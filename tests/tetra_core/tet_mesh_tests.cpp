@@ -790,6 +790,20 @@ TEST_CASE("implicit shape catalogue produces finite sign-changing surfaces") {
     const tetra::Vec3 point{x/7.0,0.5,z/7.0};
     CHECK(first.signed_distance(point)==second.signed_distance(point));
   }
+
+  const tetra::Vec3 terrain_point{0.31,0.52,0.67};
+  const auto analytic=first.normal(terrain_point);
+  constexpr double epsilon=1.0e-6;
+  tetra::Vec3 finite{
+      first.signed_distance({terrain_point.x+epsilon,terrain_point.y,terrain_point.z})-
+          first.signed_distance({terrain_point.x-epsilon,terrain_point.y,terrain_point.z}),
+      first.signed_distance({terrain_point.x,terrain_point.y+epsilon,terrain_point.z})-
+          first.signed_distance({terrain_point.x,terrain_point.y-epsilon,terrain_point.z}),
+      first.signed_distance({terrain_point.x,terrain_point.y,terrain_point.z+epsilon})-
+          first.signed_distance({terrain_point.x,terrain_point.y,terrain_point.z-epsilon})};
+  const double length=std::sqrt(finite.x*finite.x+finite.y*finite.y+finite.z*finite.z);
+  finite=finite/length;
+  CHECK(analytic.x*finite.x+analytic.y*finite.y+analytic.z*finite.z>1.0-1.0e-8);
 }
 
 TEST_CASE("every implicit shape refines and coarsens from the LOD camera") {

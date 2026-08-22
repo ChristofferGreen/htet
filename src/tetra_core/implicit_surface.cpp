@@ -72,27 +72,57 @@ double smooth_min(double first,double second,double width){
   return second*(1.0-h)+first*h-width*h*(1.0-h);
 }
 
-double gradient_noise(double x,double y){
-  const auto hash=[](int ix,int iy){
-    std::uint32_t value=static_cast<std::uint32_t>(ix)*0x8da6b343U^
-                        static_cast<std::uint32_t>(iy)*0xd8163841U;
-    value^=value>>13U;value*=0x85ebca6bU;value^=value>>16U;
-    return value;
-  };
-  const auto contribution=[&](int ix,int iy,double px,double py){
-    constexpr double diagonal=0.7071067811865475244;
-    constexpr std::array<std::array<double,2>,8> gradients{{
-        {{1.0,0.0}},{{diagonal,diagonal}},{{0.0,1.0}},{{-diagonal,diagonal}},
-        {{-1.0,0.0}},{{-diagonal,-diagonal}},{{0.0,-1.0}},{{diagonal,-diagonal}}}};
-    const auto& gradient=gradients[hash(ix,iy)&7U];
-    return gradient[0]*px+gradient[1]*py;
-  };
+struct NoiseSample { double value{},dx{},dy{}; };
+
+std::array<double,2> noise_gradient(int ix,int iy){
+  std::uint32_t hash=static_cast<std::uint32_t>(ix)*0x8da6b343U^
+                     static_cast<std::uint32_t>(iy)*0xd8163841U;
+  hash^=hash>>13U;hash*=0x85ebca6bU;hash^=hash>>16U;
+  constexpr double diagonal=0.7071067811865475244;
+  constexpr std::array<std::array<double,2>,8> gradients{{
+      {{1.0,0.0}},{{diagonal,diagonal}},{{0.0,1.0}},{{-diagonal,diagonal}},
+      {{-1.0,0.0}},{{-diagonal,-diagonal}},{{0.0,-1.0}},{{diagonal,-diagonal}}}};
+  return gradients[hash&7U];
+}
+
+NoiseSample gradient_noise_sample(double x,double y){
   const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
   const double fx=x-ix,fy=y-iy;
   const auto fade=[](double value){return value*value*value*(value*(value*6.0-15.0)+10.0);};
+  const auto fade_derivative=[](double value){
+    const double square=value*value,difference=value-1.0;
+    return 30.0*square*difference*difference;
+  };
   const double u=fade(fx),v=fade(fy);
-  const double a=contribution(ix,iy,fx,fy)*(1.0-u)+contribution(ix+1,iy,fx-1.0,fy)*u;
-  const double b=contribution(ix,iy+1,fx,fy-1.0)*(1.0-u)+contribution(ix+1,iy+1,fx-1.0,fy-1.0)*u;
+  const double du=fade_derivative(fx),dv=fade_derivative(fy);
+  const auto g00=noise_gradient(ix,iy),g10=noise_gradient(ix+1,iy);
+  const auto g01=noise_gradient(ix,iy+1),g11=noise_gradient(ix+1,iy+1);
+  const double n00=g00[0]*fx+g00[1]*fy;
+  const double n10=g10[0]*(fx-1.0)+g10[1]*fy;
+  const double n01=g01[0]*fx+g01[1]*(fy-1.0);
+  const double n11=g11[0]*(fx-1.0)+g11[1]*(fy-1.0);
+  const double a=n00*(1.0-u)+n10*u,b=n01*(1.0-u)+n11*u;
+  const double ax=g00[0]*(1.0-u)+g10[0]*u+(n10-n00)*du;
+  const double bx=g01[0]*(1.0-u)+g11[0]*u+(n11-n01)*du;
+  const double ay=g00[1]*(1.0-u)+g10[1]*u;
+  const double by=g01[1]*(1.0-u)+g11[1]*u;
+  return {a*(1.0-v)+b*v,
+          ax*(1.0-v)+bx*v,
+          ay*(1.0-v)+by*v+(b-a)*dv};
+}
+
+double gradient_noise(double x,double y){
+  const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
+  const double fx=x-ix,fy=y-iy;
+  const auto fade=[](double value){return value*value*value*(value*(value*6.0-15.0)+10.0);};
+  const auto contribution=[](std::array<double,2> gradient,double px,double py){
+    return gradient[0]*px+gradient[1]*py;
+  };
+  const double u=fade(fx),v=fade(fy);
+  const double a=contribution(noise_gradient(ix,iy),fx,fy)*(1.0-u)+
+      contribution(noise_gradient(ix+1,iy),fx-1.0,fy)*u;
+  const double b=contribution(noise_gradient(ix,iy+1),fx,fy-1.0)*(1.0-u)+
+      contribution(noise_gradient(ix+1,iy+1),fx-1.0,fy-1.0)*u;
   return a*(1.0-v)+b*v;
 }
 
@@ -239,11 +269,16 @@ Vec3 Sphere::normal(Vec3 point) const {
   }
   constexpr double epsilon=1.0e-5;
   if(kind==ImplicitShapeKind::perlin_terrain){
-    Vec3 gradient{signed_distance({point.x+epsilon,point.y,point.z})-
-                      signed_distance({point.x-epsilon,point.y,point.z}),
-                  2.0*epsilon,
-                  signed_distance({point.x,point.y,point.z+epsilon})-
-                      signed_distance({point.x,point.y,point.z-epsilon})};
+    double height_dx=0.0,height_dz=0.0;
+    double amplitude=secondary,scale=frequency;
+    for(int octave=0;octave<4;++octave){
+      const auto sample=gradient_noise_sample((point.x-centre.x)*scale,
+                                               (point.z-centre.z)*scale);
+      height_dx+=sample.dx*amplitude*scale;
+      height_dz+=sample.dy*amplitude*scale;
+      scale*=2.0;amplitude*=0.5;
+    }
+    Vec3 gradient{-height_dx,1.0,-height_dz};
     const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+
                                   gradient.z*gradient.z);
     return length>1.0e-15?gradient/length:Vec3{0.0,1.0,0.0};

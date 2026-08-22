@@ -219,8 +219,10 @@ for twice their maximum face count. Scene
 preparation reuses the same per-vertex values and skips whole-cell material
 selection when adaptive cleaving will not consume it. Terrain noise uses the
 standard fixed Perlin gradient directions, avoiding trigonometry in the hot
-signed-distance path, and its finite-difference normal omits the two redundant
-height-field samples. The default fixed shell reuses one connected-boundary
+signed-distance path. Its analytic interpolation derivative computes both
+terrain slopes in one four-octave traversal instead of evaluating the complete
+height field four times per normal. The default fixed shell reuses one
+connected-boundary
 face extraction and trusts the source-edge provenance already carried by its
 connected volume instead of reconstructing both a second time. BCC refinement
 is transactional: a transition repair
@@ -228,7 +230,7 @@ that would exceed the LOD-requested depth restores the preceding conforming
 cut instead of recursively refining an incompatible face without limit. In
 the release headless camera cycle from `(0, 1, 0.5)` to `(-1, 0.7, 0.5)` and
 back, reconciliation measures 0.44--0.51 seconds and default fixed-shell scene
-preparation 0.24--0.36 seconds on the development laptop; the original path
+preparation 0.21--0.33 seconds on the development laptop; the original path
 took approximately 1.8--2.3 seconds end to end.
 
 The editor view uses laptop-friendly Maya-inspired controls: primary-button
