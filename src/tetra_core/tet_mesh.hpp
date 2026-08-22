@@ -136,6 +136,9 @@ class TetMesh {
   // written as one batch into its target level arrays.
   void refine_selected_binary(const std::vector<TetId>& requests);
   void refine_all_binary();
+  // Collapse the active cut to the root layer while retaining all resident
+  // hierarchy records and midpoint vertices for allocation-free reuse.
+  void reset_active_hierarchy();
 
  private:
   using Edge = std::array<VertexId, 2>;
@@ -154,6 +157,8 @@ class TetMesh {
   void merge_layer(unsigned int depth, std::vector<Tetrahedron>& additions);
   void rebuild_layer_index(unsigned int depth);
   void reserve_midpoints(std::size_t count);
+  void reserve_active_midpoints(std::size_t count);
+  void activate_midpoint(EdgeKey key);
   void reserve_active_edges(std::size_t unique_edge_count);
   void insert_active_edges(TetId address);
   void remove_active_edges(TetId address);
@@ -180,6 +185,10 @@ class TetMesh {
   std::vector<EdgeKey> midpoint_keys_;
   std::vector<VertexId> midpoint_values_;
   std::size_t midpoint_count_{};
+  // Persistent midpoint vertices are separate from those participating in
+  // the current active cut, allowing coarsening without deleting hierarchy.
+  std::vector<EdgeKey> active_midpoint_keys_;
+  std::size_t active_midpoint_count_{};
   // Persistent, allocation-free-per-edge incidence storage for the active
   // cut. Nodes are retired in place and slots are rebuilt only when the flat
   // table grows; refinement updates only removed parents and new children.

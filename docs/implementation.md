@@ -188,9 +188,13 @@ visible wireframe scene object: click it to select it, use `W` for world-axis
 translation or `E` for world-axis rotation, then drag the coloured gizmo axis
 or ring with an ordinary primary-button trackpad drag. `Q` returns to selection.
 Its position, direction, field of view, and aspect ratio determine both
-projected element size and frustum visibility; moving or rotating it marks the
-previous target-refinement result stale. `Place LOD camera at view` copies the
-current editor pose, while the headless equivalent is
+projected element size and frustum visibility. Releasing a translation or
+rotation gizmo reconciles the mesh in both directions: the active cut first
+collapses to the roots, then visible surface-intersecting cells subdivide until
+they meet the pixel target. Packed per-depth tetrahedron arrays and midpoint
+vertices remain resident and are reused when the camera returns; only the BCC
+transition cut is regenerated. `Place LOD camera at view` performs the same
+reconciliation after copying the current editor pose, while the headless equivalent is
 `set-camera-direction=<x:y:z>`.
 
 The editor view uses laptop-friendly Maya-inspired controls: primary-button

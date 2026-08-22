@@ -206,6 +206,12 @@ void TetMesh::merge_layer(unsigned int depth, std::vector<Tetrahedron>& addition
   if (additions.empty()) return;
   auto& layer = layers_[depth];
   std::sort(additions.begin(), additions.end(), [](const Tetrahedron& a, const Tetrahedron& b) { return a.address < b.address; });
+  // A camera returning to an earlier branch should only reactivate its packed
+  // records. Filter those before allocating/copying a layer array.
+  additions.erase(std::remove_if(additions.begin(),additions.end(),[this](const Tetrahedron& tet){
+    return record_index(tet.address).has_value();
+  }),additions.end());
+  if(additions.empty())return;
   std::vector<Tetrahedron> merged;
   std::vector<std::uint64_t> split_words((layer.tetrahedra.size() + additions.size() + 63) / 64);
   merged.reserve(layer.tetrahedra.size() + additions.size());
@@ -220,9 +226,17 @@ void TetMesh::merge_layer(unsigned int depth, std::vector<Tetrahedron>& addition
       if (is_split(depth, old_index)) split_words[new_index / 64] |= std::uint64_t{1} << (new_index % 64);
       ++old_index;
     } else {
-      if (old_index < layer.tetrahedra.size() && layer.tetrahedra[old_index].address == additions[add_index].address)
-        throw std::logic_error("duplicate tetrahedron address");
-      merged.push_back(additions[add_index++]);
+      if (old_index < layer.tetrahedra.size() &&
+          layer.tetrahedra[old_index].address == additions[add_index].address) {
+        const std::size_t new_index=merged.size();
+        merged.push_back(layer.tetrahedra[old_index]);
+        if(is_split(depth,old_index))
+          split_words[new_index/64]|=std::uint64_t{1}<<(new_index%64);
+        ++old_index;
+        ++add_index;
+      } else {
+        merged.push_back(additions[add_index++]);
+      }
     }
   }
   layer.tetrahedra = std::move(merged);
@@ -303,7 +317,7 @@ bool TetMesh::has_conforming_active_faces() const {
   }
   std::sort(active_edges.begin(), active_edges.end());
   active_edges.erase(std::unique(active_edges.begin(), active_edges.end()), active_edges.end());
-  for (const EdgeKey key : midpoint_keys_) {
+  for (const EdgeKey key : active_midpoint_keys_) {
     if (key == 0) continue;
     const Edge bisected_edge{static_cast<VertexId>(key >> 32U), static_cast<VertexId>(key)};
     if (std::binary_search(active_edges.begin(), active_edges.end(), bisected_edge)) return false;
@@ -365,6 +379,33 @@ void TetMesh::reserve_midpoints(std::size_t count) {
   midpoint_values_ = std::move(values);
 }
 
+void TetMesh::reserve_active_midpoints(std::size_t count) {
+  std::size_t capacity=active_midpoint_keys_.empty()?16:active_midpoint_keys_.size();
+  while(capacity*7<count*10)capacity<<=1U;
+  if(capacity==active_midpoint_keys_.size())return;
+  std::vector<EdgeKey> keys(capacity);
+  const std::size_t mask=capacity-1;
+  for(const EdgeKey key:active_midpoint_keys_){
+    if(key==0)continue;
+    std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
+    while(keys[slot]!=0)slot=(slot+1)&mask;
+    keys[slot]=key;
+  }
+  active_midpoint_keys_=std::move(keys);
+}
+
+void TetMesh::activate_midpoint(EdgeKey key) {
+  reserve_active_midpoints(active_midpoint_count_+1);
+  const std::size_t mask=active_midpoint_keys_.size()-1;
+  std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
+  while(active_midpoint_keys_[slot]!=0&&active_midpoint_keys_[slot]!=key)
+    slot=(slot+1)&mask;
+  if(active_midpoint_keys_[slot]==0){
+    active_midpoint_keys_[slot]=key;
+    ++active_midpoint_count_;
+  }
+}
+
 VertexId TetMesh::midpoint(Edge edge) {
   reserve_midpoints(midpoint_count_ + 1);
   const EdgeKey key = pack_edge(edge);
@@ -377,17 +418,44 @@ VertexId TetMesh::midpoint(Edge edge) {
     vertices_.push_back((vertices_[edge[0]] + vertices_[edge[1]]) / 2.0);
     ++midpoint_count_;
   }
+  activate_midpoint(key);
   return midpoint_values_[slot];
 }
 
 std::optional<VertexId> TetMesh::existing_midpoint(Edge edge) const {
-  if(midpoint_keys_.empty())return std::nullopt;
   const EdgeKey key=pack_edge(edge);
+  if(active_midpoint_keys_.empty())return std::nullopt;
+  const std::size_t active_mask=active_midpoint_keys_.size()-1;
+  std::size_t active_slot=static_cast<std::size_t>(mix64(key))&active_mask;
+  while(active_midpoint_keys_[active_slot]!=0&&active_midpoint_keys_[active_slot]!=key)
+    active_slot=(active_slot+1)&active_mask;
+  if(active_midpoint_keys_[active_slot]==0)return std::nullopt;
   const std::size_t mask=midpoint_keys_.size()-1;
   std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
   while(midpoint_keys_[slot]!=0&&midpoint_keys_[slot]!=key)slot=(slot+1)&mask;
   if(midpoint_keys_[slot]==0)return std::nullopt;
   return midpoint_values_[slot];
+}
+
+void TetMesh::reset_active_hierarchy() {
+  for(auto& layer:layers_)
+    std::fill(layer.split_words.begin(),layer.split_words.end(),std::uint64_t{});
+  active_leaves_.clear();
+  active_leaves_.reserve(layers_.front().tetrahedra.size());
+  for(const auto& root:layers_.front().tetrahedra)
+    if(root.transition_parent==invalid_tet)active_leaves_.push_back(root.address);
+
+  std::fill(active_midpoint_keys_.begin(),active_midpoint_keys_.end(),EdgeKey{});
+  active_midpoint_count_=0;
+  std::fill(active_edge_keys_.begin(),active_edge_keys_.end(),EdgeKey{});
+  std::fill(active_edge_heads_.begin(),active_edge_heads_.end(),
+            std::numeric_limits<std::uint32_t>::max());
+  active_edge_nodes_.clear();
+  active_edge_key_count_=0;
+  reserve_active_edges(active_leaves_.size()*6);
+  active_edge_nodes_.reserve(active_leaves_.size()*6);
+  for(const TetId root:active_leaves_)insert_active_edges(root);
+  ++revision_;
 }
 
 void TetMesh::reserve_active_edges(std::size_t unique_edge_count) {

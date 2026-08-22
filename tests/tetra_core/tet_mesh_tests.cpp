@@ -573,6 +573,42 @@ TEST_CASE("BCC surface LOD leaves tetrahedra far from the surface coarse") {
   CHECK(mesh.has_conforming_active_faces());
 }
 
+TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsening") {
+  const tetra::Sphere sphere{};
+  for(const auto method:{tetra::SubdivisionMethod::maubach_diamond,
+                         tetra::SubdivisionMethod::bcc_red_green}){
+    CAPTURE(tetra::subdivision_method_name(method));
+    auto mesh=tetra::TetMesh::make_unit_cube(method);
+    tetra::Camera camera;
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    const auto near_leaves=mesh.active_leaves();
+    const auto resident_tetrahedra=mesh.tetrahedron_count();
+    const auto resident_vertices=mesh.vertices().size();
+    REQUIRE(near_leaves.size()>(method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
+
+    mesh.reset_active_hierarchy();
+    CHECK(mesh.active_leaves().size()==
+          (method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
+    CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
+    CHECK(mesh.vertices().size()==resident_vertices);
+    CHECK(mesh.has_conforming_active_faces());
+
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    CHECK(mesh.active_leaves()==near_leaves);
+    CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
+    CHECK(mesh.vertices().size()==resident_vertices);
+    CHECK(mesh.has_conforming_active_faces());
+
+    camera.forward={0.0,0.0,1.0};
+    mesh.reset_active_hierarchy();
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    CHECK(mesh.active_leaves().size()==
+          (method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
+    CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
+    CHECK(mesh.vertices().size()==resident_vertices);
+  }
+}
+
 TEST_CASE("octasection target refinement advances only at complete three-bit depths") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bey_red_fixed);
   const tetra::Sphere sphere{};

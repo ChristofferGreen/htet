@@ -639,6 +639,7 @@ int main(int argc, char** argv)
     tetra_viewer::CameraGizmoAxis active_gizmo_axis=
         tetra_viewer::CameraGizmoAxis::none;
     bool gizmo_dragging=false;
+    bool lod_reconcile_pending=false;
     bool previous_left_pressed=false;
     double previous_rotation_angle{};
     double previous_cursor_x = 0.0;
@@ -681,6 +682,10 @@ int main(int argc, char** argv)
                 tetra_viewer::whole_cell_options(tetra_viewer::material_rules[material_rule_index]));
         return tetra::refine_to_sphere(
             mesh, sphere, camera, pixel_threshold, static_cast<unsigned int>(maximum_depth));
+    };
+    const auto reconcile_to_current_surface=[&] {
+        mesh.reset_active_hierarchy();
+        return refine_to_current_surface();
     };
     update_orbit_camera();
     lod_camera_pose.apply(camera);
@@ -943,7 +948,7 @@ int main(int argc, char** argv)
             has_adaptive_result = false;
         }
         ImGui::SeparatorText("LOD camera");
-        ImGui::TextWrapped("Click the camera in the viewport, then use Q/W/E for select, move, or rotate.");
+        ImGui::TextWrapped("Click the camera, then use Q/W/E for select, move, or rotate. Releasing a gizmo rebuilds the active hierarchy to match the new view.");
         ImGui::TextDisabled("Origin: %.2f, %.2f, %.2f   Direction: %.2f, %.2f, %.2f",
                             camera.position.x,camera.position.y,camera.position.z,
                             camera.forward.x,camera.forward.y,camera.forward.z);
@@ -971,6 +976,7 @@ int main(int argc, char** argv)
             lod_camera_pose.apply(camera);
             lod_camera_selected=true;
             has_adaptive_result=false;
+            lod_reconcile_pending=true;
             upload_dirty=true;
         }
         ImGui::SeparatorText("Editor view");
@@ -1017,7 +1023,7 @@ int main(int argc, char** argv)
         ImGui::TableNextColumn();
         if (ImGui::Button("Refine to target", ImVec2(-FLT_MIN, 0.0f))) {
             const auto start = std::chrono::steady_clock::now();
-            last_adaptive_result = refine_to_current_surface();
+            last_adaptive_result = reconcile_to_current_surface();
             last_refine_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             has_adaptive_result = true;
             refined = true;
@@ -1332,7 +1338,22 @@ int main(int argc, char** argv)
         if(lod_camera_moved){
             lod_camera_pose.apply(camera);
             has_adaptive_result=false;
+            lod_reconcile_pending=true;
             upload_dirty=true;
+        }
+        // Reconcile once on release rather than rebuilding for every pointer
+        // sample. The packed hierarchy and midpoint vertices remain resident;
+        // only its active cut is collapsed and refined for the new camera.
+        if(lod_reconcile_pending&&!gizmo_dragging&&!previous_left_pressed){
+            const auto start=std::chrono::steady_clock::now();
+            last_adaptive_result=reconcile_to_current_surface();
+            last_refine_milliseconds=std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-start).count();
+            has_adaptive_result=true;
+            refined=true;
+            mesh_validation_current=false;
+            upload_dirty=true;
+            lod_reconcile_pending=false;
         }
         update_orbit_camera();
         // Derive the view direction from the orbit angles rather than
