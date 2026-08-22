@@ -140,6 +140,8 @@ when further refinement is requested.
 `set-camera=<x:y:z>` sets the headless LOD camera origin, and
 `set-camera-direction=<x:y:z>` sets its orientation.
 `set-shape=<key>` selects the same implicit field as the interactive dropdown.
+Camera commands reconcile the active cut in both directions exactly like
+releasing the interactive camera gizmo.
 `render-image=<path.ppm>` writes the selected surface method through a
 deterministic CPU depth buffer for visual comparisons.
 
@@ -676,8 +678,10 @@ potentially intersected leaf meets a view-dependent pixel-size threshold.
   selection, and diagnostic shading. The inspector exposes contextual centre,
   scale, shape-parameter, amplitude, and frequency controls; scripts use
   `set-shape=<key>` and report the selected key.
-  Deterministic Perlin terrain is the initial viewer experiment; smoothly
-  merging spheres start with wider-separated centres for a clearer neck.
+  Deterministic Perlin terrain is the initial viewer experiment and uses
+  adaptive cleaving because its open height-field boundary is not a closed-
+  shell input. Smoothly merging spheres start with wider-separated centres for
+  a clearer neck.
 - [x] Keep shape changes responsive and camera-driven. Convex negative regions
   classify wholly inside immediately; other same-sign cells use a conservative
   centre-radius field bound, including explicit slope bounds for terrain and

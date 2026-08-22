@@ -275,9 +275,12 @@ TEST_CASE("interactive smooth cutaway preserves the selected whole hierarchy cel
       VolumeConnectionMethod::quality_stencils);
 }
 
-TEST_CASE("viewer defaults select the watertight BCC TetWeave hierarchy-core experiment") {
+TEST_CASE("viewer defaults pair terrain with a compatible BCC volume method") {
   CHECK(tetra_viewer::default_subdivision_method==tetra::SubdivisionMethod::bcc_red_green);
   CHECK(tetra_viewer::default_implicit_shape==tetra::ImplicitShapeKind::perlin_terrain);
+  CHECK(tetra_viewer::default_volume_connection_for_shape(
+      tetra_viewer::default_implicit_shape)==
+      tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
   CHECK(tetra::implicit_shape_default_secondary(tetra::ImplicitShapeKind::merging_spheres)==
         doctest::Approx(0.17));
   CHECK(tetra_viewer::default_surface_method==tetra_viewer::SurfaceMethod::surface_optimization);
@@ -297,8 +300,7 @@ TEST_CASE("viewer defaults select the watertight BCC TetWeave hierarchy-core exp
   CHECK(initialized.find("\"x_cutaway\":true")!=std::string::npos);
 
   std::ostringstream validation_output,validation_errors;
-  REQUIRE(tetra_viewer::run_script(
-      "set-shape=sphere,validate-volume",validation_output,validation_errors)==0);
+  REQUIRE(tetra_viewer::run_script("validate-volume",validation_output,validation_errors)==0);
   CHECK(validation_errors.str().empty());
   CHECK(validation_output.str().find("\"authoritative_complex\":true")!=std::string::npos);
   CHECK(validation_output.str().find("\"graded_parent_band\":true")!=std::string::npos);
@@ -2048,6 +2050,27 @@ TEST_CASE("headless LOD camera direction is scriptable") {
   CHECK(errors.str().empty());
   CHECK(output.str().find("\"lod_camera\":[0.500,0.500,3.000]")!=std::string::npos);
   CHECK(output.str().find("\"lod_direction\":[0.000,1.000,0.000]")!=std::string::npos);
+}
+
+TEST_CASE("headless camera commands reconcile terrain LOD in both directions") {
+  std::ostringstream away_output,away_errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-maximum-depth=6,set-shape=perlin-terrain,set-camera=-1:0.7:0.5,"
+      "set-camera-direction=-1:0:0,validate,stats",away_output,away_errors)==0);
+  CHECK(away_errors.str().empty());
+  CHECK(away_output.str().find("\"active_leaves\":12")!=std::string::npos);
+  CHECK(away_output.str().find("\"maximum_active_depth\":0")!=std::string::npos);
+
+  std::ostringstream toward_output,toward_errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-maximum-depth=6,set-shape=perlin-terrain,set-camera=-1:0.7:0.5,"
+      "set-camera-direction=1:0:0,validate,stats",toward_output,toward_errors)==0);
+  CHECK(toward_errors.str().empty());
+  const auto stats=toward_output.str().rfind("\"event\":\"stats\"");
+  REQUIRE(stats!=std::string::npos);
+  const auto final=toward_output.str().substr(stats);
+  CHECK(final.find("\"maximum_active_depth\":6")!=std::string::npos);
+  CHECK(final.find("\"active_leaves\":12,")==std::string::npos);
 }
 
 TEST_CASE("headless renderer writes a deterministic comparison image") {

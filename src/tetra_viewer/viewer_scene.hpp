@@ -295,6 +295,12 @@ inline constexpr SurfaceMethod default_surface_method=SurfaceMethod::surface_opt
 inline constexpr VolumeConnectionMethod default_volume_connection_method=
     VolumeConnectionMethod::fixed_surface_shell;
 
+[[nodiscard]] constexpr VolumeConnectionMethod default_volume_connection_for_shape(
+    tetra::ImplicitShapeKind kind){
+  return kind==tetra::ImplicitShapeKind::perlin_terrain?
+      VolumeConnectionMethod::adaptive_cleaving:default_volume_connection_method;
+}
+
 inline constexpr std::array volume_connection_methods{
     VolumeConnectionMethod::hierarchy_cells,
     VolumeConnectionMethod::fixed_surface_shell,

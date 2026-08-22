@@ -573,6 +573,9 @@ int main(int argc, char** argv)
         (tetweave_cutaway_check || selected_atlas_check)
             ? tetra_viewer::VolumeConnectionMethod::quality_stencils
             : tetra_viewer::default_volume_connection_method;
+    if(!deterministic_visual_check)
+        volume_connection_method=tetra_viewer::default_volume_connection_for_shape(
+            tetra_viewer::default_implicit_shape);
     tetra_viewer::StencilConstruction stencil_construction =
         (tetweave_cutaway_check || selected_atlas_check)
             ? tetra_viewer::StencilConstruction::selected

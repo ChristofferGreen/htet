@@ -492,7 +492,10 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const double length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
                                     direction.z*direction.z);
       if(length>1.0e-15)state.camera.forward=direction/length;
-      write_command_event(output, command, 0.0, state);
+      const auto start=Clock::now();
+      state.mesh.reset_active_hierarchy();
+      static_cast<void>(refine_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
     constexpr std::string_view camera_direction_prefix="set-camera-direction=";
@@ -509,7 +512,10 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         return 2;
       }
       state.camera.forward=direction/length;
-      write_command_event(output,command,0.0,state);
+      const auto start=Clock::now();
+      state.mesh.reset_active_hierarchy();
+      static_cast<void>(refine_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
     constexpr std::string_view render_prefix = "render-image=";
