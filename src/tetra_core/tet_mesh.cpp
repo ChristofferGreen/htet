@@ -876,7 +876,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   constexpr std::array<std::array<std::size_t,3>,4> logical_faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
   std::size_t face_capacity=16;
-  while(face_capacity<active_leaves_.size()*8)face_capacity<<=1U;
+  while(face_capacity<active_leaves_.size()*5)face_capacity<<=1U;
   std::vector<LogicalFaceSlot> face_slots(face_capacity);
   const std::size_t face_mask=face_capacity-1;
   std::vector<std::size_t> paired_face_slots;
@@ -1166,13 +1166,24 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   // triangles in the regenerated active cut and promote only their coarsest
   // logical owners. Re-entering the same packed refinement path repairs the
   // face locally; it does not connect unrelated cells through BCC edge stars.
-  struct ActiveFaceOwner {
-    std::array<VertexId,3> key{};
+  struct ActiveFaceNode {
     TetId active{invalid_tet};
     TetId logical{invalid_tet};
+    std::uint32_t next{std::numeric_limits<std::uint32_t>::max()};
   };
-  std::vector<ActiveFaceOwner> active_faces;
-  active_faces.reserve(active_leaves_.size()*4);
+  struct ActiveFaceSlot {
+    std::array<VertexId,3> key{};
+    std::uint32_t head{std::numeric_limits<std::uint32_t>::max()};
+    std::uint32_t owner_count{};
+  };
+  std::size_t active_face_capacity=16;
+  while(active_face_capacity<active_leaves_.size()*5)active_face_capacity<<=1U;
+  std::vector<ActiveFaceSlot> active_face_slots(active_face_capacity);
+  const std::size_t active_face_mask=active_face_capacity-1;
+  std::vector<std::size_t> occupied_face_slots;
+  occupied_face_slots.reserve(active_leaves_.size()*2);
+  std::vector<ActiveFaceNode> active_face_nodes;
+  active_face_nodes.reserve(active_leaves_.size()*4);
   for(const TetId id:active_leaves_){
     const auto& record=tetrahedron(id);
     const TetId logical=record.transition_parent==invalid_tet?id:record.transition_parent;
@@ -1180,38 +1191,45 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       std::array<VertexId,3> key{{record.vertices[face[0]],record.vertices[face[1]],
                                   record.vertices[face[2]]}};
       std::sort(key.begin(),key.end());
-      active_faces.push_back({key,id,logical});
+      const std::uint64_t first_pair=(static_cast<std::uint64_t>(key[0])<<32U)|key[1];
+      std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(key[2]))&
+          active_face_mask;
+      while(active_face_slots[slot].owner_count!=0&&active_face_slots[slot].key!=key)
+        slot=(slot+1)&active_face_mask;
+      auto& owner=active_face_slots[slot];
+      if(owner.owner_count==0){owner.key=key;occupied_face_slots.push_back(slot);}
+      const auto node=static_cast<std::uint32_t>(active_face_nodes.size());
+      active_face_nodes.push_back({id,logical,owner.head});
+      owner.head=node;
+      ++owner.owner_count;
     }
   }
-  std::sort(active_faces.begin(),active_faces.end(),[](const ActiveFaceOwner& first,
-                                                       const ActiveFaceOwner& second){
-    return first.key<second.key;
-  });
   std::vector<TetId> face_repairs;
   unsigned int shallowest_repair=tet_root_shift;
-  for(std::size_t begin=0;begin<active_faces.size();){
-    std::size_t end=begin+1;
-    while(end<active_faces.size()&&active_faces[end].key==active_faces[begin].key)++end;
+  for(const std::size_t slot:occupied_face_slots){
+    const auto& owner=active_face_slots[slot];
     bool boundary=false;
-    if(end-begin==1){
+    if(owner.owner_count==1){
       for(std::size_t axis=0;axis<3;++axis){
         const auto coordinate=[&](VertexId vertex){
           const auto& point=vertices_[vertex];
           return axis==0?point.x:(axis==1?point.y:point.z);
         };
-        const double value=coordinate(active_faces[begin].key[0]);
-        if((value==0.0||value==1.0)&&coordinate(active_faces[begin].key[1])==value&&
-           coordinate(active_faces[begin].key[2])==value){boundary=true;break;}
+        const double value=coordinate(owner.key[0]);
+        if((value==0.0||value==1.0)&&coordinate(owner.key[1])==value&&
+           coordinate(owner.key[2])==value){boundary=true;break;}
       }
     }
-    if((end-begin)!=2&&!boundary){
-      for(std::size_t index=begin;index<end;++index){
-        const unsigned int depth=tet_depth(active_faces[index].logical);
+    if(owner.owner_count!=2&&!boundary){
+      for(std::uint32_t node=owner.head;
+          node!=std::numeric_limits<std::uint32_t>::max();
+          node=active_face_nodes[node].next){
+        const auto& face_owner=active_face_nodes[node];
+        const unsigned int depth=tet_depth(face_owner.logical);
         if(depth<shallowest_repair){face_repairs.clear();shallowest_repair=depth;}
-        if(depth==shallowest_repair)face_repairs.push_back(active_faces[index].active);
+        if(depth==shallowest_repair)face_repairs.push_back(face_owner.active);
       }
     }
-    begin=end;
   }
   if(!face_repairs.empty()){
     std::sort(face_repairs.begin(),face_repairs.end());
