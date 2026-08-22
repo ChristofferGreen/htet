@@ -867,14 +867,20 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   // LOD request refine almost the complete volume. Active green cells already
   // form a conforming face complex, so use their face adjacencies to find only
   // the coarse logical red parents bordering a planned finer red cell.
-  struct LogicalFace {
+  struct LogicalFaceSlot {
     std::array<VertexId,3> key{};
-    TetId parent{invalid_tet};
+    std::array<TetId,2> parents{{invalid_tet,invalid_tet}};
+    std::uint32_t owner_count{};
+    bool occupied{};
   };
   constexpr std::array<std::array<std::size_t,3>,4> logical_faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
-  std::vector<LogicalFace> face_owners;
-  face_owners.reserve(active_leaves_.size()*4);
+  std::size_t face_capacity=16;
+  while(face_capacity<active_leaves_.size()*8)face_capacity<<=1U;
+  std::vector<LogicalFaceSlot> face_slots(face_capacity);
+  const std::size_t face_mask=face_capacity-1;
+  std::vector<std::size_t> paired_face_slots;
+  paired_face_slots.reserve(active_leaves_.size()*2);
   for(const TetId active:active_leaves_){
     const auto& record=tetrahedron(active);
     const TetId parent=record.transition_parent==invalid_tet?active:record.transition_parent;
@@ -882,23 +888,25 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       std::array<VertexId,3> key{{record.vertices[face[0]],record.vertices[face[1]],
                                   record.vertices[face[2]]}};
       std::sort(key.begin(),key.end());
-      face_owners.push_back({key,parent});
+      const std::uint64_t first_pair=(static_cast<std::uint64_t>(key[0])<<32U)|key[1];
+      std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(key[2]))&face_mask;
+      while(face_slots[slot].occupied&&face_slots[slot].key!=key)slot=(slot+1)&face_mask;
+      auto& owner=face_slots[slot];
+      if(!owner.occupied){owner.key=key;owner.occupied=true;}
+      if(owner.owner_count<owner.parents.size())owner.parents[owner.owner_count]=parent;
+      ++owner.owner_count;
+      if(owner.owner_count==2)paired_face_slots.push_back(slot);
     }
   }
-  std::sort(face_owners.begin(),face_owners.end(),[](const LogicalFace& first,
-                                                     const LogicalFace& second){
-    return first.key<second.key||(first.key==second.key&&first.parent<second.parent);
-  });
   std::vector<std::array<TetId,2>> adjacent_parents;
-  for(std::size_t begin=0;begin<face_owners.size();){
-    std::size_t end=begin+1;
-    while(end<face_owners.size()&&face_owners[end].key==face_owners[begin].key)++end;
-    if(end-begin==2&&face_owners[begin].parent!=face_owners[begin+1].parent){
-      auto pair=std::array<TetId,2>{{face_owners[begin].parent,face_owners[begin+1].parent}};
+  adjacent_parents.reserve(active_leaves_.size()*2);
+  for(const std::size_t slot:paired_face_slots){
+    const auto& owner=face_slots[slot];
+    if(owner.owner_count==2&&owner.parents[0]!=owner.parents[1]){
+      auto pair=owner.parents;
       if(pair[1]<pair[0])std::swap(pair[0],pair[1]);
       adjacent_parents.push_back(pair);
     }
-    begin=end;
   }
   std::sort(adjacent_parents.begin(),adjacent_parents.end());
   adjacent_parents.erase(std::unique(adjacent_parents.begin(),adjacent_parents.end()),

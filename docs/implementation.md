@@ -210,19 +210,23 @@ storage after the first visit to each pose.
 Camera reconciliation also treats the packed hierarchy as the cache boundary.
 It clears and rebuilds the flat active-edge table in one pass, hashes logical
 edge and midpoint identities in contiguous tables, and caches every implicit
-value for the duration of a refinement. Logical BCC face ownership retains
-its complete sorted groups because collapsing a face with multiple owners to
-one hash-table entry can misbalance the transition cut. Scene
+value for the duration of a refinement. Logical BCC face slots retain exact
+owner multiplicity and the first two owners; this preserves the complete-group
+balancing semantics without comparison-sorting all face records. Scene
 preparation reuses the same per-vertex values and skips whole-cell material
 selection when adaptive cleaving will not consume it. Terrain noise uses the
 standard fixed Perlin gradient directions, avoiding trigonometry in the hot
-signed-distance path. BCC refinement is transactional: a transition repair
+signed-distance path, and its finite-difference normal omits the two redundant
+height-field samples. The default fixed shell reuses one connected-boundary
+face extraction and trusts the source-edge provenance already carried by its
+connected volume instead of reconstructing both a second time. BCC refinement
+is transactional: a transition repair
 that would exceed the LOD-requested depth restores the preceding conforming
 cut instead of recursively refining an incompatible face without limit. In
 the release headless camera cycle from `(0, 1, 0.5)` to `(-1, 0.7, 0.5)` and
-back, reconciliation measures 0.50--0.58 seconds and
-scene preparation 0.26--0.37 seconds on the development laptop; the earlier
-path took approximately 1.8--2.3 seconds end to end.
+back, reconciliation measures 0.47--0.56 seconds and default fixed-shell scene
+preparation 0.24--0.35 seconds on the development laptop; the original path
+took approximately 1.8--2.3 seconds end to end.
 
 The editor view uses laptop-friendly Maya-inspired controls: primary-button
 drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling

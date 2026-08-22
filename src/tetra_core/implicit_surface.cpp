@@ -238,6 +238,16 @@ Vec3 Sphere::normal(Vec3 point) const {
     return length>1.0e-15?offset/length:Vec3{0.0,1.0,0.0};
   }
   constexpr double epsilon=1.0e-5;
+  if(kind==ImplicitShapeKind::perlin_terrain){
+    Vec3 gradient{signed_distance({point.x+epsilon,point.y,point.z})-
+                      signed_distance({point.x-epsilon,point.y,point.z}),
+                  2.0*epsilon,
+                  signed_distance({point.x,point.y,point.z+epsilon})-
+                      signed_distance({point.x,point.y,point.z-epsilon})};
+    const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+
+                                  gradient.z*gradient.z);
+    return length>1.0e-15?gradient/length:Vec3{0.0,1.0,0.0};
+  }
   Vec3 gradient{signed_distance({point.x+epsilon,point.y,point.z})-
                     signed_distance({point.x-epsilon,point.y,point.z}),
                 signed_distance({point.x,point.y+epsilon,point.z})-

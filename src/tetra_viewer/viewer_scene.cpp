@@ -1254,33 +1254,45 @@ struct OptimizedSurface {
   std::vector<std::array<tetra::VertexId,2>> source_edges;
 };
 
+std::vector<ConnectedFace> connected_surface_boundary_faces(const PreparedScene& source){
+  constexpr std::array<std::array<std::size_t,3>,4> faces{{
+      {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
+  std::vector<ConnectedFace> all_faces;
+  all_faces.reserve(source.connected_volume_tetrahedra.size()*4);
+  for(std::size_t tet_index=0;tet_index<source.connected_volume_tetrahedra.size();++tet_index){
+    const auto& tet=source.connected_volume_tetrahedra[tet_index];
+    for(const auto face:faces){
+      std::array<std::size_t,3> vertices{{tet[face[0]],tet[face[1]],tet[face[2]]}};
+      auto key=vertices;std::sort(key.begin(),key.end());
+      all_faces.push_back({key,vertices,tet_index});
+    }
+  }
+  std::sort(all_faces.begin(),all_faces.end(),[](const auto& a,const auto& b){return a.key<b.key;});
+  std::vector<ConnectedFace> boundary_faces;
+  for(std::size_t begin=0;begin<all_faces.size();){
+    std::size_t end=begin+1;
+    while(end<all_faces.size()&&all_faces[end].key==all_faces[begin].key)++end;
+    if(end-begin==1&&std::ranges::all_of(all_faces[begin].vertices,[&](std::size_t vertex){
+         return source.connected_volume_surface_vertices[vertex]!=0U;
+       }))boundary_faces.push_back(all_faces[begin]);
+    begin=end;
+  }
+  return boundary_faces;
+}
+
 OptimizedSurface build_optimized_surface(PreparedScene& scene,
                                          const tetra::TetMesh& mesh,
                                          const tetra::Sphere& sphere,
-                                         const PreparedScene* topology_source=nullptr) {
+                                         const PreparedScene* topology_source=nullptr,
+                                         const std::vector<ConnectedFace>* supplied_boundary=nullptr) {
   std::vector<tetra::Triangle> input;
   std::vector<std::array<std::array<tetra::VertexId,2>,3>> input_source_edges;
   if(topology_source!=nullptr){
-    constexpr std::array<std::array<std::size_t,3>,4> faces{{
-        {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
-    std::vector<ConnectedFace> all_faces;
-    all_faces.reserve(topology_source->connected_volume_tetrahedra.size()*4);
-    for(std::size_t tet_index=0;tet_index<topology_source->connected_volume_tetrahedra.size();++tet_index){
-      const auto& tet=topology_source->connected_volume_tetrahedra[tet_index];
-      for(const auto face:faces){
-        std::array<std::size_t,3> vertices{{tet[face[0]],tet[face[1]],tet[face[2]]}};
-        auto key=vertices;std::sort(key.begin(),key.end());
-        all_faces.push_back({key,vertices,tet_index});
-      }
-    }
-    std::sort(all_faces.begin(),all_faces.end(),[](const auto& a,const auto& b){return a.key<b.key;});
-    for(std::size_t begin=0;begin<all_faces.size();){
-      std::size_t end=begin+1;
-      while(end<all_faces.size()&&all_faces[end].key==all_faces[begin].key)++end;
-      if(end-begin==1&&std::ranges::all_of(all_faces[begin].vertices,[&](std::size_t vertex){
-           return topology_source->connected_volume_surface_vertices[vertex]!=0U;
-         })){
-        auto ids=all_faces[begin].vertices;
+    const auto owned_boundary=supplied_boundary==nullptr?
+        connected_surface_boundary_faces(*topology_source):std::vector<ConnectedFace>{};
+    const auto& boundary=supplied_boundary==nullptr?owned_boundary:*supplied_boundary;
+    for(const auto& face:boundary){
+        auto ids=face.vertices;
         auto a=topology_source->connected_volume_vertices[ids[0]];
         auto b=topology_source->connected_volume_vertices[ids[1]];
         auto c=topology_source->connected_volume_vertices[ids[2]];
@@ -1295,8 +1307,6 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
         }
         input.push_back({a,b,c});
         input_source_edges.push_back(source_edges);
-      }
-      begin=end;
     }
   }else input=tetra::extract_isosurface(mesh,sphere);
   using PointKey=std::array<long long,3>;
@@ -1319,24 +1329,26 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
   constexpr std::array<std::array<std::size_t,2>,6> local_edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<CrossingProvenance> provenance;
-  provenance.reserve(mesh.active_leaves().size()*2);
-  for(const auto leaf:mesh.active_leaves()){
-    const auto& tet=mesh.tetrahedron(leaf).vertices;
-    for(const auto local:local_edges){
-      auto edge=std::array<tetra::VertexId,2>{{tet[local[0]],tet[local[1]]}};
-      const auto first=mesh.vertices()[edge[0]],second=mesh.vertices()[edge[1]];
-      if((sphere.signed_distance(first)<=0.0)==(sphere.signed_distance(second)<=0.0))continue;
-      if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
-      provenance.push_back({point_key(sphere.edge_intersection(
-          mesh.vertices()[edge[0]],mesh.vertices()[edge[1]])),edge});
+  if(input_source_edges.size()!=input.size()){
+    provenance.reserve(mesh.active_leaves().size()*2);
+    for(const auto leaf:mesh.active_leaves()){
+      const auto& tet=mesh.tetrahedron(leaf).vertices;
+      for(const auto local:local_edges){
+        auto edge=std::array<tetra::VertexId,2>{{tet[local[0]],tet[local[1]]}};
+        const auto first=mesh.vertices()[edge[0]],second=mesh.vertices()[edge[1]];
+        if((sphere.signed_distance(first)<=0.0)==(sphere.signed_distance(second)<=0.0))continue;
+        if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+        provenance.push_back({point_key(sphere.edge_intersection(
+            mesh.vertices()[edge[0]],mesh.vertices()[edge[1]])),edge});
+      }
     }
+    std::sort(provenance.begin(),provenance.end(),[](const auto& a,const auto& b){
+      return a.key<b.key||(a.key==b.key&&a.edge<b.edge);
+    });
+    provenance.erase(std::unique(provenance.begin(),provenance.end(),[](const auto& a,const auto& b){
+      return a.key==b.key;
+    }),provenance.end());
   }
-  std::sort(provenance.begin(),provenance.end(),[](const auto& a,const auto& b){
-    return a.key<b.key||(a.key==b.key&&a.edge<b.edge);
-  });
-  provenance.erase(std::unique(provenance.begin(),provenance.end(),[](const auto& a,const auto& b){
-    return a.key==b.key;
-  }),provenance.end());
   for(std::size_t triangle=0;triangle<input.size();++triangle){
     const std::array<tetra::Vec3,3> points{{input[triangle].a,input[triangle].b,input[triangle].c}};
     for(std::size_t corner=0;corner<3;++corner){
@@ -1506,34 +1518,14 @@ void build_fixed_surface_shell(PreparedScene& scene,const tetra::TetMesh& mesh,
   build_adaptive_cleaved_volume(scene,mesh,sphere,
                                 VolumeConnectionMethod::quality_stencils,
                                 StencilConstruction::fixed,objective);
-  auto outer=build_optimized_surface(scene,mesh,sphere,&scene);
+  auto boundary_faces=connected_surface_boundary_faces(scene);
+  auto outer=build_optimized_surface(scene,mesh,sphere,&scene,&boundary_faces);
   scene.standalone_surface_hash=hash_indexed_surface(outer);
   scene.connected_surface_hash=scene.standalone_surface_hash;
   scene.hybrid_shell_vertices=outer.positions.size();
 
   constexpr std::array<std::array<std::size_t,3>,4> face_corners{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
-  std::vector<ConnectedFace> faces;
-  faces.reserve(scene.connected_volume_tetrahedra.size()*4);
-  for(std::size_t tet_index=0;tet_index<scene.connected_volume_tetrahedra.size();++tet_index){
-    const auto& tet=scene.connected_volume_tetrahedra[tet_index];
-    for(const auto face:face_corners){
-      std::array<std::size_t,3> vertices{{tet[face[0]],tet[face[1]],tet[face[2]]}};
-      auto key=vertices;std::sort(key.begin(),key.end());
-      faces.push_back({key,vertices,tet_index});
-    }
-  }
-  std::sort(faces.begin(),faces.end(),[](const auto& a,const auto& b){return a.key<b.key;});
-  std::vector<ConnectedFace> boundary_faces;
-  for(std::size_t begin=0;begin<faces.size();){
-    std::size_t end=begin+1;
-    while(end<faces.size()&&faces[end].key==faces[begin].key)++end;
-    if(end-begin==1&&std::ranges::all_of(faces[begin].vertices,[&](std::size_t vertex){
-         return scene.connected_volume_surface_vertices[vertex]!=0U;
-       }))boundary_faces.push_back(faces[begin]);
-    begin=end;
-  }
-
   using SourceEdge=std::array<tetra::VertexId,2>;
   struct SourceVertex { SourceEdge edge{};std::size_t vertex{}; };
   std::vector<SourceVertex> source_vertices;
