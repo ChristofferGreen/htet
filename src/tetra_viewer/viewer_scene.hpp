@@ -561,6 +561,8 @@ struct PreparedScene {
   double maximum_normal_error_degrees{};
   double minimum_surface_triangle_angle_degrees{180.0};
   double maximum_surface_triangle_edge_ratio{1.0};
+  bool surface_diagnostics_available{};
+  bool summary_statistics_available{};
 };
 
 // Validates the relationship between surface and volume, rather than either
@@ -592,6 +594,14 @@ struct ProjectionStatistics {
   std::size_t accepted_count{};
 };
 
+// Geometry preparation is also used by headless research scripts, which need
+// all measurements.  The interactive viewer can explicitly omit measurements
+// that are neither displayed nor used by the selected shading model.
+struct ScenePreparationOptions {
+  bool surface_diagnostics{true};
+  bool summary_statistics{true};
+};
+
 // Builds camera-independent CPU scene data. Packed 64-bit edge keys are
 // sorted once per revision; there are no per-edge node allocations.
 [[nodiscard]] PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
@@ -606,7 +616,8 @@ struct ProjectionStatistics {
                                           StencilConstruction stencil_construction =
                                               StencilConstruction::fixed,
                                           StencilSelectionObjective stencil_selection_objective =
-                                              StencilSelectionObjective::balanced);
+                                              StencilSelectionObjective::balanced,
+                                          ScenePreparationOptions preparation = {});
 [[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
                                                  SurfaceMethod surface_method, MaterialRule material_rule,
                                                  bool show_faces, bool show_edges, bool depth_colours) {
@@ -639,7 +650,8 @@ class SceneCache {
                     StencilConstruction stencil_construction =
                         StencilConstruction::fixed,
                     StencilSelectionObjective stencil_selection_objective =
-                        StencilSelectionObjective::balanced);
+                        StencilSelectionObjective::balanced,
+                    ScenePreparationOptions preparation = {});
   bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
                     SurfaceMethod surface_method, MaterialRule material_rule,
                     bool show_faces, bool show_edges, bool depth_colours) {
@@ -688,6 +700,8 @@ class SceneCache {
   VolumeConnectionMethod volume_connection_method_{VolumeConnectionMethod::adaptive_cleaving};
   StencilConstruction stencil_construction_{StencilConstruction::fixed};
   StencilSelectionObjective stencil_selection_objective_{StencilSelectionObjective::balanced};
+  bool surface_diagnostics_available_{};
+  bool summary_statistics_available_{};
 };
 
 }  // namespace tetra_viewer

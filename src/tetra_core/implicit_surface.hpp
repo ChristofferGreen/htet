@@ -53,7 +53,23 @@ struct Camera {
 [[nodiscard]] std::vector<TetId> mark_oversized_intersections(const TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold);
 
 struct AdaptiveResult { std::size_t iterations{}; std::size_t refined_leaves{}; bool reached_depth_limit{}; };
-[[nodiscard]] AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold, unsigned int maximum_depth);
+
+// Camera motion changes projected size, but not the implicit field sampled at
+// persistent mesh vertices.  A viewer can retain this cache across camera
+// reconciliations and clear it when replacing the mesh.
+struct ImplicitValueCache {
+  std::vector<double> vertex_distances;
+  Sphere sampled_surface{};
+  bool has_sampled_surface{};
+  void clear() noexcept {
+    vertex_distances.clear();
+    has_sampled_surface=false;
+  }
+};
+
+[[nodiscard]] AdaptiveResult refine_to_sphere(
+    TetMesh& mesh,const Sphere& sphere,const Camera& camera,double pixel_threshold,
+    unsigned int maximum_depth,ImplicitValueCache* value_cache=nullptr);
 
 struct Triangle { Vec3 a; Vec3 b; Vec3 c; };
 [[nodiscard]] std::vector<Triangle> extract_isosurface(const TetMesh& mesh, const Sphere& sphere);

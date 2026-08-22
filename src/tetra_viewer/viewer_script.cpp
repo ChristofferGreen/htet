@@ -26,6 +26,7 @@ struct ScriptState {
   tetra::TetMesh mesh{tetra::TetMesh::make_unit_cube(default_subdivision_method)};
   tetra::Sphere sphere{};
   tetra::Camera camera{};
+  tetra::ImplicitValueCache implicit_value_cache;
   double pixel_threshold{28.0};
   unsigned int maximum_depth{16};
   SurfaceMethod surface_method{default_surface_method};
@@ -57,7 +58,8 @@ tetra::AdaptiveResult refine_to_current_surface(ScriptState& state){
                                                 state.pixel_threshold,state.maximum_depth,
                                                 whole_cell_options(state.material_rule));
   return tetra::refine_to_sphere(state.mesh,state.sphere,state.camera,
-                                 state.pixel_threshold,state.maximum_depth);
+                                 state.pixel_threshold,state.maximum_depth,
+                                 &state.implicit_value_cache);
 }
 
 struct InitializedScriptState {
@@ -539,6 +541,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       const auto start = Clock::now();
       state.mesh = tetra::TetMesh::make_unit_cube(*method);
+      state.implicit_value_cache.clear();
       const auto result = refine_to_current_surface(state);
       const auto duration = milliseconds_since(start);
       output << "{\"event\":\"command\",\"command\":\"" << command

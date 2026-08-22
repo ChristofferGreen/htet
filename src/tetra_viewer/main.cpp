@@ -633,6 +633,7 @@ int main(int argc, char** argv)
     double last_validation_milliseconds = -1.0;
     double last_scene_preparation_milliseconds = -1.0;
     tetra_viewer::SceneCache scene_cache;
+    tetra::ImplicitValueCache implicit_value_cache;
     std::uint64_t sphere_revision = 0;
     bool upload_dirty = true;
     enum class CameraDragMode { none, orbit, pan };
@@ -685,7 +686,8 @@ int main(int argc, char** argv)
                 mesh, sphere, camera, pixel_threshold, static_cast<unsigned int>(maximum_depth),
                 tetra_viewer::whole_cell_options(tetra_viewer::material_rules[material_rule_index]));
         return tetra::refine_to_sphere(
-            mesh, sphere, camera, pixel_threshold, static_cast<unsigned int>(maximum_depth));
+            mesh, sphere, camera, pixel_threshold, static_cast<unsigned int>(maximum_depth),
+            &implicit_value_cache);
     };
     const auto reconcile_to_current_surface=[&] {
         mesh.reset_active_hierarchy();
@@ -766,6 +768,7 @@ int main(int argc, char** argv)
                 if (ImGui::Selectable(tetra::subdivision_method_name(method).data(), selected) && !selected) {
                     subdivision_method_index = method_index;
                     mesh = tetra::TetMesh::make_unit_cube(method);
+                    implicit_value_cache.clear();
                     const auto start = std::chrono::steady_clock::now();
                     last_adaptive_result = refine_to_current_surface();
                     last_refine_milliseconds = std::chrono::duration<double, std::milli>(
@@ -1063,6 +1066,7 @@ int main(int argc, char** argv)
         ImGui::TableNextColumn();
         if (ImGui::Button("Reset", ImVec2(-FLT_MIN, 0.0f))) {
             mesh = tetra::TetMesh::make_unit_cube(tetra::subdivision_methods[subdivision_method_index]);
+            implicit_value_cache.clear();
             refined = false;
             has_adaptive_result = false;
             mesh_valid = true;
@@ -1111,6 +1115,13 @@ int main(int argc, char** argv)
             }
         }
         ImGui::TextDisabled("%s", refined ? "Refined mesh" : "Seed mesh");
+        const bool statistics_open=ImGui::CollapsingHeader("Statistics");
+        const bool diagnostic_shading=
+            shading_model==tetra_viewer::ShadingModel::dihedral_angle||
+            shading_model==tetra_viewer::ShadingModel::normal_error;
+        const tetra_viewer::ScenePreparationOptions preparation{
+            .surface_diagnostics=statistics_open||diagnostic_shading,
+            .summary_statistics=statistics_open};
         const auto preparation_start = std::chrono::steady_clock::now();
         if (scene_cache.update_scene(mesh, sphere, sphere_revision, surface_method,
                                      tetra_viewer::material_rules[material_rule_index],
@@ -1118,14 +1129,14 @@ int main(int argc, char** argv)
                                      depth_colours, x_cutaway && show_volume_edges,
                                      x_cutaway && show_volume_faces, x_cut_position,
                                      volume_connection_method,stencil_construction,
-                                     stencil_selection_objective)) {
+                                     stencil_selection_objective,preparation)) {
             last_scene_preparation_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
             upload_dirty = true;
         }
-        scene_cache.update_projection(mesh, camera, pixel_threshold);
+        if(statistics_open)scene_cache.update_projection(mesh, camera, pixel_threshold);
         const auto& prepared_scene = scene_cache.scene();
         const auto& projection_statistics = scene_cache.projection();
-        if (ImGui::CollapsingHeader("Statistics")) {
+        if (statistics_open) {
         ImGui::Text("Active leaves: %zu", mesh.active_leaves().size());
         ImGui::Text("Total volume: %.6f", prepared_scene.total_volume);
         ImGui::Text("Validation: %s", mesh_validation_current ? (mesh_valid ? "PASS" : "FAIL") : "NOT RUN");

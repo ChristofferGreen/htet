@@ -426,21 +426,38 @@ std::vector<TetId> mark_oversized_intersections(const TetMesh& mesh, const Spher
   return marked;
 }
 
-AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold, unsigned int maximum_depth) {
+AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camera& camera,
+                                double pixel_threshold, unsigned int maximum_depth,
+                                ImplicitValueCache* value_cache) {
   AdaptiveResult result;
   const unsigned int increment=subdivision_depth_increment(mesh.subdivision_method());
-  std::vector<double> vertex_distances;
+  ImplicitValueCache local_cache;
+  auto& cache=value_cache?*value_cache:local_cache;
+  const auto same_surface=[](const Sphere& first,const Sphere& second){
+    return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
+        first.centre.z==second.centre.z&&first.radius==second.radius&&
+        first.kind==second.kind&&first.secondary==second.secondary&&
+        first.frequency==second.frequency;
+  };
+  if(!cache.has_sampled_surface||!same_surface(cache.sampled_surface,sphere)){
+    cache.vertex_distances.clear();
+    cache.sampled_surface=sphere;
+    cache.has_sampled_surface=true;
+  }
+  auto& vertex_distances=cache.vertex_distances;
+  constexpr double unevaluated=std::numeric_limits<double>::quiet_NaN();
   while(true){
-    const std::size_t previous_size=vertex_distances.size();
-    vertex_distances.resize(mesh.vertices().size());
-    for(std::size_t vertex=previous_size;vertex<vertex_distances.size();++vertex)
-      vertex_distances[vertex]=sphere.signed_distance(mesh.vertices()[vertex]);
+    vertex_distances.resize(mesh.vertices().size(),unevaluated);
     std::vector<TetId> oversized;
-    for(const TetId id:mesh.active_leaves())
+    for(const TetId id:mesh.active_leaves()){
+      for(const VertexId vertex:mesh.tetrahedron(id).vertices)
+        if(std::isnan(vertex_distances[vertex]))
+          vertex_distances[vertex]=sphere.signed_distance(mesh.vertices()[vertex]);
       if(classify_tetrahedron_cached(mesh,id,sphere,vertex_distances)==
              SurfaceRelation::intersecting&&
          projected_tetrahedron_diameter(mesh,id,camera)>pixel_threshold)
         oversized.push_back(id);
+    }
     std::vector<TetId> marked;
     marked.reserve(oversized.size());
     for(const auto id:oversized)if(mesh.refinement_depth(id)+increment<=maximum_depth)marked.push_back(id);

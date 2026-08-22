@@ -237,7 +237,7 @@ tetra::Vec3 face_normal(tetra::Vec3 a, tetra::Vec3 b, tetra::Vec3 c) {
           (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)};
 }
 
-void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sphere) {
+void prepare_surface_render_attributes(PreparedScene& scene) {
   const std::size_t triangle_count=scene.triangle_vertices.size()/3;
   if (triangle_count==0) return;
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
@@ -245,6 +245,28 @@ void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sph
     const double length=std::sqrt(dot(value,value));
     return length>1e-15?value/length:tetra::Vec3{};
   };
+  for(std::size_t triangle=0;triangle<triangle_count;++triangle){
+    const auto& first=scene.triangle_vertices[triangle*3];
+    const auto normal=normalize({first.normal[0],first.normal[1],first.normal[2]});
+    for(std::size_t vertex=0;vertex<3;++vertex){
+      auto& output=scene.triangle_vertices[triangle*3+vertex];
+      // Flat lighting and barycentric wireframes are render inputs, not
+      // diagnostics, and must always be prepared.
+      output.normal[0]=static_cast<float>(normal.x);
+      output.normal[1]=static_cast<float>(normal.y);
+      output.normal[2]=static_cast<float>(normal.z);
+      output.barycentric[0]=vertex==0?1.0F:0.0F;
+      output.barycentric[1]=vertex==1?1.0F:0.0F;
+      output.barycentric[2]=vertex==2?1.0F:0.0F;
+    }
+  }
+}
+
+void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sphere) {
+  scene.surface_diagnostics_available=true;
+  const std::size_t triangle_count=scene.triangle_vertices.size()/3;
+  if (triangle_count==0) return;
+  const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
   using PointKey=std::array<long long,3>;
   struct DiagnosticEdge { std::array<PointKey,2> key{}; std::size_t triangle{}; };
   const auto point_key=[](const SceneVertex& vertex){
@@ -261,7 +283,7 @@ void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sph
     const auto& first=scene.triangle_vertices[triangle*3];
     const auto& second=scene.triangle_vertices[triangle*3+1];
     const auto& third=scene.triangle_vertices[triangle*3+2];
-    normals[triangle]=normalize({first.normal[0],first.normal[1],first.normal[2]});
+    normals[triangle]={first.normal[0],first.normal[1],first.normal[2]};
     const tetra::Vec3 centre{(first.position[0]+second.position[0]+third.position[0])/3.0,
                              (first.position[1]+second.position[1]+third.position[1])/3.0,
                              (first.position[2]+second.position[2]+third.position[2])/3.0};
@@ -317,17 +339,8 @@ void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sph
   for(std::size_t triangle=0;triangle<triangle_count;++triangle){
     for(std::size_t vertex=0;vertex<3;++vertex){
       auto& output=scene.triangle_vertices[triangle*3+vertex];
-      // Upload a unit flat normal. Raw cross products scale with triangle
-      // area, so the fragment shader previously mistook small valid faces
-      // for degenerate ones and skipped their lighting and wireframe.
-      output.normal[0]=static_cast<float>(normals[triangle].x);
-      output.normal[1]=static_cast<float>(normals[triangle].y);
-      output.normal[2]=static_cast<float>(normals[triangle].z);
       output.diagnostics[0]=dihedral_degrees[triangle];
       output.diagnostics[1]=normal_error_degrees[triangle];
-      output.barycentric[0]=vertex==0?1.0F:0.0F;
-      output.barycentric[1]=vertex==1?1.0F:0.0F;
-      output.barycentric[2]=vertex==2?1.0F:0.0F;
     }
     scene.mean_dihedral_degrees+=dihedral_degrees[triangle];
     scene.maximum_dihedral_degrees=std::max(scene.maximum_dihedral_degrees,static_cast<double>(dihedral_degrees[triangle]));
@@ -2068,7 +2081,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                             double x_cut_position,
                             VolumeConnectionMethod volume_connection_method,
                             StencilConstruction stencil_construction,
-                            StencilSelectionObjective stencil_selection_objective) {
+                            StencilSelectionObjective stencil_selection_objective,
+                            ScenePreparationOptions preparation) {
   PreparedScene scene;
   const auto& leaves = mesh.active_leaves();
   scene.relations.reserve(leaves.size());
@@ -2099,17 +2113,22 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
 
   const auto statistics_start = std::chrono::steady_clock::now();
   for (const tetra::TetId id : leaves) {
-    const auto depth = static_cast<std::size_t>(mesh.refinement_depth(id));
-    if (scene.depth_counts.size() <= depth) scene.depth_counts.resize(depth + 1);
-    ++scene.depth_counts[depth];
-    scene.total_volume += mesh.signed_volume(id);
+    if(preparation.summary_statistics){
+      const auto depth = static_cast<std::size_t>(mesh.refinement_depth(id));
+      if (scene.depth_counts.size() <= depth) scene.depth_counts.resize(depth + 1);
+      ++scene.depth_counts[depth];
+      scene.total_volume += mesh.signed_volume(id);
+    }
 
     const auto relation = tetra::classify_tetrahedron(mesh, id, sphere);
     scene.relations.push_back(relation);
-    if (relation == tetra::SurfaceRelation::inside) ++scene.inside_count;
-    else if (relation == tetra::SurfaceRelation::outside) ++scene.outside_count;
-    else ++scene.intersecting_count;
+    if(preparation.summary_statistics){
+      if (relation == tetra::SurfaceRelation::inside) ++scene.inside_count;
+      else if (relation == tetra::SurfaceRelation::outside) ++scene.outside_count;
+      else ++scene.intersecting_count;
+    }
   }
+  scene.summary_statistics_available=preparation.summary_statistics;
   scene.statistics_milliseconds = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - statistics_start).count();
 
@@ -2244,7 +2263,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
     append_dual_contour(scene, mesh, sphere, show_faces, show_surface_edges);
   else if (surface_method == SurfaceMethod::surface_optimization)
     append_surface_optimization(scene, mesh, sphere, show_faces, show_surface_edges);
-  annotate_surface_diagnostics(scene,sphere);
+  prepare_surface_render_attributes(scene);
+  if(preparation.surface_diagnostics)annotate_surface_diagnostics(scene,sphere);
   // Cut caps are diagnostic volume geometry, not part of the generated
   // isosurface metrics. Append them after surface annotation.
   if (show_volume_faces || show_volume_edges) {
@@ -2304,7 +2324,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
                               double x_cut_position,
                               VolumeConnectionMethod volume_connection_method,
                               StencilConstruction stencil_construction,
-                              StencilSelectionObjective stencil_selection_objective) {
+                              StencilSelectionObjective stencil_selection_objective,
+                              ScenePreparationOptions preparation) {
   const bool base_unchanged = has_subdivision_method_ && subdivision_method_ == mesh.subdivision_method() &&
       mesh_revision_ == mesh.revision() && sphere_revision_ == sphere_revision &&
       surface_method_ == surface_method && material_rule_ == material_rule &&
@@ -2313,7 +2334,9 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
       stencil_selection_objective_ == stencil_selection_objective &&
       show_faces_ == show_faces && show_hierarchy_edges_ == show_hierarchy_edges &&
       show_surface_edges_ == show_surface_edges &&
-      depth_colours_ == depth_colours;
+      depth_colours_ == depth_colours &&
+      (!preparation.surface_diagnostics||surface_diagnostics_available_) &&
+      (!preparation.summary_statistics||summary_statistics_available_);
   const bool cut_unchanged = show_volume_faces_ == show_volume_faces &&
       show_volume_edges_ == show_volume_edges &&
       (!(show_volume_faces || show_volume_edges) || x_cut_position_ == x_cut_position);
@@ -2323,7 +2346,7 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
     base_scene_ = prepare_scene(mesh, sphere, surface_method, material_rule, show_faces,
                                show_hierarchy_edges, show_surface_edges, depth_colours,
                                false, false, x_cut_position,volume_connection_method,
-                               stencil_construction,stencil_selection_objective);
+                               stencil_construction,stencil_selection_objective,preparation);
     volume_classification_valid_ = false;
   }
   if(uses_connected_volume(volume_connection_method)&&
@@ -2376,6 +2399,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
   volume_connection_method_ = volume_connection_method;
   stencil_construction_ = stencil_construction;
   stencil_selection_objective_ = stencil_selection_objective;
+  surface_diagnostics_available_=base_scene_.surface_diagnostics_available;
+  summary_statistics_available_=base_scene_.summary_statistics_available;
   ++scene_generation_;
   return true;
 }

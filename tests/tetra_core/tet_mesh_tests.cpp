@@ -586,7 +586,10 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
     CAPTURE(tetra::subdivision_method_name(method));
     auto mesh=tetra::TetMesh::make_unit_cube(method);
     tetra::Camera camera;
-    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    tetra::ImplicitValueCache field_cache;
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9,&field_cache));
+    const auto cached_distances=field_cache.vertex_distances;
+    CHECK(field_cache.has_sampled_surface);
     const auto near_leaves=mesh.active_leaves();
     const auto resident_tetrahedra=mesh.tetrahedron_count();
     const auto resident_vertices=mesh.vertices().size();
@@ -601,7 +604,8 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
     CHECK(mesh.layers().size()==resident_layers);
     CHECK(mesh.has_conforming_active_faces());
 
-    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9,&field_cache));
+    CHECK(field_cache.vertex_distances==cached_distances);
     CHECK(mesh.active_leaves()==near_leaves);
     CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
     CHECK(mesh.vertices().size()==resident_vertices);
@@ -610,7 +614,7 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
 
     camera.forward={0.0,0.0,1.0};
     mesh.reset_active_hierarchy();
-    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9,&field_cache));
     CHECK(mesh.active_leaves().size()==
           (method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
     CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
@@ -1358,6 +1362,71 @@ TEST_CASE("scene cache follows repeated surface and subdivision method switches"
                            tetra_viewer::MaterialRule::all_vertices_inside, true, false, false));
   CHECK(cache.scene_generation() == first_generation + 3);
   CHECK(cache.scene().surface_layer_tetrahedra > 0);
+}
+
+TEST_CASE("lightweight scene preparation preserves render geometry without research diagnostics") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::maubach_diamond);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,80.0,4));
+  const auto full=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::quality_stencils,
+      tetra_viewer::StencilConstruction::fixed,
+      tetra_viewer::StencilSelectionObjective::balanced,{});
+  const auto lightweight=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::quality_stencils,
+      tetra_viewer::StencilConstruction::fixed,
+      tetra_viewer::StencilSelectionObjective::balanced,
+      {.surface_diagnostics=false,.summary_statistics=false});
+  REQUIRE(lightweight.triangle_vertices.size()==full.triangle_vertices.size());
+  CHECK(lightweight.surface_line_vertices.size()==full.surface_line_vertices.size());
+  CHECK(lightweight.relations==full.relations);
+  CHECK_FALSE(lightweight.surface_diagnostics_available);
+  CHECK_FALSE(lightweight.summary_statistics_available);
+  CHECK(full.surface_diagnostics_available);
+  CHECK(full.summary_statistics_available);
+  CHECK(lightweight.depth_counts.empty());
+  CHECK(lightweight.total_volume==0.0);
+  for(std::size_t index=0;index<lightweight.triangle_vertices.size();++index){
+    const auto& actual=lightweight.triangle_vertices[index];
+    const auto& expected=full.triangle_vertices[index];
+    CHECK(std::equal(std::begin(actual.position),std::end(actual.position),std::begin(expected.position)));
+    CHECK(std::equal(std::begin(actual.colour),std::end(actual.colour),std::begin(expected.colour)));
+    CHECK(std::equal(std::begin(actual.normal),std::end(actual.normal),std::begin(expected.normal)));
+    CHECK(std::equal(std::begin(actual.barycentric),std::end(actual.barycentric),std::begin(expected.barycentric)));
+  }
+}
+
+TEST_CASE("scene cache enriches lightweight geometry only when requested") {
+  auto mesh=tetra::TetMesh::make_unit_cube();
+  const tetra::Sphere sphere{};
+  tetra_viewer::SceneCache cache;
+  const auto update=[&](tetra_viewer::ScenePreparationOptions preparation){
+    return cache.update_scene(
+        mesh,sphere,0,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+        tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+        false,false,0.5,tetra_viewer::VolumeConnectionMethod::quality_stencils,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,preparation);
+  };
+  const tetra_viewer::ScenePreparationOptions lightweight{
+      .surface_diagnostics=false,.summary_statistics=false};
+  REQUIRE(update(lightweight));
+  CHECK_FALSE(cache.scene().surface_diagnostics_available);
+  const auto lightweight_generation=cache.scene_generation();
+  CHECK_FALSE(update(lightweight));
+  CHECK(update({}));
+  CHECK(cache.scene_generation()==lightweight_generation+1);
+  CHECK(cache.scene().surface_diagnostics_available);
+  CHECK(cache.scene().summary_statistics_available);
+  // A fully measured scene satisfies a later lightweight request without a
+  // rebuild or loss of measurements.
+  CHECK_FALSE(update(lightweight));
+  CHECK(cache.scene_generation()==lightweight_generation+1);
 }
 
 TEST_CASE("viewer scene cache rebuilds only for relevant revisions") {
