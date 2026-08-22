@@ -182,11 +182,15 @@ The visually inspected sheets are
 [meshing-sheet.png](../output/method-comparison/meshing-sheet.png) and
 [surfacing-sheet.png](../output/method-comparison/surfacing-sheet.png).
 
-The interactive orbit camera has no artificial minimum dolly distance. Close
-scrolling becomes linear and can reach the orbit target exactly; its view
-direction remains angle-derived there to avoid a zero-length look vector. A
-one-millimetre near plane permits close inspection and travel inside the mesh.
-Holding Shift reduces the dolly step to 15 percent for precision zoom.
+The interactive view camera is also the screen-space LOD origin. Left drag
+orbits it, middle or right drag translates both position and independent orbit
+target in the view plane, and scrolling dollies to the target without an
+artificial minimum distance. Its direction remains angle-derived at distance
+zero to avoid a zero-length look vector. Holding Shift reduces orbit, pan, and
+dolly movement to 15 percent for precision work. Camera movement marks the
+previous target-refinement result stale; the next `Refine to target` uses the
+new camera position. `Frame sphere` restores a centred overview. A one-
+millimetre near plane permits close inspection and travel inside the mesh.
 Hierarchy edges default to hidden so the initial view emphasizes the evaluated
 surface; surface edges remain independently enabled.
 

@@ -14,6 +14,59 @@
 
 namespace tetra_viewer {
 
+// Standard orbit camera used by both rendering and screen-space LOD. Keeping
+// the target independent of the evaluated surface permits real camera
+// translation instead of restricting interaction to a sphere-centred orbit.
+struct OrbitCamera {
+  tetra::Vec3 target{0.5,0.5,0.5};
+  double distance{2.5};
+  double yaw{};
+  double pitch{};
+
+  [[nodiscard]] tetra::Vec3 forward() const {
+    const double horizontal=std::cos(pitch);
+    return {-horizontal*std::sin(yaw),-std::sin(pitch),
+            -horizontal*std::cos(yaw)};
+  }
+
+  [[nodiscard]] tetra::Vec3 position() const {
+    return target-forward()*distance;
+  }
+
+  [[nodiscard]] tetra::Vec3 right() const {
+    const auto direction=forward();
+    const tetra::Vec3 seed{direction.z,0.0,-direction.x};
+    const double length=std::hypot(seed.x,seed.z);
+    return length>1.0e-15?seed/length:tetra::Vec3{-1.0,0.0,0.0};
+  }
+
+  [[nodiscard]] tetra::Vec3 up() const {
+    const auto direction=forward(),horizontal=right();
+    return {horizontal.y*direction.z-horizontal.z*direction.y,
+            horizontal.z*direction.x-horizontal.x*direction.z,
+            horizontal.x*direction.y-horizontal.y*direction.x};
+  }
+
+  void orbit(double delta_x,double delta_y,double precision=1.0) {
+    constexpr double radians_per_pixel=0.004;
+    yaw+=delta_x*radians_per_pixel*precision;
+    pitch=std::clamp(pitch+delta_y*radians_per_pixel*precision,-1.45,1.45);
+  }
+
+  void pan(double delta_x,double delta_y,double viewport_height,
+           double vertical_fov_radians,double precision=1.0) {
+    const double pixels=std::max(1.0,viewport_height);
+    const double scale=2.0*std::max(distance,0.05)*
+        std::tan(vertical_fov_radians*0.5)/pixels*precision;
+    target=target-right()*(delta_x*scale)+up()*(delta_y*scale);
+  }
+
+  void dolly(double wheel,double precision=1.0) {
+    const double step=std::max(distance*0.22,0.05)*precision;
+    distance=std::clamp(distance-wheel*step,0.0,20.0);
+  }
+};
+
 enum class ConnectedVertexKind : std::uint8_t {
   hierarchy,
   surface_intersection,

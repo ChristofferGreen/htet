@@ -43,6 +43,42 @@ TEST_CASE("tetrahedron quality metrics distinguish regular and degenerate elemen
   CHECK(inverted.volume_surface_longest_edge==0.0);
 }
 
+TEST_CASE("orbit camera rotates pans and dollies the shared LOD origin") {
+  tetra_viewer::OrbitCamera camera;
+  const auto length=[](tetra::Vec3 value){
+    return std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
+  };
+  CHECK(camera.position().x==doctest::Approx(0.5));
+  CHECK(camera.position().y==doctest::Approx(0.5));
+  CHECK(camera.position().z==doctest::Approx(3.0));
+
+  const auto original_target=camera.target;
+  camera.orbit(100.0,-50.0);
+  CHECK(camera.target.x==doctest::Approx(original_target.x));
+  CHECK(camera.target.y==doctest::Approx(original_target.y));
+  CHECK(camera.target.z==doctest::Approx(original_target.z));
+  CHECK(length(camera.position()-camera.target)==doctest::Approx(camera.distance));
+
+  const auto position_before_pan=camera.position();
+  const auto target_before_pan=camera.target;
+  const auto forward_before_pan=camera.forward();
+  camera.pan(40.0,-20.0,800.0,0.7853981633974483);
+  const auto position_delta=camera.position()-position_before_pan;
+  const auto target_delta=camera.target-target_before_pan;
+  CHECK(length(target_delta)>0.0);
+  CHECK(position_delta.x==doctest::Approx(target_delta.x));
+  CHECK(position_delta.y==doctest::Approx(target_delta.y));
+  CHECK(position_delta.z==doctest::Approx(target_delta.z));
+  CHECK(camera.forward().x==doctest::Approx(forward_before_pan.x));
+  CHECK(camera.forward().y==doctest::Approx(forward_before_pan.y));
+  CHECK(camera.forward().z==doctest::Approx(forward_before_pan.z));
+
+  const double distance_before_dolly=camera.distance;
+  camera.dolly(1.0,0.15);
+  CHECK(camera.distance<distance_before_dolly);
+  CHECK(camera.distance==doctest::Approx(distance_before_dolly-distance_before_dolly*0.22*0.15));
+}
+
 TEST_CASE("variational whole-cell cut is deterministic manifold and hierarchy-owned") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::maubach_diamond);
   const tetra::Sphere sphere{{0.5,0.5,0.5},0.35};

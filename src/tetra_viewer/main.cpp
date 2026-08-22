@@ -608,9 +608,7 @@ int main(int argc, char** argv)
     tetra::Camera camera{};
     float sphere_centre[3]{0.5f, 0.5f, 0.5f};
     float sphere_radius = static_cast<float>(sphere.radius);
-    float camera_distance = 2.5f;
-    float camera_yaw = 0.0f;
-    float camera_pitch = 0.0f;
+    tetra_viewer::OrbitCamera orbit_camera;
     // Fine enough to produce a visible, discrete interior-tetrahedron volume
     // rather than only a band of surface-intersecting cells.
     float pixel_threshold = 28.0f;
@@ -626,14 +624,16 @@ int main(int argc, char** argv)
     tetra_viewer::SceneCache scene_cache;
     std::uint64_t sphere_revision = 0;
     bool upload_dirty = true;
-    bool orbit_dragging = false;
+    enum class CameraDragMode { none, orbit, pan };
+    CameraDragMode camera_drag_mode=CameraDragMode::none;
     double previous_cursor_x = 0.0;
     double previous_cursor_y = 0.0;
-    if (argc > 1 && strcmp(argv[1], "--sphere-far") == 0) camera_distance = 12.0f;
+    if (argc > 1 && strcmp(argv[1], "--sphere-far") == 0) orbit_camera.distance=12.0;
     if (argc > 1 && strcmp(argv[1], "--sphere-fine") == 0) { pixel_threshold = 40.0f; maximum_depth = 3; }
     if (argc > 1 && strcmp(argv[1], "--sphere-offcentre") == 0) {
         sphere_centre[0] = 0.43f; sphere_centre[1] = 0.57f; sphere_centre[2] = 0.46f;
         sphere.centre = {sphere_centre[0], sphere_centre[1], sphere_centre[2]}; sphere.radius = sphere_radius = 0.27f;
+        orbit_camera.target=sphere.centre;
     }
     if (deterministic_visual_check) {
         if(!whole_cell_check&&!whole_cell_cutaway_check)
@@ -641,16 +641,13 @@ int main(int argc, char** argv)
                 tetra::subdivision_methods.begin(),
                 std::find(tetra::subdivision_methods.begin(),tetra::subdivision_methods.end(),
                           tetra::SubdivisionMethod::bcc_red_green)));
-        camera_distance = 0.70F;
-        camera_yaw = -0.28F;
-        camera_pitch = 0.48F;
-        if(whole_cell_check||whole_cell_cutaway_check)camera_distance=1.10F;
+        orbit_camera.distance=0.70;
+        orbit_camera.yaw=-0.28;
+        orbit_camera.pitch=0.48;
+        if(whole_cell_check||whole_cell_cutaway_check)orbit_camera.distance=1.10;
     }
     const auto update_orbit_camera = [&] {
-        const double horizontal = std::cos(camera_pitch);
-        camera.position = {sphere.centre.x + camera_distance * horizontal * std::sin(camera_yaw),
-                           sphere.centre.y + camera_distance * std::sin(camera_pitch),
-                           sphere.centre.z + camera_distance * horizontal * std::cos(camera_yaw)};
+        camera.position=orbit_camera.position();
     };
     const auto refine_to_current_surface = [&] {
         if (surface_method == tetra_viewer::SurfaceMethod::full_tetrahedra &&
@@ -920,8 +917,19 @@ int main(int argc, char** argv)
             ++sphere_revision;
             has_adaptive_result = false;
         }
-        ImGui::TextWrapped("Drag the viewport to orbit; scroll to zoom.");
-        ImGui::TextDisabled("LOD origin: %.2f, %.2f, %.2f", camera.position.x, camera.position.y, camera.position.z);
+        ImGui::TextWrapped("Left-drag: orbit   Middle/right-drag: pan   Scroll: dolly   Shift: precision");
+        ImGui::TextDisabled("View camera = LOD camera");
+        ImGui::TextDisabled("Origin: %.2f, %.2f, %.2f   Target: %.2f, %.2f, %.2f",
+                            camera.position.x,camera.position.y,camera.position.z,
+                            orbit_camera.target.x,orbit_camera.target.y,orbit_camera.target.z);
+        if(ImGui::Button("Frame sphere",ImVec2(-FLT_MIN,0.0f))){
+            orbit_camera.target=sphere.centre;
+            orbit_camera.distance=2.5;
+            orbit_camera.yaw=0.0;
+            orbit_camera.pitch=0.0;
+            update_orbit_camera();
+            has_adaptive_result=false;
+        }
         ImGui::TextDisabled("Pixel threshold");
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::SliderFloat("##Pixel threshold", &pixel_threshold, 4.0f, 240.0f, "%.0f px"))
@@ -1079,47 +1087,54 @@ int main(int argc, char** argv)
         // The wireframe regression view must remain deterministic for Vulkan
         // screenshot validation; do not let residual trackpad-wheel inertia
         // move its camera immediately after launch.
-        const bool orbit_allowed = !deterministic_visual_check && !controls_hovered;
-        if (orbit_allowed) {
+        const bool camera_input_allowed=!deterministic_visual_check&&!controls_hovered;
+        bool camera_moved=false;
+        if(camera_input_allowed){
             double cursor_x = 0.0, cursor_y = 0.0;
             glfwGetCursorPos(window, &cursor_x, &cursor_y);
-            if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-                if (orbit_dragging) {
-                    camera_yaw += static_cast<float>((cursor_x - previous_cursor_x) * 0.008);
-                    camera_pitch = std::clamp(camera_pitch + static_cast<float>((cursor_y - previous_cursor_y) * 0.008), -1.45f, 1.45f);
+            const bool orbit_pressed=
+                glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS;
+            const bool pan_pressed=
+                glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_MIDDLE)==GLFW_PRESS||
+                glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_PRESS;
+            const auto requested_mode=pan_pressed?CameraDragMode::pan:
+                (orbit_pressed?CameraDragMode::orbit:CameraDragMode::none);
+            const auto& input=ImGui::GetIO();
+            const double precision=input.KeyShift?0.15:1.0;
+            if(requested_mode!=CameraDragMode::none&&requested_mode==camera_drag_mode){
+                const double delta_x=cursor_x-previous_cursor_x;
+                const double delta_y=cursor_y-previous_cursor_y;
+                if(delta_x!=0.0||delta_y!=0.0){
+                    if(requested_mode==CameraDragMode::orbit)
+                        orbit_camera.orbit(delta_x,delta_y,precision);
+                    else
+                        orbit_camera.pan(delta_x,delta_y,
+                            std::max(1.0F,input.DisplaySize.y),
+                            camera.vertical_fov_radians,precision);
+                    camera_moved=true;
                 }
-                orbit_dragging = true;
+            }
+            camera_drag_mode=requested_mode;
+            if(requested_mode!=CameraDragMode::none){
                 previous_cursor_x = cursor_x;
                 previous_cursor_y = cursor_y;
-            } else {
-                orbit_dragging = false;
             }
-            const auto& input = ImGui::GetIO();
             // macOS commonly converts Shift+vertical-wheel into a horizontal
             // wheel event. Treat that shifted delta as precision dolly input.
             const float wheel = input.MouseWheel != 0.0f
                 ? input.MouseWheel
                 : (input.KeyShift ? input.MouseWheelH : 0.0f);
             if (wheel != 0.0f) {
-                // Multiplicative dolly alone can never reach the orbit target.
-                // Retain proportional movement at normal distances, then use
-                // a small linear step close in so scrolling can reach exactly
-                // zero and can move away again on the next reverse scroll.
-                const float precision_scale = input.KeyShift ? 0.15f : 1.0f;
-                const float zoom_step = std::max(camera_distance * 0.22f, 0.05f) * precision_scale;
-                camera_distance = std::clamp(camera_distance - wheel * zoom_step, 0.0f, 20.0f);
+                orbit_camera.dolly(wheel,precision);
+                camera_moved=true;
             }
-        } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE) {
-            orbit_dragging = false;
-        }
+        }else camera_drag_mode=CameraDragMode::none;
+        if(camera_moved)has_adaptive_result=false;
         update_orbit_camera();
         // Derive the view direction from the orbit angles rather than
         // target-position subtraction. At distance zero both positions are
         // equal, but the camera must retain a well-defined orientation.
-        const double horizontal = std::cos(camera_pitch);
-        const tetra::Vec3 f{-horizontal * std::sin(camera_yaw),
-                            -std::sin(camera_pitch),
-                            -horizontal * std::cos(camera_yaw)};
+        const tetra::Vec3 f=orbit_camera.forward();
         const tetra::Vec3 right_seed{f.z, 0.0, -f.x};
         const double right_length = std::sqrt(right_seed.x * right_seed.x + right_seed.z * right_seed.z);
         const tetra::Vec3 right{right_seed.x / right_length, 0.0, right_seed.z / right_length};
