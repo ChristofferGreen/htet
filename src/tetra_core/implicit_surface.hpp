@@ -15,6 +15,9 @@ struct Camera {
   Vec3 position{0.5, 0.5, 3.0};
   double vertical_fov_radians{0.7853981633974483};
   double viewport_height_pixels{800.0};
+  Vec3 forward{0.0,0.0,-1.0};
+  Vec3 up{0.0,1.0,0.0};
+  double aspect_ratio{1.0};
 };
 
 [[nodiscard]] double projected_tetrahedron_diameter(const TetMesh& mesh, TetId tet, const Camera& camera);

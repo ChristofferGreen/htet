@@ -67,6 +67,81 @@ struct OrbitCamera {
   }
 };
 
+struct ViewportPoint {
+  double x{};
+  double y{};
+  double depth{};
+  bool visible{};
+};
+
+// Vulkan viewports with a positive height map positive NDC Y down the screen.
+// Keeping editor picking on this shared projection prevents rendered gizmos
+// and their hit regions from being mirrored vertically.
+[[nodiscard]] inline ViewportPoint project_to_vulkan_viewport(
+    tetra::Vec3 point,tetra::Vec3 camera_position,tetra::Vec3 forward,
+    tetra::Vec3 right,tetra::Vec3 up,double vertical_fov_radians,
+    double viewport_width,double viewport_height) {
+  const auto offset=point-camera_position;
+  const double depth=offset.x*forward.x+offset.y*forward.y+offset.z*forward.z;
+  if(depth<=1.0e-4)return {};
+  const double horizontal=offset.x*right.x+offset.y*right.y+offset.z*right.z;
+  const double vertical=offset.x*up.x+offset.y*up.y+offset.z*up.z;
+  const double tangent=std::tan(vertical_fov_radians*0.5);
+  const double aspect=viewport_width/viewport_height;
+  return {(horizontal/(depth*tangent*aspect)*0.5+0.5)*viewport_width,
+          (0.5+vertical/(depth*tangent)*0.5)*viewport_height,depth,true};
+}
+
+enum class CameraGizmoMode : std::uint8_t { select,translate,rotate };
+enum class CameraGizmoAxis : std::uint8_t { none,x,y,z };
+
+struct LodCameraPose {
+  tetra::Vec3 position{0.5,0.5,3.0};
+  tetra::Vec3 forward{0.0,0.0,-1.0};
+  tetra::Vec3 up{0.0,1.0,0.0};
+
+  [[nodiscard]] static tetra::Vec3 axis(CameraGizmoAxis selected) {
+    switch(selected){
+      case CameraGizmoAxis::x:return {1.0,0.0,0.0};
+      case CameraGizmoAxis::y:return {0.0,1.0,0.0};
+      case CameraGizmoAxis::z:return {0.0,0.0,1.0};
+      case CameraGizmoAxis::none:return {};
+    }
+    return {};
+  }
+
+  void translate(CameraGizmoAxis selected,double amount) {
+    position=position+axis(selected)*amount;
+  }
+
+  void rotate(CameraGizmoAxis selected,double radians) {
+    const auto rotation_axis=axis(selected);
+    if(selected==CameraGizmoAxis::none)return;
+    const auto rotate_vector=[&](tetra::Vec3 value){
+      const double cosine=std::cos(radians),sine=std::sin(radians);
+      const tetra::Vec3 cross{
+          rotation_axis.y*value.z-rotation_axis.z*value.y,
+          rotation_axis.z*value.x-rotation_axis.x*value.z,
+          rotation_axis.x*value.y-rotation_axis.y*value.x};
+      const double projection=rotation_axis.x*value.x+
+          rotation_axis.y*value.y+rotation_axis.z*value.z;
+      return value*cosine+cross*sine+rotation_axis*(projection*(1.0-cosine));
+    };
+    const auto normalize=[](tetra::Vec3 value){
+      const double length=std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
+      return length>1.0e-15?value/length:tetra::Vec3{};
+    };
+    forward=normalize(rotate_vector(forward));
+    up=normalize(rotate_vector(up));
+  }
+
+  void apply(tetra::Camera& camera) const {
+    camera.position=position;
+    camera.forward=forward;
+    camera.up=up;
+  }
+};
+
 enum class ConnectedVertexKind : std::uint8_t {
   hierarchy,
   surface_intersection,

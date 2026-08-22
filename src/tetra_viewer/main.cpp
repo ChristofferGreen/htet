@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 #if defined(__APPLE__)
@@ -606,9 +607,15 @@ int main(int argc, char** argv)
     float x_cut_position = 0.5F;
     tetra::Sphere sphere{};
     tetra::Camera camera{};
+    tetra_viewer::LodCameraPose lod_camera_pose;
+    tetra::Vec3 view_camera_position{};
     float sphere_centre[3]{0.5f, 0.5f, 0.5f};
     float sphere_radius = static_cast<float>(sphere.radius);
     tetra_viewer::OrbitCamera orbit_camera;
+    if(!deterministic_visual_check){
+        orbit_camera.yaw=-0.55;
+        orbit_camera.pitch=0.30;
+    }
     // Fine enough to produce a visible, discrete interior-tetrahedron volume
     // rather than only a band of surface-intersecting cells.
     float pixel_threshold = 28.0f;
@@ -626,6 +633,14 @@ int main(int argc, char** argv)
     bool upload_dirty = true;
     enum class CameraDragMode { none, orbit, pan };
     CameraDragMode camera_drag_mode=CameraDragMode::none;
+    bool lod_camera_selected=false;
+    tetra_viewer::CameraGizmoMode camera_gizmo_mode=
+        tetra_viewer::CameraGizmoMode::select;
+    tetra_viewer::CameraGizmoAxis active_gizmo_axis=
+        tetra_viewer::CameraGizmoAxis::none;
+    bool gizmo_dragging=false;
+    bool previous_left_pressed=false;
+    double previous_rotation_angle{};
     double previous_cursor_x = 0.0;
     double previous_cursor_y = 0.0;
     if (argc > 1 && strcmp(argv[1], "--sphere-far") == 0) orbit_camera.distance=12.0;
@@ -634,6 +649,15 @@ int main(int argc, char** argv)
         sphere_centre[0] = 0.43f; sphere_centre[1] = 0.57f; sphere_centre[2] = 0.46f;
         sphere.centre = {sphere_centre[0], sphere_centre[1], sphere_centre[2]}; sphere.radius = sphere_radius = 0.27f;
         orbit_camera.target=sphere.centre;
+    }
+    if(!deterministic_visual_check){
+        // Keep the editable LOD camera beside the sphere in the initial
+        // editor view instead of underneath the floating controls.
+        lod_camera_pose.position={0.0,1.0,0.5};
+        const auto direction=sphere.centre-lod_camera_pose.position;
+        const double length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                                      direction.z*direction.z);
+        lod_camera_pose.forward=direction/length;
     }
     if (deterministic_visual_check) {
         if(!whole_cell_check&&!whole_cell_cutaway_check)
@@ -647,7 +671,7 @@ int main(int argc, char** argv)
         if(whole_cell_check||whole_cell_cutaway_check)orbit_camera.distance=1.10;
     }
     const auto update_orbit_camera = [&] {
-        camera.position=orbit_camera.position();
+        view_camera_position=orbit_camera.position();
     };
     const auto refine_to_current_surface = [&] {
         if (surface_method == tetra_viewer::SurfaceMethod::full_tetrahedra &&
@@ -659,6 +683,7 @@ int main(int argc, char** argv)
             mesh, sphere, camera, pixel_threshold, static_cast<unsigned int>(maximum_depth));
     };
     update_orbit_camera();
+    lod_camera_pose.apply(camera);
     if (sphere_mode) {
         last_adaptive_result = refine_to_current_surface();
         has_adaptive_result = true;
@@ -917,11 +942,39 @@ int main(int argc, char** argv)
             ++sphere_revision;
             has_adaptive_result = false;
         }
-        ImGui::TextWrapped("Left-drag: orbit   Middle/right-drag: pan   Scroll: dolly   Shift: precision");
-        ImGui::TextDisabled("View camera = LOD camera");
-        ImGui::TextDisabled("Origin: %.2f, %.2f, %.2f   Target: %.2f, %.2f, %.2f",
+        ImGui::SeparatorText("LOD camera");
+        ImGui::TextWrapped("Click the camera in the viewport, then use Q/W/E for select, move, or rotate.");
+        ImGui::TextDisabled("Origin: %.2f, %.2f, %.2f   Direction: %.2f, %.2f, %.2f",
                             camera.position.x,camera.position.y,camera.position.z,
-                            orbit_camera.target.x,orbit_camera.target.y,orbit_camera.target.z);
+                            camera.forward.x,camera.forward.y,camera.forward.z);
+        if(ImGui::BeginTable("camera gizmo modes",3,ImGuiTableFlags_SizingStretchSame)){
+            const auto mode_button=[&](const char* label,tetra_viewer::CameraGizmoMode mode){
+                ImGui::TableNextColumn();
+                const bool selected=mode==camera_gizmo_mode;
+                if(selected)ImGui::PushStyleColor(
+                    ImGuiCol_Button,ImVec4(0.22f,0.48f,0.72f,1.0f));
+                if(ImGui::Button(label,ImVec2(-FLT_MIN,0.0f))){
+                    camera_gizmo_mode=mode;
+                    upload_dirty=true;
+                }
+                if(selected)ImGui::PopStyleColor();
+            };
+            mode_button("Select (Q)",tetra_viewer::CameraGizmoMode::select);
+            mode_button("Move (W)",tetra_viewer::CameraGizmoMode::translate);
+            mode_button("Rotate (E)",tetra_viewer::CameraGizmoMode::rotate);
+            ImGui::EndTable();
+        }
+        if(ImGui::Button("Place LOD camera at view",ImVec2(-FLT_MIN,0.0f))){
+            lod_camera_pose.position=view_camera_position;
+            lod_camera_pose.forward=orbit_camera.forward();
+            lod_camera_pose.up=orbit_camera.up();
+            lod_camera_pose.apply(camera);
+            lod_camera_selected=true;
+            has_adaptive_result=false;
+            upload_dirty=true;
+        }
+        ImGui::SeparatorText("Editor view");
+        ImGui::TextWrapped("Drag empty space: orbit   Shift-drag: pan   Option works too   Scroll: dolly");
         if(ImGui::Button("Frame sphere",ImVec2(-FLT_MIN,0.0f))){
             orbit_camera.target=sphere.centre;
             orbit_camera.distance=2.5;
@@ -942,6 +995,7 @@ int main(int argc, char** argv)
         update_orbit_camera();
         const double viewport_height = static_cast<double>(std::max(1.0F, ImGui::GetIO().DisplaySize.y));
         camera.viewport_height_pixels = viewport_height;
+        camera.aspect_ratio=static_cast<double>(std::max(1.0F,ImGui::GetIO().DisplaySize.x))/viewport_height;
         if (ImGui::BeginTable("mesh actions", 2, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn();
         if (ImGui::Button("Reset", ImVec2(-FLT_MIN, 0.0f))) {
@@ -1088,48 +1142,198 @@ int main(int argc, char** argv)
         // screenshot validation; do not let residual trackpad-wheel inertia
         // move its camera immediately after launch.
         const bool camera_input_allowed=!deterministic_visual_check&&!controls_hovered;
-        bool camera_moved=false;
+        bool lod_camera_moved=false;
+        const auto& input=ImGui::GetIO();
+        if(!input.WantCaptureKeyboard){
+            auto keyboard_mode=camera_gizmo_mode;
+            if(glfwGetKey(window,GLFW_KEY_Q)==GLFW_PRESS)
+                keyboard_mode=tetra_viewer::CameraGizmoMode::select;
+            else if(glfwGetKey(window,GLFW_KEY_W)==GLFW_PRESS)
+                keyboard_mode=tetra_viewer::CameraGizmoMode::translate;
+            else if(glfwGetKey(window,GLFW_KEY_E)==GLFW_PRESS)
+                keyboard_mode=tetra_viewer::CameraGizmoMode::rotate;
+            if(keyboard_mode!=camera_gizmo_mode){camera_gizmo_mode=keyboard_mode;upload_dirty=true;}
+        }
         if(camera_input_allowed){
-            double cursor_x = 0.0, cursor_y = 0.0;
-            glfwGetCursorPos(window, &cursor_x, &cursor_y);
-            const bool orbit_pressed=
+            double cursor_x{},cursor_y{};
+            glfwGetCursorPos(window,&cursor_x,&cursor_y);
+            const bool left_pressed=
                 glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS;
-            const bool pan_pressed=
-                glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_MIDDLE)==GLFW_PRESS||
-                glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_RIGHT)==GLFW_PRESS;
-            const auto requested_mode=pan_pressed?CameraDragMode::pan:
-                (orbit_pressed?CameraDragMode::orbit:CameraDragMode::none);
-            const auto& input=ImGui::GetIO();
-            const double precision=input.KeyShift?0.15:1.0;
-            if(requested_mode!=CameraDragMode::none&&requested_mode==camera_drag_mode){
-                const double delta_x=cursor_x-previous_cursor_x;
-                const double delta_y=cursor_y-previous_cursor_y;
-                if(delta_x!=0.0||delta_y!=0.0){
-                    if(requested_mode==CameraDragMode::orbit)
-                        orbit_camera.orbit(delta_x,delta_y,precision);
-                    else
-                        orbit_camera.pan(delta_x,delta_y,
-                            std::max(1.0F,input.DisplaySize.y),
-                            camera.vertical_fov_radians,precision);
-                    camera_moved=true;
+            const bool left_started=left_pressed&&!previous_left_pressed;
+            const bool shift_pressed=
+                glfwGetKey(window,GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS||
+                glfwGetKey(window,GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS;
+            const bool alt_pressed=
+                glfwGetKey(window,GLFW_KEY_LEFT_ALT)==GLFW_PRESS||
+                glfwGetKey(window,GLFW_KEY_RIGHT_ALT)==GLFW_PRESS;
+            const double precision=shift_pressed?0.15:1.0;
+            const double viewport_width=std::max(1.0F,input.DisplaySize.x);
+            const double viewport_height=std::max(1.0F,input.DisplaySize.y);
+            const auto view_forward=orbit_camera.forward();
+            const auto view_right=orbit_camera.right();
+            const auto view_up=orbit_camera.up();
+            const auto project=[&](tetra::Vec3 point){
+                return tetra_viewer::project_to_vulkan_viewport(point,
+                    view_camera_position,view_forward,view_right,view_up,
+                    camera.vertical_fov_radians,viewport_width,viewport_height);
+            };
+            const auto segment_distance=[](double x,double y,
+                                           const tetra_viewer::ViewportPoint& first,
+                                           const tetra_viewer::ViewportPoint& second){
+                if(!first.visible||!second.visible)return std::numeric_limits<double>::infinity();
+                const double dx=second.x-first.x,dy=second.y-first.y;
+                const double length_squared=dx*dx+dy*dy;
+                const double amount=length_squared>1.0e-12?std::clamp(
+                    ((x-first.x)*dx+(y-first.y)*dy)/length_squared,0.0,1.0):0.0;
+                return std::hypot(x-(first.x+amount*dx),y-(first.y+amount*dy));
+            };
+            const auto camera_screen=project(lod_camera_pose.position);
+            const auto camera_pick_distance=[&](){
+                const auto normalize=[](tetra::Vec3 value){
+                    const double length=std::sqrt(value.x*value.x+value.y*value.y+
+                                                  value.z*value.z);
+                    return length>1.0e-15?value/length:tetra::Vec3{};
+                };
+                const auto cross=[](tetra::Vec3 first,tetra::Vec3 second){
+                    return tetra::Vec3{first.y*second.z-first.z*second.y,
+                                       first.z*second.x-first.x*second.z,
+                                       first.x*second.y-first.y*second.x};
+                };
+                const auto camera_right=normalize(cross(
+                    lod_camera_pose.forward,lod_camera_pose.up));
+                const auto camera_up=normalize(cross(
+                    camera_right,lod_camera_pose.forward));
+                constexpr double scale=0.16;
+                const auto tip=lod_camera_pose.position+lod_camera_pose.forward*scale;
+                const std::array<tetra::Vec3,4> corners{{
+                    tip+camera_right*(scale*0.55)+camera_up*(scale*0.40),
+                    tip-camera_right*(scale*0.55)+camera_up*(scale*0.40),
+                    tip-camera_right*(scale*0.55)-camera_up*(scale*0.40),
+                    tip+camera_right*(scale*0.55)-camera_up*(scale*0.40)}};
+                double distance=std::hypot(cursor_x-camera_screen.x,
+                                           cursor_y-camera_screen.y);
+                for(const auto corner:corners)
+                    distance=std::min(distance,segment_distance(cursor_x,cursor_y,
+                        camera_screen,project(corner)));
+                for(std::size_t index=0;index<corners.size();++index)
+                    distance=std::min(distance,segment_distance(cursor_x,cursor_y,
+                        project(corners[index]),project(corners[(index+1)%corners.size()])));
+                return distance;
+            };
+            constexpr double gizmo_scale=0.28;
+            const auto pick_axis=[&](){
+                auto best=tetra_viewer::CameraGizmoAxis::none;
+                double best_distance=9.0;
+                for(const auto axis:{tetra_viewer::CameraGizmoAxis::x,
+                                     tetra_viewer::CameraGizmoAxis::y,
+                                     tetra_viewer::CameraGizmoAxis::z}){
+                    double distance=std::numeric_limits<double>::infinity();
+                    if(camera_gizmo_mode==tetra_viewer::CameraGizmoMode::translate){
+                        distance=segment_distance(cursor_x,cursor_y,camera_screen,
+                            project(lod_camera_pose.position+
+                                tetra_viewer::LodCameraPose::axis(axis)*gizmo_scale));
+                    }else if(camera_gizmo_mode==tetra_viewer::CameraGizmoMode::rotate){
+                        tetra::Vec3 first_basis{},second_basis{};
+                        if(axis==tetra_viewer::CameraGizmoAxis::x){first_basis={0,1,0};second_basis={0,0,1};}
+                        if(axis==tetra_viewer::CameraGizmoAxis::y){first_basis={1,0,0};second_basis={0,0,1};}
+                        if(axis==tetra_viewer::CameraGizmoAxis::z){first_basis={1,0,0};second_basis={0,1,0};}
+                        constexpr std::size_t segments=48;
+                        for(std::size_t index=0;index<segments;++index){
+                            const double first_angle=2.0*std::acos(-1.0)*index/segments;
+                            const double second_angle=2.0*std::acos(-1.0)*(index+1)/segments;
+                            const auto ring_point=[&](double angle){return lod_camera_pose.position+
+                                (first_basis*std::cos(angle)+second_basis*std::sin(angle))*gizmo_scale;};
+                            distance=std::min(distance,segment_distance(cursor_x,cursor_y,
+                                project(ring_point(first_angle)),project(ring_point(second_angle))));
+                        }
+                    }
+                    if(distance<best_distance){best_distance=distance;best=axis;}
+                }
+                return best;
+            };
+
+            if(left_started){
+                previous_cursor_x=cursor_x;
+                previous_cursor_y=cursor_y;
+                if(alt_pressed){
+                    camera_drag_mode=shift_pressed?CameraDragMode::pan:CameraDragMode::orbit;
+                }else{
+                    const auto picked=lod_camera_selected?pick_axis():
+                        tetra_viewer::CameraGizmoAxis::none;
+                    if(picked!=tetra_viewer::CameraGizmoAxis::none&&
+                       camera_gizmo_mode!=tetra_viewer::CameraGizmoMode::select){
+                        active_gizmo_axis=picked;
+                        gizmo_dragging=true;
+                        previous_rotation_angle=std::atan2(
+                            cursor_y-camera_screen.y,cursor_x-camera_screen.x);
+                    }else if(camera_screen.visible&&camera_pick_distance()<=10.0){
+                        lod_camera_selected=true;
+                        upload_dirty=true;
+                    }else{
+                        lod_camera_selected=false;
+                        active_gizmo_axis=tetra_viewer::CameraGizmoAxis::none;
+                        // A primary-button drag on empty space orbits the
+                        // editor view. Shift-drag pans. A stationary click
+                        // still behaves as ordinary selection/deselection.
+                        camera_drag_mode=shift_pressed?CameraDragMode::pan:
+                            CameraDragMode::orbit;
+                        upload_dirty=true;
+                    }
                 }
             }
-            camera_drag_mode=requested_mode;
-            if(requested_mode!=CameraDragMode::none){
-                previous_cursor_x = cursor_x;
-                previous_cursor_y = cursor_y;
+            if(left_pressed){
+                if(gizmo_dragging&&
+                   active_gizmo_axis!=tetra_viewer::CameraGizmoAxis::none){
+                    if(camera_gizmo_mode==tetra_viewer::CameraGizmoMode::translate){
+                        const auto axis_end=project(lod_camera_pose.position+
+                            tetra_viewer::LodCameraPose::axis(active_gizmo_axis)*gizmo_scale);
+                        const double dx=axis_end.x-camera_screen.x;
+                        const double dy=axis_end.y-camera_screen.y;
+                        const double length_squared=dx*dx+dy*dy;
+                        if(length_squared>1.0e-8){
+                            const double pixels=(cursor_x-previous_cursor_x)*dx+
+                                (cursor_y-previous_cursor_y)*dy;
+                            lod_camera_pose.translate(active_gizmo_axis,
+                                pixels/length_squared*gizmo_scale*precision);
+                            lod_camera_moved=pixels!=0.0;
+                        }
+                    }else if(camera_gizmo_mode==tetra_viewer::CameraGizmoMode::rotate){
+                        const double angle=std::atan2(
+                            cursor_y-camera_screen.y,cursor_x-camera_screen.x);
+                        double delta=angle-previous_rotation_angle;
+                        if(delta>std::acos(-1.0))delta-=2.0*std::acos(-1.0);
+                        if(delta<-std::acos(-1.0))delta+=2.0*std::acos(-1.0);
+                        lod_camera_pose.rotate(active_gizmo_axis,delta*precision);
+                        previous_rotation_angle=angle;
+                        lod_camera_moved=delta!=0.0;
+                    }
+                }else if(camera_drag_mode!=CameraDragMode::none){
+                    const double delta_x=cursor_x-previous_cursor_x;
+                    const double delta_y=cursor_y-previous_cursor_y;
+                    if(camera_drag_mode==CameraDragMode::orbit)
+                        orbit_camera.orbit(delta_x,delta_y,precision);
+                    else orbit_camera.pan(delta_x,delta_y,viewport_height,
+                                          camera.vertical_fov_radians,precision);
+                }
+            }else{
+                gizmo_dragging=false;
+                active_gizmo_axis=tetra_viewer::CameraGizmoAxis::none;
+                camera_drag_mode=CameraDragMode::none;
             }
-            // macOS commonly converts Shift+vertical-wheel into a horizontal
-            // wheel event. Treat that shifted delta as precision dolly input.
-            const float wheel = input.MouseWheel != 0.0f
-                ? input.MouseWheel
-                : (input.KeyShift ? input.MouseWheelH : 0.0f);
-            if (wheel != 0.0f) {
-                orbit_camera.dolly(wheel,precision);
-                camera_moved=true;
-            }
-        }else camera_drag_mode=CameraDragMode::none;
-        if(camera_moved)has_adaptive_result=false;
+            if(left_pressed){previous_cursor_x=cursor_x;previous_cursor_y=cursor_y;}
+            previous_left_pressed=left_pressed;
+            const float wheel=input.MouseWheel!=0.0f?input.MouseWheel:
+                (shift_pressed?input.MouseWheelH:0.0f);
+            if(wheel!=0.0f)orbit_camera.dolly(wheel,precision);
+        }else{
+            camera_drag_mode=CameraDragMode::none;
+            previous_left_pressed=false;
+        }
+        if(lod_camera_moved){
+            lod_camera_pose.apply(camera);
+            has_adaptive_result=false;
+            upload_dirty=true;
+        }
         update_orbit_camera();
         // Derive the view direction from the orbit angles rather than
         // target-position subtraction. At distance zero both positions are
@@ -1147,7 +1351,7 @@ int main(int argc, char** argv)
         const float depth_scale = far_plane / (far_plane - near_plane);
         const float depth_bias = -far_plane * near_plane / (far_plane - near_plane);
         const auto dot = [](const tetra::Vec3& first, const tetra::Vec3& second) { return first.x*second.x + first.y*second.y + first.z*second.z; };
-        const tetra::Vec3 camera_position{camera.position};
+        const tetra::Vec3 camera_position{view_camera_position};
         const float tx = static_cast<float>(-dot(right, camera_position) * scale_x);
         const float ty = static_cast<float>(-dot(up, camera_position) * scale_y);
         const float tz = static_cast<float>(-dot(f, camera_position) * depth_scale + depth_bias);
@@ -1161,9 +1365,84 @@ int main(int argc, char** argv)
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
             show_faces ? 1.0F : 0.0F, x_cutaway ? x_cut_position : 2.0F};
         if (upload_dirty) {
+            // Editor overlays deliberately do not include mesh surface-edge
+            // segments. The mesh wireframe has its own depth-tested native
+            // line pass; mixing it here would recreate the see-through bug.
+            std::vector<tetra_viewer::SceneVertex> overlay_lines;
+            const auto add_overlay_line=[&](tetra::Vec3 first,tetra::Vec3 second,
+                                            std::array<float,3> colour){
+                const auto vertex=[&](tetra::Vec3 point){
+                    tetra_viewer::SceneVertex result;
+                    result.position[0]=static_cast<float>(point.x);
+                    result.position[1]=static_cast<float>(point.y);
+                    result.position[2]=static_cast<float>(point.z);
+                    result.colour[0]=colour[0];result.colour[1]=colour[1];result.colour[2]=colour[2];
+                    return result;
+                };
+                overlay_lines.push_back(vertex(first));
+                overlay_lines.push_back(vertex(second));
+            };
+            if(!deterministic_visual_check){
+            const auto normalize=[](tetra::Vec3 value){
+                const double length=std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
+                return length>1.0e-15?value/length:tetra::Vec3{};
+            };
+            const auto cross=[](tetra::Vec3 first,tetra::Vec3 second){
+                return tetra::Vec3{first.y*second.z-first.z*second.y,
+                                   first.z*second.x-first.x*second.z,
+                                   first.x*second.y-first.y*second.x};
+            };
+            const auto camera_right=normalize(cross(lod_camera_pose.forward,lod_camera_pose.up));
+            const auto camera_up=normalize(cross(camera_right,lod_camera_pose.forward));
+            constexpr double camera_scale=0.16;
+            const auto camera_tip=lod_camera_pose.position+lod_camera_pose.forward*camera_scale;
+            const std::array<tetra::Vec3,4> corners{{
+                camera_tip+camera_right*(camera_scale*0.55)+camera_up*(camera_scale*0.40),
+                camera_tip-camera_right*(camera_scale*0.55)+camera_up*(camera_scale*0.40),
+                camera_tip-camera_right*(camera_scale*0.55)-camera_up*(camera_scale*0.40),
+                camera_tip+camera_right*(camera_scale*0.55)-camera_up*(camera_scale*0.40)}};
+            const std::array<float,3> camera_colour=lod_camera_selected?
+                std::array<float,3>{1.0F,0.82F,0.18F}:std::array<float,3>{0.86F,0.88F,0.94F};
+            for(const auto corner:corners)add_overlay_line(
+                lod_camera_pose.position,corner,camera_colour);
+            for(std::size_t index=0;index<corners.size();++index)add_overlay_line(
+                corners[index],corners[(index+1)%corners.size()],camera_colour);
+            add_overlay_line(camera_tip+camera_up*(camera_scale*0.40),
+                             camera_tip+camera_up*(camera_scale*0.72),camera_colour);
+
+            if(lod_camera_selected&&camera_gizmo_mode!=tetra_viewer::CameraGizmoMode::select){
+                constexpr double gizmo_scale=0.28;
+                constexpr std::array axes{
+                    tetra_viewer::CameraGizmoAxis::x,
+                    tetra_viewer::CameraGizmoAxis::y,
+                    tetra_viewer::CameraGizmoAxis::z};
+                constexpr std::array<std::array<float,3>,3> colours{{
+                    {{0.95F,0.18F,0.16F}},{{0.25F,0.90F,0.30F}},{{0.20F,0.48F,1.0F}}}};
+                for(std::size_t index=0;index<axes.size();++index){
+                    const auto axis=axes[index];
+                    if(camera_gizmo_mode==tetra_viewer::CameraGizmoMode::translate){
+                        add_overlay_line(lod_camera_pose.position,lod_camera_pose.position+
+                            tetra_viewer::LodCameraPose::axis(axis)*gizmo_scale,colours[index]);
+                    }else{
+                        tetra::Vec3 first_basis{},second_basis{};
+                        if(axis==tetra_viewer::CameraGizmoAxis::x){first_basis={0,1,0};second_basis={0,0,1};}
+                        if(axis==tetra_viewer::CameraGizmoAxis::y){first_basis={1,0,0};second_basis={0,0,1};}
+                        if(axis==tetra_viewer::CameraGizmoAxis::z){first_basis={1,0,0};second_basis={0,1,0};}
+                        constexpr std::size_t segments=48;
+                        for(std::size_t segment=0;segment<segments;++segment){
+                            const double first_angle=2.0*std::acos(-1.0)*segment/segments;
+                            const double second_angle=2.0*std::acos(-1.0)*(segment+1)/segments;
+                            const auto ring_point=[&](double angle){return lod_camera_pose.position+
+                                (first_basis*std::cos(angle)+second_basis*std::sin(angle))*gizmo_scale;};
+                            add_overlay_line(ring_point(first_angle),ring_point(second_angle),colours[index]);
+                        }
+                    }
+                }
+            }
+            }
             g_SceneRenderer.upload(prepared_scene.triangle_vertices,
                                    prepared_scene.hierarchy_line_vertices,
-                                   prepared_scene.surface_line_vertices);
+                                   overlay_lines);
             upload_dirty = false;
         }
 

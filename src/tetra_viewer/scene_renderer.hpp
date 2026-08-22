@@ -32,6 +32,7 @@ class SceneRenderer {
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
+  VkPipeline editor_line_pipeline_{VK_NULL_HANDLE};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
@@ -40,7 +41,7 @@ class SceneRenderer {
   };
   VertexBuffer triangles_;
   VertexBuffer hierarchy_lines_;
-  VertexBuffer surface_lines_;
+  VertexBuffer editor_lines_;
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; };
   std::vector<DepthImage> depth_images_;
 };

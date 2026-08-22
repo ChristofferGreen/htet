@@ -137,7 +137,8 @@ parent address, are terminal, and are replaced by that parent's red family
 when further refinement is requested.
 
 `set-method=<key>` selects any registered hierarchy in a headless script.
-`set-camera=<x:y:z>` sets the shared camera and LOD origin.
+`set-camera=<x:y:z>` sets the headless LOD camera origin, and
+`set-camera-direction=<x:y:z>` sets its orientation.
 `render-image=<path.ppm>` writes the selected surface method through a
 deterministic CPU depth buffer for visual comparisons.
 
@@ -182,14 +183,21 @@ The visually inspected sheets are
 [meshing-sheet.png](../output/method-comparison/meshing-sheet.png) and
 [surfacing-sheet.png](../output/method-comparison/surfacing-sheet.png).
 
-The interactive view camera is also the screen-space LOD origin. Left drag
-orbits it, middle or right drag translates both position and independent orbit
-target in the view plane, and scrolling dollies to the target without an
-artificial minimum distance. Its direction remains angle-derived at distance
-zero to avoid a zero-length look vector. Holding Shift reduces orbit, pan, and
-dolly movement to 15 percent for precision work. Camera movement marks the
-previous target-refinement result stale; the next `Refine to target` uses the
-new camera position. `Frame sphere` restores a centred overview. A one-
+The editor view and screen-space LOD camera are separate. The LOD camera is a
+visible wireframe scene object: click it to select it, use `W` for world-axis
+translation or `E` for world-axis rotation, then drag the coloured gizmo axis
+or ring with an ordinary primary-button trackpad drag. `Q` returns to selection.
+Its position, direction, field of view, and aspect ratio determine both
+projected element size and frustum visibility; moving or rotating it marks the
+previous target-refinement result stale. `Place LOD camera at view` copies the
+current editor pose, while the headless equivalent is
+`set-camera-direction=<x:y:z>`.
+
+The editor view uses laptop-friendly Maya-inspired controls: primary-button
+drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling
+dollies to its independent target without an artificial minimum distance.
+Holding Shift reduces gizmo and scroll manipulation to 15 percent for precision
+work. `Frame sphere` restores a centred overview. A one-
 millimetre near plane permits close inspection and travel inside the mesh.
 Hierarchy edges default to hidden so the initial view emphasizes the evaluated
 surface; surface edges remain independently enabled.

@@ -108,10 +108,32 @@ double projected_tetrahedron_diameter(const TetMesh& mesh, TetId tet, const Came
     radius_squared = std::max(radius_squared, delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
   }
   const Vec3 view = centre - camera.position;
-  const double distance = std::sqrt(view.x * view.x + view.y * view.y + view.z * view.z);
-  if (distance <= std::sqrt(radius_squared)) return camera.viewport_height_pixels;
+  const auto dot=[](Vec3 first,Vec3 second){
+    return first.x*second.x+first.y*second.y+first.z*second.z;
+  };
+  const auto cross=[](Vec3 first,Vec3 second){
+    return Vec3{first.y*second.z-first.z*second.y,
+                first.z*second.x-first.x*second.z,
+                first.x*second.y-first.y*second.x};
+  };
+  const auto normalize=[&](Vec3 value){
+    const double length=std::sqrt(dot(value,value));
+    return length>1.0e-15?value/length:Vec3{};
+  };
+  const Vec3 forward=normalize(camera.forward);
+  const Vec3 right=normalize(cross(forward,camera.up));
+  const Vec3 up=normalize(cross(right,forward));
+  const double radius=std::sqrt(radius_squared);
+  const double depth=dot(view,forward);
+  if(depth+radius<=0.0)return 0.0;
+  const double tangent=std::tan(camera.vertical_fov_radians*0.5);
+  const double half_height=std::max(0.0,depth)*tangent;
+  const double half_width=half_height*camera.aspect_ratio;
+  if(std::abs(dot(view,right))>half_width+radius||
+     std::abs(dot(view,up))>half_height+radius)return 0.0;
+  if(depth<=radius)return camera.viewport_height_pixels;
   const double focal_length = (camera.viewport_height_pixels * 0.5) / std::tan(camera.vertical_fov_radians * 0.5);
-  return (2.0 * std::sqrt(radius_squared) * focal_length) / distance;
+  return (2.0*radius*focal_length)/depth;
 }
 
 std::vector<TetId> mark_oversized_intersections(const TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold) {

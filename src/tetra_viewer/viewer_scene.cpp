@@ -2422,8 +2422,14 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
 bool SceneCache::update_projection(const tetra::TetMesh& mesh, const tetra::Camera& camera, double pixel_threshold) {
   const bool same_camera = projected_camera_.position.x == camera.position.x &&
       projected_camera_.position.y == camera.position.y && projected_camera_.position.z == camera.position.z &&
+      projected_camera_.forward.x == camera.forward.x &&
+      projected_camera_.forward.y == camera.forward.y &&
+      projected_camera_.forward.z == camera.forward.z &&
+      projected_camera_.up.x == camera.up.x && projected_camera_.up.y == camera.up.y &&
+      projected_camera_.up.z == camera.up.z &&
       projected_camera_.vertical_fov_radians == camera.vertical_fov_radians &&
-      projected_camera_.viewport_height_pixels == camera.viewport_height_pixels;
+      projected_camera_.viewport_height_pixels == camera.viewport_height_pixels &&
+      projected_camera_.aspect_ratio == camera.aspect_ratio;
   if (projected_scene_generation_ == scene_generation_ && same_camera &&
       projected_pixel_threshold_ == pixel_threshold)
     return false;

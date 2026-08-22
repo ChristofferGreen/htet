@@ -146,6 +146,10 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"solid_volume\":" << (state.show_volume_faces ? "true" : "false")
          << ",\"x_cutaway\":" << (state.x_cutaway ? "true" : "false")
          << ",\"x_cut_position\":" << state.x_cut_position
+         << ",\"lod_camera\":[" << state.camera.position.x << ','
+         << state.camera.position.y << ',' << state.camera.position.z << ']'
+         << ",\"lod_direction\":[" << state.camera.forward.x << ','
+         << state.camera.forward.y << ',' << state.camera.forward.z << ']'
          << ",\"active_leaves\":" << state.mesh.active_leaves().size()
          << ",\"stored_tetrahedra\":" << state.mesh.tetrahedron_count()
          << ",\"vertices\":" << state.mesh.vertices().size()
@@ -233,8 +237,8 @@ bool render_image(const ScriptState& state, std::string_view path, std::ostream&
     if(angle<45.0)return mix(red,magenta,(angle-20.0)/25.0);
     return mix(magenta,white,std::clamp((angle-45.0)/45.0,0.0,1.0));
   };
-  const tetra::Vec3 forward = normalize(state.sphere.centre - state.camera.position);
-  const tetra::Vec3 right = normalize(cross(forward, {0.0, 1.0, 0.0}));
+  const tetra::Vec3 forward=normalize(state.camera.forward);
+  const tetra::Vec3 right=normalize(cross(forward,state.camera.up));
   const tetra::Vec3 up = cross(right, forward);
   const double tangent = std::tan(state.camera.vertical_fov_radians * 0.5);
 
@@ -422,6 +426,7 @@ void print_script_help(std::ostream& output) {
             "  set-x-cut=<off|0..1>        Hide geometry to the right of an X cut plane\n"
             "  set-material-rule=<key>     Select a registered full-tetrahedron material rule\n"
             "  set-camera=<x:y:z>          Set the camera/LOD origin position\n"
+            "  set-camera-direction=<x:y:z> Set the LOD camera view direction\n"
             "  set-radius=<0.001..1.0>     Change the implicit sphere radius\n"
             "  set-pixel-threshold=<value> Change the projected-size threshold\n"
             "  set-maximum-depth=<0..32>   Change the adaptive iteration limit\n"
@@ -462,7 +467,28 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         return 2;
       }
       state.camera.position = position;
+      const auto direction=state.sphere.centre-position;
+      const double length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                                    direction.z*direction.z);
+      if(length>1.0e-15)state.camera.forward=direction/length;
       write_command_event(output, command, 0.0, state);
+      continue;
+    }
+    constexpr std::string_view camera_direction_prefix="set-camera-direction=";
+    if(command.starts_with(camera_direction_prefix)){
+      tetra::Vec3 direction{};
+      if(!parse_vec3(command.substr(camera_direction_prefix.size()),direction)){
+        write_error(errors,"camera direction must contain three finite colon-separated values",command);
+        return 2;
+      }
+      const double length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                                    direction.z*direction.z);
+      if(length<=1.0e-15){
+        write_error(errors,"camera direction must be nonzero",command);
+        return 2;
+      }
+      state.camera.forward=direction/length;
+      write_command_event(output,command,0.0,state);
       continue;
     }
     constexpr std::string_view render_prefix = "render-image=";

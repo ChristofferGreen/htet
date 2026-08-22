@@ -43,7 +43,7 @@ TEST_CASE("tetrahedron quality metrics distinguish regular and degenerate elemen
   CHECK(inverted.volume_surface_longest_edge==0.0);
 }
 
-TEST_CASE("orbit camera rotates pans and dollies the shared LOD origin") {
+TEST_CASE("editor orbit camera rotates pans and dollies independently") {
   tetra_viewer::OrbitCamera camera;
   const auto length=[](tetra::Vec3 value){
     return std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
@@ -77,6 +77,40 @@ TEST_CASE("orbit camera rotates pans and dollies the shared LOD origin") {
   camera.dolly(1.0,0.15);
   CHECK(camera.distance<distance_before_dolly);
   CHECK(camera.distance==doctest::Approx(distance_before_dolly-distance_before_dolly*0.22*0.15));
+}
+
+TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
+  auto mesh=tetra::TetMesh::make_unit_cube();
+  tetra::Camera camera;
+  tetra_viewer::LodCameraPose pose;
+  pose.apply(camera);
+  const auto leaf=mesh.active_leaves().front();
+  CHECK(tetra::projected_tetrahedron_diameter(mesh,leaf,camera)>0.0);
+
+  pose.translate(tetra_viewer::CameraGizmoAxis::x,0.25);
+  pose.rotate(tetra_viewer::CameraGizmoAxis::y,std::acos(-1.0));
+  pose.apply(camera);
+  CHECK(camera.position.x==doctest::Approx(0.75));
+  CHECK(camera.forward.z==doctest::Approx(1.0));
+  CHECK(tetra::projected_tetrahedron_diameter(mesh,leaf,camera)==0.0);
+}
+
+TEST_CASE("Vulkan viewport projection matches the rendered gizmo orientation") {
+  constexpr double fov=0.7853981633974483;
+  const auto centre=tetra_viewer::project_to_vulkan_viewport(
+      {0.0,0.0,-1.0},{0.0,0.0,0.0},{0.0,0.0,-1.0},
+      {1.0,0.0,0.0},{0.0,1.0,0.0},fov,800.0,600.0);
+  REQUIRE(centre.visible);
+  CHECK(centre.x==doctest::Approx(400.0));
+  CHECK(centre.y==doctest::Approx(300.0));
+
+  const auto positive_up=tetra_viewer::project_to_vulkan_viewport(
+      {0.0,0.25,-1.0},{0.0,0.0,0.0},{0.0,0.0,-1.0},
+      {1.0,0.0,0.0},{0.0,1.0,0.0},fov,800.0,600.0);
+  CHECK(positive_up.y>centre.y);
+  CHECK_FALSE(tetra_viewer::project_to_vulkan_viewport(
+      {0.0,0.0,1.0},{0.0,0.0,0.0},{0.0,0.0,-1.0},
+      {1.0,0.0,0.0},{0.0,1.0,0.0},fov,800.0,600.0).visible);
 }
 
 TEST_CASE("variational whole-cell cut is deterministic manifold and hierarchy-owned") {
@@ -1894,6 +1928,15 @@ TEST_CASE("headless stencil atlas controls select every research objective") {
   }
 }
 
+TEST_CASE("headless LOD camera direction is scriptable") {
+  std::ostringstream output,errors;
+  CHECK(tetra_viewer::run_script(
+      "set-camera=0.5:0.5:3,set-camera-direction=0:1:0,stats",output,errors)==0);
+  CHECK(errors.str().empty());
+  CHECK(output.str().find("\"lod_camera\":[0.500,0.500,3.000]")!=std::string::npos);
+  CHECK(output.str().find("\"lod_direction\":[0.000,1.000,0.000]")!=std::string::npos);
+}
+
 TEST_CASE("headless renderer writes a deterministic comparison image") {
   const auto path = std::filesystem::temp_directory_path() / "tetra-viewer-headless-test.ppm";
   std::filesystem::remove(path);
@@ -1981,6 +2024,13 @@ TEST_CASE("headless viewer script rejects malformed and unknown commands") {
   errors.clear();
   CHECK(tetra_viewer::run_script("set-camera=1:2", output, errors) == 2);
   CHECK(errors.str().find("three finite colon-separated values") != std::string::npos);
+
+  output.str({});
+  output.clear();
+  errors.str({});
+  errors.clear();
+  CHECK(tetra_viewer::run_script("set-camera-direction=0:0:0",output,errors)==2);
+  CHECK(errors.str().find("direction must be nonzero")!=std::string::npos);
 
   output.str({});
   output.clear();

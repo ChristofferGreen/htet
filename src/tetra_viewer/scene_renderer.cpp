@@ -78,7 +78,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; dynamic.dynamicStateCount = 2; dynamic.pDynamicStates = dynamic_states;
   VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO}; rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &colour_format_; rendering.depthAttachmentFormat = depth_format_;
   const auto create_pipeline = [&](const VkPipelineShaderStageCreateInfo* pipeline_stages,
-                                   VkPolygonMode polygon_mode, bool depth_overlay,
+                                   VkPolygonMode polygon_mode, bool depth_test,
+                                   bool depth_overlay,
                                    bool alpha_blend, bool offset_fill,
                                    VkPipeline* target) {
     constexpr VkPrimitiveTopology topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -96,7 +97,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     raster.depthBiasConstantFactor = offset_fill ? 1.0F : 0.0F;
     raster.depthBiasSlopeFactor = offset_fill ? 1.0F : 0.0F;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = VK_TRUE;
+    depth.depthTestEnable = depth_test ? VK_TRUE : VK_FALSE;
     depth.depthWriteEnable = depth_overlay ? VK_FALSE : VK_TRUE;
     depth.depthCompareOp = depth_overlay ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
     VkPipelineColorBlendAttachmentState pipeline_blend_attachment=blend_attachment;
@@ -115,14 +116,19 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     pipeline.pNext = &rendering; pipeline.stageCount = 2; pipeline.pStages = pipeline_stages; pipeline.pVertexInputState = &vertex_input; pipeline.pInputAssemblyState = &assembly; pipeline.pViewportState = &viewport; pipeline.pRasterizationState = &raster; pipeline.pMultisampleState = &multisample; pipeline.pDepthStencilState = &depth; pipeline.pColorBlendState = &pipeline_blend; pipeline.pDynamicState = &dynamic; pipeline.layout = pipeline_layout_;
     if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline, nullptr, target) != VK_SUCCESS) throw std::runtime_error("unable to create scene pipeline");
   };
-  create_pipeline(stages, VK_POLYGON_MODE_FILL, false, false, true, &triangle_pipeline_);
+  create_pipeline(stages, VK_POLYGON_MODE_FILL, true, false, false, true, &triangle_pipeline_);
   // The surface wire pass rasterizes the exact same triangle vertices as the
   // opaque pass. Each edge is therefore a native one-pixel line between its
   // two endpoints, with identical depth interpolation and no depth pull.
-  create_pipeline(wire_stages, VK_POLYGON_MODE_LINE, true, false, false, &triangle_wire_pipeline_);
+  create_pipeline(wire_stages, VK_POLYGON_MODE_LINE, true, true, false, false, &triangle_wire_pipeline_);
   // Hierarchy edges are independent segments, expanded into screen-space
   // ribbons by edge.vert. They retain alpha coverage for antialiasing.
-  create_pipeline(edge_stages, VK_POLYGON_MODE_FILL, true, true, false, &line_pipeline_);
+  create_pipeline(edge_stages, VK_POLYGON_MODE_FILL, true, true, true, false, &line_pipeline_);
+  // Editor objects and manipulation handles remain visible when they overlap
+  // the inspected mesh, as in conventional DCC applications. They use their
+  // own buffer and pipeline so mesh-edge visibility remains depth correct.
+  create_pipeline(edge_stages, VK_POLYGON_MODE_FILL, false, true, true, false,
+                  &editor_line_pipeline_);
   vkDestroyShaderModule(device_, vertex_shader, nullptr); vkDestroyShaderModule(device_, fragment_shader, nullptr);
   vkDestroyShaderModule(device_, wire_fragment_shader, nullptr);
   vkDestroyShaderModule(device_, edge_vertex_shader, nullptr); vkDestroyShaderModule(device_, edge_fragment_shader, nullptr);
@@ -179,10 +185,10 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
     return ribbons;
   };
   const auto hierarchy_ribbons=expand_edges(hierarchy_line_vertices);
-  const auto surface_ribbons=expand_edges(surface_line_vertices);
+  const auto editor_ribbons=expand_edges(surface_line_vertices);
   upload_buffer(triangles_, triangle_vertices);
   upload_buffer(hierarchy_lines_, hierarchy_ribbons);
-  upload_buffer(surface_lines_, surface_ribbons);
+  upload_buffer(editor_lines_, editor_ribbons);
 }
 
 void SceneRenderer::record(VkCommandBuffer command_buffer, VkImageView colour_view, std::uint32_t image_index, VkExtent2D extent, const float* camera_data) const {
@@ -217,15 +223,17 @@ void SceneRenderer::record(VkCommandBuffer command_buffer, VkImageView colour_vi
   draw(triangle_pipeline_, triangles_);
   draw(triangle_wire_pipeline_, triangles_);
   draw(line_pipeline_, hierarchy_lines_);
+  draw(editor_line_pipeline_, editor_lines_);
   end_rendering(command_buffer);
 }
 
 void SceneRenderer::shutdown() {
   for (auto& depth : depth_images_) { vkDestroyImageView(device_, depth.view, nullptr); vkDestroyImage(device_, depth.image, nullptr); vkFreeMemory(device_, depth.memory, nullptr); }
-  for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, surface_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
+  for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, editor_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
+  vkDestroyPipeline(device_, editor_line_pipeline_, nullptr);
   vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
 }
 
