@@ -9,6 +9,8 @@
 namespace tetra {
 namespace {
 
+struct BccClosureDepthExceeded {};
+
 constexpr double determinant(Vec3 a, Vec3 b, Vec3 c) {
   return a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x);
 }
@@ -568,10 +570,27 @@ bool TetMesh::is_active(TetId address) const {
   return index && !is_split(tet_depth(address), *index);
 }
 
-void TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
+bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
+  if(subdivision_method_==SubdivisionMethod::bcc_red_green){
+    unsigned int closure_depth_limit=0;
+    for(const TetId id:requests)if(is_active(id)){
+      const auto& record=tetrahedron(id);
+      const TetId logical=record.transition_parent==invalid_tet?id:record.transition_parent;
+      closure_depth_limit=std::max(closure_depth_limit,tet_depth(logical)+3U);
+    }
+    if(closure_depth_limit==0)return true;
+    TetMesh previous=*this;
+    try{
+      refine_selected_bcc_red_green(requests,closure_depth_limit);
+      return true;
+    }catch(const BccClosureDepthExceeded&){
+      *this=std::move(previous);
+      return false;
+    }
+  }
   if (uses_octasection(subdivision_method_)) {
     refine_selected_octasection(requests);
-    return;
+    return true;
   }
   std::vector<TetId> pending;
   pending.reserve(requests.size());
@@ -704,13 +723,10 @@ void TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
     pending = std::move(deferred);
   }
   if (changed) ++revision_;
+  return true;
 }
 
 void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
-  if(subdivision_method_==SubdivisionMethod::bcc_red_green){
-    refine_selected_bcc_red_green(requests);
-    return;
-  }
   if (std::ranges::none_of(requests, [this](TetId id) { return is_active(id); })) return;
 
   // Pure octasection has matching refined faces but no coarse/fine transition
@@ -808,7 +824,8 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
   ++revision_;
 }
 
-void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) {
+void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
+                                             unsigned int closure_depth_limit) {
   if(requests.empty())return;
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
@@ -850,19 +867,14 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) 
   // LOD request refine almost the complete volume. Active green cells already
   // form a conforming face complex, so use their face adjacencies to find only
   // the coarse logical red parents bordering a planned finer red cell.
-  struct LogicalFaceSlot {
+  struct LogicalFace {
     std::array<VertexId,3> key{};
     TetId parent{invalid_tet};
-    bool occupied{};
   };
   constexpr std::array<std::array<std::size_t,3>,4> logical_faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
-  std::size_t face_capacity=16;
-  while(face_capacity<active_leaves_.size()*8)face_capacity<<=1U;
-  std::vector<LogicalFaceSlot> face_slots(face_capacity);
-  const std::size_t face_mask=face_capacity-1;
-  std::vector<std::array<TetId,2>> adjacent_parents;
-  adjacent_parents.reserve(active_leaves_.size()*2);
+  std::vector<LogicalFace> face_owners;
+  face_owners.reserve(active_leaves_.size()*4);
   for(const TetId active:active_leaves_){
     const auto& record=tetrahedron(active);
     const TetId parent=record.transition_parent==invalid_tet?active:record.transition_parent;
@@ -870,17 +882,23 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) 
       std::array<VertexId,3> key{{record.vertices[face[0]],record.vertices[face[1]],
                                   record.vertices[face[2]]}};
       std::sort(key.begin(),key.end());
-      const std::uint64_t first_pair=(static_cast<std::uint64_t>(key[0])<<32U)|key[1];
-      std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(key[2]))&face_mask;
-      while(face_slots[slot].occupied&&face_slots[slot].key!=key)slot=(slot+1)&face_mask;
-      if(!face_slots[slot].occupied){
-        face_slots[slot]={key,parent,true};
-      }else if(face_slots[slot].parent!=parent){
-        auto pair=std::array<TetId,2>{{face_slots[slot].parent,parent}};
-        if(pair[1]<pair[0])std::swap(pair[0],pair[1]);
-        adjacent_parents.push_back(pair);
-      }
+      face_owners.push_back({key,parent});
     }
+  }
+  std::sort(face_owners.begin(),face_owners.end(),[](const LogicalFace& first,
+                                                     const LogicalFace& second){
+    return first.key<second.key||(first.key==second.key&&first.parent<second.parent);
+  });
+  std::vector<std::array<TetId,2>> adjacent_parents;
+  for(std::size_t begin=0;begin<face_owners.size();){
+    std::size_t end=begin+1;
+    while(end<face_owners.size()&&face_owners[end].key==face_owners[begin].key)++end;
+    if(end-begin==2&&face_owners[begin].parent!=face_owners[begin+1].parent){
+      auto pair=std::array<TetId,2>{{face_owners[begin].parent,face_owners[begin+1].parent}};
+      if(pair[1]<pair[0])std::swap(pair[0],pair[1]);
+      adjacent_parents.push_back(pair);
+    }
+    begin=end;
   }
   std::sort(adjacent_parents.begin(),adjacent_parents.end());
   adjacent_parents.erase(std::unique(adjacent_parents.begin(),adjacent_parents.end()),
@@ -1190,8 +1208,9 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) 
   if(!face_repairs.empty()){
     std::sort(face_repairs.begin(),face_repairs.end());
     face_repairs.erase(std::unique(face_repairs.begin(),face_repairs.end()),face_repairs.end());
+    if(shallowest_repair+3U>closure_depth_limit)throw BccClosureDepthExceeded{};
     ++revision_;
-    refine_selected_bcc_red_green(face_repairs);
+    refine_selected_bcc_red_green(face_repairs,closure_depth_limit);
     return;
   }
   ++revision_;
@@ -1199,7 +1218,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) 
 
 void TetMesh::refine_all_binary() {
   const auto leaves = active_leaves_;
-  refine_selected_binary(leaves);
+  static_cast<void>(refine_selected_binary(leaves));
 }
 
 }  // namespace tetra

@@ -403,9 +403,12 @@ AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camer
       result.reached_depth_limit=!oversized.empty();
       return result;
     }
+    if(!mesh.refine_selected_binary(marked)){
+      result.reached_depth_limit=true;
+      return result;
+    }
     result.refined_leaves += marked.size();
     ++result.iterations;
-    mesh.refine_selected_binary(marked);
   }
 }
 

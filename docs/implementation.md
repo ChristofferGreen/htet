@@ -209,13 +209,18 @@ storage after the first visit to each pose.
 
 Camera reconciliation also treats the packed hierarchy as the cache boundary.
 It clears and rebuilds the flat active-edge table in one pass, hashes logical
-BCC faces in a contiguous open-addressed table instead of sorting face records,
-and caches every implicit value for the duration of a refinement. Scene
+edge and midpoint identities in contiguous tables, and caches every implicit
+value for the duration of a refinement. Logical BCC face ownership retains
+its complete sorted groups because collapsing a face with multiple owners to
+one hash-table entry can misbalance the transition cut. Scene
 preparation reuses the same per-vertex values and skips whole-cell material
 selection when adaptive cleaving will not consume it. Terrain noise uses the
 standard fixed Perlin gradient directions, avoiding trigonometry in the hot
-signed-distance path. In the release headless camera cycle from `(0, 1, 0.5)`
-to `(-1, 0.7, 0.5)` and back, reconciliation measures 0.44--0.49 seconds and
+signed-distance path. BCC refinement is transactional: a transition repair
+that would exceed the LOD-requested depth restores the preceding conforming
+cut instead of recursively refining an incompatible face without limit. In
+the release headless camera cycle from `(0, 1, 0.5)` to `(-1, 0.7, 0.5)` and
+back, reconciliation measures 0.50--0.58 seconds and
 scene preparation 0.26--0.37 seconds on the development laptop; the earlier
 path took approximately 1.8--2.3 seconds end to end.
 

@@ -133,8 +133,10 @@ class TetMesh {
   [[nodiscard]] bool has_conforming_active_faces() const;
 
   // A request is expanded to its bisection-edge diamond.  Each diamond is
-  // written as one batch into its target level arrays.
-  void refine_selected_binary(const std::vector<TetId>& requests);
+  // written as one batch into its target level arrays. Returns false when a
+  // BCC transition closure would exceed the requested refinement depth; the
+  // preceding conforming active cut is restored in that case.
+  bool refine_selected_binary(const std::vector<TetId>& requests);
   void refine_all_binary();
   // Collapse the active cut to the root layer while retaining all resident
   // hierarchy records and midpoint vertices for allocation-free reuse.
@@ -164,7 +166,8 @@ class TetMesh {
   void insert_active_edges(TetId address);
   void remove_active_edges(TetId address);
   void refine_selected_octasection(const std::vector<TetId>& requests);
-  void refine_selected_bcc_red_green(const std::vector<TetId>& requests);
+  void refine_selected_bcc_red_green(const std::vector<TetId>& requests,
+                                     unsigned int closure_depth_limit);
   [[nodiscard]] std::optional<VertexId> existing_midpoint(Edge edge) const;
   [[nodiscard]] std::uint32_t active_edge_head(EdgeKey key) const;
 

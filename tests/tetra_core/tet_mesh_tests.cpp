@@ -2110,6 +2110,26 @@ TEST_CASE("headless camera commands reconcile terrain LOD in both directions") {
   CHECK(final.find("\"active_leaves\":12,")==std::string::npos);
 }
 
+TEST_CASE("successive terrain camera rotations terminate with a conforming BCC cut") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-shape=perlin-terrain,set-camera=0:1:0.5,"
+      "set-camera-direction=-0.60439:0.79502:0.05149,"
+      "set-camera-direction=-0.75710:0.21744:-0.61605,"
+      "set-camera-direction=-0.88569:0.14620:-0.44065,"
+      "set-camera-direction=-0.85249:-0.16423:-0.49628,"
+      "set-camera-direction=-0.51411:-0.63082:0.58117,"
+      "set-camera-direction=-0.32578:0.67589:0.66109,"
+      "set-camera-direction=0.11090:0.98514:0.13118,"
+      "set-camera-direction=0.28419:-0.43034:0.85677,validate,stats",
+      output,errors)==0);
+  CHECK(errors.str().empty());
+  CHECK(output.str().find("\"event\":\"validation\",\"valid\":true")!=
+        std::string::npos);
+  CHECK(output.str().find("\"lod_direction\":[0.284,-0.430,0.857]")!=
+        std::string::npos);
+}
+
 TEST_CASE("headless renderer writes a deterministic comparison image") {
   const auto path = std::filesystem::temp_directory_path() / "tetra-viewer-headless-test.ppm";
   std::filesystem::remove(path);

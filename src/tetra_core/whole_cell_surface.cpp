@@ -231,7 +231,8 @@ AdaptiveResult refine_to_whole_cell_surface(TetMesh& mesh,const Sphere& sphere,
     }
     std::sort(marked.begin(),marked.end());marked.erase(std::unique(marked.begin(),marked.end()),marked.end());
     if(marked.empty()){result.reached_depth_limit|=blocked_by_depth;return result;}
-    result.refined_leaves+=marked.size();++result.iterations;mesh.refine_selected_binary(marked);
+    if(!mesh.refine_selected_binary(marked)){result.reached_depth_limit=true;return result;}
+    result.refined_leaves+=marked.size();++result.iterations;
   }
 }
 
