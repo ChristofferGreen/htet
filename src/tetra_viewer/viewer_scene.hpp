@@ -1,0 +1,557 @@
+#pragma once
+
+#include "tetra_core/implicit_surface.hpp"
+#include "tetra_core/whole_cell_surface.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string_view>
+#include <vector>
+
+namespace tetra_viewer {
+
+enum class ConnectedVertexKind : std::uint8_t {
+  hierarchy,
+  surface_intersection,
+  snapped_surface,
+  stencil_interior,
+  fixed_outer_surface,
+};
+
+enum class ConnectedCellRegion : std::uint8_t {
+  hierarchy_core,
+  boundary_connector,
+  outer_shell,
+};
+
+// Complementary element measures used by construction, optimization, and
+// scripted regression benchmarks. All normalized shape scores are one for a
+// regular tetrahedron and approach zero at degeneracy.
+struct TetrahedronQuality {
+  double signed_six_volume{};
+  double mean_ratio{};
+  double volume_surface_longest_edge{};
+  double minimum_dihedral_sine{};
+  double minimum_dihedral_degrees{};
+  double maximum_dihedral_degrees{};
+};
+
+[[nodiscard]] TetrahedronQuality evaluate_tetrahedron_quality(
+    const std::array<tetra::Vec3,4>& points);
+
+// CPU mirror of the edge fragment's pixel filter, used by deterministic
+// raster-coverage regression tests and the scripted renderer.
+[[nodiscard]] inline double screen_space_edge_coverage(double distance_pixels) {
+  return std::clamp(1.0-std::abs(distance_pixels),0.0,1.0);
+}
+
+inline constexpr double screen_space_edge_depth_epsilon=5.0e-6;
+
+[[nodiscard]] inline bool screen_space_edge_depth_passes(double edge_depth,
+                                                          double stored_depth) {
+  return edge_depth-screen_space_edge_depth_epsilon<=stored_depth;
+}
+
+// Analytic triangle-wire coverage shared by the scripted renderer and its
+// regression tests. d_barycentric_dx/dy are screen-space derivatives, so the
+// result remains stable under edge rotation, triangle scale, and perspective.
+[[nodiscard]] inline double wireframe_coverage(
+    std::array<double,3> barycentric,
+    const std::array<double,3>& d_barycentric_dx,
+    const std::array<double,3>& d_barycentric_dy,
+    int edge_mask = 7) {
+  double closest_edge_pixels=std::numeric_limits<double>::infinity();
+  for(std::size_t coordinate=0;coordinate<3;++coordinate){
+    if((edge_mask&(1<<coordinate))==0)continue;
+    const double pixel_width=std::max(
+        std::hypot(d_barycentric_dx[coordinate],d_barycentric_dy[coordinate]),1.0e-12);
+    closest_edge_pixels=std::min(closest_edge_pixels,barycentric[coordinate]/pixel_width);
+  }
+  return screen_space_edge_coverage(closest_edge_pixels);
+}
+
+enum class ShadingModel { studio_flat, dihedral_angle, normal_error, reflection_stripes };
+
+inline constexpr std::array shading_models{
+    ShadingModel::studio_flat,
+    ShadingModel::dihedral_angle,
+    ShadingModel::normal_error,
+    ShadingModel::reflection_stripes,
+};
+
+[[nodiscard]] constexpr std::string_view shading_model_name(ShadingModel model) {
+  switch (model) {
+    case ShadingModel::studio_flat: return "Studio flat";
+    case ShadingModel::dihedral_angle: return "Dihedral angle";
+    case ShadingModel::normal_error: return "Normal error";
+    case ShadingModel::reflection_stripes: return "Reflection stripes";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view shading_model_key(ShadingModel model) {
+  switch (model) {
+    case ShadingModel::studio_flat: return "studio-flat";
+    case ShadingModel::dihedral_angle: return "dihedral-angle";
+    case ShadingModel::normal_error: return "normal-error";
+    case ShadingModel::reflection_stripes: return "reflection-stripes";
+  }
+  return "unknown";
+}
+
+enum class SurfaceMethod { full_tetrahedra, marching_tetrahedra, lattice_cleaving,
+                           tetrahedral_layer, dual_contouring, surface_optimization };
+
+inline constexpr std::array surface_methods{
+    SurfaceMethod::full_tetrahedra,
+    SurfaceMethod::marching_tetrahedra,
+    SurfaceMethod::lattice_cleaving,
+    SurfaceMethod::tetrahedral_layer,
+    SurfaceMethod::dual_contouring,
+    SurfaceMethod::surface_optimization,
+};
+
+[[nodiscard]] constexpr std::string_view surface_method_name(SurfaceMethod method) {
+  switch (method) {
+    case SurfaceMethod::full_tetrahedra: return "Full-tetrahedron boundary";
+    case SurfaceMethod::marching_tetrahedra: return "Marching tetrahedra";
+    case SurfaceMethod::lattice_cleaving: return "Lattice-cleaved boundary layer";
+    case SurfaceMethod::tetrahedral_layer: return "Extracted tetrahedral layer (experimental)";
+    case SurfaceMethod::dual_contouring: return "Dual contour surface (experimental)";
+    case SurfaceMethod::surface_optimization: return "Surface optimization (TetWeave-inspired)";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view surface_method_key(SurfaceMethod method) {
+  switch (method) {
+    case SurfaceMethod::full_tetrahedra: return "full-tetrahedra";
+    case SurfaceMethod::marching_tetrahedra: return "marching-tetrahedra";
+    case SurfaceMethod::lattice_cleaving: return "lattice-cleaving";
+    case SurfaceMethod::tetrahedral_layer: return "tetrahedral-layer";
+    case SurfaceMethod::dual_contouring: return "dual-contouring";
+    case SurfaceMethod::surface_optimization: return "surface-optimization";
+  }
+  return "unknown";
+}
+
+// These methods use the same marching-tetrahedra boundary topology as the
+// adaptively cleaved volume. They can therefore own a solid cutaway boundary
+// without introducing a second, disconnected display surface.
+[[nodiscard]] constexpr bool supports_connected_volume(SurfaceMethod method) {
+  return method == SurfaceMethod::marching_tetrahedra ||
+         method == SurfaceMethod::lattice_cleaving ||
+         method == SurfaceMethod::surface_optimization;
+}
+
+// Surface extraction and volume conformance are deliberately independent:
+// the same displayed surface can be compared over either the original
+// full-cell approximation or a locally cleaved, conforming volume.
+enum class VolumeConnectionMethod {
+  hierarchy_cells,
+  fixed_surface_shell,
+  coned_prototype,
+  quality_stencils,
+  adaptive_cleaving,
+};
+
+inline constexpr tetra::SubdivisionMethod default_subdivision_method=
+    tetra::SubdivisionMethod::bcc_red_green;
+inline constexpr SurfaceMethod default_surface_method=SurfaceMethod::surface_optimization;
+inline constexpr VolumeConnectionMethod default_volume_connection_method=
+    VolumeConnectionMethod::fixed_surface_shell;
+
+inline constexpr std::array volume_connection_methods{
+    VolumeConnectionMethod::hierarchy_cells,
+    VolumeConnectionMethod::fixed_surface_shell,
+    VolumeConnectionMethod::coned_prototype,
+    VolumeConnectionMethod::quality_stencils,
+    VolumeConnectionMethod::adaptive_cleaving,
+};
+
+[[nodiscard]] constexpr bool uses_connected_volume(VolumeConnectionMethod method) {
+  return method != VolumeConnectionMethod::hierarchy_cells;
+}
+
+[[nodiscard]] constexpr std::string_view volume_connection_method_name(
+    VolumeConnectionMethod method) {
+  switch (method) {
+    case VolumeConnectionMethod::hierarchy_cells: return "Whole hierarchy cells (disconnected comparison)";
+    case VolumeConnectionMethod::fixed_surface_shell: return "Connected hierarchy core";
+    case VolumeConnectionMethod::coned_prototype: return "Centroid-coned prototype";
+    case VolumeConnectionMethod::quality_stencils: return "Quality cleaving stencils";
+    case VolumeConnectionMethod::adaptive_cleaving: return "Quality stencils + safe warping";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view volume_connection_method_key(
+    VolumeConnectionMethod method) {
+  switch (method) {
+    case VolumeConnectionMethod::hierarchy_cells: return "hierarchy-cells";
+    case VolumeConnectionMethod::fixed_surface_shell: return "fixed-surface-shell";
+    case VolumeConnectionMethod::coned_prototype: return "coned-prototype";
+    case VolumeConnectionMethod::quality_stencils: return "quality-stencils";
+    case VolumeConnectionMethod::adaptive_cleaving: return "adaptive-cleaving";
+  }
+  return "unknown";
+}
+
+// Interactive selections are authoritative. Whole hierarchy cells are a
+// useful comparison volume beneath an independently optimized surface, so do
+// not silently replace that selection when a cutaway is enabled.
+[[nodiscard]] constexpr VolumeConnectionMethod resolve_interactive_volume_connection(
+    SurfaceMethod,VolumeConnectionMethod selected,bool) {
+  return selected;
+}
+
+[[nodiscard]] constexpr bool volume_connection_available(
+    SurfaceMethod surface_method,VolumeConnectionMethod candidate) {
+  return candidate!=VolumeConnectionMethod::fixed_surface_shell||
+         surface_method==SurfaceMethod::surface_optimization;
+}
+
+enum class StencilConstruction { fixed, selected };
+
+inline constexpr std::array stencil_constructions{
+    StencilConstruction::fixed,
+    StencilConstruction::selected,
+};
+
+[[nodiscard]] constexpr std::string_view stencil_construction_name(
+    StencilConstruction construction) {
+  switch(construction){
+    case StencilConstruction::fixed: return "Fixed deterministic templates";
+    case StencilConstruction::selected: return "Quality-selected template atlas";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view stencil_construction_key(
+    StencilConstruction construction) {
+  switch(construction){
+    case StencilConstruction::fixed: return "fixed";
+    case StencilConstruction::selected: return "selected";
+  }
+  return "unknown";
+}
+
+enum class StencilSelectionObjective { surface, balanced, volume };
+
+inline constexpr std::array stencil_selection_objectives{
+    StencilSelectionObjective::surface,
+    StencilSelectionObjective::balanced,
+    StencilSelectionObjective::volume,
+};
+
+[[nodiscard]] constexpr std::string_view stencil_selection_objective_name(
+    StencilSelectionObjective objective) {
+  switch(objective){
+    case StencilSelectionObjective::surface: return "Surface fairness";
+    case StencilSelectionObjective::balanced: return "Balanced surface and volume";
+    case StencilSelectionObjective::volume: return "Tetrahedron quality";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view stencil_selection_objective_key(
+    StencilSelectionObjective objective) {
+  switch(objective){
+    case StencilSelectionObjective::surface: return "surface";
+    case StencilSelectionObjective::balanced: return "balanced";
+    case StencilSelectionObjective::volume: return "volume";
+  }
+  return "unknown";
+}
+
+enum class MaterialRule {
+  all_vertices_inside, centroid_inside, majority_vertices_inside, any_overlap,
+  variational_faithful, variational, variational_smooth
+};
+
+inline constexpr std::array material_rules{
+    MaterialRule::all_vertices_inside,
+    MaterialRule::centroid_inside,
+    MaterialRule::majority_vertices_inside,
+    MaterialRule::any_overlap,
+    MaterialRule::variational,
+    MaterialRule::variational_faithful,
+    MaterialRule::variational_smooth,
+};
+
+[[nodiscard]] constexpr std::string_view material_rule_name(MaterialRule rule) {
+  switch (rule) {
+    case MaterialRule::all_vertices_inside: return "All vertices inside";
+    case MaterialRule::centroid_inside: return "Centroid inside";
+    case MaterialRule::majority_vertices_inside: return "At least 3 vertices inside";
+    case MaterialRule::any_overlap: return "Any sphere overlap";
+    case MaterialRule::variational: return "Variational whole-cell cut";
+    case MaterialRule::variational_faithful: return "Variational - faithful";
+    case MaterialRule::variational_smooth: return "Variational - smooth";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] constexpr std::string_view material_rule_key(MaterialRule rule) {
+  switch (rule) {
+    case MaterialRule::all_vertices_inside: return "all-vertices";
+    case MaterialRule::centroid_inside: return "centroid";
+    case MaterialRule::majority_vertices_inside: return "vertex-majority";
+    case MaterialRule::any_overlap: return "any-overlap";
+    case MaterialRule::variational: return "variational";
+    case MaterialRule::variational_faithful: return "variational-faithful";
+    case MaterialRule::variational_smooth: return "variational-smooth";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr bool is_variational_material_rule(MaterialRule rule) {
+  return rule==MaterialRule::variational_faithful||rule==MaterialRule::variational||
+         rule==MaterialRule::variational_smooth;
+}
+
+[[nodiscard]] constexpr tetra::WholeCellOptions whole_cell_options(MaterialRule rule) {
+  tetra::WholeCellOptions options;
+  if(rule==MaterialRule::variational_faithful){
+    options.data_weight=40.0;options.area_weight=0.005;
+    options.distance_weight=0.2;options.normal_weight=0.1;
+  }else if(rule==MaterialRule::variational_smooth){
+    options.data_weight=2.0;options.area_weight=0.12;
+    options.distance_weight=0.8;options.normal_weight=0.5;
+  }
+  return options;
+}
+
+struct SceneVertex {
+  float position[3];
+  float colour[3];
+  // A zero normal denotes unlit line geometry.
+  float normal[3]{};
+  // Maximum adjacent-face dihedral and analytic-normal error, in degrees.
+  float diagnostics[2]{};
+  // Low three bits select the triangle edges; bit three selects wire-only
+  // volume faces. This must not share storage with diagnostic angles.
+  float edge_flags{7.0F};
+  // Triangle-local coordinates used for anti-aliased surface wireframes.
+  float barycentric[3]{};
+};
+
+struct PreparedScene {
+  std::vector<SceneVertex> triangle_vertices;
+  std::vector<SceneVertex> hierarchy_line_vertices;
+  // Reserved for non-triangle overlays. Connected exterior-surface edges are
+  // rendered from triangle barycentrics so hidden edges cannot show through.
+  std::vector<SceneVertex> surface_line_vertices;
+  // Replacement volume cells generated only for sign-changing background
+  // leaves by the lattice-cleaving experiment.
+  std::vector<std::array<tetra::Vec3, 4>> cleaved_cells;
+  // Packed derived volume produced by adaptive/unstructured mesh cleaving.
+  // Original inside cells and boundary mini-cells share these arrays; every
+  // output tetrahedron retains its authoritative hierarchy parent.
+  std::vector<tetra::Vec3> connected_volume_vertices;
+  std::vector<ConnectedVertexKind> connected_volume_vertex_kinds;
+  // Source hierarchy edge for intersection vertices; invalid/invalid for
+  // hierarchy and stencil-interior vertices.
+  std::vector<std::array<tetra::VertexId,2>> connected_volume_source_edges;
+  // Stable topological classification for vertices on the cleaved exterior.
+  // Geometry optimization moves these vertices, so their role must not be
+  // rediscovered later from a floating-point distance tolerance.
+  std::vector<std::uint8_t> connected_volume_surface_vertices;
+  std::vector<std::array<std::size_t, 4>> connected_volume_tetrahedra;
+  std::vector<tetra::TetId> connected_volume_parents;
+  std::vector<std::uint8_t> connected_volume_boundary;
+  std::vector<ConnectedCellRegion> connected_volume_regions;
+  // Classification is aligned with TetMesh::active_leaves().
+  std::vector<tetra::SurfaceRelation> relations;
+  std::vector<std::size_t> depth_counts;
+  std::size_t inside_count{};
+  std::size_t outside_count{};
+  std::size_t intersecting_count{};
+  std::size_t selected_count{};
+  std::size_t whole_cell_boundary_faces{};
+  std::size_t whole_cell_nonmanifold_edges{};
+  double whole_cell_selected_volume{};
+  double whole_cell_solve_milliseconds{};
+  std::uint64_t whole_cell_hash{};
+  std::size_t volume_internal_edges{};
+  std::size_t volume_boundary_edges{};
+  std::size_t visible_volume_face_triangles{};
+  std::size_t connected_surface_edges{};
+  std::size_t marching_tetrahedra_triangles{};
+  std::size_t cleaved_tetrahedra{};
+  double cleaved_volume{};
+  std::size_t surface_layer_tetrahedra{};
+  std::size_t dual_contour_triangles{};
+  std::size_t optimized_surface_vertices{};
+  std::size_t rejected_surface_moves{};
+  std::size_t optimized_volume_boundary_vertices{};
+  std::size_t rejected_volume_boundary_moves{};
+  std::size_t selected_stencil_cells{};
+  std::size_t alternate_stencil_cells{};
+  std::uint64_t connected_surface_hash{};
+  std::uint64_t standalone_surface_hash{};
+  std::size_t hybrid_shell_tetrahedra{};
+  std::size_t hybrid_shell_vertices{};
+  std::size_t hybrid_recovery_steps{};
+  std::size_t hybrid_failed_prisms{};
+  std::size_t hybrid_missing_provenance{};
+  std::size_t hybrid_inset_failures{};
+  std::size_t hybrid_missing_inner_faces{};
+  std::size_t hybrid_degenerate_prisms{};
+  std::size_t hybrid_unmatched_faces{};
+  bool hybrid_volume_valid{};
+  double minimum_connected_tet_quality_before{1.0};
+  double minimum_connected_tet_quality_after{1.0};
+  double minimum_connected_tet_volume_surface_quality_before{1.0};
+  double minimum_connected_tet_volume_surface_quality_after{1.0};
+  double minimum_connected_tet_dihedral_sine_before{1.0};
+  double minimum_connected_tet_dihedral_sine_after{1.0};
+  double minimum_connected_tet_dihedral_degrees_after{180.0};
+  double maximum_connected_tet_dihedral_degrees_after{};
+  double total_volume{};
+  double statistics_milliseconds{};
+  double upload_preparation_milliseconds{};
+  double mean_dihedral_degrees{};
+  double percentile95_dihedral_degrees{};
+  double percentile99_dihedral_degrees{};
+  double maximum_dihedral_degrees{};
+  double mean_normal_error_degrees{};
+  double percentile95_normal_error_degrees{};
+  double percentile99_normal_error_degrees{};
+  double maximum_normal_error_degrees{};
+  double minimum_surface_triangle_angle_degrees{180.0};
+  double maximum_surface_triangle_edge_ratio{1.0};
+};
+
+// Validates the relationship between surface and volume, rather than either
+// representation in isolation. The connected exterior must literally be the
+// unmatched boundary of the tetrahedral complex.
+struct ConnectedComplexValidation {
+  bool valid{};
+  bool positive_volumes{};
+  bool manifold_face_incidence{};
+  bool exterior_owned_by_surface{};
+  bool regions_aligned{};
+  bool graded_parent_band{};
+  std::size_t exterior_faces{};
+  std::size_t nonmanifold_faces{};
+  std::size_t unmatched_non_surface_faces{};
+  double minimum_signed_six_volume{};
+  double maximum_adjacent_edge_ratio{1.0};
+  double maximum_adjacent_parent_edge_ratio{1.0};
+  unsigned int maximum_adjacent_parent_depth_difference{};
+  ConnectedCellRegion maximum_ratio_first_region{ConnectedCellRegion::hierarchy_core};
+  ConnectedCellRegion maximum_ratio_second_region{ConnectedCellRegion::hierarchy_core};
+};
+
+[[nodiscard]] ConnectedComplexValidation validate_connected_complex(
+    const PreparedScene& scene,const tetra::TetMesh* hierarchy=nullptr);
+
+struct ProjectionStatistics {
+  std::size_t pending_count{};
+  std::size_t accepted_count{};
+};
+
+// Builds camera-independent CPU scene data. Packed 64-bit edge keys are
+// sorted once per revision; there are no per-edge node allocations.
+[[nodiscard]] PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
+                                          SurfaceMethod surface_method, MaterialRule material_rule,
+                                          bool show_faces, bool show_hierarchy_edges,
+                                          bool show_surface_edges,
+                                          bool depth_colours, bool show_volume_edges = false,
+                                          bool show_volume_faces = false,
+                                          double x_cut_position = 0.5,
+                                          VolumeConnectionMethod volume_connection_method =
+                                              VolumeConnectionMethod::quality_stencils,
+                                          StencilConstruction stencil_construction =
+                                              StencilConstruction::fixed,
+                                          StencilSelectionObjective stencil_selection_objective =
+                                              StencilSelectionObjective::balanced);
+[[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
+                                                 SurfaceMethod surface_method, MaterialRule material_rule,
+                                                 bool show_faces, bool show_edges, bool depth_colours) {
+  return prepare_scene(mesh, sphere, surface_method, material_rule,
+                       show_faces, show_edges, show_edges, depth_colours, false);
+}
+[[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
+                                                 MaterialRule material_rule, bool show_faces, bool show_edges,
+                                                 bool depth_colours) {
+  return prepare_scene(mesh, sphere, SurfaceMethod::full_tetrahedra, material_rule,
+                       show_faces, show_edges, show_edges, depth_colours, false);
+}
+
+// Projection state changes while orbiting, without invalidating geometry or
+// classification. This pass only visits intersecting leaves.
+[[nodiscard]] ProjectionStatistics prepare_projection_statistics(
+    const tetra::TetMesh& mesh, const PreparedScene& scene, const tetra::Camera& camera, double pixel_threshold);
+
+class SceneCache {
+ public:
+  // Returns true only when CPU geometry/classification was rebuilt.
+  bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
+                    SurfaceMethod surface_method, MaterialRule material_rule,
+                    bool show_faces, bool show_hierarchy_edges, bool show_surface_edges,
+                    bool depth_colours, bool show_volume_edges = false,
+                    bool show_volume_faces = false,
+                    double x_cut_position = 0.5,
+                    VolumeConnectionMethod volume_connection_method =
+                        VolumeConnectionMethod::adaptive_cleaving,
+                    StencilConstruction stencil_construction =
+                        StencilConstruction::fixed,
+                    StencilSelectionObjective stencil_selection_objective =
+                        StencilSelectionObjective::balanced);
+  bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
+                    SurfaceMethod surface_method, MaterialRule material_rule,
+                    bool show_faces, bool show_edges, bool depth_colours) {
+    return update_scene(mesh, sphere, sphere_revision, surface_method, material_rule,
+                        show_faces, show_edges, show_edges, depth_colours);
+  }
+  bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
+                    MaterialRule material_rule, bool show_faces, bool show_edges, bool depth_colours) {
+    return update_scene(mesh, sphere, sphere_revision, SurfaceMethod::full_tetrahedra, material_rule,
+                        show_faces, show_edges, show_edges, depth_colours);
+  }
+  // Returns true only when camera-dependent statistics were recomputed.
+  bool update_projection(const tetra::TetMesh& mesh, const tetra::Camera& camera, double pixel_threshold);
+
+  [[nodiscard]] const PreparedScene& scene() const noexcept { return scene_; }
+  [[nodiscard]] const ProjectionStatistics& projection() const noexcept { return projection_; }
+  [[nodiscard]] std::uint64_t scene_generation() const noexcept { return scene_generation_; }
+  [[nodiscard]] std::uint64_t projection_generation() const noexcept { return projection_generation_; }
+
+ private:
+  PreparedScene scene_;
+  PreparedScene base_scene_;
+  ProjectionStatistics projection_;
+  std::uint64_t mesh_revision_{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t sphere_revision_{std::numeric_limits<std::uint64_t>::max()};
+  tetra::SubdivisionMethod subdivision_method_{tetra::SubdivisionMethod::maubach_diamond};
+  bool has_subdivision_method_{};
+  std::uint64_t projected_scene_generation_{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t scene_generation_{};
+  std::uint64_t projection_generation_{};
+  tetra::Camera projected_camera_{};
+  double projected_pixel_threshold_{std::numeric_limits<double>::quiet_NaN()};
+  bool show_faces_{};
+  bool show_hierarchy_edges_{};
+  bool show_surface_edges_{};
+  bool show_volume_edges_{};
+  bool show_volume_faces_{};
+  double x_cut_position_{std::numeric_limits<double>::quiet_NaN()};
+  std::vector<tetra::TetId> volume_material_tetrahedra_;
+  std::vector<tetra::TetId> volume_boundary_tetrahedra_;
+  std::vector<std::array<tetra::VertexId,3>> volume_boundary_faces_;
+  bool volume_classification_valid_{};
+  bool depth_colours_{};
+  MaterialRule material_rule_{MaterialRule::all_vertices_inside};
+  SurfaceMethod surface_method_{SurfaceMethod::full_tetrahedra};
+  VolumeConnectionMethod volume_connection_method_{VolumeConnectionMethod::adaptive_cleaving};
+  StencilConstruction stencil_construction_{StencilConstruction::fixed};
+  StencilSelectionObjective stencil_selection_objective_{StencilSelectionObjective::balanced};
+};
+
+}  // namespace tetra_viewer

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+viewer_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+export DYLD_LIBRARY_PATH="/opt/homebrew/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/opt/homebrew/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json}"
+exec "$viewer_dir/tetra_viewer_bin" "$@"
