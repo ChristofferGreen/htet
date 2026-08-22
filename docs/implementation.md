@@ -200,6 +200,13 @@ transition cut is regenerated. `Place LOD camera at view` performs the same
 reconciliation after copying the current editor pose, while the headless equivalent is
 `set-camera-direction=<x:y:z>`.
 
+BCC regeneration keeps persistent red hierarchy layers separate from derived
+green transition records. Rebuilding a camera cut compacts obsolete green
+records and removes empty trailing layers; temporary addition tables never
+extend persistent storage unless they contain a real deeper cell. Repeated
+camera-pose cycles must therefore stabilize in layer, vertex, and tetrahedron
+storage after the first visit to each pose.
+
 The editor view uses laptop-friendly Maya-inspired controls: primary-button
 drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling
 dollies to its independent target without an artificial minimum distance.

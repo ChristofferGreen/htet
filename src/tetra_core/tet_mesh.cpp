@@ -713,7 +713,7 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
   // template. Refine the complete active cut for the Bey and 8T-LE baselines;
   // BCC transition cells are added by its red-green specialization.
   const auto parents = active_leaves_;
-  std::vector<std::vector<Tetrahedron>> additions(layers_.size()+3);
+  std::vector<std::vector<Tetrahedron>> additions(layers_.size());
   std::vector<TetId> children;
   children.reserve(parents.size()*8);
   reserve_midpoints(midpoint_count_+parents.size()*6);
@@ -1122,6 +1122,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests) 
     layer.split_words=std::move(retained_split_words);
     rebuild_layer_index(depth);
   }
+  while(layers_.size()>1&&layers_.back().tetrahedra.empty())layers_.pop_back();
   for(std::size_t depth=0;depth<green_additions.size();++depth)if(!green_additions[depth].empty()){
     if(layers_.size()<=depth)layers_.resize(depth+1);
     merge_layer(static_cast<unsigned int>(depth),green_additions[depth]);

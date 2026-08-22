@@ -590,6 +590,7 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
     const auto near_leaves=mesh.active_leaves();
     const auto resident_tetrahedra=mesh.tetrahedron_count();
     const auto resident_vertices=mesh.vertices().size();
+    const auto resident_layers=mesh.layers().size();
     REQUIRE(near_leaves.size()>(method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
 
     mesh.reset_active_hierarchy();
@@ -597,12 +598,14 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
           (method==tetra::SubdivisionMethod::bcc_red_green?12U:6U));
     CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
     CHECK(mesh.vertices().size()==resident_vertices);
+    CHECK(mesh.layers().size()==resident_layers);
     CHECK(mesh.has_conforming_active_faces());
 
     static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,28.0,9));
     CHECK(mesh.active_leaves()==near_leaves);
     CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
     CHECK(mesh.vertices().size()==resident_vertices);
+    CHECK(mesh.layers().size()==resident_layers);
     CHECK(mesh.has_conforming_active_faces());
 
     camera.forward={0.0,0.0,1.0};
@@ -613,6 +616,40 @@ TEST_CASE("camera LOD reset reuses packed hierarchy while refining and coarsenin
     CHECK(mesh.tetrahedron_count()==resident_tetrahedra);
     CHECK(mesh.vertices().size()==resident_vertices);
   }
+}
+
+TEST_CASE("repeated BCC terrain camera cycles stabilize packed hierarchy storage") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::Camera camera;
+  camera.position={0.0,1.0,0.5};
+  camera.forward={0.7071067811865475,-0.7071067811865475,0.0};
+  const auto refine=[&]{
+    mesh.reset_active_hierarchy();
+    static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,40.0,6));
+  };
+  const auto cycle=[&]{
+    camera.position={-1.0,0.7,0.5};
+    camera.forward={0.9912279006826347,-0.1321637200910179,0.0};
+    refine();
+    camera.position={0.0,1.0,0.5};
+    camera.forward={0.7071067811865475,-0.7071067811865475,0.0};
+    refine();
+  };
+
+  refine();
+  cycle();
+  const auto stable_leaves=mesh.active_leaves();
+  const auto stable_tetrahedra=mesh.tetrahedron_count();
+  const auto stable_vertices=mesh.vertices().size();
+  const auto stable_layers=mesh.layers().size();
+  cycle();
+  CHECK(mesh.active_leaves()==stable_leaves);
+  CHECK(mesh.tetrahedron_count()==stable_tetrahedra);
+  CHECK(mesh.vertices().size()==stable_vertices);
+  CHECK(mesh.layers().size()==stable_layers);
+  CHECK(mesh.has_conforming_active_faces());
 }
 
 TEST_CASE("octasection target refinement advances only at complete three-bit depths") {
