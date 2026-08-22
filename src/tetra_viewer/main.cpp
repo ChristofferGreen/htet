@@ -932,20 +932,72 @@ int main(int argc, char** argv)
             ImGui::SliderFloat("##X cut position", &x_cut_position, 0.0F, 1.0F, "x <= %.3f");
             ImGui::TextWrapped("Tetrahedra touching the right side are hidden; retained cells stay whole and do not protrude through the plane. Interior cells are blue and the conforming boundary layer is orange.");
         }
-        ImGui::SeparatorText("Sphere and refinement");
-        ImGui::TextDisabled("Sphere centre");
+        ImGui::SeparatorText("Implicit shape and refinement");
+        ImGui::TextDisabled("Shape");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if(ImGui::BeginCombo("##Implicit shape",tetra::implicit_shape_name(sphere.kind).data())){
+            for(const auto kind:tetra::implicit_shape_kinds){
+                const bool selected=kind==sphere.kind;
+                if(ImGui::Selectable(tetra::implicit_shape_name(kind).data(),selected)&&!selected){
+                    sphere.kind=kind;
+                    ++sphere_revision;
+                    has_adaptive_result=false;
+                    lod_reconcile_pending=true;
+                }
+                if(selected)ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Shape centre");
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::SliderFloat3("##Sphere centre", sphere_centre, 0.05f, 0.95f)) {
             sphere.centre = {sphere_centre[0], sphere_centre[1], sphere_centre[2]};
             ++sphere_revision;
             has_adaptive_result = false;
+            lod_reconcile_pending=true;
         }
-        ImGui::TextDisabled("Sphere radius");
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::SliderFloat("##Sphere radius", &sphere_radius, 0.05f, 0.48f)) {
-            sphere.radius = sphere_radius;
-            ++sphere_revision;
-            has_adaptive_result = false;
+        if(sphere.kind!=tetra::ImplicitShapeKind::perlin_terrain&&
+           sphere.kind!=tetra::ImplicitShapeKind::gyroid){
+            ImGui::TextDisabled("Shape scale");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::SliderFloat("##Shape scale", &sphere_radius, 0.05f, 0.48f)) {
+                sphere.radius = sphere_radius;
+                ++sphere_revision;
+                has_adaptive_result = false;
+                lod_reconcile_pending=true;
+            }
+        }
+        if(sphere.kind==tetra::ImplicitShapeKind::merging_spheres||
+           sphere.kind==tetra::ImplicitShapeKind::torus||
+           sphere.kind==tetra::ImplicitShapeKind::rounded_cube||
+           sphere.kind==tetra::ImplicitShapeKind::perlin_terrain||
+           sphere.kind==tetra::ImplicitShapeKind::gyroid){
+            const char* parameter_label="Shape parameter";
+            switch(sphere.kind){
+                case tetra::ImplicitShapeKind::merging_spheres:parameter_label="Sphere separation";break;
+                case tetra::ImplicitShapeKind::torus:parameter_label="Tube radius";break;
+                case tetra::ImplicitShapeKind::rounded_cube:parameter_label="Corner radius";break;
+                case tetra::ImplicitShapeKind::perlin_terrain:parameter_label="Terrain amplitude";break;
+                case tetra::ImplicitShapeKind::gyroid:parameter_label="Surface threshold";break;
+                default:break;
+            }
+            ImGui::TextDisabled("%s",parameter_label);
+            float secondary=static_cast<float>(sphere.secondary);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if(ImGui::SliderFloat("##Shape secondary",&secondary,0.01F,0.30F,"%.3f")){
+                sphere.secondary=secondary;++sphere_revision;
+                has_adaptive_result=false;lod_reconcile_pending=true;
+            }
+        }
+        if(sphere.kind==tetra::ImplicitShapeKind::perlin_terrain||
+           sphere.kind==tetra::ImplicitShapeKind::gyroid){
+            ImGui::TextDisabled("Frequency");
+            float frequency=static_cast<float>(sphere.frequency);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if(ImGui::SliderFloat("##Shape frequency",&frequency,1.0F,8.0F,"%.2f")){
+                sphere.frequency=frequency;++sphere_revision;
+                has_adaptive_result=false;lod_reconcile_pending=true;
+            }
         }
         ImGui::SeparatorText("LOD camera");
         ImGui::TextWrapped("Click the camera, then use Q/W/E for select, move, or rotate. Releasing a gizmo rebuilds the active hierarchy to match the new view.");
@@ -981,7 +1033,7 @@ int main(int argc, char** argv)
         }
         ImGui::SeparatorText("Editor view");
         ImGui::TextWrapped("Drag empty space: orbit   Shift-drag: pan   Option works too   Scroll: dolly");
-        if(ImGui::Button("Frame sphere",ImVec2(-FLT_MIN,0.0f))){
+        if(ImGui::Button("Frame shape",ImVec2(-FLT_MIN,0.0f))){
             orbit_camera.target=sphere.centre;
             orbit_camera.distance=2.5;
             orbit_camera.yaw=0.0;

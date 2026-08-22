@@ -717,6 +717,56 @@ TEST_CASE("sphere field and conservative tetrahedron classification") {
   for (const auto id : mesh.active_leaves()) CHECK(tetra::classify_tetrahedron(mesh, id, sphere) == tetra::SurfaceRelation::intersecting);
 }
 
+TEST_CASE("implicit shape catalogue produces finite sign-changing surfaces") {
+  for(const auto kind:tetra::implicit_shape_kinds){
+    CAPTURE(tetra::implicit_shape_name(kind));
+    tetra::Sphere shape;
+    shape.kind=kind;
+    bool negative=false,positive=false;
+    for(int z=0;z<=8;++z)for(int y=0;y<=8;++y)for(int x=0;x<=8;++x){
+      const tetra::Vec3 point{x/8.0,y/8.0,z/8.0};
+      const double distance=shape.signed_distance(point);
+      REQUIRE(std::isfinite(distance));
+      negative|=distance<0.0;
+      positive|=distance>0.0;
+    }
+    CHECK(negative);
+    CHECK(positive);
+    const auto projected=shape.project_to_surface({0.72,0.63,0.58});
+    CHECK(std::abs(shape.signed_distance(projected))<1.0e-6);
+    const auto normal=shape.normal(projected);
+    CHECK(std::isfinite(normal.x));
+    CHECK(std::isfinite(normal.y));
+    CHECK(std::isfinite(normal.z));
+  }
+
+  tetra::Sphere first;
+  first.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  const tetra::Sphere second=first;
+  for(int z=0;z<8;++z)for(int x=0;x<8;++x){
+    const tetra::Vec3 point{x/7.0,0.5,z/7.0};
+    CHECK(first.signed_distance(point)==second.signed_distance(point));
+  }
+}
+
+TEST_CASE("every implicit shape refines and coarsens from the LOD camera") {
+  for(const auto kind:tetra::implicit_shape_kinds){
+    CAPTURE(tetra::implicit_shape_name(kind));
+    auto mesh=tetra::TetMesh::make_unit_cube();
+    tetra::Sphere shape;
+    shape.kind=kind;
+    tetra::Camera camera;
+    static_cast<void>(tetra::refine_to_sphere(mesh,shape,camera,40.0,6));
+    CHECK(mesh.active_leaves().size()>mesh.layers().front().tetrahedra.size());
+    const auto stored=mesh.tetrahedron_count();
+    camera.forward={0.0,0.0,1.0};
+    mesh.reset_active_hierarchy();
+    static_cast<void>(tetra::refine_to_sphere(mesh,shape,camera,40.0,6));
+    CHECK(mesh.active_leaves().size()==mesh.layers().front().tetrahedra.size());
+    CHECK(mesh.tetrahedron_count()==stored);
+  }
+}
+
 TEST_CASE("surface extraction follows the refined active tetrahedral cut") {
   auto mesh = tetra::TetMesh::make_unit_cube();
   const tetra::Sphere sphere{{0.5, 0.5, 0.5}, 0.10};
@@ -1419,6 +1469,29 @@ TEST_CASE("headless surface-method selection prepares the dual contour") {
   CHECK(text.find("\"surface_layer_tetrahedra\":0") != std::string::npos);
 }
 
+TEST_CASE("every implicit shape prepares geometry with every surface method") {
+  for(const auto kind:tetra::implicit_shape_kinds){
+    CAPTURE(tetra::implicit_shape_name(kind));
+    std::string script="set-maximum-depth=6,set-volume-connection=hierarchy-cells,set-shape="+
+        std::string(tetra::implicit_shape_key(kind));
+    for(const auto method:tetra_viewer::surface_methods){
+      script+=",set-surface-method="+std::string(tetra_viewer::surface_method_key(method));
+      script+=",prepare-scene";
+    }
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script(script,output,errors)==0);
+    CHECK(errors.str().empty());
+    const auto text=output.str();
+    CHECK(text.find("\"shape\":\""+std::string(tetra::implicit_shape_key(kind))+"\"")!=
+          std::string::npos);
+    CHECK(text.find("\"triangle_vertices\":0,")==std::string::npos);
+    std::size_t scenes=0,position=0;
+    while((position=text.find("\"event\":\"scene_preparation\"",position))!=
+          std::string::npos){++scenes;++position;}
+    CHECK(scenes==tetra_viewer::surface_methods.size());
+  }
+}
+
 TEST_CASE("headless shading-model selection supports every diagnostic view") {
   for(const auto model:tetra_viewer::shading_models){
     std::ostringstream output;
@@ -2018,6 +2091,13 @@ TEST_CASE("headless viewer script rejects malformed and unknown commands") {
   errors.clear();
   CHECK(tetra_viewer::run_script("set-method=made-up", output, errors) == 2);
   CHECK(errors.str().find("unknown subdivision method") != std::string::npos);
+
+  output.str({});
+  output.clear();
+  errors.str({});
+  errors.clear();
+  CHECK(tetra_viewer::run_script("set-shape=made-up",output,errors)==2);
+  CHECK(errors.str().find("unknown implicit shape")!=std::string::npos);
 
   output.str({});
   output.clear();

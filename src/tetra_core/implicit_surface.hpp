@@ -4,11 +4,39 @@
 
 namespace tetra {
 
+enum class ImplicitShapeKind : std::uint8_t {
+  sphere,
+  merging_spheres,
+  cube,
+  capped_cylinder,
+  perlin_terrain,
+  torus,
+  cone,
+  gyroid,
+  rounded_cube,
+};
+
+inline constexpr std::array<ImplicitShapeKind,9> implicit_shape_kinds{
+    ImplicitShapeKind::sphere,ImplicitShapeKind::merging_spheres,
+    ImplicitShapeKind::cube,ImplicitShapeKind::capped_cylinder,
+    ImplicitShapeKind::perlin_terrain,ImplicitShapeKind::torus,
+    ImplicitShapeKind::cone,ImplicitShapeKind::gyroid,
+    ImplicitShapeKind::rounded_cube};
+
+[[nodiscard]] std::string_view implicit_shape_name(ImplicitShapeKind kind);
+[[nodiscard]] std::string_view implicit_shape_key(ImplicitShapeKind kind);
+
 struct Sphere {
   Vec3 centre{0.5, 0.5, 0.5};
   double radius{0.35};
+  ImplicitShapeKind kind{ImplicitShapeKind::sphere};
+  double secondary{0.12};
+  double frequency{3.0};
 
   [[nodiscard]] double signed_distance(Vec3 point) const;
+  [[nodiscard]] Vec3 normal(Vec3 point) const;
+  [[nodiscard]] Vec3 edge_intersection(Vec3 first,Vec3 second) const;
+  [[nodiscard]] Vec3 project_to_surface(Vec3 point) const;
 };
 
 struct Camera {
@@ -35,8 +63,8 @@ struct Triangle { Vec3 a; Vec3 b; Vec3 c; };
 enum class SurfaceRelation { inside, outside, intersecting };
 
 // Conservative classification: a tetrahedron may be reported as intersecting
-// even when it merely contains the sphere, but an actual intersection is never
-// reported as inside or outside.
+// when the field cannot prove a uniform sign, but an actual implicit-surface
+// intersection is never reported as inside or outside.
 [[nodiscard]] SurfaceRelation classify_tetrahedron(const TetMesh& mesh, TetId tet, const Sphere& sphere);
 
 }  // namespace tetra

@@ -39,11 +39,11 @@ Initial CMake targets:
 
 Viewer workflows must be reproducible without opening or interacting with a
 window. `tetra_viewer --script "command[,command...]"` runs before GLFW or
-Vulkan initialization, starts from the viewer's default sphere experiment,
+Vulkan initialization, starts from the viewer's default implicit-shape experiment,
 and emits one JSON object per event. Supported operations include repeated
 global refinement, adaptive refinement to convergence, invariant validation,
-statistics, and changes to the sphere radius, pixel threshold, and maximum
-depth. `tetra_viewer --script-help` is the canonical command reference.
+statistics, shape selection, shape scale, pixel threshold, and maximum depth.
+`tetra_viewer --script-help` is the canonical command reference.
 
 This path is the default way to benchmark refinement and validate scripted
 state transitions. `benchmark-refinement=N` records every increasing mesh
@@ -54,7 +54,7 @@ Interactive inspection remains useful for rendering and
 interaction work, but it is not required to exercise mesh operations.
 
 The floating controls include a subdivision-method dropdown backed by the
-implemented-method registry. Selecting a method rebuilds the same sphere
+implemented-method registry. Selecting a method rebuilds the same implicit-shape
 experiment with that hierarchy while preserving the comparison inputs. The
 headless JSON output records the stable method key so visual and performance
 results can be reproduced without relying on UI state.
@@ -139,6 +139,7 @@ when further refinement is requested.
 `set-method=<key>` selects any registered hierarchy in a headless script.
 `set-camera=<x:y:z>` sets the headless LOD camera origin, and
 `set-camera-direction=<x:y:z>` sets its orientation.
+`set-shape=<key>` selects the same implicit field as the interactive dropdown.
 `render-image=<path.ppm>` writes the selected surface method through a
 deterministic CPU depth buffer for visual comparisons.
 
@@ -201,7 +202,7 @@ The editor view uses laptop-friendly Maya-inspired controls: primary-button
 drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling
 dollies to its independent target without an artificial minimum distance.
 Holding Shift reduces gizmo and scroll manipulation to 15 percent for precision
-work. `Frame sphere` restores a centred overview. A one-
+work. `Frame shape` restores a centred overview. A one-
 millimetre near plane permits close inspection and travel inside the mesh.
 Hierarchy edges default to hidden so the initial view emphasizes the evaluated
 surface; surface edges remain independently enabled.
@@ -666,6 +667,25 @@ potentially intersected leaf meets a view-dependent pixel-size threshold.
   stack full-width labelled controls, use two-column action and visibility
   grids, wrap long status text, collapse detailed statistics on demand, and
   size its height to content up to the available viewport height.
+- [x] Generalize the implicit target from a sphere to a selectable catalogue:
+  sphere, smoothly merging spheres, cube, capped cylinder, deterministic
+  four-octave terrain, torus, cone, gyroid, and rounded cube. One field API now
+  supplies signed distance, numerical normal, edge intersection, and surface
+  projection to refinement, marching tetrahedra, dual contouring, lattice
+  cleaving, surface optimization, connected-volume construction, whole-cell
+  selection, and diagnostic shading. The inspector exposes contextual centre,
+  scale, shape-parameter, amplitude, and frequency controls; scripts use
+  `set-shape=<key>` and report the selected key.
+- [x] Keep shape changes responsive and camera-driven. Convex negative regions
+  classify wholly inside immediately; other same-sign cells use a conservative
+  centre-radius field bound, including explicit slope bounds for terrain and
+  gyroid. Shape or parameter edits reset only the active hierarchy cut and then
+  refine from the current movable LOD camera, retaining packed layers and
+  midpoint storage for reuse. Release tests cover refine/coarsen behaviour for
+  every shape and scene construction for all 54 shape/surface combinations.
+  Default-depth release renders with cutaway disabled were visually checked for
+  correct sharp features, caps, holes, merging lobes, terrain relief, periodic
+  structure, and smooth rounded forms.
 
 The dual contour remains a display surface. Making its independent topology
 volume-conforming would require a separate surface-insertion construction.

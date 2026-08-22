@@ -265,7 +265,7 @@ void annotate_surface_diagnostics(PreparedScene& scene, const tetra::Sphere& sph
     const tetra::Vec3 centre{(first.position[0]+second.position[0]+third.position[0])/3.0,
                              (first.position[1]+second.position[1]+third.position[1])/3.0,
                              (first.position[2]+second.position[2]+third.position[2])/3.0};
-    const auto analytic=normalize(centre-sphere.centre);
+    const auto analytic=sphere.normal(centre);
     normal_error_degrees[triangle]=static_cast<float>(
         std::acos(std::clamp(std::abs(dot(normals[triangle],analytic)),0.0,1.0))*radians_to_degrees);
     const std::array<tetra::Vec3,3> triangle_points{{
@@ -531,21 +531,15 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   crossings.reserve(crossed_keys.size());
   scene.connected_volume_vertices.reserve(source_vertices.size()+crossed_keys.size()+mesh.active_leaves().size());
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
-  const auto project_to_surface=[&](tetra::Vec3 point){
-    const auto radial=point-sphere.centre;
-    const double length=std::sqrt(dot(radial,radial));
-    return length>1.0e-15?sphere.centre+radial*(sphere.radius/length):point;
-  };
+  const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
   for (const auto key : crossed_keys) {
     const auto endpoints = unpack_edge(key);
     const auto first = source_vertices[endpoints[0]], second = source_vertices[endpoints[1]];
-    const auto offset = first-sphere.centre, direction = second-first;
-    const double a=dot(direction,direction), b=2.0*dot(offset,direction);
-    const double c=dot(offset,offset)-sphere.radius*sphere.radius;
-    const double discriminant=std::max(0.0,b*b-4.0*a*c);
-    const double root0=(-b-std::sqrt(discriminant))/(2.0*a);
-    const double root1=(-b+std::sqrt(discriminant))/(2.0*a);
-    const double fraction=root0>=0.0&&root0<=1.0?root0:root1;
+    const auto intersection=sphere.edge_intersection(first,second);
+    const auto direction=second-first;
+    const double direction_squared=dot(direction,direction);
+    const double fraction=direction_squared>1.0e-30?
+        dot(intersection-first,direction)/direction_squared:0.0;
     std::size_t vertex{};
     constexpr double snap_epsilon=1.0e-10;
     const auto warpable=[&](tetra::VertexId endpoint){
@@ -565,7 +559,7 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     else if (fraction >= 1.0-snap_epsilon) vertex=endpoints[1];
     else {
       vertex=scene.connected_volume_vertices.size();
-      scene.connected_volume_vertices.push_back(first+direction*fraction);
+      scene.connected_volume_vertices.push_back(intersection);
       scene.connected_volume_vertex_kinds.push_back(ConnectedVertexKind::surface_intersection);
       scene.connected_volume_source_edges.push_back({{endpoints[0],endpoints[1]}});
       scene.connected_volume_surface_vertices.push_back(1U);
@@ -972,7 +966,7 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
       const auto normal=face_normal(points[0],points[1],points[2]);
       const double area_squared=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
       const auto centre=(points[0]+points[1]+points[2])/3.0;
-      const auto outward=centre-sphere.centre;
+      const auto outward=sphere.normal(centre);
       if(area_squared<1.0e-24||normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<=0.0)
         return false;
       fairness_before+=triangle_fairness(
@@ -981,11 +975,7 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
     }
     return fairness_after<=fairness_before+1.0e-12;
   };
-  const auto project_to_surface=[&](tetra::Vec3 point){
-    const auto radial=point-sphere.centre;
-    const double length=std::sqrt(radial.x*radial.x+radial.y*radial.y+radial.z*radial.z);
-    return length>1.0e-15?sphere.centre+radial*(sphere.radius/length):point;
-  };
+  const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
   constexpr std::size_t iterations=5,line_search_steps=10;
   constexpr double relaxation=0.35;
   for(std::size_t iteration=0;iteration<iterations;++iteration){
@@ -1088,14 +1078,11 @@ void append_tetrahedral_layer(PreparedScene& scene, const tetra::TetMesh& mesh, 
 
   const auto outer_count = static_cast<tetra::VertexId>(vertices.size());
   vertices.reserve(vertices.size()*2);
-  // A deliberately thin first prototype. The inner copy is radial for the
-  // analytic sphere; later methods can replace this with a general offset.
-  const double inner_radius = std::max(sphere.radius*0.90, sphere.radius-0.02);
+  // Offset the first layer along the implicit field normal so it works for
+  // curved, sharp, periodic, and height-field surfaces alike.
+  const double thickness=std::min(0.02,sphere.radius*0.10);
   for (tetra::VertexId id = 0; id < outer_count; ++id) {
-    const auto offset = vertices[id]-sphere.centre;
-    vertices.push_back({sphere.centre.x+offset.x*inner_radius/sphere.radius,
-                        sphere.centre.y+offset.y*inner_radius/sphere.radius,
-                        sphere.centre.z+offset.z*inner_radius/sphere.radius});
+    vertices.push_back(vertices[id]-sphere.normal(vertices[id])*thickness);
   }
 
   std::vector<std::array<tetra::VertexId, 4>> tetrahedra;
@@ -1160,7 +1147,7 @@ void append_dual_contour(PreparedScene& scene, const tetra::TetMesh& mesh, const
     const tetra::Vec3 centre{(triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
                              (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
                              (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
-    const auto outward = centre-sphere.centre;
+    const auto outward = sphere.normal(centre);
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
@@ -1182,7 +1169,7 @@ void append_marching_tetrahedra(PreparedScene& scene, const tetra::TetMesh& mesh
     const tetra::Vec3 centre{(triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
                              (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
                              (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
-    const auto outward = centre-sphere.centre;
+    const auto outward = sphere.normal(centre);
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
@@ -1201,18 +1188,8 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
   // triangular prisms with deterministic three-tetrahedron decompositions.
   // Fully inside/outside leaves remain owned by the background hierarchy.
   scene.cleaved_cells.reserve(mesh.active_leaves().size()*2);
-  const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
-  const auto crossing=[&sphere,&dot](tetra::Vec3 inside,tetra::Vec3 outside){
-    const auto offset=inside-sphere.centre;
-    const auto direction=outside-inside;
-    const double a=dot(direction,direction);
-    const double b=2.0*dot(offset,direction);
-    const double c=dot(offset,offset)-sphere.radius*sphere.radius;
-    const double discriminant=std::max(0.0,b*b-4.0*a*c);
-    const double first=(-b-std::sqrt(discriminant))/(2.0*a);
-    const double second=(-b+std::sqrt(discriminant))/(2.0*a);
-    const double t=first>=0.0&&first<=1.0?first:second;
-    return inside+direction*t;
+  const auto crossing=[&sphere](tetra::Vec3 inside,tetra::Vec3 outside){
+    return sphere.edge_intersection(inside,outside);
   };
   const auto add_cell=[&scene](std::array<tetra::Vec3,4> cell){
     double volume=signed_six_volume(cell[0],cell[1],cell[2],cell[3]);
@@ -1257,7 +1234,7 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
     const tetra::Vec3 centre{(triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
                              (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
                              (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
-    const auto outward = centre-sphere.centre;
+    const auto outward = sphere.normal(centre);
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
@@ -1309,7 +1286,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
             topology_source->connected_volume_source_edges[ids[1]],
             topology_source->connected_volume_source_edges[ids[2]]}};
         const auto normal=face_normal(a,b,c),centre=(a+b+c)/3.0;
-        const auto outward=centre-sphere.centre;
+        const auto outward=sphere.normal(centre);
         if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0){
           std::swap(b,c);std::swap(source_edges[1],source_edges[2]);
         }
@@ -1340,7 +1317,6 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<CrossingProvenance> provenance;
   provenance.reserve(mesh.active_leaves().size()*2);
-  const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
   for(const auto leaf:mesh.active_leaves()){
     const auto& tet=mesh.tetrahedron(leaf).vertices;
     for(const auto local:local_edges){
@@ -1348,15 +1324,8 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
       const auto first=mesh.vertices()[edge[0]],second=mesh.vertices()[edge[1]];
       if((sphere.signed_distance(first)<=0.0)==(sphere.signed_distance(second)<=0.0))continue;
       if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
-      const auto origin=mesh.vertices()[edge[0]],direction=mesh.vertices()[edge[1]]-origin;
-      const auto offset=origin-sphere.centre;
-      const double a=dot(direction,direction),b=2.0*dot(offset,direction);
-      const double c=dot(offset,offset)-sphere.radius*sphere.radius;
-      const double discriminant=std::max(0.0,b*b-4.0*a*c);
-      const double root0=(-b-std::sqrt(discriminant))/(2.0*a);
-      const double root1=(-b+std::sqrt(discriminant))/(2.0*a);
-      const double fraction=root0>=0.0&&root0<=1.0?root0:root1;
-      provenance.push_back({point_key(origin+direction*fraction),edge});
+      provenance.push_back({point_key(sphere.edge_intersection(
+          mesh.vertices()[edge[0]],mesh.vertices()[edge[1]])),edge});
     }
   }
   std::sort(provenance.begin(),provenance.end(),[](const auto& a,const auto& b){
@@ -1401,7 +1370,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
   for(auto& triangle:triangles){
     const auto normal=face_normal(positions[triangle[0]],positions[triangle[1]],positions[triangle[2]]);
     const auto centre=(positions[triangle[0]]+positions[triangle[1]]+positions[triangle[2]])/3.0;
-    const auto outward=centre-sphere.centre;
+    const auto outward=sphere.normal(centre);
     if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)std::swap(triangle[1],triangle[2]);
   }
   std::vector<std::array<std::size_t,2>> edges;
@@ -1450,7 +1419,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
       const auto normal=face_normal(points[0],points[1],points[2]);
       const double area2=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
       const auto centre=(points[0]+points[1]+points[2])/3.0;
-      const auto outward=centre-sphere.centre;
+      const auto outward=sphere.normal(centre);
       if(area2<1e-20||normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<=1e-14)return false;
     }
     return fairness_after<=fairness_before+1.0e-12;
@@ -1467,20 +1436,12 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
       average=average/static_cast<double>(degree);
       const auto original=positions[vertex];
       auto target=original*(1.0-relaxation)+average*relaxation;
-      const auto radial=target-sphere.centre;
-      const double length=std::sqrt(radial.x*radial.x+radial.y*radial.y+radial.z*radial.z);
-      if(length<=1e-15){++scene.rejected_surface_moves;continue;}
-      target=sphere.centre+radial*(sphere.radius/length);
+      target=sphere.project_to_surface(target);
       bool accepted=false;
       double step=1.0;
       for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
         auto candidate=original*(1.0-step)+target*step;
-        const auto candidate_radial=candidate-sphere.centre;
-        const double candidate_length=std::sqrt(
-            candidate_radial.x*candidate_radial.x+candidate_radial.y*candidate_radial.y+
-            candidate_radial.z*candidate_radial.z);
-        if(candidate_length<=1.0e-15)continue;
-        candidate=sphere.centre+candidate_radial*(sphere.radius/candidate_length);
+        candidate=sphere.project_to_surface(candidate);
         if(valid_move(vertex,candidate)){
           positions[vertex]=candidate;
           accepted=true;

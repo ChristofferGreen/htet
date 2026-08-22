@@ -168,7 +168,8 @@ void write_command_event(std::ostream& output, std::string_view command, double 
 void write_stats(std::ostream& output, const ScriptState& state) {
   output << "{\"event\":\"stats\",";
   write_mesh_fields(output, state);
-  output << ",\"sphere_radius\":" << state.sphere.radius
+  output << ",\"shape_scale\":" << state.sphere.radius
+         << ",\"shape\":\"" << tetra::implicit_shape_key(state.sphere.kind) << '"'
          << ",\"pixel_threshold\":" << state.pixel_threshold
          << ",\"maximum_depth\":" << state.maximum_depth
          << ",\"layer_sizes\":[";
@@ -425,9 +426,10 @@ void print_script_help(std::ostream& output) {
             "  set-solid-volume=<on|off>   Fill exposed faces of whole retained tetrahedra\n"
             "  set-x-cut=<off|0..1>        Hide geometry to the right of an X cut plane\n"
             "  set-material-rule=<key>     Select a registered full-tetrahedron material rule\n"
+            "  set-shape=<key>             Select sphere, merging-spheres, cube, capped-cylinder, perlin-terrain, torus, cone, gyroid, or rounded-cube\n"
             "  set-camera=<x:y:z>          Set the camera/LOD origin position\n"
             "  set-camera-direction=<x:y:z> Set the LOD camera view direction\n"
-            "  set-radius=<0.001..1.0>     Change the implicit sphere radius\n"
+            "  set-radius=<0.001..1.0>     Change the implicit shape scale\n"
             "  set-pixel-threshold=<value> Change the projected-size threshold\n"
             "  set-maximum-depth=<0..32>   Change the adaptive iteration limit\n"
             "\n"
@@ -459,6 +461,24 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
   output << "}\n";
 
   for (const auto command : commands) {
+    constexpr std::string_view shape_prefix="set-shape=";
+    if(command.starts_with(shape_prefix)){
+      const auto key=trim(command.substr(shape_prefix.size()));
+      const auto found=std::find_if(tetra::implicit_shape_kinds.begin(),
+          tetra::implicit_shape_kinds.end(),[&](auto kind){return tetra::implicit_shape_key(kind)==key;});
+      if(found==tetra::implicit_shape_kinds.end()){
+        write_error(errors,"unknown implicit shape",command);return 2;
+      }
+      state.sphere.kind=*found;
+      state.mesh.reset_active_hierarchy();
+      const auto start=Clock::now();
+      const auto result=refine_to_current_surface(state);
+      output<<"{\"event\":\"shape\",\"shape\":\""<<key
+            <<"\",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+            <<milliseconds_since(start)<<",\"adaptive_iterations\":"<<result.iterations<<',';
+      write_mesh_fields(output,state);output<<"}\n";
+      continue;
+    }
     constexpr std::string_view camera_prefix = "set-camera=";
     if (command.starts_with(camera_prefix)) {
       tetra::Vec3 position{};

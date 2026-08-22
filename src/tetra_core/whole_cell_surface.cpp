@@ -129,8 +129,8 @@ WholeCellCut build_whole_cell_cut(const TetMesh& mesh,const Sphere& sphere,const
     for(std::size_t begin=0;begin<faces.size();){std::size_t end=begin+1;while(end<faces.size()&&faces[end].key==faces[begin].key)++end;
       if(end-begin==2){const auto& f=faces[begin];const Vec3 a=mesh.vertices()[f.vertices[0]],b=mesh.vertices()[f.vertices[1]],c=mesh.vertices()[f.vertices[2]];
         const Vec3 n=cross(b-a,c-a);const double twice_area=length(n);const Vec3 centre=(a+b+c)/3.0;
-        const Vec3 radial=centre-sphere.centre;const double radial_length=length(radial);
-        const double alignment=radial_length>1.0e-12&&twice_area>1.0e-12?std::abs(dot(n/twice_area,radial/radial_length)):0.0;
+        const Vec3 field_normal=sphere.normal(centre);
+        const double alignment=twice_area>1.0e-12?std::abs(dot(n/twice_area,field_normal)):0.0;
         const double scale=0.5*(scales[faces[begin].leaf]+scales[faces[begin+1].leaf]);
         const double distance=std::abs(sphere.signed_distance(centre))/std::max(scale,1.0e-12);
         const double weight=0.5*twice_area*(options.area_weight+options.distance_weight*distance*distance+options.normal_weight*(1.0-alignment)*(1.0-alignment));

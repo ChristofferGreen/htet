@@ -66,35 +66,256 @@ bool sphere_intersects_tetrahedron(const TetMesh& mesh, const Tetrahedron& tet, 
   return false;
 }
 
+double smooth_min(double first,double second,double width){
+  const double h=std::clamp(0.5+0.5*(second-first)/width,0.0,1.0);
+  return second*(1.0-h)+first*h-width*h*(1.0-h);
+}
+
+double gradient_noise(double x,double y){
+  const auto hash=[](int ix,int iy){
+    std::uint32_t value=static_cast<std::uint32_t>(ix)*0x8da6b343U^
+                        static_cast<std::uint32_t>(iy)*0xd8163841U;
+    value^=value>>13U;value*=0x85ebca6bU;value^=value>>16U;
+    return value;
+  };
+  const auto contribution=[&](int ix,int iy,double px,double py){
+    const double angle=(hash(ix,iy)&65535U)*(2.0*std::acos(-1.0)/65536.0);
+    return std::cos(angle)*px+std::sin(angle)*py;
+  };
+  const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
+  const double fx=x-ix,fy=y-iy;
+  const auto fade=[](double value){return value*value*value*(value*(value*6.0-15.0)+10.0);};
+  const double u=fade(fx),v=fade(fy);
+  const double a=contribution(ix,iy,fx,fy)*(1.0-u)+contribution(ix+1,iy,fx-1.0,fy)*u;
+  const double b=contribution(ix,iy+1,fx,fy-1.0)*(1.0-u)+contribution(ix+1,iy+1,fx-1.0,fy-1.0)*u;
+  return a*(1.0-v)+b*v;
+}
+
+bool has_convex_negative_region(ImplicitShapeKind kind) {
+  switch (kind) {
+    case ImplicitShapeKind::sphere:
+    case ImplicitShapeKind::cube:
+    case ImplicitShapeKind::capped_cylinder:
+    case ImplicitShapeKind::cone:
+    case ImplicitShapeKind::rounded_cube:
+      return true;
+    case ImplicitShapeKind::merging_spheres:
+    case ImplicitShapeKind::perlin_terrain:
+    case ImplicitShapeKind::torus:
+    case ImplicitShapeKind::gyroid:
+      return false;
+  }
+  return false;
+}
+
+double field_lipschitz_bound(const Sphere& shape) {
+  switch (shape.kind) {
+    case ImplicitShapeKind::perlin_terrain:
+      // Four octaves halve their amplitude while doubling frequency, so each
+      // contributes the same slope.  Eight is a conservative derivative
+      // bound for the smooth gradient-noise interpolation used above.
+      return std::sqrt(1.0 + std::pow(8.0 * shape.secondary * shape.frequency, 2.0));
+    case ImplicitShapeKind::gyroid:
+      // Each normalized partial derivative is the sum of two unit-bounded
+      // trigonometric terms.
+      return 2.0 * std::sqrt(3.0);
+    case ImplicitShapeKind::cone:
+      return 1.1;
+    case ImplicitShapeKind::sphere:
+    case ImplicitShapeKind::merging_spheres:
+    case ImplicitShapeKind::cube:
+    case ImplicitShapeKind::capped_cylinder:
+    case ImplicitShapeKind::torus:
+    case ImplicitShapeKind::rounded_cube:
+      return 1.0;
+  }
+  return 1.0;
+}
+
 }  // namespace
+
+std::string_view implicit_shape_name(ImplicitShapeKind kind){
+  switch(kind){
+    case ImplicitShapeKind::sphere:return "Sphere";
+    case ImplicitShapeKind::merging_spheres:return "Merging spheres";
+    case ImplicitShapeKind::cube:return "Cube";
+    case ImplicitShapeKind::capped_cylinder:return "Capped cylinder";
+    case ImplicitShapeKind::perlin_terrain:return "Perlin terrain";
+    case ImplicitShapeKind::torus:return "Torus";
+    case ImplicitShapeKind::cone:return "Cone";
+    case ImplicitShapeKind::gyroid:return "Gyroid";
+    case ImplicitShapeKind::rounded_cube:return "Rounded cube";
+  }
+  return "Unknown";
+}
+
+std::string_view implicit_shape_key(ImplicitShapeKind kind){
+  switch(kind){
+    case ImplicitShapeKind::sphere:return "sphere";
+    case ImplicitShapeKind::merging_spheres:return "merging-spheres";
+    case ImplicitShapeKind::cube:return "cube";
+    case ImplicitShapeKind::capped_cylinder:return "capped-cylinder";
+    case ImplicitShapeKind::perlin_terrain:return "perlin-terrain";
+    case ImplicitShapeKind::torus:return "torus";
+    case ImplicitShapeKind::cone:return "cone";
+    case ImplicitShapeKind::gyroid:return "gyroid";
+    case ImplicitShapeKind::rounded_cube:return "rounded-cube";
+  }
+  return "unknown";
+}
 
 double Sphere::signed_distance(Vec3 point) const {
   const double x = point.x - centre.x;
   const double y = point.y - centre.y;
   const double z = point.z - centre.z;
-  return std::sqrt(x * x + y * y + z * z) - radius;
+  const double radial=std::sqrt(x*x+z*z);
+  switch(kind){
+    case ImplicitShapeKind::sphere:return std::sqrt(x*x+y*y+z*z)-radius;
+    case ImplicitShapeKind::merging_spheres:{
+      const double separation=secondary;
+      const auto distance=[&](double offset){
+        const double dx=x-offset;return std::sqrt(dx*dx+y*y+z*z)-radius*0.78;};
+      return smooth_min(distance(-separation),distance(separation),radius*0.32);
+    }
+    case ImplicitShapeKind::cube:
+    case ImplicitShapeKind::rounded_cube:{
+      const double rounding=kind==ImplicitShapeKind::rounded_cube?
+          std::min(secondary,radius*0.95):0.0;
+      const double half=radius-rounding;
+      const double qx=std::abs(x)-half,qy=std::abs(y)-half,qz=std::abs(z)-half;
+      const double outside=std::sqrt(std::max(qx,0.0)*std::max(qx,0.0)+
+          std::max(qy,0.0)*std::max(qy,0.0)+std::max(qz,0.0)*std::max(qz,0.0));
+      return outside+std::min(std::max({qx,qy,qz}),0.0)-rounding;
+    }
+    case ImplicitShapeKind::capped_cylinder:{
+      const double dx=radial-radius*0.72,dy=std::abs(y)-radius;
+      return std::min(std::max(dx,dy),0.0)+
+          std::sqrt(std::max(dx,0.0)*std::max(dx,0.0)+std::max(dy,0.0)*std::max(dy,0.0));
+    }
+    case ImplicitShapeKind::perlin_terrain:{
+      double height=centre.y;
+      double amplitude=secondary,scale=frequency,total=0.0;
+      for(int octave=0;octave<4;++octave){
+        total+=gradient_noise((point.x-centre.x)*scale,
+                              (point.z-centre.z)*scale)*amplitude;
+        scale*=2.0;amplitude*=0.5;
+      }
+      return point.y-(height+total);
+    }
+    case ImplicitShapeKind::torus:{
+      const double q=radial-radius*0.68;
+      return std::sqrt(q*q+y*y)-secondary;
+    }
+    case ImplicitShapeKind::cone:{
+      const double half=radius;
+      const double normalized=std::clamp((y+half)/(2.0*half),0.0,1.0);
+      const double side=radial-radius*0.78*(1.0-normalized);
+      return std::max(side,std::abs(y)-half);
+    }
+    case ImplicitShapeKind::gyroid:{
+      const double k=2.0*std::acos(-1.0)*frequency;
+      const double gx=point.x-centre.x,gy=point.y-centre.y,gz=point.z-centre.z;
+      return (std::sin(k*gx)*std::cos(k*gy)+std::sin(k*gy)*std::cos(k*gz)+
+              std::sin(k*gz)*std::cos(k*gx)-secondary)/k;
+    }
+  }
+  return 0.0;
+}
+
+Vec3 Sphere::normal(Vec3 point) const {
+  if(kind==ImplicitShapeKind::sphere){
+    const Vec3 offset=point-centre;
+    const double length=std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+    return length>1.0e-15?offset/length:Vec3{0.0,1.0,0.0};
+  }
+  constexpr double epsilon=1.0e-5;
+  Vec3 gradient{signed_distance({point.x+epsilon,point.y,point.z})-
+                    signed_distance({point.x-epsilon,point.y,point.z}),
+                signed_distance({point.x,point.y+epsilon,point.z})-
+                    signed_distance({point.x,point.y-epsilon,point.z}),
+                signed_distance({point.x,point.y,point.z+epsilon})-
+                    signed_distance({point.x,point.y,point.z-epsilon})};
+  const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+gradient.z*gradient.z);
+  return length>1.0e-15?gradient/length:Vec3{0.0,1.0,0.0};
+}
+
+Vec3 Sphere::edge_intersection(Vec3 first,Vec3 second) const {
+  if(kind==ImplicitShapeKind::sphere){
+    const Vec3 offset=first-centre,direction=second-first;
+    const double a=direction.x*direction.x+direction.y*direction.y+direction.z*direction.z;
+    const double b=2.0*(offset.x*direction.x+offset.y*direction.y+offset.z*direction.z);
+    const double c=offset.x*offset.x+offset.y*offset.y+offset.z*offset.z-radius*radius;
+    const double discriminant=std::max(0.0,b*b-4.0*a*c);
+    const double first_root=(-b-std::sqrt(discriminant))/(2.0*a);
+    const double second_root=(-b+std::sqrt(discriminant))/(2.0*a);
+    const double t=first_root>=0.0&&first_root<=1.0?first_root:second_root;
+    return first+direction*t;
+  }
+  double first_distance=signed_distance(first);
+  for(int iteration=0;iteration<40;++iteration){
+    const Vec3 middle=(first+second)/2.0;
+    const double middle_distance=signed_distance(middle);
+    if((first_distance<=0.0)==(middle_distance<=0.0)){
+      first=middle;first_distance=middle_distance;
+    }else{second=middle;}
+  }
+  return (first+second)/2.0;
+}
+
+Vec3 Sphere::project_to_surface(Vec3 point) const {
+  if(kind==ImplicitShapeKind::sphere){
+    const Vec3 offset=point-centre;
+    const double length=std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+    return length>1.0e-15?centre+offset*(radius/length):point;
+  }
+  for(int iteration=0;iteration<12;++iteration){
+    const double distance=signed_distance(point);
+    if(std::abs(distance)<1.0e-10)break;
+    point=point-normal(point)*distance;
+  }
+  return point;
 }
 
 SurfaceRelation classify_tetrahedron(const TetMesh& mesh, TetId tet, const Sphere& sphere) {
   const auto& vertices = mesh.tetrahedron(tet).vertices;
   bool has_negative = false;
   bool has_positive = false;
+  Vec3 centre{};
   for (const VertexId vertex : vertices) {
-    const double distance = sphere.signed_distance(mesh.vertices().at(vertex));
+    const Vec3 point=mesh.vertices().at(vertex);
+    const double distance = sphere.signed_distance(point);
+    if (std::abs(distance) <= 1.0e-12) return SurfaceRelation::intersecting;
     has_negative |= distance < 0.0;
     has_positive |= distance > 0.0;
+    centre=centre+point;
   }
-  // A sphere is convex, so a tetrahedron whose four vertices are inside is
-  // wholly inside as well.  Do this before the conservative overlap test:
-  // the latter also detects the sphere centre inside a tet and would wrongly
-  // turn an interior cell back into a boundary cell.
-  if (!has_positive) return SurfaceRelation::inside;
   if (has_negative && has_positive) return SurfaceRelation::intersecting;
+  if (has_negative && has_convex_negative_region(sphere.kind)) return SurfaceRelation::inside;
+  if (sphere.kind==ImplicitShapeKind::sphere) {
   // A same-sign test misses both a sphere contained by a tetrahedron and a
   // sphere that merely clips one of its faces.  Use the closest point on the
   // tetrahedron boundary for the conservative sphere-versus-tetrahedron test.
-  if (sphere_intersects_tetrahedron(mesh, mesh.tetrahedron(tet), sphere)) return SurfaceRelation::intersecting;
-  return SurfaceRelation::outside;
+    if (sphere_intersects_tetrahedron(mesh, mesh.tetrahedron(tet), sphere)) return SurfaceRelation::intersecting;
+    return SurfaceRelation::outside;
+  }
+
+  // A sign test at only the vertices can miss a feature enclosed by or passing
+  // through a tetrahedron.  The field's Lipschitz bound and a bounding sphere
+  // around the cell prove when its sign cannot change anywhere in the cell.
+  // This is substantially tighter than comparing every vertex with the
+  // longest edge and avoids refining the whole interior of convex shapes.
+  centre=centre/4.0;
+  double radius_squared=0.0;
+  for(const VertexId vertex:vertices){
+    const Vec3 delta=mesh.vertices().at(vertex)-centre;
+    radius_squared=std::max(radius_squared,
+        delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+  }
+  const double centre_distance=sphere.signed_distance(centre);
+  const double uncertainty=field_lipschitz_bound(sphere)*std::sqrt(radius_squared);
+  if(centre_distance>uncertainty)return SurfaceRelation::outside;
+  if(centre_distance<-uncertainty)return SurfaceRelation::inside;
+  return SurfaceRelation::intersecting;
 }
 
 double projected_tetrahedron_diameter(const TetMesh& mesh, TetId tet, const Camera& camera) {
@@ -180,29 +401,13 @@ std::vector<Triangle> extract_isosurface(const TetMesh& mesh, const Sphere& sphe
     for (const auto& edge : edges) {
       const std::size_t first = static_cast<std::size_t>(edge[0]), second = static_cast<std::size_t>(edge[1]);
       if ((distances[first] < 0.0) == (distances[second] < 0.0)) continue;
-      // The field is an analytic sphere: solve the edge/sphere intersection
-      // exactly instead of interpolating signed distances linearly.
-      const Vec3 offset = points[first] - sphere.centre;
-      const Vec3 direction = points[second] - points[first];
-      const double qa = dot(direction, direction);
-      const double qb = 2.0 * dot(offset, direction);
-      const double qc = dot(offset, offset) - sphere.radius * sphere.radius;
-      const double discriminant = std::max(0.0, qb * qb - 4.0 * qa * qc);
-      const double root0 = (-qb - std::sqrt(discriminant)) / (2.0 * qa);
-      const double root1 = (-qb + std::sqrt(discriminant)) / (2.0 * qa);
-      const double fraction = root0 >= 0.0 && root0 <= 1.0 ? root0 : root1;
-      crossings.push_back({points[first].x + fraction * (points[second].x - points[first].x),
-                           points[first].y + fraction * (points[second].y - points[first].y),
-                           points[first].z + fraction * (points[second].z - points[first].z)});
+      crossings.push_back(sphere.edge_intersection(points[first],points[second]));
     }
     if (crossings.size() < 3) continue;
     Vec3 centre{};
     for (const Vec3 point : crossings) centre = centre + point;
     centre = centre / static_cast<double>(crossings.size());
-    Vec3 normal = centre - sphere.centre;
-    const double normal_length = std::sqrt(dot(normal, normal));
-    if (normal_length < 1e-12) continue;
-    normal = normal / normal_length;
+    const Vec3 normal=sphere.normal(centre);
     const Vec3 reference = std::abs(normal.z) < 0.9 ? Vec3{0.0, 0.0, 1.0} : Vec3{0.0, 1.0, 0.0};
     const Vec3 axis_u = cross(reference, normal);
     const Vec3 axis_v = cross(normal, axis_u);
@@ -318,17 +523,8 @@ std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sp
     if (second < first) std::swap(first, second);
     return (static_cast<std::uint64_t>(first) << 32U) | static_cast<std::uint64_t>(second);
   };
-  const auto edge_crossing = [&sphere, &dot](Vec3 first, Vec3 second) {
-    const Vec3 offset = first-sphere.centre;
-    const Vec3 direction = second-first;
-    const double a = dot(direction, direction);
-    const double b = 2.0*dot(offset, direction);
-    const double c = dot(offset, offset)-sphere.radius*sphere.radius;
-    const double discriminant = std::max(0.0, b*b-4.0*a*c);
-    const double root0 = (-b-std::sqrt(discriminant))/(2.0*a);
-    const double root1 = (-b+std::sqrt(discriminant))/(2.0*a);
-    const double t = root0 >= 0.0 && root0 <= 1.0 ? root0 : root1;
-    return Vec3{first.x+t*direction.x, first.y+t*direction.y, first.z+t*direction.z};
+  const auto edge_crossing = [&sphere](Vec3 first, Vec3 second) {
+    return sphere.edge_intersection(first,second);
   };
 
   struct EdgeIncident {
@@ -359,7 +555,7 @@ std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sp
       if ((distances[first] < 0.0) == (distances[second] < 0.0)) continue;
       const Vec3 crossing = edge_crossing(points[first], points[second]);
       crossings[crossing_count] = crossing;
-      normals[crossing_count] = normalize(crossing-sphere.centre);
+      normals[crossing_count] = sphere.normal(crossing);
       ++crossing_count;
       crossed_edges[crossed_edge_count++] = packed_edge(tet.vertices[first], tet.vertices[second]);
     }
@@ -477,7 +673,7 @@ std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sp
     });
 
     const Vec3 polygon_normal = cross(polygon[1]-polygon[0], polygon[2]-polygon[0]);
-    if (dot(polygon_normal, edge_point-sphere.centre) < 0.0)
+    if (dot(polygon_normal, sphere.normal(edge_point)) < 0.0)
       std::reverse(polygon.begin(), polygon.end());
     // A ring of constrained QEF vertices is not necessarily convex. A fan
     // from one ring vertex can cross outside the dual face and overlap other
@@ -490,7 +686,7 @@ std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sp
       const Vec3 triangle_centre{(triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
                                  (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
                                  (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
-      if (dot(triangle_normal,triangle_centre-sphere.centre) < 0.0)
+      if (dot(triangle_normal,sphere.normal(triangle_centre)) < 0.0)
         std::swap(triangle.b,triangle.c);
       if (length_squared(triangle_normal) > 1e-24) triangles.push_back(triangle);
     }
