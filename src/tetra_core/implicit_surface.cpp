@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace tetra {
 namespace {
@@ -79,8 +80,12 @@ double gradient_noise(double x,double y){
     return value;
   };
   const auto contribution=[&](int ix,int iy,double px,double py){
-    const double angle=(hash(ix,iy)&65535U)*(2.0*std::acos(-1.0)/65536.0);
-    return std::cos(angle)*px+std::sin(angle)*py;
+    constexpr double diagonal=0.7071067811865475244;
+    constexpr std::array<std::array<double,2>,8> gradients{{
+        {{1.0,0.0}},{{diagonal,diagonal}},{{0.0,1.0}},{{-diagonal,diagonal}},
+        {{-1.0,0.0}},{{-diagonal,-diagonal}},{{0.0,-1.0}},{{diagonal,-diagonal}}}};
+    const auto& gradient=gradients[hash(ix,iy)&7U];
+    return gradient[0]*px+gradient[1]*py;
   };
   const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
   const double fx=x-ix,fy=y-iy;
@@ -280,14 +285,16 @@ Vec3 Sphere::project_to_surface(Vec3 point) const {
   return point;
 }
 
-SurfaceRelation classify_tetrahedron(const TetMesh& mesh, TetId tet, const Sphere& sphere) {
+SurfaceRelation classify_tetrahedron_cached(const TetMesh& mesh,TetId tet,const Sphere& sphere,
+                                             std::span<const double> vertex_distances) {
   const auto& vertices = mesh.tetrahedron(tet).vertices;
   bool has_negative = false;
   bool has_positive = false;
   Vec3 centre{};
   for (const VertexId vertex : vertices) {
     const Vec3 point=mesh.vertices().at(vertex);
-    const double distance = sphere.signed_distance(point);
+    const double distance=vertex_distances.empty()?
+        sphere.signed_distance(point):vertex_distances[vertex];
     if (std::abs(distance) <= 1.0e-12) return SurfaceRelation::intersecting;
     has_negative |= distance < 0.0;
     has_positive |= distance > 0.0;
@@ -320,6 +327,10 @@ SurfaceRelation classify_tetrahedron(const TetMesh& mesh, TetId tet, const Spher
   if(centre_distance>uncertainty)return SurfaceRelation::outside;
   if(centre_distance<-uncertainty)return SurfaceRelation::inside;
   return SurfaceRelation::intersecting;
+}
+
+SurfaceRelation classify_tetrahedron(const TetMesh& mesh,TetId tet,const Sphere& sphere){
+  return classify_tetrahedron_cached(mesh,tet,sphere,{});
 }
 
 double projected_tetrahedron_diameter(const TetMesh& mesh, TetId tet, const Camera& camera) {
@@ -373,8 +384,18 @@ std::vector<TetId> mark_oversized_intersections(const TetMesh& mesh, const Spher
 AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold, unsigned int maximum_depth) {
   AdaptiveResult result;
   const unsigned int increment=subdivision_depth_increment(mesh.subdivision_method());
+  std::vector<double> vertex_distances;
   while(true){
-    const auto oversized=mark_oversized_intersections(mesh,sphere,camera,pixel_threshold);
+    const std::size_t previous_size=vertex_distances.size();
+    vertex_distances.resize(mesh.vertices().size());
+    for(std::size_t vertex=previous_size;vertex<vertex_distances.size();++vertex)
+      vertex_distances[vertex]=sphere.signed_distance(mesh.vertices()[vertex]);
+    std::vector<TetId> oversized;
+    for(const TetId id:mesh.active_leaves())
+      if(classify_tetrahedron_cached(mesh,id,sphere,vertex_distances)==
+             SurfaceRelation::intersecting&&
+         projected_tetrahedron_diameter(mesh,id,camera)>pixel_threshold)
+        oversized.push_back(id);
     std::vector<TetId> marked;
     marked.reserve(oversized.size());
     for(const auto id:oversized)if(mesh.refinement_depth(id)+increment<=maximum_depth)marked.push_back(id);

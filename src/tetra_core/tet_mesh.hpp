@@ -160,6 +160,7 @@ class TetMesh {
   void reserve_active_midpoints(std::size_t count);
   void activate_midpoint(EdgeKey key);
   void reserve_active_edges(std::size_t unique_edge_count);
+  void clear_active_edges();
   void insert_active_edges(TetId address);
   void remove_active_edges(TetId address);
   void refine_selected_octasection(const std::vector<TetId>& requests);

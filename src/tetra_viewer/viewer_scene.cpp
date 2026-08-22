@@ -481,6 +481,9 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   constexpr std::array<std::array<std::size_t, 2>, 6> edges{{
       {{0, 1}}, {{0, 2}}, {{0, 3}}, {{1, 2}}, {{1, 3}}, {{2, 3}}}};
   const auto& source_vertices = mesh.vertices();
+  std::vector<double> source_distances(source_vertices.size());
+  for(std::size_t vertex=0;vertex<source_vertices.size();++vertex)
+    source_distances[vertex]=sphere.signed_distance(source_vertices[vertex]);
   scene.connected_volume_vertices = source_vertices;
   scene.connected_volume_vertex_kinds.assign(source_vertices.size(),ConnectedVertexKind::hierarchy);
   scene.connected_volume_source_edges.assign(
@@ -520,7 +523,7 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     const auto& tet = mesh.tetrahedron(id).vertices;
     std::array<bool, 4> inside{};
     for (std::size_t corner = 0; corner < 4; ++corner)
-      inside[corner] = sphere.signed_distance(source_vertices[tet[corner]]) <= 0.0;
+      inside[corner] = source_distances[tet[corner]] <= 0.0;
     for (const auto edge : edges) if (inside[edge[0]] != inside[edge[1]])
       crossed_keys.push_back(pack_edge(tet[edge[0]], tet[edge[1]]));
   }
@@ -544,13 +547,13 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     constexpr double snap_epsilon=1.0e-10;
     const auto warpable=[&](tetra::VertexId endpoint){
       return method==VolumeConnectionMethod::adaptive_cleaving&&
-          std::abs(sphere.signed_distance(source_vertices[endpoint]))<=safe_warp_radius[endpoint];
+          std::abs(source_distances[endpoint])<=safe_warp_radius[endpoint];
     };
     const bool warp_first=warpable(endpoints[0]),warp_second=warpable(endpoints[1]);
     if(warp_first||warp_second){
       if(warp_first&&warp_second){
-        const double first_distance=std::abs(sphere.signed_distance(source_vertices[endpoints[0]]));
-        const double second_distance=std::abs(sphere.signed_distance(source_vertices[endpoints[1]]));
+        const double first_distance=std::abs(source_distances[endpoints[0]]);
+        const double second_distance=std::abs(source_distances[endpoints[1]]);
         vertex=first_distance<second_distance||(first_distance==second_distance&&endpoints[0]<endpoints[1])
             ?endpoints[0]:endpoints[1];
       }else vertex=warp_first?endpoints[0]:endpoints[1];
@@ -689,7 +692,7 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     std::array<bool,4> inside{};
     std::size_t inside_count{};
     for(std::size_t corner=0;corner<4;++corner){
-      inside[corner]=sphere.signed_distance(source_vertices[tet[corner]])<=0.0;
+      inside[corner]=source_distances[tet[corner]]<=0.0;
       inside_count+=inside[corner]?1U:0U;
     }
     if(inside_count==0)continue;
@@ -2088,9 +2091,12 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   std::vector<tetra::TetId> boundary_tetrahedra;
   std::vector<std::array<tetra::VertexId,3>> material_boundary_faces;
   if (show_volume_faces || show_volume_edges) material_tetrahedra.reserve(leaves.size());
+  const bool connected_volume=uses_connected_volume(volume_connection_method);
+  const bool need_material_selection=surface_method==SurfaceMethod::full_tetrahedra||
+      ((show_volume_faces||show_volume_edges)&&!connected_volume);
   const bool need_material_faces =
       (surface_method == SurfaceMethod::full_tetrahedra && (show_faces || show_surface_edges)) ||
-      show_volume_edges || show_volume_faces;
+      ((show_volume_edges||show_volume_faces)&&!connected_volume);
 
   constexpr std::array<std::array<std::size_t, 3>, 4> faces{{{{0, 1, 2}}, {{0, 1, 3}}, {{0, 2, 3}}, {{1, 2, 3}}}};
   const auto add_triangle = [&scene](tetra::Vec3 point, std::array<float, 3> colour, tetra::Vec3 normal) {
@@ -2115,9 +2121,9 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   scene.statistics_milliseconds = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - statistics_start).count();
 
-  const auto whole_cell_cut=is_variational_material_rule(material_rule)
+  const auto whole_cell_cut=need_material_selection&&is_variational_material_rule(material_rule)
       ? tetra::build_whole_cell_cut(mesh,sphere,whole_cell_options(material_rule)) : tetra::WholeCellCut{};
-  if(is_variational_material_rule(material_rule)){
+  if(need_material_selection&&is_variational_material_rule(material_rule)){
     scene.whole_cell_boundary_faces=whole_cell_cut.boundary_faces.size();
     scene.whole_cell_nonmanifold_edges=whole_cell_cut.nonmanifold_boundary_edges;
     scene.whole_cell_selected_volume=whole_cell_cut.selected_volume;
@@ -2129,10 +2135,12 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   for (std::size_t leaf_index = 0; leaf_index < leaves.size(); ++leaf_index) {
     const tetra::TetId id = leaves[leaf_index];
     const auto& tet = mesh.tetrahedron(id).vertices;
-    const bool material = is_variational_material_rule(material_rule)
-        ? whole_cell_cut.selected(leaf_index)
-        : is_material(mesh,id,sphere,scene.relations[leaf_index],material_rule);
-    if ((show_volume_faces || show_volume_edges) && material) material_tetrahedra.push_back(id);
+    const bool material = need_material_selection&&
+        (is_variational_material_rule(material_rule)
+            ? whole_cell_cut.selected(leaf_index)
+            : is_material(mesh,id,sphere,scene.relations[leaf_index],material_rule));
+    if ((show_volume_faces || show_volume_edges) && !connected_volume && material)
+      material_tetrahedra.push_back(id);
     const bool selected = surface_method == SurfaceMethod::full_tetrahedra && material;
     if (selected) ++scene.selected_count;
     if (need_material_faces && material && !is_variational_material_rule(material_rule)) {

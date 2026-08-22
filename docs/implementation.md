@@ -207,6 +207,18 @@ extend persistent storage unless they contain a real deeper cell. Repeated
 camera-pose cycles must therefore stabilize in layer, vertex, and tetrahedron
 storage after the first visit to each pose.
 
+Camera reconciliation also treats the packed hierarchy as the cache boundary.
+It clears and rebuilds the flat active-edge table in one pass, hashes logical
+BCC faces in a contiguous open-addressed table instead of sorting face records,
+and caches every implicit value for the duration of a refinement. Scene
+preparation reuses the same per-vertex values and skips whole-cell material
+selection when adaptive cleaving will not consume it. Terrain noise uses the
+standard fixed Perlin gradient directions, avoiding trigonometry in the hot
+signed-distance path. In the release headless camera cycle from `(0, 1, 0.5)`
+to `(-1, 0.7, 0.5)` and back, reconciliation measures 0.44--0.49 seconds and
+scene preparation 0.26--0.37 seconds on the development laptop; the earlier
+path took approximately 1.8--2.3 seconds end to end.
+
 The editor view uses laptop-friendly Maya-inspired controls: primary-button
 drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling
 dollies to its independent target without an artificial minimum distance.
