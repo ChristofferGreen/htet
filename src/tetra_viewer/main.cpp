@@ -606,6 +606,7 @@ int main(int argc, char** argv)
         :true;
     float x_cut_position = 0.5F;
     tetra::Sphere sphere{};
+    if(!deterministic_visual_check)sphere.kind=tetra_viewer::default_implicit_shape;
     tetra::Camera camera{};
     tetra_viewer::LodCameraPose lod_camera_pose;
     tetra::Vec3 view_camera_position{};
@@ -940,6 +941,7 @@ int main(int argc, char** argv)
                 const bool selected=kind==sphere.kind;
                 if(ImGui::Selectable(tetra::implicit_shape_name(kind).data(),selected)&&!selected){
                     sphere.kind=kind;
+                    sphere.secondary=tetra::implicit_shape_default_secondary(kind);
                     ++sphere_revision;
                     has_adaptive_result=false;
                     lod_reconcile_pending=true;

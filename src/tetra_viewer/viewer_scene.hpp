@@ -289,6 +289,8 @@ enum class VolumeConnectionMethod {
 
 inline constexpr tetra::SubdivisionMethod default_subdivision_method=
     tetra::SubdivisionMethod::bcc_red_green;
+inline constexpr tetra::ImplicitShapeKind default_implicit_shape=
+    tetra::ImplicitShapeKind::perlin_terrain;
 inline constexpr SurfaceMethod default_surface_method=SurfaceMethod::surface_optimization;
 inline constexpr VolumeConnectionMethod default_volume_connection_method=
     VolumeConnectionMethod::fixed_surface_shell;

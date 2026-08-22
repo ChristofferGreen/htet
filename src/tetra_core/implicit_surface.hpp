@@ -25,6 +25,7 @@ inline constexpr std::array<ImplicitShapeKind,9> implicit_shape_kinds{
 
 [[nodiscard]] std::string_view implicit_shape_name(ImplicitShapeKind kind);
 [[nodiscard]] std::string_view implicit_shape_key(ImplicitShapeKind kind);
+[[nodiscard]] double implicit_shape_default_secondary(ImplicitShapeKind kind);
 
 struct Sphere {
   Vec3 centre{0.5, 0.5, 0.5};

@@ -470,6 +470,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         write_error(errors,"unknown implicit shape",command);return 2;
       }
       state.sphere.kind=*found;
+      state.sphere.secondary=tetra::implicit_shape_default_secondary(*found);
       state.mesh.reset_active_hierarchy();
       const auto start=Clock::now();
       const auto result=refine_to_current_surface(state);

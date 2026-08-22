@@ -277,6 +277,9 @@ TEST_CASE("interactive smooth cutaway preserves the selected whole hierarchy cel
 
 TEST_CASE("viewer defaults select the watertight BCC TetWeave hierarchy-core experiment") {
   CHECK(tetra_viewer::default_subdivision_method==tetra::SubdivisionMethod::bcc_red_green);
+  CHECK(tetra_viewer::default_implicit_shape==tetra::ImplicitShapeKind::perlin_terrain);
+  CHECK(tetra::implicit_shape_default_secondary(tetra::ImplicitShapeKind::merging_spheres)==
+        doctest::Approx(0.17));
   CHECK(tetra_viewer::default_surface_method==tetra_viewer::SurfaceMethod::surface_optimization);
   CHECK(tetra_viewer::default_volume_connection_method==
         tetra_viewer::VolumeConnectionMethod::fixed_surface_shell);
@@ -294,7 +297,8 @@ TEST_CASE("viewer defaults select the watertight BCC TetWeave hierarchy-core exp
   CHECK(initialized.find("\"x_cutaway\":true")!=std::string::npos);
 
   std::ostringstream validation_output,validation_errors;
-  REQUIRE(tetra_viewer::run_script("validate-volume",validation_output,validation_errors)==0);
+  REQUIRE(tetra_viewer::run_script(
+      "set-shape=sphere,validate-volume",validation_output,validation_errors)==0);
   CHECK(validation_errors.str().empty());
   CHECK(validation_output.str().find("\"authoritative_complex\":true")!=std::string::npos);
   CHECK(validation_output.str().find("\"graded_parent_band\":true")!=std::string::npos);

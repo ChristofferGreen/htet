@@ -676,6 +676,8 @@ potentially intersected leaf meets a view-dependent pixel-size threshold.
   selection, and diagnostic shading. The inspector exposes contextual centre,
   scale, shape-parameter, amplitude, and frequency controls; scripts use
   `set-shape=<key>` and report the selected key.
+  Deterministic Perlin terrain is the initial viewer experiment; smoothly
+  merging spheres start with wider-separated centres for a clearer neck.
 - [x] Keep shape changes responsive and camera-driven. Convex negative regions
   classify wholly inside immediately; other same-sign cells use a conservative
   centre-radius field bound, including explicit slope bounds for terrain and

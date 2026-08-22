@@ -164,6 +164,10 @@ std::string_view implicit_shape_key(ImplicitShapeKind kind){
   return "unknown";
 }
 
+double implicit_shape_default_secondary(ImplicitShapeKind kind){
+  return kind==ImplicitShapeKind::merging_spheres?0.17:0.12;
+}
+
 double Sphere::signed_distance(Vec3 point) const {
   const double x = point.x - centre.x;
   const double y = point.y - centre.y;
