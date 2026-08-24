@@ -190,3 +190,10 @@
   orientation, triangle, and canonical edge hashes across mixed-depth BCC
   transitions. The default 13,284-owner build generated 17,276 triangles in
   6.084 ms; fallback return reused every record and triangle in 2.339 ms.
+- [x] CPU-G5-1 four-hexahedra construction specification and boundary proof:
+  formalized the Scholz vertex-centred barycentric construction with exact
+  twelfths and fixed-size records. Symbolic release tests cover all 24 local
+  vertex permutations, both orientation parities, five regular lattice
+  resolutions, malformed inputs, both green-transition strategies, and every
+  paired face in their refined conforming red/green cuts. Shared faces produce
+  identical `3n^2+3n+1` sample sets without renderer or extractor changes.

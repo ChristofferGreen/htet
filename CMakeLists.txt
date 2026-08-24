@@ -20,6 +20,7 @@ FetchContent_MakeAvailable(doctest)
 
 add_library(tetra_core
   src/tetra_core/adjacency.cpp
+  src/tetra_core/four_hexahedra.cpp
   src/tetra_core/green_templates.cpp
   src/tetra_core/layer_storage.cpp
   src/tetra_core/parallel_commit.cpp

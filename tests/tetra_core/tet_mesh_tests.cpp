@@ -3,6 +3,7 @@
 
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
+#include "tetra_core/four_hexahedra.hpp"
 #include "tetra_core/green_templates.hpp"
 #include "tetra_core/layer_storage.hpp"
 #include "tetra_core/parallel_commit.hpp"
@@ -137,6 +138,183 @@ TEST_CASE("green masks canonicalize under every orientation preserving vertex pe
                   std::invalid_argument);
   CHECK_THROWS_AS(static_cast<void>(tetra::permute_green_mask(1U,reflected)),
                   std::invalid_argument);
+}
+
+TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
+  const auto construction=tetra::make_four_hexahedra();
+  REQUIRE(construction.cells.size()==4U);
+  std::set<tetra::BarycentricTwelfths> distinct_points;
+  for(std::size_t owner=0;owner<construction.cells.size();++owner){
+    const auto& cell=construction.cells[owner];
+    CHECK(cell[0].weights[owner]==12U);
+    CHECK(cell[7].weights==std::array<std::uint8_t,4>{{3U,3U,3U,3U}});
+    for(const auto& point:cell){
+      CHECK(std::accumulate(point.weights.begin(),point.weights.end(),0U)==12U);
+      distinct_points.insert(point);
+    }
+  }
+  // Four vertices, six edge midpoints, four face centroids, and one cell
+  // centroid are shared by the four fixed-size hexahedra.
+  CHECK(distinct_points.size()==15U);
+
+  auto canonical_cells=construction.cells;
+  for(auto& cell:canonical_cells)std::sort(cell.begin(),cell.end());
+  std::sort(canonical_cells.begin(),canonical_cells.end());
+  std::array<std::uint8_t,4> permutation{{0U,1U,2U,3U}};
+  std::size_t permutations{};
+  std::array<bool,2> parity_seen{};
+  do{
+    unsigned int inversions{};
+    for(std::size_t first=0;first<permutation.size();++first)
+      for(std::size_t second=first+1;second<permutation.size();++second)
+        inversions+=permutation[first]>permutation[second]?1U:0U;
+    parity_seen[inversions&1U]=true;
+    auto permuted=tetra::make_four_hexahedra(permutation).cells;
+    for(auto& cell:permuted)std::sort(cell.begin(),cell.end());
+    std::sort(permuted.begin(),permuted.end());
+    CHECK(permuted==canonical_cells);
+    ++permutations;
+  }while(std::next_permutation(permutation.begin(),permutation.end()));
+  CHECK(permutations==24U);
+  CHECK(parity_seen==std::array<bool,2>{{true,true}});
+
+  CHECK_THROWS_AS(static_cast<void>(tetra::make_four_hexahedra({{0U,1U,1U,3U}})),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::make_four_hexahedra({{0U,1U,2U,4U}})),
+                  std::invalid_argument);
+}
+
+TEST_CASE("four-hexahedra regular boundary lattices match for all vertex orders") {
+  using SampleSet=std::set<std::array<std::uint64_t,4>>;
+  const auto samples=[](const tetra::FourHexahedra& construction,
+                        std::uint8_t opposite,std::uint32_t resolution){
+    SampleSet result;
+    for(std::uint8_t owner=0;owner<4U;++owner){
+      if(owner==opposite)continue;
+      const auto quad=tetra::four_hexahedra_boundary_quad(
+          construction,owner,opposite);
+      for(std::uint32_t u=0;u<=resolution;++u)
+        for(std::uint32_t v=0;v<=resolution;++v){
+          const auto sample=tetra::sample_boundary_quad(quad,resolution,u,v);
+          CHECK(sample.numerators[opposite]==0U);
+          CHECK(std::accumulate(sample.numerators.begin(),
+                                sample.numerators.end(),std::uint64_t{})==
+                sample.denominator);
+          result.insert(sample.numerators);
+        }
+    }
+    return result;
+  };
+
+  constexpr std::array<std::uint32_t,5> resolutions{{1U,2U,3U,4U,8U}};
+  const auto identity=tetra::make_four_hexahedra();
+  std::array<std::uint8_t,4> permutation{{0U,1U,2U,3U}};
+  do{
+    const auto construction=tetra::make_four_hexahedra(permutation);
+    for(std::uint8_t opposite=0;opposite<4U;++opposite)
+      for(const auto resolution:resolutions){
+        CAPTURE(permutation);
+        CAPTURE(opposite);
+        CAPTURE(resolution);
+        const auto actual=samples(construction,opposite,resolution);
+        CHECK(actual==samples(identity,opposite,resolution));
+        CHECK(actual.size()==3U*resolution*resolution+3U*resolution+1U);
+      }
+  }while(std::next_permutation(permutation.begin(),permutation.end()));
+
+  const auto quad=tetra::four_hexahedra_boundary_quad(identity,0U,3U);
+  CHECK_THROWS_AS(static_cast<void>(tetra::four_hexahedra_boundary_quad(identity,0U,0U)),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::four_hexahedra_boundary_quad(identity,4U,0U)),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::sample_boundary_quad(quad,0U,0U,0U)),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::sample_boundary_quad(quad,2U,3U,0U)),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::sample_boundary_quad(
+                      quad,std::numeric_limits<std::uint32_t>::max(),0U,0U)),
+                  std::invalid_argument);
+}
+
+TEST_CASE("red and green conforming cells produce identical four-hexahedra face samples") {
+  using Face=std::array<tetra::VertexId,3>;
+  struct Incident { tetra::TetId cell{}; std::uint8_t opposite{}; };
+  using GlobalSample=std::vector<std::pair<tetra::VertexId,std::uint64_t>>;
+  using GlobalSamples=std::set<GlobalSample>;
+  const auto face_samples=[](const tetra::TetMesh& mesh,const Incident incident,
+                             std::uint32_t resolution){
+    GlobalSamples result;
+    const auto& tet=mesh.tetrahedron(incident.cell);
+    const auto construction=tetra::make_four_hexahedra();
+    for(std::uint8_t owner=0;owner<4U;++owner){
+      if(owner==incident.opposite)continue;
+      const auto quad=tetra::four_hexahedra_boundary_quad(
+          construction,owner,incident.opposite);
+      for(std::uint32_t u=0;u<=resolution;++u)
+        for(std::uint32_t v=0;v<=resolution;++v){
+          const auto local=tetra::sample_boundary_quad(quad,resolution,u,v);
+          GlobalSample global;
+          for(std::size_t vertex=0;vertex<4U;++vertex)
+            if(local.numerators[vertex]!=0U)
+              global.emplace_back(tet.vertices[vertex],local.numerators[vertex]);
+          std::sort(global.begin(),global.end());
+          result.insert(std::move(global));
+        }
+    }
+    return result;
+  };
+
+  std::array<bool,2> local_parity_seen{};
+  for(const auto strategy:{tetra::BccTransitionStrategy::crystalline_restricted,
+                           tetra::BccTransitionStrategy::complete_minimal}){
+    auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+    if(strategy==tetra::BccTransitionStrategy::complete_minimal)
+      REQUIRE(mesh.set_transition_strategy(strategy));
+    REQUIRE(mesh.refine_selected_binary({mesh.logical_red_owners().front()}));
+    REQUIRE(mesh.has_conforming_active_faces());
+
+    std::map<Face,std::vector<Incident>> incidence;
+    std::size_t transition_cells{};
+    for(const auto address:mesh.conforming_volume().addresses()){
+      const auto& tet=mesh.tetrahedron(address);
+      transition_cells+=tet.transition_parent!=tetra::invalid_tet?1U:0U;
+      auto sorted_vertices=tet.vertices;
+      std::sort(sorted_vertices.begin(),sorted_vertices.end());
+      std::array<std::uint8_t,4> order{};
+      for(std::size_t local=0;local<4U;++local)
+        order[local]=static_cast<std::uint8_t>(
+            std::ranges::find(sorted_vertices,tet.vertices[local])-
+            sorted_vertices.begin());
+      unsigned int inversions{};
+      for(std::size_t first=0;first<4U;++first)
+        for(std::size_t second=first+1;second<4U;++second)
+          inversions+=order[first]>order[second]?1U:0U;
+      local_parity_seen[inversions&1U]=true;
+
+      for(std::uint8_t opposite=0;opposite<4U;++opposite){
+        Face face{};
+        std::size_t output{};
+        for(std::uint8_t vertex=0;vertex<4U;++vertex)
+          if(vertex!=opposite)face[output++]=tet.vertices[vertex];
+        std::sort(face.begin(),face.end());
+        incidence[face].push_back({address,opposite});
+      }
+    }
+    REQUIRE(transition_cells>0U);
+    std::size_t paired_faces{};
+    for(const auto& [face,incidents]:incidence){
+      CAPTURE(strategy);
+      CAPTURE(face);
+      REQUIRE(incidents.size()<=2U);
+      if(incidents.size()!=2U)continue;
+      for(const auto resolution:{1U,2U,4U})
+        CHECK(face_samples(mesh,incidents[0],resolution)==
+              face_samples(mesh,incidents[1],resolution));
+      ++paired_faces;
+    }
+    CHECK(paired_faces>0U);
+  }
+  CHECK(local_parity_seen==std::array<bool,2>{{true,true}});
 }
 
 TEST_CASE("complete minimal BCC transitions remain conforming without mask enlargement") {

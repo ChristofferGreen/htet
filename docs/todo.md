@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G5-1 four-hexahedra construction specification and boundary proof.
-  - Scope: specify the Scholz four-hexahedra construction for every supported
-    BCC owner orientation and enumerate shared-face boundary samples.
-  - Acceptance: exhaustive release fixtures prove adjacent supported cells
-    generate identical boundary samples without introducing renderer code.
-  - Stop rule: close the construction contract before implementing extraction.
 - [ ] CPU-G5-2 cell-local four-hexahedra extractor and retained patch cache.
   - Scope: add a separate surface-method option and cache field samples and
     generated owner patches by field/topology revision.

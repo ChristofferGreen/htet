@@ -5,6 +5,12 @@
 - none
 
 ## Recent Test Runs
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: final CPU-G5-1 gate passed all 203 tests with overflow-safe exact rational sampling
+- 2026-08-24 local | pass | mode: release | command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "Scholz|four-hexahedra"` | failures: none | notes: all three focused tests passed after adding exact-sample overflow rejection
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 203 tests passed after CPU-G5-1 exact four-hexahedra construction and symbolic red/green shared-boundary proof
+- 2026-08-24 local | pass | mode: release | command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "Scholz|four-hexahedra"` | failures: none | notes: all three exact-construction, 24-permutation boundary-lattice, and real BCC red/green shared-face tests passed
+- 2026-08-24 local | fail | mode: release | command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "Scholz|four-hexahedra"` | failures: tetra_tests compile | notes: doctest 2.4 CAPTURE accepts one expression; split multi-value diagnostics into separate captures before rerun
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation CPU-G5-1 four-hexahedra construction/boundary-proof baseline passed all 200 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 200 tests passed after CPU-G4-5 exact monolithic/fixed/hybrid comparison, threshold sweep, production selection enforcement, visual audit, and fixed-capacity default retention
 - 2026-08-24 local | pass | mode: release | command: `./build/release/src/tetra_viewer/tetra_viewer --retained-upload-check` | failures: none | notes: selected fixed-capacity production path presented through MoltenVK with 27 exact retained ranges, 1,221,120 uploaded bytes, and 27 draws
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface draw chunks|hybrid draw chunks|headless draw chunk benchmark"` | failures: none | notes: final five focused tests passed after overflow-safe hybrid sizing, corrected monolithic allocation accounting, and enforced aggregate strategy selection
@@ -147,6 +153,7 @@
 
 ## Resolved Failures
 
+- [x] tetra_tests four-hexahedra diagnostics compile | resolved: 2026-08-24 local | validating command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "Scholz|four-hexahedra"` | notes: split doctest 2.4 multi-value CAPTURE calls; all three focused tests pass
 - [x] tetra_tests vector size_bytes compile | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface draw chunks|retained host staging|headless draw chunk benchmark"` | notes: replaced vector `size_bytes()` calls with explicit byte counts; all five focused tests pass
 - [x] tetra_tests aggregate local-repack counter compile | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface draw chunks|headless draw chunk benchmark"` | notes: moved the counter declaration into the draw-chunk benchmark test; all four focused tests pass
 - [x] headless surface patch benchmark proves locality and exact output | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "headless surface patch benchmark|dual edge-star|multiple unpublished revisions"` | notes: dual dirty accounting now includes topology-changed current records as well as edge-star dependents, so rebuilt work is fully reported and stale empty-patch hashes cannot persist

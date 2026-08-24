@@ -1122,7 +1122,53 @@ stale edge, or partial publication. Gate 4 therefore meets its exit condition.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 
-- [ ] Specify the Scholz four-hexahedra construction for every supported BCC
+#### Four-hexahedra construction contract
+
+Scholz, Bender, and Dachsbacher describe splitting each active tetrahedron into
+four hexahedra, reusing one barycentric reference mesh, and regularly
+subdividing each hexahedron so neighbouring cell-border lattices match. Their
+Figures 3 and 8 show the construction but do not give a coordinate table. The
+following table is this project's exact formalization of that illustrated
+vertex-centred barycentric construction.
+
+For tetrahedron vertices `v0..v3`, hexahedron `Hv` belongs to vertex `v`. Let
+`a,b,c` be the other three vertices in any local order. Its cube-bit corners
+are:
+
+| Cube corner | Exact barycentric point |
+|---|---|
+| `000` | `v` |
+| `100` | `(v+a)/2` |
+| `010` | `(v+b)/2` |
+| `110` | `(v+a+b)/3` |
+| `001` | `(v+c)/2` |
+| `101` | `(v+a+c)/3` |
+| `011` | `(v+b+c)/3` |
+| `111` | `(v0+v1+v2+v3)/4` |
+
+The implementation stores these points exactly as four unsigned barycentric
+weights with common denominator 12: vertices use weight 12, edge midpoints
+use `6+6`, face centroids use `4+4+4`, and the tetrahedron centroid uses
+`3+3+3+3`. It creates only fixed-size records and accepts every one of the 24
+local vertex permutations, including both orientation parities.
+
+The contract applies to every cell in `conforming_volume()`, not merely logical
+red owners. Consequently red descendants and derived green transition cells
+use the same construction after conformity has already replaced coarse/fine
+logical interfaces with complete, face-to-face tetrahedral faces.
+
+For a shared face `(A,B,C)`, the boundary quad belonging to `A` has corners
+`A`, `(A+B)/2`, `(A+C)/2`, and `(A+B+C)/3`. A regular resolution-`n` bilinear
+sample at integer `(u,v)` is evaluated with weights
+`(n-u)(n-v)`, `u(n-v)`, `(n-u)v`, and `uv`; its exact common denominator is
+`12 n^2`. This expression contains neither the fourth tetrahedron vertex nor
+cell orientation. The three owner quads for `A`, `B`, and `C` therefore induce
+the same union of `3n^2+3n+1` boundary samples from either incident cell. Tests
+prove that identity symbolically rather than with floating-point equality for
+resolutions 1, 2, 3, 4, and 8, all 24 permutations, and every paired face in
+refined BCC cuts using both supported green-transition strategies.
+
+- [x] Specify the Scholz four-hexahedra construction for every supported BCC
   owner orientation and prove adjacent cells generate matching boundary
   samples.
 - [ ] Implement a CPU cell-local extractor as a separate surface dropdown
