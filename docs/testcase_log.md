@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 180 tests passed after deterministic camera-epoch heap refresh and retained queue-front scratch
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: none | notes: three tests passed for one-time seeding, lazy unique-front refresh, current-epoch reuse, stale-front removal, camera epoch changes, and streamed hash equivalence
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "set-update-scheduler=persistent-split-merge-queues,set-camera=0.55:0.5:1.5,adapt-once,set-camera=0.6:0.5:1.5,adapt-once,stats"` | failures: none | notes: priority recomputations fell from 14,508 to 3,256 with identical logical and conforming hashes
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation Gate 2 lazy-priority baseline passed all 179 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 179 tests passed after one-time cancellation-safe persistent-front seeding and command-independent queue retention
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent schedulers|headless events identify"` | failures: none | notes: one-time persistent seeding, cross-camera retention, post-commit no-reseed behavior, streamed hash equivalence, and JSON diagnostics passed
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "set-update-scheduler=persistent-split-merge-queues,set-camera=0.55:0.5:1.5,adapt-once,set-camera=0.6:0.5:1.5,adapt-once,stats"` | failures: none | notes: production mesh reported one 13,284-owner seed, 14,780 initial front insertions, and zero fallback reseeds across two camera requests

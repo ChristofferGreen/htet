@@ -128,6 +128,7 @@ struct SpatialOwnerRun {
 struct PersistentSchedulerEntry {
   TetId address{invalid_tet};
   std::uint64_t state_revision{};
+  std::uint64_t priority_epoch{};
   double last_priority{};
 };
 
@@ -148,9 +149,13 @@ struct AdaptationPlanningCache {
   std::uint64_t spatial_index_field_revision{std::numeric_limits<std::uint64_t>::max()};
   std::vector<PersistentSchedulerEntry> split_queue;
   std::vector<PersistentSchedulerEntry> merge_queue;
+  std::vector<PersistentSchedulerEntry> scheduler_entry_scratch;
   // Persistent schedulers scan the active cut exactly once to establish both
   // fronts. Ordinary camera requests retain these arrays.
   bool scheduler_seeded{};
+  bool has_scheduler_priority_camera{};
+  Camera scheduler_priority_camera{};
+  std::uint64_t scheduler_priority_epoch{};
   // A converged stationary request is an exact no-op until either the mesh,
   // field, camera, or adaptation settings change.
   bool has_stationary_no_change{};
@@ -189,7 +194,10 @@ struct AdaptationPlanningCache {
     spatial_index_field_revision=std::numeric_limits<std::uint64_t>::max();
     split_queue.clear();
     merge_queue.clear();
+    scheduler_entry_scratch.clear();
     scheduler_seeded=false;
+    has_scheduler_priority_camera=false;
+    scheduler_priority_epoch=0U;
     has_stationary_no_change=false;
     has_split_pose=false;
     has_last_request_origin=false;

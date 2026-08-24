@@ -85,3 +85,7 @@
   requests, compacted stale entries in place, and removed command-fed queue
   insertion. Production diagnostics report exactly one 13,284-owner seed and
   focused tests prove later camera and post-commit requests perform no reseed.
+- [x] Gate 2 lazy queue-front priority: added camera epochs and deterministic
+  retained heaps, refreshed projected size only for unique popped entries, and
+  reused current priorities without projection. The production two-move path
+  fell from 14,508 to 3,256 recomputations while preserving both mesh hashes.

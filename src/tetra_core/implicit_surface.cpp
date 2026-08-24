@@ -886,6 +886,13 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     if(summaries.has_split_pose&&!split_origin_matches())
       summaries.has_split_pose=false;
   }
+  if(configuration.update_scheduler!=UpdateScheduler::classify_and_stream&&
+     (!summaries.has_scheduler_priority_camera||
+      !same_camera(summaries.scheduler_priority_camera,camera))){
+    ++summaries.scheduler_priority_epoch;
+    summaries.scheduler_priority_camera=camera;
+    summaries.has_scheduler_priority_camera=true;
+  }
   if(planning_cache&&summaries.has_stationary_no_change&&
      summaries.stationary_mesh_revision==mesh.revision()&&
      summaries.stationary_field_revision==field_revision&&
@@ -928,7 +935,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     split_seed.reserve(logical.size());
     for(const TetId owner:logical){
       if(cancel())return;
-      split_seed.push_back({owner,mesh.revision(),0.0});
+      split_seed.push_back({owner,mesh.revision(),0U,0.0});
     }
     std::vector<TetId> parents;
     parents.reserve(logical.size());
@@ -941,7 +948,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     for(const TetId parent:parents){
       if(cancel())return;
       if(complete_merge_parent(parent))
-        merge_seed.push_back({parent,mesh.revision(),0.0});
+        merge_seed.push_back({parent,mesh.revision(),0U,0.0});
     }
     summaries.split_queue=std::move(split_seed);
     summaries.merge_queue=std::move(merge_seed);
@@ -960,34 +967,55 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     const auto kind=plan.commands.front().kind;
     auto& queue=kind==AdaptationCommandKind::split
         ?summaries.split_queue:summaries.merge_queue;
-    // Stable address remains the secondary key. This leaf retains the eager
-    // priority refresh; the next Gate 2 leaf limits refresh to queue fronts.
-    std::sort(queue.begin(),queue.end(),[](const auto& left,const auto& right){
+    const auto priority_epoch=summaries.scheduler_priority_epoch;
+    const auto lower_priority=[priority_epoch](const auto& left,const auto& right){
+      const bool left_stale=left.priority_epoch!=priority_epoch;
+      const bool right_stale=right.priority_epoch!=priority_epoch;
+      if(left_stale!=right_stale)return !left_stale;
       if(left.last_priority!=right.last_priority)
-        return left.last_priority>right.last_priority;
-      return left.address<right.address;
-    });
+        return left.last_priority<right.last_priority;
+      return left.address>right.address;
+    };
+    std::make_heap(queue.begin(),queue.end(),lower_priority);
     const auto current_entry=[&](TetId address){
       return kind==AdaptationCommandKind::split
           ?std::binary_search(owners.begin(),owners.end(),address)
           :complete_merge_parent(address);
     };
-    std::size_t write{};
-    for(std::size_t read=0;read<queue.size();++read){
-      if(cancel())return;
-      auto entry=queue[read];
+    auto& processed=summaries.scheduler_entry_scratch;
+    processed.clear();
+    processed.reserve(std::min(queue.size(),plan.commands.size()));
+    const auto restore_processed=[&]{
+      for(const auto& entry:processed){
+        queue.push_back(entry);
+        std::push_heap(queue.begin(),queue.end(),lower_priority);
+      }
+      processed.clear();
+    };
+    const std::size_t useful_budget=std::min(queue.size(),plan.commands.size());
+    while(processed.size()<useful_budget&&!queue.empty()){
+      if(cancel()){
+        restore_processed();
+        return;
+      }
+      std::pop_heap(queue.begin(),queue.end(),lower_priority);
+      auto entry=queue.back();
+      queue.pop_back();
       if(!current_entry(entry.address)){
         ++plan.scheduler_stale_pops;
         continue;
       }
-      entry.last_priority=projected_tetrahedron_diameter(
-          mesh,entry.address,prepared_camera);
+      if(entry.priority_epoch!=priority_epoch){
+        entry.last_priority=projected_tetrahedron_diameter(
+            mesh,entry.address,prepared_camera);
+        entry.priority_epoch=priority_epoch;
+        ++plan.scheduler_priority_recomputations;
+      }
       entry.state_revision=mesh.revision();
-      ++plan.scheduler_priority_recomputations;
       ++plan.scheduler_useful_pops;
-      queue[write++]=entry;
+      processed.push_back(entry);
     }
-    queue.resize(write);
+    restore_processed();
     if(configuration.update_scheduler==UpdateScheduler::hybrid_queued_blocks){
       std::vector<std::uint64_t> blocks;
       blocks.reserve(plan.commands.size());

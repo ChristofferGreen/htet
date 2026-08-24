@@ -2273,7 +2273,8 @@ TEST_CASE("persistent schedulers match streamed hashes through motion reversals 
   }
   CHECK(pushes>0);
   CHECK(useful>0);
-  CHECK(recomputations==useful);
+  CHECK(recomputations>0);
+  CHECK(recomputations<=useful);
   CHECK(block_streams>0);
 }
 
@@ -2330,6 +2331,58 @@ TEST_CASE("persistent schedulers seed the active cut once across camera requests
   CHECK_FALSE(canceled_cache.scheduler_seeded);
   CHECK(canceled_cache.split_queue.empty());
   CHECK(canceled_cache.merge_queue.empty());
+}
+
+TEST_CASE("persistent scheduler refreshes camera priority only at queue fronts") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=1U;
+  configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.5};
+
+  const auto first=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,10,&cache);
+  REQUIRE(first.commands.size()==1U);
+  REQUIRE(cache.split_queue.size()>1U);
+  CHECK(first.scheduler_useful_pops==1U);
+  CHECK(first.scheduler_priority_recomputations==1U);
+  CHECK(cache.scheduler_entry_scratch.empty());
+  const auto front_size=cache.split_queue.size();
+  for(std::size_t index=1;index<front_size;++index){
+    const auto plan=tetra::plan_adaptation(
+        mesh,shape,camera,48.0,3,configuration,10,&cache);
+    REQUIRE(plan.commands.size()==1U);
+    CHECK(plan.scheduler_useful_pops==1U);
+    CHECK(plan.scheduler_priority_recomputations==1U);
+    CHECK(cache.scheduler_entry_scratch.empty());
+  }
+
+  const auto already_current=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,10,&cache);
+  CHECK(already_current.scheduler_useful_pops==1U);
+  CHECK(already_current.scheduler_priority_recomputations==0U);
+
+  cache.split_queue.push_back({
+      tetra::invalid_tet,mesh.revision(),cache.scheduler_priority_epoch,1.0e30});
+  const auto stale_front=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,10,&cache);
+  CHECK(stale_front.scheduler_stale_pops==1U);
+  CHECK(stale_front.scheduler_useful_pops==1U);
+  CHECK(std::ranges::none_of(cache.split_queue,[](const auto& entry){
+    return entry.address==tetra::invalid_tet;
+  }));
+
+  camera.position.x+=0.05;
+  const auto moved=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,10,&cache);
+  CHECK(moved.scheduler_useful_pops==1U);
+  CHECK(moved.scheduler_priority_recomputations==1U);
 }
 
 TEST_CASE("adaptation capabilities reject surface-only volume claims") {

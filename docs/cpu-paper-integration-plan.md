@@ -580,7 +580,7 @@ differs from the independent oracle.
   persistent queues on every request.
 - [x] Seed the initial queues once from the active cut and retain them across
   camera requests.
-- [ ] Recompute camera-dependent priority lazily when an entry reaches a queue
+- [x] Recompute camera-dependent priority lazily when an entry reaches a queue
   front.
 - [ ] After a split or merge, enqueue only the changed owner, parent, children,
   sibling family, and conservatively expanded conformity neighbours.
@@ -606,9 +606,9 @@ after the pass finishes, so cancellation cannot retain a partial seed.
 Ordinary camera requests retain those flat arrays and never insert their
 streamed `plan.commands` back into the queues. Entries carry their last
 observed mesh revision, are checked against the current cut, and are compacted
-in place when stale. This leaf deliberately leaves camera-priority refresh at
-its previous eager behavior and leaves post-commit family/neighbour insertion
-to the next two Gate 2 leaves.
+in place when stale. That seed leaf left camera-priority refresh eager; the
+following section replaces it. Post-commit family and neighbour insertion
+remains the next Gate 2 leaf.
 
 A production-default mesh followed through two camera moves reported one seed
 scan over 13,284 logical owners, 14,780 total split/merge-front insertions, and
@@ -617,6 +617,30 @@ post-commit request report zero seed scans, zero seed candidates, and zero
 command-fed queue pushes while retaining queue capacity. The existing
 reversal/teleport comparison continues to match streamed logical and
 conforming hashes.
+
+#### Lazy camera-priority refresh
+
+Persistent entries now carry the camera epoch of their last projected-size
+evaluation. A complete camera change advances the retained epoch without
+touching the queues. Each split or merge front is maintained as a deterministic
+binary heap: stale-epoch entries rank ahead of already refreshed entries,
+projected size is recomputed only after a valid entry is popped, and stable
+address order breaks equal-priority ties.
+
+Valid popped entries live temporarily in one retained flat scratch array so a
+single planning transaction cannot select the same front entry twice. They are
+restored to the heap before publication or cancellation. The useful-pop budget
+is the current atomic command budget; unchanged-camera entries retain their
+priority and incur no projection work, while a new camera refreshes distinct
+entries over successive bounded transactions.
+
+On the same two-move production sequence used for the seed baseline, lazy
+refresh reduced queue projection recomputations from 14,508 to 3,256 (77.6%)
+while preserving logical hash `13682450355903576323` and conforming hash
+`15065136194667184043`. Focused tests use a one-command budget to prove one
+refresh per unique front, zero recomputation after the epoch is current,
+deterministic stale-front removal, and exactly one new refresh after camera
+motion. Queue-driven candidate discovery remains the next Gate 2 leaf.
 
 ### Gate 3 - Dirty-owner surface patches
 
