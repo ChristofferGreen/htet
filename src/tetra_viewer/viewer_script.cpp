@@ -559,6 +559,56 @@ void write_stats(std::ostream& output, const ScriptState& state) {
   output << "]}\n";
 }
 
+struct CameraBenchmarkPath {
+  std::string_view name;
+  std::vector<tetra::Vec3> positions;
+};
+
+std::vector<CameraBenchmarkPath> cpu_camera_benchmark_paths(const tetra::Vec3& centre) {
+  const auto position = [&](double x, double y, double z) {
+    return centre + tetra::Vec3{x, y, z};
+  };
+  return {
+      {"stationary", std::vector<tetra::Vec3>(4, position(0.0, 0.0, 2.5))},
+      {"slow-orbit",
+       {position(0.000, 0.20, 2.500), position(0.218, 0.21, 2.490),
+        position(0.434, 0.22, 2.462), position(0.647, 0.23, 2.415),
+        position(0.855, 0.24, 2.349), position(1.057, 0.25, 2.266),
+        position(1.250, 0.24, 2.165), position(1.434, 0.23, 2.048)}},
+      {"rapid-orbit",
+       {position(0.0, 0.20, 2.5), position(2.5, 0.35, 0.0),
+        position(0.0, 0.05, -2.5), position(-2.5, 0.30, 0.0),
+        position(1.768, 0.10, 1.768), position(-1.768, 0.35, -1.768),
+        position(1.768, 0.25, -1.768), position(-1.768, 0.15, 1.768)}},
+      {"near-to-far",
+       {position(0.0, 0.15, 0.65), position(0.0, 0.17, 0.90),
+        position(0.0, 0.19, 1.30), position(0.0, 0.21, 1.90),
+        position(0.0, 0.23, 2.60), position(0.0, 0.25, 3.60)}},
+      {"far-to-near",
+       {position(0.0, 0.25, 3.60), position(0.0, 0.23, 2.60),
+        position(0.0, 0.21, 1.90), position(0.0, 0.19, 1.30),
+        position(0.0, 0.17, 0.90), position(0.0, 0.15, 0.65)}},
+      {"teleport",
+       {position(0.0, 0.20, 2.5), position(0.0, 0.20, -2.5),
+        position(2.5, 0.20, 0.0), position(-2.5, 0.20, 0.0),
+        position(1.75, 1.10, 1.75), position(-1.75, -0.35, -1.75)}},
+      {"reversal",
+       {position(0.000, 0.20, 2.500), position(0.855, 0.24, 2.349),
+        position(1.607, 0.27, 1.915), position(2.165, 0.30, 1.250),
+        position(1.607, 0.27, 1.915), position(0.855, 0.24, 2.349),
+        position(0.000, 0.20, 2.500)}},
+      {"repeated-pose", std::vector<tetra::Vec3>(8, position(1.25, 0.25, 2.165))},
+  };
+}
+
+void point_camera_at(tetra::Camera& camera, tetra::Vec3 position, tetra::Vec3 target) {
+  camera.position = position;
+  const auto direction = target - position;
+  const double length = std::sqrt(direction.x * direction.x + direction.y * direction.y +
+                                  direction.z * direction.z);
+  if (length > 1.0e-15) camera.forward = direction / length;
+}
+
 void write_error(std::ostream& errors, std::string_view message, std::string_view command = {}) {
   errors << "{\"event\":\"error\",\"message\":\"" << message << '"';
   if (!command.empty()) errors << ",\"command\":\"" << command << '"';
@@ -794,6 +844,7 @@ void print_script_help(std::ostream& output) {
             "  prepare-scene               Build cached CPU geometry and statistics\n"
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
+            "  benchmark-cpu-camera-paths Benchmark all standard CPU camera motion paths\n"
             "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
             "  set-method=<key>            Reset using a registered subdivision method\n"
@@ -1601,6 +1652,46 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                << ",\"duration_ms\":" << std::fixed << std::setprecision(3) << duration << ',';
         write_mesh_fields(output, state);
         output << "}\n";
+      }
+      continue;
+    }
+    if(command=="benchmark-cpu-camera-paths"){
+      ScriptState baseline;
+      baseline.sphere.kind=default_implicit_shape;
+      baseline.sphere.secondary=tetra::implicit_shape_default_secondary(default_implicit_shape);
+      baseline.volume_connection_method=default_volume_connection_for_shape(default_implicit_shape);
+      static_cast<void>(refine_to_current_surface(baseline));
+      const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
+      for(const auto& path:paths){
+        ScriptState benchmark=baseline;
+        std::size_t transactions{};
+        std::size_t zero_work_updates{};
+        bool reached_depth_limit{};
+        const auto start=Clock::now();
+        for(const auto position:path.positions){
+          point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+          const auto result=reconcile_to_current_surface(benchmark);
+          transactions+=result.iterations;
+          zero_work_updates+=result.iterations==0?1U:0U;
+          reached_depth_limit|=result.reached_depth_limit;
+        }
+        const auto duration=milliseconds_since(start);
+        const bool valid=benchmark.mesh.has_positive_active_volumes()&&
+                         benchmark.mesh.has_conforming_active_faces();
+        output<<"{\"event\":\"cpu_camera_path_benchmark\",\"path\":\""
+              <<path.name<<"\",\"shape\":\""
+              <<tetra::implicit_shape_key(benchmark.sphere.kind)
+              <<"\",\"updates\":"<<path.positions.size()
+              <<",\"transactions\":"<<transactions
+              <<",\"zero_work_updates\":"<<zero_work_updates
+              <<",\"reached_depth_limit\":"<<(reached_depth_limit?"true":"false")
+              <<",\"valid\":"<<(valid?"true":"false")
+              <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)<<duration<<',';
+        write_mesh_fields(output,benchmark);output<<"}\n";
+        if(!valid){
+          write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);
+          return 1;
+        }
       }
       continue;
     }

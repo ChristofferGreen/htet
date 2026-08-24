@@ -159,7 +159,7 @@ count. Compact globally only when fragmentation crosses a measured threshold.
 
 ### Gate 0 - Freeze the baseline
 
-- [ ] Record a release benchmark for the current defaults over stationary,
+- [x] Record a release benchmark for the current defaults over stationary,
   slow orbit, rapid orbit, near-to-far, far-to-near, teleport, reversal, and
   repeated-pose paths.
 - [ ] Record planning, family resolution, commit, closure, derived-green
@@ -175,6 +175,27 @@ count. Compact globally only when fragmentation crosses a measured threshold.
 Exit condition: the release benchmark can distinguish adaptation work, surface
 work, handoff/copy work, and upload work without using wall-clock guesses from
 the UI.
+
+#### Initial CPU camera-path baseline
+
+The release command `tetra_viewer --script "benchmark-cpu-camera-paths"` runs
+each path from an independent copy of the interactive defaults: Perlin terrain,
+BCC red-green subdivision, surface optimization, and adaptive cleaving. Each
+event includes path duration, work counts, validity, and final logical and
+conforming-volume hashes. The following first-run baseline was recorded on
+2026-08-24 on an Apple M3 Pro; later gates extend these same events rather than
+introducing incompatible benchmark scripts.
+
+| Path | Updates | Time (ms) | Accepted splits | Accepted merges | Logical hash | Conforming hash |
+|---|---:|---:|---:|---:|---:|---:|
+| stationary | 4 | 3.364 | 0 | 0 | 10771159108319399354 | 8306739072152298354 |
+| slow orbit | 8 | 151.830 | 107 | 0 | 10511304919572425217 | 15684681851838777602 |
+| rapid orbit | 8 | 1168.869 | 6537 | 122 | 11188254276063111597 | 10446292943243739664 |
+| near to far | 6 | 2739.935 | 12248 | 10890 | 9631812835180593406 | 369648173658669266 |
+| far to near | 6 | 2132.255 | 11188 | 6580 | 5085705718518191816 | 3862747607337303755 |
+| teleport | 6 | 761.750 | 6497 | 2449 | 7982904738747822154 | 9287830994776944529 |
+| reversal | 7 | 134.553 | 1350 | 0 | 8574200701652014340 | 9946433227311532595 |
+| repeated pose | 8 | 22.450 | 13 | 0 | 17612503117663115496 | 14683475872280492951 |
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 

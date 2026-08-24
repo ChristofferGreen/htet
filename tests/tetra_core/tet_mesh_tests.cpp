@@ -3551,6 +3551,58 @@ TEST_CASE("headless refinement benchmark reports every increasing pass") {
   CHECK(text.find("\"event\":\"validation\",\"valid\":true") != std::string::npos);
 }
 
+TEST_CASE("headless CPU camera benchmark covers every deterministic motion path") {
+  const auto run=[] {
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script("benchmark-cpu-camera-paths",output,errors)==0);
+    CHECK(errors.str().empty());
+    return output.str();
+  };
+  const auto first=run();
+  const auto second=run();
+  constexpr std::array paths{
+      "stationary","slow-orbit","rapid-orbit","near-to-far",
+      "far-to-near","teleport","reversal","repeated-pose"};
+  std::size_t event_count{};
+  std::size_t offset{};
+  while((offset=first.find("\"event\":\"cpu_camera_path_benchmark\"",offset))!=
+        std::string::npos){
+    ++event_count;
+    ++offset;
+  }
+  CHECK(event_count==paths.size());
+  const auto event_for=[](const std::string& text,std::string_view path){
+    const std::string marker="\"path\":\""+std::string(path)+"\"";
+    const auto marker_position=text.find(marker);
+    REQUIRE(marker_position!=std::string::npos);
+    const auto begin=text.rfind('{',marker_position);
+    const auto end=text.find('\n',marker_position);
+    REQUIRE(begin!=std::string::npos);
+    REQUIRE(end!=std::string::npos);
+    return text.substr(begin,end-begin);
+  };
+  const auto field=[](const std::string& event,std::string_view key){
+    const auto begin=event.find(key);
+    REQUIRE(begin!=std::string::npos);
+    const auto value=begin+key.size();
+    return event.substr(value,event.find_first_of(",}",value)-value);
+  };
+  for(const auto path:paths){
+    const auto first_event=event_for(first,path);
+    const auto second_event=event_for(second,path);
+    CHECK(first_event.find("\"shape\":\"perlin-terrain\"")!=std::string::npos);
+    CHECK(first_event.find("\"valid\":true")!=std::string::npos);
+    CHECK(field(first_event,"\"logical_cut_hash\":")==
+          field(second_event,"\"logical_cut_hash\":"));
+    CHECK(field(first_event,"\"conforming_volume_hash\":")==
+          field(second_event,"\"conforming_volume_hash\":"));
+  }
+  const auto stationary=event_for(first,"stationary");
+  CHECK(field(stationary,"\"updates\":")==field(stationary,"\"zero_work_updates\":"));
+  const auto repeated=event_for(first,"repeated-pose");
+  CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=7U);
+}
+
 TEST_CASE("headless camera stress path is deterministic and conforming") {
   const auto run=[] {
     std::ostringstream output,errors;

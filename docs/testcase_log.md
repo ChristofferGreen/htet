@@ -9,6 +9,8 @@
 - 2026-08-24 05:58 local | fail | mode: release | command: `./scripts/compile.sh --release` | failures: release workflow entry point | notes: shell reported no such file or directory before configuration
 - 2026-08-24 06:00 local | fail | mode: release | command: `./scripts/compile.sh --release` | failures: default terrain cutaway visual baselines remain stable for both transitions | notes: 165 of 166 tests passed; three committed baseline files were not visible from the CTest working directory
 - 2026-08-24 06:02 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 166 tests passed
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark"` | failures: none | notes: the focused benchmark test passed; all eight motion paths were valid and deterministic
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 167 tests passed after adding the CPU camera-path baseline
 
 ## Resolved Failures
 
