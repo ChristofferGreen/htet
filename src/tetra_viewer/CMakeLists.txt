@@ -48,6 +48,11 @@ if(APPLE)
   # the compiled application remains next to it as tetra_viewer_bin.
   set_target_properties(tetra_viewer PROPERTIES OUTPUT_NAME tetra_viewer_bin)
   configure_file(tetra_viewer_macos.sh.in ${CMAKE_CURRENT_BINARY_DIR}/tetra_viewer @ONLY)
+  file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/tetra_viewer
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE)
   add_custom_command(TARGET tetra_viewer POST_BUILD
     COMMAND chmod +x ${CMAKE_CURRENT_BINARY_DIR}/tetra_viewer)
 endif()
