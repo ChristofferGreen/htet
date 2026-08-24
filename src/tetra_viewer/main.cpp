@@ -692,6 +692,7 @@ int main(int argc, char** argv)
     std::optional<tetra_viewer::MeshUpdateParameters> submitted_mesh_update;
     tetra_viewer::MeshUpdateOperation submitted_mesh_operation=
         tetra_viewer::MeshUpdateOperation::reconcile_lod;
+    std::uint64_t submitted_mesh_request_id{};
     std::uint64_t submitted_mesh_revision{};
     bool lod_reconcile_before_drag=false;
     bool previous_left_pressed=false;
@@ -831,7 +832,7 @@ int main(int argc, char** argv)
         return tetra_viewer::MeshUpdateParameters{
             sphere,camera,static_cast<double>(pixel_threshold),
             static_cast<unsigned int>(maximum_depth),adaptation_configuration,
-            sphere_revision};
+            sphere_revision,{.target_milliseconds=4.0}};
     };
 
     // Main loop
@@ -848,25 +849,36 @@ int main(int argc, char** argv)
         // The worker owns and mutates a private snapshot while this thread
         // continues presenting the previous complete scene.
         if(auto completed=mesh_update_worker.take_completed()){
-            mesh_update_in_flight=false;
-            submitted_mesh_update.reset();
             const auto current_parameters=mesh_update_parameters();
-            if(completed->converged&&
-               completed->source_mesh_revision==mesh.revision()&&
-               tetra_viewer::same_mesh_update_parameters(
-                   completed->parameters,current_parameters)){
-                mesh=std::move(completed->mesh);
-                adaptation_planning_cache=std::move(completed->planning_cache);
-                last_adaptive_result=completed->adaptation;
-                last_refine_milliseconds=completed->duration_milliseconds;
+            const auto publication=tetra_viewer::publish_mesh_update_result(
+                mesh_update_worker,std::move(*completed),mesh,
+                adaptation_planning_cache,submitted_mesh_request_id,
+                submitted_mesh_operation,current_parameters);
+            if(publication.published()){
+                last_adaptive_result=publication.adaptation;
+                last_refine_milliseconds=publication.duration_milliseconds;
                 has_adaptive_result=true;
                 refined=true;
                 mesh_validation_current=false;
-                lod_reconcile_pending=false;
                 upload_dirty=true;
+                submitted_mesh_revision=mesh.revision();
+                if(publication.status==
+                   tetra_viewer::MeshPublicationStatus::intermediate){
+                    submitted_mesh_request_id=publication.request_id;
+                    mesh_update_in_flight=true;
+                    lod_reconcile_pending=true;
+                }else{
+                    mesh_update_in_flight=false;
+                    submitted_mesh_update.reset();
+                    submitted_mesh_request_id=0U;
+                    lod_reconcile_pending=false;
+                }
             }else{
                 // A camera, field, setting, or direct mesh edit superseded the
                 // snapshot. Never publish stale geometry.
+                mesh_update_in_flight=false;
+                submitted_mesh_update.reset();
+                submitted_mesh_request_id=0U;
                 lod_reconcile_pending=true;
             }
         }
@@ -1568,6 +1580,7 @@ int main(int argc, char** argv)
                 mesh_update_worker.cancel();
                 mesh_update_in_flight=false;
                 submitted_mesh_update.reset();
+                submitted_mesh_request_id=0U;
             }
             mesh = tetra::TetMesh::make_unit_cube(tetra::subdivision_methods[subdivision_method_index]);
             if(mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green)
@@ -1583,8 +1596,8 @@ int main(int argc, char** argv)
         ImGui::TableNextColumn();
         if (ImGui::Button("Refine once", ImVec2(-FLT_MIN, 0.0f))) {
             const auto parameters=mesh_update_parameters();
-            static_cast<void>(mesh_update_worker.submit(
-                mesh,parameters,tetra_viewer::MeshUpdateOperation::refine_all_once));
+            submitted_mesh_request_id=mesh_update_worker.submit(
+                mesh,parameters,tetra_viewer::MeshUpdateOperation::refine_all_once);
             submitted_mesh_update=parameters;
             submitted_mesh_operation=
                 tetra_viewer::MeshUpdateOperation::refine_all_once;
@@ -1651,16 +1664,9 @@ int main(int argc, char** argv)
             .surface_diagnostics=statistics_open||diagnostic_shading,
             .summary_statistics=statistics_open};
         const auto preparation_start = std::chrono::steady_clock::now();
-        // A default scene rebuild is substantially more expensive than one
-        // budgeted LOD transaction. Keep drawing the last complete scene while
-        // several transactions converge, then publish the final revision once.
-        // UI-only changes still rebuild immediately because their mesh revision
-        // already matches the cache.
-        const bool defer_intermediate_mesh_scene=
-            tetra_viewer::defer_intermediate_scene_update(
-                lod_reconcile_pending,scene_cache,mesh);
-        if (!defer_intermediate_mesh_scene&&
-            scene_cache.update_scene(mesh, sphere, sphere_revision, surface_method,
+        // Each worker slice is a complete conforming revision, so publish its
+        // scene immediately while the retained private chain continues.
+        if (scene_cache.update_scene(mesh, sphere, sphere_revision, surface_method,
                                      tetra_viewer::material_rules[material_rule_index],
                                      show_faces, show_hierarchy_edges, show_surface_edges,
                                      depth_colours, x_cutaway && show_volume_edges,
@@ -1672,7 +1678,7 @@ int main(int argc, char** argv)
             last_scene_preparation_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
             upload_dirty = true;
         }
-        if(statistics_open&&!defer_intermediate_mesh_scene)
+        if(statistics_open)
             scene_cache.update_projection(mesh, camera, pixel_threshold);
         const auto& prepared_scene = scene_cache.scene();
         const auto& projection_statistics = scene_cache.projection();
@@ -1952,7 +1958,8 @@ int main(int argc, char** argv)
                     !tetra_viewer::same_mesh_update_parameters(
                         *submitted_mesh_update,parameters);
                 if(!mesh_update_in_flight||request_changed){
-                    static_cast<void>(mesh_update_worker.submit(mesh,parameters));
+                    submitted_mesh_request_id=
+                        mesh_update_worker.submit(mesh,parameters);
                     submitted_mesh_update=parameters;
                     submitted_mesh_operation=
                         tetra_viewer::MeshUpdateOperation::reconcile_lod;
@@ -1964,6 +1971,7 @@ int main(int argc, char** argv)
                     mesh_update_worker.cancel();
                     mesh_update_in_flight=false;
                     submitted_mesh_update.reset();
+                    submitted_mesh_request_id=0U;
                 }
                 const auto start=std::chrono::steady_clock::now();
                 last_adaptive_result=reconcile_to_current_surface();

@@ -297,7 +297,7 @@ complete-revision latency while preserving the same final hashes.
   without changing final hashes.
 - [x] Allow the worker to return a complete intermediate revision with
   `converged=false` and enough continuation state to resume the same request.
-- [ ] Make the viewer publish that revision and continue the request without
+- [x] Make the viewer publish that revision and continue the request without
   rebuilding planning state from the roots.
 - [ ] Cancel superseded continuations promptly and prove the latest request
   eventually wins.
@@ -404,6 +404,30 @@ time target until convergence. The following release run was recorded on
 Every intermediate slice passed positive-volume and face-conformity checks.
 The final hashes equal both unsliced policies, and hierarchy-bound tests prove
 that populated packed cache layers retain their allocations across slices.
+
+#### Progressive viewer publication
+
+The interactive viewer now applies a soft 4 ms worker target and publishes each
+complete result instead of waiting for final convergence. The publication
+handoff first verifies the request identity, operation, parameters, and exact
+immediate source revision. For an intermediate result it copies the immutable
+mesh snapshot needed by the renderer, moves the worker's original mesh and
+packed planning cache directly into the next slice, and exposes the copied
+snapshot only after the continuation is accepted. A converged result moves its
+mesh and cache into the viewer without the intermediate copy.
+
+Scene preparation follows every newly published mesh revision. This removes
+the old deliberate final-convergence deferral; later dirty-patch and draw-chunk
+gates can reduce the cost without weakening the complete-revision boundary.
+The viewer reports cumulative passes, marks, and worker time for the active
+chain rather than resetting those values for each slice.
+
+The headless worker benchmark now uses the same publication handoff. Its
+`resumed-slices` policy publishes five valid revisions, including four strictly
+improving intermediate logical cuts, before reaching the same logical and
+conforming hashes as both unsliced policies. A release integration test also
+builds the surface scene at every intermediate revision and verifies that the
+scene cache tracks each published mesh revision.
 
 ### Gate 2 - Independent persistent candidate discovery
 

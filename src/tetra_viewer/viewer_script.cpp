@@ -1990,46 +1990,76 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           surface,camera,4.0,9U,configuration,0U,
           {.maximum_operations_per_transaction=64U,
            .target_milliseconds=1.0e-9}};
-      static_cast<void>(worker.submit(source,resumed_parameters));
-      auto resumed=worker.wait_for_completed(std::chrono::seconds(10));
+      auto published_mesh=source;
+      tetra::AdaptationPlanningCache published_planning_cache;
+      auto expected_request=worker.submit(source,resumed_parameters);
+      MeshPublicationResult final_publication;
       std::size_t slice_count{};
-      while(resumed&&!resumed->converged&&slice_count<64U){
-        ++slice_count;
-        const auto submission=worker.submit_continuation(std::move(*resumed));
-        if(!submission){
-          write_error(errors,"CPU worker rejected a current continuation",
+      std::size_t intermediate_revisions{};
+      std::size_t previous_logical_owners=published_mesh.logical_cut().owners.size();
+      while(slice_count<64U){
+        auto resumed=worker.wait_for_completed(std::chrono::seconds(10));
+        if(!resumed){
+          write_error(errors,"CPU worker continuation timed out",
                       "resumed-slices");
           return 1;
         }
-        resumed=worker.wait_for_completed(std::chrono::seconds(10));
+        const auto publication=publish_mesh_update_result(
+            worker,std::move(*resumed),published_mesh,
+            published_planning_cache,expected_request,
+            MeshUpdateOperation::reconcile_lod,resumed_parameters);
+        ++slice_count;
+        const auto logical_owners=published_mesh.logical_cut().owners.size();
+        const bool valid=publication.published()&&
+            published_mesh.has_positive_active_volumes()&&
+            published_mesh.has_conforming_active_faces()&&
+            logical_owners>=previous_logical_owners;
+        if(!valid){
+          write_error(errors,"CPU worker published an invalid revision",
+                      "resumed-slices");
+          return 1;
+        }
+        previous_logical_owners=logical_owners;
+        if(publication.status==MeshPublicationStatus::converged){
+          final_publication=publication;
+          break;
+        }
+        if(publication.status!=MeshPublicationStatus::intermediate){
+          write_error(errors,"CPU worker failed to publish its continuation",
+                      "resumed-slices");
+          return 1;
+        }
+        ++intermediate_revisions;
+        expected_request=publication.request_id;
       }
-      if(!resumed||!resumed->converged){
+      if(final_publication.status!=MeshPublicationStatus::converged){
         write_error(errors,"CPU worker continuation did not converge",
                     "resumed-slices");
         return 1;
       }
-      ++slice_count;
       const auto resumed_logical_hash=address_hash(
-          resumed->mesh.logical_cut().owners);
+          published_mesh.logical_cut().owners);
       const auto resumed_conforming_hash=address_hash(
-          resumed->mesh.conforming_volume().addresses());
-      const bool resumed_valid=resumed->mesh.has_positive_active_volumes()&&
-          resumed->mesh.has_conforming_active_faces();
+          published_mesh.conforming_volume().addresses());
+      const bool resumed_valid=published_mesh.has_positive_active_volumes()&&
+          published_mesh.has_conforming_active_faces();
       const bool resumed_matches=final_logical_hash&&final_conforming_hash&&
           resumed_logical_hash==*final_logical_hash&&
           resumed_conforming_hash==*final_conforming_hash;
       output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
             "\"resumed-slices\",\"transaction_operation_budget\":"
-            <<resumed->transaction_operation_budget
+            <<final_publication.transaction_operation_budget
             <<",\"worker_time_target_ms\":"<<std::setprecision(9)
             <<resumed_parameters.budget.target_milliseconds
             <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
-            <<resumed->cumulative_duration_milliseconds
+            <<final_publication.duration_milliseconds
             <<",\"slices\":"<<slice_count
+            <<",\"published_revisions\":"<<slice_count
+            <<",\"intermediate_revisions\":"<<intermediate_revisions
             <<",\"transactions\":"
-            <<resumed->cumulative_adaptation.iterations
+            <<final_publication.adaptation.iterations
             <<",\"admissible_operations\":"
-            <<resumed->cumulative_admissible_operations
+            <<final_publication.admissible_operations
             <<",\"resumed_without_rebuild\":true,\"converged\":true,\"valid\":"
             <<(resumed_valid?"true":"false")
             <<",\"logical_cut_hash\":"<<resumed_logical_hash

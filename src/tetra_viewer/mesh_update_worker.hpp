@@ -90,6 +90,28 @@ struct MeshContinuationSubmission {
   }
 };
 
+enum class MeshPublicationStatus {
+  stale,
+  intermediate,
+  converged,
+  continuation_rejected
+};
+
+struct MeshPublicationResult {
+  MeshPublicationStatus status{MeshPublicationStatus::stale};
+  tetra::AdaptiveResult adaptation;
+  std::uint64_t request_id{};
+  std::uint64_t chain_id{};
+  std::size_t slice_index{};
+  double duration_milliseconds{};
+  std::size_t admissible_operations{};
+  std::size_t transaction_operation_budget{};
+  [[nodiscard]] bool published() const noexcept {
+    return status==MeshPublicationStatus::intermediate||
+        status==MeshPublicationStatus::converged;
+  }
+};
+
 // Owns all mutation of its private mesh snapshot. The render thread keeps
 // using the last published mesh and atomically adopts only a completed result.
 class MeshUpdateWorker {
@@ -125,5 +147,17 @@ class MeshUpdateWorker {
   bool running_{};
   std::jthread thread_;
 };
+
+// Publishes only a complete result from the expected request. An intermediate
+// mesh is copied for rendering while the worker-owned mesh and packed planning
+// state move directly into the next slice. The snapshot becomes visible only
+// after that continuation has been accepted.
+[[nodiscard]] MeshPublicationResult publish_mesh_update_result(
+    MeshUpdateWorker& worker,MeshUpdateResult&& result,
+    tetra::TetMesh& published_mesh,
+    tetra::AdaptationPlanningCache& published_planning_cache,
+    std::uint64_t expected_request_id,
+    MeshUpdateOperation expected_operation,
+    const MeshUpdateParameters& current_parameters);
 
 }  // namespace tetra_viewer

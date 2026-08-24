@@ -730,11 +730,4 @@ class SceneCache {
   bool summary_statistics_available_{};
 };
 
-[[nodiscard]] inline bool defer_intermediate_scene_update(
-    bool lod_reconcile_pending,const SceneCache& cache,
-    const tetra::TetMesh& mesh) noexcept {
-  return lod_reconcile_pending&&cache.initialized()&&
-         cache.mesh_revision()!=mesh.revision();
-}
-
 }  // namespace tetra_viewer

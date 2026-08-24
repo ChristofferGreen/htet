@@ -3474,21 +3474,6 @@ TEST_CASE("scene cache follows repeated surface and subdivision method switches"
   CHECK(cache.scene().surface_layer_tetrahedra > 0);
 }
 
-TEST_CASE("scene publication waits for a pending LOD transaction chain") {
-  auto mesh=tetra::TetMesh::make_unit_cube(
-      tetra::SubdivisionMethod::bcc_red_green);
-  const tetra::Sphere sphere{};
-  tetra_viewer::SceneCache cache;
-  CHECK_FALSE(tetra_viewer::defer_intermediate_scene_update(true,cache,mesh));
-  REQUIRE(cache.update_scene(
-      mesh,sphere,0,tetra_viewer::SurfaceMethod::surface_optimization,
-      tetra_viewer::MaterialRule::variational_smooth,true,false,true,false));
-  CHECK_FALSE(tetra_viewer::defer_intermediate_scene_update(true,cache,mesh));
-  REQUIRE(mesh.refine_selected_binary({mesh.logical_red_owners().front()}));
-  CHECK(tetra_viewer::defer_intermediate_scene_update(true,cache,mesh));
-  CHECK_FALSE(tetra_viewer::defer_intermediate_scene_update(false,cache,mesh));
-}
-
 TEST_CASE("background mesh updates publish only the latest converged snapshot") {
   auto mesh=tetra::TetMesh::make_unit_cube(
       tetra::SubdivisionMethod::bcc_red_green);
@@ -3697,6 +3682,102 @@ TEST_CASE("unconverged worker revisions resume retained planning state") {
   CHECK(finished.request_id==0U);
 }
 
+TEST_CASE("viewer publishes every complete worker slice before convergence") {
+  const auto source=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.25};
+  camera.forward={0.0,0.0,-1.0};
+  tetra::AdaptationConfiguration configuration;
+  configuration.candidate_traversal=
+      tetra::CandidateTraversal::hierarchy_bounds;
+  tetra_viewer::MeshUpdateParameters wide_parameters{
+      sphere,camera,4.0,9U,configuration,0U,
+      {.maximum_operations_per_transaction=4096U}};
+  auto sliced_parameters=wide_parameters;
+  sliced_parameters.budget.maximum_operations_per_transaction=64U;
+  sliced_parameters.budget.target_milliseconds=1.0e-9;
+
+  tetra_viewer::MeshUpdateWorker worker;
+  static_cast<void>(worker.submit(source,wide_parameters));
+  auto wide=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(wide.has_value());
+  REQUIRE(wide->converged);
+
+  auto published_mesh=source;
+  tetra::AdaptationPlanningCache published_planning_cache;
+  tetra_viewer::SceneCache scene_cache;
+  REQUIRE(scene_cache.update_scene(
+      published_mesh,sphere,0U,
+      tetra_viewer::SurfaceMethod::surface_optimization,
+      tetra_viewer::MaterialRule::variational_smooth,true,false,true,false));
+  const auto initial_scene_generation=scene_cache.scene_generation();
+  auto expected_request=worker.submit(source,sliced_parameters);
+  std::size_t intermediate_revisions{};
+  std::size_t previous_logical_owners=
+      published_mesh.logical_cut().owners.size();
+  std::uint64_t chain_id{};
+  tetra_viewer::MeshPublicationResult final_publication;
+  for(std::size_t slice_index=0;slice_index<64U;++slice_index){
+    auto completed=worker.wait_for_completed(std::chrono::seconds(10));
+    REQUIRE(completed.has_value());
+    const auto publication=tetra_viewer::publish_mesh_update_result(
+        worker,std::move(*completed),published_mesh,
+        published_planning_cache,expected_request,
+        tetra_viewer::MeshUpdateOperation::reconcile_lod,sliced_parameters);
+    REQUIRE(publication.published());
+    CHECK(publication.slice_index==slice_index);
+    if(slice_index==0U)chain_id=publication.chain_id;
+    CHECK(publication.chain_id==chain_id);
+    CHECK(published_mesh.has_positive_active_volumes());
+    CHECK(published_mesh.has_conforming_active_faces());
+    const auto logical_owners=published_mesh.logical_cut().owners.size();
+    CHECK(logical_owners>=previous_logical_owners);
+    if(publication.status==
+       tetra_viewer::MeshPublicationStatus::intermediate){
+      CHECK(logical_owners>previous_logical_owners);
+      ++intermediate_revisions;
+      expected_request=publication.request_id;
+      REQUIRE(scene_cache.update_scene(
+          published_mesh,sphere,0U,
+          tetra_viewer::SurfaceMethod::surface_optimization,
+          tetra_viewer::MaterialRule::variational_smooth,
+          true,false,true,false));
+      CHECK(scene_cache.mesh_revision()==published_mesh.revision());
+      CHECK(scene_cache.scene_generation()==
+            initial_scene_generation+intermediate_revisions);
+      previous_logical_owners=logical_owners;
+      continue;
+    }
+    REQUIRE(publication.status==
+            tetra_viewer::MeshPublicationStatus::converged);
+    final_publication=publication;
+    break;
+  }
+  REQUIRE(final_publication.status==
+          tetra_viewer::MeshPublicationStatus::converged);
+  CHECK(intermediate_revisions>1U);
+  CHECK(final_publication.adaptation.iterations==intermediate_revisions);
+  CHECK_FALSE(published_planning_cache.layers.empty());
+  CHECK(published_mesh.logical_cut().owners==wide->mesh.logical_cut().owners);
+  CHECK(std::ranges::equal(published_mesh.conforming_volume().addresses(),
+                           wide->mesh.conforming_volume().addresses()));
+
+  const auto final_revision=published_mesh.revision();
+  static_cast<void>(worker.submit(source,sliced_parameters));
+  auto stale=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(stale.has_value());
+  const auto wrong_request_id=stale->request_id+1U;
+  const auto rejected=tetra_viewer::publish_mesh_update_result(
+      worker,std::move(*stale),published_mesh,published_planning_cache,
+      wrong_request_id,tetra_viewer::MeshUpdateOperation::reconcile_lod,
+      sliced_parameters);
+  CHECK(rejected.status==tetra_viewer::MeshPublicationStatus::stale);
+  CHECK_FALSE(rejected.published());
+  CHECK(published_mesh.revision()==final_revision);
+}
+
 TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent policies") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -3711,6 +3792,8 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"time_budget_reached\":true,\"converged\":false,\"valid\":true")
         !=std::string::npos);
   CHECK(text.find("\"resumed_without_rebuild\":true")!=std::string::npos);
+  CHECK(text.find("\"published_revisions\":5")!=std::string::npos);
+  CHECK(text.find("\"intermediate_revisions\":4")!=std::string::npos);
 }
 
 TEST_CASE("lightweight scene preparation preserves render geometry without research diagnostics") {

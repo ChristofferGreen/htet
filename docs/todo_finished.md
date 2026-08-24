@@ -45,3 +45,9 @@
   identities plus cumulative metrics, and rejected reused, superseded, and
   converged continuations. Five timed release slices converge to the unsliced
   logical and conforming hashes while every intermediate mesh remains valid.
+- [x] Gate 1 progressive viewer publication: added one request-checked handoff
+  shared by the interactive viewer and headless benchmark. The viewer publishes
+  a render-owned copy of every complete intermediate mesh, moves the original
+  mesh and packed cache into the next 4 ms worker slice, rebuilds the scene for
+  each revision, and reports cumulative chain metrics. Tests observe four
+  improving intermediate scenes before hash-identical final convergence.

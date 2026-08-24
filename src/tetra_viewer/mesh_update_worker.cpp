@@ -237,4 +237,44 @@ void MeshUpdateWorker::run(std::stop_token stop) {
   }
 }
 
+MeshPublicationResult publish_mesh_update_result(
+    MeshUpdateWorker& worker,MeshUpdateResult&& result,
+    tetra::TetMesh& published_mesh,
+    tetra::AdaptationPlanningCache& published_planning_cache,
+    std::uint64_t expected_request_id,
+    MeshUpdateOperation expected_operation,
+    const MeshUpdateParameters& current_parameters) {
+  if(result.request_id!=expected_request_id||
+     result.operation!=expected_operation||
+     result.slice_source_mesh_revision!=published_mesh.revision()||
+     !same_mesh_update_parameters(result.parameters,current_parameters))
+    return {};
+
+  MeshPublicationResult publication{
+      .status=MeshPublicationStatus::converged,
+      .adaptation=result.cumulative_adaptation,
+      .request_id=result.request_id,.chain_id=result.chain_id,
+      .slice_index=result.slice_index,
+      .duration_milliseconds=result.cumulative_duration_milliseconds,
+      .admissible_operations=result.cumulative_admissible_operations,
+      .transaction_operation_budget=result.transaction_operation_budget};
+  if(result.converged){
+    published_mesh=std::move(result.mesh);
+    published_planning_cache=std::move(result.planning_cache);
+    return publication;
+  }
+
+  // The render thread and the next worker slice need independent ownership.
+  // Copy only the complete immutable publication; move the original private
+  // mesh and its retained planning arrays back into the worker.
+  auto publication_mesh=result.mesh;
+  const auto continuation=worker.submit_continuation(std::move(result));
+  if(!continuation)
+    return {.status=MeshPublicationStatus::continuation_rejected};
+  published_mesh=std::move(publication_mesh);
+  publication.status=MeshPublicationStatus::intermediate;
+  publication.request_id=continuation.request_id;
+  return publication;
+}
+
 }  // namespace tetra_viewer

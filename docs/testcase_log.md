@@ -6,6 +6,11 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation progressive-publication baseline passed all 176 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "background mesh updates|worker revisions resume|viewer publishes every|headless worker budget"` | failures: none | notes: four focused worker and publication tests passed, including scene generation for every complete intermediate revision
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: canonical publication handoff exposed five valid revisions, four improving intermediates, and the unsliced final hashes
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 176 tests passed after progressive viewer publication and retained-state continuation
+
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation continuation-state baseline passed all 175 tests
 - 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker revisions resume|worker budgets stop|headless worker budget"` | failures: unconverged worker revisions resume retained planning state | notes: expected summary layers were empty under the default candidate traversal
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker revisions resume|worker budgets stop|headless worker budget"` | failures: none | notes: all three focused worker tests passed with hierarchy-bound cache retention checked explicitly
