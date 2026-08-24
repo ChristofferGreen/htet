@@ -2191,10 +2191,54 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
       .wire_edge_count=wire_edges.size()};
 }
 
-SurfaceDrawChunkStorage::SurfaceDrawChunkStorage(std::size_t chunk_capacity)
-    :chunk_capacity_(chunk_capacity) {
+SurfaceDrawChunkStorage::SurfaceDrawChunkStorage(
+    std::size_t chunk_capacity,
+    SurfaceDrawChunkStrategy strategy,
+    std::size_t large_patch_threshold)
+    :chunk_capacity_(chunk_capacity),strategy_(strategy),
+     large_patch_threshold_(large_patch_threshold) {
   if(chunk_capacity_==0U)
     throw std::invalid_argument("surface draw chunk capacity must be positive");
+  if(strategy_==SurfaceDrawChunkStrategy::hybrid_large_patches&&
+     (large_patch_threshold_==0U||large_patch_threshold_>chunk_capacity_))
+    throw std::invalid_argument(
+        "surface draw large-patch threshold must fit a chunk");
+}
+
+bool SurfaceDrawChunkStorage::is_large_patch(
+    std::size_t triangle_count) const noexcept {
+  return strategy_==SurfaceDrawChunkStrategy::hybrid_large_patches&&
+      triangle_count>=large_patch_threshold_;
+}
+
+std::size_t SurfaceDrawChunkStorage::required_chunks(
+    std::span<const SurfacePatchRecord> patches) const {
+  std::size_t chunks{},used{};
+  for(const auto& patch:patches){
+    if(patch.triangle_count==0U)continue;
+    if(is_large_patch(patch.triangle_count)){
+      used=0U;
+      const auto dedicated=patch.triangle_count/chunk_capacity_+
+          (patch.triangle_count%chunk_capacity_!=0U?1U:0U);
+      if(dedicated>std::numeric_limits<std::size_t>::max()-chunks)
+        throw std::overflow_error("surface draw chunk count overflow");
+      chunks+=dedicated;
+      continue;
+    }
+    std::size_t remaining=patch.triangle_count;
+    while(remaining!=0U){
+      if(used==0U){
+        if(chunks==std::numeric_limits<std::size_t>::max())
+          throw std::overflow_error("surface draw chunk count overflow");
+        ++chunks;
+      }
+      const auto count=std::min(remaining,chunk_capacity_-used);
+      used+=count;
+      remaining-=count;
+      if(used==chunk_capacity_)used=0U;
+    }
+  }
+  return chunks;
 }
 
 void SurfaceDrawChunkStorage::normalize_free_ranges() {
@@ -2244,6 +2288,8 @@ void SurfaceDrawChunkStorage::finish_metrics(
     std::size_t triangle_count,
     std::chrono::steady_clock::time_point start) {
   metrics_.patch_segments=segments_.size();
+  metrics_.strategy=strategy_;
+  metrics_.large_patch_threshold=large_patch_threshold_;
   metrics_.triangles=triangle_count;
   metrics_.active_chunks=chunks_.size();
   metrics_.retained_slots=arena_.size()/chunk_capacity_;
@@ -2281,9 +2327,9 @@ void SurfaceDrawChunkStorage::compact(
   ++metrics_.global_compactions;
   std::size_t triangle_count{};
   for(const auto& patch:patches)triangle_count+=patch.triangle_count;
-  const auto required_chunks=(triangle_count+chunk_capacity_-1U)/chunk_capacity_;
-  chunks_.reserve(std::max(chunks_.capacity(),required_chunks));
-  segments_.reserve(std::max(segments_.capacity(),patches.size()+required_chunks));
+  const auto chunk_count=required_chunks(patches);
+  chunks_.reserve(std::max(chunks_.capacity(),chunk_count));
+  segments_.reserve(std::max(segments_.capacity(),patches.size()+chunk_count));
 
   const auto begin_chunk=[&]{
     SurfaceDrawChunkRecord chunk;
@@ -2293,9 +2339,14 @@ void SurfaceDrawChunkStorage::compact(
     if(next_content_revision_==0U)next_content_revision_=1U;
     chunks_.push_back(chunk);
   };
+  bool previous_large_patch{};
   for(const auto& patch:patches){
     if(patch.triangle_count==0U)continue;
     ++metrics_.nonempty_patches;
+    const bool large_patch=is_large_patch(patch.triangle_count);
+    if((large_patch||previous_large_patch)&&!chunks_.empty()&&
+       chunks_.back().triangle_count!=chunk_capacity_)
+      begin_chunk();
     std::size_t source_offset{};
     bool first_segment=true;
     while(source_offset<patch.triangle_count){
@@ -2319,6 +2370,7 @@ void SurfaceDrawChunkStorage::compact(
       if(source_offset<patch.triangle_count)++metrics_.chunk_splits;
       first_segment=false;
     }
+    previous_large_patch=large_patch;
   }
   metrics_.copied_bytes=triangle_count*sizeof(tetra::Triangle);
 }
@@ -2349,10 +2401,17 @@ void SurfaceDrawChunkStorage::pack(
   }
 
   metrics_={};
+  metrics_.strategy=strategy_;
   metrics_.chunk_capacity=chunk_capacity_;
+  metrics_.large_patch_threshold=large_patch_threshold_;
   metrics_.source_patches=patches.size();
   metrics_.nonempty_patches=static_cast<std::size_t>(std::ranges::count_if(
       patches,[](const auto& patch){return patch.triangle_count!=0U;}));
+  for(const auto& patch:patches){
+    if(!is_large_patch(patch.triangle_count))continue;
+    ++metrics_.large_patches;
+    metrics_.large_patch_triangles+=patch.triangle_count;
+  }
   const auto same_patch=[](const RetainedPatch& old_patch,
                            const RetainedPatch& new_patch){
     return old_patch.logical_owner==new_patch.logical_owner&&
@@ -2497,9 +2556,11 @@ void SurfaceDrawChunkStorage::pack(
   std::size_t local_triangles{};
   for(std::size_t index=patch_begin;index<patch_end;++index)
     local_triangles+=patches[index].triangle_count;
-  const auto required_chunks=(local_triangles+chunk_capacity_-1U)/chunk_capacity_;
+  const auto replacement_chunk_count=required_chunks(
+      patches.subspan(patch_begin,patch_end-patch_begin));
   const auto replaced_chunks=last_chunk-first_chunk+1U;
-  if(replaced_chunks>local_chunk_budget||required_chunks>local_chunk_budget||
+  if(replaced_chunks>local_chunk_budget||
+     replacement_chunk_count>local_chunk_budget||
      metrics_.dirty_patches*2U>std::max(retained_patches_.size(),next_patches.size())){
     compact(patches,patch_arena);
     retained_patches_=std::move(next_patches);
@@ -2508,12 +2569,14 @@ void SurfaceDrawChunkStorage::pack(
   }
 
   std::vector<std::size_t> local_slots;
-  local_slots.reserve(required_chunks);
+  local_slots.reserve(replacement_chunk_count);
   for(std::size_t index=first_chunk;
-      index<=last_chunk&&local_slots.size()<required_chunks;++index)
+      index<=last_chunk&&local_slots.size()<replacement_chunk_count;++index)
     local_slots.push_back(chunks_[index].arena_slot);
-  while(local_slots.size()<required_chunks)local_slots.push_back(allocate_slot());
-  for(std::size_t index=first_chunk+std::min(required_chunks,replaced_chunks);
+  while(local_slots.size()<replacement_chunk_count)
+    local_slots.push_back(allocate_slot());
+  for(std::size_t index=first_chunk+
+          std::min(replacement_chunk_count,replaced_chunks);
       index<=last_chunk;++index){
     free_ranges_.push_back({chunks_[index].arena_slot,1U});
     ++metrics_.released_slots;
@@ -2522,8 +2585,9 @@ void SurfaceDrawChunkStorage::pack(
 
   std::vector<SurfaceDrawChunkRecord> replacement_chunks;
   std::vector<SurfaceDrawPatchSegment> replacement_segments;
-  replacement_chunks.reserve(required_chunks);
-  replacement_segments.reserve((patch_end-patch_begin)+required_chunks);
+  replacement_chunks.reserve(replacement_chunk_count);
+  replacement_segments.reserve(
+      (patch_end-patch_begin)+replacement_chunk_count);
   const auto begin_replacement_chunk=[&]{
     SurfaceDrawChunkRecord chunk;
     chunk.arena_slot=local_slots[replacement_chunks.size()];
@@ -2532,8 +2596,14 @@ void SurfaceDrawChunkStorage::pack(
     if(next_content_revision_==0U)next_content_revision_=1U;
     replacement_chunks.push_back(chunk);
   };
+  bool previous_large_patch{};
   for(std::size_t patch_index=patch_begin;patch_index<patch_end;++patch_index){
     const auto& patch=patches[patch_index];
+    if(patch.triangle_count==0U)continue;
+    const bool large_patch=is_large_patch(patch.triangle_count);
+    if((large_patch||previous_large_patch)&&!replacement_chunks.empty()&&
+       replacement_chunks.back().triangle_count!=chunk_capacity_)
+      begin_replacement_chunk();
     std::size_t source_offset{};
     while(source_offset<patch.triangle_count){
       if(replacement_chunks.empty()||
@@ -2554,6 +2624,7 @@ void SurfaceDrawChunkStorage::pack(
       chunk.triangle_count+=count;
       source_offset+=count;
     }
+    previous_large_patch=large_patch;
   }
 
   std::vector<SurfaceDrawChunkRecord> next_chunks;
@@ -2595,10 +2666,10 @@ void SurfaceDrawChunkStorage::pack(
   metrics_.reused_bytes=(triangle_count-local_triangles)*sizeof(tetra::Triangle);
   metrics_.copied_bytes=local_triangles*sizeof(tetra::Triangle);
   metrics_.local_repacks=1U;
-  metrics_.overflow_splits=required_chunks>replaced_chunks?
-      required_chunks-replaced_chunks:0U;
-  metrics_.underfull_merges=replaced_chunks>required_chunks?
-      replaced_chunks-required_chunks:0U;
+  metrics_.overflow_splits=replacement_chunk_count>replaced_chunks?
+      replacement_chunk_count-replaced_chunks:0U;
+  metrics_.underfull_merges=replaced_chunks>replacement_chunk_count?
+      replaced_chunks-replacement_chunk_count:0U;
   retained_patches_=std::move(next_patches);
   finish_metrics(triangle_count,start);
 }

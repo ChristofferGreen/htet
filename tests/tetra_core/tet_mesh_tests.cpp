@@ -4470,6 +4470,14 @@ TEST_CASE("fixed surface draw chunks match direct packing for every local method
 
 TEST_CASE("surface draw chunks diagnose invalid ranges and report split merge packing") {
   CHECK_THROWS_AS(tetra_viewer::SurfaceDrawChunkStorage(0U),std::invalid_argument);
+  CHECK_THROWS_AS(tetra_viewer::SurfaceDrawChunkStorage(
+                      6U,tetra_viewer::SurfaceDrawChunkStrategy::
+                          hybrid_large_patches,0U),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(tetra_viewer::SurfaceDrawChunkStorage(
+                      6U,tetra_viewer::SurfaceDrawChunkStrategy::
+                          hybrid_large_patches,7U),
+                  std::invalid_argument);
   std::array<tetra::Triangle,7> arena{};
   std::array patches{
       tetra_viewer::SurfacePatchRecord{
@@ -4496,6 +4504,69 @@ TEST_CASE("surface draw chunks diagnose invalid ranges and report split merge pa
   CHECK_THROWS_AS(
       static_cast<void>(tetra_viewer::direct_pack_surface_patches(invalid,arena)),
       std::out_of_range);
+}
+
+TEST_CASE("hybrid draw chunks isolate large patches in packed retained slots") {
+  CHECK(tetra_viewer::default_surface_draw_chunk_strategy==
+        tetra_viewer::SurfaceDrawChunkStrategy::fixed_capacity);
+  CHECK(tetra_viewer::SurfaceDrawChunkStorage{}.strategy()==
+        tetra_viewer::SurfaceDrawChunkStrategy::fixed_capacity);
+  std::array<tetra::Triangle,14> arena{};
+  for(std::size_t index=0;index<arena.size();++index)
+    arena[index].a.x=static_cast<double>(index+1U);
+  std::array patches{
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=1U,.field_revision=1U,.topology_hash=1U,
+          .triangle_begin=0U,.triangle_count=2U,.triangle_capacity=2U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=2U,.field_revision=1U,.topology_hash=2U,
+          .triangle_begin=2U,.triangle_count=5U,.triangle_capacity=5U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=3U,.field_revision=1U,.topology_hash=3U,
+          .triangle_begin=7U,.triangle_count=2U,.triangle_capacity=2U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=4U,.field_revision=1U,.topology_hash=4U,
+          .triangle_begin=9U,.triangle_count=5U,.triangle_capacity=5U}};
+  tetra_viewer::SurfaceDrawChunkStorage hybrid(
+      6U,tetra_viewer::SurfaceDrawChunkStrategy::hybrid_large_patches,4U);
+  hybrid.pack(patches,arena);
+  const auto direct=tetra_viewer::direct_pack_surface_patches(patches,arena);
+  const auto assembled=tetra_viewer::assemble_surface_draw_chunks(hybrid);
+  REQUIRE(assembled.size()==direct.size());
+  CHECK(std::memcmp(assembled.data(),direct.data(),
+                    direct.size()*sizeof(tetra::Triangle))==0);
+  CHECK(hybrid.metrics().strategy==
+        tetra_viewer::SurfaceDrawChunkStrategy::hybrid_large_patches);
+  CHECK(hybrid.metrics().large_patch_threshold==4U);
+  CHECK(hybrid.metrics().large_patches==2U);
+  CHECK(hybrid.metrics().large_patch_triangles==10U);
+  CHECK(hybrid.metrics().active_chunks==4U);
+  CHECK(hybrid.metrics().fragmented_slots==10U);
+  for(const auto owner:{tetra::TetId{2U},tetra::TetId{4U}}){
+    const auto segment=std::ranges::find_if(
+        hybrid.segments(),[&](const auto& value){
+          return value.logical_owner==owner;
+        });
+    REQUIRE(segment!=hybrid.segments().end());
+    const auto& chunk=hybrid.chunks()[segment->chunk_index];
+    CHECK(chunk.segment_count==1U);
+    CHECK(segment->triangle_begin==
+          chunk.arena_slot*hybrid.chunk_capacity());
+  }
+
+  arena[3].b.y=42.0;
+  patches[1].field_revision=2U;
+  hybrid.pack(patches,arena);
+  CHECK(hybrid.metrics().dirty_patches==1U);
+  CHECK(hybrid.metrics().dirty_chunks==1U);
+  CHECK(hybrid.metrics().reused_chunks==3U);
+  CHECK(hybrid.metrics().copied_bytes==5U*sizeof(tetra::Triangle));
+  const auto changed=tetra_viewer::assemble_surface_draw_chunks(hybrid);
+  const auto changed_direct=
+      tetra_viewer::direct_pack_surface_patches(patches,arena);
+  REQUIRE(changed.size()==changed_direct.size());
+  CHECK(std::memcmp(changed.data(),changed_direct.data(),
+                    changed.size()*sizeof(tetra::Triangle))==0);
 }
 
 TEST_CASE("surface draw chunks repack only bounded dirty owner neighbourhoods") {
@@ -5758,9 +5829,11 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       "far-to-near","teleport","reversal","repeated-pose"};
   constexpr std::array methods{
       "marching-tetrahedra","lattice-cleaving","dual-contouring"};
-  const auto event_for=[&](std::string_view path,std::string_view method){
+  const auto event_for=[&](std::string_view path,std::string_view method,
+                           std::string_view strategy="fixed-capacity"){
     const std::string marker="\"path\":\""+std::string(path)+
-        "\",\"method\":\""+std::string(method)+"\"";
+        "\",\"method\":\""+std::string(method)+
+        "\",\"strategy\":\""+std::string(strategy)+"\"";
     const auto marker_position=text.find(marker);
     REQUIRE(marker_position!=std::string::npos);
     const auto begin=text.rfind('{',marker_position);
@@ -5776,9 +5849,12 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
     return event.substr(value,event.find_first_of(",}",value)-value);
   };
   std::size_t total_local_repacks{};
+  std::size_t total_hybrid_large_patches{};
   for(const auto path:paths){
     for(const auto method:methods){
       const auto event=event_for(path,method);
+      const auto monolithic=event_for(path,method,"direct-monolithic");
+      const auto hybrid=event_for(path,method,"hybrid-large-patches");
       const auto triangles=std::stoull(field(event,"\"triangles\":"));
       const auto chunks=std::stoull(field(event,"\"active_chunks\":"));
       const auto revisions=std::stoull(field(event,"\"revisions\":"));
@@ -5798,7 +5874,23 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       CHECK(event.find("\"host_byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"device_byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"exact\":true")!=std::string::npos);
+      CHECK(monolithic.find("\"exact\":true")!=std::string::npos);
+      CHECK(hybrid.find("\"exact\":true")!=std::string::npos);
       CHECK(field(event,"\"chunk_capacity\":")=="256");
+      CHECK(field(event,"\"large_patch_threshold\":")=="16");
+      CHECK(field(monolithic,"\"chunk_capacity\":")=="0");
+      CHECK(field(monolithic,"\"draw_calls\":")=="1");
+      CHECK(field(monolithic,"\"occupancy\":")=="1.000000");
+      CHECK(field(hybrid,"\"chunk_capacity\":")=="256");
+      CHECK(field(hybrid,"\"large_patch_threshold\":")=="16");
+      CHECK(field(monolithic,"\"triangle_hash\":")==
+            field(event,"\"triangle_hash\":"));
+      CHECK(field(hybrid,"\"triangle_hash\":")==
+            field(event,"\"triangle_hash\":"));
+      CHECK(field(monolithic,"\"wire_edge_hash\":")==
+            field(event,"\"wire_edge_hash\":"));
+      CHECK(field(hybrid,"\"wire_edge_hash\":")==
+            field(event,"\"wire_edge_hash\":"));
       CHECK(triangles>0U);
       CHECK(chunks>0U);
       CHECK(std::stoull(field(event,"\"retained_slots\":"))>=chunks);
@@ -5820,11 +5912,21 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       CHECK(std::stoull(field(event,"\"device_publications\":"))==revisions);
       CHECK(full_device_upload_bytes==full_host_stage_bytes);
       CHECK(device_uploaded_bytes<full_device_upload_bytes);
+      CHECK(std::stoull(field(monolithic,"\"copied_bytes\":"))==
+            std::stoull(field(monolithic,"\"full_pack_bytes\":")));
+      CHECK(std::stoull(field(monolithic,"\"device_uploaded_bytes\":"))==
+            std::stoull(field(monolithic,"\"full_device_upload_bytes\":")));
+      CHECK(copied_bytes<
+            std::stoull(field(monolithic,"\"copied_bytes\":")));
+      CHECK(device_uploaded_bytes<
+            std::stoull(field(monolithic,"\"device_uploaded_bytes\":")));
       CHECK(std::stoull(field(event,"\"device_upload_ranges\":"))>0U);
       CHECK(std::stoull(field(event,"\"device_reused_ranges\":"))>0U);
       CHECK(std::stoull(field(event,"\"device_draw_calls\":"))>=revisions);
       total_local_repacks+=
           std::stoull(field(event,"\"local_repacks\":"));
+      total_hybrid_large_patches+=
+          std::stoull(field(hybrid,"\"large_patches\":"));
       CHECK(std::stod(field(event,"\"occupancy\":"))>0.0);
       CHECK(std::stod(field(event,"\"occupancy\":"))<=1.0);
       CHECK(std::stod(field(event,"\"direct_pack_ms\":"))>=0.0);
@@ -5833,11 +5935,33 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
     }
   }
   CHECK(total_local_repacks>0U);
+  CHECK(total_hybrid_large_patches>0U);
+  const auto selection_position=text.find(
+      "\"event\":\"cpu_draw_strategy_selection\"");
+  REQUIRE(selection_position!=std::string::npos);
+  const auto selection_end=text.find('\n',selection_position);
+  REQUIRE(selection_end!=std::string::npos);
+  const auto selection=text.substr(
+      selection_position,selection_end-selection_position);
+  CHECK(selection.find("\"selected\":\"fixed-capacity\"")!=
+        std::string::npos);
+  CHECK(selection.find("\"selection_applicable\":false")!=
+        std::string::npos);
+  CHECK(selection.find("\"fixed_qualified\":true")!=std::string::npos);
+  CHECK(std::stoull(field(selection,"\"fixed_uploaded_bytes\":"))<
+        std::stoull(field(selection,"\"fixed_full_upload_bytes\":")));
 
   std::ostringstream invalid_output,invalid_errors;
   CHECK(tetra_viewer::run_script(
       "benchmark-cpu-draw-chunks=33",invalid_output,invalid_errors)==2);
   CHECK(invalid_errors.str().find("depth outside the supported range")!=
+        std::string::npos);
+  invalid_output.str({});
+  invalid_errors.str({});
+  CHECK(tetra_viewer::run_script(
+      "benchmark-cpu-draw-chunks=6:0",invalid_output,invalid_errors)==2);
+  CHECK(invalid_errors.str().find(
+            "hybrid threshold outside the supported range")!=
         std::string::npos);
 }
 

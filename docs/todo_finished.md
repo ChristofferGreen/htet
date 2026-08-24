@@ -2,6 +2,17 @@
 
 ## 2026-08-24
 
+- [x] CPU-G4-5 draw-front strategy comparison and selection: implemented a
+  flat hybrid path that isolates large patches in dedicated chunks, extended
+  the canonical benchmark to compare direct monolithic, fixed-capacity, and
+  hybrid publication on identical revisions, and added an enforced production
+  selection event. All strategies were exact. Fixed chunks reduced aggregate
+  uploads from 377.034 MB to 265.649 MB with 96.23% minimum occupancy; the
+  threshold-16 hybrid used 36,649 draws, 76.783 MB fragmentation, and twice the
+  packing/staging latency. Thresholds 8/16/32/64/128 were evaluated; no
+  nontrivial hybrid beat fixed. Solid/edged renders of all retained methods
+  remained closed and seam-free, so fixed-capacity remains the default and
+  Gate 4 is complete.
 - [x] CPU-G4-4 atomic Vulkan partial buffer uploads: mapped retained host slots
   directly to reusable device offsets, uploaded only replacement ranges, and
   atomically promoted complete draw tables after copies finished. Growth fills

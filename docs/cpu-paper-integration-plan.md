@@ -899,7 +899,7 @@ meets its exactness, locality, fallback, and visual exit conditions.
   the replacement revision is ready.
 - [x] Track chunk occupancy, fragmentation, bytes copied, bytes uploaded,
   splits, merges, global compactions, and draw calls.
-- [ ] Compare direct monolithic packing, fixed-capacity chunks, and a hybrid
+- [x] Compare direct monolithic packing, fixed-capacity chunks, and a hybrid
   large-patch path on the same camera traces.
 
 Exit condition: changed upload bytes follow changed patch bytes rather than
@@ -1069,6 +1069,56 @@ The release wrapper also completed a real MoltenVK presentation smoke check
 with 27 uploaded ranges, 1.221 MB uploaded, 27 draw calls, and no Vulkan error.
 CPU-G4-4 therefore closes the retained device-range and atomic-publication
 portion of Gate 4 without changing any surface method.
+
+#### Draw-front strategy selection
+
+The final Gate 4 comparison evaluates three complete draw fronts on the same
+eight camera traces and three patchable surface methods:
+
+- direct monolithic packing rebuilds, stages, and uploads one contiguous stream
+  per revision and renders it with one draw;
+- fixed-capacity packing uses the retained 256-triangle chunks selected by the
+  preceding leaves;
+- hybrid large-patch packing gives patches at or above a configurable threshold
+  dedicated fixed-capacity chunks while small patches continue sharing chunks.
+
+The hybrid remains a flat retained arena with ordered range tables and no
+allocation per patch or tetrahedron. Dedicated large patches are isolated from
+their neighbours, so same-size changes rewrite only their own chunks. Release
+tests cover isolation, selective replacement, invalid thresholds, structural
+camera changes, and exact triangle, orientation, incidence, material, wire,
+host, and device output for all three strategies.
+
+The production depth-16 run covered 159 complete revisions per strategy. Every
+strategy was exact, but only a retained strategy can satisfy Gate 4's
+proportional-upload exit condition:
+
+| Strategy | Copied bytes | Uploaded bytes | Device draws | Aggregate fragmentation | Minimum occupancy | Pack + host-stage latency | Decision |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Direct monolithic | 150.814 MB | 377.034 MB | 159 | 0 MB | 100% | 41.8 ms | reject: every revision uploads the full stream |
+| Fixed capacity | 101.709 MB | 265.649 MB | 8,295 | 0.309 MB | 96.23% | 96.5 ms | retain |
+| Hybrid, threshold 16 | 101.323 MB | 265.696 MB | 36,649 | 76.783 MB | 13.04% | 201.5 ms | reject |
+
+Direct packing has the lowest CPU packing latency and draw count, but uploads
+42% more bytes than fixed chunks and fails the required changed-work scaling.
+The hybrid saves no upload traffic at threshold 16 and more than doubles
+packing/staging latency. A threshold sweep confirms this is not an arbitrary
+cutoff: threshold 32 reduces fixed upload traffic by only 0.4% while lowering
+minimum occupancy to 64.18% and increasing dual-contour range draws from 4,603
+to 6,411; thresholds 64 and 128 classify no production patches and merely
+converge to fixed behavior.
+
+`benchmark-cpu-draw-chunks[=<depth>[:<hybrid-threshold>]]` now emits each
+strategy row plus an explicit selection event. At production depth it requires
+exact output, aggregate uploaded bytes below monolithic, and at least 90%
+minimum occupancy, then selects the lowest measured packing/staging latency.
+The benchmark rejects a compiled production default that differs from the
+winner. The selected and compiled default is `fixed-capacity`.
+
+Solid and edged depth-8 renders of marching tetrahedra, lattice cleaving, and
+dual contouring were inspected after selection. They were closed and opaque,
+with complete visible triangle edges and no draw-chunk seam, missing face,
+stale edge, or partial publication. Gate 4 therefore meets its exit condition.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 

@@ -726,8 +726,30 @@ struct SurfaceDrawChunkFreeRange {
   std::size_t slot_count{};
 };
 
+enum class SurfaceDrawChunkStrategy : std::uint8_t {
+  fixed_capacity,
+  hybrid_large_patches
+};
+
+[[nodiscard]] constexpr std::string_view surface_draw_chunk_strategy_key(
+    SurfaceDrawChunkStrategy strategy) noexcept {
+  switch(strategy){
+    case SurfaceDrawChunkStrategy::fixed_capacity:return "fixed-capacity";
+    case SurfaceDrawChunkStrategy::hybrid_large_patches:
+      return "hybrid-large-patches";
+  }
+  return "unknown";
+}
+
+inline constexpr SurfaceDrawChunkStrategy default_surface_draw_chunk_strategy=
+    SurfaceDrawChunkStrategy::fixed_capacity;
+
 struct SurfaceDrawChunkMetrics {
+  SurfaceDrawChunkStrategy strategy{SurfaceDrawChunkStrategy::fixed_capacity};
   std::size_t chunk_capacity{};
+  std::size_t large_patch_threshold{};
+  std::size_t large_patches{};
+  std::size_t large_patch_triangles{};
   std::size_t source_patches{};
   std::size_t nonempty_patches{};
   std::size_t patch_segments{};
@@ -762,13 +784,22 @@ struct SurfaceDrawChunkMetrics {
 // chunk; all metadata and geometry remain in flat retained arrays.
 class SurfaceDrawChunkStorage {
  public:
-  explicit SurfaceDrawChunkStorage(std::size_t chunk_capacity=256U);
+  explicit SurfaceDrawChunkStorage(
+      std::size_t chunk_capacity=256U,
+      SurfaceDrawChunkStrategy strategy=default_surface_draw_chunk_strategy,
+      std::size_t large_patch_threshold=64U);
 
   void pack(std::span<const SurfacePatchRecord> patches,
             std::span<const tetra::Triangle> patch_arena);
 
   [[nodiscard]] std::size_t chunk_capacity() const noexcept {
     return chunk_capacity_;
+  }
+  [[nodiscard]] SurfaceDrawChunkStrategy strategy() const noexcept {
+    return strategy_;
+  }
+  [[nodiscard]] std::size_t large_patch_threshold() const noexcept {
+    return large_patch_threshold_;
   }
   [[nodiscard]] std::span<const SurfaceDrawChunkRecord> chunks() const noexcept {
     return chunks_;
@@ -799,10 +830,15 @@ class SurfaceDrawChunkStorage {
   void normalize_free_ranges();
   void compact(std::span<const SurfacePatchRecord> patches,
                std::span<const tetra::Triangle> patch_arena);
+  [[nodiscard]] std::size_t required_chunks(
+      std::span<const SurfacePatchRecord> patches) const;
+  [[nodiscard]] bool is_large_patch(std::size_t triangle_count) const noexcept;
   void finish_metrics(std::size_t triangle_count,
                       std::chrono::steady_clock::time_point start);
 
   std::size_t chunk_capacity_{};
+  SurfaceDrawChunkStrategy strategy_{};
+  std::size_t large_patch_threshold_{};
   std::vector<SurfaceDrawChunkRecord> chunks_;
   std::vector<SurfaceDrawPatchSegment> segments_;
   std::vector<SurfaceDrawChunkFreeRange> free_ranges_;

@@ -1004,7 +1004,7 @@ void print_script_help(std::ostream& output) {
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
-            "  benchmark-cpu-draw-chunks[=<0..32>] Compare fixed chunks with direct surface packing\n"
+            "  benchmark-cpu-draw-chunks[=<0..32>[:<1..256>]] Compare monolithic, fixed, and hybrid draw packing\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
@@ -2131,31 +2131,60 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
     if(command==draw_chunk_benchmark||
        command.starts_with(std::string(draw_chunk_benchmark)+"=")){
       unsigned int benchmark_depth=16U;
+      unsigned int hybrid_threshold=16U;
       if(command.size()>draw_chunk_benchmark.size()){
         const auto value=command.substr(draw_chunk_benchmark.size()+1U);
-        if(!parse_unsigned(value,benchmark_depth)||benchmark_depth>32U){
+        const auto separator=value.find(':');
+        const auto depth_value=value.substr(0U,separator);
+        if(!parse_unsigned(depth_value,benchmark_depth)||benchmark_depth>32U){
           write_error(errors,"draw chunk benchmark depth outside the supported range",command);
+          return 2;
+        }
+        if(separator!=std::string_view::npos&&
+           (!parse_unsigned(value.substr(separator+1U),hybrid_threshold)||
+            hybrid_threshold==0U||hybrid_threshold>256U)){
+          write_error(errors,
+              "draw chunk hybrid threshold outside the supported range",command);
           return 2;
         }
       }
       constexpr std::size_t chunk_capacity=256U;
+      const auto large_patch_threshold=
+          static_cast<std::size_t>(hybrid_threshold);
       constexpr std::array methods{
           SurfaceMethod::marching_tetrahedra,
           SurfaceMethod::lattice_cleaving,
           SurfaceMethod::dual_contouring};
+      constexpr std::array retained_strategies{
+          SurfaceDrawChunkStrategy::fixed_capacity,
+          SurfaceDrawChunkStrategy::hybrid_large_patches};
       constexpr ScenePreparationOptions preparation{
           .surface_diagnostics=false,.summary_statistics=false};
       const auto baseline=cpu_benchmark_baseline(
           default_implicit_shape,benchmark_depth);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
+      struct StrategySelectionMetrics {
+        bool exact{true};
+        std::size_t uploaded_bytes{};
+        std::size_t full_upload_bytes{};
+        std::size_t draw_calls{};
+        double minimum_occupancy{1.0};
+        double latency_milliseconds{};
+      };
+      std::array<StrategySelectionMetrics,retained_strategies.size()>
+          selection_metrics;
       for(const auto& path:paths){
         for(const auto method:methods){
+         for(const auto strategy:retained_strategies){
           ScriptState benchmark=baseline;
           SceneCache cache;
-          SurfaceDrawChunkStorage chunks(chunk_capacity);
+          SurfaceDrawChunkStorage chunks(
+              chunk_capacity,strategy,large_patch_threshold);
           SurfaceHostStagingStorage host_staging(chunk_capacity);
           SurfaceDeviceUploadPlanner device_upload;
           std::vector<SceneVertex> device_arena;
+          std::vector<SceneVertex> monolithic_staging;
+          std::size_t monolithic_capacity{},monolithic_reallocations{};
           std::size_t revisions{},exact_matches{},full_pack_bytes{},copied_bytes{};
           std::size_t dirty_patches{},dirty_chunks{},reused_chunks{},reused_bytes{};
           std::size_t local_repacks{},global_compactions{},overflow_splits{};
@@ -2169,7 +2198,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           std::size_t device_upload_ranges{},device_reused_ranges{};
           std::size_t device_reallocations{},device_draw_calls{};
           double direct_milliseconds{},chunk_milliseconds{};
-          double host_stage_milliseconds{};
+          double host_stage_milliseconds{},monolithic_stage_milliseconds{};
           bool byte_match=true,layout_valid=true,host_byte_match=true;
           bool device_byte_match=true;
           SurfaceGeometryHashes packed_hashes;
@@ -2205,6 +2234,20 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 StencilConstruction::fixed,
                 StencilSelectionObjective::balanced,preparation,
                 assembled,true);
+            if(strategy==SurfaceDrawChunkStrategy::fixed_capacity){
+              const auto monolithic_stage_start=Clock::now();
+              if(packed_scene.triangle_vertices.size()>monolithic_capacity){
+                monolithic_capacity=std::max<std::size_t>(
+                    packed_scene.triangle_vertices.size(),4096U);
+                monolithic_staging.reserve(monolithic_capacity);
+                ++monolithic_reallocations;
+              }
+              monolithic_staging.assign(
+                  packed_scene.triangle_vertices.begin(),
+                  packed_scene.triangle_vertices.end());
+              monolithic_stage_milliseconds+=
+                  milliseconds_since(monolithic_stage_start);
+            }
             host_staging.stage(chunks,packed_scene.triangle_vertices);
             const auto assembled_host=
                 assemble_surface_host_staging(host_staging);
@@ -2300,8 +2343,15 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           const auto& metrics=chunks.metrics();
           output<<"{\"event\":\"cpu_draw_chunk_benchmark\",\"path\":\""
                 <<path.name<<"\",\"method\":\""<<surface_method_key(method)
+                <<"\",\"strategy\":\""
+                <<surface_draw_chunk_strategy_key(strategy)
                 <<"\",\"maximum_depth\":"<<benchmark_depth
                 <<",\"chunk_capacity\":"<<metrics.chunk_capacity
+                <<",\"large_patch_threshold\":"
+                <<metrics.large_patch_threshold
+                <<",\"large_patches\":"<<metrics.large_patches
+                <<",\"large_patch_triangles\":"
+                <<metrics.large_patch_triangles
                 <<",\"source_patches\":"<<metrics.source_patches
                 <<",\"nonempty_patches\":"<<metrics.nonempty_patches
                 <<",\"patch_segments\":"<<metrics.patch_segments
@@ -2371,7 +2421,139 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             write_error(errors,"draw chunk benchmark failed exact packing",path.name);
             return 1;
           }
+          const auto strategy_index=static_cast<std::size_t>(std::distance(
+              retained_strategies.begin(),
+              std::ranges::find(retained_strategies,strategy)));
+          auto& selection=selection_metrics[strategy_index];
+          selection.exact&=exact;
+          selection.uploaded_bytes+=device_uploaded_bytes;
+          selection.full_upload_bytes+=full_device_upload_bytes;
+          selection.draw_calls+=device_draw_calls;
+          selection.minimum_occupancy=
+              std::min(selection.minimum_occupancy,metrics.occupancy);
+          selection.latency_milliseconds+=
+              chunk_milliseconds+host_stage_milliseconds;
+          if(strategy==SurfaceDrawChunkStrategy::fixed_capacity){
+            output<<"{\"event\":\"cpu_draw_chunk_benchmark\",\"path\":\""
+                <<path.name<<"\",\"method\":\""<<surface_method_key(method)
+                <<"\",\"strategy\":\"direct-monolithic\""
+                <<",\"maximum_depth\":"<<benchmark_depth
+                <<",\"chunk_capacity\":0"
+                <<",\"large_patch_threshold\":0"
+                <<",\"large_patches\":0"
+                <<",\"large_patch_triangles\":0"
+                <<",\"source_patches\":"<<metrics.source_patches
+                <<",\"nonempty_patches\":"<<metrics.nonempty_patches
+                <<",\"patch_segments\":"<<metrics.nonempty_patches
+                <<",\"triangles\":"<<metrics.triangles
+                <<",\"active_chunks\":"<<(metrics.triangles==0U?0U:1U)
+                <<",\"retained_slots\":"<<(metrics.triangles==0U?0U:1U)
+                <<",\"free_slots\":0,\"reused_slots\":0"
+                <<",\"allocated_slots\":"<<monolithic_reallocations
+                <<",\"released_slots\":0,\"chunk_splits\":0"
+                <<",\"chunk_merges\":0,\"dirty_patches\":"
+                <<dirty_patches
+                <<",\"dirty_chunks\":"<<revisions
+                <<",\"reused_chunks\":0,\"reused_bytes\":0"
+                <<",\"local_repacks\":0,\"overflow_splits\":0"
+                <<",\"underfull_merges\":0,\"global_compactions\":0"
+                <<",\"fragmented_slots\":0,\"fragmentation_bytes\":0"
+                <<",\"revisions\":"<<revisions
+                <<",\"exact_matches\":"<<revisions
+                <<",\"full_pack_bytes\":"<<full_pack_bytes
+                <<",\"copied_bytes\":"<<full_pack_bytes
+                <<",\"retained_bytes\":"
+                <<monolithic_capacity*sizeof(SceneVertex)
+                <<",\"host_publications\":"<<revisions
+                <<",\"full_host_stage_bytes\":"<<full_host_stage_bytes
+                <<",\"host_staged_bytes\":"<<full_host_stage_bytes
+                <<",\"host_staged_wire_bytes\":0"
+                <<",\"host_aliased_wire_bytes\":"<<full_host_stage_bytes
+                <<",\"host_dirty_ranges\":"<<revisions
+                <<",\"host_reused_ranges\":0"
+                <<",\"host_retained_slots\":"<<(metrics.triangles==0U?0U:1U)
+                <<",\"host_free_slots\":0"
+                <<",\"host_allocated_slots\":"<<revisions
+                <<",\"host_reused_slots\":0,\"host_released_slots\":0"
+                <<",\"device_publications\":"<<revisions
+                <<",\"full_device_upload_bytes\":"<<full_device_upload_bytes
+                <<",\"device_uploaded_bytes\":"<<full_device_upload_bytes
+                <<",\"device_upload_ranges\":"<<revisions
+                <<",\"device_reused_ranges\":0"
+                <<",\"device_reallocations\":"<<monolithic_reallocations
+                <<",\"device_draw_calls\":"<<revisions
+                <<",\"draw_calls\":"<<(metrics.triangles==0U?0U:1U)
+                <<",\"triangle_hash\":"<<packed_hashes.triangle_hash
+                <<",\"wire_edge_hash\":"<<packed_hashes.wire_edge_hash
+                <<",\"byte_match\":true,\"layout_valid\":true"
+                <<",\"host_byte_match\":true,\"device_byte_match\":true"
+                <<",\"exact\":true,\"occupancy\":1.000000"
+                <<",\"direct_pack_ms\":"<<direct_milliseconds
+                <<",\"chunk_pack_ms\":"<<direct_milliseconds
+                <<",\"host_stage_ms\":"<<monolithic_stage_milliseconds
+                <<"}\n";
+          }
+         }
         }
+      }
+      const double minimum_required_occupancy=
+          benchmark_depth>=16U?0.90:0.0;
+      const auto qualifies=[minimum_required_occupancy](
+          const StrategySelectionMetrics& metrics){
+        return metrics.exact&&
+            metrics.uploaded_bytes<metrics.full_upload_bytes&&
+            metrics.minimum_occupancy>=minimum_required_occupancy;
+      };
+      std::size_t selected=retained_strategies.size();
+      if(benchmark_depth<16U)selected=0U;
+      else for(std::size_t index=0;index<selection_metrics.size();++index){
+          if(!qualifies(selection_metrics[index]))continue;
+          if(selected==retained_strategies.size()||
+             selection_metrics[index].latency_milliseconds<
+                 selection_metrics[selected].latency_milliseconds)
+            selected=index;
+        }
+      if(selected==retained_strategies.size()){
+        write_error(errors,"no draw chunk strategy passed the selection gate",command);
+        return 1;
+      }
+      const auto selected_strategy=retained_strategies[selected];
+      output<<"{\"event\":\"cpu_draw_strategy_selection\""
+            <<",\"selected\":\""
+            <<surface_draw_chunk_strategy_key(selected_strategy)<<"\""
+            <<",\"hybrid_threshold\":"<<large_patch_threshold
+            <<",\"selection_applicable\":"
+            <<(benchmark_depth>=16U?"true":"false")
+            <<",\"minimum_required_occupancy\":"<<std::fixed
+            <<std::setprecision(6)<<minimum_required_occupancy
+            <<",\"fixed_qualified\":"
+            <<(qualifies(selection_metrics[0])?"true":"false")
+            <<",\"fixed_uploaded_bytes\":"
+            <<selection_metrics[0].uploaded_bytes
+            <<",\"fixed_full_upload_bytes\":"
+            <<selection_metrics[0].full_upload_bytes
+            <<",\"fixed_draw_calls\":"<<selection_metrics[0].draw_calls
+            <<",\"fixed_minimum_occupancy\":"<<std::fixed
+            <<std::setprecision(6)<<selection_metrics[0].minimum_occupancy
+            <<",\"fixed_latency_ms\":"
+            <<selection_metrics[0].latency_milliseconds
+            <<",\"hybrid_qualified\":"
+            <<(qualifies(selection_metrics[1])?"true":"false")
+            <<",\"hybrid_uploaded_bytes\":"
+            <<selection_metrics[1].uploaded_bytes
+            <<",\"hybrid_full_upload_bytes\":"
+            <<selection_metrics[1].full_upload_bytes
+            <<",\"hybrid_draw_calls\":"<<selection_metrics[1].draw_calls
+            <<",\"hybrid_minimum_occupancy\":"
+            <<selection_metrics[1].minimum_occupancy
+            <<",\"hybrid_latency_ms\":"
+            <<selection_metrics[1].latency_milliseconds<<"}\n";
+      if(benchmark_depth>=16U&&large_patch_threshold==16U&&
+         selected_strategy!=default_surface_draw_chunk_strategy){
+        write_error(errors,
+            "production draw chunk default differs from benchmark selection",
+            command);
+        return 1;
       }
       continue;
     }
