@@ -291,7 +291,7 @@ complete-revision latency while preserving the same final hashes.
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 
-- [ ] Extend commit metrics with requested, admissible, committed, rejected,
+- [x] Extend commit metrics with requested, admissible, committed, rejected,
   stale, and conformity-expanded edits for both splitting and merging.
 - [ ] Add a deterministic transaction-operation budget and a worker-time target
   without changing final hashes.
@@ -307,6 +307,47 @@ complete-revision latency while preserving the same final hashes.
 
 Exit condition: a large camera jump yields multiple valid, improving revisions;
 the UI remains responsive; disabling slicing produces the same final hashes.
+
+#### Exact operation lifecycle accounting
+
+`AdaptationCommitResult::operations` now carries both split and merge counts
+through every lifecycle boundary. Requested candidates are partitioned into
+admissible commands, planner conformity rejections, and deferred work.
+Admissible commands then become committed, atomically rejected, or stale;
+conformity-created hierarchy families are reported separately as expansions.
+The benchmark verifies these identities for every camera path:
+
+```text
+requested = admissible + conformity rejected + deferred
+committed + rejected + stale = admissible + conformity expanded + conformity rejected
+```
+
+The following production-depth release counts were recorded on 2026-08-24.
+Split rejection and staleness were zero on every path; merge staleness and
+conformity expansion were also zero. Nonzero split expansion is the exact BCC
+closure work that was previously hidden inside the final cut delta.
+
+| Path | Split requested | Split admissible | Split committed | Split expanded |
+|---|---:|---:|---:|---:|
+| stationary | 0 | 0 | 0 | 0 |
+| slow orbit | 54 | 54 | 107 | 53 |
+| rapid orbit | 3024 | 3024 | 6537 | 3513 |
+| near to far | 11068 | 9614 | 12248 | 2634 |
+| far to near | 8731 | 8382 | 11188 | 2806 |
+| teleport | 3035 | 3035 | 6497 | 3462 |
+| reversal | 633 | 633 | 1350 | 717 |
+| repeated pose | 5 | 5 | 13 | 8 |
+
+| Path | Merge requested | Merge admissible | Merge committed | Merge rejected | Conformity rejected | Merge deferred |
+|---|---:|---:|---:|---:|---:|---:|
+| stationary | 0 | 0 | 0 | 0 | 0 | 0 |
+| slow orbit | 26 | 0 | 0 | 26 | 26 | 0 |
+| rapid orbit | 6335 | 122 | 122 | 6213 | 6213 | 0 |
+| near to far | 34836 | 11142 | 10890 | 11747 | 11495 | 12199 |
+| far to near | 10881 | 7154 | 6580 | 2517 | 1943 | 1784 |
+| teleport | 7705 | 2449 | 2449 | 5256 | 5256 | 0 |
+| reversal | 36 | 0 | 0 | 36 | 36 | 0 |
+| repeated pose | 0 | 0 | 0 | 0 | 0 | 0 |
 
 ### Gate 2 - Independent persistent candidate discovery
 

@@ -64,6 +64,12 @@ struct ScriptState {
   std::size_t accepted_merges{};
   std::size_t rejected_split_operations{};
   std::size_t rejected_merge_operations{};
+  std::size_t stale_split_operations{};
+  std::size_t stale_merge_operations{};
+  std::size_t conformity_expanded_splits{};
+  std::size_t conformity_expanded_merges{};
+  std::size_t conformity_rejected_splits{};
+  std::size_t conformity_rejected_merges{};
   std::size_t dirty_owner_events{};
   std::size_t maximum_dirty_owners{};
   std::size_t adaptation_transactions{};
@@ -102,6 +108,15 @@ struct ScriptState {
   std::optional<tetra::AdaptationReplayRecord> last_replay;
   tetra::BccUpdateMetrics bcc_metrics;
 };
+
+void accumulate(ScriptState& state,const tetra::AdaptationOperationMetrics& update){
+  state.rejected_split_operations+=update.rejected_splits;
+  state.rejected_merge_operations+=update.rejected_merges;
+  state.stale_split_operations+=update.stale_splits;
+  state.stale_merge_operations+=update.stale_merges;
+  state.conformity_expanded_splits+=update.conformity_expanded_splits;
+  state.conformity_expanded_merges+=update.conformity_expanded_merges;
+}
 
 void accumulate(tetra::BccUpdateMetrics& total,const tetra::BccUpdateMetrics& update){
   total.cut_scan_ms+=update.cut_scan_ms;
@@ -190,7 +205,8 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       state.projection_evaluations+=plan.projection_evaluations;
       state.depth_rejections+=plan.depth_rejections;
       state.conformity_rejections+=plan.conformity_rejections;
-      state.rejected_merge_operations+=plan.conformity_rejections;
+      state.conformity_rejected_splits+=plan.conformity_rejected_splits;
+      state.conformity_rejected_merges+=plan.conformity_rejected_merges;
       state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
@@ -213,20 +229,15 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       const auto commit_start=Clock::now();
       const auto commit=tetra::commit_adaptation(
           state.mesh,plan,state.adaptation,state.field_revision);
+      accumulate(state,commit.operations);
       if(commit.status==tetra::AdaptationCommitStatus::no_change&&
          !plan.commands.empty())state.planning_cache.pose_merge_pending=false;
       state.commit_milliseconds+=milliseconds_since(commit_start);
       state.last_result_revision=commit.resulting_revision;
       if(commit.status==tetra::AdaptationCommitStatus::no_change){
-        if(!plan.commands.empty()){
-          state.rejected_split_operations+=plan.planned_splits;
-          state.rejected_merge_operations+=plan.planned_merges;
-        }
         break;
       }
       if(commit.status!=tetra::AdaptationCommitStatus::committed){
-        state.rejected_split_operations+=plan.planned_splits;
-        state.rejected_merge_operations+=plan.planned_merges;
         state.stale_plans+=commit.status==tetra::AdaptationCommitStatus::stale_plan?1U:0U;
         state.rejected_plans+=commit.status==tetra::AdaptationCommitStatus::rejected?1U:0U;
         result.reached_depth_limit=true;
@@ -438,12 +449,22 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"committed_merges\":" << state.accepted_merges
          << ",\"rejected_split_operations\":" << state.rejected_split_operations
          << ",\"rejected_merge_operations\":" << state.rejected_merge_operations
+         << ",\"stale_split_operations\":" << state.stale_split_operations
+         << ",\"stale_merge_operations\":" << state.stale_merge_operations
+         << ",\"conformity_expanded_splits\":" << state.conformity_expanded_splits
+         << ",\"conformity_expanded_merges\":" << state.conformity_expanded_merges
+         << ",\"conformity_rejected_splits\":" << state.conformity_rejected_splits
+         << ",\"conformity_rejected_merges\":" << state.conformity_rejected_merges
          << ",\"deferred_splits\":"
-         << (state.requested_splits>state.planned_splits
-                 ?state.requested_splits-state.planned_splits:0U)
+         << (state.requested_splits>
+                 state.planned_splits+state.conformity_rejected_splits
+                 ?state.requested_splits-state.planned_splits-
+                      state.conformity_rejected_splits:0U)
          << ",\"deferred_merges\":"
-         << (state.requested_merges>state.planned_merges
-                 ?state.requested_merges-state.planned_merges:0U)
+         << (state.requested_merges>
+                 state.planned_merges+state.conformity_rejected_merges
+                 ?state.requested_merges-state.planned_merges-
+                      state.conformity_rejected_merges:0U)
          << ",\"dirty_owners\":" << state.dirty_owner_events
          << ",\"maximum_dirty_owners\":" << state.maximum_dirty_owners
          << ",\"planned_splits\":" << state.planned_splits
@@ -1532,7 +1553,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       state.projection_evaluations+=plan.projection_evaluations;
       state.depth_rejections+=plan.depth_rejections;
       state.conformity_rejections+=plan.conformity_rejections;
-      state.rejected_merge_operations+=plan.conformity_rejections;
+      state.conformity_rejected_splits+=plan.conformity_rejected_splits;
+      state.conformity_rejected_merges+=plan.conformity_rejected_merges;
       state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
@@ -1554,10 +1576,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       state.spatial_index_build_milliseconds+=plan.spatial_index_build_ms;
       const auto commit=tetra::commit_adaptation(
           state.mesh,plan,state.adaptation,state.field_revision);
+      accumulate(state,commit.operations);
       if(commit.status==tetra::AdaptationCommitStatus::rejected||
          commit.status==tetra::AdaptationCommitStatus::stale_plan){
-        state.rejected_split_operations+=plan.planned_splits;
-        state.rejected_merge_operations+=plan.planned_merges;
         write_error(errors,"incremental adaptation transaction was rejected",command);
         return 2;
       }
@@ -1570,9 +1591,6 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         state.maximum_dirty_owners=std::max(
             state.maximum_dirty_owners,state.mesh.last_dirty_logical_owners().size());
         ++state.adaptation_transactions;
-      }else if(!plan.commands.empty()){
-        state.rejected_split_operations+=plan.planned_splits;
-        state.rejected_merge_operations+=plan.planned_merges;
       }
       write_command_event(output,command,milliseconds_since(start),state);
       continue;

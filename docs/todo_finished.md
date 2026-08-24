@@ -30,3 +30,8 @@
   first changed complete conforming publication, and time to final convergence.
   Recorded all eight release baselines and defined stationary zero-work
   semantics so bounded worker slices can be compared against the same boundary.
+- [x] Gate 1 exact operation lifecycle accounting: added per-split and
+  per-merge requested, admissible, committed, rejected, stale, and
+  conformity-expanded counters to every commit result. Planner conformity
+  rejections and genuinely deferred work are now distinct, benchmark events
+  expose all states, and release tests prove both accounting identities.

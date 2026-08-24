@@ -25,6 +25,11 @@
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark"` | failures: none | notes: latency fields and publication-boundary invariants passed in the focused release test
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-camera-paths"` | failures: none | notes: recorded first-complete-revision and final-convergence latency for all eight production-depth camera paths
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 172 tests passed after complete-revision latency instrumentation and Gate 0 closure
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation Gate 1 lifecycle-accounting baseline passed all 172 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "adaptation planning is budgeted|adaptation commit metrics|headless CPU camera benchmark"` | failures: none | notes: all three lifecycle-accounting tests passed, including stale/rejected/closure-expanded identities
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-camera-paths"` | failures: none | notes: recorded exact split/merge lifecycle counts for all eight production-depth paths
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 173 tests passed after exact split/merge lifecycle accounting
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 173 tests passed after final address-level matching of admissible and committed operations
 
 ## Resolved Failures
 

@@ -1409,8 +1409,14 @@ TEST_CASE("adaptation planning is budgeted non-mutating and revision checked") {
   REQUIRE(plan.planned_splits>0);
   CHECK(plan.planned_merges==0);
 
-  CHECK(tetra::commit_adaptation(mesh,plan,configuration,18).status==
-        tetra::AdaptationCommitStatus::stale_plan);
+  const auto wrong_field=tetra::commit_adaptation(mesh,plan,configuration,18);
+  CHECK(wrong_field.status==tetra::AdaptationCommitStatus::stale_plan);
+  CHECK(wrong_field.operations.requested_splits==plan.requested_splits);
+  CHECK(wrong_field.operations.admissible_splits==plan.planned_splits);
+  CHECK(wrong_field.operations.stale_splits==plan.planned_splits);
+  CHECK(wrong_field.operations.committed_splits==0U);
+  CHECK(wrong_field.operations.rejected_splits==0U);
+  CHECK(wrong_field.operations.conformity_expanded_splits==0U);
   auto changed_configuration=configuration;
   changed_configuration.operation_budget=3;
   CHECK(tetra::commit_adaptation(mesh,plan,changed_configuration,17).status==
@@ -1422,6 +1428,60 @@ TEST_CASE("adaptation planning is budgeted non-mutating and revision checked") {
   const auto stale=tetra::commit_adaptation(mesh,plan,configuration,17);
   CHECK(stale.status==tetra::AdaptationCommitStatus::stale_plan);
   CHECK(mesh.logical_cut().owners==owners_after_external_change);
+}
+
+TEST_CASE("adaptation commit metrics cover the complete operation lifecycle") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  tetra::Camera camera;
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=1U;
+  const auto split_plan=tetra::plan_adaptation(
+      mesh,sphere,camera,28.0,6,configuration,0);
+  REQUIRE(split_plan.requested_splits>0U);
+  REQUIRE(split_plan.planned_splits==1U);
+  const auto split=tetra::commit_adaptation(mesh,split_plan,configuration,0);
+  REQUIRE(split.status==tetra::AdaptationCommitStatus::committed);
+  CHECK(split.operations.requested_splits==split_plan.requested_splits);
+  CHECK(split.operations.admissible_splits==split_plan.planned_splits);
+  CHECK(split.operations.committed_splits==split.accepted_splits);
+  CHECK(split.operations.committed_splits>=split.operations.admissible_splits);
+  CHECK(split.operations.conformity_expanded_splits==
+        split.operations.committed_splits-split.operations.admissible_splits);
+  CHECK(split.operations.committed_merges==0U);
+
+  tetra::AdaptationPlan rejected_plan;
+  rejected_plan.base_revision=mesh.revision();
+  rejected_plan.field_revision=0U;
+  rejected_plan.configuration=configuration;
+  rejected_plan.requested_splits=1U;
+  rejected_plan.planned_splits=1U;
+  rejected_plan.commands.push_back(
+      {split_plan.commands.front().logical_owner,
+       tetra::AdaptationCommandKind::split});
+  const auto rejected=tetra::commit_adaptation(
+      mesh,rejected_plan,configuration,0);
+  CHECK(rejected.status==tetra::AdaptationCommitStatus::rejected);
+  CHECK(rejected.operations.admissible_splits==1U);
+  CHECK(rejected.operations.rejected_splits==1U);
+  CHECK(rejected.operations.stale_splits==0U);
+  CHECK(rejected.operations.committed_splits==0U);
+
+  camera.position={0.5,0.5,100.0};
+  camera.forward={0.0,0.0,-1.0};
+  tetra::AdaptationPlanningCache cache;
+  const auto merge_plan=tetra::plan_adaptation(
+      mesh,sphere,camera,28.0,6,configuration,0,&cache);
+  REQUIRE(merge_plan.planned_merges>0U);
+  const auto merge=tetra::commit_adaptation(mesh,merge_plan,configuration,0);
+  REQUIRE(merge.status==tetra::AdaptationCommitStatus::committed);
+  CHECK(merge.operations.requested_merges==merge_plan.requested_merges);
+  CHECK(merge.operations.admissible_merges==merge_plan.planned_merges);
+  CHECK(merge.operations.committed_merges==merge.accepted_merges);
+  CHECK(merge.operations.conformity_expanded_merges==
+        merge.operations.committed_merges-merge.operations.admissible_merges);
+  CHECK(merge.operations.committed_splits==0U);
 }
 
 TEST_CASE("mesh snapshot byte accounting follows live packed storage") {
@@ -3725,6 +3785,29 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
     CHECK(first_event.find("\"dirty_owners\":")!=std::string::npos);
     CHECK(first_event.find("\"rejected_split_operations\":")!=std::string::npos);
     CHECK(first_event.find("\"rejected_merge_operations\":")!=std::string::npos);
+    for(const auto kind:{"splits","merges"}){
+      const auto requested=number(first_event,
+          "\"requested_"+std::string(kind)+"\":");
+      const auto admissible=number(first_event,
+          "\"admissible_"+std::string(kind)+"\":");
+      const auto committed=number(first_event,
+          "\"committed_"+std::string(kind)+"\":");
+      const auto rejected=number(first_event,
+          "\"rejected_"+std::string(kind==std::string_view{"splits"}
+              ?"split":"merge")+"_operations\":");
+      const auto stale=number(first_event,
+          "\"stale_"+std::string(kind==std::string_view{"splits"}
+              ?"split":"merge")+"_operations\":");
+      const auto expanded=number(first_event,
+          "\"conformity_expanded_"+std::string(kind)+"\":");
+      const auto conformity_rejected=number(first_event,
+          "\"conformity_rejected_"+std::string(kind)+"\":");
+      const auto deferred=number(first_event,
+          "\"deferred_"+std::string(kind)+"\":");
+      CHECK(requested==admissible+conformity_rejected+deferred);
+      CHECK(committed+rejected+stale==
+            admissible+expanded+conformity_rejected);
+    }
     CHECK(field(first_event,"\"logical_cut_hash\":")==
           field(second_event,"\"logical_cut_hash\":"));
     CHECK(field(first_event,"\"conforming_volume_hash\":")==

@@ -258,6 +258,8 @@ struct AdaptationPlan {
   std::size_t projection_evaluations{};
   std::size_t depth_rejections{};
   std::size_t conformity_rejections{};
+  std::size_t conformity_rejected_splits{};
+  std::size_t conformity_rejected_merges{};
   std::size_t hierarchy_nodes_visited{};
   std::size_t frustum_subtrees_rejected{};
   std::size_t field_subtrees_rejected{};
@@ -300,6 +302,25 @@ enum class AdaptationCommitStatus : std::uint8_t {
   committed,no_change,stale_plan,rejected,
 };
 
+// Counts logical hierarchy-family operations at each lifecycle boundary.
+// Requested candidates may be deferred or rejected by the planner;
+// admissible commands may later become stale or be rejected atomically;
+// conformity closure may commit additional exact hierarchy families.
+struct AdaptationOperationMetrics {
+  std::size_t requested_splits{};
+  std::size_t requested_merges{};
+  std::size_t admissible_splits{};
+  std::size_t admissible_merges{};
+  std::size_t committed_splits{};
+  std::size_t committed_merges{};
+  std::size_t rejected_splits{};
+  std::size_t rejected_merges{};
+  std::size_t stale_splits{};
+  std::size_t stale_merges{};
+  std::size_t conformity_expanded_splits{};
+  std::size_t conformity_expanded_merges{};
+};
+
 struct AdaptationCommitResult {
   AdaptationCommitStatus status{AdaptationCommitStatus::no_change};
   std::size_t accepted_splits{};
@@ -307,6 +328,7 @@ struct AdaptationCommitResult {
   std::uint64_t resulting_revision{};
   AdaptationReplayRecord replay;
   BccUpdateMetrics bcc_metrics;
+  AdaptationOperationMetrics operations;
 };
 
 } // namespace tetra

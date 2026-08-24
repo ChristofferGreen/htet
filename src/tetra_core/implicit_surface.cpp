@@ -1383,7 +1383,10 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     // every unrelated family made detailed cuts permanently unable to merge.
     if(!planning_cache){
       if(mesh.can_coarsen_selected_red(band))accepted=std::move(band);
-      else plan.conformity_rejections+=band.size();
+      else{
+        plan.conformity_rejections+=band.size();
+        plan.conformity_rejected_merges+=band.size();
+      }
       if(!accepted.empty())break;
       continue;
     }
@@ -1395,6 +1398,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       }
       if(blocked.empty())break;
       plan.conformity_rejections+=blocked.size();
+      plan.conformity_rejected_merges+=blocked.size();
       std::vector<TetId> filtered;
       filtered.reserve(band.size());
       std::set_difference(band.begin(),band.end(),blocked.begin(),blocked.end(),
@@ -1422,18 +1426,32 @@ AdaptationCommitResult commit_adaptation(
     std::uint64_t current_field_revision) {
   AdaptationCommitResult result;
   result.resulting_revision=mesh.revision();
+  result.operations.requested_splits=plan.requested_splits;
+  result.operations.requested_merges=plan.requested_merges;
+  result.operations.admissible_splits=plan.planned_splits;
+  result.operations.admissible_merges=plan.planned_merges;
+  result.operations.rejected_splits=plan.conformity_rejected_splits;
+  result.operations.rejected_merges=plan.conformity_rejected_merges;
+  const auto reject_admissible=[&]{
+    result.operations.rejected_splits+=result.operations.admissible_splits;
+    result.operations.rejected_merges+=result.operations.admissible_merges;
+  };
   if(plan.base_revision!=mesh.revision()||
      plan.field_revision!=current_field_revision||
      plan.configuration!=current_configuration){
     result.status=AdaptationCommitStatus::stale_plan;
+    result.operations.stale_splits=result.operations.admissible_splits;
+    result.operations.stale_merges=result.operations.admissible_merges;
     return result;
   }
   if(!plan.supported){
     result.status=AdaptationCommitStatus::rejected;
+    reject_admissible();
     return result;
   }
   if(plan.over_budget&&plan.commands.empty()){
     result.status=AdaptationCommitStatus::rejected;
+    reject_admissible();
     return result;
   }
   // Planning writes marks fine-to-coarse. Once closure is stable, commit reads
@@ -1454,6 +1472,7 @@ AdaptationCommitResult commit_adaptation(
   }
   if(!splits.empty()&&!merges.empty()){
     result.status=AdaptationCommitStatus::rejected;
+    reject_admissible();
     return result;
   }
   const auto logical=mesh.logical_cut();
@@ -1467,6 +1486,7 @@ AdaptationCommitResult commit_adaptation(
     for(const TetId owner:splits)
       if(!std::binary_search(logical.owners.begin(),logical.owners.end(),owner)){
         result.status=AdaptationCommitStatus::rejected;
+        reject_admissible();
         return result;
       }
     BccClosureMode closure_mode=BccClosureMode::sparse_frontier;
@@ -1477,14 +1497,19 @@ AdaptationCommitResult commit_adaptation(
     if(!mesh.commit_planned_red_refinement(
            splits,closure_mode,current_configuration.hybrid_frontier_ratio)){
       result.status=AdaptationCommitStatus::rejected;
+      reject_admissible();
       return result;
     }
   }else{
     if(mesh.subdivision_method()!=SubdivisionMethod::bcc_red_green){
       result.status=AdaptationCommitStatus::rejected;
+      reject_admissible();
       return result;
     }
-    if(!mesh.coarsen_selected_red(merges))return result;
+    if(!mesh.coarsen_selected_red(merges)){
+      reject_admissible();
+      return result;
+    }
   }
   const auto target=mesh.logical_cut();
   result.replay.target_owner_hash=logical_owner_hash(target.owners);
@@ -1530,6 +1555,25 @@ AdaptationCommitResult commit_adaptation(
         return command.kind==AdaptationCommandKind::split;
       }));
   result.accepted_merges=result.replay.forward_commands.size()-result.accepted_splits;
+  result.operations.committed_splits=result.accepted_splits;
+  result.operations.committed_merges=result.accepted_merges;
+  std::size_t matched_splits{},matched_merges{};
+  for(const auto& command:result.replay.forward_commands){
+    const auto& admissible=command.kind==AdaptationCommandKind::split?splits:merges;
+    const bool matched=std::binary_search(
+        admissible.begin(),admissible.end(),command.logical_owner);
+    if(command.kind==AdaptationCommandKind::split){
+      matched_splits+=matched?1U:0U;
+      result.operations.conformity_expanded_splits+=matched?0U:1U;
+    }else{
+      matched_merges+=matched?1U:0U;
+      result.operations.conformity_expanded_merges+=matched?0U:1U;
+    }
+  }
+  result.operations.rejected_splits+=
+      result.operations.admissible_splits-matched_splits;
+  result.operations.rejected_merges+=
+      result.operations.admissible_merges-matched_merges;
   result.status=AdaptationCommitStatus::committed;
   result.resulting_revision=mesh.revision();
   result.bcc_metrics=mesh.last_bcc_update_metrics();
@@ -1564,8 +1608,11 @@ AdaptationCommitResult replay_adaptation(
       mesh.subdivision_method()==SubdivisionMethod::bcc_red_green;
   plan.commands=reverse?record.reverse_commands:record.forward_commands;
   for(const auto& command:plan.commands){
-    plan.planned_splits+=command.kind==AdaptationCommandKind::split?1U:0U;
-    plan.planned_merges+=command.kind==AdaptationCommandKind::merge?1U:0U;
+    const bool split=command.kind==AdaptationCommandKind::split;
+    plan.requested_splits+=split?1U:0U;
+    plan.requested_merges+=split?0U:1U;
+    plan.planned_splits+=split?1U:0U;
+    plan.planned_merges+=split?0U:1U;
   }
   result=commit_adaptation(mesh,plan,current_configuration,current_field_revision);
   if(result.status==AdaptationCommitStatus::committed){
