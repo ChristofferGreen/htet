@@ -22,6 +22,11 @@ struct MeshUpdateBudget {
   // Zero disables the elapsed target. Positive targets are checked only after
   // a complete conforming transaction has committed.
   double target_milliseconds{};
+  // Zero disables each low-yield criterion. When either criterion is enabled,
+  // a slice ends after a complete transaction only when every enabled minimum
+  // is missed. Conformity-created edits are excluded from useful work.
+  std::uint32_t minimum_useful_operations_per_transaction{};
+  double minimum_useful_operations_per_millisecond{};
   friend bool operator==(const MeshUpdateBudget&,const MeshUpdateBudget&)=default;
 };
 
@@ -52,6 +57,8 @@ struct MeshUpdateRequest {
   tetra::AdaptiveResult cumulative_adaptation;
   double cumulative_duration_milliseconds{};
   std::size_t cumulative_admissible_operations{};
+  std::size_t cumulative_committed_useful_operations{};
+  std::size_t cumulative_low_yield_slices{};
   bool continuation{};
 };
 
@@ -71,8 +78,14 @@ struct MeshUpdateResult {
   double cumulative_duration_milliseconds{};
   std::size_t admissible_operations{};
   std::size_t cumulative_admissible_operations{};
+  std::size_t committed_useful_operations{};
+  std::size_t cumulative_committed_useful_operations{};
+  std::size_t low_yield_slices{};
+  std::size_t last_transaction_useful_operations{};
+  double last_transaction_useful_operations_per_millisecond{};
   std::size_t transaction_operation_budget{};
   bool time_budget_reached{};
+  bool low_yield_cutoff_reached{};
   bool converged{};
 };
 
@@ -105,7 +118,12 @@ struct MeshPublicationResult {
   std::size_t slice_index{};
   double duration_milliseconds{};
   std::size_t admissible_operations{};
+  std::size_t committed_useful_operations{};
+  std::size_t low_yield_slices{};
+  std::size_t last_transaction_useful_operations{};
+  double last_transaction_useful_operations_per_millisecond{};
   std::size_t transaction_operation_budget{};
+  bool low_yield_cutoff_reached{};
   [[nodiscard]] bool published() const noexcept {
     return status==MeshPublicationStatus::intermediate||
         status==MeshPublicationStatus::converged;

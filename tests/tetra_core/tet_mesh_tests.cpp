@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <ranges>
@@ -3569,6 +3570,16 @@ TEST_CASE("worker budgets stop only at complete transactions and preserve final 
   narrow_parameters.budget.maximum_operations_per_transaction=64U;
   CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(
       wide_parameters,narrow_parameters));
+  auto low_yield_parameters=narrow_parameters;
+  low_yield_parameters.budget.minimum_useful_operations_per_transaction=
+      std::numeric_limits<std::uint32_t>::max();
+  CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(
+      narrow_parameters,low_yield_parameters));
+  auto low_yield_rate_parameters=narrow_parameters;
+  low_yield_rate_parameters.budget.minimum_useful_operations_per_millisecond=
+      std::numeric_limits<double>::max();
+  CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(
+      narrow_parameters,low_yield_rate_parameters));
 
   tetra_viewer::MeshUpdateWorker worker;
   static_cast<void>(worker.submit(source,wide_parameters));
@@ -3589,6 +3600,19 @@ TEST_CASE("worker budgets stop only at complete transactions and preserve final 
   CHECK(std::ranges::equal(narrow->mesh.conforming_volume().addresses(),
                            wide->mesh.conforming_volume().addresses()));
 
+  auto mixed_threshold_parameters=narrow_parameters;
+  mixed_threshold_parameters.budget.minimum_useful_operations_per_transaction=1U;
+  mixed_threshold_parameters.budget.minimum_useful_operations_per_millisecond=
+      std::numeric_limits<double>::max();
+  static_cast<void>(worker.submit(source,mixed_threshold_parameters));
+  auto mixed_threshold=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(mixed_threshold.has_value());
+  CHECK(mixed_threshold->converged);
+  CHECK_FALSE(mixed_threshold->low_yield_cutoff_reached);
+  CHECK(mixed_threshold->low_yield_slices==0U);
+  CHECK(mixed_threshold->mesh.logical_cut().owners==
+        wide->mesh.logical_cut().owners);
+
   auto timed_parameters=narrow_parameters;
   timed_parameters.budget.target_milliseconds=1.0e-9;
   static_cast<void>(worker.submit(source,timed_parameters));
@@ -3602,6 +3626,49 @@ TEST_CASE("worker budgets stop only at complete transactions and preserve final 
   CHECK(timed->mesh.revision()!=source.revision());
   CHECK(timed->mesh.has_positive_active_volumes());
   CHECK(timed->mesh.has_conforming_active_faces());
+
+  low_yield_parameters.budget.minimum_useful_operations_per_millisecond=
+      std::numeric_limits<double>::max();
+  static_cast<void>(worker.submit(source,low_yield_parameters));
+  auto low_yield=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(low_yield.has_value());
+  REQUIRE_FALSE(low_yield->converged);
+  CHECK(low_yield->low_yield_cutoff_reached);
+  CHECK_FALSE(low_yield->time_budget_reached);
+  CHECK(low_yield->adaptation.iterations==1U);
+  CHECK(low_yield->mesh.revision()!=source.revision());
+  CHECK(low_yield->mesh.has_positive_active_volumes());
+  CHECK(low_yield->mesh.has_conforming_active_faces());
+  CHECK(low_yield->low_yield_slices==1U);
+  CHECK(low_yield->last_transaction_useful_operations==
+        low_yield->committed_useful_operations);
+  CHECK(low_yield->last_transaction_useful_operations_per_millisecond>0.0);
+
+  std::size_t useful_operations=low_yield->committed_useful_operations;
+  std::size_t low_yield_slices=1U;
+  for(std::size_t slice=1U;!low_yield->converged&&slice<64U;++slice){
+    const auto continuation=worker.submit_continuation(std::move(*low_yield));
+    REQUIRE(continuation.status==
+            tetra_viewer::MeshContinuationStatus::accepted);
+    low_yield=worker.wait_for_completed(std::chrono::seconds(10));
+    REQUIRE(low_yield.has_value());
+    CHECK(low_yield->mesh.has_positive_active_volumes());
+    CHECK(low_yield->mesh.has_conforming_active_faces());
+    useful_operations+=low_yield->committed_useful_operations;
+    if(low_yield->low_yield_cutoff_reached)++low_yield_slices;
+    CHECK(low_yield->cumulative_committed_useful_operations==useful_operations);
+    CHECK(low_yield->low_yield_slices==low_yield_slices);
+    if(!low_yield->converged){
+      CHECK(low_yield->low_yield_cutoff_reached);
+      CHECK(low_yield->adaptation.iterations==1U);
+    }
+  }
+  REQUIRE(low_yield->converged);
+  CHECK_FALSE(low_yield->low_yield_cutoff_reached);
+  CHECK(low_yield_slices>1U);
+  CHECK(low_yield->mesh.logical_cut().owners==wide->mesh.logical_cut().owners);
+  CHECK(std::ranges::equal(low_yield->mesh.conforming_volume().addresses(),
+                           wide->mesh.conforming_volume().addresses()));
 }
 
 TEST_CASE("unconverged worker revisions resume retained planning state") {
@@ -3816,12 +3883,17 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"variant\":\"bounded\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"timed-slice\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"resumed-slices\"")!=std::string::npos);
+  CHECK(text.find("\"variant\":\"low-yield-slices\"")!=std::string::npos);
   CHECK(text.find("\"transaction_operation_budget\":64")!=std::string::npos);
   CHECK(text.find("\"time_budget_reached\":true,\"converged\":false,\"valid\":true")
         !=std::string::npos);
   CHECK(text.find("\"resumed_without_rebuild\":true")!=std::string::npos);
   CHECK(text.find("\"published_revisions\":5")!=std::string::npos);
   CHECK(text.find("\"intermediate_revisions\":4")!=std::string::npos);
+  CHECK(text.find("\"low_yield_cutoff_reached\":true")!=std::string::npos);
+  CHECK(text.find("\"low_yield_slices\":")!=std::string::npos);
+  CHECK(text.find("\"committed_useful_operations\":")!=std::string::npos);
+  CHECK(text.find("\"last_useful_operations_per_ms\":")!=std::string::npos);
 }
 
 TEST_CASE("headless worker supersession keeps only the latest camera request") {

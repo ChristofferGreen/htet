@@ -90,6 +90,9 @@ MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
           result.cumulative_duration_milliseconds,
       .cumulative_admissible_operations=
           result.cumulative_admissible_operations,
+      .cumulative_committed_useful_operations=
+          result.cumulative_committed_useful_operations,
+      .cumulative_low_yield_slices=result.low_yield_slices,
       .continuation=true});
   completed_.reset();
   ++metrics_.submitted_requests;
@@ -192,7 +195,11 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     const std::size_t transaction_operation_budget=
         transaction_configuration.operation_budget;
     std::size_t admissible_operations{};
+    std::size_t committed_useful_operations{};
+    std::size_t last_transaction_useful_operations{};
+    double last_transaction_useful_operations_per_millisecond{};
     bool time_budget_reached=false;
+    bool low_yield_cutoff_reached=false;
     bool converged=false;
     bool canceled_plan=false;
     std::size_t transactions_after_supersession{};
@@ -207,6 +214,7 @@ void MeshUpdateWorker::run(std::stop_token stop) {
             transaction<transaction_limit;
         ++transaction){
       if(stop.stop_requested()||!current(request->request_id))break;
+      const auto transaction_start=std::chrono::steady_clock::now();
       const auto commit=tetra::adapt_to_surface(
           request->mesh,request->parameters.surface,request->parameters.camera,
           request->parameters.pixel_threshold,request->parameters.maximum_depth,
@@ -228,6 +236,24 @@ void MeshUpdateWorker::run(std::stop_token stop) {
       }
       ++adaptation.iterations;
       adaptation.refined_leaves+=commit.accepted_splits;
+      const std::size_t committed_operations=
+          commit.operations.committed_splits+commit.operations.committed_merges;
+      const std::size_t conformity_operations=
+          commit.operations.conformity_expanded_splits+
+          commit.operations.conformity_expanded_merges;
+      const std::size_t useful_operations=
+          committed_operations>=conformity_operations
+              ?committed_operations-conformity_operations:0U;
+      committed_useful_operations+=useful_operations;
+      const double transaction_milliseconds=
+          std::chrono::duration<double,std::milli>(
+              std::chrono::steady_clock::now()-transaction_start).count();
+      const double useful_operations_per_millisecond=
+          static_cast<double>(useful_operations)/
+          std::max(transaction_milliseconds,1.0e-12);
+      last_transaction_useful_operations=useful_operations;
+      last_transaction_useful_operations_per_millisecond=
+          useful_operations_per_millisecond;
       {
         std::lock_guard lock(mutex_);
         if(latest_request_id_!=request->request_id){
@@ -235,13 +261,21 @@ void MeshUpdateWorker::run(std::stop_token stop) {
           break;
         }
       }
-      if(request->parameters.budget.target_milliseconds>0.0&&
-         std::chrono::duration<double,std::milli>(
-             std::chrono::steady_clock::now()-start).count()>=
-             request->parameters.budget.target_milliseconds){
-        time_budget_reached=true;
-        break;
-      }
+      const bool count_enabled=
+          request->parameters.budget.minimum_useful_operations_per_transaction>0U;
+      const bool rate_enabled=
+          request->parameters.budget.minimum_useful_operations_per_millisecond>0.0;
+      const bool count_low=!count_enabled||useful_operations<
+          request->parameters.budget.minimum_useful_operations_per_transaction;
+      const bool rate_low=!rate_enabled||useful_operations_per_millisecond<
+          request->parameters.budget.minimum_useful_operations_per_millisecond;
+      low_yield_cutoff_reached=
+          (count_enabled||rate_enabled)&&count_low&&rate_low;
+      time_budget_reached=request->parameters.budget.target_milliseconds>0.0&&
+          std::chrono::duration<double,std::milli>(
+              std::chrono::steady_clock::now()-start).count()>=
+              request->parameters.budget.target_milliseconds;
+      if(low_yield_cutoff_reached||time_budget_reached)break;
     }
     const double duration=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-start).count();
@@ -254,6 +288,12 @@ void MeshUpdateWorker::run(std::stop_token stop) {
         request->cumulative_duration_milliseconds+duration;
     const std::size_t cumulative_admissible=
         request->cumulative_admissible_operations+admissible_operations;
+    const std::size_t cumulative_committed_useful=
+        request->cumulative_committed_useful_operations+
+        committed_useful_operations;
+    const std::size_t cumulative_low_yield_slices=
+        request->cumulative_low_yield_slices+
+        (low_yield_cutoff_reached?1U:0U);
 
     {
       std::lock_guard lock(mutex_);
@@ -274,8 +314,18 @@ void MeshUpdateWorker::run(std::stop_token stop) {
             .cumulative_duration_milliseconds=cumulative_duration,
             .admissible_operations=admissible_operations,
             .cumulative_admissible_operations=cumulative_admissible,
+            .committed_useful_operations=committed_useful_operations,
+            .cumulative_committed_useful_operations=
+                cumulative_committed_useful,
+            .low_yield_slices=cumulative_low_yield_slices,
+            .last_transaction_useful_operations=
+                last_transaction_useful_operations,
+            .last_transaction_useful_operations_per_millisecond=
+                last_transaction_useful_operations_per_millisecond,
             .transaction_operation_budget=transaction_operation_budget,
-            .time_budget_reached=time_budget_reached,.converged=converged});
+            .time_budget_reached=time_budget_reached,
+            .low_yield_cutoff_reached=low_yield_cutoff_reached,
+            .converged=converged});
         ++metrics_.completed_requests;
         metrics_.latest_completed_request_id=request->request_id;
       }else{
@@ -316,7 +366,15 @@ MeshPublicationResult publish_mesh_update_result(
       .slice_index=result.slice_index,
       .duration_milliseconds=result.cumulative_duration_milliseconds,
       .admissible_operations=result.cumulative_admissible_operations,
-      .transaction_operation_budget=result.transaction_operation_budget};
+      .committed_useful_operations=
+          result.cumulative_committed_useful_operations,
+      .low_yield_slices=result.low_yield_slices,
+      .last_transaction_useful_operations=
+          result.last_transaction_useful_operations,
+      .last_transaction_useful_operations_per_millisecond=
+          result.last_transaction_useful_operations_per_millisecond,
+      .transaction_operation_budget=result.transaction_operation_budget,
+      .low_yield_cutoff_reached=result.low_yield_cutoff_reached};
   if(result.converged){
     published_mesh=std::move(result.mesh);
     published_planning_cache=std::move(result.planning_cache);

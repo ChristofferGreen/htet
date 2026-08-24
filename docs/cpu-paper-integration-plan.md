@@ -301,7 +301,7 @@ complete-revision latency while preserving the same final hashes.
   rebuilding planning state from the roots.
 - [x] Cancel superseded continuations promptly and prove the latest request
   eventually wins.
-- [ ] Add a configurable low-yield cutoff based on committed useful edits per
+- [x] Add a configurable low-yield cutoff based on committed useful edits per
   pass and per millisecond; never use it to skip required conformity closure.
 - [ ] Measure snapshot copy and worker handoff cost separately.
 
@@ -404,6 +404,32 @@ time target until convergence. The following release run was recorded on
 Every intermediate slice passed positive-volume and face-conformity checks.
 The final hashes equal both unsliced policies, and hierarchy-bound tests prove
 that populated packed cache layers retain their allocations across slices.
+
+#### Low-yield complete-slice cutoff
+
+`MeshUpdateBudget` now has independent minimum useful-operation count and
+useful-operations-per-millisecond thresholds. Zero disables either threshold.
+When both are enabled, a transaction is low yield only when it misses both
+minima. Useful work is the committed split and merge count after subtracting
+conformity-expanded edits, so closure work cannot make a tail transaction look
+productive. The check runs only after an atomic transaction and its conformity
+closure commit; it ends the current worker slice, never the adaptation chain.
+
+Worker and publication results report per-slice and cumulative useful work,
+the final committed transaction's count and rate, cumulative low-yield slices,
+and whether the current slice ended at the cutoff. The
+`low-yield-slices` headless policy deliberately raises both minima so every
+productive transaction becomes its own complete publication. The following
+release run was recorded on 2026-08-24 on an Apple M3 Pro:
+
+| Policy | Slices | Low-yield slices | Useful operations | Last useful rate (operations/ms) | Time (ms) | Converged | Logical hash | Conforming hash |
+|---|---:|---:|---:|---:|---:|---|---:|---:|
+| low-yield slices | 5 | 4 | 164 | 61.538 | 2.334 | yes | 16825792801125746743 | 1178652062429369095 |
+
+All four intermediate publications were positive-volume and face-conforming.
+The fifth slice observed convergence without firing the cutoff, and the final
+hashes match the wide, bounded, and elapsed-slice continuation policies.
+Disabling both thresholds preserves the previous unsliced behavior.
 
 #### Progressive viewer publication
 

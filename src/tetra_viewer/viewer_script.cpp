@@ -2070,6 +2070,114 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                     "resumed-slices");
         return 1;
       }
+
+      MeshUpdateParameters low_yield_parameters{
+          surface,camera,4.0,9U,configuration,0U,
+          {.maximum_operations_per_transaction=64U,
+           .minimum_useful_operations_per_transaction=
+               std::numeric_limits<std::uint32_t>::max(),
+           .minimum_useful_operations_per_millisecond=
+               std::numeric_limits<double>::max()}};
+      published_mesh=source;
+      published_planning_cache={};
+      expected_request=worker.submit(source,low_yield_parameters);
+      final_publication={};
+      slice_count=0U;
+      intermediate_revisions=0U;
+      previous_logical_owners=published_mesh.logical_cut().owners.size();
+      bool observed_low_yield_cutoff=false;
+      std::size_t last_useful_operations{};
+      double last_useful_operations_per_millisecond{};
+      while(slice_count<64U){
+        auto completed=worker.wait_for_completed(std::chrono::seconds(10));
+        if(!completed){
+          write_error(errors,"CPU worker low-yield continuation timed out",
+                      "low-yield-slices");
+          return 1;
+        }
+        const auto publication=publish_mesh_update_result(
+            worker,std::move(*completed),published_mesh,
+            published_planning_cache,expected_request,
+            MeshUpdateOperation::reconcile_lod,low_yield_parameters);
+        ++slice_count;
+        const auto logical_owners=published_mesh.logical_cut().owners.size();
+        const bool valid=publication.published()&&
+            published_mesh.has_positive_active_volumes()&&
+            published_mesh.has_conforming_active_faces()&&
+            logical_owners>=previous_logical_owners;
+        if(!valid){
+          write_error(errors,"CPU worker published an invalid low-yield revision",
+                      "low-yield-slices");
+          return 1;
+        }
+        previous_logical_owners=logical_owners;
+        if(publication.low_yield_cutoff_reached){
+          observed_low_yield_cutoff=true;
+          last_useful_operations=publication.last_transaction_useful_operations;
+          last_useful_operations_per_millisecond=
+              publication.last_transaction_useful_operations_per_millisecond;
+        }
+        if(publication.status==MeshPublicationStatus::converged){
+          final_publication=publication;
+          break;
+        }
+        if(publication.status!=MeshPublicationStatus::intermediate||
+           !publication.low_yield_cutoff_reached){
+          write_error(errors,"CPU worker failed its low-yield slice boundary",
+                      "low-yield-slices");
+          return 1;
+        }
+        ++intermediate_revisions;
+        expected_request=publication.request_id;
+      }
+      if(final_publication.status!=MeshPublicationStatus::converged){
+        write_error(errors,"CPU worker low-yield continuation did not converge",
+                    "low-yield-slices");
+        return 1;
+      }
+      const auto low_yield_logical_hash=address_hash(
+          published_mesh.logical_cut().owners);
+      const auto low_yield_conforming_hash=address_hash(
+          published_mesh.conforming_volume().addresses());
+      const bool low_yield_valid=
+          published_mesh.has_positive_active_volumes()&&
+          published_mesh.has_conforming_active_faces();
+      const bool low_yield_matches=final_logical_hash&&final_conforming_hash&&
+          low_yield_logical_hash==*final_logical_hash&&
+          low_yield_conforming_hash==*final_conforming_hash;
+      output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
+            "\"low-yield-slices\",\"transaction_operation_budget\":"
+            <<final_publication.transaction_operation_budget
+            <<",\"minimum_useful_operations_per_transaction\":"
+            <<low_yield_parameters.budget.
+                minimum_useful_operations_per_transaction
+            <<",\"minimum_useful_operations_per_ms\":"
+            <<low_yield_parameters.budget.
+                minimum_useful_operations_per_millisecond
+            <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+            <<final_publication.duration_milliseconds
+            <<",\"slices\":"<<slice_count
+            <<",\"intermediate_revisions\":"<<intermediate_revisions
+            <<",\"low_yield_cutoff_reached\":"
+            <<(observed_low_yield_cutoff?"true":"false")
+            <<",\"low_yield_slices\":"<<final_publication.low_yield_slices
+            <<",\"committed_useful_operations\":"
+            <<final_publication.committed_useful_operations
+            <<",\"last_useful_operations\":"<<last_useful_operations
+            <<",\"last_useful_operations_per_ms\":"
+            <<last_useful_operations_per_millisecond
+            <<",\"converged\":true,\"valid\":"
+            <<(low_yield_valid?"true":"false")
+            <<",\"logical_cut_hash\":"<<low_yield_logical_hash
+            <<",\"conforming_volume_hash\":"
+            <<low_yield_conforming_hash<<"}\n";
+      if(!observed_low_yield_cutoff||intermediate_revisions==0U||
+         final_publication.low_yield_slices!=intermediate_revisions||
+         !low_yield_valid||!low_yield_matches){
+        write_error(errors,"CPU worker low-yield slices changed final hashes",
+                    "low-yield-slices");
+        return 1;
+      }
       continue;
     }
     if(command=="benchmark-cpu-worker-supersession"){

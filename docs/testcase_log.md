@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation low-yield-cutoff baseline passed all 178 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker budgets stop|headless worker budget"` | failures: none | notes: both focused tests passed; every low-yield slice was conforming and the continued chain matched unsliced final hashes
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: five low-yield slices published four valid intermediates, counted 164 useful operations, and converged to the wide and bounded hashes
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 178 tests passed after configurable low-yield complete-slice cutoff implementation
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation worker-supersession baseline passed all 176 tests
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "canceled adaptation|worker supersession|background mesh updates|worker revisions resume|viewer publishes every"` | failures: none | notes: five focused cancellation, worker, and publication tests passed
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-supersession"` | failures: none | notes: eight rapid requests superseded one pending and seven running requests; seven planners canceled, zero atomic transactions finished after supersession, and the latest hashes matched the oracle

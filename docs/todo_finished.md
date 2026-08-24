@@ -58,3 +58,10 @@
   most 0.007 ms, published no stale revision, and converged only the latest
   chain to independent oracle hashes. A racing private atomic commit may finish
   but is discarded before publication.
+- [x] Gate 1 low-yield complete-slice cutoff: added independently configurable
+  useful-operation count and rate minima, excluding conformity-expanded work.
+  Cutoffs occur only after atomic conformity commits and end a worker slice,
+  not its retained-state adaptation chain. Five deliberately low-yield release
+  slices published four valid intermediates and converged to the wide and
+  bounded policies' logical and conforming hashes; worker, publication,
+  benchmark, and parameter-identity diagnostics expose the policy and metrics.
