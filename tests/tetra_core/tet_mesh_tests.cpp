@@ -12,6 +12,7 @@
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/viewer_script.hpp"
 
 #include <cmath>
@@ -6092,6 +6093,37 @@ TEST_CASE("viewer publishes every complete worker slice before convergence") {
   CHECK(rejected.status==tetra_viewer::MeshPublicationStatus::stale);
   CHECK_FALSE(rejected.published());
   CHECK(published_mesh.revision()==final_revision);
+}
+
+TEST_CASE("scene preparation worker publishes only the latest complete scene") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere first_surface;
+  tetra::Sphere latest_surface;
+  latest_surface.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::ScenePreparationParameters first;
+  first.surface=first_surface;
+  first.surface_method=tetra_viewer::SurfaceMethod::marching_tetrahedra;
+  first.show_volume_edges=false;
+  first.show_volume_faces=false;
+  first.preparation={.surface_diagnostics=false,.summary_statistics=false};
+  auto latest=first;
+  latest.surface=latest_surface;
+  latest.surface_revision=1U;
+
+  tetra_viewer::ScenePreparationWorker worker;
+  const auto first_request=worker.submit(mesh,first);
+  const auto latest_request=worker.submit(mesh,latest);
+  CHECK(latest_request>first_request);
+  auto result=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(result.has_value());
+  CHECK(result->request_id==latest_request);
+  CHECK(result->mesh_revision==mesh.revision());
+  CHECK(tetra_viewer::same_scene_preparation_parameters(
+      result->parameters,latest));
+  CHECK_FALSE(result->scene.triangle_vertices.empty());
+  CHECK(result->duration_milliseconds>=0.0);
+  CHECK_FALSE(worker.busy());
 }
 
 TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent policies") {

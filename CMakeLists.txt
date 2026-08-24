@@ -43,6 +43,7 @@ target_compile_options(tetra_core PRIVATE
 add_library(tetra_viewer_script
   src/tetra_viewer/camera_manipulator.cpp
   src/tetra_viewer/mesh_update_worker.cpp
+  src/tetra_viewer/scene_preparation_worker.cpp
   src/tetra_viewer/viewer_script.cpp
   src/tetra_viewer/viewer_scene.cpp)
 target_include_directories(tetra_viewer_script PUBLIC src)

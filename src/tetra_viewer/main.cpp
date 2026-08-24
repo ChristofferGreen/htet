@@ -23,6 +23,7 @@
 #include "scene_renderer.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/viewer_script.hpp"
 #include <stdio.h>          // printf, fprintf
 #include <stdlib.h>         // abort
@@ -655,6 +656,16 @@ int main(int argc, char** argv)
     double last_validation_milliseconds = -1.0;
     double last_scene_preparation_milliseconds = -1.0;
     tetra_viewer::SceneCache scene_cache;
+    tetra_viewer::ScenePreparationWorker scene_preparation_worker;
+    tetra_viewer::PreparedScene background_prepared_scene;
+    tetra_viewer::ProjectionStatistics background_projection_statistics;
+    std::optional<tetra_viewer::ScenePreparationParameters>
+        submitted_scene_preparation;
+    std::uint64_t submitted_scene_request_id{};
+    std::uint64_t submitted_scene_mesh_revision{
+        std::numeric_limits<std::uint64_t>::max()};
+    std::uint64_t prepared_scene_mesh_revision{
+        std::numeric_limits<std::uint64_t>::max()};
     tetra_viewer::SurfaceDrawChunkStorage surface_draw_chunks;
     tetra_viewer::SurfaceHostStagingStorage surface_host_staging;
     bool retained_surface_upload_ready=false;
@@ -873,7 +884,7 @@ int main(int argc, char** argv)
                 has_adaptive_result=true;
                 refined=true;
                 mesh_validation_current=false;
-                upload_dirty=true;
+                if(retained_upload_check)upload_dirty=true;
                 submitted_mesh_revision=mesh.revision();
                 if(publication.status==
                    tetra_viewer::MeshPublicationStatus::intermediate){
@@ -1671,6 +1682,9 @@ int main(int argc, char** argv)
         if(mesh_update_in_flight)
             ImGui::TextColored(ImVec4(0.42f,0.78f,1.0f,1.0f),
                                "Updating mesh in background...");
+        if(!retained_upload_check&&scene_preparation_worker.busy())
+            ImGui::TextColored(ImVec4(0.42f,0.78f,1.0f,1.0f),
+                               "Preparing geometry in background...");
         const bool statistics_open=ImGui::CollapsingHeader("Statistics");
         const bool diagnostic_shading=
             shading_model==tetra_viewer::ShadingModel::dihedral_angle||
@@ -1678,36 +1692,78 @@ int main(int argc, char** argv)
         const tetra_viewer::ScenePreparationOptions preparation{
             .surface_diagnostics=statistics_open||diagnostic_shading,
             .summary_statistics=statistics_open};
-        const auto preparation_start = std::chrono::steady_clock::now();
-        // Each worker slice is a complete conforming revision, so publish its
-        // scene immediately while the retained private chain continues.
-        if (scene_cache.update_scene(mesh, sphere, sphere_revision, surface_method,
-                                     tetra_viewer::material_rules[material_rule_index],
-                                     show_faces, show_hierarchy_edges, show_surface_edges,
-                                     depth_colours, x_cutaway && show_volume_edges,
-                                     x_cutaway && show_volume_faces, x_cut_position,
-                                     volume_connection_method,stencil_construction,
-                                     stencil_selection_objective,preparation,
-                                     fixed_field_surface_triangles,
-                                     fixed_field_surface_cut_revision)) {
-            last_scene_preparation_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
-            const auto& updated_scene=scene_cache.scene();
-            const auto& patch_metrics=scene_cache.surface_patch_metrics();
-            retained_surface_upload_ready=patch_metrics.active&&
-                updated_scene.triangle_vertices.size()==
-                    patch_metrics.output_triangles*3U;
-            if(retained_surface_upload_ready){
+        const tetra_viewer::ScenePreparationParameters scene_parameters{
+            .surface=sphere,.surface_revision=sphere_revision,
+            .surface_method=surface_method,
+            .material_rule=tetra_viewer::material_rules[material_rule_index],
+            .show_faces=show_faces,
+            .show_hierarchy_edges=show_hierarchy_edges,
+            .show_surface_edges=show_surface_edges,
+            .depth_colours=depth_colours,
+            .show_volume_edges=x_cutaway&&show_volume_edges,
+            .show_volume_faces=x_cutaway&&show_volume_faces,
+            .x_cut_position=x_cut_position,
+            .volume_connection_method=volume_connection_method,
+            .stencil_construction=stencil_construction,
+            .stencil_selection_objective=stencil_selection_objective,
+            .preparation=preparation,
+            .surface_override_revision=fixed_field_surface_cut_revision};
+        if(retained_upload_check){
+            const auto preparation_start=std::chrono::steady_clock::now();
+            if(scene_cache.update_scene(
+                   mesh,sphere,sphere_revision,surface_method,
+                   tetra_viewer::material_rules[material_rule_index],show_faces,
+                   show_hierarchy_edges,show_surface_edges,depth_colours,
+                   x_cutaway&&show_volume_edges,x_cutaway&&show_volume_faces,
+                   x_cut_position,volume_connection_method,stencil_construction,
+                   stencil_selection_objective,preparation,
+                   fixed_field_surface_triangles,fixed_field_surface_cut_revision)){
+              last_scene_preparation_milliseconds=
+                  std::chrono::duration<double,std::milli>(
+                      std::chrono::steady_clock::now()-preparation_start).count();
+              const auto& patch_metrics=scene_cache.surface_patch_metrics();
+              retained_surface_upload_ready=patch_metrics.active&&
+                  scene_cache.scene().triangle_vertices.size()==
+                      patch_metrics.output_triangles*3U;
+              if(retained_surface_upload_ready){
                 surface_draw_chunks.pack(scene_cache.surface_patch_records(),
                                          scene_cache.surface_patch_arena());
-                surface_host_staging.stage(surface_draw_chunks,
-                                           updated_scene.triangle_vertices);
+                surface_host_staging.stage(
+                    surface_draw_chunks,scene_cache.scene().triangle_vertices);
+              }
+              upload_dirty=true;
             }
-            upload_dirty = true;
+        }else{
+          retained_surface_upload_ready=false;
+          if(auto completed=scene_preparation_worker.take_completed()){
+            if(completed->request_id==submitted_scene_request_id&&
+               completed->mesh_revision==mesh.revision()&&
+               tetra_viewer::same_scene_preparation_parameters(
+                   completed->parameters,scene_parameters)){
+              background_prepared_scene=std::move(completed->scene);
+              prepared_scene_mesh_revision=completed->mesh_revision;
+              last_scene_preparation_milliseconds=completed->duration_milliseconds;
+              upload_dirty=true;
+            }
+          }
+          const bool request_changed=!submitted_scene_preparation||
+              submitted_scene_mesh_revision!=mesh.revision()||
+              !tetra_viewer::same_scene_preparation_parameters(
+                  *submitted_scene_preparation,scene_parameters);
+          if(request_changed){
+            submitted_scene_request_id=scene_preparation_worker.submit(
+                mesh,scene_parameters,fixed_field_surface_triangles);
+            submitted_scene_preparation=scene_parameters;
+            submitted_scene_mesh_revision=mesh.revision();
+          }
         }
-        if(statistics_open)
-            scene_cache.update_projection(mesh, camera, pixel_threshold);
-        const auto& prepared_scene = scene_cache.scene();
-        const auto& projection_statistics = scene_cache.projection();
+        const auto& prepared_scene=retained_upload_check
+            ?scene_cache.scene():background_prepared_scene;
+        if(statistics_open&&prepared_scene_mesh_revision==mesh.revision())
+          background_projection_statistics=tetra_viewer::prepare_projection_statistics(
+              mesh,prepared_scene,camera,pixel_threshold);
+        const auto& projection_statistics=retained_upload_check
+            ?scene_cache.projection():background_projection_statistics;
         if (statistics_open) {
         ImGui::Text("Conforming cells: %zu", mesh.conforming_volume().size());
         ImGui::Text("Total volume: %.6f", prepared_scene.total_volume);

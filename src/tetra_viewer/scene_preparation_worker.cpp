@@ -1,0 +1,126 @@
+#include "tetra_viewer/scene_preparation_worker.hpp"
+
+#include <utility>
+
+namespace tetra_viewer {
+namespace {
+
+bool same_surface(const tetra::Sphere& first,const tetra::Sphere& second) noexcept {
+  return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
+      first.centre.z==second.centre.z&&first.radius==second.radius&&
+      first.kind==second.kind&&first.secondary==second.secondary&&
+      first.frequency==second.frequency;
+}
+
+}  // namespace
+
+bool same_scene_preparation_parameters(
+    const ScenePreparationParameters& first,
+    const ScenePreparationParameters& second) noexcept {
+  return same_surface(first.surface,second.surface)&&
+      first.surface_revision==second.surface_revision&&
+      first.surface_method==second.surface_method&&
+      first.material_rule==second.material_rule&&
+      first.show_faces==second.show_faces&&
+      first.show_hierarchy_edges==second.show_hierarchy_edges&&
+      first.show_surface_edges==second.show_surface_edges&&
+      first.depth_colours==second.depth_colours&&
+      first.show_volume_edges==second.show_volume_edges&&
+      first.show_volume_faces==second.show_volume_faces&&
+      first.x_cut_position==second.x_cut_position&&
+      first.volume_connection_method==second.volume_connection_method&&
+      first.stencil_construction==second.stencil_construction&&
+      first.stencil_selection_objective==second.stencil_selection_objective&&
+      first.preparation.surface_diagnostics==second.preparation.surface_diagnostics&&
+      first.preparation.summary_statistics==second.preparation.summary_statistics&&
+      first.surface_override_revision==second.surface_override_revision;
+}
+
+ScenePreparationWorker::ScenePreparationWorker()
+    :thread_([this](std::stop_token stop){run(stop);}) {}
+
+ScenePreparationWorker::~ScenePreparationWorker() {
+  thread_.request_stop();
+  condition_.notify_all();
+}
+
+std::uint64_t ScenePreparationWorker::submit(
+    const tetra::TetMesh& mesh,ScenePreparationParameters parameters,
+    std::span<const tetra::Triangle> surface_override) {
+  std::lock_guard lock(mutex_);
+  const auto request_id=++latest_request_id_;
+  pending_.emplace(Request{
+      .mesh=mesh,.parameters=std::move(parameters),
+      .surface_override={surface_override.begin(),surface_override.end()},
+      .request_id=request_id});
+  completed_.reset();
+  condition_.notify_all();
+  return request_id;
+}
+
+std::optional<ScenePreparationResult> ScenePreparationWorker::take_completed() {
+  std::lock_guard lock(mutex_);
+  if(!completed_)return std::nullopt;
+  auto result=std::move(completed_);
+  completed_.reset();
+  return result;
+}
+
+std::optional<ScenePreparationResult> ScenePreparationWorker::wait_for_completed(
+    std::chrono::milliseconds timeout) {
+  std::unique_lock lock(mutex_);
+  condition_.wait_for(lock,timeout,[&]{return completed_.has_value();});
+  if(!completed_)return std::nullopt;
+  auto result=std::move(completed_);
+  completed_.reset();
+  return result;
+}
+
+bool ScenePreparationWorker::busy() const {
+  std::lock_guard lock(mutex_);
+  return running_||pending_.has_value();
+}
+
+void ScenePreparationWorker::run(std::stop_token stop) {
+  while(!stop.stop_requested()){
+    std::optional<Request> request;
+    {
+      std::unique_lock lock(mutex_);
+      condition_.wait(lock,stop,[&]{return pending_.has_value();});
+      if(stop.stop_requested())return;
+      request=std::move(pending_);
+      pending_.reset();
+      running_=true;
+    }
+    const auto start=std::chrono::steady_clock::now();
+    auto scene=prepare_scene(
+        request->mesh,request->parameters.surface,
+        request->parameters.surface_method,request->parameters.material_rule,
+        request->parameters.show_faces,
+        request->parameters.show_hierarchy_edges,
+        request->parameters.show_surface_edges,
+        request->parameters.depth_colours,
+        request->parameters.show_volume_edges,
+        request->parameters.show_volume_faces,
+        request->parameters.x_cut_position,
+        request->parameters.volume_connection_method,
+        request->parameters.stencil_construction,
+        request->parameters.stencil_selection_objective,
+        request->parameters.preparation,request->surface_override,false);
+    const double duration=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-start).count();
+    {
+      std::lock_guard lock(mutex_);
+      running_=false;
+      if(request->request_id==latest_request_id_)
+        completed_.emplace(ScenePreparationResult{
+            .scene=std::move(scene),.parameters=request->parameters,
+            .mesh_revision=request->mesh.revision(),
+            .request_id=request->request_id,
+            .duration_milliseconds=duration});
+    }
+    condition_.notify_all();
+  }
+}
+
+}  // namespace tetra_viewer
