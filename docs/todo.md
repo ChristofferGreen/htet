@@ -6,8 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 2: seed persistent queues once and remove the complete streamed
-  active-cut seed from ordinary camera requests.
 - [ ] Gate 2: recompute camera-dependent queue priority lazily at the front.
 - [ ] Gate 2: enqueue only changed hierarchy families and conservative
   conformity neighbours after commits.

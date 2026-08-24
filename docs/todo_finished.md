@@ -80,3 +80,8 @@
   mesh submits a 136-byte handle in 0.001 ms, stationary work retains shared
   storage, moved-camera work detaches without changing source hashes, and five
   progressive slices copy only 680 bytes while remaining conforming.
+- [x] Gate 2 one-time persistent queue seed: initialized flat split and merge
+  fronts in one cancellation-safe active-cut pass, retained them across camera
+  requests, compacted stale entries in place, and removed command-fed queue
+  insertion. Production diagnostics report exactly one 13,284-owner seed and
+  focused tests prove later camera and post-commit requests perform no reseed.

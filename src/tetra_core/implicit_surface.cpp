@@ -910,6 +910,49 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.stationary_pixel_threshold=pixel_threshold;
     summaries.stationary_maximum_depth=maximum_depth;
   };
+  const auto& logical=mesh.logical_red_owners();
+  plan.logical_candidates=logical.size();
+  const auto complete_merge_parent=[&](TetId parent){
+    for(std::uint32_t child=0;child<8U;++child){
+      const TetId address=make_tet_id(
+          tet_root(parent),(tet_path(parent)<<3U)|static_cast<TetId>(child));
+      if(!std::binary_search(logical.begin(),logical.end(),address))return false;
+    }
+    return true;
+  };
+  const auto seed_scheduler=[&]{
+    if(configuration.update_scheduler==UpdateScheduler::classify_and_stream||
+       summaries.scheduler_seeded)return;
+    std::vector<PersistentSchedulerEntry> split_seed;
+    std::vector<PersistentSchedulerEntry> merge_seed;
+    split_seed.reserve(logical.size());
+    for(const TetId owner:logical){
+      if(cancel())return;
+      split_seed.push_back({owner,mesh.revision(),0.0});
+    }
+    std::vector<TetId> parents;
+    parents.reserve(logical.size());
+    for(const TetId owner:logical)
+      if(tet_depth(owner)>=3U)
+        parents.push_back(make_tet_id(tet_root(owner),tet_path(owner)>>3U));
+    std::sort(parents.begin(),parents.end());
+    parents.erase(std::unique(parents.begin(),parents.end()),parents.end());
+    merge_seed.reserve(parents.size());
+    for(const TetId parent:parents){
+      if(cancel())return;
+      if(complete_merge_parent(parent))
+        merge_seed.push_back({parent,mesh.revision(),0.0});
+    }
+    summaries.split_queue=std::move(split_seed);
+    summaries.merge_queue=std::move(merge_seed);
+    summaries.scheduler_seeded=true;
+    plan.scheduler_seed_scans=1U;
+    plan.scheduler_seed_candidates=logical.size();
+    plan.scheduler_queue_pushes=
+        summaries.split_queue.size()+summaries.merge_queue.size();
+  };
+  seed_scheduler();
+  if(cancel())return plan;
   const auto apply_scheduler=[&](std::span<const TetId> owners){
     if(cancel())return;
     if(configuration.update_scheduler==UpdateScheduler::classify_and_stream||
@@ -917,35 +960,34 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     const auto kind=plan.commands.front().kind;
     auto& queue=kind==AdaptationCommandKind::split
         ?summaries.split_queue:summaries.merge_queue;
-    for(const auto& command:plan.commands){
-      if(cancel())return;
-      const bool already=std::ranges::any_of(queue,[&](const auto& entry){
-        return entry.address==command.logical_owner&&
-            entry.state_revision==mesh.revision();
-      });
-      if(!already){
-        queue.push_back({command.logical_owner,mesh.revision(),0.0});
-        ++plan.scheduler_queue_pushes;
-      }
-    }
-    // Stable address is the secondary key. Camera priority is deliberately
-    // recomputed only when an entry reaches the retained queue front.
+    // Stable address remains the secondary key. This leaf retains the eager
+    // priority refresh; the next Gate 2 leaf limits refresh to queue fronts.
     std::sort(queue.begin(),queue.end(),[](const auto& left,const auto& right){
       if(left.last_priority!=right.last_priority)
         return left.last_priority>right.last_priority;
       return left.address<right.address;
     });
-    std::size_t stale{};
-    for(auto& entry:queue){
+    const auto current_entry=[&](TetId address){
+      return kind==AdaptationCommandKind::split
+          ?std::binary_search(owners.begin(),owners.end(),address)
+          :complete_merge_parent(address);
+    };
+    std::size_t write{};
+    for(std::size_t read=0;read<queue.size();++read){
       if(cancel())return;
-      if(entry.state_revision!=mesh.revision()){
-        ++plan.scheduler_stale_pops;++stale;continue;
+      auto entry=queue[read];
+      if(!current_entry(entry.address)){
+        ++plan.scheduler_stale_pops;
+        continue;
       }
       entry.last_priority=projected_tetrahedron_diameter(
           mesh,entry.address,prepared_camera);
+      entry.state_revision=mesh.revision();
       ++plan.scheduler_priority_recomputations;
       ++plan.scheduler_useful_pops;
+      queue[write++]=entry;
     }
+    queue.resize(write);
     if(configuration.update_scheduler==UpdateScheduler::hybrid_queued_blocks){
       std::vector<std::uint64_t> blocks;
       blocks.reserve(plan.commands.size());
@@ -956,16 +998,10 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
       plan.scheduler_block_streams=blocks.size();
     }
-    if(queue.size()>owners.size()/2U+1U||stale>owners.size()/4U){
-      ++plan.scheduler_fallbacks;
-      queue.clear();
-    }
   };
 
   struct Candidate { TetId address{invalid_tet}; double priority{}; };
   std::vector<Candidate> splits;
-  const auto& logical=mesh.logical_red_owners();
-  plan.logical_candidates=logical.size();
   const bool has_overdepth=std::ranges::any_of(logical,[&](TetId owner){
     return tet_depth(owner)>maximum_depth;
   });

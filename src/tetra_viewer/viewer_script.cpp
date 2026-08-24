@@ -91,6 +91,8 @@ struct ScriptState {
   std::size_t spatial_run_count{};
   std::size_t spatial_run_bound_tests{};
   std::size_t spatial_run_candidates{};
+  std::size_t scheduler_seed_scans{};
+  std::size_t scheduler_seed_candidates{};
   std::size_t scheduler_queue_pushes{};
   std::size_t scheduler_useful_pops{};
   std::size_t scheduler_stale_pops{};
@@ -217,6 +219,8 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       state.spatial_run_count=plan.spatial_run_count;
       state.spatial_run_bound_tests+=plan.spatial_run_bound_tests;
       state.spatial_run_candidates+=plan.spatial_run_candidates;
+      state.scheduler_seed_scans+=plan.scheduler_seed_scans;
+      state.scheduler_seed_candidates+=plan.scheduler_seed_candidates;
       state.scheduler_queue_pushes+=plan.scheduler_queue_pushes;
       state.scheduler_useful_pops+=plan.scheduler_useful_pops;
       state.scheduler_stale_pops+=plan.scheduler_stale_pops;
@@ -496,6 +500,8 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"spatial_run_bound_tests\":" << state.spatial_run_bound_tests
          << ",\"spatial_run_candidates\":" << state.spatial_run_candidates
          << ",\"spatial_index_build_ms\":" << state.spatial_index_build_milliseconds
+         << ",\"scheduler_seed_scans\":" << state.scheduler_seed_scans
+         << ",\"scheduler_seed_candidates\":" << state.scheduler_seed_candidates
          << ",\"scheduler_queue_pushes\":" << state.scheduler_queue_pushes
          << ",\"scheduler_useful_pops\":" << state.scheduler_useful_pops
          << ",\"scheduler_stale_pops\":" << state.scheduler_stale_pops
@@ -1567,6 +1573,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       state.spatial_run_count=plan.spatial_run_count;
       state.spatial_run_bound_tests+=plan.spatial_run_bound_tests;
       state.spatial_run_candidates+=plan.spatial_run_candidates;
+      state.scheduler_seed_scans+=plan.scheduler_seed_scans;
+      state.scheduler_seed_candidates+=plan.scheduler_seed_candidates;
       state.scheduler_queue_pushes+=plan.scheduler_queue_pushes;
       state.scheduler_useful_pops+=plan.scheduler_useful_pops;
       state.scheduler_stale_pops+=plan.scheduler_stale_pops;

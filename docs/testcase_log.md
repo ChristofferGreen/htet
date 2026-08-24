@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 179 tests passed after one-time cancellation-safe persistent-front seeding and command-independent queue retention
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent schedulers|headless events identify"` | failures: none | notes: one-time persistent seeding, cross-camera retention, post-commit no-reseed behavior, streamed hash equivalence, and JSON diagnostics passed
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "set-update-scheduler=persistent-split-merge-queues,set-camera=0.55:0.5:1.5,adapt-once,set-camera=0.6:0.5:1.5,adapt-once,stats"` | failures: none | notes: production mesh reported one 13,284-owner seed, 14,780 initial front insertions, and zero fallback reseeds across two camera requests
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation Gate 2 one-time queue-seed baseline passed all 178 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 178 tests passed after immutable shared mesh snapshots, private copy-on-write mutation, and constant-time worker submission
 - 2026-08-24 local | fail | mode: release | command: `./scripts/compile.sh --release --skip-tests` | failures: tetra_core compile | notes: libc++ C++23 removes `shared_ptr::unique`; next rerun uses the equivalent `use_count() != 1` detach check
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "mesh snapshot byte|adaptation commit metrics|incremental BCC adaptation|operation budgets converge|worker budgets stop|worker revisions resume|viewer publishes every|background mesh updates"` | failures: none | notes: nine focused ownership, rollback, adaptation, publication, and worker tests passed after the C++23 detach fix

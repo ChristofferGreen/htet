@@ -576,9 +576,9 @@ differs from the independent oracle.
 
 ### Gate 2 - Independent persistent candidate discovery
 
-- [ ] Remove the complete streamed active-cut classification used to seed the
+- [x] Remove the complete streamed active-cut classification used to seed the
   persistent queues on every request.
-- [ ] Seed the initial queues once from the active cut and retain them across
+- [x] Seed the initial queues once from the active cut and retain them across
   camera requests.
 - [ ] Recompute camera-dependent priority lazily when an entry reaches a queue
   front.
@@ -594,6 +594,29 @@ differs from the independent oracle.
 Exit condition: small camera movements discover complete refine and merge work
 without scanning the entire active cut, while teleports recover through a
 bounded fallback.
+
+#### One-time persistent-front seed
+
+The persistent and queued-block schedulers now establish both fronts in one
+transactional active-cut pass when their planning cache is first used. The
+split front receives each current logical owner and the merge front receives
+each complete active sibling parent. Temporary seed arrays are published only
+after the pass finishes, so cancellation cannot retain a partial seed.
+
+Ordinary camera requests retain those flat arrays and never insert their
+streamed `plan.commands` back into the queues. Entries carry their last
+observed mesh revision, are checked against the current cut, and are compacted
+in place when stale. This leaf deliberately leaves camera-priority refresh at
+its previous eager behavior and leaves post-commit family/neighbour insertion
+to the next two Gate 2 leaves.
+
+A production-default mesh followed through two camera moves reported one seed
+scan over 13,284 logical owners, 14,780 total split/merge-front insertions, and
+zero fallback reseeds. A focused test proves subsequent camera requests and a
+post-commit request report zero seed scans, zero seed candidates, and zero
+command-fed queue pushes while retaining queue capacity. The existing
+reversal/teleport comparison continues to match streamed logical and
+conforming hashes.
 
 ### Gate 3 - Dirty-owner surface patches
 

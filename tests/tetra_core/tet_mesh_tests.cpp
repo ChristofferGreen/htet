@@ -2277,6 +2277,61 @@ TEST_CASE("persistent schedulers match streamed hashes through motion reversals 
   CHECK(block_streams>0);
 }
 
+TEST_CASE("persistent schedulers seed the active cut once across camera requests") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=4096;
+  configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera first_camera;
+  first_camera.position={0.5,0.5,1.5};
+
+  const auto initial_owners=mesh.logical_red_owners().size();
+  const auto first=tetra::plan_adaptation(
+      mesh,shape,first_camera,48.0,3,configuration,9,&cache);
+  REQUIRE_FALSE(first.commands.empty());
+  CHECK(first.scheduler_seed_scans==1U);
+  CHECK(first.scheduler_seed_candidates==initial_owners);
+  CHECK(first.scheduler_queue_pushes==
+        cache.split_queue.size()+cache.merge_queue.size());
+  CHECK(cache.scheduler_seeded);
+  const auto split_capacity=cache.split_queue.capacity();
+  const auto merge_capacity=cache.merge_queue.capacity();
+
+  auto moved_camera=first_camera;
+  moved_camera.position.x+=0.05;
+  const auto second=tetra::plan_adaptation(
+      mesh,shape,moved_camera,48.0,3,configuration,9,&cache);
+  CHECK(second.scheduler_seed_scans==0U);
+  CHECK(second.scheduler_seed_candidates==0U);
+  CHECK(second.scheduler_queue_pushes==0U);
+  CHECK(cache.split_queue.capacity()==split_capacity);
+  CHECK(cache.merge_queue.capacity()==merge_capacity);
+
+  REQUIRE(tetra::commit_adaptation(mesh,second,configuration,9).status==
+          tetra::AdaptationCommitStatus::committed);
+  const auto after_commit=tetra::plan_adaptation(
+      mesh,shape,moved_camera,48.0,3,configuration,9,&cache);
+  CHECK(after_commit.scheduler_seed_scans==0U);
+  CHECK(after_commit.scheduler_seed_candidates==0U);
+  CHECK(after_commit.scheduler_queue_pushes==0U);
+
+  tetra::AdaptationPlanningCache canceled_cache;
+  std::stop_source stop;
+  stop.request_stop();
+  const auto canceled=tetra::plan_adaptation(
+      mesh,shape,moved_camera,48.0,3,configuration,9,&canceled_cache,
+      stop.get_token());
+  CHECK(canceled.canceled);
+  CHECK_FALSE(canceled_cache.scheduler_seeded);
+  CHECK(canceled_cache.split_queue.empty());
+  CHECK(canceled_cache.merge_queue.empty());
+}
+
 TEST_CASE("adaptation capabilities reject surface-only volume claims") {
   tetra::AdaptationConfiguration configuration;
   CHECK(tetra::valid(configuration));
@@ -5078,6 +5133,8 @@ TEST_CASE("headless events identify adaptation schemas strategies and both cut v
   CHECK(text.find("\"logical_candidates\":")!=std::string::npos);
   CHECK(text.find("\"field_classifications\":")!=std::string::npos);
   CHECK(text.find("\"exact_field_evaluations\":")!=std::string::npos);
+  CHECK(text.find("\"scheduler_seed_scans\":")!=std::string::npos);
+  CHECK(text.find("\"scheduler_seed_candidates\":")!=std::string::npos);
   CHECK(text.find("\"plan_ms\":")!=std::string::npos);
   CHECK(text.find("\"commit_ms\":")!=std::string::npos);
   CHECK(text.find("\"logical_cut_hash\":")!=std::string::npos);

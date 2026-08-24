@@ -148,6 +148,9 @@ struct AdaptationPlanningCache {
   std::uint64_t spatial_index_field_revision{std::numeric_limits<std::uint64_t>::max()};
   std::vector<PersistentSchedulerEntry> split_queue;
   std::vector<PersistentSchedulerEntry> merge_queue;
+  // Persistent schedulers scan the active cut exactly once to establish both
+  // fronts. Ordinary camera requests retain these arrays.
+  bool scheduler_seeded{};
   // A converged stationary request is an exact no-op until either the mesh,
   // field, camera, or adaptation settings change.
   bool has_stationary_no_change{};
@@ -186,6 +189,7 @@ struct AdaptationPlanningCache {
     spatial_index_field_revision=std::numeric_limits<std::uint64_t>::max();
     split_queue.clear();
     merge_queue.clear();
+    scheduler_seeded=false;
     has_stationary_no_change=false;
     has_split_pose=false;
     has_last_request_origin=false;
