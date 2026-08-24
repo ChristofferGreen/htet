@@ -689,6 +689,33 @@ struct BenchmarkUploadBuffers {
   }
 };
 
+ScriptState cpu_benchmark_baseline(
+    tetra::ImplicitShapeKind shape,unsigned int maximum_depth=16U) {
+  ScriptState baseline;
+  baseline.sphere.kind=shape;
+  baseline.sphere.secondary=tetra::implicit_shape_default_secondary(shape);
+  baseline.maximum_depth=maximum_depth;
+  // The interactive application starts with terrain and retains its selected
+  // adaptive-cleaving volume method when another implicit shape is selected.
+  baseline.volume_connection_method=
+      default_volume_connection_for_shape(default_implicit_shape);
+  static_cast<void>(refine_to_current_surface(baseline));
+  return baseline;
+}
+
+PreparedScene prepare_cpu_benchmark_scene(const ScriptState& state) {
+  constexpr ScenePreparationOptions preparation{
+      .surface_diagnostics=false,.summary_statistics=false};
+  return prepare_scene(
+      state.mesh,state.sphere,state.surface_method,state.material_rule,
+      state.show_faces,state.show_hierarchy_edges,state.show_surface_edges,true,
+      state.x_cutaway&&state.show_volume_edges,
+      state.x_cutaway&&state.show_volume_faces,state.x_cut_position,
+      state.volume_connection_method,state.stencil_construction,
+      state.stencil_selection_objective,preparation,
+      state.surface_hierarchy_triangles);
+}
+
 void write_error(std::ostream& errors, std::string_view message, std::string_view command = {}) {
   errors << "{\"event\":\"error\",\"message\":\"" << message << '"';
   if (!command.empty()) errors << ",\"command\":\"" << command << '"';
@@ -925,6 +952,7 @@ void print_script_help(std::ostream& output) {
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark all standard CPU camera motion paths\n"
+            "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
             "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
             "  set-method=<key>            Reset using a registered subdivision method\n"
@@ -1753,25 +1781,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       continue;
     }
     if(command=="benchmark-cpu-camera-paths"){
-      ScriptState baseline;
-      baseline.sphere.kind=default_implicit_shape;
-      baseline.sphere.secondary=tetra::implicit_shape_default_secondary(default_implicit_shape);
-      baseline.volume_connection_method=default_volume_connection_for_shape(default_implicit_shape);
-      static_cast<void>(refine_to_current_surface(baseline));
-      const ScenePreparationOptions benchmark_preparation{
-          .surface_diagnostics=false,.summary_statistics=false};
-      const auto prepare_benchmark_scene=[&](const ScriptState& benchmark){
-        return prepare_scene(
-            benchmark.mesh,benchmark.sphere,benchmark.surface_method,
-            benchmark.material_rule,benchmark.show_faces,
-            benchmark.show_hierarchy_edges,benchmark.show_surface_edges,true,
-            benchmark.x_cutaway&&benchmark.show_volume_edges,
-            benchmark.x_cutaway&&benchmark.show_volume_faces,
-            benchmark.x_cut_position,benchmark.volume_connection_method,
-            benchmark.stencil_construction,benchmark.stencil_selection_objective,
-            benchmark_preparation,benchmark.surface_hierarchy_triangles);
-      };
-      const auto baseline_scene=prepare_benchmark_scene(baseline);
+      const auto baseline=cpu_benchmark_baseline(default_implicit_shape);
+      const auto baseline_scene=prepare_cpu_benchmark_scene(baseline);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
         ScriptState benchmark=baseline;
@@ -1810,7 +1821,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           reached_depth_limit|=result.reached_depth_limit;
           if(benchmark.mesh.revision()!=published_mesh_revision){
             const auto scene_start=Clock::now();
-            const auto scene=prepare_benchmark_scene(benchmark);
+            const auto scene=prepare_cpu_benchmark_scene(benchmark);
             scene_preparation_milliseconds+=milliseconds_since(scene_start);
             scene_statistics_milliseconds+=scene.statistics_milliseconds;
             scene_geometry_milliseconds+=scene.upload_preparation_milliseconds;
@@ -1858,6 +1869,66 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         if(!valid){
           write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);
           return 1;
+        }
+      }
+      continue;
+    }
+    constexpr std::string_view shape_hash_prefix="benchmark-cpu-shape-hashes=";
+    if(command.starts_with(shape_hash_prefix)){
+      auto specification=trim(command.substr(shape_hash_prefix.size()));
+      unsigned int benchmark_depth=16U;
+      if(const auto separator=specification.rfind(':');separator!=std::string_view::npos){
+        if(!parse_unsigned(specification.substr(separator+1U),benchmark_depth)||
+           benchmark_depth>32U){
+          write_error(errors,"shape hash benchmark depth outside the supported range",command);
+          return 2;
+        }
+        specification=trim(specification.substr(0,separator));
+      }
+      std::vector<tetra::ImplicitShapeKind> shapes;
+      if(specification=="all"){
+        shapes.assign(tetra::implicit_shape_kinds.begin(),tetra::implicit_shape_kinds.end());
+      }else{
+        const auto found=std::ranges::find_if(
+            tetra::implicit_shape_kinds,[&](auto shape){
+              return tetra::implicit_shape_key(shape)==specification;
+            });
+        if(found==tetra::implicit_shape_kinds.end()){
+          write_error(errors,"unknown implicit shape for hash benchmark",command);
+          return 2;
+        }
+        shapes.push_back(*found);
+      }
+      for(const auto shape:shapes){
+        const auto baseline=cpu_benchmark_baseline(shape,benchmark_depth);
+        const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
+        for(const auto& path:paths){
+          ScriptState benchmark=baseline;
+          for(const auto position:path.positions){
+            point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+            static_cast<void>(reconcile_to_current_surface(benchmark));
+          }
+          const auto scene=prepare_cpu_benchmark_scene(benchmark);
+          const auto surface_hashes=surface_geometry_hashes(scene);
+          const auto logical=benchmark.mesh.logical_cut();
+          const auto conforming=benchmark.mesh.conforming_volume();
+          const bool valid=benchmark.mesh.has_positive_active_volumes()&&
+              benchmark.mesh.has_conforming_active_faces()&&
+              surface_hashes.triangle_count>0U&&surface_hashes.edge_count>0U;
+          output<<"{\"event\":\"cpu_shape_path_hash\",\"shape\":\""
+                <<tetra::implicit_shape_key(shape)<<"\",\"path\":\""<<path.name
+                <<"\",\"maximum_depth\":"<<benchmark_depth
+                <<",\"valid\":"<<(valid?"true":"false")
+                <<",\"logical_cut_hash\":"<<address_hash(logical.owners)
+                <<",\"conforming_volume_hash\":"<<address_hash(conforming.addresses())
+                <<",\"surface_triangle_hash\":"<<surface_hashes.triangle_hash
+                <<",\"surface_edge_hash\":"<<surface_hashes.edge_hash
+                <<",\"surface_triangles\":"<<surface_hashes.triangle_count
+                <<",\"surface_edges\":"<<surface_hashes.edge_count<<"}\n";
+          if(!valid){
+            write_error(errors,"shape hash benchmark produced invalid geometry",path.name);
+            return 1;
+          }
         }
       }
       continue;

@@ -17,8 +17,13 @@
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation accounting baseline remained green at 168 tests
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "adaptation planning is budgeted|mesh snapshot byte accounting|headless CPU camera benchmark"` | failures: none | notes: all three focused work-accounting tests passed
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 169 tests passed after complete work and byte accounting
+- 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | failures: headless shape hash matrix covers every shape and camera path deterministically | notes: 2 of 3 focused tests passed; matrix command returned 1
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | failures: none | notes: all three focused tests passed at depth 6, the minimum test depth that resolves the torus surface
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-shape-hashes=all"` | failures: none | notes: all 72 shape/path rows were valid at production depth 16 and stored in docs/cpu-shape-path-hashes.tsv
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 172 tests passed after canonical shape/path geometry hashing and baseline storage
 
 ## Resolved Failures
 
 - [x] release workflow entry point | resolved: 2026-08-24 06:00 local | validating command: `./scripts/compile.sh --release` | notes: added the missing root release build/test script; workflow reached and executed all tests
 - [x] default terrain cutaway visual baselines remain stable for both transitions | resolved: 2026-08-24 06:02 local | validating command: `./scripts/compile.sh --release` | notes: doctest cases now run with the repository root as their working directory
+- [x] headless shape hash matrix covers every shape and camera path deterministically | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | notes: raised the lightweight matrix-test depth from 3 to 6 so thin torus geometry is sampled

@@ -2083,6 +2083,59 @@ void append_screen_space_edges(PreparedScene& scene, bool show_surface_edges,
 
 }  // namespace
 
+SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
+  using PointKey=std::array<std::uint32_t,3>;
+  using TriangleKey=std::array<PointKey,3>;
+  using EdgeKey=std::array<PointKey,2>;
+  const auto point_key=[](const SceneVertex& vertex){
+    PointKey key{};
+    for(std::size_t axis=0;axis<3U;++axis){
+      const float coordinate=vertex.position[axis]==0.0F?0.0F:vertex.position[axis];
+      key[axis]=std::bit_cast<std::uint32_t>(coordinate);
+    }
+    return key;
+  };
+  std::vector<TriangleKey> triangles;
+  triangles.reserve(scene.triangle_vertices.size()/3U);
+  for(std::size_t begin=0;begin+2U<scene.triangle_vertices.size();begin+=3U){
+    const auto* vertices=scene.triangle_vertices.data()+begin;
+    const float marker=vertices[0].diagnostics[0];
+    const bool diagnostic_volume_face=marker<-0.5F&&marker>=-1.5F;
+    if(diagnostic_volume_face)continue;
+    TriangleKey key{{point_key(vertices[0]),point_key(vertices[1]),point_key(vertices[2])}};
+    const TriangleKey second{{key[1],key[2],key[0]}};
+    const TriangleKey third{{key[2],key[0],key[1]}};
+    key=std::min({key,second,third});
+    triangles.push_back(key);
+  }
+  std::sort(triangles.begin(),triangles.end());
+  std::vector<EdgeKey> edges;
+  edges.reserve(triangles.size()*3U);
+  constexpr std::array<std::array<std::size_t,2>,3> edge_corners{{
+      {{0U,1U}},{{1U,2U}},{{2U,0U}}}};
+  for(const auto& triangle:triangles){
+    for(const auto corners:edge_corners){
+      EdgeKey edge{{triangle[corners[0]],triangle[corners[1]]}};
+      if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+      edges.push_back(edge);
+    }
+  }
+  std::sort(edges.begin(),edges.end());
+  edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  const auto hash_keys=[=](const auto& keys){
+    std::uint64_t hash=offset;
+    const auto append=[&](std::uint64_t value){hash^=value;hash*=prime;};
+    append(keys.size());
+    for(const auto& key:keys)
+      for(const auto& point:key)
+        for(const auto coordinate:point)append(coordinate);
+    return hash;
+  };
+  return {hash_keys(triangles),hash_keys(edges),triangles.size(),edges.size()};
+}
+
 void expand_line_segments_for_upload(
     std::span<const SceneVertex> line_vertices,
     std::vector<SceneVertex>& ribbons) {

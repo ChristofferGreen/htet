@@ -167,7 +167,7 @@ count. Compact globally only when fragmentation crosses a measured threshold.
 - [x] Record active/resident owners, requested/admissible/committed splits and
   merges, rejected operations, dirty owners, exact field evaluations, copied
   bytes, generated surface bytes, and uploaded bytes.
-- [ ] Store final logical, conforming-volume, surface-triangle, and surface-edge
+- [x] Store final logical, conforming-volume, surface-triangle, and surface-edge
   hashes for every path and implicit shape.
 - [ ] Add a benchmark event for time to first complete intermediate revision
   and time to final convergence.
@@ -244,6 +244,22 @@ expansion. `copied_bytes` is the mesh snapshot plus that staged payload.
 | teleport | 74317 / 100548 | 3035 / 3035 / 6497 | 7705 / 2449 / 2449 | 5256 | 35036 | 242022 | 448571808 | 20871360 | 41742720 |
 | reversal | 55431 / 63348 | 633 / 633 / 1350 | 36 / 0 / 0 | 36 | 2640 | 194698 | 391437846 | 10147680 | 20295360 |
 | repeated pose | 46072 / 52652 | 5 / 5 / 13 | 0 / 0 / 0 | 0 | 39 | 34564 | 414921432 | 2424240 | 4848480 |
+
+#### Shape and path geometry baseline
+
+The release command
+`tetra_viewer --script "benchmark-cpu-shape-hashes=all"` records all four
+canonical geometry hashes for every combination of the nine implicit shapes
+and eight camera paths at the production maximum depth of 16. The complete
+72-row baseline, including triangle and edge counts, is stored in
+[`cpu-shape-path-hashes.tsv`](cpu-shape-path-hashes.tsv).
+
+Surface hashes cover physical surface triangles only, excluding diagnostic
+volume faces. They are invariant to triangle draw order and cyclic corner
+rotation. Winding, vertex coordinates, duplicates, missing triangles, cracks,
+and the canonical unique edge set remain observable. The lightweight release
+test exercises the complete matrix at depth 6, which is the minimum depth that
+samples all shapes including the torus, and verifies deterministic output.
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 

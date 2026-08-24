@@ -3000,6 +3000,45 @@ TEST_CASE("headless and Vulkan uploads share exact screen-space line expansion")
   CHECK(ribbons.empty());
 }
 
+TEST_CASE("surface geometry hashes ignore draw order but preserve winding and edges") {
+  const auto vertex=[](float x,float y,float z,float marker=0.0F){
+    tetra_viewer::SceneVertex result{};
+    result.position[0]=x;result.position[1]=y;result.position[2]=z;
+    result.diagnostics[0]=marker;
+    return result;
+  };
+  const auto a=vertex(0.0F,0.0F,0.0F),b=vertex(1.0F,0.0F,0.0F);
+  const auto c=vertex(1.0F,1.0F,0.0F),d=vertex(0.0F,1.0F,0.0F);
+  tetra_viewer::PreparedScene first;
+  first.triangle_vertices={a,b,c,a,c,d};
+  const auto first_hashes=tetra_viewer::surface_geometry_hashes(first);
+  CHECK(first_hashes.triangle_count==2U);
+  CHECK(first_hashes.edge_count==5U);
+
+  tetra_viewer::PreparedScene reordered;
+  reordered.triangle_vertices={c,d,a,b,c,a};
+  CHECK(tetra_viewer::surface_geometry_hashes(reordered).triangle_hash==
+        first_hashes.triangle_hash);
+  CHECK(tetra_viewer::surface_geometry_hashes(reordered).edge_hash==
+        first_hashes.edge_hash);
+
+  tetra_viewer::PreparedScene reversed;
+  reversed.triangle_vertices={a,c,b,a,c,d};
+  const auto reversed_hashes=tetra_viewer::surface_geometry_hashes(reversed);
+  CHECK(reversed_hashes.triangle_hash!=first_hashes.triangle_hash);
+  CHECK(reversed_hashes.edge_hash==first_hashes.edge_hash);
+
+  const auto volume_a=vertex(2.0F,0.0F,0.0F,-1.0F);
+  const auto volume_b=vertex(2.0F,1.0F,0.0F,-1.0F);
+  const auto volume_c=vertex(2.0F,0.0F,1.0F,-1.0F);
+  first.triangle_vertices.insert(
+      first.triangle_vertices.end(),{volume_a,volume_b,volume_c});
+  CHECK(tetra_viewer::surface_geometry_hashes(first).triangle_hash==
+        first_hashes.triangle_hash);
+  CHECK(tetra_viewer::surface_geometry_hashes(first).edge_hash==
+        first_hashes.edge_hash);
+}
+
 TEST_CASE("viewer submits only exposed faces of full-tetrahedron material") {
   const tetra::Sphere containing_sphere{{0.5, 0.5, 0.5}, 2.0};
   const auto six = tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::maubach_diamond);
@@ -3686,6 +3725,58 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   CHECK(std::stoull(field(repeated,"\"generated_surface_bytes\":"))>0U);
   CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
   CHECK(std::stoull(field(repeated,"\"dirty_owners\":"))>0U);
+}
+
+TEST_CASE("headless shape hash matrix covers every shape and camera path deterministically") {
+  const auto run=[] {
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script(
+        "benchmark-cpu-shape-hashes=all:6",output,errors)==0);
+    CHECK(errors.str().empty());
+    const auto initialized_end=output.str().find('\n');
+    REQUIRE(initialized_end!=std::string::npos);
+    return output.str().substr(initialized_end+1U);
+  };
+  const auto first=run();
+  const auto second=run();
+  CHECK(first==second);
+  constexpr std::array paths{
+      "stationary","slow-orbit","rapid-orbit","near-to-far",
+      "far-to-near","teleport","reversal","repeated-pose"};
+  std::size_t events{};
+  std::size_t offset{};
+  while((offset=first.find("\"event\":\"cpu_shape_path_hash\"",offset))!=
+        std::string::npos){++events;++offset;}
+  CHECK(events==tetra::implicit_shape_kinds.size()*paths.size());
+  for(const auto shape:tetra::implicit_shape_kinds){
+    for(const auto path:paths){
+      const std::string marker="\"shape\":\""+
+          std::string(tetra::implicit_shape_key(shape))+"\",\"path\":\""+path+"\"";
+      const auto begin=first.find(marker);
+      REQUIRE(begin!=std::string::npos);
+      const auto end=first.find('\n',begin);
+      REQUIRE(end!=std::string::npos);
+      const auto event=first.substr(begin,end-begin);
+      CHECK(event.find("\"maximum_depth\":6")!=std::string::npos);
+      CHECK(event.find("\"valid\":true")!=std::string::npos);
+      CHECK(event.find("\"logical_cut_hash\":")!=std::string::npos);
+      CHECK(event.find("\"conforming_volume_hash\":")!=std::string::npos);
+      CHECK(event.find("\"surface_triangle_hash\":")!=std::string::npos);
+      CHECK(event.find("\"surface_edge_hash\":")!=std::string::npos);
+      CHECK(event.find("\"surface_triangles\":0") == std::string::npos);
+      CHECK(event.find("\"surface_edges\":0") == std::string::npos);
+    }
+  }
+}
+
+TEST_CASE("headless shape hash benchmark rejects unknown shapes and depths") {
+  for(const auto command:{"benchmark-cpu-shape-hashes=unknown",
+                          "benchmark-cpu-shape-hashes=all:33",
+                          "benchmark-cpu-shape-hashes=sphere:nope"}){
+    std::ostringstream output,errors;
+    CHECK(tetra_viewer::run_script(command,output,errors)==2);
+    CHECK_FALSE(errors.str().empty());
+  }
 }
 
 TEST_CASE("headless camera stress path is deterministic and conforming") {

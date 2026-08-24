@@ -565,6 +565,19 @@ struct PreparedScene {
   bool summary_statistics_available{};
 };
 
+struct SurfaceGeometryHashes {
+  std::uint64_t triangle_hash{};
+  std::uint64_t edge_hash{};
+  std::size_t triangle_count{};
+  std::size_t edge_count{};
+};
+
+// Canonical hashes of physical surface geometry. Triangle buffer order and
+// cyclic corner rotation do not matter, while winding, coordinates, duplicate
+// triangles, missing edges, and cracks remain observable.
+[[nodiscard]] SurfaceGeometryHashes surface_geometry_hashes(
+    const PreparedScene& scene);
+
 // Validates the relationship between surface and volume, rather than either
 // representation in isolation. The connected exterior must literally be the
 // unmatched boundary of the tetrahedral complex.

@@ -20,3 +20,8 @@
   counts; exact field, dirty-owner, packed snapshot-copy, generated-surface,
   staged-upload, and aggregate copied-byte counts. Snapshot byte accounting is
   derived from every live packed array copied by `TetMesh`.
+- [x] Gate 0 shape/path geometry baseline: added canonical physical-surface
+  triangle and edge hashes, a headless command covering all nine implicit
+  shapes and eight camera paths, deterministic and diagnostic tests, and a
+  durable 72-row depth-16 release baseline alongside logical-cut and
+  conforming-volume hashes.
