@@ -303,7 +303,9 @@ complete-revision latency while preserving the same final hashes.
   eventually wins.
 - [x] Add a configurable low-yield cutoff based on committed useful edits per
   pass and per millisecond; never use it to skip required conformity closure.
-- [ ] Measure snapshot copy and worker handoff cost separately.
+- [x] Measure snapshot copy and worker handoff cost separately.
+- [ ] Remove the measured render-thread full-mesh copy through immutable
+  shared resident storage while keeping worker mutation private.
 
 Exit condition: a large camera jump yields multiple valid, improving revisions;
 the UI remains responsive; disabling slicing produces the same final hashes.
@@ -430,6 +432,47 @@ All four intermediate publications were positive-volume and face-conforming.
 The fifth slice observed convergence without firing the cutoff, and the final
 hashes match the wide, bounded, and elapsed-slice continuation policies.
 Disabling both thresholds preserves the previous unsliced behavior.
+
+#### Snapshot-copy and worker-handoff accounting
+
+Worker submission now makes the private `TetMesh` snapshot explicitly, timing
+that copy before it acquires the worker lock. Initial and continuation enqueue,
+state moves, request accounting, and notification are timed separately as the
+worker handoff. Intermediate publication likewise measures the render-owned
+mesh copy before moving the original mesh and packed planning cache into the
+next worker slice. Counts, live copied bytes, per-publication timings, and
+cumulative chain timings are carried through worker and publication results.
+
+The `benchmark-cpu-worker-budgets` event reports each cost independently and
+also reports their combined fraction of measured worker CPU time. The following
+release measurements were recorded on 2026-08-24 on an Apple M3 Pro:
+
+| Policy | Snapshot copies | Copied bytes | Copy (ms) | Handoffs | Handoff (ms) | Transfer fraction |
+|---|---:|---:|---:|---:|---:|---:|
+| wide | 1 | 9,800 | 0.003 | 1 | 0.002 | 0.3% |
+| resumed slices | 5 | 3,325,668 | 0.084 | 5 | 0.001 | 3.4% |
+| low-yield slices | 5 | 3,325,668 | 0.069 | 5 | 0.001 | 3.2% |
+
+The production terrain benchmark provides the scale check missing from the
+small worker-policy fixture:
+
+| Path | Copied bytes | Copy (ms) | Adaptation (ms) | Publication (ms) | Copy / publication |
+|---|---:|---:|---:|---:|---:|
+| stationary | 177,765,512 | 5.601 | 3.679 | 9.281 | 60.3% |
+| slow orbit | 410,093,452 | 10.070 | 144.870 | 846.292 | 1.2% |
+| rapid orbit | 616,847,594 | 14.836 | 1,108.040 | 2,887.466 | 0.5% |
+| near to far | 633,161,464 | 14.321 | 2,681.130 | 4,302.279 | 0.3% |
+| repeated pose | 410,072,952 | 8.996 | 21.570 | 164.735 | 5.5% |
+
+Locking and state handoff are negligible at this scale. Full mesh copying is
+not the dominant cost during heavy adaptation or surface rebuilding, but it is
+the dominant measured cost for a stationary request and remains several
+milliseconds for low-work camera updates. Because the initial copy currently
+runs on the render thread, its 5.6-14.8 ms production range exceeds the 2 ms
+render-thread blocking target even when its end-to-end fraction is small. The
+next ownership leaf must therefore share an immutable published snapshot or
+move only compact mutable state while preserving the complete-revision
+boundary; locking and queue handoff do not need redesign.
 
 #### Progressive viewer publication
 

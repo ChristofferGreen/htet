@@ -3588,6 +3588,11 @@ TEST_CASE("worker budgets stop only at complete transactions and preserve final 
   REQUIRE(wide->converged);
   CHECK_FALSE(wide->time_budget_reached);
   CHECK(wide->transaction_operation_budget==4096U);
+  CHECK(wide->cumulative_snapshot_copy_count==1U);
+  CHECK(wide->cumulative_snapshot_copy_bytes==source.snapshot_copy_bytes());
+  CHECK(wide->cumulative_snapshot_copy_milliseconds>=0.0);
+  CHECK(wide->cumulative_worker_handoff_count==1U);
+  CHECK(wide->cumulative_worker_handoff_milliseconds>=0.0);
 
   static_cast<void>(worker.submit(source,narrow_parameters));
   auto narrow=worker.wait_for_completed(std::chrono::seconds(10));
@@ -3704,6 +3709,9 @@ TEST_CASE("unconverged worker revisions resume retained planning state") {
   CHECK(slice->source_mesh_revision==source.revision());
   CHECK(slice->slice_source_mesh_revision==source.revision());
   REQUIRE_FALSE(slice->planning_cache.layers.empty());
+  CHECK(slice->cumulative_snapshot_copy_count==1U);
+  CHECK(slice->cumulative_snapshot_copy_bytes==source.snapshot_copy_bytes());
+  CHECK(slice->cumulative_worker_handoff_count==1U);
 
   const auto retained_capacity=[](const tetra::AdaptationPlanningCache& cache){
     std::size_t capacity=cache.layers.capacity()+
@@ -3761,6 +3769,9 @@ TEST_CASE("unconverged worker revisions resume retained planning state") {
     CHECK(slice->cumulative_admissible_operations==summed_admissible);
     CHECK(slice->cumulative_duration_milliseconds==
           doctest::Approx(summed_duration));
+    CHECK(slice->cumulative_snapshot_copy_count==1U);
+    CHECK(slice->cumulative_snapshot_copy_bytes==source.snapshot_copy_bytes());
+    CHECK(slice->cumulative_worker_handoff_count==completed_slices);
     previous_request=slice->request_id;
     previous_revision=slice->mesh.revision();
     previous_capacity=retained_capacity(slice->planning_cache);
@@ -3832,7 +3843,14 @@ TEST_CASE("viewer publishes every complete worker slice before convergence") {
     if(publication.status==
        tetra_viewer::MeshPublicationStatus::intermediate){
       CHECK(logical_owners>previous_logical_owners);
+      CHECK(publication.snapshot_copy_bytes>0U);
+      CHECK(publication.snapshot_copy_milliseconds>=0.0);
+      CHECK(publication.worker_handoff_milliseconds>=0.0);
       ++intermediate_revisions;
+      CHECK(publication.cumulative_snapshot_copy_count==
+            intermediate_revisions+1U);
+      CHECK(publication.cumulative_worker_handoff_count==
+            intermediate_revisions+1U);
       expected_request=publication.request_id;
       REQUIRE(scene_cache.update_scene(
           published_mesh,sphere,0U,
@@ -3854,6 +3872,15 @@ TEST_CASE("viewer publishes every complete worker slice before convergence") {
           tetra_viewer::MeshPublicationStatus::converged);
   CHECK(intermediate_revisions>1U);
   CHECK(final_publication.adaptation.iterations==intermediate_revisions);
+  CHECK(final_publication.snapshot_copy_bytes==0U);
+  CHECK(final_publication.snapshot_copy_milliseconds==0.0);
+  CHECK(final_publication.worker_handoff_milliseconds==0.0);
+  CHECK(final_publication.cumulative_snapshot_copy_count==
+        intermediate_revisions+1U);
+  CHECK(final_publication.cumulative_snapshot_copy_bytes>
+        source.snapshot_copy_bytes());
+  CHECK(final_publication.cumulative_worker_handoff_count==
+        intermediate_revisions+1U);
   CHECK_FALSE(published_planning_cache.layers.empty());
   CHECK(published_mesh.logical_cut().owners==wide->mesh.logical_cut().owners);
   CHECK(std::ranges::equal(published_mesh.conforming_volume().addresses(),
@@ -3894,6 +3921,13 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"low_yield_slices\":")!=std::string::npos);
   CHECK(text.find("\"committed_useful_operations\":")!=std::string::npos);
   CHECK(text.find("\"last_useful_operations_per_ms\":")!=std::string::npos);
+  CHECK(text.find("\"snapshot_copy_count\":5")!=std::string::npos);
+  CHECK(text.find("\"snapshot_copy_bytes\":")!=std::string::npos);
+  CHECK(text.find("\"snapshot_copy_ms\":")!=std::string::npos);
+  CHECK(text.find("\"worker_handoff_count\":5")!=std::string::npos);
+  CHECK(text.find("\"worker_handoff_ms\":")!=std::string::npos);
+  CHECK(text.find("\"transfer_fraction_of_measured_cpu\":")!=
+        std::string::npos);
 }
 
 TEST_CASE("headless worker supersession keeps only the latest camera request") {

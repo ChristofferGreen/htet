@@ -65,3 +65,11 @@
   slices published four valid intermediates and converged to the wide and
   bounded policies' logical and conforming hashes; worker, publication,
   benchmark, and parameter-identity diagnostics expose the policy and metrics.
+- [x] Gate 1 snapshot-copy and worker-handoff accounting: made initial worker
+  snapshots explicit and separately timed private snapshot creation,
+  intermediate publication copies, and worker enqueue/state-move handoffs.
+  Metrics accumulate across retained-state continuations and the headless
+  benchmark reports counts, copied bytes, time, and transfer fraction. Five
+  resumed slices copied 3.33 MB in 0.084 ms while handoff took 0.001 ms; the
+  production terrain benchmark shows copies remain material for stationary
+  and other low-work updates but not heavy adaptation or scene preparation.

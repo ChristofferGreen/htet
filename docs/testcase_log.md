@@ -6,6 +6,11 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation snapshot-copy and worker-handoff accounting baseline passed all 178 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker budgets stop|worker revisions resume|viewer publishes every|headless worker budget"` | failures: none | notes: four focused tests passed with exact snapshot/handoff counts, cumulative bytes, retained-state continuation, and hash-equivalent convergence
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: resumed chain measured five copies at 3,325,668 bytes and 0.084 ms separately from five handoffs at 0.001 ms
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-camera-paths"` | failures: none | notes: production terrain snapshots cost 5.601-14.836 ms on representative paths; stationary copy cost was 60.3% of publication time
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 178 tests passed after separate snapshot-copy and worker-handoff instrumentation
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation low-yield-cutoff baseline passed all 178 tests
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker budgets stop|headless worker budget"` | failures: none | notes: both focused tests passed; every low-yield slice was conforming and the continued chain matched unsliced final hashes
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: five low-yield slices published four valid intermediates, counted 164 useful operations, and converged to the wide and bounded hashes

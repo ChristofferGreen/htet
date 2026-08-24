@@ -1950,6 +1950,11 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         const auto conforming_hash=address_hash(conforming.addresses());
         const bool valid=result->mesh.has_positive_active_volumes()&&
             result->mesh.has_conforming_active_faces();
+        const double transfer_milliseconds=
+            result->cumulative_snapshot_copy_milliseconds+
+            result->cumulative_worker_handoff_milliseconds;
+        const double measured_cpu_milliseconds=
+            result->cumulative_duration_milliseconds+transfer_milliseconds;
         output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":\""
               <<variant.name<<"\",\"transaction_operation_budget\":"
               <<result->transaction_operation_budget
@@ -1959,6 +1964,20 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<result->duration_milliseconds
               <<",\"transactions\":"<<result->adaptation.iterations
               <<",\"admissible_operations\":"<<result->admissible_operations
+              <<",\"snapshot_copy_count\":"
+              <<result->cumulative_snapshot_copy_count
+              <<",\"snapshot_copy_bytes\":"
+              <<result->cumulative_snapshot_copy_bytes
+              <<",\"snapshot_copy_ms\":"
+              <<result->cumulative_snapshot_copy_milliseconds
+              <<",\"worker_handoff_count\":"
+              <<result->cumulative_worker_handoff_count
+              <<",\"worker_handoff_ms\":"
+              <<result->cumulative_worker_handoff_milliseconds
+              <<",\"transfer_ms\":"<<transfer_milliseconds
+              <<",\"transfer_fraction_of_measured_cpu\":"
+              <<(measured_cpu_milliseconds>0.0
+                     ?transfer_milliseconds/measured_cpu_milliseconds:0.0)
               <<",\"time_budget_reached\":"
               <<(result->time_budget_reached?"true":"false")
               <<",\"converged\":"<<(result->converged?"true":"false")
@@ -2047,6 +2066,12 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const bool resumed_matches=final_logical_hash&&final_conforming_hash&&
           resumed_logical_hash==*final_logical_hash&&
           resumed_conforming_hash==*final_conforming_hash;
+      const double resumed_transfer_milliseconds=
+          final_publication.cumulative_snapshot_copy_milliseconds+
+          final_publication.cumulative_worker_handoff_milliseconds;
+      const double resumed_measured_cpu_milliseconds=
+          final_publication.duration_milliseconds+
+          resumed_transfer_milliseconds;
       output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
             "\"resumed-slices\",\"transaction_operation_budget\":"
             <<final_publication.transaction_operation_budget
@@ -2061,6 +2086,21 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             <<final_publication.adaptation.iterations
             <<",\"admissible_operations\":"
             <<final_publication.admissible_operations
+            <<",\"snapshot_copy_count\":"
+            <<final_publication.cumulative_snapshot_copy_count
+            <<",\"snapshot_copy_bytes\":"
+            <<final_publication.cumulative_snapshot_copy_bytes
+            <<",\"snapshot_copy_ms\":"
+            <<final_publication.cumulative_snapshot_copy_milliseconds
+            <<",\"worker_handoff_count\":"
+            <<final_publication.cumulative_worker_handoff_count
+            <<",\"worker_handoff_ms\":"
+            <<final_publication.cumulative_worker_handoff_milliseconds
+            <<",\"transfer_ms\":"<<resumed_transfer_milliseconds
+            <<",\"transfer_fraction_of_measured_cpu\":"
+            <<(resumed_measured_cpu_milliseconds>0.0
+                   ?resumed_transfer_milliseconds/
+                       resumed_measured_cpu_milliseconds:0.0)
             <<",\"resumed_without_rebuild\":true,\"converged\":true,\"valid\":"
             <<(resumed_valid?"true":"false")
             <<",\"logical_cut_hash\":"<<resumed_logical_hash
@@ -2145,6 +2185,12 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const bool low_yield_matches=final_logical_hash&&final_conforming_hash&&
           low_yield_logical_hash==*final_logical_hash&&
           low_yield_conforming_hash==*final_conforming_hash;
+      const double low_yield_transfer_milliseconds=
+          final_publication.cumulative_snapshot_copy_milliseconds+
+          final_publication.cumulative_worker_handoff_milliseconds;
+      const double low_yield_measured_cpu_milliseconds=
+          final_publication.duration_milliseconds+
+          low_yield_transfer_milliseconds;
       output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
             "\"low-yield-slices\",\"transaction_operation_budget\":"
             <<final_publication.transaction_operation_budget
@@ -2163,6 +2209,21 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             <<",\"low_yield_slices\":"<<final_publication.low_yield_slices
             <<",\"committed_useful_operations\":"
             <<final_publication.committed_useful_operations
+            <<",\"snapshot_copy_count\":"
+            <<final_publication.cumulative_snapshot_copy_count
+            <<",\"snapshot_copy_bytes\":"
+            <<final_publication.cumulative_snapshot_copy_bytes
+            <<",\"snapshot_copy_ms\":"
+            <<final_publication.cumulative_snapshot_copy_milliseconds
+            <<",\"worker_handoff_count\":"
+            <<final_publication.cumulative_worker_handoff_count
+            <<",\"worker_handoff_ms\":"
+            <<final_publication.cumulative_worker_handoff_milliseconds
+            <<",\"transfer_ms\":"<<low_yield_transfer_milliseconds
+            <<",\"transfer_fraction_of_measured_cpu\":"
+            <<(low_yield_measured_cpu_milliseconds>0.0
+                   ?low_yield_transfer_milliseconds/
+                       low_yield_measured_cpu_milliseconds:0.0)
             <<",\"last_useful_operations\":"<<last_useful_operations
             <<",\"last_useful_operations_per_ms\":"
             <<last_useful_operations_per_millisecond

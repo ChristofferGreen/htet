@@ -59,6 +59,11 @@ struct MeshUpdateRequest {
   std::size_t cumulative_admissible_operations{};
   std::size_t cumulative_committed_useful_operations{};
   std::size_t cumulative_low_yield_slices{};
+  std::size_t cumulative_snapshot_copy_count{};
+  std::size_t cumulative_snapshot_copy_bytes{};
+  double cumulative_snapshot_copy_milliseconds{};
+  std::size_t cumulative_worker_handoff_count{};
+  double cumulative_worker_handoff_milliseconds{};
   bool continuation{};
 };
 
@@ -83,6 +88,11 @@ struct MeshUpdateResult {
   std::size_t low_yield_slices{};
   std::size_t last_transaction_useful_operations{};
   double last_transaction_useful_operations_per_millisecond{};
+  std::size_t cumulative_snapshot_copy_count{};
+  std::size_t cumulative_snapshot_copy_bytes{};
+  double cumulative_snapshot_copy_milliseconds{};
+  std::size_t cumulative_worker_handoff_count{};
+  double cumulative_worker_handoff_milliseconds{};
   std::size_t transaction_operation_budget{};
   bool time_budget_reached{};
   bool low_yield_cutoff_reached{};
@@ -98,6 +108,12 @@ enum class MeshContinuationStatus {
 struct MeshContinuationSubmission {
   MeshContinuationStatus status{MeshContinuationStatus::superseded};
   std::uint64_t request_id{};
+  double worker_handoff_milliseconds{};
+  std::size_t cumulative_snapshot_copy_count{};
+  std::size_t cumulative_snapshot_copy_bytes{};
+  double cumulative_snapshot_copy_milliseconds{};
+  std::size_t cumulative_worker_handoff_count{};
+  double cumulative_worker_handoff_milliseconds{};
   [[nodiscard]] explicit operator bool() const noexcept {
     return status==MeshContinuationStatus::accepted;
   }
@@ -122,6 +138,14 @@ struct MeshPublicationResult {
   std::size_t low_yield_slices{};
   std::size_t last_transaction_useful_operations{};
   double last_transaction_useful_operations_per_millisecond{};
+  std::size_t snapshot_copy_bytes{};
+  double snapshot_copy_milliseconds{};
+  double worker_handoff_milliseconds{};
+  std::size_t cumulative_snapshot_copy_count{};
+  std::size_t cumulative_snapshot_copy_bytes{};
+  double cumulative_snapshot_copy_milliseconds{};
+  std::size_t cumulative_worker_handoff_count{};
+  double cumulative_worker_handoff_milliseconds{};
   std::size_t transaction_operation_budget{};
   bool low_yield_cutoff_reached{};
   [[nodiscard]] bool published() const noexcept {
@@ -154,13 +178,14 @@ class MeshUpdateWorker {
   MeshUpdateWorker& operator=(const MeshUpdateWorker&)=delete;
 
   [[nodiscard]] std::uint64_t submit(
-      tetra::TetMesh mesh,MeshUpdateParameters parameters,
+      const tetra::TetMesh& mesh,MeshUpdateParameters parameters,
       MeshUpdateOperation operation=MeshUpdateOperation::reconcile_lod);
   // Consumes a complete unconverged result and resumes its private mesh and
   // packed planning state. Only the latest slice in the active chain can be
   // resumed; reused and superseded results are rejected without mutation.
   [[nodiscard]] MeshContinuationSubmission submit_continuation(
-      MeshUpdateResult&& result);
+      MeshUpdateResult&& result,std::size_t snapshot_copy_bytes=0U,
+      double snapshot_copy_milliseconds=0.0);
   [[nodiscard]] std::optional<MeshUpdateResult> take_completed();
   [[nodiscard]] std::optional<MeshUpdateResult> wait_for_completed(
       std::chrono::milliseconds timeout);

@@ -51,32 +51,54 @@ MeshUpdateWorker::~MeshUpdateWorker() {
 }
 
 std::uint64_t MeshUpdateWorker::submit(
-    tetra::TetMesh mesh,MeshUpdateParameters parameters,
+    const tetra::TetMesh& mesh,MeshUpdateParameters parameters,
     MeshUpdateOperation operation) {
+  const std::size_t snapshot_copy_bytes=mesh.snapshot_copy_bytes();
+  const auto snapshot_start=std::chrono::steady_clock::now();
+  auto worker_mesh=mesh;
+  const double snapshot_copy_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-snapshot_start).count();
+  const auto handoff_start=std::chrono::steady_clock::now();
   std::lock_guard lock(mutex_);
   supersede_locked();
   const std::uint64_t request_id=++latest_request_id_;
   const std::uint64_t source_revision=mesh.revision();
   pending_.emplace(MeshUpdateRequest{
-      .mesh=std::move(mesh),.parameters=std::move(parameters),
+      .mesh=std::move(worker_mesh),.parameters=std::move(parameters),
       .operation=operation,.request_id=request_id,.chain_id=request_id,
       .source_mesh_revision=source_revision,
-      .slice_source_mesh_revision=source_revision});
+      .slice_source_mesh_revision=source_revision,
+      .cumulative_snapshot_copy_count=1U,
+      .cumulative_snapshot_copy_bytes=snapshot_copy_bytes,
+      .cumulative_snapshot_copy_milliseconds=snapshot_copy_milliseconds,
+      .cumulative_worker_handoff_count=1U});
   completed_.reset();
   ++metrics_.submitted_requests;
+  pending_->cumulative_worker_handoff_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-handoff_start).count();
   condition_.notify_all();
   return request_id;
 }
 
 MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
-    MeshUpdateResult&& result) {
+    MeshUpdateResult&& result,std::size_t snapshot_copy_bytes,
+    double snapshot_copy_milliseconds) {
+  const auto handoff_start=std::chrono::steady_clock::now();
   std::lock_guard lock(mutex_);
   if(latest_request_id_!=result.request_id)
-    return {MeshContinuationStatus::superseded,0U};
+    return {.status=MeshContinuationStatus::superseded};
   if(result.converged)
-    return {MeshContinuationStatus::already_converged,0U};
+    return {.status=MeshContinuationStatus::already_converged};
   const std::uint64_t request_id=++latest_request_id_;
   const std::uint64_t slice_source_revision=result.mesh.revision();
+  const std::size_t cumulative_snapshot_copy_count=
+      result.cumulative_snapshot_copy_count+(snapshot_copy_bytes>0U?1U:0U);
+  const std::size_t cumulative_snapshot_copy_bytes=
+      result.cumulative_snapshot_copy_bytes+snapshot_copy_bytes;
+  const double cumulative_snapshot_copy_milliseconds=
+      result.cumulative_snapshot_copy_milliseconds+snapshot_copy_milliseconds;
   pending_.emplace(MeshUpdateRequest{
       .mesh=std::move(result.mesh),
       .planning_cache=std::move(result.planning_cache),
@@ -93,12 +115,34 @@ MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
       .cumulative_committed_useful_operations=
           result.cumulative_committed_useful_operations,
       .cumulative_low_yield_slices=result.low_yield_slices,
+      .cumulative_snapshot_copy_count=cumulative_snapshot_copy_count,
+      .cumulative_snapshot_copy_bytes=cumulative_snapshot_copy_bytes,
+      .cumulative_snapshot_copy_milliseconds=
+          cumulative_snapshot_copy_milliseconds,
+      .cumulative_worker_handoff_count=
+          result.cumulative_worker_handoff_count+1U,
       .continuation=true});
   completed_.reset();
   ++metrics_.submitted_requests;
   ++metrics_.submitted_continuations;
+  const double worker_handoff_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-handoff_start).count();
+  pending_->cumulative_worker_handoff_milliseconds=
+      result.cumulative_worker_handoff_milliseconds+
+      worker_handoff_milliseconds;
   condition_.notify_all();
-  return {MeshContinuationStatus::accepted,request_id};
+  return {
+      .status=MeshContinuationStatus::accepted,.request_id=request_id,
+      .worker_handoff_milliseconds=worker_handoff_milliseconds,
+      .cumulative_snapshot_copy_count=cumulative_snapshot_copy_count,
+      .cumulative_snapshot_copy_bytes=cumulative_snapshot_copy_bytes,
+      .cumulative_snapshot_copy_milliseconds=
+          cumulative_snapshot_copy_milliseconds,
+      .cumulative_worker_handoff_count=
+          pending_->cumulative_worker_handoff_count,
+      .cumulative_worker_handoff_milliseconds=
+          pending_->cumulative_worker_handoff_milliseconds};
 }
 
 std::optional<MeshUpdateResult> MeshUpdateWorker::take_completed() {
@@ -322,6 +366,16 @@ void MeshUpdateWorker::run(std::stop_token stop) {
                 last_transaction_useful_operations,
             .last_transaction_useful_operations_per_millisecond=
                 last_transaction_useful_operations_per_millisecond,
+            .cumulative_snapshot_copy_count=
+                request->cumulative_snapshot_copy_count,
+            .cumulative_snapshot_copy_bytes=
+                request->cumulative_snapshot_copy_bytes,
+            .cumulative_snapshot_copy_milliseconds=
+                request->cumulative_snapshot_copy_milliseconds,
+            .cumulative_worker_handoff_count=
+                request->cumulative_worker_handoff_count,
+            .cumulative_worker_handoff_milliseconds=
+                request->cumulative_worker_handoff_milliseconds,
             .transaction_operation_budget=transaction_operation_budget,
             .time_budget_reached=time_budget_reached,
             .low_yield_cutoff_reached=low_yield_cutoff_reached,
@@ -373,6 +427,13 @@ MeshPublicationResult publish_mesh_update_result(
           result.last_transaction_useful_operations,
       .last_transaction_useful_operations_per_millisecond=
           result.last_transaction_useful_operations_per_millisecond,
+      .cumulative_snapshot_copy_count=result.cumulative_snapshot_copy_count,
+      .cumulative_snapshot_copy_bytes=result.cumulative_snapshot_copy_bytes,
+      .cumulative_snapshot_copy_milliseconds=
+          result.cumulative_snapshot_copy_milliseconds,
+      .cumulative_worker_handoff_count=result.cumulative_worker_handoff_count,
+      .cumulative_worker_handoff_milliseconds=
+          result.cumulative_worker_handoff_milliseconds,
       .transaction_operation_budget=result.transaction_operation_budget,
       .low_yield_cutoff_reached=result.low_yield_cutoff_reached};
   if(result.converged){
@@ -384,10 +445,36 @@ MeshPublicationResult publish_mesh_update_result(
   // The render thread and the next worker slice need independent ownership.
   // Copy only the complete immutable publication; move the original private
   // mesh and its retained planning arrays back into the worker.
+  const std::size_t snapshot_copy_bytes=result.mesh.snapshot_copy_bytes();
+  const auto snapshot_start=std::chrono::steady_clock::now();
   auto publication_mesh=result.mesh;
-  const auto continuation=worker.submit_continuation(std::move(result));
-  if(!continuation)
-    return {.status=MeshPublicationStatus::continuation_rejected};
+  const double snapshot_copy_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-snapshot_start).count();
+  publication.snapshot_copy_bytes=snapshot_copy_bytes;
+  publication.snapshot_copy_milliseconds=snapshot_copy_milliseconds;
+  publication.cumulative_snapshot_copy_count+=1U;
+  publication.cumulative_snapshot_copy_bytes+=snapshot_copy_bytes;
+  publication.cumulative_snapshot_copy_milliseconds+=
+      snapshot_copy_milliseconds;
+  const auto continuation=worker.submit_continuation(
+      std::move(result),snapshot_copy_bytes,snapshot_copy_milliseconds);
+  publication.worker_handoff_milliseconds=
+      continuation.worker_handoff_milliseconds;
+  if(!continuation){
+    publication.status=MeshPublicationStatus::continuation_rejected;
+    return publication;
+  }
+  publication.cumulative_snapshot_copy_count=
+      continuation.cumulative_snapshot_copy_count;
+  publication.cumulative_snapshot_copy_bytes=
+      continuation.cumulative_snapshot_copy_bytes;
+  publication.cumulative_snapshot_copy_milliseconds=
+      continuation.cumulative_snapshot_copy_milliseconds;
+  publication.cumulative_worker_handoff_count=
+      continuation.cumulative_worker_handoff_count;
+  publication.cumulative_worker_handoff_milliseconds=
+      continuation.cumulative_worker_handoff_milliseconds;
   published_mesh=std::move(publication_mesh);
   publication.status=MeshPublicationStatus::intermediate;
   publication.request_id=continuation.request_id;
