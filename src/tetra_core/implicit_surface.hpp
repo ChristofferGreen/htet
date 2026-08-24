@@ -20,6 +20,22 @@ enum class ImplicitShapeKind : std::uint8_t {
   rounded_cube,
 };
 
+// A gain below one half makes both height and slope energy decay toward the
+// fine octaves. The old 0.5 gain kept slope amplitude constant while frequency
+// doubled, so local LOD refinement exposed visually sharp islands that were
+// absent from adjacent coarser terrain.
+inline constexpr int terrain_octave_count=4;
+inline constexpr double terrain_octave_gain=0.25;
+
+[[nodiscard]] constexpr double terrain_slope_bound_multiplier() noexcept {
+  double sum{},relative_slope=1.0;
+  for(int octave=0;octave<terrain_octave_count;++octave){
+    sum+=relative_slope;
+    relative_slope*=2.0*terrain_octave_gain;
+  }
+  return 2.0*sum;
+}
+
 inline constexpr std::array<ImplicitShapeKind,9> implicit_shape_kinds{
     ImplicitShapeKind::sphere,ImplicitShapeKind::merging_spheres,
     ImplicitShapeKind::cube,ImplicitShapeKind::capped_cylinder,

@@ -200,10 +200,11 @@ bool has_convex_negative_region(ImplicitShapeKind kind) {
 double field_lipschitz_bound(const Sphere& shape) {
   switch (shape.kind) {
     case ImplicitShapeKind::perlin_terrain:
-      // Four octaves halve their amplitude while doubling frequency, so each
-      // contributes the same slope. Eight is a conservative total derivative
-      // bound for the four smooth gradient-noise octaves used above.
-      return std::sqrt(1.0 + std::pow(8.0 * shape.secondary * shape.frequency, 2.0));
+      // Gradient-noise derivatives are conservatively bounded by two. With a
+      // frequency ratio of two and a gain of one quarter, octave slope energy
+      // forms 1 + 1/2 + 1/4 + 1/8 < 2.
+      return std::sqrt(1.0 + std::pow(
+          terrain_slope_bound_multiplier()*shape.secondary*shape.frequency,2.0));
     case ImplicitShapeKind::gyroid:
       // Each normalized partial derivative is the sum of two unit-bounded
       // trigonometric terms.
@@ -633,10 +634,10 @@ double Sphere::signed_distance(Vec3 point) const {
     case ImplicitShapeKind::perlin_terrain:{
       double height=centre.y;
       double amplitude=secondary,scale=frequency,total=0.0;
-      for(int octave=0;octave<4;++octave){
+      for(int octave=0;octave<terrain_octave_count;++octave){
         total+=gradient_noise((point.x-centre.x)*scale,
                               (point.z-centre.z)*scale)*amplitude;
-        scale*=2.0;amplitude*=0.5;
+        scale*=2.0;amplitude*=terrain_octave_gain;
       }
       return point.y-(height+total);
     }
@@ -779,12 +780,12 @@ void evaluate_signed_distances(
       auto x=vld1q_f64(xs),z=vld1q_f64(zs);
       auto total=vdupq_n_f64(0.0);
       double amplitude=surface.secondary,scale=surface.frequency;
-      for(int octave=0;octave<4;++octave){
+      for(int octave=0;octave<terrain_octave_count;++octave){
         const auto scale_vector=vdupq_n_f64(scale);
         const auto noise=gradient_noise_pair(
             vmulq_f64(x,scale_vector),vmulq_f64(z,scale_vector));
         total=vaddq_f64(total,vmulq_f64(noise,vdupq_n_f64(amplitude)));
-        scale*=2.0;amplitude*=0.5;
+        scale*=2.0;amplitude*=terrain_octave_gain;
       }
       const double ys[2]{points[index].y-surface.centre.y,
                          points[index+1U].y-surface.centre.y};
@@ -811,12 +812,12 @@ Vec3 Sphere::normal(Vec3 point) const {
   if(kind==ImplicitShapeKind::perlin_terrain){
     double height_dx=0.0,height_dz=0.0;
     double amplitude=secondary,scale=frequency;
-    for(int octave=0;octave<4;++octave){
+    for(int octave=0;octave<terrain_octave_count;++octave){
       const auto sample=gradient_noise_sample((point.x-centre.x)*scale,
                                                (point.z-centre.z)*scale);
       height_dx+=sample.dx*amplitude*scale;
       height_dz+=sample.dy*amplitude*scale;
-      scale*=2.0;amplitude*=0.5;
+      scale*=2.0;amplitude*=terrain_octave_gain;
     }
     Vec3 gradient{-height_dx,1.0,-height_dz};
     const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+

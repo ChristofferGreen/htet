@@ -787,8 +787,11 @@ potentially intersected leaf meets a view-dependent pixel-size threshold.
   `set-shape=<key>` and report the selected key.
   Deterministic Perlin terrain is the initial viewer experiment and uses
   adaptive cleaving because its open height-field boundary is not a closed-
-  shell input. Smoothly merging spheres start with wider-separated centres for
-  a clearer neck.
+  shell input. Its four octaves use a one-quarter amplitude gain: frequency
+  still doubles, but fine-octave slope energy now decays instead of remaining
+  constant. This keeps progressive local LOD publication responsive without
+  exposing isolated high-frequency bumps beside coarse terrain. Smoothly
+  merging spheres start with wider-separated centres for a clearer neck.
 - [x] Keep shape changes responsive and camera-driven. Convex negative regions
   classify wholly inside immediately; other same-sign cells use a conservative
   centre-radius field bound, including explicit slope bounds for terrain and

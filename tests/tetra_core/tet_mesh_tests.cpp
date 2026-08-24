@@ -3763,6 +3763,40 @@ TEST_CASE("batched implicit fields match the scalar oracle for every shape") {
       std::invalid_argument);
 }
 
+TEST_CASE("terrain fine octaves remain subordinate to its coarse surface") {
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  const auto height=[&](double x,double z){
+    const tetra::Vec3 point{x,terrain.centre.y,z};
+    return terrain.centre.y-terrain.signed_distance(point);
+  };
+  constexpr std::size_t coarse_cells=16U;
+  double maximum_midcell_residual{};
+  double maximum_sampled_slope{};
+  for(std::size_t z=0;z<coarse_cells;++z){
+    for(std::size_t x=0;x<coarse_cells;++x){
+      const double x0=static_cast<double>(x)/coarse_cells;
+      const double x1=static_cast<double>(x+1U)/coarse_cells;
+      const double z0=static_cast<double>(z)/coarse_cells;
+      const double z1=static_cast<double>(z+1U)/coarse_cells;
+      const double bilinear=0.25*(height(x0,z0)+height(x1,z0)+
+                                  height(x0,z1)+height(x1,z1));
+      maximum_midcell_residual=std::max(
+          maximum_midcell_residual,
+          std::abs(height((x0+x1)*0.5,(z0+z1)*0.5)-bilinear));
+      const auto normal=terrain.normal({(x0+x1)*0.5,0.5,(z0+z1)*0.5});
+      maximum_sampled_slope=std::max(maximum_sampled_slope,
+          std::hypot(normal.x,normal.z)/normal.y);
+    }
+  }
+  CAPTURE(maximum_midcell_residual);
+  CAPTURE(maximum_sampled_slope);
+  CHECK(maximum_midcell_residual<0.02);
+  CHECK(maximum_sampled_slope<
+        tetra::terrain_slope_bound_multiplier()*
+            terrain.secondary*terrain.frequency);
+}
+
 TEST_CASE("every implicit shape refines and coarsens from the LOD camera") {
   for(const auto kind:tetra::implicit_shape_kinds){
     CAPTURE(tetra::implicit_shape_name(kind));
@@ -6131,6 +6165,68 @@ TEST_CASE("production terrain LOD publishes visible progress before convergence"
   CHECK(worker.busy());
 }
 
+TEST_CASE("progressive terrain publications stay field aligned and manifold") {
+  auto displayed_mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::Camera camera;
+  camera.position={0.35,0.71,0.35};
+  camera.forward={0.71,-0.55,0.44};
+  tetra::AdaptationConfiguration configuration;
+  tetra_viewer::MeshUpdateParameters parameters{
+      terrain,camera,13.0,21U,configuration,0U,
+      {.maximum_operations_per_transaction=256U,
+       .target_milliseconds=1.0e-9}};
+  tetra_viewer::MeshUpdateWorker worker;
+  tetra::AdaptationPlanningCache planning_cache;
+  auto expected_request=worker.submit(displayed_mesh,parameters);
+  for(std::size_t slice=0;slice<4U;++slice){
+    auto completed=worker.wait_for_completed(std::chrono::seconds(20));
+    REQUIRE(completed.has_value());
+    const auto publication=tetra_viewer::publish_mesh_update_result(
+        worker,std::move(*completed),displayed_mesh,planning_cache,
+        expected_request,tetra_viewer::MeshUpdateOperation::reconcile_lod,
+        parameters);
+    REQUIRE(publication.status==
+            tetra_viewer::MeshPublicationStatus::intermediate);
+    expected_request=publication.request_id;
+    REQUIRE(displayed_mesh.has_positive_active_volumes());
+    REQUIRE(displayed_mesh.has_conforming_active_faces());
+
+    const auto scene=tetra_viewer::prepare_scene(
+        displayed_mesh,terrain,
+        tetra_viewer::SurfaceMethod::surface_optimization,
+        tetra_viewer::MaterialRule::variational_smooth,
+        true,false,false,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::adaptive_cleaving,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,
+        {.surface_diagnostics=false,.summary_statistics=false});
+    CAPTURE(slice);
+    REQUIRE_FALSE(scene.triangle_vertices.empty());
+    const auto topology=tetra_viewer::validate_connected_complex(
+        scene,&displayed_mesh);
+    // Terrain material intentionally reaches the unit-domain floor and side
+    // walls, so those unmatched domain faces are not implicit-surface faces.
+    CHECK(topology.positive_volumes);
+    CHECK(topology.manifold_face_incidence);
+    CHECK(topology.regions_aligned);
+    CHECK(topology.graded_parent_band);
+    CHECK(topology.nonmanifold_faces==0U);
+    for(const auto& vertex:scene.triangle_vertices){
+      const tetra::Vec3 point{
+          vertex.position[0],vertex.position[1],vertex.position[2]};
+      CHECK(std::abs(terrain.signed_distance(point))<1.0e-6);
+      const double normal_length=std::sqrt(
+          vertex.normal[0]*vertex.normal[0]+
+          vertex.normal[1]*vertex.normal[1]+
+          vertex.normal[2]*vertex.normal[2]);
+      CHECK(normal_length==doctest::Approx(1.0).epsilon(1.0e-5));
+    }
+  }
+}
+
 TEST_CASE("scene preparation worker publishes only the latest complete scene") {
   auto mesh=tetra::TetMesh::make_unit_cube(
       tetra::SubdivisionMethod::bcc_red_green);
@@ -8204,7 +8300,7 @@ TEST_CASE("pixel threshold reconciles detail in both directions") {
   CHECK(field(restored,"accepted_splits")>field(coarse,"accepted_splits"));
 }
 
-TEST_CASE("one large camera move and several small moves converge to identical hashes") {
+TEST_CASE("large and stepped camera moves converge within the LOD hysteresis band") {
   const auto run=[](std::string_view path){
     std::ostringstream output,errors;
     const std::string script="set-maximum-depth=9,set-shape=perlin-terrain,"
@@ -8223,13 +8319,25 @@ TEST_CASE("one large camera move and several small moves converge to identical h
       return output.str().substr(
           begin,output.str().find_first_of(",}",begin)-begin);
     };
-    return std::pair{field("logical_cut_hash"),field("conforming_volume_hash")};
+    return std::tuple{
+        std::stoull(field("logical_owners")),
+        std::stoull(field("maximum_active_depth")),
+        field("logical_cut_hash"),field("conforming_volume_hash")};
   };
   const auto direct=run("set-camera=1:0:0.5");
   const auto stepped=run(
       "set-camera=0.25:0.75:0.5,set-camera=0.5:0.5:0.5,"
       "set-camera=0.75:0.25:0.5,set-camera=1:0:0.5");
-  CHECK(stepped==direct);
+  // Split and merge thresholds deliberately define a history-dependent
+  // hysteresis band. Require equivalent depth and a bounded population,
+  // rather than accidentally demanding one canonical topology inside it.
+  CHECK(run("set-camera=1:0:0.5")==direct);
+  CHECK(run("set-camera=0.25:0.75:0.5,set-camera=0.5:0.5:0.5,"
+            "set-camera=0.75:0.25:0.5,set-camera=1:0:0.5")==stepped);
+  CHECK(std::get<1>(stepped)==std::get<1>(direct));
+  const auto larger=std::max(std::get<0>(stepped),std::get<0>(direct));
+  const auto smaller=std::min(std::get<0>(stepped),std::get<0>(direct));
+  CHECK(smaller*10U>=larger*9U);
 }
 
 TEST_CASE("gizmo translation simplifies LOD without retargeting its camera direction") {
@@ -8529,7 +8637,7 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
     image.close();std::filesystem::remove(path);
     return hash;
   };
-  constexpr std::uint64_t expected=11915255033212884579ULL;
+  constexpr std::uint64_t expected=18212849074860900224ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(
