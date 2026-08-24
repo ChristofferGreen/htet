@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TETRA_BUILD_VIEWER "Build the Vulkan tetrahedral viewer" ON)
+option(TETRA_ENABLE_SIMD "Enable architecture-specific SIMD kernels" ON)
 
 include(FetchContent)
 
@@ -18,12 +19,19 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(doctest)
 
 add_library(tetra_core
+  src/tetra_core/adjacency.cpp
+  src/tetra_core/green_templates.cpp
+  src/tetra_core/layer_storage.cpp
+  src/tetra_core/parallel_commit.cpp
   src/tetra_core/tet_mesh.cpp
   src/tetra_core/implicit_surface.cpp
   src/tetra_core/whole_cell_surface.cpp)
 add_library(tetra::core ALIAS tetra_core)
 target_include_directories(tetra_core PUBLIC src)
 target_compile_features(tetra_core PUBLIC cxx_std_23)
+if(TETRA_ENABLE_SIMD)
+  target_compile_definitions(tetra_core PRIVATE TETRA_ENABLE_SIMD=1)
+endif()
 target_compile_options(tetra_core PRIVATE
   $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
 
@@ -31,6 +39,8 @@ target_compile_options(tetra_core PRIVATE
 # Keeping it independent of GLFW and Vulkan makes headless validation usable
 # even when the viewer itself cannot be built or launched.
 add_library(tetra_viewer_script
+  src/tetra_viewer/camera_manipulator.cpp
+  src/tetra_viewer/mesh_update_worker.cpp
   src/tetra_viewer/viewer_script.cpp
   src/tetra_viewer/viewer_scene.cpp)
 target_include_directories(tetra_viewer_script PUBLIC src)
@@ -43,6 +53,11 @@ target_compile_options(tetra_viewer_script PRIVATE
 add_library(tetra_io INTERFACE)
 add_library(tetra::io ALIAS tetra_io)
 target_link_libraries(tetra_io INTERFACE tetra::core)
+
+add_executable(tetra_simd_benchmark benchmarks/simd_benchmark.cpp)
+target_link_libraries(tetra_simd_benchmark PRIVATE tetra::core)
+target_compile_options(tetra_simd_benchmark PRIVATE
+  $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 enable_testing()
 add_executable(tetra_tests tests/tetra_core/tet_mesh_tests.cpp)

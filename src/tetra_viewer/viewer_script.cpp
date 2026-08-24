@@ -1,7 +1,10 @@
 #include "tetra_viewer/viewer_script.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
+#include "tetra_viewer/camera_manipulator.hpp"
 
 #include "tetra_core/implicit_surface.hpp"
+#include "tetra_core/adjacency.hpp"
+#include "tetra_core/layer_storage.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +16,7 @@
 #include <iomanip>
 #include <limits>
 #include <ostream>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -21,12 +25,22 @@ namespace tetra_viewer {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+double milliseconds_since(Clock::time_point start);
 
 struct ScriptState {
   tetra::TetMesh mesh{tetra::TetMesh::make_unit_cube(default_subdivision_method)};
   tetra::Sphere sphere{};
   tetra::Camera camera{};
   tetra::ImplicitValueCache implicit_value_cache;
+  tetra::AdaptationPlanningCache planning_cache;
+  tetra::FixedFieldSurfaceHierarchy surface_hierarchy;
+  tetra::PreorderSurfaceHierarchy preorder_hierarchy;
+  tetra::PreorderRenderMetrics preorder_metrics;
+  std::vector<tetra::TetId> surface_hierarchy_cut;
+  std::vector<tetra::Triangle> surface_hierarchy_triangles;
+  tetra::AdaptationConfiguration adaptation;
+  tetra::LayerStorageExperiment layer_storage_experiment;
+  tetra::AdjacencyExperiment adjacency_experiment;
   double pixel_threshold{28.0};
   unsigned int maximum_depth{16};
   SurfaceMethod surface_method{default_surface_method};
@@ -41,8 +55,64 @@ struct ScriptState {
   bool show_volume_edges{true};
   bool show_volume_faces{true};
   bool x_cutaway{true};
-  double x_cut_position{0.5};
+  double x_cut_position{1.0};
+  std::size_t planned_splits{};
+  std::size_t planned_merges{};
+  std::size_t accepted_splits{};
+  std::size_t accepted_merges{};
+  std::size_t adaptation_transactions{};
+  std::size_t stale_plans{};
+  std::size_t rejected_plans{};
+  std::size_t logical_candidates{};
+  std::size_t field_classifications{};
+  std::size_t exact_field_evaluations{};
+  std::size_t projection_evaluations{};
+  std::size_t conformity_rejections{};
+  std::size_t hierarchy_nodes_visited{};
+  std::size_t frustum_subtrees_rejected{};
+  std::size_t field_subtrees_rejected{};
+  std::size_t projected_subtrees_rejected{};
+  std::size_t exact_field_evaluations_avoided{};
+  std::size_t spatial_index_bytes{};
+  std::size_t spatial_run_count{};
+  std::size_t spatial_run_bound_tests{};
+  std::size_t spatial_run_candidates{};
+  std::size_t scheduler_queue_pushes{};
+  std::size_t scheduler_useful_pops{};
+  std::size_t scheduler_stale_pops{};
+  std::size_t scheduler_priority_recomputations{};
+  std::size_t scheduler_block_streams{};
+  std::size_t scheduler_fallbacks{};
+  double plan_milliseconds{};
+  double commit_milliseconds{};
+  double classification_milliseconds{};
+  double family_resolution_milliseconds{};
+  double summary_build_milliseconds{};
+  double spatial_index_build_milliseconds{};
+  std::uint64_t last_plan_revision{};
+  std::uint64_t last_result_revision{};
+  std::uint64_t field_revision{};
+  std::optional<tetra::AdaptationReplayRecord> last_replay;
+  tetra::BccUpdateMetrics bcc_metrics;
 };
+
+void accumulate(tetra::BccUpdateMetrics& total,const tetra::BccUpdateMetrics& update){
+  total.cut_scan_ms+=update.cut_scan_ms;
+  total.conformity_closure_ms+=update.conformity_closure_ms;
+  total.cut_transform_ms+=update.cut_transform_ms;
+  total.green_generation_ms+=update.green_generation_ms;
+  total.incidence_update_ms+=update.incidence_update_ms;
+  total.face_repair_ms+=update.face_repair_ms;
+  total.full_cut_cells_scanned+=update.full_cut_cells_scanned;
+  total.closure_cells_examined+=update.closure_cells_examined;
+  total.logical_owners_changed+=update.logical_owners_changed;
+  total.green_records_generated+=update.green_records_generated;
+  total.edge_tables_rebuilt+=update.edge_tables_rebuilt;
+  total.face_tables_rebuilt+=update.face_tables_rebuilt;
+  total.repair_iterations+=update.repair_iterations;
+  total.sparse_frontier_pops+=update.sparse_frontier_pops;
+  total.dense_sweeps+=update.dense_sweeps;
+}
 
 void enforce_conforming_smooth_cutaway(ScriptState& state){
   // Method selections are authoritative. Unsupported or disconnected
@@ -57,9 +127,107 @@ tetra::AdaptiveResult refine_to_current_surface(ScriptState& state){
     return tetra::refine_to_whole_cell_surface(state.mesh,state.sphere,state.camera,
                                                 state.pixel_threshold,state.maximum_depth,
                                                 whole_cell_options(state.material_rule));
+  const double threshold=state.mesh.subdivision_method()==
+          tetra::SubdivisionMethod::bcc_red_green
+      ?state.pixel_threshold*state.adaptation.split_hysteresis
+      :state.pixel_threshold;
   return tetra::refine_to_sphere(state.mesh,state.sphere,state.camera,
-                                 state.pixel_threshold,state.maximum_depth,
+                                 threshold,state.maximum_depth,
                                  &state.implicit_value_cache);
+}
+
+tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
+  if(state.adaptation.lod_update==tetra::LodUpdateStrategy::full_rebuild_oracle){
+    state.mesh.reset_active_hierarchy();
+    return refine_to_current_surface(state);
+  }
+  tetra::AdaptiveResult result;
+  if(state.adaptation.lod_update==tetra::LodUpdateStrategy::relevant_surface_hierarchy||
+     state.adaptation.lod_update==tetra::LodUpdateStrategy::minimal_surface_hierarchy||
+     state.adaptation.lod_update==tetra::LodUpdateStrategy::on_demand_render_traversal){
+    static_cast<void>(tetra::update_fixed_field_surface_hierarchy(
+        state.surface_hierarchy,state.mesh,state.sphere,state.field_revision));
+    if(state.adaptation.lod_update==tetra::LodUpdateStrategy::on_demand_render_traversal){
+      static_cast<void>(tetra::update_preorder_surface_hierarchy(
+          state.preorder_hierarchy,state.surface_hierarchy));
+      state.surface_hierarchy_cut.clear();
+      state.preorder_metrics=tetra::render_preorder_surface(
+          state.preorder_hierarchy,state.mesh,state.sphere,state.camera,
+          state.pixel_threshold,state.maximum_depth,state.surface_hierarchy_triangles);
+    }else{
+      state.surface_hierarchy_cut=tetra::select_fixed_field_surface_cut(
+          state.surface_hierarchy,state.mesh,state.camera,state.pixel_threshold,
+          state.maximum_depth,state.adaptation.lod_update);
+      state.surface_hierarchy_triangles=tetra::extract_isosurface(
+          state.mesh,state.sphere,state.surface_hierarchy_cut);
+    }
+    return result;
+  }
+  state.surface_hierarchy_cut.clear();
+  state.surface_hierarchy_triangles.clear();
+  if(state.mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green){
+    for(std::size_t transaction=0;transaction<64;++transaction){
+      const auto plan_start=Clock::now();
+      const auto plan=tetra::plan_adaptation(
+          state.mesh,state.sphere,state.camera,state.pixel_threshold,
+          state.maximum_depth,state.adaptation,state.field_revision,&state.planning_cache);
+      state.plan_milliseconds+=milliseconds_since(plan_start);
+      state.planned_splits+=plan.planned_splits;
+      state.planned_merges+=plan.planned_merges;
+      state.last_plan_revision=plan.base_revision;
+      state.logical_candidates+=plan.logical_candidates;
+      state.field_classifications+=plan.field_classifications;
+      state.exact_field_evaluations+=plan.exact_field_evaluations;
+      state.projection_evaluations+=plan.projection_evaluations;
+      state.conformity_rejections+=plan.conformity_rejections;
+      state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
+      state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
+      state.field_subtrees_rejected+=plan.field_subtrees_rejected;
+      state.projected_subtrees_rejected+=plan.projected_subtrees_rejected;
+      state.exact_field_evaluations_avoided+=plan.exact_field_evaluations_avoided;
+      state.spatial_index_bytes=std::max(state.spatial_index_bytes,plan.spatial_index_bytes);
+      state.spatial_run_count=plan.spatial_run_count;
+      state.spatial_run_bound_tests+=plan.spatial_run_bound_tests;
+      state.spatial_run_candidates+=plan.spatial_run_candidates;
+      state.scheduler_queue_pushes+=plan.scheduler_queue_pushes;
+      state.scheduler_useful_pops+=plan.scheduler_useful_pops;
+      state.scheduler_stale_pops+=plan.scheduler_stale_pops;
+      state.scheduler_priority_recomputations+=plan.scheduler_priority_recomputations;
+      state.scheduler_block_streams+=plan.scheduler_block_streams;
+      state.scheduler_fallbacks+=plan.scheduler_fallbacks;
+      state.classification_milliseconds+=plan.classification_ms;
+      state.family_resolution_milliseconds+=plan.family_resolution_ms;
+      state.summary_build_milliseconds+=plan.summary_build_ms;
+      state.spatial_index_build_milliseconds+=plan.spatial_index_build_ms;
+      const auto commit_start=Clock::now();
+      const auto commit=tetra::commit_adaptation(
+          state.mesh,plan,state.adaptation,state.field_revision);
+      if(commit.status==tetra::AdaptationCommitStatus::no_change&&
+         !plan.commands.empty())state.planning_cache.pose_merge_pending=false;
+      state.commit_milliseconds+=milliseconds_since(commit_start);
+      state.last_result_revision=commit.resulting_revision;
+      if(commit.status==tetra::AdaptationCommitStatus::no_change)break;
+      if(commit.status!=tetra::AdaptationCommitStatus::committed){
+        state.stale_plans+=commit.status==tetra::AdaptationCommitStatus::stale_plan?1U:0U;
+        state.rejected_plans+=commit.status==tetra::AdaptationCommitStatus::rejected?1U:0U;
+        result.reached_depth_limit=true;
+        break;
+      }
+      ++state.adaptation_transactions;
+      state.last_replay=commit.replay;
+      accumulate(state.bcc_metrics,commit.bcc_metrics);
+      state.accepted_splits+=commit.accepted_splits;
+      state.accepted_merges+=commit.accepted_merges;
+      ++result.iterations;
+      result.refined_leaves+=commit.accepted_splits;
+    }
+    return result;
+  }
+  const auto completion=refine_to_current_surface(state);
+  result.iterations+=completion.iterations;
+  result.refined_leaves+=completion.refined_leaves;
+  result.reached_depth_limit|=completion.reached_depth_limit;
+  return result;
 }
 
 struct InitializedScriptState {
@@ -129,12 +297,81 @@ bool parse_vec3(std::string_view text, tetra::Vec3& value) {
 
 unsigned int maximum_active_depth(const tetra::TetMesh& mesh) {
   unsigned int depth = 0;
-  for (const auto address : mesh.active_leaves()) depth = std::max(depth, mesh.refinement_depth(address));
+  for (const auto address : mesh.conforming_volume().addresses())
+    depth = std::max(depth, mesh.refinement_depth(address));
   return depth;
 }
 
+std::uint64_t address_hash(std::span<const tetra::TetId> addresses){
+  std::uint64_t hash=1469598103934665603ULL;
+  for(const auto address:addresses){hash^=address;hash*=1099511628211ULL;}
+  return hash;
+}
+
+struct ConformingQualitySummary {
+  double minimum_mean_ratio{1.0};
+  double minimum_dihedral_degrees{180.0};
+  double maximum_dihedral_degrees{};
+};
+
+ConformingQualitySummary conforming_quality(const tetra::TetMesh& mesh){
+  ConformingQualitySummary result;
+  const auto volume=mesh.conforming_volume();
+  if(volume.empty())return {};
+  for(const auto address:volume.addresses()){
+    const auto& vertices=mesh.tetrahedron(address).vertices;
+    std::array<tetra::Vec3,4> points{};
+    for(std::size_t corner=0;corner<points.size();++corner)
+      points[corner]=mesh.vertices()[vertices[corner]];
+    auto quality=evaluate_tetrahedron_quality(points);
+    if(quality.signed_six_volume<=0.0){
+      std::swap(points[0],points[1]);
+      quality=evaluate_tetrahedron_quality(points);
+    }
+    result.minimum_mean_ratio=std::min(result.minimum_mean_ratio,quality.mean_ratio);
+    result.minimum_dihedral_degrees=std::min(
+        result.minimum_dihedral_degrees,quality.minimum_dihedral_degrees);
+    result.maximum_dihedral_degrees=std::max(
+        result.maximum_dihedral_degrees,quality.maximum_dihedral_degrees);
+  }
+  return result;
+}
+
+std::size_t retained_layer_bytes(const tetra::TetMesh& mesh){
+  std::size_t bytes=mesh.vertices().capacity()*sizeof(tetra::Vec3);
+  for(const auto& layer:mesh.layers()){
+    bytes+=layer.tetrahedra.capacity()*sizeof(tetra::Tetrahedron);
+    bytes+=layer.tetrahedra_scratch.capacity()*sizeof(tetra::Tetrahedron);
+    bytes+=layer.split_words.capacity()*sizeof(std::uint64_t);
+    bytes+=layer.split_words_scratch.capacity()*sizeof(std::uint64_t);
+    bytes+=layer.pinned_words.capacity()*sizeof(std::uint64_t);
+    bytes+=layer.pinned_words_scratch.capacity()*sizeof(std::uint64_t);
+    bytes+=layer.pinned_descendant_words.capacity()*sizeof(std::uint64_t);
+    bytes+=layer.address_slots.capacity()*sizeof(std::uint32_t);
+  }
+  return bytes;
+}
+
 void write_mesh_fields(std::ostream& output, const ScriptState& state) {
-  output << "\"subdivision_method\":\"" << tetra::subdivision_method_key(state.mesh.subdivision_method()) << '"'
+  const auto logical=state.mesh.logical_cut();
+  const auto conforming=state.mesh.conforming_volume();
+  const auto quality=conforming_quality(state.mesh);
+  output << "\"adaptation_configuration_schema\":"
+         << tetra::adaptation_configuration_schema_version
+         << ",\"benchmark_schema\":" << tetra::adaptation_benchmark_schema_version
+         << ",\"lod_update\":\"" << tetra::strategy_key(state.adaptation.lod_update) << '"'
+         << ",\"update_scheduler\":\"" << tetra::strategy_key(state.adaptation.update_scheduler) << '"'
+         << ",\"candidate_traversal\":\"" << tetra::strategy_key(state.adaptation.candidate_traversal) << '"'
+         << ",\"closure_execution\":\"" << tetra::strategy_key(state.adaptation.closure_execution) << '"'
+         << ",\"layer_storage\":\"" << tetra::strategy_key(state.adaptation.layer_storage) << '"'
+         << ",\"adjacency\":\"" << tetra::strategy_key(state.adaptation.adjacency) << '"'
+         << ",\"kernel_order\":\"" << tetra::strategy_key(state.adaptation.kernel_order) << '"'
+         << ",\"transition_strategy\":\"" << tetra::strategy_key(state.adaptation.transition_strategy) << '"'
+         << ",\"split_hysteresis\":" << state.adaptation.split_hysteresis
+         << ",\"merge_hysteresis\":" << state.adaptation.merge_hysteresis
+         << ",\"hybrid_frontier_ratio\":" << state.adaptation.hybrid_frontier_ratio
+         << ",\"operation_budget\":" << state.adaptation.operation_budget
+         << ",\"subdivision_method\":\"" << tetra::subdivision_method_key(state.mesh.subdivision_method()) << '"'
          << ",\"surface_method\":\"" << surface_method_key(state.surface_method) << '"'
          << ",\"volume_connection\":\"" << volume_connection_method_key(state.volume_connection_method) << '"'
          << ",\"stencil_construction\":\"" << stencil_construction_key(state.stencil_construction) << '"'
@@ -152,11 +389,151 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << state.camera.position.y << ',' << state.camera.position.z << ']'
          << ",\"lod_direction\":[" << state.camera.forward.x << ','
          << state.camera.forward.y << ',' << state.camera.forward.z << ']'
-         << ",\"active_leaves\":" << state.mesh.active_leaves().size()
+         << ",\"active_leaves\":" << state.mesh.conforming_volume().size()
+         << ",\"logical_owners\":" << logical.owners.size()
+         << ",\"conforming_cells\":" << conforming.size()
          << ",\"stored_tetrahedra\":" << state.mesh.tetrahedron_count()
          << ",\"vertices\":" << state.mesh.vertices().size()
          << ",\"layers\":" << state.mesh.layers().size()
          << ",\"maximum_active_depth\":" << maximum_active_depth(state.mesh)
+         << ",\"planned_splits\":" << state.planned_splits
+         << ",\"planned_merges\":" << state.planned_merges
+         << ",\"accepted_splits\":" << state.accepted_splits
+         << ",\"accepted_merges\":" << state.accepted_merges
+         << ",\"adaptation_transactions\":" << state.adaptation_transactions
+         << ",\"stale_plans\":" << state.stale_plans
+         << ",\"rejected_plans\":" << state.rejected_plans
+         << ",\"logical_candidates\":" << state.logical_candidates
+         << ",\"field_classifications\":" << state.field_classifications
+         << ",\"exact_field_evaluations\":" << state.exact_field_evaluations
+         << ",\"projection_evaluations\":" << state.projection_evaluations
+         << ",\"conformity_rejections\":" << state.conformity_rejections
+         << ",\"hierarchy_nodes_visited\":" << state.hierarchy_nodes_visited
+         << ",\"frustum_subtrees_rejected\":" << state.frustum_subtrees_rejected
+         << ",\"field_subtrees_rejected\":" << state.field_subtrees_rejected
+         << ",\"projected_subtrees_rejected\":" << state.projected_subtrees_rejected
+         << ",\"exact_field_evaluations_avoided\":" << state.exact_field_evaluations_avoided
+         << ",\"plan_ms\":" << state.plan_milliseconds
+         << ",\"commit_ms\":" << state.commit_milliseconds
+         << ",\"classification_ms\":" << state.classification_milliseconds
+         << ",\"family_resolution_ms\":" << state.family_resolution_milliseconds
+         << ",\"summary_build_ms\":" << state.summary_build_milliseconds
+         << ",\"spatial_index_bytes\":" << state.spatial_index_bytes
+         << ",\"spatial_run_count\":" << state.spatial_run_count
+         << ",\"spatial_run_bound_tests\":" << state.spatial_run_bound_tests
+         << ",\"spatial_run_candidates\":" << state.spatial_run_candidates
+         << ",\"spatial_index_build_ms\":" << state.spatial_index_build_milliseconds
+         << ",\"scheduler_queue_pushes\":" << state.scheduler_queue_pushes
+         << ",\"scheduler_useful_pops\":" << state.scheduler_useful_pops
+         << ",\"scheduler_stale_pops\":" << state.scheduler_stale_pops
+         << ",\"scheduler_priority_recomputations\":"
+         << state.scheduler_priority_recomputations
+         << ",\"scheduler_block_streams\":" << state.scheduler_block_streams
+         << ",\"scheduler_fallbacks\":" << state.scheduler_fallbacks
+         << ",\"last_plan_revision\":" << state.last_plan_revision
+         << ",\"last_result_revision\":" << state.last_result_revision
+         << ",\"logical_cut_hash\":" << address_hash(logical.owners)
+         << ",\"conforming_volume_hash\":" << address_hash(conforming.addresses())
+         << ",\"minimum_conforming_mean_ratio\":" << quality.minimum_mean_ratio
+         << ",\"minimum_conforming_dihedral_degrees\":"
+         << quality.minimum_dihedral_degrees
+         << ",\"maximum_conforming_dihedral_degrees\":"
+         << quality.maximum_dihedral_degrees
+         << ",\"retained_layer_bytes\":" << retained_layer_bytes(state.mesh)
+         << ",\"surface_hierarchy_rebuilds\":" << state.surface_hierarchy.rebuild_count
+         << ",\"surface_hierarchy_relevant_clusters\":"
+         << state.surface_hierarchy.relevant_clusters
+         << ",\"surface_hierarchy_minimal_clusters\":"
+         << state.surface_hierarchy.minimal_clusters
+         << ",\"surface_hierarchy_retained_bytes\":"
+         << state.surface_hierarchy.retained_bytes
+         << ",\"surface_hierarchy_selected_clusters\":"
+         << state.surface_hierarchy_cut.size()
+         << ",\"surface_hierarchy_triangles\":"
+         << state.surface_hierarchy_triangles.size()
+         << ",\"surface_hierarchy_cut_hash\":"
+         << address_hash(state.surface_hierarchy_cut)
+         << ",\"preorder_nodes\":" << state.preorder_hierarchy.addresses.size()
+         << ",\"preorder_retained_bytes\":" << state.preorder_hierarchy.retained_bytes
+         << ",\"preorder_rebuilds\":" << state.preorder_hierarchy.rebuild_count
+         << ",\"preorder_nodes_visited\":" << state.preorder_metrics.nodes_visited
+         << ",\"preorder_selected_nodes\":" << state.preorder_metrics.selected_nodes
+         << ",\"preorder_generated_triangles\":"
+         << state.preorder_metrics.generated_triangles
+         << ",\"preorder_traversal_ms\":" << state.preorder_metrics.traversal_ms
+         << ",\"storage_live_bytes\":" << state.layer_storage_experiment.metrics.live_bytes
+         << ",\"storage_retained_bytes\":"
+         << state.layer_storage_experiment.metrics.retained_bytes
+         << ",\"storage_blocks\":" << state.layer_storage_experiment.metrics.block_count
+         << ",\"storage_address_runs\":"
+         << state.layer_storage_experiment.metrics.address_run_count
+         << ",\"storage_supercubes\":"
+         << state.layer_storage_experiment.metrics.supercube_count
+         << ",\"storage_supercube_diamonds\":"
+         << state.layer_storage_experiment.metrics.supercube_diamonds
+         << ",\"storage_minimum_block_occupancy\":"
+         << state.layer_storage_experiment.metrics.minimum_block_occupancy
+         << ",\"storage_maximum_block_occupancy\":"
+         << state.layer_storage_experiment.metrics.maximum_block_occupancy
+         << ",\"storage_mean_block_occupancy\":"
+         << state.layer_storage_experiment.metrics.mean_block_occupancy
+         << ",\"storage_conversion_ms\":"
+         << state.layer_storage_experiment.metrics.conversion_ms
+         << ",\"storage_classification_ms\":"
+         << state.layer_storage_experiment.metrics.classification_ms
+         << ",\"storage_candidate_throughput\":"
+         << state.layer_storage_experiment.metrics.candidate_throughput_per_second
+         << ",\"storage_exact_field_throughput\":"
+         << state.layer_storage_experiment.metrics.exact_field_throughput_per_second
+         << ",\"storage_topology_hash\":"
+         << state.layer_storage_experiment.metrics.topology_hash
+         << ",\"storage_classification_hash\":"
+         << state.layer_storage_experiment.metrics.classification_hash
+         << ",\"adjacency_retained_bytes\":"
+         << state.adjacency_experiment.metrics.retained_bytes
+         << ",\"adjacency_boundary_faces\":"
+         << state.adjacency_experiment.metrics.boundary_faces
+         << ",\"adjacency_manifold_pairs\":"
+         << state.adjacency_experiment.metrics.manifold_pairs
+         << ",\"adjacency_nonmanifold_faces\":"
+         << state.adjacency_experiment.metrics.nonmanifold_faces
+         << ",\"adjacency_template_wired\":"
+         << state.adjacency_experiment.metrics.template_wired_half_facets
+         << ",\"adjacency_path_exceptions\":"
+         << state.adjacency_experiment.metrics.path_exceptions
+         << ",\"adjacency_dirty_half_facets\":"
+         << state.adjacency_experiment.metrics.dirty_half_facets_updated
+         << ",\"adjacency_build_ms\":" << state.adjacency_experiment.metrics.build_ms
+         << ",\"adjacency_query_ms\":"
+         << state.adjacency_experiment.metrics.neighbour_query_ms
+         << ",\"adjacency_validation_ms\":"
+         << state.adjacency_experiment.metrics.validation_ms
+         << ",\"adjacency_multiplicity_hash\":"
+         << state.adjacency_experiment.metrics.owner_multiplicity_hash
+         << ",\"adjacency_oriented_hash\":"
+         << state.adjacency_experiment.metrics.oriented_adjacency_hash
+         << ",\"replay_schema\":" << tetra::adaptation_replay_schema_version
+         << ",\"last_replay_source_hash\":"
+         << (state.last_replay?state.last_replay->source_owner_hash:0U)
+         << ",\"last_replay_target_hash\":"
+         << (state.last_replay?state.last_replay->target_owner_hash:0U)
+         << ",\"last_replay_commands\":"
+         << (state.last_replay?state.last_replay->forward_commands.size():0U)
+         << ",\"bcc_cut_scan_ms\":" << state.bcc_metrics.cut_scan_ms
+         << ",\"bcc_conformity_closure_ms\":" << state.bcc_metrics.conformity_closure_ms
+         << ",\"bcc_cut_transform_ms\":" << state.bcc_metrics.cut_transform_ms
+         << ",\"bcc_green_generation_ms\":" << state.bcc_metrics.green_generation_ms
+         << ",\"bcc_incidence_update_ms\":" << state.bcc_metrics.incidence_update_ms
+         << ",\"bcc_face_repair_ms\":" << state.bcc_metrics.face_repair_ms
+         << ",\"bcc_full_cut_cells_scanned\":" << state.bcc_metrics.full_cut_cells_scanned
+         << ",\"bcc_closure_cells_examined\":" << state.bcc_metrics.closure_cells_examined
+         << ",\"bcc_logical_owners_changed\":" << state.bcc_metrics.logical_owners_changed
+         << ",\"bcc_green_records_generated\":" << state.bcc_metrics.green_records_generated
+         << ",\"bcc_edge_tables_rebuilt\":" << state.bcc_metrics.edge_tables_rebuilt
+         << ",\"bcc_face_tables_rebuilt\":" << state.bcc_metrics.face_tables_rebuilt
+         << ",\"bcc_repair_iterations\":" << state.bcc_metrics.repair_iterations
+         << ",\"bcc_sparse_frontier_pops\":" << state.bcc_metrics.sparse_frontier_pops
+         << ",\"bcc_dense_sweeps\":" << state.bcc_metrics.dense_sweeps
          << ",\"total_active_volume\":" << std::setprecision(17) << state.mesh.total_active_volume();
 }
 
@@ -212,7 +589,7 @@ bool render_image(const ScriptState& state, std::string_view path, std::ostream&
       state.x_cutaway && state.show_volume_edges,
       state.x_cutaway && state.show_volume_faces, state.x_cut_position,
       state.volume_connection_method,state.stencil_construction,
-      state.stencil_selection_objective);
+      state.stencil_selection_objective,{},state.surface_hierarchy_triangles);
   const auto dot = [](tetra::Vec3 a, tetra::Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
   const auto cross = [](tetra::Vec3 a, tetra::Vec3 b) {
     return tetra::Vec3{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
@@ -409,13 +786,20 @@ void print_script_help(std::ostream& output) {
             "before the first command. Commands execute from left to right:\n"
             "  refine-once                 Bisect every active tetrahedron once\n"
             "  refine-to-convergence       Refine sphere intersections to the current limit\n"
+            "  adapt-once                  Plan and commit one incremental transaction\n"
+            "  reverse-last-adaptation     Apply the inverse of the last accepted transaction\n"
+            "  replay-last-adaptation      Reapply the last accepted transaction\n"
             "  validate                    Check volumes, adjacency, and conformity\n"
             "  validate-volume             Validate the selected connected volume\n"
             "  prepare-scene               Build cached CPU geometry and statistics\n"
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
+            "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
             "  set-method=<key>            Reset using a registered subdivision method\n"
+            "  set-lod-update=<key>        Select a registered capability-compatible LOD strategy\n"
+            "  set-candidate-traversal=<key> Select active-cut-scan, hierarchy-bounds, or spatial-runs\n"
+            "  set-transition-strategy=<key> Select crystalline-restricted or complete-minimal\n"
             "  set-surface-method=<key>    Select a registered surface generation method\n"
             "  set-volume-connection=<key> Select hierarchy cells or adaptive cleaving\n"
             "  set-stencil-construction=<fixed|selected> Select fixed templates or the atlas\n"
@@ -431,9 +815,20 @@ void print_script_help(std::ostream& output) {
             "  set-shape=<key>             Select sphere, merging-spheres, cube, capped-cylinder, perlin-terrain, torus, cone, gyroid, or rounded-cube\n"
             "  set-camera=<x:y:z>          Set the camera/LOD origin position\n"
             "  set-camera-direction=<x:y:z> Set the LOD camera view direction\n"
+            "  gizmo-move=<world|local>:<x|y|z>:<amount> Apply a scripted camera manipulator move\n"
+            "  gizmo-rotate=<world|local>:<x|y|z>:<degrees> Apply a scripted camera manipulator rotation\n"
             "  set-radius=<0.001..1.0>     Change the implicit shape scale\n"
             "  set-pixel-threshold=<value> Change the projected-size threshold\n"
             "  set-maximum-depth=<0..32>   Change the adaptive iteration limit\n"
+            "  set-split-hysteresis=<v>    Set the split threshold multiplier\n"
+            "  set-merge-hysteresis=<v>    Set the merge threshold multiplier\n"
+            "  set-operation-budget=<n>    Set the maximum commands per transaction\n"
+            "  set-closure-execution=<key> Select sparse-frontier, dense-level-sweep, or hybrid\n"
+            "  set-hybrid-threshold=<v>    Set the hybrid dense-switch ratio\n"
+            "  set-layer-storage=<key>     Rebuild the packed layer storage experiment\n"
+            "  set-kernel-order=<key>      Rebuild with address, orientation, or fused order\n"
+            "  set-update-scheduler=<key>  Select streamed, persistent-queue, or queued-block scheduling\n"
+            "  set-adjacency=<key>         Build path, half-facet, table, or oracle adjacency\n"
             "\n"
             "Every event is emitted as one JSON object. Parsing or validation failures\n"
             "return a nonzero exit code. No window or graphics API is initialized.\n";
@@ -463,6 +858,206 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
   output << "}\n";
 
   for (const auto command : commands) {
+    constexpr std::string_view transition_prefix="set-transition-strategy=";
+    if(command.starts_with(transition_prefix)){
+      const auto key=command.substr(transition_prefix.size());
+      tetra::BccTransitionStrategy strategy{};
+      if(key==tetra::strategy_key(tetra::BccTransitionStrategy::crystalline_restricted))
+        strategy=tetra::BccTransitionStrategy::crystalline_restricted;
+      else if(key==tetra::strategy_key(tetra::BccTransitionStrategy::complete_minimal))
+        strategy=tetra::BccTransitionStrategy::complete_minimal;
+      else{
+        write_error(errors,"unknown BCC transition strategy",command);
+        return 2;
+      }
+      if(!state.mesh.set_transition_strategy(strategy)){
+        write_error(errors,"transition strategy requires BCC red-green subdivision",command);
+        return 2;
+      }
+      state.adaptation.transition_strategy=strategy;
+      state.planning_cache.clear();
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view candidate_traversal_prefix="set-candidate-traversal=";
+    if(command.starts_with(candidate_traversal_prefix)){
+      const auto previous=state.adaptation.candidate_traversal;
+      const auto key=command.substr(candidate_traversal_prefix.size());
+      if(key==tetra::strategy_key(tetra::CandidateTraversal::active_cut_scan))
+        state.adaptation.candidate_traversal=tetra::CandidateTraversal::active_cut_scan;
+      else if(key==tetra::strategy_key(tetra::CandidateTraversal::hierarchy_bounds))
+        state.adaptation.candidate_traversal=tetra::CandidateTraversal::hierarchy_bounds;
+      else if(key==tetra::strategy_key(tetra::CandidateTraversal::spatial_runs))
+        state.adaptation.candidate_traversal=tetra::CandidateTraversal::spatial_runs;
+      else{
+        write_error(errors,"candidate traversal is registered but not implemented",command);
+        return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.candidate_traversal=previous;
+        write_error(errors,"candidate traversal is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view closure_prefix="set-closure-execution=";
+    if(command.starts_with(closure_prefix)){
+      const auto previous=state.adaptation.closure_execution;
+      const auto key=command.substr(closure_prefix.size());
+      if(key==tetra::strategy_key(tetra::ClosureExecution::sparse_frontier))
+        state.adaptation.closure_execution=tetra::ClosureExecution::sparse_frontier;
+      else if(key==tetra::strategy_key(tetra::ClosureExecution::dense_level_sweep))
+        state.adaptation.closure_execution=tetra::ClosureExecution::dense_level_sweep;
+      else if(key==tetra::strategy_key(tetra::ClosureExecution::hybrid))
+        state.adaptation.closure_execution=tetra::ClosureExecution::hybrid;
+      else{write_error(errors,"unknown closure execution mode",command);return 2;}
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.closure_execution=previous;
+        write_error(errors,"closure execution is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view scheduler_prefix="set-update-scheduler=";
+    if(command.starts_with(scheduler_prefix)){
+      const auto previous=state.adaptation.update_scheduler;
+      const auto key=command.substr(scheduler_prefix.size());
+      if(key==tetra::strategy_key(tetra::UpdateScheduler::classify_and_stream))
+        state.adaptation.update_scheduler=tetra::UpdateScheduler::classify_and_stream;
+      else if(key==tetra::strategy_key(tetra::UpdateScheduler::persistent_split_merge_queues))
+        state.adaptation.update_scheduler=tetra::UpdateScheduler::persistent_split_merge_queues;
+      else if(key==tetra::strategy_key(tetra::UpdateScheduler::hybrid_queued_blocks))
+        state.adaptation.update_scheduler=tetra::UpdateScheduler::hybrid_queued_blocks;
+      else{write_error(errors,"unknown update scheduler",command);return 2;}
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.update_scheduler=previous;
+        write_error(errors,"update scheduler is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view layer_storage_prefix="set-layer-storage=";
+    if(command.starts_with(layer_storage_prefix)){
+      const auto previous=state.adaptation.layer_storage;
+      const auto key=command.substr(layer_storage_prefix.size());
+      const auto set=[&](tetra::LayerStorage storage){
+        if(key!=tetra::strategy_key(storage))return false;
+        state.adaptation.layer_storage=storage;return true;
+      };
+      if(!(set(tetra::LayerStorage::flat_packed)||
+           set(tetra::LayerStorage::mutable_macro_blocks)||
+           set(tetra::LayerStorage::occupancy_bit_macro_blocks)||
+           set(tetra::LayerStorage::address_runs))){
+        write_error(errors,"unknown layer storage mode",command);return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.layer_storage=previous;
+        write_error(errors,"layer storage is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      const auto start=Clock::now();
+      state.layer_storage_experiment=tetra::build_layer_storage_experiment(
+          state.mesh,state.sphere,state.adaptation.layer_storage,
+          state.adaptation.kernel_order);
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view adjacency_prefix="set-adjacency=";
+    if(command.starts_with(adjacency_prefix)){
+      const auto previous=state.adaptation.adjacency;
+      const auto key=command.substr(adjacency_prefix.size());
+      const auto set=[&](tetra::AdjacencyRepresentation representation){
+        if(key!=tetra::strategy_key(representation))return false;
+        state.adaptation.adjacency=representation;return true;
+      };
+      if(!(set(tetra::AdjacencyRepresentation::path_arithmetic)||
+           set(tetra::AdjacencyRepresentation::packed_half_facets)||
+           set(tetra::AdjacencyRepresentation::logical_face_table)||
+           set(tetra::AdjacencyRepresentation::reconstruction_oracle))){
+        write_error(errors,"unknown adjacency representation",command);return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.adjacency=previous;
+        write_error(errors,"adjacency is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      const auto start=Clock::now();
+      state.adjacency_experiment=tetra::build_adjacency_experiment(
+          state.mesh,state.adaptation.adjacency);
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view kernel_order_prefix="set-kernel-order=";
+    if(command.starts_with(kernel_order_prefix)){
+      const auto previous=state.adaptation.kernel_order;
+      const auto key=command.substr(kernel_order_prefix.size());
+      const auto set=[&](tetra::KernelOrder order){
+        if(key!=tetra::strategy_key(order))return false;
+        state.adaptation.kernel_order=order;return true;
+      };
+      if(!(set(tetra::KernelOrder::address_order)||
+           set(tetra::KernelOrder::orientation_buckets)||
+           set(tetra::KernelOrder::fused_macro_blocks))){
+        write_error(errors,"unknown kernel order",command);return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.kernel_order=previous;
+        write_error(errors,"kernel order is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      const auto start=Clock::now();
+      state.layer_storage_experiment=tetra::build_layer_storage_experiment(
+          state.mesh,state.sphere,state.adaptation.layer_storage,
+          state.adaptation.kernel_order);
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view lod_update_prefix="set-lod-update=";
+    if(command.starts_with(lod_update_prefix)){
+      const auto previous=state.adaptation.lod_update;
+      const auto key=command.substr(lod_update_prefix.size());
+      if(key==tetra::strategy_key(tetra::LodUpdateStrategy::transactional_active_cut))
+        state.adaptation.lod_update=tetra::LodUpdateStrategy::transactional_active_cut;
+      else if(key==tetra::strategy_key(tetra::LodUpdateStrategy::saturated_clusters))
+        state.adaptation.lod_update=tetra::LodUpdateStrategy::saturated_clusters;
+      else if(key==tetra::strategy_key(tetra::LodUpdateStrategy::relevant_surface_hierarchy)||
+              key==tetra::strategy_key(tetra::LodUpdateStrategy::minimal_surface_hierarchy)||
+              key==tetra::strategy_key(tetra::LodUpdateStrategy::on_demand_render_traversal)){
+        const auto strategy=key==tetra::strategy_key(
+            tetra::LodUpdateStrategy::relevant_surface_hierarchy)
+            ?tetra::LodUpdateStrategy::relevant_surface_hierarchy
+            :key==tetra::strategy_key(tetra::LodUpdateStrategy::minimal_surface_hierarchy)
+                ?tetra::LodUpdateStrategy::minimal_surface_hierarchy
+                :tetra::LodUpdateStrategy::on_demand_render_traversal;
+        if(state.x_cutaway){
+          write_error(errors,"surface-only LOD strategy does not support volume cutaway",command);
+          return 2;
+        }
+        state.adaptation.lod_update=strategy;
+      }
+      else if(key==tetra::strategy_key(tetra::LodUpdateStrategy::full_rebuild_oracle))
+        state.adaptation.lod_update=tetra::LodUpdateStrategy::full_rebuild_oracle;
+      else{
+        write_error(errors,"LOD update strategy is registered but not implemented",command);
+        return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.lod_update=previous;
+        write_error(errors,"LOD strategy is incompatible with the selected experiment axes",command);
+        return 2;
+      }
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
     constexpr std::string_view shape_prefix="set-shape=";
     if(command.starts_with(shape_prefix)){
       const auto key=trim(command.substr(shape_prefix.size()));
@@ -473,9 +1068,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       state.sphere.kind=*found;
       state.sphere.secondary=tetra::implicit_shape_default_secondary(*found);
-      state.mesh.reset_active_hierarchy();
+      ++state.field_revision;
       const auto start=Clock::now();
-      const auto result=refine_to_current_surface(state);
+      const auto result=reconcile_to_current_surface(state);
       output<<"{\"event\":\"shape\",\"shape\":\""<<key
             <<"\",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
             <<milliseconds_since(start)<<",\"adaptive_iterations\":"<<result.iterations<<',';
@@ -495,8 +1090,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                                     direction.z*direction.z);
       if(length>1.0e-15)state.camera.forward=direction/length;
       const auto start=Clock::now();
-      state.mesh.reset_active_hierarchy();
-      static_cast<void>(refine_to_current_surface(state));
+      static_cast<void>(reconcile_to_current_surface(state));
       write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
@@ -515,9 +1109,45 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       state.camera.forward=direction/length;
       const auto start=Clock::now();
-      state.mesh.reset_active_hierarchy();
-      static_cast<void>(refine_to_current_surface(state));
+      static_cast<void>(reconcile_to_current_surface(state));
       write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    const auto scripted_manipulator=[&](std::string_view prefix,bool rotation){
+      if(!command.starts_with(prefix))return false;
+      const auto value=command.substr(prefix.size());
+      const auto first=value.find(':'),second=value.find(':',first==std::string_view::npos?0:first+1U);
+      if(first==std::string_view::npos||second==std::string_view::npos){
+        write_error(errors,"manipulator command requires space axis and finite amount",command);
+        return true;
+      }
+      const auto space_key=value.substr(0,first),axis_key=value.substr(first+1U,second-first-1U);
+      double amount{};
+      if((space_key!="world"&&space_key!="local")||
+         (axis_key!="x"&&axis_key!="y"&&axis_key!="z")||
+         !parse_double(value.substr(second+1U),amount)){
+        write_error(errors,"manipulator command requires space axis and finite amount",command);
+        return true;
+      }
+      LodCameraPose pose{state.camera.position,state.camera.forward,state.camera.up};
+      orthonormalize_camera_pose(pose);
+      const auto basis=manipulator_basis(pose,space_key=="world"?
+          ManipulatorSpace::world:ManipulatorSpace::local);
+      const auto axis=axis_key=="x"?basis.x:(axis_key=="y"?basis.y:basis.z);
+      if(rotation)rotate_camera_pose(pose,axis,amount*std::acos(-1.0)/180.0);
+      else pose.position=pose.position+axis*amount;
+      pose.apply(state.camera);
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      return true;
+    };
+    if(command.starts_with("gizmo-move=")){
+      if(scripted_manipulator("gizmo-move=",false)&&errors.tellp()>0)return 2;
+      continue;
+    }
+    if(command.starts_with("gizmo-rotate=")){
+      if(scripted_manipulator("gizmo-rotate=",true)&&errors.tellp()>0)return 2;
       continue;
     }
     constexpr std::string_view render_prefix = "render-image=";
@@ -541,6 +1171,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       const auto start = Clock::now();
       state.mesh = tetra::TetMesh::make_unit_cube(*method);
+      if(*method==tetra::SubdivisionMethod::bcc_red_green)
+        static_cast<void>(state.mesh.set_transition_strategy(
+            state.adaptation.transition_strategy));
       state.implicit_value_cache.clear();
       const auto result = refine_to_current_surface(state);
       const auto duration = milliseconds_since(start);
@@ -714,10 +1347,75 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         write_error(errors,"X cut position outside the supported range",command);
         return 2;
       }else{
+        if(!tetra::has_capability(tetra::capabilities(state.adaptation.lod_update),
+                                  tetra::AdaptationCapability::cutaway)){
+          write_error(errors,"selected LOD strategy does not support volume cutaway",command);
+          return 2;
+        }
         state.x_cutaway=true;
       }
       enforce_conforming_smooth_cutaway(state);
       write_command_event(output,command,0.0,state);
+      continue;
+    }
+    if(command=="adapt-once"){
+      const auto start=Clock::now();
+      const auto plan=tetra::plan_adaptation(
+          state.mesh,state.sphere,state.camera,state.pixel_threshold,
+          state.maximum_depth,state.adaptation,state.field_revision,&state.planning_cache);
+      state.planned_splits+=plan.planned_splits;
+      state.planned_merges+=plan.planned_merges;
+      state.logical_candidates+=plan.logical_candidates;
+      state.field_classifications+=plan.field_classifications;
+      state.exact_field_evaluations+=plan.exact_field_evaluations;
+      state.projection_evaluations+=plan.projection_evaluations;
+      state.conformity_rejections+=plan.conformity_rejections;
+      state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
+      state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
+      state.field_subtrees_rejected+=plan.field_subtrees_rejected;
+      state.projected_subtrees_rejected+=plan.projected_subtrees_rejected;
+      state.exact_field_evaluations_avoided+=plan.exact_field_evaluations_avoided;
+      state.spatial_index_bytes=std::max(state.spatial_index_bytes,plan.spatial_index_bytes);
+      state.spatial_run_count=plan.spatial_run_count;
+      state.spatial_run_bound_tests+=plan.spatial_run_bound_tests;
+      state.spatial_run_candidates+=plan.spatial_run_candidates;
+      state.scheduler_queue_pushes+=plan.scheduler_queue_pushes;
+      state.scheduler_useful_pops+=plan.scheduler_useful_pops;
+      state.scheduler_stale_pops+=plan.scheduler_stale_pops;
+      state.scheduler_priority_recomputations+=plan.scheduler_priority_recomputations;
+      state.scheduler_block_streams+=plan.scheduler_block_streams;
+      state.scheduler_fallbacks+=plan.scheduler_fallbacks;
+      state.classification_milliseconds+=plan.classification_ms;
+      state.family_resolution_milliseconds+=plan.family_resolution_ms;
+      state.summary_build_milliseconds+=plan.summary_build_ms;
+      state.spatial_index_build_milliseconds+=plan.spatial_index_build_ms;
+      const auto commit=tetra::commit_adaptation(
+          state.mesh,plan,state.adaptation,state.field_revision);
+      if(commit.status==tetra::AdaptationCommitStatus::rejected||
+         commit.status==tetra::AdaptationCommitStatus::stale_plan){
+        write_error(errors,"incremental adaptation transaction was rejected",command);
+        return 2;
+      }
+      if(commit.status==tetra::AdaptationCommitStatus::committed)
+        {state.last_replay=commit.replay;accumulate(state.bcc_metrics,commit.bcc_metrics);}
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    if(command=="reverse-last-adaptation"||command=="replay-last-adaptation"){
+      if(!state.last_replay){
+        write_error(errors,"no accepted adaptation transaction is available",command);
+        return 2;
+      }
+      const bool reverse=command=="reverse-last-adaptation";
+      const auto start=Clock::now();
+      const auto result=tetra::replay_adaptation(
+          state.mesh,*state.last_replay,reverse,state.adaptation,state.field_revision);
+      if(result.status!=tetra::AdaptationCommitStatus::committed){
+        write_error(errors,"adaptation record does not match the current logical cut",command);
+        return 2;
+      }
+      accumulate(state.bcc_metrics,result.bcc_metrics);
+      write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
     if (command == "refine-once") {
@@ -764,7 +1462,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           state.x_cutaway && state.show_volume_edges,
           state.x_cutaway && state.show_volume_faces, state.x_cut_position,
           state.volume_connection_method,state.stencil_construction,
-          state.stencil_selection_objective);
+          state.stencil_selection_objective,{},state.surface_hierarchy_triangles);
       const auto projection = prepare_projection_statistics(
           state.mesh, scene, state.camera, state.pixel_threshold);
       const auto duration = milliseconds_since(start);
@@ -846,6 +1544,11 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       continue;
     }
     if(command=="validate-volume"){
+      if(!tetra::has_capability(tetra::capabilities(state.adaptation.lod_update),
+                                tetra::AdaptationCapability::conforming_volume)){
+        write_error(errors,"selected LOD strategy does not provide a conforming volume",command);
+        return 2;
+      }
       const auto start=Clock::now();
       const auto scene=prepare_scene(
           state.mesh,state.sphere,state.surface_method,state.material_rule,
@@ -889,7 +1592,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         return 2;
       }
       for (unsigned int pass = 1; pass <= passes; ++pass) {
-        const auto before = state.mesh.active_leaves().size();
+        const auto before = state.mesh.conforming_volume().size();
         const auto start = Clock::now();
         state.mesh.refine_all_binary();
         const auto duration = milliseconds_since(start);
@@ -901,6 +1604,41 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       continue;
     }
+    constexpr std::string_view stress_prefix="stress-camera=";
+    if(command.starts_with(stress_prefix)){
+      unsigned int updates{};
+      if(!parse_unsigned(command.substr(stress_prefix.size()),updates)||
+         updates==0U||updates>1000U){
+        write_error(errors,"stress update count outside the supported range",command);
+        return 2;
+      }
+      const auto start=Clock::now();
+      std::size_t transactions{};
+      for(unsigned int update=0;update<updates;++update){
+        const double angle=2.0*std::acos(-1.0)*
+            static_cast<double>(update%32U)/32.0;
+        state.camera.position={state.sphere.centre.x+1.7*std::cos(angle),
+                               state.sphere.centre.y+0.35+0.25*std::sin(angle*2.0),
+                               state.sphere.centre.z+1.7*std::sin(angle)};
+        const auto direction=state.sphere.centre-state.camera.position;
+        const double length=std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                                      direction.z*direction.z);
+        state.camera.forward=direction/length;
+        const auto result=reconcile_to_current_surface(state);
+        transactions+=result.iterations;
+        if(result.reached_depth_limit||!state.mesh.has_positive_active_volumes()||
+           !state.mesh.has_conforming_active_faces()){
+          write_error(errors,"camera stress path failed to converge conformingly",command);
+          return 1;
+        }
+      }
+      output<<"{\"event\":\"camera_stress\",\"updates\":"<<updates
+            <<",\"transactions\":"<<transactions
+            <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+            <<milliseconds_since(start)<<',';
+      write_mesh_fields(output,state);output<<"}\n";
+      continue;
+    }
     if (command == "stats") {
       write_stats(output, state);
       continue;
@@ -908,14 +1646,69 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
     const auto radius_result = set_double_command(command, "set-radius=", 0.001, 1.0, state.sphere.radius, errors);
     if (radius_result != SetResult::not_recognized) {
       if (radius_result == SetResult::error) return 2;
-      write_command_event(output, command, 0.0, state);
+      ++state.field_revision;
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
     const auto threshold_result = set_double_command(
         command, "set-pixel-threshold=", 0.001, 1000000.0, state.pixel_threshold, errors);
     if (threshold_result != SetResult::not_recognized) {
       if (threshold_result == SetResult::error) return 2;
-      write_command_event(output, command, 0.0, state);
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    double split_hysteresis=state.adaptation.split_hysteresis;
+    const auto split_hysteresis_result=set_double_command(
+        command,"set-split-hysteresis=",0.001,100.0,split_hysteresis,errors);
+    if(split_hysteresis_result!=SetResult::not_recognized){
+      if(split_hysteresis_result==SetResult::error)return 2;
+      if(split_hysteresis<=state.adaptation.merge_hysteresis){
+        write_error(errors,"split hysteresis must exceed merge hysteresis",command);
+        return 2;
+      }
+      state.adaptation.split_hysteresis=split_hysteresis;
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    double merge_hysteresis=state.adaptation.merge_hysteresis;
+    const auto merge_hysteresis_result=set_double_command(
+        command,"set-merge-hysteresis=",0.001,100.0,merge_hysteresis,errors);
+    if(merge_hysteresis_result!=SetResult::not_recognized){
+      if(merge_hysteresis_result==SetResult::error)return 2;
+      if(merge_hysteresis>=state.adaptation.split_hysteresis){
+        write_error(errors,"merge hysteresis must be below split hysteresis",command);
+        return 2;
+      }
+      state.adaptation.merge_hysteresis=merge_hysteresis;
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    double hybrid_threshold=state.adaptation.hybrid_frontier_ratio;
+    const auto hybrid_threshold_result=set_double_command(
+        command,"set-hybrid-threshold=",0.0,1.0,hybrid_threshold,errors);
+    if(hybrid_threshold_result!=SetResult::not_recognized){
+      if(hybrid_threshold_result==SetResult::error)return 2;
+      state.adaptation.hybrid_frontier_ratio=hybrid_threshold;
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view operation_budget_prefix="set-operation-budget=";
+    if(command.starts_with(operation_budget_prefix)){
+      unsigned int value{};
+      if(!parse_unsigned(command.substr(operation_budget_prefix.size()),value)||value==0U){
+        write_error(errors,"operation budget must be a positive integer",command);
+        return 2;
+      }
+      state.adaptation.operation_budget=value;
+      write_command_event(output,command,0.0,state);
       continue;
     }
     constexpr std::string_view depth_prefix = "set-maximum-depth=";
@@ -926,7 +1719,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         return 2;
       }
       state.maximum_depth = value;
-      write_command_event(output, command, 0.0, state);
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
 

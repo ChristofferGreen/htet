@@ -187,9 +187,17 @@ The visually inspected sheets are
 [surfacing-sheet.png](../output/method-comparison/surfacing-sheet.png).
 
 The editor view and screen-space LOD camera are separate. The LOD camera is a
-visible wireframe scene object: click it to select it, use `W` for world-axis
-translation or `E` for world-axis rotation, then drag the coloured gizmo axis
-or ring with an ordinary primary-button trackpad drag. `Q` returns to selection.
+visible wireframe scene object: click it to select it, use `W` for translation
+or `E` for rotation, then drag an axis, two-axis plane, free-move centre,
+rotation ring, view ring, or arcball with an ordinary primary-button trackpad
+drag. `Q` returns to selection. World and camera-local spaces are available in
+the panel or with `1` and `2`; `X`, `Y`, and `Z` select a handle for keyboard-led
+dragging. Handles retain a constant screen size and share one geometry model
+for rendering and picking. Hover and active states are highlighted, translation
+and angular snapping are optional, Shift provides precision, Escape cancels the
+current drag, and Command/Ctrl-Z plus Shift-Command/Ctrl-Z undo and redo complete
+camera edits. The camera wireframe uses its actual field of view and aspect
+ratio rather than a decorative fixed pyramid.
 Its position, direction, field of view, and aspect ratio determine both
 projected element size and frustum visibility. Releasing a translation or
 rotation gizmo reconciles the mesh in both directions: the active cut first
@@ -199,6 +207,18 @@ vertices remain resident and are reused when the camera returns; only the BCC
 transition cut is regenerated. `Place LOD camera at view` performs the same
 reconciliation after copying the current editor pose, while the headless equivalent is
 `set-camera-direction=<x:y:z>`.
+
+Interactive BCC camera reconciliation runs on a persistent background worker.
+The worker owns a private snapshot of the packed mesh, applies budgeted
+transactions until that snapshot converges, and checks for a newer request
+between transactions. The render thread continues drawing and accepting input
+against the last complete scene. It adopts a completed mesh only at a frame
+boundary and only when the source mesh revision, implicit-field revision,
+camera, pixel target, depth limit, and adaptation configuration still match.
+Newer camera motion replaces queued work; stale results are discarded. The
+default `Refine once` and `Refine to target` actions use the same worker, so
+their topology mutation also stays out of the frame loop. The headless command
+runner remains synchronous and deterministic for benchmarking.
 
 BCC regeneration keeps persistent red hierarchy layers separate from derived
 green transition records. Rebuilding a camera cut compacts obsolete green
@@ -232,6 +252,60 @@ the release headless camera cycle from `(0, 1, 0.5)` to `(-1, 0.7, 0.5)` and
 back, reconciliation measures 0.44--0.51 seconds and default fixed-shell scene
 preparation 0.21--0.33 seconds on the development laptop; the original path
 took approximately 1.8--2.3 seconds end to end.
+
+The camera-LOD implementation now uses a transactional incremental red-hierarchy
+update rather than a reset-and-rebuild path. It plans desired refinement
+from fine to coarse, commits complete sibling-family splits and merges from
+coarse to fine, reconstructs deterministic shared edge requirements, and rejects
+complete subtrees using conservative view and field bounds. Green cells remain
+derived terminal records. Merge planning removes only newly exposed parents
+whose crystalline transition would require a full red split instead of
+rejecting their entire depth band. A translated or rotated camera request keeps
+its merge phase active after split transactions, so obsolete detail from the
+previous pose is removed before the new pose becomes stationary. The request
+becomes an exact cached no-op only after both refinement and coarsening have
+converged. The research synthesis, data layout, invariants,
+transaction semantics, schemas, and implementation gates are specified in the
+[normative incremental-adaptation contract](incremental-adaptation-contract.md).
+Paper rationale, alternative algorithms, benchmarks, and comparative work are
+kept separately in [incremental-rebuild.md](incremental-rebuild.md).
+
+That design also retains several paper-derived implementations for controlled
+comparison instead of baking every decision into one rebuild path. The active
+experiment axes are LOD update strategy (transactional cut, saturated clusters,
+relevant/minimal surface hierarchies, or on-demand render traversal), update
+scheduler (streamed, persistent queues, or queued blocks), candidate traversal
+(linear cut, bounded subtrees, or spatial runs), closure execution (sparse,
+dense, or hybrid), per-layer storage, adjacency representation, and hot-loop
+order. Compatible choices are exposed through dropdowns and matching headless
+keys; every result records the complete strategy tuple. Invalid capability
+combinations are disabled in the UI and rejected headlessly. Fixed camera
+paths and topology, surface, quality, memory, and timing measurements determine
+which combination is best for a conforming volume, render-only traversal, or
+low-memory workload.
+
+The general-purpose defaults are the fastest measured production path that
+still provides the conforming volume required by whole-cell rendering and X
+cutaway: transactional active-cut LOD, classify-and-stream scheduling, direct
+active-cut candidate scanning, and sparse-frontier closure. Flat packed layers
+remain the lowest-memory storage choice. Logical-face tables and address order
+remain the production representations; their alternatives currently build
+comparison data and therefore are not advertised as live-update speedups.
+
+The concrete block experiment is the paper's 56-diamond Supercube for regular
+simplex bisection, plus grammar-neutral address macro blocks for BCC and other
+hierarchies. Mutable direct slots and compact occupancy-bit storage are separate
+states so camera movement does not force constant repacking. Packed half-facet
+adjacency is also retained as an alternative to path arithmetic and logical-face
+tables. The release comparison includes the exact 56-slot supercube map,
+retained 64-slot address blocks, mutable and occupancy-bit macro blocks,
+address runs, three kernel orders, four adjacency representations, persistent
+and queued-block schedulers, spatial-run candidates, sparse/dense/hybrid
+closure, and deterministic parallel scheduling prototypes. Minimal isodiamonds
+and on-demand traversal are explicitly surface-only;
+neither may silently enable volume cutaway or export. A graph-Voronoi hierarchy
+such as GravoTet is reserved for future physics transfer operators because its
+approximate coarse tetrahedra are not a valid visible material partition.
 
 The editor view uses laptop-friendly Maya-inspired controls: primary-button
 drag on empty space (or Option-drag) orbits, Shift-drag pans, and scrolling
@@ -410,16 +484,16 @@ tie-break or central-diagonal policy, and overlay selection.
 
 ## Milestones
 
-- [ ] Create the CMake project, presets, dependency wiring, and empty targets.
-- [ ] Implement basic vector, vertex, tetrahedron, and indexed mesh types.
-- [ ] Generate a cube decomposed into tetrahedra and validate its connectivity.
-- [ ] Implement global red refinement with hierarchy links and validation.
-- [ ] Build the minimal Vulkan/GLFW/ImGui viewer for the generated mesh.
-- [ ] Add wireframe, selection, slice-plane, and quality overlays.
-- [ ] Implement local refinement and conformity closure.
-- [ ] Add reversible coarsening and round-trip tests.
-- [ ] Add alternative refinement rules and comparison experiments.
-- [ ] Add experiment serialization and deterministic replay.
+- [x] Create the CMake project, presets, dependency wiring, and empty targets.
+- [x] Implement basic vector, vertex, tetrahedron, and indexed mesh types.
+- [x] Generate a cube decomposed into tetrahedra and validate its connectivity.
+- [x] Implement global red refinement with hierarchy links and validation.
+- [x] Build the minimal Vulkan/GLFW/ImGui viewer for the generated mesh.
+- [x] Add wireframe, selection, slice-plane, and quality overlays.
+- [x] Implement local refinement and conformity closure.
+- [x] Add reversible coarsening and round-trip tests.
+- [x] Add alternative refinement rules and comparison experiments.
+- [x] Add experiment serialization and deterministic replay.
 
 ## First implementation chain
 
@@ -725,6 +799,14 @@ potentially intersected leaf meets a view-dependent pixel-size threshold.
   Default-depth release renders with cutaway disabled were visually checked for
   correct sharp features, caps, holes, merging lobes, terrain relief, periodic
   structure, and smooth rounded forms.
+- [x] Add measured SIMD acceleration without changing packed hierarchy storage.
+  Camera projection constants are prepared once per LOD request. An isolated
+  AArch64 NEON signed-distance batch API accelerates analytic shapes by 1.89x
+  to 4.31x in the release microbenchmark while preserving scalar signs near the
+  surface. Perlin improves only 1.09x and remains scalar in small scene batches.
+  Projection gathers, fused terrain scratch arrays, and scene arithmetic
+  variants that failed their end-to-end gates were removed. See
+  [SIMD acceleration](simd-acceleration.md) for the A/B results and commands.
 
 The dual contour remains a display surface. Making its independent topology
 volume-conforming would require a separate surface-insertion construction.

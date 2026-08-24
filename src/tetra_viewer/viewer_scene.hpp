@@ -501,7 +501,7 @@ struct PreparedScene {
   std::vector<tetra::TetId> connected_volume_parents;
   std::vector<std::uint8_t> connected_volume_boundary;
   std::vector<ConnectedCellRegion> connected_volume_regions;
-  // Classification is aligned with TetMesh::active_leaves().
+  // Classification is aligned with TetMesh::conforming_volume().
   std::vector<tetra::SurfaceRelation> relations;
   std::vector<std::size_t> depth_counts;
   std::size_t inside_count{};
@@ -617,7 +617,8 @@ struct ScenePreparationOptions {
                                               StencilConstruction::fixed,
                                           StencilSelectionObjective stencil_selection_objective =
                                               StencilSelectionObjective::balanced,
-                                          ScenePreparationOptions preparation = {});
+                                          ScenePreparationOptions preparation = {},
+                                          std::span<const tetra::Triangle> surface_override = {});
 [[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
                                                  SurfaceMethod surface_method, MaterialRule material_rule,
                                                  bool show_faces, bool show_edges, bool depth_colours) {
@@ -651,7 +652,9 @@ class SceneCache {
                         StencilConstruction::fixed,
                     StencilSelectionObjective stencil_selection_objective =
                         StencilSelectionObjective::balanced,
-                    ScenePreparationOptions preparation = {});
+                    ScenePreparationOptions preparation = {},
+                    std::span<const tetra::Triangle> surface_override = {},
+                    std::uint64_t surface_override_revision = 0);
   bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
                     SurfaceMethod surface_method, MaterialRule material_rule,
                     bool show_faces, bool show_edges, bool depth_colours) {
@@ -670,6 +673,8 @@ class SceneCache {
   [[nodiscard]] const ProjectionStatistics& projection() const noexcept { return projection_; }
   [[nodiscard]] std::uint64_t scene_generation() const noexcept { return scene_generation_; }
   [[nodiscard]] std::uint64_t projection_generation() const noexcept { return projection_generation_; }
+  [[nodiscard]] bool initialized() const noexcept { return has_subdivision_method_; }
+  [[nodiscard]] std::uint64_t mesh_revision() const noexcept { return mesh_revision_; }
 
  private:
   PreparedScene scene_;
@@ -677,6 +682,7 @@ class SceneCache {
   ProjectionStatistics projection_;
   std::uint64_t mesh_revision_{std::numeric_limits<std::uint64_t>::max()};
   std::uint64_t sphere_revision_{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t surface_override_revision_{std::numeric_limits<std::uint64_t>::max()};
   tetra::SubdivisionMethod subdivision_method_{tetra::SubdivisionMethod::maubach_diamond};
   bool has_subdivision_method_{};
   std::uint64_t projected_scene_generation_{std::numeric_limits<std::uint64_t>::max()};
@@ -703,5 +709,12 @@ class SceneCache {
   bool surface_diagnostics_available_{};
   bool summary_statistics_available_{};
 };
+
+[[nodiscard]] inline bool defer_intermediate_scene_update(
+    bool lod_reconcile_pending,const SceneCache& cache,
+    const tetra::TetMesh& mesh) noexcept {
+  return lod_reconcile_pending&&cache.initialized()&&
+         cache.mesh_revision()!=mesh.revision();
+}
 
 }  // namespace tetra_viewer

@@ -89,7 +89,7 @@ std::uint64_t mix(std::uint64_t hash,std::uint64_t value){
 
 WholeCellCut build_whole_cell_cut(const TetMesh& mesh,const Sphere& sphere,const WholeCellOptions& options){
   const auto start=std::chrono::steady_clock::now();
-  const auto& leaves=mesh.active_leaves();
+  const auto leaves=mesh.conforming_volume().addresses();
   WholeCellCut result;
   result.selected_words.assign((leaves.size()+63U)/64U,0);
   std::vector<FaceRecord> faces;faces.reserve(leaves.size()*4U);
@@ -224,7 +224,7 @@ AdaptiveResult refine_to_whole_cell_surface(TetMesh& mesh,const Sphere& sphere,
     std::vector<TetId> marked;marked.reserve(cut.boundary_faces.size());
     bool blocked_by_depth=false;
     for(const auto& face:cut.boundary_faces){
-      const TetId id=mesh.active_leaves()[face.inside_leaf];
+      const TetId id=mesh.conforming_volume().addresses()[face.inside_leaf];
       if(projected_tetrahedron_diameter(mesh,id,camera)<=pixel_threshold)continue;
       if(mesh.refinement_depth(id)+increment<=maximum_depth)marked.push_back(id);
       else blocked_by_depth=true;

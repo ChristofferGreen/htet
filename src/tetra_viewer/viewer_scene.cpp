@@ -495,8 +495,17 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       {{0, 1}}, {{0, 2}}, {{0, 3}}, {{1, 2}}, {{1, 3}}, {{2, 3}}}};
   const auto& source_vertices = mesh.vertices();
   std::vector<double> source_distances(source_vertices.size());
-  for(std::size_t vertex=0;vertex<source_vertices.size();++vertex)
-    source_distances[vertex]=sphere.signed_distance(source_vertices[vertex]);
+  const bool accelerated_field=sphere.kind==tetra::ImplicitShapeKind::sphere||
+      sphere.kind==tetra::ImplicitShapeKind::merging_spheres||
+      sphere.kind==tetra::ImplicitShapeKind::cube||
+      sphere.kind==tetra::ImplicitShapeKind::capped_cylinder||
+      sphere.kind==tetra::ImplicitShapeKind::torus||
+      sphere.kind==tetra::ImplicitShapeKind::rounded_cube;
+  if(accelerated_field)
+    tetra::evaluate_signed_distances(sphere,source_vertices,source_distances);
+  else
+    for(std::size_t vertex=0;vertex<source_vertices.size();++vertex)
+      source_distances[vertex]=sphere.signed_distance(source_vertices[vertex]);
   scene.connected_volume_vertices = source_vertices;
   scene.connected_volume_vertex_kinds.assign(source_vertices.size(),ConnectedVertexKind::hierarchy);
   scene.connected_volume_source_edges.assign(
@@ -512,7 +521,7 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   if(method==VolumeConnectionMethod::adaptive_cleaving){
     std::fill(safe_warp_radius.begin(),safe_warp_radius.end(),
               std::numeric_limits<double>::infinity());
-    for(const auto id:mesh.active_leaves()){
+    for(const auto id:mesh.conforming_volume().addresses()){
       const auto& tet=mesh.tetrahedron(id).vertices;
       const std::array<tetra::Vec3,4> points{{source_vertices[tet[0]],source_vertices[tet[1]],
                                               source_vertices[tet[2]],source_vertices[tet[3]]}};
@@ -531,8 +540,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   }
 
   std::vector<PackedEdge> crossed_keys;
-  crossed_keys.reserve(mesh.active_leaves().size()*2);
-  for (const auto id : mesh.active_leaves()) {
+  crossed_keys.reserve(mesh.conforming_volume().size()*2);
+  for (const auto id : mesh.conforming_volume().addresses()) {
     const auto& tet = mesh.tetrahedron(id).vertices;
     std::array<bool, 4> inside{};
     for (std::size_t corner = 0; corner < 4; ++corner)
@@ -545,7 +554,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
 
   std::vector<CrossedEdge> crossings;
   crossings.reserve(crossed_keys.size());
-  scene.connected_volume_vertices.reserve(source_vertices.size()+crossed_keys.size()+mesh.active_leaves().size());
+  scene.connected_volume_vertices.reserve(
+      source_vertices.size()+crossed_keys.size()+mesh.conforming_volume().size());
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
   const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
   for (const auto key : crossed_keys) {
@@ -696,11 +706,11 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     }
   };
 
-  scene.connected_volume_tetrahedra.reserve(mesh.active_leaves().size()*5);
-  scene.connected_volume_parents.reserve(mesh.active_leaves().size()*5);
-  scene.connected_volume_boundary.reserve(mesh.active_leaves().size()*5);
-  scene.connected_volume_regions.reserve(mesh.active_leaves().size()*5);
-  for (const auto id : mesh.active_leaves()) {
+  scene.connected_volume_tetrahedra.reserve(mesh.conforming_volume().size()*5);
+  scene.connected_volume_parents.reserve(mesh.conforming_volume().size()*5);
+  scene.connected_volume_boundary.reserve(mesh.conforming_volume().size()*5);
+  scene.connected_volume_regions.reserve(mesh.conforming_volume().size()*5);
+  for (const auto id : mesh.conforming_volume().addresses()) {
     const auto& tet = mesh.tetrahedron(id).vertices;
     std::array<bool,4> inside{};
     std::size_t inside_count{};
@@ -1203,7 +1213,7 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
   // clipped material is one tetrahedron; the two- and three-inside cases are
   // triangular prisms with deterministic three-tetrahedron decompositions.
   // Fully inside/outside leaves remain owned by the background hierarchy.
-  scene.cleaved_cells.reserve(mesh.active_leaves().size()*2);
+  scene.cleaved_cells.reserve(mesh.conforming_volume().size()*2);
   const auto crossing=[&sphere](tetra::Vec3 inside,tetra::Vec3 outside){
     return sphere.edge_intersection(inside,outside);
   };
@@ -1214,7 +1224,7 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
     scene.cleaved_volume+=volume/6.0;
     scene.cleaved_cells.push_back(cell);
   };
-  for (const auto id : mesh.active_leaves()) {
+  for (const auto id : mesh.conforming_volume().addresses()) {
     std::array<tetra::Vec3,4> points{};
     std::array<std::size_t,4> inside{},outside{};
     std::size_t inside_count=0,outside_count=0;
@@ -1343,8 +1353,8 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<CrossingProvenance> provenance;
   if(input_source_edges.size()!=input.size()){
-    provenance.reserve(mesh.active_leaves().size()*2);
-    for(const auto leaf:mesh.active_leaves()){
+    provenance.reserve(mesh.conforming_volume().size()*2);
+    for(const auto leaf:mesh.conforming_volume().addresses()){
       const auto& tet=mesh.tetrahedron(leaf).vertices;
       for(const auto local:local_edges){
         auto edge=std::array<tetra::VertexId,2>{{tet[local[0]],tet[local[1]]}};
@@ -1739,7 +1749,7 @@ VolumeCutClassification classify_volume_cut_cells(
     const tetra::TetMesh& mesh, const tetra::Sphere& sphere, MaterialRule rule,
     std::span<const tetra::SurfaceRelation> relations) {
   VolumeCutClassification result;
-  const auto& leaves = mesh.active_leaves();
+  const auto leaves = mesh.conforming_volume().addresses();
   result.material_tetrahedra.reserve(leaves.size());
   std::vector<MaterialFace> faces;
   faces.reserve(leaves.size()*4);
@@ -2082,9 +2092,10 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                             VolumeConnectionMethod volume_connection_method,
                             StencilConstruction stencil_construction,
                             StencilSelectionObjective stencil_selection_objective,
-                            ScenePreparationOptions preparation) {
+                            ScenePreparationOptions preparation,
+                            std::span<const tetra::Triangle> surface_override) {
   PreparedScene scene;
-  const auto& leaves = mesh.active_leaves();
+  const auto leaves = mesh.conforming_volume().addresses();
   scene.relations.reserve(leaves.size());
   scene.triangle_vertices.reserve((show_faces || show_surface_edges) ? leaves.size() * 12 : 0);
   scene.hierarchy_line_vertices.reserve(show_hierarchy_edges ? leaves.size() * 12 : 0);
@@ -2240,7 +2251,17 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   const bool connected_optimized_surface=
       surface_method==SurfaceMethod::surface_optimization&&
       uses_connected_volume(volume_connection_method);
-  if(connected_optimized_surface){
+  if(!surface_override.empty()){
+    for(const auto& triangle:surface_override){
+      const auto normal=face_normal(triangle.a,triangle.b,triangle.c);
+      constexpr std::array<float,3> colour{{0.24F,0.76F,0.38F}};
+      if(show_faces||show_surface_edges){
+        add_triangle(triangle.a,colour,normal);
+        add_triangle(triangle.b,colour,normal);
+        add_triangle(triangle.c,colour,normal);
+      }
+    }
+  }else if(connected_optimized_surface){
     // Build the optimized connected boundary even when the cutaway is off.
     // Turning the cutaway on must reveal cells beneath this exact surface,
     // not switch to a separately optimized representation.
@@ -2305,7 +2326,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
 ProjectionStatistics prepare_projection_statistics(const tetra::TetMesh& mesh, const PreparedScene& scene,
                                                     const tetra::Camera& camera, double pixel_threshold) {
   ProjectionStatistics statistics;
-  const auto& leaves = mesh.active_leaves();
+  const auto leaves = mesh.conforming_volume().addresses();
   for (std::size_t index = 0; index < scene.relations.size(); ++index) {
     if (scene.relations[index] != tetra::SurfaceRelation::intersecting) continue;
     if (tetra::projected_tetrahedron_diameter(mesh, leaves[index], camera) > pixel_threshold)
@@ -2325,9 +2346,12 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
                               VolumeConnectionMethod volume_connection_method,
                               StencilConstruction stencil_construction,
                               StencilSelectionObjective stencil_selection_objective,
-                              ScenePreparationOptions preparation) {
+                              ScenePreparationOptions preparation,
+                              std::span<const tetra::Triangle> surface_override,
+                              std::uint64_t surface_override_revision) {
   const bool base_unchanged = has_subdivision_method_ && subdivision_method_ == mesh.subdivision_method() &&
       mesh_revision_ == mesh.revision() && sphere_revision_ == sphere_revision &&
+      surface_override_revision_==surface_override_revision&&
       surface_method_ == surface_method && material_rule_ == material_rule &&
       volume_connection_method_ == volume_connection_method &&
       stencil_construction_ == stencil_construction &&
@@ -2346,7 +2370,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
     base_scene_ = prepare_scene(mesh, sphere, surface_method, material_rule, show_faces,
                                show_hierarchy_edges, show_surface_edges, depth_colours,
                                false, false, x_cut_position,volume_connection_method,
-                               stencil_construction,stencil_selection_objective,preparation);
+                               stencil_construction,stencil_selection_objective,preparation,
+                               surface_override);
     volume_classification_valid_ = false;
   }
   if(uses_connected_volume(volume_connection_method)&&
@@ -2387,6 +2412,7 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
   subdivision_method_ = mesh.subdivision_method();
   has_subdivision_method_ = true;
   sphere_revision_ = sphere_revision;
+  surface_override_revision_=surface_override_revision;
   show_faces_ = show_faces;
   show_hierarchy_edges_ = show_hierarchy_edges;
   show_surface_edges_ = show_surface_edges;

@@ -238,23 +238,23 @@ Modern GPU implementation of adaptive tetrahedral construction and traversal bas
 
 - **Year:** 2025
 - **PDF:** [PDF](../papers/hierarchy/2025-Adaptive%20Tetrahedral%20Grids%20for%20Volumetric%20Path-Tracing.pdf)
-- **Status:** UNREAD
+- **Status:** READ
 - **Quality:** 89/100
 - **Project relevance:** 94/100
 - **Reading priority:** 96/100
 
 ### Paper description
 
-Builds adaptive tetrahedral grids using longest-edge bisection and traverses them efficiently on the GPU for volumetric path tracing. It exploits the fixed maximum of four face neighbours per tetrahedron and demonstrates large gains over dense regular grids in its test scenes.
+Builds adaptive tetrahedral grids using longest-edge bisection and traverses them efficiently on the GPU for volumetric path tracing. Refinement combines a density-variation test with two camera tests: cells outside the frustum are rejected and cells projecting below one pixel stop refining. It exploits the fixed maximum of four face neighbours per tetrahedron and a small finite set of face orientations, and demonstrates large gains over dense regular grids in its test scenes.
 
 ### Relevance to this project
 
-This is a modern, concrete implementation reference for adaptive tetrahedral construction, addressing, compact neighbour representation, and GPU ray walking. It may inform both object-local geometry traversal and a separate world-space lighting grid.
+This is a modern, concrete implementation reference for ordering refinement tests from cheap camera rejection to expensive data evaluation, as well as adaptive tetrahedral construction, compact neighbour representation, and GPU ray walking. For camera-driven isosurfacing, the density-variation test translates to a conservative signed-field interval followed by exact evaluation only for surviving cells.
 
 ### Important limitations and questions
 
 - The represented assets are static participating media, not editable moving solids.
-- The paper does not solve incremental updates, temporal lighting reuse, or object motion.
+- Grid construction is described top-down; the paper does not provide incremental camera updates, derefinement, temporal lighting reuse, or object motion.
 - Compare its results against research finding tetrahedral radiative-transfer grids slower than octrees in other workloads; performance is use-case dependent.
 
 ---
@@ -273,7 +273,7 @@ Production-oriented tree data structures, indexing, refinement, coarsening and p
 
 - **Year:** 2018
 - **PDF:** [PDF](../papers/hierarchy/2018-Scalable%20Algorithms%20for%20Parallel%20Tree-based%20Adaptive%20Mesh%20Refinement%20with%20General%20Element%20Types.pdf)
-- **Status:** UNREAD
+- **Status:** READ
 - **Quality:** 91/100
 - **Project relevance:** 93/100
 - **Reading priority:** 94/100
@@ -360,7 +360,7 @@ Taxonomy/comparison of tetrahedral hierarchy models, valid cuts and adjacency.
 
 - **Year:** 2002
 - **PDF:** [PDF](../papers/hierarchy/2002-Multiresolution%20Tetrahedral%20Meshes%20-%20An%20Analysis%20and%20a%20Comparison.pdf)
-- **Status:** SKIMMED
+- **Status:** READ
 - **Quality:** 80/100
 - **Project relevance:** 74/100
 - **Reading priority:** 54/100
@@ -371,7 +371,16 @@ Compares regular tetrahedral refinement hierarchies and irregular multiresolutio
 
 ### Relevance to this project
 
-Useful historical taxonomy, but modern tree-based AMR, nonconforming volumetric LOD, and correspondence methods are more actionable. Read after the newer hierarchy papers, not before them.
+The comparison is directly actionable for the camera rebuild. Its regular
+Hierarchy of Tetrahedra used about 14 bytes per tetrahedron versus about 30
+bytes for the edge-based Multi-Tessellation implementation, generally selected
+fewer tetrahedra for spatially or field-localized LOD, and had better average
+tetrahedron quality. The irregular model sometimes selected fewer tetrahedra
+for uniform LOD, but assumes a fine input mesh and preprocessing. Most
+importantly, saturated cluster selection produced cuts only about five percent
+larger than neighbour-driven selection in the reported 3-D comparison, with
+similar extraction time. This motivates a simpler saturated-cluster dropdown
+option alongside transactional neighbour closure.
 
 ---
 
@@ -379,7 +388,7 @@ Useful historical taxonomy, but modern tree-based AMR, nonconforming volumetric 
 
 - **Year:** 2024
 - **PDF:** [PDF](../papers/hierarchy/2024-Tetrahedral%20Grids%20in%20Monte%20Carlo%20Radiative%20Transfer.pdf)
-- **Status:** UNREAD
+- **Status:** READ
 - **Quality:** 84/100
 - **Project relevance:** 70/100
 - **Reading priority:** 62/100
@@ -1021,7 +1030,12 @@ Useful comparison for indexing tetrahedral data even when refinement ancestry di
 - **Project relevance:** 74/100
 - **Reading priority:** 58/100
 
-Indexes large structured and unstructured tetrahedral meshes for spatial and topological queries. Relevant as an external indexing alternative, but it is not necessarily the material's own refinement ancestry.
+Indexes large structured and unstructured tetrahedral meshes for spatial and
+topological queries. Its compact leaves store contiguous tetrahedron-index runs;
+reported spatial-index overhead was commonly about 5--10 percent, and run-aware
+bounding-box rejection saved roughly 10--20 percent query time in several
+tests. It is a candidate-enumeration alternative to active-cut scanning and
+ancestry traversal, not a replacement for the material's refinement hierarchy.
 
 ## K15. Constant-Time Neighbour Finding in Hierarchical Tetrahedral Meshes
 - **Authors:** M. Lee, L. De Floriani, H. Samet
@@ -1037,12 +1051,12 @@ Directly relevant to computable neighbours and stable hierarchical addresses; de
 
 - **Year:** 2001
 - **PDF:** [PDF](../papers/supporting/2001-Constant-Time%20Neighbour%20Finding%20in%20Hierarchical%20Tetrahedral%20Meshes.pdf)
-- **Status:** UNREAD
+- **Status:** READ
 - **Quality:** 80/100
 - **Project relevance:** 78/100
 - **Reading priority:** 59/100
 
-Addresses neighbour lookup in regular hierarchical tetrahedral structures. Old but directly relevant if the canonical hierarchy uses computable addresses and must traverse across nonuniform refinement levels.
+Derives equal-level face neighbours from a machine-word location code using masks, carry propagation, XOR, and small lookup tables instead of a root walk or global adjacency graph. The exact masks apply to its regular binary longest-edge hierarchy, not directly to BCC red octasection. It nevertheless supports deriving a BCC-specific path-and-orientation neighbour operation and keeping a flat lookup only for root boundaries and cases the address grammar cannot express.
 
 ## K16. Optimized Spatial Hashing for Collision Detection of Deformable Objects
 
@@ -1146,7 +1160,7 @@ A robust large-scale coupling reference for rigid and deformable bodies. Useful 
 ## K25. TetSimNet and simulation-aware tetrahedral simplification
 
 - **Year:** 2025
-- **PDF:** [PDF](../papers/supporting/2019-Incremental%20Graph%20Computation.pdf)
+- **PDF:** Exact discussed paper link to verify
 - **Status:** ARCHIVED
 - **Quality:** 72/100
 - **Project relevance:** 56/100
@@ -1157,13 +1171,108 @@ Mentioned as evidence that tetrahedral simplification can target simulation fide
 ## K26. GraphBolt and incremental graph computation
 
 - **Year:** 2019
-- **PDF:** Publisher copy to verify
-- **Status:** ARCHIVED
+- **PDF:** [PDF](../papers/supporting/2019-Incremental%20Graph%20Computation.pdf)
+- **Status:** READ
 - **Quality:** 84/100
 - **Project relevance:** 51/100
 - **Reading priority:** 26/100
 
-Systems research on dependency tracking and incremental propagation through graph computations. Relevant as vocabulary for the `RepresentationManager`, not as a direct graphics or physics algorithm.
+Systems research rather than a meshing algorithm, but its execution model maps
+well to conformity closure: batch mutations, keep synchronous old/new state,
+propagate changed dependency aggregates, and switch from sparse frontier work
+to dense streaming when the frontier becomes large. It motivates sparse,
+dense, and dirty-ratio hybrid closure modes that must produce the same mesh.
+
+### Camera-rebuild deep dive: third paper set
+
+This pass intentionally used papers outside the two earlier rebuild readings.
+Together they separate the experiment into representation, enumeration,
+propagation, storage, and memory-order decisions:
+
+- **Isodiamond Hierarchies (2010):** a relevant isodiamond hierarchy stores
+  surface-active diamonds and relevant ancestors; a minimal hierarchy stores
+  only active and topology-creation diamonds. In the reported isosurface tests,
+  the minimal structure was about 65 percent the size of the relevant one, its
+  active front about 25 percent of the full diamond hierarchy, and high-
+  accuracy extraction about 50 percent of full-hierarchy time versus about 75
+  percent for the relevant hierarchy. Both are strong fixed-shape camera-LOD
+  candidates, but field changes require regeneration.
+- **Simplex and Diamond Hierarchies (2011):** a conformity-owning diamond or
+  cluster avoids repeated simplex-neighbour work. In 3-D the conforming simplex
+  representation averaged about 3.75 simplices per diamond in the reported
+  study. Saturated cluster errors avoid neighbour finding at the cost of a
+  slightly larger cut, reinforcing the alternative suggested by Danovaro et
+  al.
+- **Direct Volume Rendering of Tet-AMR (2026):** compact preorder trees and
+  descendant counts allow geometry to be generated on demand and traversal to
+  stop at a screen-space threshold. This is a render-only alternative to
+  rebuilding an active cut; it can win for deep trees but add overhead for
+  shallow forests with many roots.
+- **SPGrid (2014):** fixed-size blocks, active bitmaps, compact block-offset
+  lists, and a sparse pyramid of uniform levels offer a packed per-layer design
+  without pointer nodes. A portable retained block pool is the appropriate
+  experiment here; the original virtual-memory aliasing is not a requirement.
+- **Matrix-Free Hybrid Tetrahedral Grids (2024):** implicit orientation types
+  avoid connectivity indirection. Processing one orientation at a time loses
+  cache reuse, while fused local cube/macro-block traversal, invariant
+  hoisting, and tabulation improve locality. Address order, orientation buckets,
+  and fused blocks should therefore be benchmarked with identical mesh hashes.
+
+The corresponding implementation matrix and parallel TODO branches are in
+[incremental-rebuild.md](incremental-rebuild.md). The intended controls are
+`LOD update`, `Update scheduler`, `Candidate traversal`, `Closure execution`,
+`Layer storage`, `Adjacency`, and `Kernel order`; compatibility rules
+deliberately exclude meaningless parts of the full Cartesian product.
+
+### Camera-rebuild deep dive: fourth paper set
+
+This pass added persistent scheduling and adjacency as distinct experiment
+axes, made the macro-block proposal concrete, and identified two algorithms
+that must not be used as visible geometry:
+
+- **Supercubes (2009):** an exact regular-simplex-bisection supercube spans
+  three consecutive levels and indexes 56 diamond types. Static records use a
+  56-bit occupancy flag plus packed data, while mutation is performed in a
+  directly indexed form before compaction. The reported active front averaged
+  about one byte of overhead per tetrahedron, versus about 2.16 bytes for the
+  compared per-diamond representation, and used less than half its storage
+  while being slightly faster. This supports exact supercubes for Maubach/
+  diamond meshes and analogous, clearly named address macro blocks for BCC.
+- **Modeling Multiresolution 3D Scalar Fields through Regular Simplex
+  Bisection (2011):** documents a dual split/merge queue that exploits frame-
+  to-frame coherence, coordinate-bit derivation of diamond type and scale, and
+  hierarchical space-filling-curve layout. It also clarifies an important
+  limitation: a minimal isodiamond hierarchy preserves its embedded conforming
+  isosurface but loses spatial selection and connectivity of the underlying
+  volume mesh. It is therefore surface-only, not a cutaway/export backend.
+- **Array-Based Parallel Hierarchical Refinement (2016):** its compact
+  half-facet representation stores sibling half-facets and a vertex anchor
+  while leaving edges and faces implicit. Child interiors come entirely from
+  templates and only dirty shared parent facets need cross-parent connection.
+  Children are contiguous in parent order and level capacity is computed before
+  writing. These are strong alternatives to a logical-face table; duplicating
+  every old vertex into every independent level is not appropriate here.
+- **Vectorized 3D Mesh Refinement (2025):** demonstrates fast batched array
+  construction, but uses a different 12-child centroid grammar plus global
+  uniqueness, membership, and sparse-matrix operations. It can inform a bulk
+  full-rebuild oracle, not the local BCC update or its production hierarchy.
+- **Distributed Semi-Speculative Parallel Adaptation (2026):** atomically
+  acquires complete operation cavities and rolls back on conflict. Its strongest
+  local lesson is to exclude frozen or inactive work before scheduling rather
+  than repeatedly fail locks. Deterministic conflict-free batches should be
+  compared before optimistic locking because this viewer requires bitwise
+  topology reproducibility, whereas the paper accepts same-quality meshes.
+- **GravoTet (2026):** graph-Voronoi coarse complexes generate sparse and useful
+  physics transfer operators, normally with at most four coarse weights per
+  fine vertex. The approximate coarse complex can overlap, invert, become very
+  thin, or lose thin features; it is acceptable for interpolation but invalid
+  as a rendered material partition, collision mesh, cutaway, or surface source.
+
+The implementation document now includes scheduler comparisons (streaming,
+persistent split/merge queues, and queued blocks), adjacency comparisons
+(address arithmetic, packed half-facets, and logical-face ownership), exact
+supercube and macro-block layouts, and deterministic-versus-optimistic parallel
+commit TODO branches.
 
 ## K27. MPM–rigid and convex-body coupling
 
@@ -1459,7 +1568,7 @@ Bisection/diamond still has the strongest addressability and neighbour-finding e
 | E13 | 1995 | S. N. Muthukrishnan, P. S. Shiakolas, R. V. Nambiar, K. L. Lawrence | **Simple Algorithm for the Adaptive Refinement of Three Dimensional Problems with Tetrahedral Meshes** | B | 82 | 82 | 60 | 76 | Third completeness audit | A frequently cited early practical 3-D tetrahedral refinement algorithm in the Plaza/Rivara lineage; worth retaining so the historical comparison chain is complete. | not located publicly | [source](https://mars.uta.edu/publications/) |
 | E14 | 1999 | H. L. De Cougny, M. S. Shephard | **Parallel Refinement and Coarsening of Tetrahedral Meshes** | A | 90 | 96 | 62 | 88 | Third completeness audit | Distributed refinement plus coarsening using edge-based subdivision templates. Strong implementation evidence for reversible LOD and page-scale parallel adaptation. | not located publicly | [source](https://doi.org/10.1002/%28SICI%291097-0207%2819991110%2946%3A7%3C1101%3A%3AAID-NME741%3E3.0.CO%3B2-E) |
 | E15 | 2004 | P. P. Pébay, D. C. Thompson | **Parallel Mesh Refinement without Communication** | A | 88 | 98 | 65 | 90 | Third completeness audit | Theoretical/procedural precursor to the communication-free streaming work; especially relevant to deterministic independent refinement of pages or GPU workgroups. | [PDF](../papers/subdivision/2004-Parallel%20Mesh%20Refinement%20without%20Communication.pdf) | [source](https://www.osti.gov/servlets/purl/948286) |
-| E16 | 2004 | D. C. Thompson, P. P. Pébay | **Performance of a Streaming Mesh Refinement Algorithm** | B | 86 | 93 | 62 | 84 | Third completeness audit | Sandia performance report for the edge-template method; characterizes mesh quality, throughput and the several-hundred-template implementation burden. | [PDF](../papers/subdivision/2004-Performance%20of%20a%20Streaming%20Mesh%20Refinement%20Algorithm.pdf) | [source](https://doi.org/10.2172/919132) |
+| E16 | 2004 | D. C. Thompson, P. P. Pébay | **Performance of a Streaming Mesh Refinement Algorithm** | B | 86 | 93 | 62 | 84 | Third completeness audit | Separates edge-split decisions from canonical orientation-aware templates and proves stateless shared-face agreement. Runtime is linear in output, but repeats work per incident cell; best used here as a template/conformity oracle rather than the persistent hierarchy update. | [PDF](../papers/subdivision/2004-Performance%20of%20a%20Streaming%20Mesh%20Refinement%20Algorithm.pdf) | [source](https://doi.org/10.2172/919132) |
 | E17 | 2016 | S. Korotov, Á. Plaza, J. P. Suárez | **Longest-Edge n-Section Algorithms: Properties and Open Problems** | A | 91 | 91 | 82 | 90 | Third completeness audit | Unifies bisection, trisection and higher n-section refinements and explicitly catalogs the unresolved 3-D regularity/similarity-class questions. Useful for avoiding an artificially binary-vs-eight-child framing. | [PDF](../papers/subdivision/2016-Longest-Edge%20n-Section%20Algorithms%20-%20Properties%20and%20Open%20Problems.pdf) | [source](https://doi.org/10.1016/j.cam.2015.03.046) |
 
 ### 4. Red refinement, octasection and hierarchical refinement frameworks
@@ -1477,14 +1586,14 @@ Bisection/diamond still has the strongest addressability and neighbour-finding e
 | R14 | 2020 | S. Korotov, J. E. Vatne | **On Regularity of Tetrahedral Meshes Produced by Some Red-Type Refinements** | A | 90 | 92 | 86 | 90 | Third completeness audit | Gives red-type strategies producing face-to-face tetrahedral partitions with regularity guarantees; helps separate safe deterministic diagonal policies from arbitrary ones. | [PDF](https://link.springer.com/content/pdf/10.1007/978-3-030-56323-3_49.pdf) | [source](https://doi.org/10.1007/978-3-030-56323-3_49) |
 | R15 | 2021 | S. Korotov, M. Křížek | **On Degenerating Tetrahedra Resulting from Red Refinements of Tetrahedral Partitions** | A | 94 | 94 | 100 | 98 | Third completeness audit | Critical warning for Dygd: poor repeated choices of the central-octahedron diagonal can drive a red-refined tetrahedral sequence toward degeneracy and extreme angles. | [PDF](https://link.springer.com/content/pdf/10.1134/S1995423921040030.pdf) | [source](https://doi.org/10.1134/S1995423921040030) |
 | R16 | 2022 | S. Korotov, M. Křížek | **Degeneracy of Tetrahedral Partitions Produced by Randomly Generated Red Refinements** | A | 88 | 88 | 98 | 93 | Third completeness audit | Shows that randomizing red-refinement diagonal choices is not a free aesthetic de-biasing trick: uncontrolled choices can generate degenerating families. | [PDF](https://link.springer.com/content/pdf/10.1007/978-3-030-97549-4_16.pdf) | [source](https://doi.org/10.1007/978-3-030-97549-4_16) |
-| R17 | 2025 | H. N. Mallesham, S. Gaddam, J. Valdman, S. K. Acharya | **Vectorized 3D Mesh Refinement and Implementation of Primal Hybrid FEM in MATLAB** | B | 77 | 86 | 90 | 85 | Third completeness audit | Implements a uniform 12-child tetrahedral refinement using edge midpoints plus the tetrahedron centroid. It is a useful branch-factor/control comparison because it avoids selecting a single interior octahedron diagonal. | [PDF](../papers/subdivision/2025-Vectorized%203D%20Mesh%20Refinement%20and%20Hybrid%20Finite%20Element%20Method%20Implementation.pdf) | [source](https://arxiv.org/abs/2509.11133) |
+| R17 | 2025 | H. N. Mallesham, S. Gaddam, J. Valdman, S. K. Acharya | **Vectorized 3D Mesh Refinement and Implementation of Primal Hybrid FEM in MATLAB** | B | 77 | 86 | 90 | 85 | Third completeness audit | Implements a uniform 12-child centroid grammar with batched array writes. Global uniqueness, membership, and sparse-matrix construction make it useful as a bulk-rebuild reference, not an incremental BCC hierarchy. | [PDF](../papers/subdivision/2025-Vectorized%203D%20Mesh%20Refinement%20and%20Hybrid%20Finite%20Element%20Method%20Implementation.pdf) | [source](https://arxiv.org/abs/2509.11133) |
 
 ### 5. BCC/crystalline and parallel red-green refinement
 
 | ID | Year | Authors | Paper | Tier | Q | D | V | P | Provenance | Why it matters | PDF | Source |
 |---|---:|---|---|:---:|---:|---:|---:|---:|---|---|---|---|
 | R08 | 2003 | N. Molino, R. Bridson, J. Teran, R. Fedkiw | **A Crystalline, Red Green Strategy for Meshing Highly Deformable Objects with Tetrahedra** | A | 91 | 96 | 92 | 97 | 2026 completeness audit | Uses a BCC/crystalline base lattice and red-green refinement, giving a visually and geometrically regular structured alternative to arbitrary tetrahedral meshes. | [PDF](../papers/subdivision/2003-A%20Crystalline,%20Red%20Green%20Strategy%20for%20Meshing%20Highly%20Deformable%20Objects%20with%20Tetrahedra.pdf) | [source](https://www.cs.ubc.ca/~rbridson/docs/meshing2003.pdf) |
-| R07 | 2005 | S. Groß, A. Reusken | **Parallel Multilevel Tetrahedral Grid Refinement** | A | 90 | 90 | 65 | 85 | 2026 completeness audit | Parallel multilevel red/green refinement with explicit parent-child locality; important implementation evidence for tree-based adaptive tetrahedra. | [PDF](../papers/subdivision/2005-Parallel%20Multilevel%20Tetrahedral%20Grid%20Refinement.pdf) | [source](https://doi.org/10.1137/S1064827503425237) |
+| R07 | 2005 | S. Groß, A. Reusken | **Parallel Multilevel Tetrahedral Grid Refinement** | A | 90 | 90 | 65 | 85 | 2026 completeness audit | Gives a transactional red-green V-cycle: desired marks are resolved fine-to-coarse, topology is committed coarse-to-fine, shared edge counters determine six-bit transition states, and all 64 green rules avoid domino refinement. | [PDF](../papers/subdivision/2005-Parallel%20Multilevel%20Tetrahedral%20Grid%20Refinement.pdf) | [source](https://doi.org/10.1137/S1064827503425237) |
 | R09 | 2005 | J. Teran, N. Molino, R. Fedkiw, R. Bridson | **Adaptive Physics Based Tetrahedral Mesh Generation Using Level Sets** | A | 92 | 94 | 88 | 94 | 2026 completeness audit | Extends the BCC/red-green strategy with adaptive level-set-driven meshing; useful for local generation/refinement around detailed boundaries. | [PDF](../papers/subdivision/2005-Adaptive%20Physics%20Based%20Tetrahedral%20Mesh%20Generation%20Using%20Level%20Sets.pdf) | [source](https://doi.org/10.1007/s00366-005-0308-8) |
 | R10 | 2013 | H. Friess, S. Haussener, A. Steinfeld, J. Petrasch | **Tetrahedral Mesh Generation Based on Space Indicator Functions** | B | 83 | 79 | 66 | 75 | 2026 completeness audit | Practical BCC red-green refinement driven by a sizing/surface indicator; useful later implementation evidence and discussion of red/green transition patterns. | [PDF](../papers/subdivision/2013-Tetrahedral%20Mesh%20Generation%20Based%20on%20Space%20Indicator%20Functions.pdf) | [source](https://doi.org/10.1002/nme.4419) |
 | R11 | 2022 | M. A. Padrón, Á. Plaza | **Similarity Classes Generated by the Octasection Method Applied to the Triangulation of the 3D Unit Cube into Six Tetrahedra** | B | 83 | 79 | 81 | 81 | 2026 completeness audit | Direct octasection similarity-class/non-degeneracy study for the six-tetrahedra cube triangulation; a particularly relevant visual-pattern companion to 8T-LE. | [PDF](../papers/subdivision/2022-Similarity%20Classes%20Generated%20by%20the%20Octasection%20Method%20Applied%20to%20the%20Triangulation%20of%20the%203D%20Unit%20Cube%20into%20Six%20Tetrahedra.pdf) | [source](https://accedacris.ulpgc.es/handle/10553/119794) |
@@ -1514,7 +1623,7 @@ Bisection/diamond still has the strongest addressability and neighbour-finding e
 | C19 | 2025 | A. Binninger, R. Wiersma, P. Herholz, O. Sorkine-Hornung | **TetWeave: Isosurface Extraction Using On-The-Fly Delaunay Tetrahedral Grids for Gradient-Based Mesh Optimization** | A | 97 | 98 | 99 | 100 | Forward citation audit | Jointly optimizes an implicit surface and a dynamically rebuilt Delaunay tetrahedral grid, creating and removing vertices as the surface evolves. This is the most direct recent reference for replacing a fixed background lattice with an adaptive tetrahedral structure driven by surface quality. | [PDF](../papers/subdivision/2025-Isosurface%20Extraction%20Using%20On-the-Fly%20Delaunay%20Tetrahedral%20Grids.pdf) | [source](https://doi.org/10.1145/3730851) |
 | C20 | 2026 | J. Knodt, S.-H. Baek | **Differential Locally Injective Grid Deformation and Optimization** | B | 91 | 91 | 96 | 94 | Forward citation audit | Represents grid deformation through a differential formulation with local-injectivity constraints. Its inversion-resistant optimization is relevant to moving hierarchical grid vertices toward an isosurface without creating folded or invalid cells. | [PDF](../papers/subdivision/2026-Differential%20Locally%20Injective%20Grid%20Deformation%20and%20Optimization.pdf) | [source](https://arxiv.org/abs/2601.04494) |
 | C21 | 2026 | E. Galin, P. Hubert-Brierre, H. Schott, M.-P. Cani, A. Peytavie, E. Guérin | **The PhaseTree: Multiphase Signed Distance Fields** | A | 95 | 94 | 98 | 96 | Forward citation audit | Introduces a hierarchical construction-tree representation for volumetric objects containing multiple phases and material interfaces. It supplies a compact implicit model for the multi-material case that a boundary-conforming tetrahedral hierarchy ultimately needs to discretize. | [PDF](../papers/subdivision/2026-The%20PhaseTree%20-%20Multiphase%20Signed%20Distance%20Fields.pdf) | [source](https://doi.org/10.1145/3811379) |
-| C22 | 2026 | K. Garner, P. Thomadakis, N. Chrisochoides | **Distributed Semi-Speculative Parallel Anisotropic Mesh Adaptation** | A | 94 | 97 | 86 | 95 | Forward citation audit | Uses distributed-memory speculative local operations and asynchronous communication to adapt very large anisotropic meshes without global synchronization. It is strong implementation evidence for arranging refinement data and work so local hierarchy updates remain scalable. | [PDF](../papers/subdivision/2026-Distributed%20Semi-Speculative%20Parallel%20Anisotropic%20Mesh%20Adaptation.pdf) | [source](https://doi.org/10.1007/s00366-026-02391-5) |
+| C22 | 2026 | K. Garner, P. Thomadakis, N. Chrisochoides | **Distributed Semi-Speculative Parallel Anisotropic Mesh Adaptation** | A | 94 | 97 | 86 | 95 | Forward citation audit | Acquires complete local cavities atomically and rolls back conflicts; also shows why frozen/inactive work must be removed before scheduling. Useful as a later optimistic-commit comparison, but its weak reproducibility is insufficient for the viewer default. | [PDF](../papers/subdivision/2026-Distributed%20Semi-Speculative%20Parallel%20Anisotropic%20Mesh%20Adaptation.pdf) | [source](https://doi.org/10.1007/s00366-026-02391-5) |
 | C23 | 2026 | Y. Qiu | **Mesh Simplification Method Based on Implicit Geometric Constraints** | B | 76 | 68 | 82 | 70 | TetWeave follow-on audit | Uses a TetWeave implicit reference field to add continuous surface-deviation and normal-consistency constraints to quadric-error edge collapse. Its collapse procedure does not preserve a tetrahedral boundary, but its implicit distance, normal, and Hausdorff objectives are useful for evaluating or optimizing boundary triangles while retaining a separate tetrahedral-quality constraint. | [PDF](../papers/supporting/2026-Mesh%20Simplification%20with%20Implicit%20Geometric%20Constraints.pdf) | [source](https://doi.org/10.70267/cai.26v3n3.2133) |
 | C24 | 2026 | H. Baktash, M. Gillespie, K. Crane | **Subgrid Marching Tetrahedra** | A | 98 | 100 | 99 | 100 | TetWeave forward citation audit | Generalizes marching tetrahedra to arbitrary integer intersection counts on grid edges, allowing several surface patches, thin sheets, and features below the grid spacing inside one tetrahedron. Reconstruction remains local per cell, manifold, intersection-free, and conforming across tetrahedral faces. It is the clearest next surface-extraction experiment, though its multi-patch cells require a richer volume-cleaving grammar than the current one-crossing-per-edge stencils. | [PDF](../papers/subdivision/2026-Subgrid%20Marching%20Tetrahedra.pdf) | [source](https://doi.org/10.1145/3811358) |
 | C25 | 2026 | X. Carrera, N. Wang, C. Batty, O. Stein, S. Sellán | **Dual Contouring of Signed Distance Data** | A | 96 | 87 | 98 | 95 | TetWeave forward citation audit | Reconstructs sharp-feature surfaces from discrete signed-distance samples by solving a quadratic vertex-placement problem without continuous field queries or gradients. Its regular-grid connectivity is not directly transferable, but its placement objective is a strong basis for replacing the viewer's provisional tetrahedral dual-contour vertex positioning. | [PDF](../papers/subdivision/2026-Dual%20Contouring%20of%20Signed%20Distance%20Data.pdf) | [source](https://arxiv.org/abs/2604.00157) |
@@ -1568,24 +1677,31 @@ Bisection/diamond still has the strongest addressability and neighbour-finding e
 | H08 | 2004 | L. De Floriani, M. Lee | **Selective Refinement on Nested Tetrahedral Meshes** | A | 90 | 95 | 66 | 88 | Thread-core | Variable-resolution refine/coarsen extraction from nested tetrahedral structures. | [PDF](https://link.springer.com/content/pdf/10.1007/978-3-662-07443-5_20.pdf) | [source](https://doi.org/10.1007/978-3-662-07443-5_20) |
 | H09 | 2007 | F. B. Atalay, D. M. Mount | **Pointerless Implementation of Hierarchical Simplicial Meshes and Efficient Neighbor Finding in Arbitrary Dimensions** | A | 91 | 100 | 55 | 90 | Reference-chain audit | Strong fit for compact, address-derived hierarchy operations; LPT codes avoid explicit parent/child/neighbour pointers. Canonical journal version is 2007; the free PDF is the 2004 IMR version. | [PDF](../papers/subdivision/2007-Pointerless%20Implementation%20of%20Hierarchical%20Simplicial%20Meshes%20and%20Efficient%20Neighbor%20Finding%20in%20Arbitrary%20Dimensions.pdf) | [source](https://doi.org/10.1142/S0218195907002495) |
 | H10 | 2009 | K. Weiss, L. De Floriani | **Diamond Hierarchies of Arbitrary Dimension** | A | 94 | 99 | 80 | 95 | Reference-chain audit | Makes diamonds first-class conforming refinement units and derives implicit relationships for the hierarchy. | [PDF](../papers/subdivision/2009-Diamond%20Hierarchies%20of%20Arbitrary%20Dimension.pdf) | [source](https://kennyweiss.com/papers/Weiss09.sgp.pdf) |
-| H11 | 2009 | K. Weiss, L. De Floriani | **Supercubes: A High-Level Primitive for Diamond Hierarchies** | A | 89 | 91 | 72 | 87 | Reference-chain audit | Higher-level grouping over diamonds; relevant to paging/coarse state organization above individual refinement clusters. | [PDF](../papers/subdivision/2009-Supercubes%20-%20A%20High-Level%20Primitive%20for%20Diamond%20Hierarchies.pdf) | [source](https://doi.org/10.1109/TVCG.2009.186) |
+| H11 | 2009 | K. Weiss, L. De Floriani | **Supercubes: A High-Level Primitive for Diamond Hierarchies** | A | 89 | 91 | 72 | 87 | Reference-chain audit | Defines an exact three-level block of 56 diamond types with occupancy-bit compaction; its active front used about one byte overhead per tetrahedron and less than half the compared per-diamond storage. | [PDF](../papers/subdivision/2009-Supercubes%20-%20A%20High-Level%20Primitive%20for%20Diamond%20Hierarchies.pdf) | [source](https://doi.org/10.1109/TVCG.2009.186) |
 | H12 | 2010 | K. Weiss, L. De Floriani | **Bisection-Based Triangulations of Nested Hypercubic Meshes** | A | 92 | 97 | 84 | 95 | Reference-chain audit | Connects regular simplex bisection with nested cube-derived domains and local, dimension-independent triangulation. | [PDF](../papers/subdivision/2010-Bisection-Based%20Triangulations%20of%20Nested%20Hypercubic%20Meshes.pdf) | [source](https://kennyweiss.com/papers/Weiss10.imr.pdf) |
-| H13 | 2010 | K. Weiss, L. De Floriani | **Isodiamond Hierarchies: An Efficient Multiresolution Representation for Isosurfaces and Interval Volumes** | B | 89 | 91 | 84 | 89 | Reference-chain audit | Concrete diamond-based multiresolution extraction and storage ideas. | [PDF](../papers/subdivision/2010-Isodiamond%20Hierarchies%20-%20An%20Efficient%20Multiresolution%20Representation%20for%20Isosurfaces%20and%20Interval%20Volumes.pdf) | [source](https://kennyweiss.com/papers/Weiss10.tvcg.pdf) |
-| H14 | 2011 | K. Weiss, L. De Floriani | **Simplex and Diamond Hierarchies: Models and Applications** | A | 95 | 99 | 88 | 98 | Reference-chain audit | Best conceptual comparison for “tetrahedron as node” versus “diamond as node”; central architectural paper for Dygd. | [PDF](../papers/subdivision/2011-Simplex%20and%20Diamond%20Hierarchies%20-%20Models%20and%20Applications.pdf) | [source](https://kennyweiss.com/papers/Weiss11.cg_forum.pdf) |
-| H15 | 2011 | K. Weiss, L. De Floriani | **Modeling Multiresolution 3D Scalar Fields through Regular Simplex Bisection** | A | 96 | 100 | 89 | 99 | Thread-core | The central diamond paper in our discussion; explicitly compares tetrahedron primitives with clusters sharing a bisection edge. | [PDF](../papers/subdivision/2011-Modeling%20Multiresolution%203D%20Scalar%20Fields%20through%20Regular%20Simplex%20Bisection.pdf) | [source](https://doi.org/10.4230/DFU.Vol2.SciViz.2011.360) |
-| H16 | 2016 | C. Burstedde, J. Holke | **A Tetrahedral Space-Filling Curve for Non-Conforming Adaptive Meshes** | A | 97 | 100 | 72 | 96 | Thread-core | Compact tetrahedral addressing with constant-time parent/children/face-neighbour and SFC operations; major production-quality precedent. | [PDF](../papers/subdivision/2016-A%20Tetrahedral%20Space-Filling%20Curve%20for%20Non-Conforming%20Adaptive%20Meshes.pdf) | [source](https://doi.org/10.1137/15M1040049) |
+| H13 | 2010 | K. Weiss, L. De Floriani | **Isodiamond Hierarchies: An Efficient Multiresolution Representation for Isosurfaces and Interval Volumes** | B | 89 | 91 | 84 | 89 | Reference-chain audit | Defines relevant and minimal fixed-field surface hierarchies; the minimal form substantially reduces active clusters, storage, and extraction work, making it a strong camera-only LOD alternative. | [PDF](../papers/subdivision/2010-Isodiamond%20Hierarchies%20-%20An%20Efficient%20Multiresolution%20Representation%20for%20Isosurfaces%20and%20Interval%20Volumes.pdf) | [source](https://kennyweiss.com/papers/Weiss10.tvcg.pdf) |
+| H14 | 2011 | K. Weiss, L. De Floriani | **Simplex and Diamond Hierarchies: Models and Applications** | A | 95 | 99 | 88 | 98 | Reference-chain audit | Shows why conformity-owning diamond clusters can replace repeated per-simplex closure and supports saturated-cluster selection as a simpler, slightly larger-cut alternative. | [PDF](../papers/subdivision/2011-Simplex%20and%20Diamond%20Hierarchies%20-%20Models%20and%20Applications.pdf) | [source](https://kennyweiss.com/papers/Weiss11.cg_forum.pdf) |
+| H15 | 2011 | K. Weiss, L. De Floriani | **Modeling Multiresolution 3D Scalar Fields through Regular Simplex Bisection** | A | 96 | 100 | 89 | 99 | Thread-core | Connects diamond clusters to dual-queue incremental view updates, coordinate-derived types, and cache-coherent layout; also establishes that minimal isodiamonds lose volume connectivity and spatial selection. | [PDF](../papers/subdivision/2011-Modeling%20Multiresolution%203D%20Scalar%20Fields%20through%20Regular%20Simplex%20Bisection.pdf) | [source](https://doi.org/10.4230/DFU.Vol2.SciViz.2011.360) |
+| H16 | 2016 | C. Burstedde, J. Holke | **A Tetrahedral Space-Filling Curve for Non-Conforming Adaptive Meshes** | A | 97 | 100 | 72 | 96 | Thread-core | Encodes a random-access red tetrahedron in 14 bytes, computes parent/children/face-neighbours without a root walk, orders complete eight-child families consecutively, and adapts an ordered leaf array with a linear streaming pass. | [PDF](../papers/subdivision/2016-A%20Tetrahedral%20Space-Filling%20Curve%20for%20Non-Conforming%20Adaptive%20Meshes.pdf) | [source](https://doi.org/10.1137/15M1040049) |
 | H20 | 2006 | L. De Floriani, E. Danovaro | **Generating, Representing and Querying Level-Of-Detail Tetrahedral Meshes** | A | 90 | 95 | 60 | 88 | 2026 completeness audit | Explicitly addresses generation, representation and queries on tetrahedral LOD structures. | not located publicly | [source](https://doi.org/10.1007/3-540-30790-7_6) |
 | H21 | 2000 | T. Roxborough, G. M. Nielson | **Tetrahedron Based, Least Squares, Progressive Volume Models with Application to Freehand Ultrasound Data** | B | 83 | 74 | 58 | 71 | 2026 completeness audit | Progressive tetrahedral volume model using longest-edge splitting; relevant to coarse-to-fine storage. | [PDF](https://citeseerx.ist.psu.edu/document?doi=f6d541e10784eae812b3cb1e829842b8a6d875c9&repid=rep1&type=pdf) | [source](https://doi.org/10.1145/375213.375224) |
-| H22 | 2014 | D. Koschier, S. Lipponer, J. Bender | **Adaptive Tetrahedral Meshes for Brittle Fracture Simulation** | A | 90 | 93 | 70 | 84 | 2026 completeness audit | Reversible adaptive refinement/coarsening in a graphics simulation context; useful evidence for persistent state under topology changes. | [PDF](../papers/subdivision/2014-Adaptive%20Tetrahedral%20Meshes%20for%20Brittle%20Fracture%20Simulation.pdf) | [source](https://animation.rwth-aachen.de/publication/0540/) |
+| H22 | 2014 | D. Koschier, S. Lipponer, J. Bender | **Adaptive Tetrahedral Meshes for Brittle Fracture Simulation** | A | 90 | 93 | 70 | 84 | 2026 completeness audit | Defines an explicit inverse for every refinement transition, stores compact rollback metadata, locks permanently fractured cells against coarsening, and reports further speedup when reverse refinement is enabled. Its templates differ from BCC, but its reversibility contract is directly useful. | [PDF](../papers/subdivision/2014-Adaptive%20Tetrahedral%20Meshes%20for%20Brittle%20Fracture%20Simulation.pdf) | [source](https://animation.rwth-aachen.de/publication/0540/) |
 | H23 | 1999 | M. Ohlberger, M. Rumpf | **Adaptive Projection Operators in Multiresolution Scientific Visualization** | B | 83 | 79 | 58 | 73 | 2026 completeness audit | Relevant to transferring quantities across levels of a multiresolution hierarchy. | not located publicly | source not verified |
-| H24 | 2026 | M. E. Ünalan, S. Demirci, S. Zellmann, U. Güdükbay | **Direct Volume Rendering of Tree-Based Tetrahedral Adaptive Mesh Refinement Data** | A | 88 | 96 | 66 | 92 | 2026 completeness audit | Direct rendering of tree-based tetrahedral AMR with geometry generated on demand and screen-space LOD. | [PDF](../papers/subdivision/2026-Direct%20Volume%20Rendering%20of%20Tree-Based%20Tetrahedral%20Adaptive%20Mesh%20Refinement%20Data.pdf) | [source](https://doi.org/10.1016/j.cag.2026.104638) |
-| H25 | 2026 | M. Padilla, T. Huisman, J. Campolattaro, R. Wiersma, K. Hildebrandt, O. Sorkine-Hornung | **GravoTet: A Fast Multigrid Hierarchy Construction for Tetrahedral Meshes** | B | 88 | 86 | 72 | 84 | Third completeness audit | Not a recursive child grammar, but a current high-quality comparison for constructing useful coarse tetrahedral hierarchies quickly from arbitrary meshes. | [PDF](../papers/subdivision/2026-Fast%20Multigrid%20Hierarchy%20Construction%20for%20Tetrahedral%20Meshes.pdf) | [source](https://marcelpadilla.com/Projects/GravoTet/) |
-| H26 | 2017 | N. Ray, I. Grindeanu, X. Zhao, V. S. Mahadevan, X. Jiao | **Array-Based, Parallel Hierarchical Mesh Refinement Algorithms for Unstructured Meshes** | A | 90 | 95 | 60 | 88 | Third completeness audit | Multi-level template-based uniform refinement for tetrahedral and other unstructured meshes with explicit hierarchy storage and parallel traversal. Valuable implementation comparison to tree-specific tetrahedral schemes. | [PDF](../papers/subdivision/2016-Array-Based,%20Parallel%20Hierarchical%20Mesh%20Refinement%20Algorithms%20for%20Unstructured%20Meshes.pdf) | [source](https://doi.org/10.1016/j.cad.2016.07.011) |
+| H24 | 2026 | M. E. Ünalan, S. Demirci, S. Zellmann, U. Güdükbay | **Direct Volume Rendering of Tree-Based Tetrahedral Adaptive Mesh Refinement Data** | A | 88 | 96 | 66 | 92 | 2026 completeness audit | Uses packed preorder trees and on-demand descendant generation to apply screen-space LOD without materializing a camera cut; promising as a render-only comparison, with overhead risk for shallow many-root forests. | [PDF](../papers/subdivision/2026-Direct%20Volume%20Rendering%20of%20Tree-Based%20Tetrahedral%20Adaptive%20Mesh%20Refinement%20Data.pdf) | [source](https://doi.org/10.1016/j.cag.2026.104638) |
+| H25 | 2026 | M. Padilla, T. Huisman, J. Campolattaro, R. Wiersma, K. Hildebrandt, O. Sorkine-Hornung | **GravoTet: A Fast Multigrid Hierarchy Construction for Tetrahedral Meshes** | B | 88 | 86 | 72 | 84 | Third completeness audit | Fast graph-Voronoi hierarchy for sparse physics transfer weights. Its approximate coarse complex may overlap, invert, or lose thin features, so it is not a valid visible/material LOD mesh. | [PDF](../papers/subdivision/2026-Fast%20Multigrid%20Hierarchy%20Construction%20for%20Tetrahedral%20Meshes.pdf) | [source](https://marcelpadilla.com/Projects/GravoTet/) |
+| H26 | 2017 | N. Ray, I. Grindeanu, X. Zhao, V. S. Mahadevan, X. Jiao | **Array-Based, Parallel Hierarchical Mesh Refinement Algorithms for Unstructured Meshes** | A | 90 | 95 | 60 | 88 | Third completeness audit | Stores packed sibling half-facets and vertex anchors, wires child interiors from templates, and connects only across shared parent facets; a strong adjacency alternative without explicit edge/face objects. | [PDF](../papers/subdivision/2016-Array-Based,%20Parallel%20Hierarchical%20Mesh%20Refinement%20Algorithms%20for%20Unstructured%20Meshes.pdf) | [source](https://doi.org/10.1016/j.cad.2016.07.011) |
 
-| H27 | 2010 | K. Weiss, L. De Floriani | **Nested Refinement Domains for Tetrahedral and Diamond Hierarchies** | A | 92 | 100 | 78 | 96 | Hierarchy research | Derives nested descendant, convex-descendant, and bounding-box domains. A hierarchy node may provide a conservative bound for all descendants, supporting subtree culling or collision without a separate BVH. | [PDF](../papers/hierarchy/2010-Nested%20Refinement%20Domains%20for%20Tetrahedral%20and%20Diamond%20Hierarchies.pdf) | [source](https://kennyweiss.com/papers/Weiss10.vis_poster.pdf) |
+| H27 | 2010 | K. Weiss, L. De Floriani | **Nested Refinement Domains for Tetrahedral and Diamond Hierarchies** | A | 92 | 100 | 78 | 96 | Hierarchy research | Derives exact, convex, and bounding-box domains containing every possible descendant. These permit conservative whole-subtree frustum, projected-size, and isovalue rejection without visiting descendant tetrahedra or maintaining a separate BVH. | [PDF](../papers/hierarchy/2010-Nested%20Refinement%20Domains%20for%20Tetrahedral%20and%20Diamond%20Hierarchies.pdf) | [source](https://kennyweiss.com/papers/Weiss10.vis_poster.pdf) |
 | H28 | 2020 | J. Dupuy | **Concurrent Binary Trees (with application to longest edge bisection)** | A | 95 | 100 | 68 | 98 | Hierarchy research | Presents a GPU-friendly adaptive binary hierarchy using a 1-D binary heap, leaf bitfield, and sum-reduction tree, with arithmetic relationships and concurrent split/merge. | [PDF](../papers/hierarchy/2020-Concurrent%20Binary%20Trees%20%28with%20application%20to%20longest%20edge%20bisection%29.pdf) | [source](https://doi.org/10.1145/3406186) |
 | H29 | 2024 | A. Benyoub, J. Dupuy | **Concurrent Binary Trees for Large-Scale Game Components** | A | 93 | 100 | 68 | 97 | Hierarchy research | Extends CBTs into a GPU memory-pool manager, decoupling addressable subdivision depth from the number of resident active primitives. | [PDF](../papers/hierarchy/2024-Concurrent%20Binary%20Trees%20for%20Large-Scale%20Game%20Components.pdf) | [source](https://arxiv.org/abs/2407.02215) |
-| H30 | 2024 | F. Böhm, D. Bauer, N. Kohl, C. Alappat, D. Thönnes, M. Mohr, H. Köstler, U. Rüde | **Code Generation and Performance Engineering for Matrix-Free Finite Element Methods on Hybrid Tetrahedral Grids** | A | 94 | 96 | 62 | 92 | Hierarchy research | Shows that implicit indexing on regularly refined hybrid tetrahedral grids can be a compute-performance advantage, not merely a storage optimization. | [PDF](../papers/hierarchy/2024-Code%20Generation%20and%20Performance%20Engineering%20for%20Matrix-Free%20Finite%20Element%20Methods%20on%20Hybrid%20Tetrahedral%20Grids.pdf) | [source](https://arxiv.org/abs/2404.08371) |
+| H30 | 2024 | F. Böhm, D. Bauer, N. Kohl, C. Alappat, D. Thönnes, M. Mohr, H. Köstler, U. Rüde | **Code Generation and Performance Engineering for Matrix-Free Finite Element Methods on Hybrid Tetrahedral Grids** | A | 94 | 96 | 62 | 92 | Hierarchy research | Shows that implicit indexing removes connectivity loads and that fusing orientation types into local cube/macro-block traversal improves cache reuse over orientation-at-a-time streaming. | [PDF](../papers/hierarchy/2024-Code%20Generation%20and%20Performance%20Engineering%20for%20Matrix-Free%20Finite%20Element%20Methods%20on%20Hybrid%20Tetrahedral%20Grids.pdf) | [source](https://arxiv.org/abs/2404.08371) |
+| H31 | 2002 | B. Gregorski, M. Duchaineau, P. Lindstrom, V. Pascucci, K. I. Joy | **Interactive View-Dependent Rendering of Large Isosurfaces** | A | 94 | 98 | 84 | 96 | GPU LOD Scholar audit | Uses a diamond DAG, coherent split/merge queues, isovalue-range rejection, and a per-frame work budget to refine near the viewer and coarsen elsewhere without restarting from the roots. It is the clearest historical match for the reversible camera-driven active front needed here. | [PDF](../papers/subdivision/2002-Interactive%20View-Dependent%20Rendering%20of%20Large%20Isosurfaces.pdf) | [source](https://escholarship.org/uc/item/2297w4dr) |
+| H32 | 2004 | V. Pascucci | **Isosurface Computation Made Simple: Hardware Acceleration, Adaptive Refinement and Tetrahedral Stripping** | A | 91 | 96 | 82 | 92 | GPU LOD Scholar audit | Demonstrates recursive tetrahedral LOD termination from nested bounds, scalar min/max, frustum, and projected error tests. Its hardware interface is obsolete, but its conservative traversal and strip-preserving refinement remain useful design evidence. | [PDF](../papers/subdivision/2004-Isosurface%20Computation%20Made%20Simple.pdf) | [source](https://doi.org/10.2312/VisSym/VisSym04/293-300) |
+| H33 | 2009 | S. Hu, P. V. Sander, H. Hoppe | **Parallel View-Dependent Level-of-Detail Control** | A | 94 | 91 | 70 | 91 | GPU LOD Scholar audit | Maintains a GPU-resident active frontier with parallel split/collapse streaming passes, double-buffered render indices, work proportional to the active mesh, and feedback-controlled amortization over frames. Its hierarchy is a progressive triangle mesh rather than tetrahedral volume cells, so it is a scheduling reference rather than a topology recipe. | [PDF](../papers/hierarchy/2009-Parallel%20View-Dependent%20Level-of-Detail%20Control.pdf) | [source](https://hhoppe.com/proj/pvdlod/) |
+| H34 | 2015 | M. Scholz, J. Bender, C. Dachsbacher | **Real-Time Isosurface Extraction with View-Dependent Level of Detail and Applications** | A | 96 | 99 | 94 | 99 | GPU LOD Scholar audit | Couples a coherent longest-edge-bisection diamond front to independently cached surface cells, divides each active tetrahedron into four matching hexahedral lattices, and batches variable output with a second fixed-capacity GPU-buffer front. It avoids cross-LOD stitching and reports better geometric behavior than direct tetrahedral contouring, though extraction and hierarchy updates in the prototype run on a CPU worker. | [PDF](../papers/subdivision/2015-Real-Time%20Isosurface%20Extraction%20with%20View-Dependent%20Level%20of%20Detail%20and%20Applications.pdf) | [source](https://doi.org/10.1111/cgf.12462) |
+| H35 | 2020 | I. Wald | **A Simple, General, and GPU Friendly Method for Computing Dual Mesh and Iso-Surfaces of Adaptive Mesh Refinement Data** | A | 94 | 86 | 84 | 90 | GPU LOD Scholar audit | Produces crack-free mixed-resolution surfaces by snapping logical dual-cell corners to actual adaptive cells and applying three deterministic ownership rules. The lock-free, one-thread-per-candidate construction is directly useful as a surface-ownership comparison, but its coordinate locator assumes structured or octree adaptive cells rather than a tetrahedral hierarchy. | [PDF](../papers/subdivision/2020-GPU-Friendly%20Dual%20Mesh%20and%20Isosurfaces%20for%20Adaptive%20Mesh%20Refinement%20Data.pdf) | [source](https://arxiv.org/abs/2004.08475) |
+| H36 | 2023 | D. Ströter, A. Stork, D. W. Fellner | **Massively Parallel Adaptive Collapsing of Edges for Unstructured Tetrahedral Meshes** | A | 95 | 85 | 62 | 87 | GPU LOD Scholar audit | Gives a GPU-parallel coarsening baseline with link-condition and signed-volume admissibility, cost-prioritized conflict-free edge sets, array markers, and an explicit stop threshold for low-yield tail iterations. It also shows that rebuilding connectivity dominates runtime, so arbitrary edge collapse is not a substitute for cheap inverse hierarchy merges in the visual path. | [PDF](../papers/hierarchy/2023-Massively%20Parallel%20Adaptive%20Collapsing%20of%20Edges%20for%20Unstructured%20Tetrahedral%20Meshes.pdf) | [source](https://doi.org/10.2312/hpg.20231139) |
+| H37 | 2025 | M. Stegemann, J. Mueller-Roemer, D. Ströter, D. Weber | **GPU-Accelerated Mesh Adaptation for Structural Analysis** | B | 86 | 82 | 55 | 78 | GPU LOD Scholar audit | Integrates GPU sizing-field processing, patterned subdivision, edge-collapse coarsening, smoothing, and significance-based scheduling. Its double-buffered unstructured rebuild and seconds-scale structural-analysis target are too heavy for camera frames, but its refine/coarsen deadband and low-yield-operation suppression are valuable controls. | [PDF](../papers/hierarchy/2025-Graphics-Processor-Accelerated%20Mesh%20Adaptation%20for%20Structural%20Analysis.pdf) | [source](https://www.nafems.org/downloads/dropbox/nologin/nwc25/nwc25-0007129-paper.pdf) |
 
 ### 10. Graphics/data-driven adaptive subdivision
 
@@ -1667,7 +1783,7 @@ This queue is regenerated from the actual v4 rows, so every listed ID is present
 | Rank | ID | P | Paper | Immediate reason to read |
 |---:|---|---:|---|---|
 | 1 | V06 | 100 | **Artifacts Caused by Simplicial Subdivision** | Most directly relevant artifact paper found: analyzes geometric/visual artifacts introduced by simplicial subdivision choices and directional bias. |
-| 2 | H15 | 99 | **Modeling Multiresolution 3D Scalar Fields through Regular Simplex Bisection** | The central diamond paper in our discussion; explicitly compares tetrahedron primitives with clusters sharing a bisection edge. |
+| 2 | H15 | 99 | **Modeling Multiresolution 3D Scalar Fields through Regular Simplex Bisection** | Connects diamond clusters to persistent dual-queue view updates, coordinate-derived addressing, compact macro blocks, and the exact capability limits of minimal surface hierarchies. |
 | 3 | F04 | 99 | **Simplicial Grid Refinement: On Freudenthal’s Algorithm and the Optimal Number of Congruence Classes** | Directly analyzes Freudenthal-style refinement and the minimum/optimal congruence-class vocabulary; highly relevant to repetition and structured LOD. |
 | 4 | B10 | 98 | **Tetrahedral Grid Refinement** | Canonical tetrahedral 1-to-8/red refinement with conformity/coarsening machinery. |
 | 5 | B09 | 98 | **Local Bisection Refinement for n-Simplicial Grids Generated by Reflection** | Deterministic refinement edges from vertex ordering, bounded shape classes, natural binary hierarchy. |
@@ -1742,7 +1858,7 @@ These works are not tetrahedral subdivision grammars, but they inform physical L
 | T01 | 2019 | **[Material-adapted Refinable Basis Functions for Elasticity Simulation](../papers/physics/2019-Material-adapted%20Refinable%20Basis%20Functions%20for%20Elasticity%20Simulation.pdf)** | Hierarchical and refinable mechanical bases for heterogeneous material; possible physics LOD over the spatial hierarchy. |
 | T02 | 2018 | **[Numerical Coarsening using Discontinuous Shape Functions](../papers/physics/2018-Numerical%20Coarsening%20using%20Discontinuous%20Shape%20Functions.pdf)** | Coarse simulation of heterogeneous nonlinear material while reducing artificial stiffening. |
 | T03 | 2017 | **[ArbiLoMod: A Simulation Technique Designed for Arbitrary Local Modifications](../papers/physics/2017-Simulation%20for%20Arbitrary%20Local%20Modifications.pdf)** | Reuse reduced spaces away from local edits and rebuild or enrich only affected regions. |
-| T04 | 2014 | **[SPGrid: A Sparse Paged Grid Structure Applied to Adaptive Smoke Simulation](../papers/physics/2014-Sparse%20Paged%20Grid%20for%20Adaptive%20Smoke%20Simulation.pdf)** | Sparse pyramid of uniform grids, virtual-memory paging, and Morton-style addressing; an architectural analogue for sparse per-level state. |
+| T04 | 2014 | **[SPGrid: A Sparse Paged Grid Structure Applied to Adaptive Smoke Simulation](../papers/physics/2014-Sparse%20Paged%20Grid%20for%20Adaptive%20Smoke%20Simulation.pdf)** | Fixed-size blocks, active bitmaps, compact active-block lists, and colocated channels provide a concrete paged alternative to flat per-layer arrays without per-cell allocations. |
 | T05 | 2001 | **[Fast and Controllable Simulation of the Shattering of Brittle Objects](../papers/physics/2001-Fast%20and%20Controllable%20Simulation%20of%20the%20Shattering%20of%20Brittle%20Objects.pdf)** | Cheap fracture tier using distance-preserving and breakable constraints. |
 | T06 | 2003 | **[Multiresolution Green's Function Methods for Interactive Simulation of Large-Scale Elastostatic Objects](../papers/physics/2003-Multiresolution%20Green's%20Function%20Methods%20for%20Interactive%20Simulation%20of%20Large-Scale%20Elastostatic%20Objects.pdf)** | Hierarchical physical approximation that can degrade gracefully under a real-time budget. |
 | T07 | 2026 | **[Affinification: A Fine Approximation of Deformations](../papers/physics/2026-Affinification%20A%20Fine%20Approximation%20of%20Deformations.pdf)** | Dynamic affine-versus-elastic clustering; strongly aligned with a rigid → affine → elastic Dygd physics ladder. |
