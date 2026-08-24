@@ -7320,6 +7320,57 @@ TEST_CASE("fixed optimized shell preserves the standalone surface and whole hier
   CHECK(invalid_errors.str().find("requires surface optimization")!=std::string::npos);
 }
 
+TEST_CASE("default connected cutaway keeps unit geometric normals through refinement") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra_viewer::default_subdivision_method);
+  tetra::Sphere terrain;
+  terrain.kind=tetra_viewer::default_implicit_shape;
+  tetra::Camera camera;
+  const auto check_scene=[&] {
+    const auto scene=tetra_viewer::prepare_scene(
+        mesh,terrain,tetra_viewer::default_surface_method,
+        tetra_viewer::MaterialRule::variational_smooth,
+        true,false,true,false,true,true,1.0,
+        tetra_viewer::default_volume_connection_for_shape(terrain.kind));
+    REQUIRE_FALSE(scene.triangle_vertices.empty());
+    REQUIRE(scene.triangle_vertices.size()%3U==0U);
+    for(std::size_t triangle=0;triangle<scene.triangle_vertices.size();triangle+=3U){
+      const auto& first=scene.triangle_vertices[triangle];
+      const auto& second=scene.triangle_vertices[triangle+1U];
+      const auto& third=scene.triangle_vertices[triangle+2U];
+      const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
+      const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
+      const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
+      const auto ab=b-a,ac=c-a;
+      const tetra::Vec3 geometric{
+          ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,
+          ab.x*ac.y-ab.y*ac.x};
+      const double geometric_length=std::sqrt(
+          geometric.x*geometric.x+geometric.y*geometric.y+
+          geometric.z*geometric.z);
+      REQUIRE(geometric_length>1.0e-15);
+      for(std::size_t corner=0;corner<3U;++corner){
+        const auto& vertex=scene.triangle_vertices[triangle+corner];
+        const double normal_length=std::sqrt(
+            vertex.normal[0]*vertex.normal[0]+vertex.normal[1]*vertex.normal[1]+
+            vertex.normal[2]*vertex.normal[2]);
+        CHECK(normal_length==doctest::Approx(1.0).epsilon(1.0e-5));
+        const double alignment=std::abs(
+            vertex.normal[0]*geometric.x+vertex.normal[1]*geometric.y+
+            vertex.normal[2]*geometric.z)/geometric_length;
+        CHECK(alignment==doctest::Approx(1.0).epsilon(1.0e-5));
+        CHECK(vertex.normal[0]==doctest::Approx(first.normal[0]));
+        CHECK(vertex.normal[1]==doctest::Approx(first.normal[1]));
+        CHECK(vertex.normal[2]==doctest::Approx(first.normal[2]));
+      }
+    }
+  };
+
+  static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,28.0,9U));
+  check_scene();
+  static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,14.0,12U));
+  check_scene();
+}
+
 TEST_CASE("fixed optimized shell validates across every packed hierarchy family") {
   const tetra::Sphere sphere{{0.47,0.52,0.49},0.31};
   const tetra::Camera camera{};

@@ -250,7 +250,20 @@ void prepare_surface_render_attributes(PreparedScene& scene) {
   };
   for(std::size_t triangle=0;triangle<triangle_count;++triangle){
     const auto& first=scene.triangle_vertices[triangle*3];
-    const auto normal=normalize({first.normal[0],first.normal[1],first.normal[2]});
+    const auto& second=scene.triangle_vertices[triangle*3+1];
+    const auto& third=scene.triangle_vertices[triangle*3+2];
+    const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
+    const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
+    const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
+    auto geometric=face_normal(a,b,c);
+    const tetra::Vec3 supplied{first.normal[0],first.normal[1],first.normal[2]};
+    // Preserve the deliberately selected outward side, but derive the final
+    // lighting vector from the submitted geometry. In particular, never
+    // publish the raw area vector: its length shrinks quadratically under
+    // refinement and was eventually mistaken for the zero-normal sentinel
+    // by the fragment shader.
+    if(dot(geometric,supplied)<0.0)geometric=geometric*-1.0;
+    const auto normal=normalize(geometric);
     for(std::size_t vertex=0;vertex<3;++vertex){
       auto& output=scene.triangle_vertices[triangle*3+vertex];
       // Flat lighting and barycentric wireframes are render inputs, not
@@ -3643,6 +3656,10 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                              surface_method==SurfaceMethod::full_tetrahedra);
     }
   }
+  // Volume and connected-shell triangles are appended after surface
+  // diagnostics. Finalize the complete draw list so every publication path,
+  // including incremental cutaway updates, carries unit geometric normals.
+  prepare_surface_render_attributes(scene);
   append_screen_space_edges(scene,show_surface_edges,show_volume_edges,
                             show_faces,show_volume_faces);
   scene.upload_preparation_milliseconds = std::chrono::duration<double, std::milli>(
