@@ -63,7 +63,7 @@ enable_testing()
 add_executable(tetra_tests tests/tetra_core/tet_mesh_tests.cpp)
 target_link_libraries(tetra_tests PRIVATE tetra_viewer_script doctest::doctest)
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
-doctest_discover_tests(tetra_tests)
+doctest_discover_tests(tetra_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 if(TETRA_BUILD_VIEWER)
   if(APPLE)
