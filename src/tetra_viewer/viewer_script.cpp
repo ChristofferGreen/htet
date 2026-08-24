@@ -1968,6 +1968,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<result->cumulative_snapshot_copy_count
               <<",\"snapshot_copy_bytes\":"
               <<result->cumulative_snapshot_copy_bytes
+              <<",\"resident_storage_bytes\":"
+              <<result->mesh.resident_storage_bytes()
               <<",\"snapshot_copy_ms\":"
               <<result->cumulative_snapshot_copy_milliseconds
               <<",\"worker_handoff_count\":"
@@ -2090,6 +2092,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             <<final_publication.cumulative_snapshot_copy_count
             <<",\"snapshot_copy_bytes\":"
             <<final_publication.cumulative_snapshot_copy_bytes
+            <<",\"resident_storage_bytes\":"
+            <<published_mesh.resident_storage_bytes()
             <<",\"snapshot_copy_ms\":"
             <<final_publication.cumulative_snapshot_copy_milliseconds
             <<",\"worker_handoff_count\":"
@@ -2213,6 +2217,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             <<final_publication.cumulative_snapshot_copy_count
             <<",\"snapshot_copy_bytes\":"
             <<final_publication.cumulative_snapshot_copy_bytes
+            <<",\"resident_storage_bytes\":"
+            <<published_mesh.resident_storage_bytes()
             <<",\"snapshot_copy_ms\":"
             <<final_publication.cumulative_snapshot_copy_milliseconds
             <<",\"worker_handoff_count\":"
@@ -2237,6 +2243,87 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
          !low_yield_valid||!low_yield_matches){
         write_error(errors,"CPU worker low-yield slices changed final hashes",
                     "low-yield-slices");
+        return 1;
+      }
+
+      auto production=cpu_benchmark_baseline(default_implicit_shape);
+      MeshUpdateParameters production_parameters{
+          production.sphere,production.camera,production.pixel_threshold,
+          production.maximum_depth,production.adaptation,0U,
+          {.maximum_operations_per_transaction=4096U}};
+      const auto source_logical_hash=address_hash(
+          production.mesh.logical_cut().owners);
+      const auto source_conforming_hash=address_hash(
+          production.mesh.conforming_volume().addresses());
+      MeshUpdateWorker production_worker;
+      const auto stationary_submit_start=Clock::now();
+      static_cast<void>(production_worker.submit(
+          production.mesh,production_parameters));
+      const double stationary_submit_milliseconds=
+          milliseconds_since(stationary_submit_start);
+      auto stationary=production_worker.wait_for_completed(
+          std::chrono::seconds(10));
+      if(!stationary||!stationary->converged){
+        write_error(errors,"production shared snapshot did not converge",
+                    "production-shared-snapshot");
+        return 1;
+      }
+      const bool stationary_shared=
+          stationary->mesh.shares_storage_with(production.mesh);
+      const double stationary_copy_milliseconds=
+          stationary->cumulative_snapshot_copy_milliseconds;
+      const double stationary_handoff_milliseconds=
+          stationary->cumulative_worker_handoff_milliseconds;
+      stationary.reset();
+
+      auto moved_parameters=production_parameters;
+      point_camera_at(moved_parameters.camera,{0.5,0.5,10.0},
+                      production.sphere.centre);
+      const auto moved_submit_start=Clock::now();
+      static_cast<void>(production_worker.submit(
+          production.mesh,moved_parameters));
+      const double moved_submit_milliseconds=
+          milliseconds_since(moved_submit_start);
+      auto moved=production_worker.wait_for_completed(std::chrono::seconds(10));
+      if(!moved||!moved->converged){
+        write_error(errors,"production moved shared snapshot did not converge",
+                    "production-shared-snapshot");
+        return 1;
+      }
+      const bool moved_detached=
+          !moved->mesh.shares_storage_with(production.mesh);
+      const bool source_unchanged=
+          address_hash(production.mesh.logical_cut().owners)==source_logical_hash&&
+          address_hash(production.mesh.conforming_volume().addresses())==
+              source_conforming_hash;
+      const bool moved_valid=moved->mesh.has_positive_active_volumes()&&
+          moved->mesh.has_conforming_active_faces();
+      const double maximum_submit_milliseconds=std::max(
+          stationary_submit_milliseconds,moved_submit_milliseconds);
+      output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
+            "\"production-shared-snapshot\",\"resident_storage_bytes\":"
+            <<production.mesh.resident_storage_bytes()
+            <<",\"snapshot_copy_bytes\":"
+            <<production.mesh.snapshot_copy_bytes()
+            <<",\"stationary_submit_ms\":"
+            <<stationary_submit_milliseconds
+            <<",\"moved_submit_ms\":"<<moved_submit_milliseconds
+            <<",\"maximum_submit_ms\":"<<maximum_submit_milliseconds
+            <<",\"snapshot_copy_ms\":"<<stationary_copy_milliseconds
+            <<",\"worker_handoff_ms\":"<<stationary_handoff_milliseconds
+            <<",\"moved_worker_ms\":"
+            <<moved->cumulative_duration_milliseconds
+            <<",\"stationary_shared_storage\":"
+            <<(stationary_shared?"true":"false")
+            <<",\"moved_private_storage\":"
+            <<(moved_detached?"true":"false")
+            <<",\"source_unchanged\":"
+            <<(source_unchanged?"true":"false")
+            <<",\"valid\":"<<(moved_valid?"true":"false")<<"}\n";
+      if(maximum_submit_milliseconds>=2.0||!stationary_shared||
+         !moved_detached||!source_unchanged||!moved_valid){
+        write_error(errors,"production shared snapshot violated ownership target",
+                    "production-shared-snapshot");
         return 1;
       }
       continue;

@@ -73,3 +73,10 @@
   resumed slices copied 3.33 MB in 0.084 ms while handoff took 0.001 ms; the
   production terrain benchmark shows copies remain material for stationary
   and other low-work updates but not heavy adaptation or scene preparation.
+- [x] Gate 1 immutable shared mesh snapshots: moved every packed hierarchy and
+  active-state array behind one reference-counted immutable snapshot block.
+  Value copies and rollback checkpoints now share the block; mutating
+  transactions detach privately on the worker. A 44.4 MB production terrain
+  mesh submits a 136-byte handle in 0.001 ms, stationary work retains shared
+  storage, moved-camera work detaches without changing source hashes, and five
+  progressive slices copy only 680 bytes while remaining conforming.

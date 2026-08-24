@@ -304,7 +304,7 @@ complete-revision latency while preserving the same final hashes.
 - [x] Add a configurable low-yield cutoff based on committed useful edits per
   pass and per millisecond; never use it to skip required conformity closure.
 - [x] Measure snapshot copy and worker handoff cost separately.
-- [ ] Remove the measured render-thread full-mesh copy through immutable
+- [x] Remove the measured render-thread full-mesh copy through immutable
   shared resident storage while keeping worker mutation private.
 
 Exit condition: a large camera jump yields multiple valid, improving revisions;
@@ -469,10 +469,50 @@ not the dominant cost during heavy adaptation or surface rebuilding, but it is
 the dominant measured cost for a stationary request and remains several
 milliseconds for low-work camera updates. Because the initial copy currently
 runs on the render thread, its 5.6-14.8 ms production range exceeds the 2 ms
-render-thread blocking target even when its end-to-end fraction is small. The
-next ownership leaf must therefore share an immutable published snapshot or
-move only compact mutable state while preserving the complete-revision
-boundary; locking and queue handoff do not need redesign.
+render-thread blocking target even when its end-to-end fraction is small. That
+measurement required shared immutable publication snapshots while preserving
+the complete-revision boundary; locking and queue handoff did not need
+redesign.
+
+#### Immutable shared mesh snapshots
+
+`TetMesh` now stores the packed per-layer hierarchy, flat active cut, derived
+green ranges, incidence tables, and retained scratch in one reference-counted
+snapshot block. A value copy shares that block and copies only the 136-byte
+`TetMesh` handle and diagnostics. Every public mutating transaction detaches
+the block once before writing; unchanged published snapshots therefore remain
+immutable, rollback snapshots are constant-time, and worker results cannot
+mutate the render-thread mesh. The internal layout remains one flat record
+array per hierarchy layer with no per-tetrahedron ownership or allocation.
+
+The production worker benchmark exercises both ownership branches. A
+stationary request finishes while sharing the source storage. A distant-camera
+request privately detaches, coarsens, remains positive-volume and conforming,
+and leaves both source hashes unchanged:
+
+| Resident storage | Snapshot handle | Stationary submit | Moved submit | Maximum submit | Moved worker | Result |
+|---:|---:|---:|---:|---:|---:|---|
+| 44,441,258 bytes | 136 bytes | 0.001 ms | 0.001 ms | 0.001 ms | 157.891 ms | shared no-op, private mutation, valid |
+
+Five resumed worker slices now copy 680 bytes of handles in effectively
+0.000 ms and spend 0.001 ms in handoff, down from 3,325,668 copied bytes and
+0.084 ms before shared ownership. More importantly, production render-thread
+submission is far below the 2 ms target instead of copying 5.6-14.8 ms of
+resident data.
+
+The same-session production camera-path rerun also benefits from constant-time
+transaction rollback snapshots. It preserves all established final hashes:
+
+| Path | Snapshot bytes | Snapshot copy (ms) | Adaptation (ms) | Publication (ms) |
+|---|---:|---:|---:|---:|
+| stationary | 544 | 0.000 | 3.204 | 3.204 |
+| slow orbit | 1,088 | 0.000 | 145.086 | 735.830 |
+| rapid orbit | 1,088 | 0.001 | 951.371 | 2,491.823 |
+| near to far | 816 | 0.000 | 2,340.334 | 3,711.831 |
+| far to near | 816 | 0.000 | 1,989.666 | 2,925.181 |
+| teleport | 816 | 0.000 | 678.328 | 1,732.080 |
+| reversal | 952 | 0.000 | 121.874 | 612.622 |
+| repeated pose | 1,088 | 0.000 | 20.624 | 136.992 |
 
 #### Progressive viewer publication
 

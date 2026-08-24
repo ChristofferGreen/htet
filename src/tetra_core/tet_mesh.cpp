@@ -96,10 +96,10 @@ unsigned int tet_refinement_type(TetId id) {
 
 TetMesh TetMesh::make_unit_cube(SubdivisionMethod method) {
   TetMesh mesh;
-  mesh.subdivision_method_ = method;
-  mesh.layers_.resize(1);
+  mesh.storage_->subdivision_method_ = method;
+  mesh.storage_->layers_.resize(1);
   for (int z = 0; z <= 1; ++z) for (int y = 0; y <= 1; ++y) for (int x = 0; x <= 1; ++x) {
-    mesh.vertices_.push_back({static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)});
+    mesh.storage_->vertices_.push_back({static_cast<double>(x), static_cast<double>(y), static_cast<double>(z)});
   }
 
   std::vector<std::array<VertexId, 4>> roots;
@@ -117,8 +117,8 @@ TetMesh TetMesh::make_unit_cube(SubdivisionMethod method) {
     // same surface-intersecting descendants as cyclic Maubach bisection.  A
     // centre-star seed gives the experiment an independent initial complex:
     // two tetrahedra connect each triangulated cube face to the cube centre.
-    const VertexId centre = static_cast<VertexId>(mesh.vertices_.size());
-    mesh.vertices_.push_back({0.5, 0.5, 0.5});
+    const VertexId centre = static_cast<VertexId>(mesh.storage_->vertices_.size());
+    mesh.storage_->vertices_.push_back({0.5, 0.5, 0.5});
     roots = {
         {{0, 2, 3, centre}}, {{0, 3, 1, centre}},
         {{4, 5, 7, centre}}, {{4, 7, 6, centre}},
@@ -136,15 +136,15 @@ TetMesh TetMesh::make_unit_cube(SubdivisionMethod method) {
         {{0, 1, 5, 4}}, {{2, 6, 7, 3}},
         {{0, 4, 6, 2}}, {{1, 3, 7, 5}},
     }};
-    const VertexId cube_centre = static_cast<VertexId>(mesh.vertices_.size());
-    mesh.vertices_.push_back({0.5, 0.5, 0.5});
+    const VertexId cube_centre = static_cast<VertexId>(mesh.storage_->vertices_.size());
+    mesh.storage_->vertices_.push_back({0.5, 0.5, 0.5});
     roots.reserve(24);
     for (std::size_t face_index = 0; face_index < faces.size(); ++face_index) {
       const auto& face = faces[face_index];
       Vec3 centre{};
-      for (const VertexId vertex : face) centre = centre + mesh.vertices_[vertex];
-      const VertexId face_centre = static_cast<VertexId>(mesh.vertices_.size());
-      mesh.vertices_.push_back(centre / 4.0);
+      for (const VertexId vertex : face) centre = centre + mesh.storage_->vertices_[vertex];
+      const VertexId face_centre = static_cast<VertexId>(mesh.storage_->vertices_.size());
+      mesh.storage_->vertices_.push_back(centre / 4.0);
       for (std::size_t edge = 0; edge < face.size(); ++edge) {
         const VertexId first = face[edge];
         const VertexId second = face[(edge + 1) % face.size()];
@@ -160,37 +160,37 @@ TetMesh TetMesh::make_unit_cube(SubdivisionMethod method) {
     throw std::invalid_argument("unknown subdivision method");
   }
 
-  mesh.layers_[0].tetrahedra.reserve(roots.size());
-  mesh.active_leaves_.reserve(roots.size());
-  mesh.logical_red_owners_.reserve(roots.size());
-  mesh.root_orientations_.reserve(roots.size());
+  mesh.storage_->layers_[0].tetrahedra.reserve(roots.size());
+  mesh.storage_->active_leaves_.reserve(roots.size());
+  mesh.storage_->logical_red_owners_.reserve(roots.size());
+  mesh.storage_->root_orientations_.reserve(roots.size());
   for (std::size_t root = 0; root < roots.size(); ++root) {
     if (root >= (std::size_t{1} << (64U - tet_root_shift)))
       throw std::logic_error("too many roots for the packed tetrahedron address");
     const TetId address = make_tet_id(static_cast<std::uint8_t>(root), 1);
-    mesh.layers_[0].tetrahedra.push_back({roots[root], address});
-    mesh.active_leaves_.push_back(address);
-    mesh.logical_red_owners_.push_back(address);
-    mesh.logical_midpoint_masks_.push_back(0U);
-    mesh.logical_stencil_choices_.push_back(0U);
-    const Vec3& a = mesh.vertices_[roots[root][0]];
-    const Vec3& b = mesh.vertices_[roots[root][1]];
-    const Vec3& c = mesh.vertices_[roots[root][2]];
-    const Vec3& d = mesh.vertices_[roots[root][3]];
-    mesh.root_orientations_.push_back(determinant(b - a, c - a, d - a) < 0.0 ? -1.0 : 1.0);
+    mesh.storage_->layers_[0].tetrahedra.push_back({roots[root], address});
+    mesh.storage_->active_leaves_.push_back(address);
+    mesh.storage_->logical_red_owners_.push_back(address);
+    mesh.storage_->logical_midpoint_masks_.push_back(0U);
+    mesh.storage_->logical_stencil_choices_.push_back(0U);
+    const Vec3& a = mesh.storage_->vertices_[roots[root][0]];
+    const Vec3& b = mesh.storage_->vertices_[roots[root][1]];
+    const Vec3& c = mesh.storage_->vertices_[roots[root][2]];
+    const Vec3& d = mesh.storage_->vertices_[roots[root][3]];
+    mesh.storage_->root_orientations_.push_back(determinant(b - a, c - a, d - a) < 0.0 ? -1.0 : 1.0);
   }
-  mesh.layers_[0].split_words.resize((roots.size() + 63) / 64);
-  mesh.logical_derived_hashes_.assign(roots.size(),0U);
-  mesh.logical_derived_offsets_.assign(roots.size()+1U,0U);
-  mesh.last_dirty_logical_owners_=mesh.logical_red_owners_;
-  mesh.layers_[0].pinned_words.resize((roots.size()+63)/64);
-  mesh.layers_[0].pinned_descendant_words.resize((roots.size()+63)/64);
+  mesh.storage_->layers_[0].split_words.resize((roots.size() + 63) / 64);
+  mesh.storage_->logical_derived_hashes_.assign(roots.size(),0U);
+  mesh.storage_->logical_derived_offsets_.assign(roots.size()+1U,0U);
+  mesh.storage_->last_dirty_logical_owners_=mesh.storage_->logical_red_owners_;
+  mesh.storage_->layers_[0].pinned_words.resize((roots.size()+63)/64);
+  mesh.storage_->layers_[0].pinned_descendant_words.resize((roots.size()+63)/64);
   mesh.rebuild_layer_index(0);
-  mesh.reserve_active_edges(mesh.active_leaves_.size() * 6);
-  mesh.active_edge_nodes_.reserve(mesh.active_leaves_.size() * 6);
-  for (const TetId address : mesh.active_leaves_) mesh.insert_active_edges(address);
-  mesh.reserve_active_faces(mesh.active_leaves_.size()*4U);
-  for(const TetId address:mesh.active_leaves_)mesh.insert_active_faces(address);
+  mesh.reserve_active_edges(mesh.storage_->active_leaves_.size() * 6);
+  mesh.storage_->active_edge_nodes_.reserve(mesh.storage_->active_leaves_.size() * 6);
+  for (const TetId address : mesh.storage_->active_leaves_) mesh.insert_active_edges(address);
+  mesh.reserve_active_faces(mesh.storage_->active_leaves_.size()*4U);
+  for(const TetId address:mesh.storage_->active_leaves_)mesh.insert_active_faces(address);
   return mesh;
 }
 
@@ -198,7 +198,7 @@ const Tetrahedron& TetMesh::tetrahedron(TetId address) const {
   const unsigned int depth = tet_depth(address);
   const auto index = record_index(address);
   if (!index) throw std::out_of_range("tetrahedron address is not resident");
-  return layers_[depth].tetrahedra[*index];
+  return storage_->layers_[depth].tetrahedra[*index];
 }
 
 ConformingCellRef ConformingVolumeView::cell(std::size_t index) const {
@@ -226,13 +226,13 @@ bool ConformingVolumeView::current() const noexcept {
 
 LogicalCutSnapshot TetMesh::logical_cut() const {
   LogicalCutSnapshot result;
-  result.hierarchy_revision=revision_;
-  if(subdivision_method_==SubdivisionMethod::bcc_red_green){
-    result.owners=logical_red_owners_;
+  result.hierarchy_revision=storage_->revision_;
+  if(storage_->subdivision_method_==SubdivisionMethod::bcc_red_green){
+    result.owners=storage_->logical_red_owners_;
     return result;
   }
-  result.owners.reserve(active_leaves_.size());
-  for(const TetId address:active_leaves_){
+  result.owners.reserve(storage_->active_leaves_.size());
+  for(const TetId address:storage_->active_leaves_){
     const auto& record=tetrahedron(address);
     result.owners.push_back(record.transition_parent==invalid_tet
                                 ?address:record.transition_parent);
@@ -245,8 +245,8 @@ LogicalCutSnapshot TetMesh::logical_cut() const {
 
 std::optional<std::size_t> TetMesh::record_index(TetId address) const {
   const unsigned int depth = tet_depth(address);
-  if (depth >= layers_.size()) return std::nullopt;
-  const auto& layer = layers_[depth];
+  if (depth >= storage_->layers_.size()) return std::nullopt;
+  const auto& layer = storage_->layers_[depth];
   if (layer.address_slots.empty()) return std::nullopt;
   const std::size_t mask = layer.address_slots.size() - 1;
   std::size_t slot = static_cast<std::size_t>(mix64(address)) & mask;
@@ -264,14 +264,14 @@ unsigned int TetMesh::refinement_depth(TetId address) const {
 }
 
 bool TetMesh::is_split(unsigned int depth, std::size_t index) const {
-  return (layers_[depth].split_words[index / 64] & (std::uint64_t{1} << (index % 64))) != 0;
+  return (storage_->layers_[depth].split_words[index / 64] & (std::uint64_t{1} << (index % 64))) != 0;
 }
 
 bool TetMesh::logical_owner_pinned(TetId address) const {
   const auto index=record_index(address);
   if(!index)return false;
   const auto depth=tet_depth(address);
-  const auto& words=layers_[depth].pinned_words;
+  const auto& words=storage_->layers_[depth].pinned_words;
   return *index/64U<words.size()&&
       (words[*index/64U]&(std::uint64_t{1}<<(*index%64U)))!=0U;
 }
@@ -280,17 +280,17 @@ bool TetMesh::has_pinned_descendant(TetId address) const {
   const auto index=record_index(address);
   if(!index)return false;
   const auto depth=tet_depth(address);
-  const auto& words=layers_[depth].pinned_descendant_words;
+  const auto& words=storage_->layers_[depth].pinned_descendant_words;
   return *index/64U<words.size()&&
       (words[*index/64U]&(std::uint64_t{1}<<(*index%64U)))!=0U;
 }
 
 void TetMesh::rebuild_pinned_descendant_summaries(){
-  for(auto& layer:layers_){
+  for(auto& layer:storage_->layers_){
     layer.pinned_descendant_words.assign((layer.tetrahedra.size()+63U)/64U,0U);
   }
-  for(std::size_t depth=0;depth<layers_.size();++depth){
-    const auto& layer=layers_[depth];
+  for(std::size_t depth=0;depth<storage_->layers_.size();++depth){
+    const auto& layer=storage_->layers_[depth];
     for(std::size_t index=0;index<layer.tetrahedra.size();++index){
       if(layer.tetrahedra[index].transition_parent!=invalid_tet||
          index/64U>=layer.pinned_words.size()||
@@ -300,7 +300,7 @@ void TetMesh::rebuild_pinned_descendant_summaries(){
       while(true){
         const auto ancestor_index=record_index(ancestor);
         if(ancestor_index){
-          auto& words=layers_[tet_depth(ancestor)].pinned_descendant_words;
+          auto& words=storage_->layers_[tet_depth(ancestor)].pinned_descendant_words;
           words[*ancestor_index/64U]|=std::uint64_t{1}<<(*ancestor_index%64U);
         }
         if(tet_depth(ancestor)<3U)break;
@@ -313,20 +313,23 @@ void TetMesh::rebuild_pinned_descendant_summaries(){
 bool TetMesh::set_logical_owner_pinned(TetId address,bool pinned){
   const auto index=record_index(address);
   if(!index||tetrahedron(address).transition_parent!=invalid_tet)return false;
-  auto& words=layers_[tet_depth(address)].pinned_words;
-  words.resize((layers_[tet_depth(address)].tetrahedra.size()+63U)/64U,0U);
   const auto bit=std::uint64_t{1}<<(*index%64U);
-  const bool current=(words[*index/64U]&bit)!=0U;
+  const auto& current_words=storage_->layers_[tet_depth(address)].pinned_words;
+  const bool current=*index/64U<current_words.size()&&
+      (current_words[*index/64U]&bit)!=0U;
   if(current==pinned)return true;
+  detach_storage();
+  auto& words=storage_->layers_[tet_depth(address)].pinned_words;
+  words.resize((storage_->layers_[tet_depth(address)].tetrahedra.size()+63U)/64U,0U);
   if(pinned)words[*index/64U]|=bit;else words[*index/64U]&=~bit;
   rebuild_pinned_descendant_summaries();
-  ++pinned_revision_;
-  ++revision_;
+  ++storage_->pinned_revision_;
+  ++storage_->revision_;
   return true;
 }
 
 void TetMesh::rebuild_layer_index(unsigned int depth) {
-  auto& layer = layers_[depth];
+  auto& layer = storage_->layers_[depth];
   std::size_t capacity = 1;
   while (capacity < layer.tetrahedra.size() * 2) capacity <<= 1U;
   layer.address_slots.assign(capacity, 0);
@@ -342,12 +345,12 @@ void TetMesh::mark_split(TetId address) {
   const unsigned int depth = tet_depth(address);
   const auto index = record_index(address);
   if (!index) throw std::logic_error("cannot split a nonresident tetrahedron");
-  layers_[depth].split_words[*index / 64] |= std::uint64_t{1} << (*index % 64);
+  storage_->layers_[depth].split_words[*index / 64] |= std::uint64_t{1} << (*index % 64);
 }
 
 void TetMesh::merge_layer(unsigned int depth, std::vector<Tetrahedron>& additions) {
   if (additions.empty()) return;
-  auto& layer = layers_[depth];
+  auto& layer = storage_->layers_[depth];
   std::sort(additions.begin(), additions.end(), [](const Tetrahedron& a, const Tetrahedron& b) { return a.address < b.address; });
   // A camera returning to an earlier branch should only reactivate its packed
   // records. Filter those before allocating/copying a layer array.
@@ -396,53 +399,53 @@ void TetMesh::merge_layer(unsigned int depth, std::vector<Tetrahedron>& addition
   layer.split_words = std::move(split_words);
   layer.pinned_words=std::move(pinned_words);
   rebuild_layer_index(depth);
-  if(pinned_revision_!=0U)rebuild_pinned_descendant_summaries();
+  if(storage_->pinned_revision_!=0U)rebuild_pinned_descendant_summaries();
   else layer.pinned_descendant_words.assign((layer.tetrahedra.size()+63U)/64U,0U);
-  if(adds_resident_red)++resident_revision_;
+  if(adds_resident_red)++storage_->resident_revision_;
 }
 
 std::size_t TetMesh::tetrahedron_count() const noexcept {
   std::size_t total = 0;
-  for (const auto& layer : layers_) total += layer.tetrahedra.size();
+  for (const auto& layer : storage_->layers_) total += layer.tetrahedra.size();
   return total;
 }
 
 BccScratchCapacities TetMesh::bcc_scratch_capacities() const noexcept {
-  return {active_edge_nodes_.capacity(),
-          closure_edge_keys_.capacity(),closure_edge_nodes_.capacity(),
-          closure_face_slots_.capacity(),closure_face_nodes_.capacity(),
-          closure_dirty_edge_slots_.capacity(),closure_dirty_owners_.capacity(),
-          closure_face_repairs_.capacity(),
-          closure_selected_words_.capacity()+closure_queued_edge_words_.capacity()+
-              closure_queued_owner_words_.capacity()+closure_queued_face_words_.capacity()};
+  return {storage_->active_edge_nodes_.capacity(),
+          storage_->closure_edge_keys_.capacity(),storage_->closure_edge_nodes_.capacity(),
+          storage_->closure_face_slots_.capacity(),storage_->closure_face_nodes_.capacity(),
+          storage_->closure_dirty_edge_slots_.capacity(),storage_->closure_dirty_owners_.capacity(),
+          storage_->closure_face_repairs_.capacity(),
+          storage_->closure_selected_words_.capacity()+storage_->closure_queued_edge_words_.capacity()+
+              storage_->closure_queued_owner_words_.capacity()+storage_->closure_queued_face_words_.capacity()};
 }
 
 double TetMesh::signed_volume(TetId tet) const {
   const auto& indices = tetrahedron(tet).vertices;
-  const Vec3& a = vertices_.at(indices[0]);
-  const Vec3& b = vertices_.at(indices[1]);
-  const Vec3& c = vertices_.at(indices[2]);
-  const Vec3& d = vertices_.at(indices[3]);
+  const Vec3& a = storage_->vertices_.at(indices[0]);
+  const Vec3& b = storage_->vertices_.at(indices[1]);
+  const Vec3& c = storage_->vertices_.at(indices[2]);
+  const Vec3& d = storage_->vertices_.at(indices[3]);
   const double signed_determinant = determinant(b - a, c - a, d - a);
-  if (subdivision_method_ == SubdivisionMethod::longest_edge_bisection || uses_octasection(subdivision_method_))
+  if (storage_->subdivision_method_ == SubdivisionMethod::longest_edge_bisection || uses_octasection(storage_->subdivision_method_))
     return std::abs(signed_determinant) / 6.0;
-  return hierarchy_orientation(tet, root_orientations_.at(tet_root(tet))) * signed_determinant / 6.0;
+  return hierarchy_orientation(tet, storage_->root_orientations_.at(tet_root(tet))) * signed_determinant / 6.0;
 }
 
 double TetMesh::total_active_volume() const {
   double volume = 0.0;
-  for (const TetId id : active_leaves_) volume += signed_volume(id);
+  for (const TetId id : storage_->active_leaves_) volume += signed_volume(id);
   return volume;
 }
 
 bool TetMesh::has_positive_active_volumes() const {
-  return std::ranges::all_of(active_leaves_, [this](TetId id) { return signed_volume(id) > 0.0; });
+  return std::ranges::all_of(storage_->active_leaves_, [this](TetId id) { return signed_volume(id) > 0.0; });
 }
 
 bool TetMesh::has_symmetric_active_adjacency() const {
   std::vector<std::array<VertexId, 3>> faces;
-  faces.reserve(active_leaves_.size() * 4);
-  for (const TetId id : active_leaves_)
+  faces.reserve(storage_->active_leaves_.size() * 4);
+  for (const TetId id : storage_->active_leaves_)
     for (std::size_t face = 0; face < 4; ++face)
       faces.push_back(face_vertices(tetrahedron(id), face));
   std::sort(faces.begin(), faces.end());
@@ -454,7 +457,7 @@ bool TetMesh::has_symmetric_active_adjacency() const {
       bool domain_boundary=false;
       for(std::size_t axis=0;axis<3;++axis){
         const auto coordinate=[&](VertexId vertex){
-          const auto& point=vertices_[vertex];
+          const auto& point=storage_->vertices_[vertex];
           return axis==0?point.x:(axis==1?point.y:point.z);
         };
         const double value=coordinate(faces[begin][0]);
@@ -475,8 +478,8 @@ bool TetMesh::has_conforming_active_faces() const {
   // exposes an edge that has already been bisected elsewhere.  Index active
   // edges once instead of comparing every active face with every vertex.
   std::vector<Edge> active_edges;
-  active_edges.reserve(active_leaves_.size() * 6);
-  for (const TetId id : active_leaves_) {
+  active_edges.reserve(storage_->active_leaves_.size() * 6);
+  for (const TetId id : storage_->active_leaves_) {
     const auto& vertices = tetrahedron(id).vertices;
     for (std::size_t first = 0; first < 4; ++first)
       for (std::size_t second = first + 1; second < 4; ++second)
@@ -484,7 +487,7 @@ bool TetMesh::has_conforming_active_faces() const {
   }
   std::sort(active_edges.begin(), active_edges.end());
   active_edges.erase(std::unique(active_edges.begin(), active_edges.end()), active_edges.end());
-  for (const EdgeKey key : active_midpoint_keys_) {
+  for (const EdgeKey key : storage_->active_midpoint_keys_) {
     if (key == 0) continue;
     const Edge bisected_edge{static_cast<VertexId>(key >> 32U), static_cast<VertexId>(key)};
     if (std::binary_search(active_edges.begin(), active_edges.end(), bisected_edge)) return false;
@@ -493,12 +496,12 @@ bool TetMesh::has_conforming_active_faces() const {
 }
 
 TetMesh::Edge TetMesh::bisection_edge(const Tetrahedron& tet) const {
-  if (subdivision_method_ == SubdivisionMethod::longest_edge_bisection) {
+  if (storage_->subdivision_method_ == SubdivisionMethod::longest_edge_bisection) {
     Edge longest{};
     double longest_squared = -1.0;
     for (std::size_t first = 0; first < 4; ++first) {
       for (std::size_t second = first + 1; second < 4; ++second) {
-        const Vec3 delta = vertices_[tet.vertices[second]] - vertices_[tet.vertices[first]];
+        const Vec3 delta = storage_->vertices_[tet.vertices[second]] - storage_->vertices_[tet.vertices[first]];
         const double length_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
         const Edge candidate = canonical_edge(tet.vertices[first], tet.vertices[second]);
         // Equal-length choices are common after the first split of a regular
@@ -529,69 +532,69 @@ TetMesh::DiamondId TetMesh::diamond_id(const Tetrahedron& tet) const {
 }
 
 void TetMesh::reserve_midpoints(std::size_t count) {
-  std::size_t capacity = midpoint_keys_.empty() ? 16 : midpoint_keys_.size();
+  std::size_t capacity = storage_->midpoint_keys_.empty() ? 16 : storage_->midpoint_keys_.size();
   while (capacity * 7 < count * 10) capacity <<= 1U;
-  if (capacity == midpoint_keys_.size()) return;
+  if (capacity == storage_->midpoint_keys_.size()) return;
   std::vector<EdgeKey> keys(capacity);
   std::vector<VertexId> values(capacity);
   const std::size_t mask = capacity - 1;
-  for (std::size_t old = 0; old < midpoint_keys_.size(); ++old) {
-    if (midpoint_keys_[old] == 0) continue;
-    std::size_t slot = static_cast<std::size_t>(mix64(midpoint_keys_[old])) & mask;
+  for (std::size_t old = 0; old < storage_->midpoint_keys_.size(); ++old) {
+    if (storage_->midpoint_keys_[old] == 0) continue;
+    std::size_t slot = static_cast<std::size_t>(mix64(storage_->midpoint_keys_[old])) & mask;
     while (keys[slot] != 0) slot = (slot + 1) & mask;
-    keys[slot] = midpoint_keys_[old];
-    values[slot] = midpoint_values_[old];
+    keys[slot] = storage_->midpoint_keys_[old];
+    values[slot] = storage_->midpoint_values_[old];
   }
-  midpoint_keys_ = std::move(keys);
-  midpoint_values_ = std::move(values);
+  storage_->midpoint_keys_ = std::move(keys);
+  storage_->midpoint_values_ = std::move(values);
 }
 
 void TetMesh::reserve_active_midpoints(std::size_t count) {
-  std::size_t capacity=active_midpoint_keys_.empty()?16:active_midpoint_keys_.size();
+  std::size_t capacity=storage_->active_midpoint_keys_.empty()?16:storage_->active_midpoint_keys_.size();
   while(capacity*7<count*10)capacity<<=1U;
-  if(capacity==active_midpoint_keys_.size())return;
+  if(capacity==storage_->active_midpoint_keys_.size())return;
   std::vector<EdgeKey> keys(capacity);
   const std::size_t mask=capacity-1;
-  for(const EdgeKey key:active_midpoint_keys_){
+  for(const EdgeKey key:storage_->active_midpoint_keys_){
     if(key==0)continue;
     std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
     while(keys[slot]!=0)slot=(slot+1)&mask;
     keys[slot]=key;
   }
-  active_midpoint_keys_=std::move(keys);
+  storage_->active_midpoint_keys_=std::move(keys);
 }
 
 void TetMesh::reserve_logical_edges(std::size_t count){
-  std::size_t capacity=logical_edge_keys_.empty()?16U:logical_edge_keys_.size();
+  std::size_t capacity=storage_->logical_edge_keys_.empty()?16U:storage_->logical_edge_keys_.size();
   while(capacity*7U<count*10U)capacity<<=1U;
-  if(capacity==logical_edge_keys_.size())return;
+  if(capacity==storage_->logical_edge_keys_.size())return;
   std::vector<EdgeKey> keys(capacity);
   std::vector<std::uint32_t> counts(capacity);
   const std::size_t mask=capacity-1U;
-  for(std::size_t old=0;old<logical_edge_keys_.size();++old){
-    if(logical_edge_keys_[old]==0U)continue;
-    std::size_t slot=static_cast<std::size_t>(mix64(logical_edge_keys_[old]))&mask;
+  for(std::size_t old=0;old<storage_->logical_edge_keys_.size();++old){
+    if(storage_->logical_edge_keys_[old]==0U)continue;
+    std::size_t slot=static_cast<std::size_t>(mix64(storage_->logical_edge_keys_[old]))&mask;
     while(keys[slot]!=0U)slot=(slot+1U)&mask;
-    keys[slot]=logical_edge_keys_[old];
-    counts[slot]=logical_edge_reference_counts_[old];
+    keys[slot]=storage_->logical_edge_keys_[old];
+    counts[slot]=storage_->logical_edge_reference_counts_[old];
   }
-  logical_edge_keys_=std::move(keys);
-  logical_edge_reference_counts_=std::move(counts);
+  storage_->logical_edge_keys_=std::move(keys);
+  storage_->logical_edge_reference_counts_=std::move(counts);
 }
 
 void TetMesh::change_logical_edge_reference(Edge edge,int delta){
-  reserve_logical_edges(logical_edge_key_count_+1U);
+  reserve_logical_edges(storage_->logical_edge_key_count_+1U);
   const EdgeKey key=pack_edge(edge);
-  const std::size_t mask=logical_edge_keys_.size()-1U;
+  const std::size_t mask=storage_->logical_edge_keys_.size()-1U;
   std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
-  while(logical_edge_keys_[slot]!=0U&&logical_edge_keys_[slot]!=key)
+  while(storage_->logical_edge_keys_[slot]!=0U&&storage_->logical_edge_keys_[slot]!=key)
     slot=(slot+1U)&mask;
-  if(logical_edge_keys_[slot]==0U){
+  if(storage_->logical_edge_keys_[slot]==0U){
     if(delta<0)throw std::logic_error("logical edge reference underflow");
-    logical_edge_keys_[slot]=key;
-    ++logical_edge_key_count_;
+    storage_->logical_edge_keys_[slot]=key;
+    ++storage_->logical_edge_key_count_;
   }
-  auto& count=logical_edge_reference_counts_[slot];
+  auto& count=storage_->logical_edge_reference_counts_[slot];
   if(delta<0&&count<static_cast<std::uint32_t>(-delta))
     throw std::logic_error("logical edge reference underflow");
   count=static_cast<std::uint32_t>(static_cast<std::int64_t>(count)+delta);
@@ -599,209 +602,211 @@ void TetMesh::change_logical_edge_reference(Edge edge,int delta){
 
 std::uint32_t TetMesh::logical_edge_reference_count(
     VertexId first,VertexId second) const{
-  if(first==second||logical_edge_keys_.empty())return 0U;
+  if(first==second||storage_->logical_edge_keys_.empty())return 0U;
   const EdgeKey key=pack_edge(canonical_edge(first,second));
-  const std::size_t mask=logical_edge_keys_.size()-1U;
+  const std::size_t mask=storage_->logical_edge_keys_.size()-1U;
   std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
-  while(logical_edge_keys_[slot]!=0U&&logical_edge_keys_[slot]!=key)
+  while(storage_->logical_edge_keys_[slot]!=0U&&storage_->logical_edge_keys_[slot]!=key)
     slot=(slot+1U)&mask;
-  return logical_edge_keys_[slot]==key?logical_edge_reference_counts_[slot]:0U;
+  return storage_->logical_edge_keys_[slot]==key?storage_->logical_edge_reference_counts_[slot]:0U;
 }
 
 void TetMesh::activate_midpoint(EdgeKey key) {
-  reserve_active_midpoints(active_midpoint_count_+1);
-  const std::size_t mask=active_midpoint_keys_.size()-1;
+  reserve_active_midpoints(storage_->active_midpoint_count_+1);
+  const std::size_t mask=storage_->active_midpoint_keys_.size()-1;
   std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
-  while(active_midpoint_keys_[slot]!=0&&active_midpoint_keys_[slot]!=key)
+  while(storage_->active_midpoint_keys_[slot]!=0&&storage_->active_midpoint_keys_[slot]!=key)
     slot=(slot+1)&mask;
-  if(active_midpoint_keys_[slot]==0){
-    active_midpoint_keys_[slot]=key;
-    ++active_midpoint_count_;
+  if(storage_->active_midpoint_keys_[slot]==0){
+    storage_->active_midpoint_keys_[slot]=key;
+    ++storage_->active_midpoint_count_;
   }
 }
 
 VertexId TetMesh::midpoint(Edge edge) {
-  reserve_midpoints(midpoint_count_ + 1);
+  reserve_midpoints(storage_->midpoint_count_ + 1);
   const EdgeKey key = pack_edge(edge);
-  const std::size_t mask = midpoint_keys_.size() - 1;
+  const std::size_t mask = storage_->midpoint_keys_.size() - 1;
   std::size_t slot = static_cast<std::size_t>(mix64(key)) & mask;
-  while (midpoint_keys_[slot] != 0 && midpoint_keys_[slot] != key) slot = (slot + 1) & mask;
-  if (midpoint_keys_[slot] == 0) {
-    midpoint_keys_[slot] = key;
-    midpoint_values_[slot] = static_cast<VertexId>(vertices_.size());
-    vertices_.push_back((vertices_[edge[0]] + vertices_[edge[1]]) / 2.0);
-    ++midpoint_count_;
+  while (storage_->midpoint_keys_[slot] != 0 && storage_->midpoint_keys_[slot] != key) slot = (slot + 1) & mask;
+  if (storage_->midpoint_keys_[slot] == 0) {
+    storage_->midpoint_keys_[slot] = key;
+    storage_->midpoint_values_[slot] = static_cast<VertexId>(storage_->vertices_.size());
+    storage_->vertices_.push_back((storage_->vertices_[edge[0]] + storage_->vertices_[edge[1]]) / 2.0);
+    ++storage_->midpoint_count_;
   }
   activate_midpoint(key);
-  return midpoint_values_[slot];
+  return storage_->midpoint_values_[slot];
 }
 
 std::optional<VertexId> TetMesh::existing_midpoint(Edge edge) const {
   const EdgeKey key=pack_edge(edge);
-  if(active_midpoint_keys_.empty())return std::nullopt;
-  const std::size_t active_mask=active_midpoint_keys_.size()-1;
+  if(storage_->active_midpoint_keys_.empty())return std::nullopt;
+  const std::size_t active_mask=storage_->active_midpoint_keys_.size()-1;
   std::size_t active_slot=static_cast<std::size_t>(mix64(key))&active_mask;
-  while(active_midpoint_keys_[active_slot]!=0&&active_midpoint_keys_[active_slot]!=key)
+  while(storage_->active_midpoint_keys_[active_slot]!=0&&storage_->active_midpoint_keys_[active_slot]!=key)
     active_slot=(active_slot+1)&active_mask;
-  if(active_midpoint_keys_[active_slot]==0)return std::nullopt;
-  const std::size_t mask=midpoint_keys_.size()-1;
+  if(storage_->active_midpoint_keys_[active_slot]==0)return std::nullopt;
+  const std::size_t mask=storage_->midpoint_keys_.size()-1;
   std::size_t slot=static_cast<std::size_t>(mix64(key))&mask;
-  while(midpoint_keys_[slot]!=0&&midpoint_keys_[slot]!=key)slot=(slot+1)&mask;
-  if(midpoint_keys_[slot]==0)return std::nullopt;
-  return midpoint_values_[slot];
+  while(storage_->midpoint_keys_[slot]!=0&&storage_->midpoint_keys_[slot]!=key)slot=(slot+1)&mask;
+  if(storage_->midpoint_keys_[slot]==0)return std::nullopt;
+  return storage_->midpoint_values_[slot];
 }
 
 void TetMesh::reset_active_hierarchy() {
-  for(auto& layer:layers_)
+  detach_storage();
+  for(auto& layer:storage_->layers_)
     std::fill(layer.split_words.begin(),layer.split_words.end(),std::uint64_t{});
-  active_leaves_.clear();
-  active_leaves_.reserve(layers_.front().tetrahedra.size());
-  for(const auto& root:layers_.front().tetrahedra)
-    if(root.transition_parent==invalid_tet)active_leaves_.push_back(root.address);
-  if(subdivision_method_==SubdivisionMethod::bcc_red_green){
-    logical_red_owners_=active_leaves_;
-    logical_red_scratch_.clear();
-    logical_midpoint_masks_.assign(logical_red_owners_.size(),0U);
-    logical_stencil_choices_.assign(logical_red_owners_.size(),0U);
-    logical_derived_hashes_.assign(logical_red_owners_.size(),0U);
-    logical_derived_offsets_.assign(logical_red_owners_.size()+1U,0U);
-    logical_derived_addresses_.clear();
-    last_dirty_logical_owners_=logical_red_owners_;
+  storage_->active_leaves_.clear();
+  storage_->active_leaves_.reserve(storage_->layers_.front().tetrahedra.size());
+  for(const auto& root:storage_->layers_.front().tetrahedra)
+    if(root.transition_parent==invalid_tet)storage_->active_leaves_.push_back(root.address);
+  if(storage_->subdivision_method_==SubdivisionMethod::bcc_red_green){
+    storage_->logical_red_owners_=storage_->active_leaves_;
+    storage_->logical_red_scratch_.clear();
+    storage_->logical_midpoint_masks_.assign(storage_->logical_red_owners_.size(),0U);
+    storage_->logical_stencil_choices_.assign(storage_->logical_red_owners_.size(),0U);
+    storage_->logical_derived_hashes_.assign(storage_->logical_red_owners_.size(),0U);
+    storage_->logical_derived_offsets_.assign(storage_->logical_red_owners_.size()+1U,0U);
+    storage_->logical_derived_addresses_.clear();
+    storage_->last_dirty_logical_owners_=storage_->logical_red_owners_;
   }
 
-  std::fill(active_midpoint_keys_.begin(),active_midpoint_keys_.end(),EdgeKey{});
-  active_midpoint_count_=0;
-  std::fill(logical_edge_reference_counts_.begin(),
-            logical_edge_reference_counts_.end(),0U);
+  std::fill(storage_->active_midpoint_keys_.begin(),storage_->active_midpoint_keys_.end(),EdgeKey{});
+  storage_->active_midpoint_count_=0;
+  std::fill(storage_->logical_edge_reference_counts_.begin(),
+            storage_->logical_edge_reference_counts_.end(),0U);
   clear_active_edges();
   clear_active_faces();
-  reserve_active_edges(active_leaves_.size()*6);
-  active_edge_nodes_.reserve(active_leaves_.size()*6);
-  for(const TetId root:active_leaves_)insert_active_edges(root);
-  reserve_active_faces(active_leaves_.size()*4U);
-  for(const TetId root:active_leaves_)insert_active_faces(root);
-  ++revision_;
+  reserve_active_edges(storage_->active_leaves_.size()*6);
+  storage_->active_edge_nodes_.reserve(storage_->active_leaves_.size()*6);
+  for(const TetId root:storage_->active_leaves_)insert_active_edges(root);
+  reserve_active_faces(storage_->active_leaves_.size()*4U);
+  for(const TetId root:storage_->active_leaves_)insert_active_faces(root);
+  ++storage_->revision_;
 }
 
 bool TetMesh::set_transition_strategy(BccTransitionStrategy strategy){
-  if(subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
-  if(transition_strategy_==strategy)return true;
-  transition_strategy_=strategy;
+  if(storage_->subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
+  if(storage_->transition_strategy_==strategy)return true;
+  detach_storage();
+  storage_->transition_strategy_=strategy;
   reset_active_hierarchy();
   return true;
 }
 
 void TetMesh::clear_active_edges(){
-  std::fill(active_edge_keys_.begin(),active_edge_keys_.end(),EdgeKey{});
-  std::fill(active_edge_heads_.begin(),active_edge_heads_.end(),
+  std::fill(storage_->active_edge_keys_.begin(),storage_->active_edge_keys_.end(),EdgeKey{});
+  std::fill(storage_->active_edge_heads_.begin(),storage_->active_edge_heads_.end(),
             std::numeric_limits<std::uint32_t>::max());
-  active_edge_nodes_.clear();
-  active_edge_free_nodes_.clear();
-  active_edge_key_count_=0;
+  storage_->active_edge_nodes_.clear();
+  storage_->active_edge_free_nodes_.clear();
+  storage_->active_edge_key_count_=0;
 }
 
 void TetMesh::reserve_active_edges(std::size_t unique_edge_count) {
-  std::size_t capacity = active_edge_keys_.empty() ? 16 : active_edge_keys_.size();
+  std::size_t capacity = storage_->active_edge_keys_.empty() ? 16 : storage_->active_edge_keys_.size();
   while (capacity * 7 < unique_edge_count * 10) capacity <<= 1U;
-  if (capacity == active_edge_keys_.size()) return;
+  if (capacity == storage_->active_edge_keys_.size()) return;
   constexpr std::uint32_t none = std::numeric_limits<std::uint32_t>::max();
   std::vector<EdgeKey> keys(capacity);
   std::vector<std::uint32_t> heads(capacity, none);
   const std::size_t mask = capacity - 1;
-  active_edge_key_count_ = 0;
-  for (std::size_t node_index = 0; node_index < active_edge_nodes_.size(); ++node_index) {
-    auto& node = active_edge_nodes_[node_index];
+  storage_->active_edge_key_count_ = 0;
+  for (std::size_t node_index = 0; node_index < storage_->active_edge_nodes_.size(); ++node_index) {
+    auto& node = storage_->active_edge_nodes_[node_index];
     if (node.key == 0) continue;
     std::size_t slot = static_cast<std::size_t>(mix64(node.key)) & mask;
     while (keys[slot] != 0 && keys[slot] != node.key) slot = (slot + 1) & mask;
     if (keys[slot] == 0) {
       keys[slot] = node.key;
-      ++active_edge_key_count_;
+      ++storage_->active_edge_key_count_;
     }
     node.next = heads[slot];
     heads[slot] = static_cast<std::uint32_t>(node_index);
   }
-  active_edge_keys_ = std::move(keys);
-  active_edge_heads_ = std::move(heads);
+  storage_->active_edge_keys_ = std::move(keys);
+  storage_->active_edge_heads_ = std::move(heads);
 }
 
 void TetMesh::insert_active_edges(TetId address) {
-  reserve_active_edges(active_edge_key_count_ + 6);
+  reserve_active_edges(storage_->active_edge_key_count_ + 6);
   const auto& vertices = tetrahedron(address).vertices;
-  const std::size_t mask = active_edge_keys_.size() - 1;
+  const std::size_t mask = storage_->active_edge_keys_.size() - 1;
   for (std::size_t first = 0; first < 4; ++first) {
     for (std::size_t second = first + 1; second < 4; ++second) {
       const EdgeKey key = pack_edge(canonical_edge(vertices[first], vertices[second]));
       std::size_t slot = static_cast<std::size_t>(mix64(key)) & mask;
-      while (active_edge_keys_[slot] != 0 && active_edge_keys_[slot] != key) slot = (slot + 1) & mask;
-      if (active_edge_keys_[slot] == 0) {
-        active_edge_keys_[slot] = key;
-        ++active_edge_key_count_;
+      while (storage_->active_edge_keys_[slot] != 0 && storage_->active_edge_keys_[slot] != key) slot = (slot + 1) & mask;
+      if (storage_->active_edge_keys_[slot] == 0) {
+        storage_->active_edge_keys_[slot] = key;
+        ++storage_->active_edge_key_count_;
       }
       std::uint32_t node{};
-      if(active_edge_free_nodes_.empty()){
-        node=static_cast<std::uint32_t>(active_edge_nodes_.size());
-        active_edge_nodes_.push_back({key,address,active_edge_heads_[slot]});
+      if(storage_->active_edge_free_nodes_.empty()){
+        node=static_cast<std::uint32_t>(storage_->active_edge_nodes_.size());
+        storage_->active_edge_nodes_.push_back({key,address,storage_->active_edge_heads_[slot]});
       }else{
-        node=active_edge_free_nodes_.back();
-        active_edge_free_nodes_.pop_back();
-        active_edge_nodes_[node]={key,address,active_edge_heads_[slot]};
+        node=storage_->active_edge_free_nodes_.back();
+        storage_->active_edge_free_nodes_.pop_back();
+        storage_->active_edge_nodes_[node]={key,address,storage_->active_edge_heads_[slot]};
       }
-      active_edge_heads_[slot]=node;
+      storage_->active_edge_heads_[slot]=node;
     }
   }
 }
 
 std::uint32_t TetMesh::active_edge_head(EdgeKey key) const {
   constexpr std::uint32_t none = std::numeric_limits<std::uint32_t>::max();
-  if (active_edge_keys_.empty()) return none;
-  const std::size_t mask = active_edge_keys_.size() - 1;
+  if (storage_->active_edge_keys_.empty()) return none;
+  const std::size_t mask = storage_->active_edge_keys_.size() - 1;
   std::size_t slot = static_cast<std::size_t>(mix64(key)) & mask;
-  while (active_edge_keys_[slot] != 0 && active_edge_keys_[slot] != key) slot = (slot + 1) & mask;
-  return active_edge_keys_[slot] == key ? active_edge_heads_[slot] : none;
+  while (storage_->active_edge_keys_[slot] != 0 && storage_->active_edge_keys_[slot] != key) slot = (slot + 1) & mask;
+  return storage_->active_edge_keys_[slot] == key ? storage_->active_edge_heads_[slot] : none;
 }
 
 void TetMesh::remove_active_edges(TetId address) {
   constexpr std::uint32_t none = std::numeric_limits<std::uint32_t>::max();
   const auto vertices = tetrahedron(address).vertices;
-  const std::size_t mask = active_edge_keys_.size() - 1;
+  const std::size_t mask = storage_->active_edge_keys_.size() - 1;
   for (std::size_t first = 0; first < 4; ++first) {
     for (std::size_t second = first + 1; second < 4; ++second) {
       const EdgeKey key = pack_edge(canonical_edge(vertices[first], vertices[second]));
       std::size_t slot = static_cast<std::size_t>(mix64(key)) & mask;
-      while (active_edge_keys_[slot] != key) {
-        if (active_edge_keys_[slot] == 0) throw std::logic_error("active edge is missing from the persistent index");
+      while (storage_->active_edge_keys_[slot] != key) {
+        if (storage_->active_edge_keys_[slot] == 0) throw std::logic_error("active edge is missing from the persistent index");
         slot = (slot + 1) & mask;
       }
       std::uint32_t previous = none;
-      std::uint32_t node = active_edge_heads_[slot];
-      while (node != none && active_edge_nodes_[node].tetrahedron != address) {
+      std::uint32_t node = storage_->active_edge_heads_[slot];
+      while (node != none && storage_->active_edge_nodes_[node].tetrahedron != address) {
         previous = node;
-        node = active_edge_nodes_[node].next;
+        node = storage_->active_edge_nodes_[node].next;
       }
       if (node == none) throw std::logic_error("active tetrahedron is missing from its edge incidence list");
-      if (previous == none) active_edge_heads_[slot] = active_edge_nodes_[node].next;
-      else active_edge_nodes_[previous].next = active_edge_nodes_[node].next;
-      active_edge_nodes_[node].key = 0;
-      active_edge_nodes_[node].tetrahedron = invalid_tet;
-      active_edge_nodes_[node].next = none;
-      active_edge_free_nodes_.push_back(node);
+      if (previous == none) storage_->active_edge_heads_[slot] = storage_->active_edge_nodes_[node].next;
+      else storage_->active_edge_nodes_[previous].next = storage_->active_edge_nodes_[node].next;
+      storage_->active_edge_nodes_[node].key = 0;
+      storage_->active_edge_nodes_[node].tetrahedron = invalid_tet;
+      storage_->active_edge_nodes_[node].next = none;
+      storage_->active_edge_free_nodes_.push_back(node);
     }
   }
 }
 
 void TetMesh::reserve_active_faces(std::size_t face_count){
-  std::size_t capacity=closure_face_slots_.empty()?16U:closure_face_slots_.size();
+  std::size_t capacity=storage_->closure_face_slots_.empty()?16U:storage_->closure_face_slots_.size();
   while(capacity*7U<face_count*10U)capacity<<=1U;
-  if(capacity==closure_face_slots_.size())return;
+  if(capacity==storage_->closure_face_slots_.size())return;
   constexpr std::uint32_t none=std::numeric_limits<std::uint32_t>::max();
   std::vector<ClosureFaceSlot> slots(capacity);
   std::vector<std::uint32_t> occupied;
-  occupied.reserve(closure_occupied_face_slots_.size());
+  occupied.reserve(storage_->closure_occupied_face_slots_.size());
   const std::size_t mask=capacity-1U;
   std::size_t key_count{};
-  for(const auto old_slot:closure_occupied_face_slots_){
-    const auto& old=closure_face_slots_[old_slot];
+  for(const auto old_slot:storage_->closure_occupied_face_slots_){
+    const auto& old=storage_->closure_face_slots_[old_slot];
     if(old.owner_count==0U)continue;
     const std::uint64_t first_pair=(static_cast<std::uint64_t>(old.key[0])<<32U)|old.key[1];
     std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(old.key[2]))&mask;
@@ -811,36 +816,36 @@ void TetMesh::reserve_active_faces(std::size_t face_count){
     occupied.push_back(static_cast<std::uint32_t>(slot));
     ++key_count;
     for(auto node=old.head;node!=none;){
-      const auto next=closure_face_nodes_[node].next;
-      closure_face_nodes_[node].next=slots[slot].head;
+      const auto next=storage_->closure_face_nodes_[node].next;
+      storage_->closure_face_nodes_[node].next=slots[slot].head;
       slots[slot].head=node;
       ++slots[slot].owner_count;
       node=next;
     }
   }
-  closure_face_slots_=std::move(slots);
-  closure_occupied_face_slots_=std::move(occupied);
-  closure_face_key_count_=key_count;
+  storage_->closure_face_slots_=std::move(slots);
+  storage_->closure_occupied_face_slots_=std::move(occupied);
+  storage_->closure_face_key_count_=key_count;
 }
 
 void TetMesh::clear_active_faces(){
-  std::fill(closure_face_slots_.begin(),closure_face_slots_.end(),ClosureFaceSlot{});
-  closure_face_nodes_.clear();
-  closure_face_free_nodes_.clear();
-  closure_occupied_face_slots_.clear();
-  closure_face_repairs_.clear();
-  closure_face_key_count_=0U;
+  std::fill(storage_->closure_face_slots_.begin(),storage_->closure_face_slots_.end(),ClosureFaceSlot{});
+  storage_->closure_face_nodes_.clear();
+  storage_->closure_face_free_nodes_.clear();
+  storage_->closure_occupied_face_slots_.clear();
+  storage_->closure_face_repairs_.clear();
+  storage_->closure_face_key_count_=0U;
 }
 
 void TetMesh::insert_active_faces(TetId address){
-  reserve_active_faces(closure_face_key_count_+4U);
+  reserve_active_faces(storage_->closure_face_key_count_+4U);
   constexpr std::uint32_t none=std::numeric_limits<std::uint32_t>::max();
   constexpr std::array<std::array<std::size_t,3>,4> faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
   const auto& record=tetrahedron(address);
   const TetId logical=record.transition_parent==invalid_tet
       ?address:record.transition_parent;
-  const std::size_t mask=closure_face_slots_.size()-1U;
+  const std::size_t mask=storage_->closure_face_slots_.size()-1U;
   for(const auto face:faces){
     std::array<VertexId,3> key{{record.vertices[face[0]],record.vertices[face[1]],
                                 record.vertices[face[2]]}};
@@ -848,25 +853,25 @@ void TetMesh::insert_active_faces(TetId address){
     const std::uint64_t first_pair=(static_cast<std::uint64_t>(key[0])<<32U)|key[1];
     std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(key[2]))&mask;
     const auto empty=[&](std::size_t candidate){
-      const auto& value=closure_face_slots_[candidate].key;
+      const auto& value=storage_->closure_face_slots_[candidate].key;
       return value[0]==0U&&value[1]==0U&&value[2]==0U;
     };
-    while(!empty(slot)&&closure_face_slots_[slot].key!=key)slot=(slot+1U)&mask;
-    auto& owner=closure_face_slots_[slot];
+    while(!empty(slot)&&storage_->closure_face_slots_[slot].key!=key)slot=(slot+1U)&mask;
+    auto& owner=storage_->closure_face_slots_[slot];
     if(empty(slot)){
       owner.key=key;
       owner.head=none;
-      closure_occupied_face_slots_.push_back(static_cast<std::uint32_t>(slot));
-      ++closure_face_key_count_;
+      storage_->closure_occupied_face_slots_.push_back(static_cast<std::uint32_t>(slot));
+      ++storage_->closure_face_key_count_;
     }
     std::uint32_t node{};
-    if(closure_face_free_nodes_.empty()){
-      node=static_cast<std::uint32_t>(closure_face_nodes_.size());
-      closure_face_nodes_.push_back({address,logical,owner.head});
+    if(storage_->closure_face_free_nodes_.empty()){
+      node=static_cast<std::uint32_t>(storage_->closure_face_nodes_.size());
+      storage_->closure_face_nodes_.push_back({address,logical,owner.head});
     }else{
-      node=closure_face_free_nodes_.back();
-      closure_face_free_nodes_.pop_back();
-      closure_face_nodes_[node]={address,logical,owner.head};
+      node=storage_->closure_face_free_nodes_.back();
+      storage_->closure_face_free_nodes_.pop_back();
+      storage_->closure_face_nodes_[node]={address,logical,owner.head};
     }
     owner.head=node;
     ++owner.owner_count;
@@ -878,35 +883,35 @@ void TetMesh::remove_active_faces(TetId address){
   constexpr std::array<std::array<std::size_t,3>,4> faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
   const auto vertices=tetrahedron(address).vertices;
-  const std::size_t mask=closure_face_slots_.size()-1U;
+  const std::size_t mask=storage_->closure_face_slots_.size()-1U;
   for(const auto face:faces){
     std::array<VertexId,3> key{{vertices[face[0]],vertices[face[1]],vertices[face[2]]}};
     std::sort(key.begin(),key.end());
     const std::uint64_t first_pair=(static_cast<std::uint64_t>(key[0])<<32U)|key[1];
     std::size_t slot=static_cast<std::size_t>(mix64(first_pair)^mix64(key[2]))&mask;
-    while(closure_face_slots_[slot].key!=key){
-      const auto& value=closure_face_slots_[slot].key;
+    while(storage_->closure_face_slots_[slot].key!=key){
+      const auto& value=storage_->closure_face_slots_[slot].key;
       if(value[0]==0U&&value[1]==0U&&value[2]==0U)
         throw std::logic_error("active face is missing from the persistent index");
       slot=(slot+1U)&mask;
     }
-    auto& owner=closure_face_slots_[slot];
+    auto& owner=storage_->closure_face_slots_[slot];
     std::uint32_t previous=none,node=owner.head;
-    while(node!=none&&closure_face_nodes_[node].active!=address){
-      previous=node;node=closure_face_nodes_[node].next;
+    while(node!=none&&storage_->closure_face_nodes_[node].active!=address){
+      previous=node;node=storage_->closure_face_nodes_[node].next;
     }
     if(node==none)throw std::logic_error("active tetrahedron is missing from face incidence");
-    if(previous==none)owner.head=closure_face_nodes_[node].next;
-    else closure_face_nodes_[previous].next=closure_face_nodes_[node].next;
+    if(previous==none)owner.head=storage_->closure_face_nodes_[node].next;
+    else storage_->closure_face_nodes_[previous].next=storage_->closure_face_nodes_[node].next;
     --owner.owner_count;
-    closure_face_nodes_[node]={invalid_tet,invalid_tet,none};
-    closure_face_free_nodes_.push_back(node);
+    storage_->closure_face_nodes_[node]={invalid_tet,invalid_tet,none};
+    storage_->closure_face_free_nodes_.push_back(node);
   }
 }
 
 std::array<std::array<VertexId, 4>, 2> TetMesh::bisect_vertices(
     const Tetrahedron& tet, Edge edge, VertexId middle) const {
-  if (subdivision_method_ == SubdivisionMethod::longest_edge_bisection) {
+  if (storage_->subdivision_method_ == SubdivisionMethod::longest_edge_bisection) {
     auto left = tet.vertices;
     auto right = tet.vertices;
     *std::ranges::find(left, edge[0]) = middle;
@@ -929,16 +934,24 @@ bool TetMesh::is_active(TetId address) const {
   return index && !is_split(tet_depth(address), *index);
 }
 
+void TetMesh::detach_storage() {
+  if(storage_.use_count()!=1)storage_=std::make_shared<Storage>(*storage_);
+}
+
 std::size_t TetMesh::snapshot_copy_bytes() const noexcept {
-  std::size_t bytes=sizeof(TetMesh);
+  return sizeof(TetMesh);
+}
+
+std::size_t TetMesh::resident_storage_bytes() const noexcept {
+  std::size_t bytes=sizeof(Storage);
   const auto add=[&bytes](const auto& values){
     using Value=typename std::decay_t<decltype(values)>::value_type;
     bytes+=values.size()*sizeof(Value);
   };
-  add(vertices_);
-  add(root_orientations_);
-  bytes+=layers_.size()*sizeof(TetLayer);
-  for(const auto& layer:layers_){
+  add(storage_->vertices_);
+  add(storage_->root_orientations_);
+  bytes+=storage_->layers_.size()*sizeof(TetLayer);
+  for(const auto& layer:storage_->layers_){
     add(layer.tetrahedra);
     add(layer.tetrahedra_scratch);
     add(layer.split_words);
@@ -948,50 +961,50 @@ std::size_t TetMesh::snapshot_copy_bytes() const noexcept {
     add(layer.split_words_scratch);
     add(layer.pinned_words_scratch);
   }
-  add(active_leaves_);
-  add(logical_red_owners_);
-  add(logical_red_scratch_);
-  add(logical_midpoint_masks_);
-  add(logical_stencil_choices_);
-  add(logical_midpoint_mask_scratch_);
-  add(logical_stencil_choice_scratch_);
-  add(logical_derived_hashes_);
-  add(logical_derived_hash_scratch_);
-  add(logical_derived_offsets_);
-  add(logical_derived_offset_scratch_);
-  add(logical_derived_addresses_);
-  add(logical_derived_address_scratch_);
-  add(last_dirty_logical_owners_);
-  add(midpoint_keys_);
-  add(midpoint_values_);
-  add(active_midpoint_keys_);
-  add(logical_edge_keys_);
-  add(logical_edge_reference_counts_);
-  add(active_edge_keys_);
-  add(active_edge_heads_);
-  add(active_edge_nodes_);
-  add(active_edge_free_nodes_);
-  add(closure_edge_keys_);
-  add(closure_edge_heads_);
-  add(closure_edge_nodes_);
-  add(closure_dirty_edge_slots_);
-  add(closure_dirty_owners_);
-  add(closure_selected_words_);
-  add(closure_queued_edge_words_);
-  add(closure_queued_owner_words_);
-  add(closure_face_slots_);
-  add(closure_face_nodes_);
-  add(closure_face_free_nodes_);
-  add(closure_occupied_face_slots_);
-  add(closure_face_repairs_);
-  add(closure_queued_face_words_);
+  add(storage_->active_leaves_);
+  add(storage_->logical_red_owners_);
+  add(storage_->logical_red_scratch_);
+  add(storage_->logical_midpoint_masks_);
+  add(storage_->logical_stencil_choices_);
+  add(storage_->logical_midpoint_mask_scratch_);
+  add(storage_->logical_stencil_choice_scratch_);
+  add(storage_->logical_derived_hashes_);
+  add(storage_->logical_derived_hash_scratch_);
+  add(storage_->logical_derived_offsets_);
+  add(storage_->logical_derived_offset_scratch_);
+  add(storage_->logical_derived_addresses_);
+  add(storage_->logical_derived_address_scratch_);
+  add(storage_->last_dirty_logical_owners_);
+  add(storage_->midpoint_keys_);
+  add(storage_->midpoint_values_);
+  add(storage_->active_midpoint_keys_);
+  add(storage_->logical_edge_keys_);
+  add(storage_->logical_edge_reference_counts_);
+  add(storage_->active_edge_keys_);
+  add(storage_->active_edge_heads_);
+  add(storage_->active_edge_nodes_);
+  add(storage_->active_edge_free_nodes_);
+  add(storage_->closure_edge_keys_);
+  add(storage_->closure_edge_heads_);
+  add(storage_->closure_edge_nodes_);
+  add(storage_->closure_dirty_edge_slots_);
+  add(storage_->closure_dirty_owners_);
+  add(storage_->closure_selected_words_);
+  add(storage_->closure_queued_edge_words_);
+  add(storage_->closure_queued_owner_words_);
+  add(storage_->closure_face_slots_);
+  add(storage_->closure_face_nodes_);
+  add(storage_->closure_face_free_nodes_);
+  add(storage_->closure_occupied_face_slots_);
+  add(storage_->closure_face_repairs_);
+  add(storage_->closure_queued_face_words_);
   return bytes;
 }
 
 bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
-  if(subdivision_method_==SubdivisionMethod::bcc_red_green){
+  if(storage_->subdivision_method_==SubdivisionMethod::bcc_red_green){
     last_bcc_update_metrics_={};
-    const std::uint64_t base_revision=revision_;
+    const std::uint64_t base_revision=storage_->revision_;
     const auto logical=logical_cut();
     unsigned int closure_depth_limit=0;
     for(const TetId id:requests){
@@ -1006,16 +1019,18 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
     }
     if(closure_depth_limit==0)return true;
     TetMesh previous=*this;
+    detach_storage();
     try{
       refine_selected_bcc_red_green(requests,closure_depth_limit);
-      revision_=base_revision+1U;
+      storage_->revision_=base_revision+1U;
       return true;
     }catch(const BccClosureDepthExceeded&){
       *this=std::move(previous);
       return false;
     }
   }
-  if (uses_octasection(subdivision_method_)) {
+  if (uses_octasection(storage_->subdivision_method_)) {
+    detach_storage();
     refine_selected_octasection(requests);
     return true;
   }
@@ -1024,6 +1039,8 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
   for (const TetId id : requests) if (is_active(id)) pending.push_back(id);
   std::sort(pending.begin(), pending.end());
   pending.erase(std::unique(pending.begin(), pending.end()), pending.end());
+  if(pending.empty())return true;
+  detach_storage();
 
   struct Diamond {
     Edge edge{};
@@ -1043,11 +1060,11 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
 
     constexpr std::uint32_t no_incident = std::numeric_limits<std::uint32_t>::max();
     std::size_t position_capacity = 1;
-    while (position_capacity < active_leaves_.size() * 2) position_capacity <<= 1U;
+    while (position_capacity < storage_->active_leaves_.size() * 2) position_capacity <<= 1U;
     std::vector<std::uint32_t> active_positions(position_capacity);
     const std::size_t position_mask = position_capacity - 1;
-    for (std::size_t active_index = 0; active_index < active_leaves_.size(); ++active_index) {
-      std::size_t slot = static_cast<std::size_t>(mix64(active_leaves_[active_index])) & position_mask;
+    for (std::size_t active_index = 0; active_index < storage_->active_leaves_.size(); ++active_index) {
+      std::size_t slot = static_cast<std::size_t>(mix64(storage_->active_leaves_[active_index])) & position_mask;
       while (active_positions[slot] != 0) slot = (slot + 1) & position_mask;
       active_positions[slot] = static_cast<std::uint32_t>(active_index + 1);
     }
@@ -1055,7 +1072,7 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
       std::size_t slot = static_cast<std::size_t>(mix64(address)) & position_mask;
       while (active_positions[slot] != 0) {
         const std::size_t index = static_cast<std::size_t>(active_positions[slot] - 1U);
-        if (active_leaves_[index] == address) return index;
+        if (storage_->active_leaves_[index] == address) return index;
         slot = (slot + 1) & position_mask;
       }
       throw std::logic_error("persistent edge index references an inactive tetrahedron");
@@ -1063,7 +1080,7 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
 
     std::vector<Diamond> diamonds;
     std::vector<std::size_t> diamond_incidents;
-    std::vector<bool> selected_parents(active_leaves_.size(), false);
+    std::vector<bool> selected_parents(storage_->active_leaves_.size(), false);
     std::size_t selected_parent_count = 0;
     std::vector<TetId> deferred;
     std::vector<TetId> prerequisites;
@@ -1073,9 +1090,9 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
       const std::uint32_t head = active_edge_head(edge_key);
       if (head == no_incident) throw std::logic_error("active tetrahedron edge is missing from incidence index");
       bool compatible = true;
-      for (std::uint32_t node = head; node != no_incident; node = active_edge_nodes_[node].next) {
-        const TetId neighbor = active_edge_nodes_[node].tetrahedron;
-        if (subdivision_method_ != SubdivisionMethod::longest_edge_bisection &&
+      for (std::uint32_t node = head; node != no_incident; node = storage_->active_edge_nodes_[node].next) {
+        const TetId neighbor = storage_->active_edge_nodes_[node].tetrahedron;
+        if (storage_->subdivision_method_ != SubdivisionMethod::longest_edge_bisection &&
             diamond_id(tetrahedron(neighbor)) != edge_key) {
           prerequisites.push_back(neighbor);
           compatible = false;
@@ -1086,15 +1103,15 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
         continue;
       }
       bool overlaps = false;
-      for (std::uint32_t node = head; node != no_incident; node = active_edge_nodes_[node].next)
-        overlaps |= selected_parents[active_position(active_edge_nodes_[node].tetrahedron)];
+      for (std::uint32_t node = head; node != no_incident; node = storage_->active_edge_nodes_[node].next)
+        overlaps |= selected_parents[active_position(storage_->active_edge_nodes_[node].tetrahedron)];
       if (overlaps) {
         deferred.push_back(id);
         continue;
       }
       const std::size_t begin_offset = diamond_incidents.size();
-      for (std::uint32_t node = head; node != no_incident; node = active_edge_nodes_[node].next) {
-        const std::size_t active_index = active_position(active_edge_nodes_[node].tetrahedron);
+      for (std::uint32_t node = head; node != no_incident; node = storage_->active_edge_nodes_[node].next) {
+        const std::size_t active_index = active_position(storage_->active_edge_nodes_[node].tetrahedron);
         diamond_incidents.push_back(active_index);
         selected_parents[active_index] = true;
         ++selected_parent_count;
@@ -1104,13 +1121,13 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
     if (diamonds.empty() && prerequisites.empty()) throw std::logic_error("refinement wave made no progress");
     changed |= !diamonds.empty();
 
-    std::vector<std::vector<Tetrahedron>> additions(layers_.size());
+    std::vector<std::vector<Tetrahedron>> additions(storage_->layers_.size());
     std::vector<TetId> children;
     children.reserve(selected_parent_count * 2);
     for (const Diamond& diamond : diamonds) {
       const VertexId middle = midpoint(diamond.edge);
       for (std::size_t incidence_index = diamond.incidence_begin; incidence_index < diamond.incidence_end; ++incidence_index) {
-        const TetId parent = active_leaves_[diamond_incidents[incidence_index]];
+        const TetId parent = storage_->active_leaves_[diamond_incidents[incidence_index]];
         const auto children_vertices = bisect_vertices(tetrahedron(parent), diamond.edge, middle);
         const unsigned int depth = tet_depth(parent) + 1;
         if (depth >= additions.size()) additions.resize(depth + 1);
@@ -1124,32 +1141,32 @@ bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {
 
     for (std::size_t active_index = 0; active_index < selected_parents.size(); ++active_index) {
       if (!selected_parents[active_index]) continue;
-      remove_active_edges(active_leaves_[active_index]);
-      mark_split(active_leaves_[active_index]);
+      remove_active_edges(storage_->active_leaves_[active_index]);
+      mark_split(storage_->active_leaves_[active_index]);
     }
 
-    if (additions.size() > layers_.size()) layers_.resize(additions.size());
+    if (additions.size() > storage_->layers_.size()) storage_->layers_.resize(additions.size());
     for (std::size_t depth = 0; depth < additions.size(); ++depth) {
       if (additions[depth].empty()) continue;
       merge_layer(static_cast<unsigned int>(depth), additions[depth]);
     }
 
     std::vector<TetId> next_active;
-    next_active.reserve(active_leaves_.size() + children.size() - selected_parent_count);
-    for (std::size_t active_index = 0; active_index < active_leaves_.size(); ++active_index)
-      if (!selected_parents[active_index]) next_active.push_back(active_leaves_[active_index]);
+    next_active.reserve(storage_->active_leaves_.size() + children.size() - selected_parent_count);
+    for (std::size_t active_index = 0; active_index < storage_->active_leaves_.size(); ++active_index)
+      if (!selected_parents[active_index]) next_active.push_back(storage_->active_leaves_[active_index]);
     next_active.insert(next_active.end(), children.begin(), children.end());
     std::sort(next_active.begin(), next_active.end());
-    active_leaves_ = std::move(next_active);
-    reserve_active_edges(active_edge_key_count_ + children.size() * 6);
-    active_edge_nodes_.reserve(active_edge_nodes_.size() + children.size() * 6);
+    storage_->active_leaves_ = std::move(next_active);
+    reserve_active_edges(storage_->active_edge_key_count_ + children.size() * 6);
+    storage_->active_edge_nodes_.reserve(storage_->active_edge_nodes_.size() + children.size() * 6);
     for (const TetId child : children) insert_active_edges(child);
     deferred.insert(deferred.end(), prerequisites.begin(), prerequisites.end());
     std::sort(deferred.begin(), deferred.end());
     deferred.erase(std::unique(deferred.begin(), deferred.end()), deferred.end());
     pending = std::move(deferred);
   }
-  if (changed) ++revision_;
+  if (changed) ++storage_->revision_;
   return true;
 }
 
@@ -1159,12 +1176,12 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
   // Pure octasection has matching refined faces but no coarse/fine transition
   // template. Refine the complete active cut for the Bey and 8T-LE baselines;
   // BCC transition cells are added by its red-green specialization.
-  const auto parents = active_leaves_;
-  std::vector<std::vector<Tetrahedron>> additions(layers_.size());
+  const auto parents = storage_->active_leaves_;
+  std::vector<std::vector<Tetrahedron>> additions(storage_->layers_.size());
   std::vector<TetId> children;
   children.reserve(parents.size()*8);
-  reserve_midpoints(midpoint_count_+parents.size()*6);
-  reserve_active_edges(active_edge_key_count_+parents.size()*24);
+  reserve_midpoints(storage_->midpoint_count_+parents.size()*6);
+  reserve_active_edges(storage_->active_edge_key_count_+parents.size()*24);
 
   constexpr std::array<std::array<std::size_t,2>,6> local_edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
@@ -1173,7 +1190,7 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
   constexpr std::array<std::array<std::size_t,4>,3> equators{{
       {{1,2,4,3}},{{0,2,5,3}},{{0,1,5,4}}}};
   const auto squared_length=[this](VertexId first,VertexId second){
-    const auto delta=vertices_[second]-vertices_[first];
+    const auto delta=storage_->vertices_[second]-storage_->vertices_[first];
     return delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
   };
   for(const TetId parent:parents) remove_active_edges(parent);
@@ -1184,8 +1201,8 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
       mids[edge]=midpoint(canonical_edge(tet.vertices[local_edges[edge][0]],tet.vertices[local_edges[edge][1]]));
 
     std::size_t diagonal=0;
-    if(subdivision_method_==SubdivisionMethod::bey_red_shortest ||
-             subdivision_method_==SubdivisionMethod::bcc_red_green){
+    if(storage_->subdivision_method_==SubdivisionMethod::bey_red_shortest ||
+             storage_->subdivision_method_==SubdivisionMethod::bcc_red_green){
       double best=std::numeric_limits<double>::infinity();
       for(std::size_t candidate=0;candidate<opposite_edge_pairs.size();++candidate){
         const auto pair=opposite_edge_pairs[candidate];
@@ -1205,7 +1222,7 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
       }
     }
     std::array<std::array<VertexId,4>,8> child_vertices{};
-    if(subdivision_method_==SubdivisionMethod::bey_red_fixed){
+    if(storage_->subdivision_method_==SubdivisionMethod::bey_red_fixed){
       // Ong's fixed Kuhn octasection, using the 6-8 diagonal from Endres and
       // Krysl Figure 4.  The four interior sets are reordered into the same
       // orthoscheme frame as the corner children.  This ordering encodes the
@@ -1243,12 +1260,12 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
     }
     mark_split(parent);
   }
-  if(layers_.size()<additions.size())layers_.resize(additions.size());
+  if(storage_->layers_.size()<additions.size())storage_->layers_.resize(additions.size());
   for(std::size_t depth=0;depth<additions.size();++depth)merge_layer(static_cast<unsigned int>(depth),additions[depth]);
   std::sort(children.begin(),children.end());
-  active_leaves_=std::move(children);
-  for(const TetId child:active_leaves_)insert_active_edges(child);
-  ++revision_;
+  storage_->active_leaves_=std::move(children);
+  for(const TetId child:storage_->active_leaves_)insert_active_edges(child);
+  ++storage_->revision_;
 }
 
 void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
@@ -1264,9 +1281,9 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   constexpr std::array<std::array<std::size_t,4>,3> equators{{
       {{1,2,4,3}},{{0,2,5,3}},{{0,1,5,4}}}};
   std::vector<TetId> red_cut;
-  red_cut.reserve(active_leaves_.size());
-  for(std::size_t active_index=0;active_index<active_leaves_.size();++active_index){
-    const TetId id=active_leaves_[active_index];
+  red_cut.reserve(storage_->active_leaves_.size());
+  for(std::size_t active_index=0;active_index<storage_->active_leaves_.size();++active_index){
+    const TetId id=storage_->active_leaves_[active_index];
     const auto& record=tetrahedron(id);
     red_cut.push_back(record.transition_parent==invalid_tet?id:record.transition_parent);
   }
@@ -1286,7 +1303,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   }
   std::sort(selected.begin(),selected.end());
   selected.erase(std::unique(selected.begin(),selected.end()),selected.end());
-  last_bcc_update_metrics_.full_cut_cells_scanned+=active_leaves_.size();
+  last_bcc_update_metrics_.full_cut_cells_scanned+=storage_->active_leaves_.size();
   last_bcc_update_metrics_.cut_scan_ms+=update_milliseconds(cut_scan_start);
   if(selected.empty())return;
   const auto closure_start=UpdateClock::now();
@@ -1299,16 +1316,16 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   constexpr std::array<std::array<std::size_t,3>,4> logical_faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
   std::vector<std::array<TetId,2>> adjacent_parents;
-  adjacent_parents.reserve(active_leaves_.size()*2);
-  if(!closure_occupied_face_slots_.empty()&&!closure_face_nodes_.empty()){
+  adjacent_parents.reserve(storage_->active_leaves_.size()*2);
+  if(!storage_->closure_occupied_face_slots_.empty()&&!storage_->closure_face_nodes_.empty()){
     constexpr std::uint32_t no_face=std::numeric_limits<std::uint32_t>::max();
-    for(const auto slot:closure_occupied_face_slots_){
-      const auto& face=closure_face_slots_[slot];
+    for(const auto slot:storage_->closure_occupied_face_slots_){
+      const auto& face=storage_->closure_face_slots_[slot];
       if(face.owner_count!=2U)continue;
       std::array<TetId,2> pair{{invalid_tet,invalid_tet}};
       std::size_t count{};
-      for(auto node=face.head;node!=no_face;node=closure_face_nodes_[node].next){
-        const TetId logical=closure_face_nodes_[node].logical;
+      for(auto node=face.head;node!=no_face;node=storage_->closure_face_nodes_[node].next){
+        const TetId logical=storage_->closure_face_nodes_[node].logical;
         if(count==0U||pair[0]!=logical)pair[count++]=logical;
         if(count==2U)break;
       }
@@ -1327,12 +1344,12 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       bool occupied{};
     };
     std::size_t face_capacity=16;
-    while(face_capacity<active_leaves_.size()*5)face_capacity<<=1U;
+    while(face_capacity<storage_->active_leaves_.size()*5)face_capacity<<=1U;
     std::vector<LogicalFaceSlot> face_slots(face_capacity);
     const std::size_t face_mask=face_capacity-1;
     std::vector<std::size_t> paired_face_slots;
-    paired_face_slots.reserve(active_leaves_.size()*2);
-    for(const TetId active:active_leaves_){
+    paired_face_slots.reserve(storage_->active_leaves_.size()*2);
+    for(const TetId active:storage_->active_leaves_){
       const auto& record=tetrahedron(active);
       const TetId parent=record.transition_parent==invalid_tet?active:record.transition_parent;
       for(const auto face:logical_faces){
@@ -1382,7 +1399,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
     }
   }
 
-  reserve_midpoints(midpoint_count_+red_cut.size()*6);
+  reserve_midpoints(storage_->midpoint_count_+red_cut.size()*6);
 
   const auto edge_of=[&](const Tetrahedron& tet,std::size_t edge){
     return canonical_edge(tet.vertices[edges[edge][0]],tet.vertices[edges[edge][1]]);
@@ -1406,9 +1423,9 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   constexpr std::uint32_t no_node=std::numeric_limits<std::uint32_t>::max();
   std::size_t red_edge_capacity=16;
   while(red_edge_capacity<red_cut.size()*12U)red_edge_capacity<<=1U;
-  auto& red_edge_keys=closure_edge_keys_;
-  auto& red_edge_heads=closure_edge_heads_;
-  auto& red_edge_nodes=closure_edge_nodes_;
+  auto& red_edge_keys=storage_->closure_edge_keys_;
+  auto& red_edge_heads=storage_->closure_edge_heads_;
+  auto& red_edge_nodes=storage_->closure_edge_nodes_;
   red_edge_keys.assign(red_edge_capacity,EdgeKey{});
   red_edge_heads.assign(red_edge_capacity,no_node);
   red_edge_nodes.clear();
@@ -1427,7 +1444,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       red_edge_heads[slot]=node;
     }
   }
-  auto& selected_words=closure_selected_words_;
+  auto& selected_words=storage_->closure_selected_words_;
   selected_words.assign((red_cut.size()+63U)/64U,0U);
   for(const TetId id:selected){
     const auto found=std::lower_bound(red_cut.begin(),red_cut.end(),id);
@@ -1436,10 +1453,10 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       selected_words[index/64U]|=std::uint64_t{1}<<(index%64U);
     }
   }
-  auto& queued_owner_words=closure_queued_owner_words_;
-  auto& queued_edge_words=closure_queued_edge_words_;
-  auto& dirty_edges=closure_dirty_edge_slots_;
-  auto& dirty_owners=closure_dirty_owners_;
+  auto& queued_owner_words=storage_->closure_queued_owner_words_;
+  auto& queued_edge_words=storage_->closure_queued_edge_words_;
+  auto& dirty_edges=storage_->closure_dirty_edge_slots_;
+  auto& dirty_owners=storage_->closure_dirty_owners_;
   queued_owner_words.assign((red_cut.size()+63U)/64U,0U);
   queued_edge_words.assign((red_edge_capacity+63U)/64U,0U);
   dirty_edges.clear();
@@ -1490,7 +1507,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       for(std::size_t owner=0;owner<red_cut.size();++owner){
         ++last_bcc_update_metrics_.closure_cells_examined;
         if((selected_words[owner/64U]&(std::uint64_t{1}<<(owner%64U)))!=0U)continue;
-        if(transition_strategy_==BccTransitionStrategy::complete_minimal)continue;
+        if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal)continue;
         const auto& tet=tetrahedron(red_cut[owner]);
         const unsigned int mask=midpoint_mask(tet);
         const unsigned int target=allowed_superset(mask);
@@ -1523,7 +1540,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
       queued_owner_words[owner/64U]&=~(std::uint64_t{1}<<(owner%64U));
       ++last_bcc_update_metrics_.closure_cells_examined;
       if((selected_words[owner/64U]&(std::uint64_t{1}<<(owner%64U)))!=0U)continue;
-      if(transition_strategy_==BccTransitionStrategy::complete_minimal)continue;
+      if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal)continue;
       const auto& tet=tetrahedron(red_cut[owner]);
       const unsigned int mask=midpoint_mask(tet);
       const unsigned int target=allowed_superset(mask);
@@ -1547,13 +1564,13 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   last_bcc_update_metrics_.conformity_closure_ms+=update_milliseconds(closure_start);
   const auto transform_start=UpdateClock::now();
 
-  std::vector<std::vector<Tetrahedron>> additions(layers_.size()+3);
+  std::vector<std::vector<Tetrahedron>> additions(storage_->layers_.size()+3);
   std::vector<Tetrahedron> unchanged_red_cut;
   std::vector<Tetrahedron> child_red_cut;
   unchanged_red_cut.reserve(red_cut.size()-selected.size());
   child_red_cut.reserve(selected.size()*8U);
   const auto squared_length=[this](VertexId first,VertexId second){
-    const auto delta=vertices_[second]-vertices_[first];
+    const auto delta=storage_->vertices_[second]-storage_->vertices_[first];
     return delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
   };
   for(const TetId id:red_cut){
@@ -1590,7 +1607,7 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
     }
     mark_split(id);
   }
-  if(layers_.size()<additions.size())layers_.resize(additions.size());
+  if(storage_->layers_.size()<additions.size())storage_->layers_.resize(additions.size());
   for(std::size_t depth=0;depth<additions.size();++depth)merge_layer(static_cast<unsigned int>(depth),additions[depth]);
 
   std::vector<Tetrahedron> next_red_cut;
@@ -1610,20 +1627,20 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
 
 void TetMesh::clear_split_subtree(TetId parent) {
   const unsigned int parent_depth=tet_depth(parent);
-  for(unsigned int depth=parent_depth;depth<layers_.size();++depth){
+  for(unsigned int depth=parent_depth;depth<storage_->layers_.size();++depth){
     const unsigned int shift=depth-parent_depth;
-    for(std::size_t index=0;index<layers_[depth].tetrahedra.size();++index){
-      const auto& record=layers_[depth].tetrahedra[index];
+    for(std::size_t index=0;index<storage_->layers_[depth].tetrahedra.size();++index){
+      const auto& record=storage_->layers_[depth].tetrahedra[index];
       if(record.transition_parent!=invalid_tet||tet_root(record.address)!=tet_root(parent))continue;
       if((tet_path(record.address)>>shift)!=tet_path(parent))continue;
-      layers_[depth].split_words[index/64U]&=~(std::uint64_t{1}<<(index%64U));
+      storage_->layers_[depth].split_words[index/64U]&=~(std::uint64_t{1}<<(index%64U));
     }
   }
 }
 
 void TetMesh::rebuild_active_midpoints(const std::vector<Tetrahedron>& red_cut) {
-  std::fill(active_midpoint_keys_.begin(),active_midpoint_keys_.end(),EdgeKey{});
-  active_midpoint_count_=0;
+  std::fill(storage_->active_midpoint_keys_.begin(),storage_->active_midpoint_keys_.end(),EdgeKey{});
+  storage_->active_midpoint_count_=0;
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   for(const auto& leaf:red_cut){
@@ -1645,20 +1662,21 @@ bool TetMesh::commit_planned_red_refinement(
     const std::vector<TetId>& requests,BccClosureMode closure_mode,
     double hybrid_frontier_ratio) {
   if(requests.empty())return true;
-  if(subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
+  if(storage_->subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
   last_bcc_update_metrics_={};
-  const auto& logical=logical_red_owners_;
+  const auto& logical=storage_->logical_red_owners_;
   unsigned int closure_depth_limit{};
   for(const TetId owner:requests){
     if(!std::binary_search(logical.begin(),logical.end(),owner))return false;
     closure_depth_limit=std::max(closure_depth_limit,tet_depth(owner)+3U);
   }
-  const std::uint64_t base_revision=revision_;
+  const std::uint64_t base_revision=storage_->revision_;
   TetMesh previous=*this;
+  detach_storage();
   try{
     refine_selected_bcc_red_green(
         requests,closure_depth_limit,closure_mode,hybrid_frontier_ratio);
-    revision_=base_revision+1U;
+    storage_->revision_=base_revision+1U;
     return true;
   }catch(const BccClosureDepthExceeded&){
     *this=std::move(previous);
@@ -1670,9 +1688,9 @@ bool TetMesh::can_coarsen_selected_red(
     const std::vector<TetId>& parents,std::vector<TetId>* blocked_parents) const {
   if(blocked_parents)blocked_parents->clear();
   if(parents.empty())return true;
-  if(subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
+  if(storage_->subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
 
-  const auto& logical=logical_red_owners_;
+  const auto& logical=storage_->logical_red_owners_;
   std::vector<TetId> requested=parents;
   std::sort(requested.begin(),requested.end());
   requested.erase(std::unique(requested.begin(),requested.end()),requested.end());
@@ -1749,7 +1767,7 @@ bool TetMesh::can_coarsen_selected_red(
       depth-=3U;
     }
   }
-  if(transition_strategy_==BccTransitionStrategy::crystalline_restricted){
+  if(storage_->transition_strategy_==BccTransitionStrategy::crystalline_restricted){
     bool changed=true;
     bool invalid=false;
     while(changed){
@@ -1792,9 +1810,10 @@ bool TetMesh::can_coarsen_selected_red(
 bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
   if(!can_coarsen_selected_red(parents))return false;
   TetMesh previous=*this;
+  detach_storage();
   last_bcc_update_metrics_={};
   const auto transform_start=UpdateClock::now();
-  const std::uint64_t base_revision=revision_;
+  const std::uint64_t base_revision=storage_->revision_;
 
   const auto logical=logical_cut();
   std::vector<TetId> requested=parents;
@@ -1834,7 +1853,7 @@ bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
           canonical_edge(record.vertices[edge[0]],record.vertices[edge[1]]),-1);
   }
   rebuild_active_midpoints(red_cut);
-  if(transition_strategy_==BccTransitionStrategy::crystalline_restricted){
+  if(storage_->transition_strategy_==BccTransitionStrategy::crystalline_restricted){
     bool changed=true;
     while(changed){
       changed=false;
@@ -1875,44 +1894,44 @@ bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
     *this=std::move(previous);
     return false;
   }
-  revision_=base_revision+1U;
+  storage_->revision_=base_revision+1U;
   return true;
 }
 
 void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
                                           unsigned int closure_depth_limit) {
-  logical_red_scratch_.clear();
-  logical_red_scratch_.reserve(next_red_cut.size());
+  storage_->logical_red_scratch_.clear();
+  storage_->logical_red_scratch_.reserve(next_red_cut.size());
   for(const auto& owner:next_red_cut){
-    if(!logical_red_scratch_.empty()&&logical_red_scratch_.back()>=owner.address)
+    if(!storage_->logical_red_scratch_.empty()&&storage_->logical_red_scratch_.back()>=owner.address)
       throw std::logic_error("BCC logical cut stream is not strictly ordered");
-    logical_red_scratch_.push_back(owner.address);
+    storage_->logical_red_scratch_.push_back(owner.address);
   }
-  logical_red_owners_.swap(logical_red_scratch_);
-  logical_midpoint_masks_.swap(logical_midpoint_mask_scratch_);
-  logical_stencil_choices_.swap(logical_stencil_choice_scratch_);
-  logical_derived_hashes_.swap(logical_derived_hash_scratch_);
-  logical_derived_offsets_.swap(logical_derived_offset_scratch_);
-  logical_derived_addresses_.swap(logical_derived_address_scratch_);
-  logical_midpoint_masks_.assign(next_red_cut.size(),0U);
-  logical_stencil_choices_.assign(next_red_cut.size(),0U);
-  logical_derived_hashes_.assign(next_red_cut.size(),0U);
-  logical_derived_offsets_.assign(next_red_cut.size()+1U,0U);
-  logical_derived_addresses_.clear();
-  logical_derived_addresses_.reserve(logical_derived_address_scratch_.size());
+  storage_->logical_red_owners_.swap(storage_->logical_red_scratch_);
+  storage_->logical_midpoint_masks_.swap(storage_->logical_midpoint_mask_scratch_);
+  storage_->logical_stencil_choices_.swap(storage_->logical_stencil_choice_scratch_);
+  storage_->logical_derived_hashes_.swap(storage_->logical_derived_hash_scratch_);
+  storage_->logical_derived_offsets_.swap(storage_->logical_derived_offset_scratch_);
+  storage_->logical_derived_addresses_.swap(storage_->logical_derived_address_scratch_);
+  storage_->logical_midpoint_masks_.assign(next_red_cut.size(),0U);
+  storage_->logical_stencil_choices_.assign(next_red_cut.size(),0U);
+  storage_->logical_derived_hashes_.assign(next_red_cut.size(),0U);
+  storage_->logical_derived_offsets_.assign(next_red_cut.size()+1U,0U);
+  storage_->logical_derived_addresses_.clear();
+  storage_->logical_derived_addresses_.reserve(storage_->logical_derived_address_scratch_.size());
   constexpr std::size_t no_old_owner=std::numeric_limits<std::size_t>::max();
   std::vector<std::size_t> old_owner_indices(next_red_cut.size(),no_old_owner);
-  std::vector<std::uint8_t> old_owner_mapped(logical_red_scratch_.size(),0U);
+  std::vector<std::uint8_t> old_owner_mapped(storage_->logical_red_scratch_.size(),0U);
   // Transfer aligned owner state with one merge walk. No address hash or
   // per-owner lookup is required, and scratch capacities survive the update.
   std::size_t old_owner=0,new_owner=0;
-  while(old_owner<logical_red_scratch_.size()&&new_owner<logical_red_owners_.size()){
-    if(logical_red_scratch_[old_owner]<logical_red_owners_[new_owner]){++old_owner;continue;}
-    if(logical_red_owners_[new_owner]<logical_red_scratch_[old_owner]){++new_owner;continue;}
-    if(old_owner<logical_midpoint_mask_scratch_.size())
-      logical_midpoint_masks_[new_owner]=logical_midpoint_mask_scratch_[old_owner];
-    if(old_owner<logical_stencil_choice_scratch_.size())
-      logical_stencil_choices_[new_owner]=logical_stencil_choice_scratch_[old_owner];
+  while(old_owner<storage_->logical_red_scratch_.size()&&new_owner<storage_->logical_red_owners_.size()){
+    if(storage_->logical_red_scratch_[old_owner]<storage_->logical_red_owners_[new_owner]){++old_owner;continue;}
+    if(storage_->logical_red_owners_[new_owner]<storage_->logical_red_scratch_[old_owner]){++new_owner;continue;}
+    if(old_owner<storage_->logical_midpoint_mask_scratch_.size())
+      storage_->logical_midpoint_masks_[new_owner]=storage_->logical_midpoint_mask_scratch_[old_owner];
+    if(old_owner<storage_->logical_stencil_choice_scratch_.size())
+      storage_->logical_stencil_choices_[new_owner]=storage_->logical_stencil_choice_scratch_[old_owner];
     old_owner_indices[new_owner]=old_owner;
     old_owner_mapped[old_owner]=1U;
     ++old_owner;++new_owner;
@@ -1940,7 +1959,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     return mask;
   };
 
-  std::vector<std::vector<Tetrahedron>> green_additions(layers_.size()+10);
+  std::vector<std::vector<Tetrahedron>> green_additions(storage_->layers_.size()+10);
   std::vector<TetId> active;
   active.reserve(next_red_cut.size()*4);
   std::vector<TetId> dirty_green_owners;
@@ -1967,7 +1986,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     const auto& red=next_red_cut[owner_index];
     unsigned int mask=midpoint_mask(red);
     green.clear();
-    if(transition_strategy_==BccTransitionStrategy::complete_minimal){
+    if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal){
       auto numbered=red.vertices;
       std::sort(numbered.begin(),numbered.end());
       mask=0U;
@@ -1992,22 +2011,22 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
         }
       }
     }
-    logical_midpoint_masks_[owner_index]=static_cast<std::uint8_t>(mask);
-    logical_stencil_choices_[owner_index]=static_cast<std::uint8_t>(mask);
-    logical_derived_offsets_[owner_index]=logical_derived_addresses_.size();
+    storage_->logical_midpoint_masks_[owner_index]=static_cast<std::uint8_t>(mask);
+    storage_->logical_stencil_choices_[owner_index]=static_cast<std::uint8_t>(mask);
+    storage_->logical_derived_offsets_[owner_index]=storage_->logical_derived_addresses_.size();
     if(mask==0U){
       const auto old=old_owner_indices[owner_index];
       const bool old_had_green=old!=no_old_owner&&
-          old+1U<logical_derived_offset_scratch_.size()&&
-          logical_derived_offset_scratch_[old]!=logical_derived_offset_scratch_[old+1U];
+          old+1U<storage_->logical_derived_offset_scratch_.size()&&
+          storage_->logical_derived_offset_scratch_[old]!=storage_->logical_derived_offset_scratch_[old+1U];
       if(old_had_green)dirty_green_owners.push_back(red.address);
-      logical_derived_offsets_[owner_index+1U]=logical_derived_addresses_.size();
+      storage_->logical_derived_offsets_[owner_index+1U]=storage_->logical_derived_addresses_.size();
       active.push_back(red.address);
       continue;
     }
-    if(transition_strategy_==BccTransitionStrategy::crystalline_restricted&&mask==63U)
+    if(storage_->transition_strategy_==BccTransitionStrategy::crystalline_restricted&&mask==63U)
       throw std::logic_error("BCC red closure left a fully marked coarse tetrahedron");
-    if(transition_strategy_==BccTransitionStrategy::complete_minimal){
+    if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal){
       if(green.empty())throw std::logic_error("complete green template is empty");
     }else if(std::popcount(mask)==1){
       const std::size_t edge=static_cast<std::size_t>(std::countr_zero(mask));
@@ -2088,27 +2107,27 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
       }
     }
     if(derived_hash==0U)derived_hash=1U;
-    logical_derived_hashes_[owner_index]=derived_hash;
+    storage_->logical_derived_hashes_[owner_index]=derived_hash;
     const auto old=old_owner_indices[owner_index];
-    bool reuse=old!=no_old_owner&&old<logical_derived_hash_scratch_.size()&&
-        old+1U<logical_derived_offset_scratch_.size()&&
-        logical_derived_hash_scratch_[old]==derived_hash;
+    bool reuse=old!=no_old_owner&&old<storage_->logical_derived_hash_scratch_.size()&&
+        old+1U<storage_->logical_derived_offset_scratch_.size()&&
+        storage_->logical_derived_hash_scratch_[old]==derived_hash;
     std::size_t old_begin{},old_end{};
     if(reuse){
-      old_begin=logical_derived_offset_scratch_[old];
-      old_end=logical_derived_offset_scratch_[old+1U];
+      old_begin=storage_->logical_derived_offset_scratch_[old];
+      old_end=storage_->logical_derived_offset_scratch_[old+1U];
       reuse=old_end-old_begin==pending.size()&&
-          old_end<=logical_derived_address_scratch_.size();
+          old_end<=storage_->logical_derived_address_scratch_.size();
       for(std::size_t index=0;reuse&&index<pending.size();++index)
-        reuse=logical_derived_address_scratch_[old_begin+index]==pending[index].address;
+        reuse=storage_->logical_derived_address_scratch_[old_begin+index]==pending[index].address;
     }
     if(reuse){
-      logical_derived_addresses_.insert(logical_derived_addresses_.end(),
-          logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
-          logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
+      storage_->logical_derived_addresses_.insert(storage_->logical_derived_addresses_.end(),
+          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
+          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
       active.insert(active.end(),
-          logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
-          logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
+          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
+          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
     }else{
       dirty_green_owners.push_back(red.address);
       for(const auto& cell:pending){
@@ -2117,29 +2136,29 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
         if(depth>=green_additions.size())green_additions.resize(depth+1);
         Tetrahedron record{cell.vertices,address,red.address};
         green_additions[depth].push_back(record);
-        logical_derived_addresses_.push_back(address);
+        storage_->logical_derived_addresses_.push_back(address);
         active.push_back(address);
         ++last_bcc_update_metrics_.green_records_generated;
       }
     }
-    logical_derived_offsets_[owner_index+1U]=logical_derived_addresses_.size();
+    storage_->logical_derived_offsets_[owner_index+1U]=storage_->logical_derived_addresses_.size();
   }
-  for(std::size_t old=0;old<logical_red_scratch_.size();++old)
-    if(old_owner_mapped[old]==0U)dirty_green_owners.push_back(logical_red_scratch_[old]);
+  for(std::size_t old=0;old<storage_->logical_red_scratch_.size();++old)
+    if(old_owner_mapped[old]==0U)dirty_green_owners.push_back(storage_->logical_red_scratch_[old]);
   std::sort(dirty_green_owners.begin(),dirty_green_owners.end());
   dirty_green_owners.erase(
       std::unique(dirty_green_owners.begin(),dirty_green_owners.end()),
       dirty_green_owners.end());
-  last_dirty_logical_owners_=dirty_green_owners;
+  storage_->last_dirty_logical_owners_=dirty_green_owners;
   std::sort(active.begin(),active.end());
   std::vector<TetId> removed_active,added_active;
-  removed_active.reserve(active_leaves_.size()/8U+16U);
+  removed_active.reserve(storage_->active_leaves_.size()/8U+16U);
   added_active.reserve(active.size()/8U+16U);
-  std::set_difference(active_leaves_.begin(),active_leaves_.end(),
+  std::set_difference(storage_->active_leaves_.begin(),storage_->active_leaves_.end(),
                       active.begin(),active.end(),
                       std::back_inserter(removed_active));
   std::set_difference(active.begin(),active.end(),
-                      active_leaves_.begin(),active_leaves_.end(),
+                      storage_->active_leaves_.begin(),storage_->active_leaves_.end(),
                       std::back_inserter(added_active));
   // Remove incidence while obsolete green records are still addressable.
   const auto incidence_remove_start=UpdateClock::now();
@@ -2152,8 +2171,8 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
   // Green templates are derived, terminal transition geometry. Retain the
   // exact ranges whose owner hash and address sequence did not change; compact
   // only dirty or removed owners before installing their regenerated ranges.
-  for(unsigned int depth=0;depth<layers_.size();++depth){
-    auto& layer=layers_[depth];
+  for(unsigned int depth=0;depth<storage_->layers_.size();++depth){
+    auto& layer=storage_->layers_[depth];
     const bool layer_dirty=std::ranges::any_of(layer.tetrahedra,[&](const auto& record){
       return record.transition_parent!=invalid_tet&&std::binary_search(
           dirty_green_owners.begin(),dirty_green_owners.end(),record.transition_parent);
@@ -2187,22 +2206,22 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     layer.pinned_words.swap(retained_pinned_words);
     rebuild_layer_index(depth);
   }
-  while(layers_.size()>1&&layers_.back().tetrahedra.empty())layers_.pop_back();
+  while(storage_->layers_.size()>1&&storage_->layers_.back().tetrahedra.empty())storage_->layers_.pop_back();
   for(std::size_t depth=0;depth<green_additions.size();++depth)if(!green_additions[depth].empty()){
-    if(layers_.size()<=depth)layers_.resize(depth+1);
+    if(storage_->layers_.size()<=depth)storage_->layers_.resize(depth+1);
     merge_layer(static_cast<unsigned int>(depth),green_additions[depth]);
   }
   last_bcc_update_metrics_.green_generation_ms+=update_milliseconds(green_start);
   const auto incidence_start=UpdateClock::now();
-  active_leaves_=std::move(active);
-  reserve_active_edges(active_edge_key_count_+added_active.size()*6U);
+  storage_->active_leaves_=std::move(active);
+  reserve_active_edges(storage_->active_edge_key_count_+added_active.size()*6U);
   const std::size_t needed_nodes=added_active.size()*6U>
-          active_edge_free_nodes_.size()
-      ?added_active.size()*6U-active_edge_free_nodes_.size():0U;
-  active_edge_nodes_.reserve(active_edge_nodes_.size()+needed_nodes);
+          storage_->active_edge_free_nodes_.size()
+      ?added_active.size()*6U-storage_->active_edge_free_nodes_.size():0U;
+  storage_->active_edge_nodes_.reserve(storage_->active_edge_nodes_.size()+needed_nodes);
   for(const TetId id:added_active)insert_active_edges(id);
-  reserve_active_faces(closure_face_key_count_+added_active.size()*4U);
-  closure_face_nodes_.reserve(closure_face_nodes_.size()+added_active.size()*4U);
+  reserve_active_faces(storage_->closure_face_key_count_+added_active.size()*4U);
+  storage_->closure_face_nodes_.reserve(storage_->closure_face_nodes_.size()+added_active.size()*4U);
   for(const TetId id:added_active)insert_active_faces(id);
   last_bcc_update_metrics_.incidence_update_ms+=update_milliseconds(incidence_start);
   const auto repair_start=UpdateClock::now();
@@ -2213,14 +2232,14 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
   // logical owners. Re-entering the same packed refinement path repairs the
   // face locally; it does not connect unrelated cells through BCC edge stars.
   constexpr std::uint32_t no_face=std::numeric_limits<std::uint32_t>::max();
-  auto& active_face_slots=closure_face_slots_;
-  auto& occupied_face_slots=closure_occupied_face_slots_;
-  auto& active_face_nodes=closure_face_nodes_;
-  auto& face_repairs=closure_face_repairs_;
-  auto& queued_face_words=closure_queued_face_words_;
+  auto& active_face_slots=storage_->closure_face_slots_;
+  auto& occupied_face_slots=storage_->closure_occupied_face_slots_;
+  auto& active_face_nodes=storage_->closure_face_nodes_;
+  auto& face_repairs=storage_->closure_face_repairs_;
+  auto& queued_face_words=storage_->closure_queued_face_words_;
   face_repairs.clear();
-  face_repairs.reserve(active_leaves_.size()/16U+16U);
-  queued_face_words.assign((active_leaves_.size()+63U)/64U,0U);
+  face_repairs.reserve(storage_->active_leaves_.size()/16U+16U);
+  queued_face_words.assign((storage_->active_leaves_.size()+63U)/64U,0U);
   unsigned int shallowest_repair=tet_root_shift;
   for(const std::size_t slot:occupied_face_slots){
     const auto& owner=active_face_slots[slot];
@@ -2228,7 +2247,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     if(owner.owner_count==1){
       for(std::size_t axis=0;axis<3;++axis){
         const auto coordinate=[&](VertexId vertex){
-          const auto& point=vertices_[vertex];
+          const auto& point=storage_->vertices_[vertex];
           return axis==0?point.x:(axis==1?point.y:point.z);
         };
         const double value=coordinate(owner.key[0]);
@@ -2249,10 +2268,10 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
         }
         if(depth==shallowest_repair){
           const auto found=std::lower_bound(
-              active_leaves_.begin(),active_leaves_.end(),face_owner.active);
-          if(found==active_leaves_.end()||*found!=face_owner.active)
+              storage_->active_leaves_.begin(),storage_->active_leaves_.end(),face_owner.active);
+          if(found==storage_->active_leaves_.end()||*found!=face_owner.active)
             throw std::logic_error("persistent face index references an inactive cell");
-          const auto active_index=static_cast<std::size_t>(found-active_leaves_.begin());
+          const auto active_index=static_cast<std::size_t>(found-storage_->active_leaves_.begin());
           const auto bit=std::uint64_t{1}<<(active_index%64U);
           auto& word=queued_face_words[active_index/64U];
           if((word&bit)==0U){word|=bit;face_repairs.push_back(face_owner.active);}
@@ -2266,16 +2285,16 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     std::sort(face_repairs.begin(),face_repairs.end());
     face_repairs.erase(std::unique(face_repairs.begin(),face_repairs.end()),face_repairs.end());
     if(shallowest_repair+3U>closure_depth_limit)throw BccClosureDepthExceeded{};
-    ++revision_;
+    ++storage_->revision_;
     refine_selected_bcc_red_green(face_repairs,closure_depth_limit);
     return;
   }
   last_bcc_update_metrics_.face_repair_ms+=update_milliseconds(repair_start);
-  ++revision_;
+  ++storage_->revision_;
 }
 
 void TetMesh::refine_all_binary() {
-  const auto leaves = active_leaves_;
+  const auto leaves = storage_->active_leaves_;
   static_cast<void>(refine_selected_binary(leaves));
 }
 

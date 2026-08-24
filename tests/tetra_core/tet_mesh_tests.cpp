@@ -1515,15 +1515,27 @@ TEST_CASE("adaptation commit metrics cover the complete operation lifecycle") {
 
 TEST_CASE("mesh snapshot byte accounting follows live packed storage") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
-  const auto initial_bytes=mesh.snapshot_copy_bytes();
-  CHECK(initial_bytes>=sizeof(tetra::TetMesh));
+  const auto snapshot_bytes=mesh.snapshot_copy_bytes();
+  const auto initial_resident_bytes=mesh.resident_storage_bytes();
+  CHECK(snapshot_bytes==sizeof(tetra::TetMesh));
+  CHECK(initial_resident_bytes>snapshot_bytes);
   auto initial_copy=mesh;
-  CHECK(initial_copy.snapshot_copy_bytes()==initial_bytes);
+  CHECK(initial_copy.snapshot_copy_bytes()==snapshot_bytes);
+  CHECK(initial_copy.resident_storage_bytes()==initial_resident_bytes);
+  CHECK(mesh.shares_storage_with(initial_copy));
+  CHECK(mesh.storage_use_count()==2);
+  const auto initial_revision=initial_copy.revision();
+  const auto initial_owners=initial_copy.logical_cut().owners;
   REQUIRE(mesh.refine_selected_binary({mesh.logical_cut().owners.front()}));
-  const auto refined_bytes=mesh.snapshot_copy_bytes();
-  CHECK(refined_bytes>initial_bytes);
+  CHECK_FALSE(mesh.shares_storage_with(initial_copy));
+  CHECK(initial_copy.revision()==initial_revision);
+  CHECK(initial_copy.logical_cut().owners==initial_owners);
+  const auto refined_bytes=mesh.resident_storage_bytes();
+  CHECK(refined_bytes>initial_resident_bytes);
   auto refined_copy=mesh;
-  CHECK(refined_copy.snapshot_copy_bytes()==refined_bytes);
+  CHECK(refined_copy.snapshot_copy_bytes()==snapshot_bytes);
+  CHECK(refined_copy.resident_storage_bytes()==refined_bytes);
+  CHECK(refined_copy.shares_storage_with(mesh));
 }
 
 TEST_CASE("incremental BCC adaptation splits nearby and derefines for a distant camera") {
@@ -3535,6 +3547,7 @@ TEST_CASE("background mesh updates publish only the latest converged snapshot") 
   CHECK(tetra_viewer::same_mesh_update_parameters(result->parameters,latest));
   CHECK(result->mesh.revision()!=source_revision);
   CHECK(result->mesh.logical_red_owners().size()<source_owners);
+  CHECK_FALSE(result->mesh.shares_storage_with(mesh));
   CHECK(result->mesh.has_positive_active_volumes());
   CHECK(result->mesh.has_conforming_active_faces());
   // The worker never mutates the render-thread snapshot.
@@ -3911,6 +3924,8 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"variant\":\"timed-slice\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"resumed-slices\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"low-yield-slices\"")!=std::string::npos);
+  CHECK(text.find("\"variant\":\"production-shared-snapshot\"")!=
+        std::string::npos);
   CHECK(text.find("\"transaction_operation_budget\":64")!=std::string::npos);
   CHECK(text.find("\"time_budget_reached\":true,\"converged\":false,\"valid\":true")
         !=std::string::npos);
@@ -3923,10 +3938,15 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"last_useful_operations_per_ms\":")!=std::string::npos);
   CHECK(text.find("\"snapshot_copy_count\":5")!=std::string::npos);
   CHECK(text.find("\"snapshot_copy_bytes\":")!=std::string::npos);
+  CHECK(text.find("\"resident_storage_bytes\":")!=std::string::npos);
   CHECK(text.find("\"snapshot_copy_ms\":")!=std::string::npos);
   CHECK(text.find("\"worker_handoff_count\":5")!=std::string::npos);
   CHECK(text.find("\"worker_handoff_ms\":")!=std::string::npos);
   CHECK(text.find("\"transfer_fraction_of_measured_cpu\":")!=
+        std::string::npos);
+  CHECK(text.find("\"stationary_shared_storage\":true")!=std::string::npos);
+  CHECK(text.find("\"moved_private_storage\":true")!=std::string::npos);
+  CHECK(text.find("\"source_unchanged\":true,\"valid\":true")!=
         std::string::npos);
 }
 

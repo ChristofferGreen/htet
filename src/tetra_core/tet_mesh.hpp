@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -200,54 +201,77 @@ class TetMesh {
  public:
   [[nodiscard]] static TetMesh make_unit_cube(SubdivisionMethod method = SubdivisionMethod::maubach_diamond);
 
-  [[nodiscard]] SubdivisionMethod subdivision_method() const noexcept { return subdivision_method_; }
-  [[nodiscard]] BccTransitionStrategy transition_strategy() const noexcept {
-    return transition_strategy_;
+  [[nodiscard]] SubdivisionMethod subdivision_method() const noexcept {
+    return storage_->subdivision_method_;
   }
-  [[nodiscard]] const std::vector<Vec3>& vertices() const noexcept { return vertices_; }
+  [[nodiscard]] BccTransitionStrategy transition_strategy() const noexcept {
+    return storage_->transition_strategy_;
+  }
+  [[nodiscard]] const std::vector<Vec3>& vertices() const noexcept {
+    return storage_->vertices_;
+  }
   [[nodiscard]] const Tetrahedron& tetrahedron(TetId address) const;
-  [[nodiscard]] const std::vector<TetLayer>& layers() const noexcept { return layers_; }
-  [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
-  [[nodiscard]] std::uint64_t resident_revision() const noexcept{return resident_revision_;}
-  [[nodiscard]] std::uint64_t pinned_revision() const noexcept{return pinned_revision_;}
+  [[nodiscard]] const std::vector<TetLayer>& layers() const noexcept {
+    return storage_->layers_;
+  }
+  [[nodiscard]] std::uint64_t revision() const noexcept {
+    return storage_->revision_;
+  }
+  [[nodiscard]] std::uint64_t resident_revision() const noexcept {
+    return storage_->resident_revision_;
+  }
+  [[nodiscard]] std::uint64_t pinned_revision() const noexcept {
+    return storage_->pinned_revision_;
+  }
   [[nodiscard]] const BccUpdateMetrics& last_bcc_update_metrics() const noexcept {
     return last_bcc_update_metrics_;
   }
   [[nodiscard]] BccScratchCapacities bcc_scratch_capacities() const noexcept;
   [[nodiscard]] unsigned int refinement_depth(TetId address) const;
   [[nodiscard]] std::size_t tetrahedron_count() const noexcept;
-  // Bytes copied by the default value snapshot, including live packed vector
-  // elements but excluding allocator bookkeeping and unused capacity.
+  // Value snapshots share immutable packed storage. This is the fixed amount
+  // copied by that operation; resident_storage_bytes() reports the live data
+  // retained behind the shared snapshot.
   [[nodiscard]] std::size_t snapshot_copy_bytes() const noexcept;
+  [[nodiscard]] std::size_t resident_storage_bytes() const noexcept;
+  [[nodiscard]] bool shares_storage_with(const TetMesh& other) const noexcept {
+    return storage_==other.storage_;
+  }
+  [[nodiscard]] long storage_use_count() const noexcept {
+    return storage_.use_count();
+  }
   // Legacy access retained while tests and hierarchy internals migrate. New
   // consumers must choose logical_cut() or conforming_volume().
-  [[nodiscard]] const std::vector<TetId>& active_leaves() const noexcept { return active_leaves_; }
+  [[nodiscard]] const std::vector<TetId>& active_leaves() const noexcept {
+    return storage_->active_leaves_;
+  }
   [[nodiscard]] LogicalCutSnapshot logical_cut() const;
   // Ordered persistent red owners for the current BCC cut. Unlike
   // logical_cut(), this does not reconstruct or allocate from green records.
   [[nodiscard]] const std::vector<TetId>& logical_red_owners() const noexcept {
-    return logical_red_owners_;
+    return storage_->logical_red_owners_;
   }
   [[nodiscard]] std::span<const std::uint8_t> logical_midpoint_masks() const noexcept {
-    return logical_midpoint_masks_;
+    return storage_->logical_midpoint_masks_;
   }
   [[nodiscard]] std::span<const std::uint8_t> logical_stencil_choices() const noexcept {
-    return logical_stencil_choices_;
+    return storage_->logical_stencil_choices_;
   }
   [[nodiscard]] std::span<const std::uint64_t> logical_derived_hashes() const noexcept {
-    return logical_derived_hashes_;
+    return storage_->logical_derived_hashes_;
   }
   [[nodiscard]] std::span<const std::size_t> logical_derived_offsets() const noexcept {
-    return logical_derived_offsets_;
+    return storage_->logical_derived_offsets_;
   }
   [[nodiscard]] std::span<const TetId> logical_derived_addresses() const noexcept {
-    return logical_derived_addresses_;
+    return storage_->logical_derived_addresses_;
   }
   [[nodiscard]] std::span<const TetId> last_dirty_logical_owners() const noexcept {
-    return last_dirty_logical_owners_;
+    return storage_->last_dirty_logical_owners_;
   }
   [[nodiscard]] ConformingVolumeView conforming_volume() const noexcept {
-    return ConformingVolumeView(*this, active_leaves_, revision_);
+    return ConformingVolumeView(
+        *this,storage_->active_leaves_,storage_->revision_);
   }
   [[nodiscard]] double signed_volume(TetId tet) const;
   [[nodiscard]] double total_active_volume() const;
@@ -348,72 +372,66 @@ class TetMesh {
     std::uint32_t owner_count{};
   };
 
-  std::vector<Vec3> vertices_;
-  SubdivisionMethod subdivision_method_{SubdivisionMethod::maubach_diamond};
-  BccTransitionStrategy transition_strategy_{BccTransitionStrategy::crystalline_restricted};
-  // Sign of the determinant for each ordered root. Descendant orientation is
-  // then derived arithmetically from the path bits.
-  std::vector<double> root_orientations_;
-  std::vector<TetLayer> layers_;
-  std::vector<TetId> active_leaves_;
-  // The committed logical cut is independent of derived green cells. The
-  // scratch array retains the previous cut's capacity for streaming updates.
-  std::vector<TetId> logical_red_owners_;
-  std::vector<TetId> logical_red_scratch_;
-  std::vector<std::uint8_t> logical_midpoint_masks_;
-  std::vector<std::uint8_t> logical_stencil_choices_;
-  std::vector<std::uint8_t> logical_midpoint_mask_scratch_;
-  std::vector<std::uint8_t> logical_stencil_choice_scratch_;
-  // Packed variable-length derived ranges aligned with logical owners.
-  std::vector<std::uint64_t> logical_derived_hashes_;
-  std::vector<std::uint64_t> logical_derived_hash_scratch_;
-  std::vector<std::size_t> logical_derived_offsets_;
-  std::vector<std::size_t> logical_derived_offset_scratch_;
-  std::vector<TetId> logical_derived_addresses_;
-  std::vector<TetId> logical_derived_address_scratch_;
-  std::vector<TetId> last_dirty_logical_owners_;
-  // Flat open-addressed edge-to-midpoint table. Edge key zero is impossible
-  // for a valid edge and is used as the empty sentinel.
-  std::vector<EdgeKey> midpoint_keys_;
-  std::vector<VertexId> midpoint_values_;
-  std::size_t midpoint_count_{};
-  // Persistent midpoint vertices are separate from those participating in
-  // the current active cut, allowing coarsening without deleting hierarchy.
-  std::vector<EdgeKey> active_midpoint_keys_;
-  std::size_t active_midpoint_count_{};
-  // One persistent entry per encountered hierarchy edge. Counts are the
-  // number of currently split logical red owners that request the midpoint.
-  std::vector<EdgeKey> logical_edge_keys_;
-  std::vector<std::uint32_t> logical_edge_reference_counts_;
-  std::size_t logical_edge_key_count_{};
-  // Persistent, allocation-free-per-edge incidence storage for the active
-  // cut. Nodes are retired in place and slots are rebuilt only when the flat
-  // table grows; refinement updates only removed parents and new children.
-  std::vector<EdgeKey> active_edge_keys_;
-  std::vector<std::uint32_t> active_edge_heads_;
-  std::vector<ActiveEdgeNode> active_edge_nodes_;
-  std::vector<std::uint32_t> active_edge_free_nodes_;
-  std::size_t active_edge_key_count_{};
-  // Retained packed scratch for local BCC closure. Tables and queues are
-  // cleared logically between transactions without releasing capacity.
-  std::vector<EdgeKey> closure_edge_keys_;
-  std::vector<std::uint32_t> closure_edge_heads_;
-  std::vector<ClosureEdgeNode> closure_edge_nodes_;
-  std::vector<std::uint32_t> closure_dirty_edge_slots_;
-  std::vector<std::uint32_t> closure_dirty_owners_;
-  std::vector<std::uint64_t> closure_selected_words_;
-  std::vector<std::uint64_t> closure_queued_edge_words_;
-  std::vector<std::uint64_t> closure_queued_owner_words_;
-  std::vector<ClosureFaceSlot> closure_face_slots_;
-  std::vector<ClosureFaceNode> closure_face_nodes_;
-  std::vector<std::uint32_t> closure_face_free_nodes_;
-  std::vector<std::uint32_t> closure_occupied_face_slots_;
-  std::vector<TetId> closure_face_repairs_;
-  std::vector<std::uint64_t> closure_queued_face_words_;
-  std::size_t closure_face_key_count_{};
-  std::uint64_t revision_{};
-  std::uint64_t resident_revision_{};
-  std::uint64_t pinned_revision_{};
+  // One immutable snapshot block retains the packed per-layer hierarchy and
+  // flat active-state arrays. TetMesh value copies share this block; a public
+  // mutating transaction detaches it once before writing. This preserves the
+  // one-array-per-layer layout and never introduces per-tetrahedron ownership.
+  struct Storage {
+    std::vector<Vec3> vertices_;
+    SubdivisionMethod subdivision_method_{SubdivisionMethod::maubach_diamond};
+    BccTransitionStrategy transition_strategy_{
+        BccTransitionStrategy::crystalline_restricted};
+    std::vector<double> root_orientations_;
+    std::vector<TetLayer> layers_;
+    std::vector<TetId> active_leaves_;
+    std::vector<TetId> logical_red_owners_;
+    std::vector<TetId> logical_red_scratch_;
+    std::vector<std::uint8_t> logical_midpoint_masks_;
+    std::vector<std::uint8_t> logical_stencil_choices_;
+    std::vector<std::uint8_t> logical_midpoint_mask_scratch_;
+    std::vector<std::uint8_t> logical_stencil_choice_scratch_;
+    std::vector<std::uint64_t> logical_derived_hashes_;
+    std::vector<std::uint64_t> logical_derived_hash_scratch_;
+    std::vector<std::size_t> logical_derived_offsets_;
+    std::vector<std::size_t> logical_derived_offset_scratch_;
+    std::vector<TetId> logical_derived_addresses_;
+    std::vector<TetId> logical_derived_address_scratch_;
+    std::vector<TetId> last_dirty_logical_owners_;
+    std::vector<EdgeKey> midpoint_keys_;
+    std::vector<VertexId> midpoint_values_;
+    std::size_t midpoint_count_{};
+    std::vector<EdgeKey> active_midpoint_keys_;
+    std::size_t active_midpoint_count_{};
+    std::vector<EdgeKey> logical_edge_keys_;
+    std::vector<std::uint32_t> logical_edge_reference_counts_;
+    std::size_t logical_edge_key_count_{};
+    std::vector<EdgeKey> active_edge_keys_;
+    std::vector<std::uint32_t> active_edge_heads_;
+    std::vector<ActiveEdgeNode> active_edge_nodes_;
+    std::vector<std::uint32_t> active_edge_free_nodes_;
+    std::size_t active_edge_key_count_{};
+    std::vector<EdgeKey> closure_edge_keys_;
+    std::vector<std::uint32_t> closure_edge_heads_;
+    std::vector<ClosureEdgeNode> closure_edge_nodes_;
+    std::vector<std::uint32_t> closure_dirty_edge_slots_;
+    std::vector<std::uint32_t> closure_dirty_owners_;
+    std::vector<std::uint64_t> closure_selected_words_;
+    std::vector<std::uint64_t> closure_queued_edge_words_;
+    std::vector<std::uint64_t> closure_queued_owner_words_;
+    std::vector<ClosureFaceSlot> closure_face_slots_;
+    std::vector<ClosureFaceNode> closure_face_nodes_;
+    std::vector<std::uint32_t> closure_face_free_nodes_;
+    std::vector<std::uint32_t> closure_occupied_face_slots_;
+    std::vector<TetId> closure_face_repairs_;
+    std::vector<std::uint64_t> closure_queued_face_words_;
+    std::size_t closure_face_key_count_{};
+    std::uint64_t revision_{};
+    std::uint64_t resident_revision_{};
+    std::uint64_t pinned_revision_{};
+  };
+
+  void detach_storage();
+  std::shared_ptr<Storage> storage_{std::make_shared<Storage>()};
   BccUpdateMetrics last_bcc_update_metrics_{};
 };
 

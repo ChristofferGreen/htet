@@ -6,9 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 1: remove the render-thread full-mesh copy from worker submission
-  through immutable shared resident storage, while preserving independent
-  worker mutation, exact hashes, and a measured sub-2 ms handoff.
 - [ ] Gate 2: seed persistent queues once and remove the complete streamed
   active-cut seed from ordinary camera requests.
 - [ ] Gate 2: recompute camera-dependent queue priority lazily at the front.
