@@ -1175,7 +1175,7 @@ refined BCC cuts using both supported green-transition strategies.
   option; do not replace existing methods silently.
 - [x] Cache field samples and generated patches by logical owner and field
   revision.
-- [ ] Measure Hausdorff distance, normal-angle error, triangle aspect ratio,
+- [x] Measure Hausdorff distance, normal-angle error, triangle aspect ratio,
   triangle count, field samples, patch time, and end-to-end update time.
 - [ ] Visually compare terrain, sphere, merging spheres, cube, and cylinder with
   flat shading and triangle edges.
@@ -1215,6 +1215,44 @@ geometry hashes are exact after full construction and local refinement. They
 also prove method switching can rebuild every patch with zero field
 evaluations, field changes invalidate every sample, and the headless selector
 reports nonempty cached output.
+
+#### Release quality and update-cost matrix
+
+CPU-G5-3 uses the release headless command
+`benchmark-cpu-four-hexahedra-quality=10:20`. It compares all five required
+shapes against marching tetrahedra, lattice cleaving, dual contouring,
+four-hexahedra, and surface optimization. The complete 25-row result is stored
+in [`cpu-four-hexahedra-quality.tsv`](cpu-four-hexahedra-quality.tsv).
+
+The sampled Hausdorff estimate takes the maximum of two directions. Mesh to
+implicit samples every triangle vertex, edge midpoint, and centroid against
+the absolute field value. Implicit to mesh samples every sign-changing edge
+of a regular `20^3` unit-domain grid, then obtains exact point-to-triangle
+distance through a local BVH. Normal error compares the normalized geometric
+face normal at each centroid with the analytic field normal. Edge aspect ratio
+is longest divided by shortest triangle edge. Degenerate triangles are counted
+but excluded from finite BVH, normal, and aspect statistics.
+
+`lattice_field_samples` means primary extraction-lattice evaluations. Existing
+methods report four vertex samples per conforming tetrahedron; four-hexahedra
+reports the exactly tracked 60 samples per cell. A controlled field revision
+moves the implicit surface by `1e-5` in x and measures both patch-only and
+complete scene-update time. Surface optimization is globally coupled and has
+no patch-only timing, so its zero patch value is intentional. Times are one
+release observation for this gate; median and tail-latency selection remains
+part of Gate 7.
+
+The numerical matrix establishes tradeoffs without making the Gate 5 visual
+decision. On the sphere, four-hexahedra reduces sampled Hausdorff distance from
+`0.00589` to `0.00106` and mean normal error from `2.95` to `0.79` degrees,
+while increasing triangles from 1,020 to 26,040, samples from 8,784 to 131,760,
+and field-update time from `0.48` to `9.83` ms. Merging spheres shows a similar
+distance improvement (`0.01182` to `0.00123`) at `84.79` ms per field update.
+Terrain improves in distance and mean normal error but exposes a maximum edge
+aspect ratio above 70,000. Cube and capped-cylinder reverse-distance values
+are dominated by the deliberately coarse, grid-aligned reference sampling;
+the raw directed metrics remain available in the command output. No method is
+retained or rejected from these numbers alone.
 
 ### Gate 6 - Mixed-depth dual-ownership experiment
 

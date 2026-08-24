@@ -6128,6 +6128,102 @@ TEST_CASE("headless surface patch benchmark proves locality and exact output") {
         std::string::npos);
 }
 
+TEST_CASE("surface quality metrics normalize face normals and reject coarse grids") {
+  tetra_viewer::PreparedScene scene;
+  const auto vertex=[](tetra::Vec3 point){
+    tetra_viewer::SceneVertex result{};
+    result.position[0]=static_cast<float>(point.x);
+    result.position[1]=static_cast<float>(point.y);
+    result.position[2]=static_cast<float>(point.z);
+    return result;
+  };
+  // This small tangent triangle has an area normal of length 0.04. Passing
+  // that unnormalised vector to acos would report about 88 degrees.
+  scene.triangle_vertices={
+      vertex({0.85,0.4,0.4}),vertex({0.85,0.6,0.4}),
+      vertex({0.85,0.5,0.7})};
+  const auto quality=tetra_viewer::evaluate_surface_quality(
+      scene,tetra::Sphere{},8U);
+  CHECK(quality.valid);
+  CHECK(quality.triangle_count==1U);
+  CHECK(quality.degenerate_triangle_count==0U);
+  CHECK(quality.implicit_reference_samples>0U);
+  CHECK(quality.mean_normal_error_degrees==doctest::Approx(0.0).scale(1.0));
+  CHECK(quality.maximum_normal_error_degrees==doctest::Approx(0.0).scale(1.0));
+  CHECK(std::isfinite(quality.sampled_hausdorff_distance));
+  CHECK(std::isfinite(quality.mean_triangle_edge_aspect_ratio));
+  CHECK(quality.mean_triangle_edge_aspect_ratio>1.0);
+  CHECK_THROWS_AS(static_cast<void>(tetra_viewer::evaluate_surface_quality(
+      scene,tetra::Sphere{},1U)),std::invalid_argument);
+}
+
+TEST_CASE("four-hexahedra quality benchmark covers a deterministic matrix") {
+  const auto run=[] {
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script(
+        "benchmark-cpu-four-hexahedra-quality=3:4",output,errors)==0);
+    CHECK(errors.str().empty());
+    return output.str();
+  };
+  const auto first=run(),second=run();
+  const auto rows=[](const std::string& text){
+    std::vector<std::string> result;
+    std::istringstream lines(text);
+    for(std::string line;std::getline(lines,line);)
+      if(line.find("\"event\":\"cpu_four_hexahedra_quality_benchmark\"")!=
+         std::string::npos)
+        result.push_back(std::move(line));
+    return result;
+  };
+  const auto first_rows=rows(first),second_rows=rows(second);
+  REQUIRE(first_rows.size()==25U);
+  REQUIRE(second_rows.size()==first_rows.size());
+  constexpr std::array<std::string_view,4> timing_fields{
+      "\"cold_patch_update_ms\":","\"cold_end_to_end_update_ms\":",
+      "\"update_patch_ms\":","\"end_to_end_update_ms\":"};
+  const auto without_timings=[&](std::string row){
+    for(const auto key:timing_fields){
+      const auto begin=row.find(key);
+      REQUIRE(begin!=std::string::npos);
+      const auto value=begin+key.size();
+      row.replace(value,row.find_first_of(",}",value)-value,"<timing>");
+    }
+    return row;
+  };
+  std::set<std::string> shapes,methods;
+  for(std::size_t index=0;index<first_rows.size();++index){
+    const auto& row=first_rows[index];
+    CHECK(row.find("\"valid\":true")!=std::string::npos);
+    const auto field=[&](std::string_view key){
+      const auto begin=row.find(key);
+      REQUIRE(begin!=std::string::npos);
+      const auto value=begin+key.size();
+      return row.substr(value,row.find_first_of(",}",value)-value);
+    };
+    shapes.insert(field("\"shape\":"));
+    methods.insert(field("\"method\":"));
+    CHECK(without_timings(row)==without_timings(second_rows[index]));
+  }
+  CHECK(shapes.size()==5U);
+  CHECK(methods.size()==5U);
+
+  std::ostringstream deep_output,deep_errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-cpu-four-hexahedra-quality=10:2",
+      deep_output,deep_errors)==0);
+  CHECK(deep_errors.str().empty());
+  CHECK(rows(deep_output.str()).size()==25U);
+
+  for(const auto command:{"benchmark-cpu-four-hexahedra-quality=33:4",
+                          "benchmark-cpu-four-hexahedra-quality=3:1",
+                          "benchmark-cpu-four-hexahedra-quality=nope"}){
+    std::ostringstream output,errors;
+    CHECK(tetra_viewer::run_script(command,output,errors)==2);
+    CHECK(errors.str().find("parameters outside the supported range")!=
+          std::string::npos);
+  }
+}
+
 TEST_CASE("headless draw chunk benchmark matches direct packing on every path") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(

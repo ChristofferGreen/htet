@@ -207,3 +207,11 @@
   exact patched/monolithic hashes, local topology invalidation, complete field
   invalidation, zero-evaluation reuse after method switching, and headless
   dropdown selection.
+- [x] CPU-G5-3 four-hexahedra quality and update-cost benchmark: added a
+  deterministic five-shape/five-method release command with symmetric sampled
+  Hausdorff distance, normalized face-normal error, triangle edge aspect and
+  degeneracy statistics, exact extraction-field counts, retained bytes, and
+  cold/field-update patch and end-to-end timings. The depth-10 matrix is stored
+  as TSV without making the visual retain/reject decision; release regressions
+  also enforce all 25 rows, deterministic non-timing fields, parameter
+  diagnostics, finite metrics, and sorted deep BCC owner-cell ranges.

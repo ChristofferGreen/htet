@@ -4,6 +4,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 
 ## Active Memories
 
+### logical-derived-address-order
+- Updated: 2026-08-24
+- Tags: bcc, surface-cache, ordering
+- Fact: BCC logical-owner derived-cell slices are not guaranteed to be address-sorted, so consumers with sorted-range contracts must sort their flat scratch slice explicitly.
+- Evidence: The depth-10 sphere four-hexahedra benchmark threw `invalid four-hexahedra owner cell range` until `SceneCache` sorted each derived-cell slice; the production-depth regression then passed all 25 rows.
+
 ### release-validation-entry-point
 - Updated: 2026-08-24
 - Tags: build, cmake, tests

@@ -648,6 +648,28 @@ struct SurfaceGeometryHashes {
   bool operator==(const SurfaceGeometryHashes&) const = default;
 };
 
+struct SurfaceQualityEvaluation {
+  bool valid{};
+  std::size_t triangle_count{};
+  std::size_t degenerate_triangle_count{};
+  std::size_t implicit_reference_samples{};
+  double mesh_to_implicit_distance{};
+  double implicit_to_mesh_distance{};
+  double sampled_hausdorff_distance{};
+  double mean_normal_error_degrees{};
+  double maximum_normal_error_degrees{};
+  double mean_triangle_edge_aspect_ratio{};
+  double maximum_triangle_edge_aspect_ratio{};
+};
+
+// Symmetric sampled Hausdorff estimate over the unit-domain implicit surface.
+// The mesh-to-field direction samples triangle vertices, edge midpoints, and
+// centroids. The reverse direction samples sign-changing edges of a regular
+// field grid and uses exact point-to-triangle distance through a local BVH.
+[[nodiscard]] SurfaceQualityEvaluation evaluate_surface_quality(
+    const PreparedScene& scene,const tetra::Sphere& surface,
+    unsigned int reference_grid_resolution);
+
 // Canonical hashes of physical surface geometry. Triangle buffer order and
 // cyclic corner rotation do not matter, while winding, coordinates, duplicate
 // triangles, missing edges, incidence multiplicity, classification changes,

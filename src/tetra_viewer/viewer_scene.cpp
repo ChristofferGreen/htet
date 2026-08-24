@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 
@@ -2112,6 +2113,256 @@ void append_screen_space_edges(PreparedScene& scene, bool show_surface_edges,
 
 }  // namespace
 
+SurfaceQualityEvaluation evaluate_surface_quality(
+    const PreparedScene& scene,const tetra::Sphere& surface,
+    unsigned int reference_grid_resolution) {
+  if(reference_grid_resolution<2U)
+    throw std::invalid_argument("surface quality grid resolution must be at least two");
+  struct QualityTriangle {
+    std::array<tetra::Vec3,3> points{};
+    tetra::Vec3 minimum{},maximum{},centre{};
+  };
+  struct BvhNode {
+    tetra::Vec3 minimum{},maximum{};
+    std::size_t begin{},count{};
+    std::size_t left{std::numeric_limits<std::size_t>::max()};
+    std::size_t right{std::numeric_limits<std::size_t>::max()};
+  };
+  const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){
+    return a.x*b.x+a.y*b.y+a.z*b.z;
+  };
+  const auto length_squared=[&](tetra::Vec3 value){return dot(value,value);};
+  const auto coordinate=[](tetra::Vec3 point,std::size_t axis){
+    return axis==0U?point.x:(axis==1U?point.y:point.z);
+  };
+  std::vector<QualityTriangle> triangles;
+  triangles.reserve(scene.triangle_vertices.size()/3U);
+  SurfaceQualityEvaluation result;
+  result.triangle_count=scene.triangle_vertices.size()/3U;
+  for(std::size_t begin=0;begin+2U<scene.triangle_vertices.size();begin+=3U){
+    QualityTriangle triangle;
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto& source=scene.triangle_vertices[begin+corner];
+      triangle.points[corner]={source.position[0],source.position[1],
+                               source.position[2]};
+    }
+    triangle.minimum=triangle.maximum=triangle.points[0];
+    for(std::size_t corner=1U;corner<3U;++corner){
+      const auto point=triangle.points[corner];
+      triangle.minimum.x=std::min(triangle.minimum.x,point.x);
+      triangle.minimum.y=std::min(triangle.minimum.y,point.y);
+      triangle.minimum.z=std::min(triangle.minimum.z,point.z);
+      triangle.maximum.x=std::max(triangle.maximum.x,point.x);
+      triangle.maximum.y=std::max(triangle.maximum.y,point.y);
+      triangle.maximum.z=std::max(triangle.maximum.z,point.z);
+    }
+    triangle.centre=(triangle.points[0]+triangle.points[1]+triangle.points[2])/3.0;
+    const auto ab=triangle.points[1]-triangle.points[0];
+    const auto ac=triangle.points[2]-triangle.points[0];
+    const tetra::Vec3 area_normal{
+        ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,
+        ab.x*ac.y-ab.y*ac.x};
+    const double area_squared=area_normal.x*area_normal.x+
+        area_normal.y*area_normal.y+area_normal.z*area_normal.z;
+    if(area_squared<=1.0e-24){
+      ++result.degenerate_triangle_count;
+      continue;
+    }
+    triangles.push_back(triangle);
+  }
+  if(triangles.empty())return result;
+
+  std::vector<std::size_t> indices(triangles.size());
+  std::iota(indices.begin(),indices.end(),0U);
+  std::vector<BvhNode> nodes;
+  nodes.reserve(triangles.size()*2U);
+  const auto build=[&](auto&& self,std::size_t begin,std::size_t end)->std::size_t{
+    const auto node_index=nodes.size();
+    nodes.push_back({});
+    auto minimum=triangles[indices[begin]].minimum;
+    auto maximum=triangles[indices[begin]].maximum;
+    for(std::size_t position=begin+1U;position<end;++position){
+      const auto& triangle=triangles[indices[position]];
+      minimum.x=std::min(minimum.x,triangle.minimum.x);
+      minimum.y=std::min(minimum.y,triangle.minimum.y);
+      minimum.z=std::min(minimum.z,triangle.minimum.z);
+      maximum.x=std::max(maximum.x,triangle.maximum.x);
+      maximum.y=std::max(maximum.y,triangle.maximum.y);
+      maximum.z=std::max(maximum.z,triangle.maximum.z);
+    }
+    nodes[node_index].minimum=minimum;
+    nodes[node_index].maximum=maximum;
+    nodes[node_index].begin=begin;
+    nodes[node_index].count=end-begin;
+    if(end-begin<=8U)return node_index;
+    const auto extent=maximum-minimum;
+    const std::size_t axis=extent.x>=extent.y&&extent.x>=extent.z?0U:
+        (extent.y>=extent.z?1U:2U);
+    const auto middle=begin+(end-begin)/2U;
+    std::nth_element(
+        indices.begin()+static_cast<std::ptrdiff_t>(begin),
+        indices.begin()+static_cast<std::ptrdiff_t>(middle),
+        indices.begin()+static_cast<std::ptrdiff_t>(end),
+        [&](std::size_t left,std::size_t right){
+          return coordinate(triangles[left].centre,axis)<
+                 coordinate(triangles[right].centre,axis);
+        });
+    nodes[node_index].left=self(self,begin,middle);
+    nodes[node_index].right=self(self,middle,end);
+    nodes[node_index].count=0U;
+    return node_index;
+  };
+  static_cast<void>(build(build,0U,indices.size()));
+
+  const auto box_distance_squared=[](tetra::Vec3 point,const BvhNode& node){
+    const auto axis=[](double value,double minimum,double maximum){
+      if(value<minimum)return minimum-value;
+      if(value>maximum)return value-maximum;
+      return 0.0;
+    };
+    const double x=axis(point.x,node.minimum.x,node.maximum.x);
+    const double y=axis(point.y,node.minimum.y,node.maximum.y);
+    const double z=axis(point.z,node.minimum.z,node.maximum.z);
+    return x*x+y*y+z*z;
+  };
+  const auto triangle_distance_squared=[&](tetra::Vec3 point,
+                                            const QualityTriangle& triangle){
+    const auto a=triangle.points[0],b=triangle.points[1],c=triangle.points[2];
+    const auto ab=b-a,ac=c-a,ap=point-a;
+    const double d1=dot(ab,ap),d2=dot(ac,ap);
+    if(d1<=0.0&&d2<=0.0)return length_squared(ap);
+    const auto bp=point-b;
+    const double d3=dot(ab,bp),d4=dot(ac,bp);
+    if(d3>=0.0&&d4<=d3)return length_squared(bp);
+    const double vc=d1*d4-d3*d2;
+    if(vc<=0.0&&d1>=0.0&&d3<=0.0){
+      const double v=d1/(d1-d3);
+      return length_squared(point-(a+ab*v));
+    }
+    const auto cp=point-c;
+    const double d5=dot(ab,cp),d6=dot(ac,cp);
+    if(d6>=0.0&&d5<=d6)return length_squared(cp);
+    const double vb=d5*d2-d1*d6;
+    if(vb<=0.0&&d2>=0.0&&d6<=0.0){
+      const double w=d2/(d2-d6);
+      return length_squared(point-(a+ac*w));
+    }
+    const double va=d3*d6-d5*d4;
+    if(va<=0.0&&(d4-d3)>=0.0&&(d5-d6)>=0.0){
+      const double w=(d4-d3)/((d4-d3)+(d5-d6));
+      return length_squared(point-(b+(c-b)*w));
+    }
+    const double denominator=1.0/(va+vb+vc);
+    const double v=vb*denominator,w=vc*denominator;
+    return length_squared(point-(a+ab*v+ac*w));
+  };
+  std::vector<std::size_t> query_stack;
+  query_stack.reserve(64U);
+  const auto nearest_distance_squared=[&](tetra::Vec3 point){
+    double best=std::numeric_limits<double>::infinity();
+    query_stack.clear();
+    query_stack.push_back(0U);
+    while(!query_stack.empty()){
+      const auto node_index=query_stack.back();query_stack.pop_back();
+      const auto& node=nodes[node_index];
+      if(box_distance_squared(point,node)>=best)continue;
+      if(node.count!=0U){
+        for(std::size_t position=node.begin;position<node.begin+node.count;++position)
+          best=std::min(best,triangle_distance_squared(
+              point,triangles[indices[position]]));
+      }else{
+        const double left_distance=box_distance_squared(point,nodes[node.left]);
+        const double right_distance=box_distance_squared(point,nodes[node.right]);
+        if(left_distance<right_distance){
+          if(right_distance<best)query_stack.push_back(node.right);
+          if(left_distance<best)query_stack.push_back(node.left);
+        }else{
+          if(left_distance<best)query_stack.push_back(node.left);
+          if(right_distance<best)query_stack.push_back(node.right);
+        }
+      }
+    }
+    return best;
+  };
+
+  constexpr double radians_to_degrees=57.295779513082320876;
+  for(const auto& triangle:triangles){
+    const auto& p=triangle.points;
+    const std::array<double,3> lengths{{
+        std::sqrt(length_squared(p[1]-p[0])),
+        std::sqrt(length_squared(p[2]-p[1])),
+        std::sqrt(length_squared(p[0]-p[2]))}};
+    const auto [shortest,longest]=std::minmax_element(lengths.begin(),lengths.end());
+    const double aspect=*shortest>1.0e-15?*longest/ *shortest:
+        std::numeric_limits<double>::infinity();
+    result.mean_triangle_edge_aspect_ratio+=aspect;
+    result.maximum_triangle_edge_aspect_ratio=std::max(
+        result.maximum_triangle_edge_aspect_ratio,aspect);
+    const auto area_normal=face_normal(p[0],p[1],p[2]);
+    const auto normal=area_normal/std::sqrt(length_squared(area_normal));
+    const double error=std::acos(std::clamp(
+        dot(normal,surface.normal(triangle.centre)),-1.0,1.0))*radians_to_degrees;
+    result.mean_normal_error_degrees+=error;
+    result.maximum_normal_error_degrees=std::max(
+        result.maximum_normal_error_degrees,error);
+    const std::array<tetra::Vec3,7> mesh_samples{{
+        p[0],p[1],p[2],(p[0]+p[1])/2.0,(p[1]+p[2])/2.0,
+        (p[2]+p[0])/2.0,triangle.centre}};
+    for(const auto sample:mesh_samples)
+      result.mesh_to_implicit_distance=std::max(
+          result.mesh_to_implicit_distance,std::abs(surface.signed_distance(sample)));
+  }
+  result.mean_triangle_edge_aspect_ratio/=static_cast<double>(triangles.size());
+  result.mean_normal_error_degrees/=static_cast<double>(triangles.size());
+
+  const unsigned int resolution=reference_grid_resolution;
+  const std::size_t side=static_cast<std::size_t>(resolution)+1U;
+  std::vector<double> field(side*side*side);
+  const auto grid_index=[=](unsigned int x,unsigned int y,unsigned int z){
+    return (static_cast<std::size_t>(z)*side+y)*side+x;
+  };
+  const auto grid_point=[=](unsigned int x,unsigned int y,unsigned int z){
+    const double inverse=1.0/static_cast<double>(resolution);
+    return tetra::Vec3{static_cast<double>(x)*inverse,
+                       static_cast<double>(y)*inverse,
+                       static_cast<double>(z)*inverse};
+  };
+  for(unsigned int z=0;z<=resolution;++z)
+    for(unsigned int y=0;y<=resolution;++y)
+      for(unsigned int x=0;x<=resolution;++x)
+        field[grid_index(x,y,z)]=surface.signed_distance(grid_point(x,y,z));
+  const auto include_reference=[&](tetra::Vec3 point){
+    ++result.implicit_reference_samples;
+    result.implicit_to_mesh_distance=std::max(
+        result.implicit_to_mesh_distance,
+        std::sqrt(nearest_distance_squared(point)));
+  };
+  for(unsigned int z=0;z<=resolution;++z)
+    for(unsigned int y=0;y<=resolution;++y)
+      for(unsigned int x=0;x<=resolution;++x){
+        const auto first=grid_point(x,y,z);
+        const double first_distance=field[grid_index(x,y,z)];
+        const auto edge=[&](unsigned int nx,unsigned int ny,unsigned int nz){
+          const auto second=grid_point(nx,ny,nz);
+          const double second_distance=field[grid_index(nx,ny,nz)];
+          if(first_distance==0.0)include_reference(first);
+          if(second_distance==0.0)include_reference(second);
+          if((first_distance<0.0)!=(second_distance<0.0))
+            include_reference(surface.edge_intersection(first,second));
+        };
+        if(x<resolution)edge(x+1U,y,z);
+        if(y<resolution)edge(x,y+1U,z);
+        if(z<resolution)edge(x,y,z+1U);
+      }
+  result.sampled_hausdorff_distance=std::max(
+      result.mesh_to_implicit_distance,result.implicit_to_mesh_distance);
+  result.valid=result.implicit_reference_samples!=0U&&
+      std::isfinite(result.sampled_hausdorff_distance)&&
+      std::isfinite(result.mean_normal_error_degrees)&&
+      std::isfinite(result.mean_triangle_edge_aspect_ratio);
+  return result;
+}
+
 SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
   using PointKey=std::array<std::uint32_t,3>;
   using TriangleKey=std::array<PointKey,3>;
@@ -3612,6 +3863,8 @@ void SceneCache::update_surface_patches(
           surface_patch_cell_scratch_.assign(
               addresses.begin()+static_cast<std::ptrdiff_t>(begin),
               addresses.begin()+static_cast<std::ptrdiff_t>(end));
+          std::sort(surface_patch_cell_scratch_.begin(),
+                    surface_patch_cell_scratch_.end());
           return;
         }
       }

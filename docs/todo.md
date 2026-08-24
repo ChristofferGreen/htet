@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G5-3 four-hexahedra quality and update-cost benchmark.
-  - Scope: measure Hausdorff distance, normal-angle error, aspect ratio,
-    triangles, field samples, patch time, and end-to-end update time.
-  - Acceptance: release results cover terrain, sphere, merging spheres, cube,
-    and cylinder against retained surface baselines.
-  - Stop rule: record the quality/performance matrix without choosing by eye.
 - [ ] CPU-G5-4 four-hexahedra visual audit and retain-or-reject decision.
   - Scope: inspect every benchmark shape with flat shading and triangle edges.
   - Acceptance: retain the method only for a meaningful measured quality gain

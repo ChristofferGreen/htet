@@ -1004,6 +1004,7 @@ void print_script_help(std::ostream& output) {
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
+            "  benchmark-cpu-four-hexahedra-quality[=<0..32>[:<2..64>]] Compare five shapes and retained surfaces\n"
             "  benchmark-cpu-draw-chunks[=<0..32>[:<1..256>]] Compare monolithic, fixed, and hybrid draw packing\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
@@ -2129,6 +2130,135 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"monolithic_reference_ms\":"
                 <<total.monolithic_milliseconds
                 <<",\"valid\":true}\n";
+        }
+      }
+      continue;
+    }
+    constexpr std::string_view four_hexahedra_quality_benchmark=
+        "benchmark-cpu-four-hexahedra-quality";
+    if(command==four_hexahedra_quality_benchmark||
+       command.starts_with(std::string(four_hexahedra_quality_benchmark)+"=")){
+      unsigned int benchmark_depth=10U;
+      unsigned int reference_grid=20U;
+      if(command.size()>four_hexahedra_quality_benchmark.size()){
+        const auto value=command.substr(four_hexahedra_quality_benchmark.size()+1U);
+        const auto separator=value.find(':');
+        if(!parse_unsigned(value.substr(0U,separator),benchmark_depth)||
+           benchmark_depth>32U||
+           (separator!=std::string_view::npos&&
+            (!parse_unsigned(value.substr(separator+1U),reference_grid)||
+             reference_grid<2U||reference_grid>64U))){
+          write_error(errors,"four-hexahedra quality benchmark parameters outside the supported range",command);
+          return 2;
+        }
+      }
+      constexpr std::array shapes{
+          tetra::ImplicitShapeKind::perlin_terrain,
+          tetra::ImplicitShapeKind::sphere,
+          tetra::ImplicitShapeKind::merging_spheres,
+          tetra::ImplicitShapeKind::cube,
+          tetra::ImplicitShapeKind::capped_cylinder};
+      constexpr std::array methods{
+          SurfaceMethod::marching_tetrahedra,
+          SurfaceMethod::lattice_cleaving,
+          SurfaceMethod::dual_contouring,
+          SurfaceMethod::four_hexahedra,
+          SurfaceMethod::surface_optimization};
+      constexpr ScenePreparationOptions preparation{
+          .surface_diagnostics=false,.summary_statistics=false};
+      for(const auto shape:shapes){
+        const auto baseline=cpu_benchmark_baseline(shape,benchmark_depth);
+        for(const auto method:methods){
+          SceneCache cache;
+          const auto cold_start=Clock::now();
+          const bool cold_rebuilt=cache.update_scene(
+              baseline.mesh,baseline.sphere,baseline.field_revision,
+              method,MaterialRule::all_vertices_inside,
+              true,false,false,false,false,false,1.0,
+              VolumeConnectionMethod::hierarchy_cells,
+              StencilConstruction::fixed,
+              StencilSelectionObjective::balanced,preparation);
+          const double cold_end_to_end_ms=milliseconds_since(cold_start);
+          if(!cold_rebuilt){
+            write_error(errors,"four-hexahedra quality cold scene did not build",
+                        surface_method_key(method));
+            return 1;
+          }
+          const auto cold_patch=cache.surface_patch_metrics();
+          const auto quality=evaluate_surface_quality(
+              cache.scene(),baseline.sphere,reference_grid);
+          const auto hashes=surface_geometry_hashes(cache.scene());
+          const std::size_t lattice_field_samples=
+              method==SurfaceMethod::four_hexahedra
+                  ?cold_patch.evaluated_field_samples
+                  :baseline.mesh.conforming_volume().size()*4U;
+
+          auto moved_surface=baseline.sphere;
+          moved_surface.centre.x+=1.0e-5;
+          const auto update_start=Clock::now();
+          const bool update_rebuilt=cache.update_scene(
+              baseline.mesh,moved_surface,baseline.field_revision+1U,
+              method,MaterialRule::all_vertices_inside,
+              true,false,false,false,false,false,1.0,
+              VolumeConnectionMethod::hierarchy_cells,
+              StencilConstruction::fixed,
+              StencilSelectionObjective::balanced,preparation);
+          const double update_end_to_end_ms=milliseconds_since(update_start);
+          const auto update_patch=cache.surface_patch_metrics();
+          const std::size_t update_field_samples=
+              method==SurfaceMethod::four_hexahedra
+                  ?update_patch.evaluated_field_samples
+                  :baseline.mesh.conforming_volume().size()*4U;
+          const bool expected_samples=method!=SurfaceMethod::four_hexahedra||
+              (lattice_field_samples==baseline.mesh.conforming_volume().size()*
+                   tetra::four_hexahedra_field_samples_per_cell&&
+               update_field_samples==lattice_field_samples);
+          const bool valid=quality.valid&&quality.triangle_count!=0U&&
+              hashes.triangle_count==quality.triangle_count&&cold_rebuilt&&
+              update_rebuilt&&expected_samples&&
+              std::isfinite(cold_end_to_end_ms)&&
+              std::isfinite(update_end_to_end_ms);
+          output<<"{\"event\":\"cpu_four_hexahedra_quality_benchmark\""
+                <<",\"shape\":\""<<tetra::implicit_shape_key(shape)<<'"'
+                <<",\"method\":\""<<surface_method_key(method)<<'"'
+                <<",\"maximum_depth\":"<<benchmark_depth
+                <<",\"reference_grid\":"<<reference_grid
+                <<",\"conforming_cells\":"
+                <<baseline.mesh.conforming_volume().size()
+                <<",\"triangles\":"<<quality.triangle_count
+                <<",\"degenerate_triangles\":"
+                <<quality.degenerate_triangle_count
+                <<",\"implicit_reference_samples\":"
+                <<quality.implicit_reference_samples
+                <<",\"mesh_to_implicit_distance\":"<<std::setprecision(9)
+                <<quality.mesh_to_implicit_distance
+                <<",\"implicit_to_mesh_distance\":"
+                <<quality.implicit_to_mesh_distance
+                <<",\"sampled_hausdorff_distance\":"
+                <<quality.sampled_hausdorff_distance
+                <<",\"mean_normal_error_degrees\":"
+                <<quality.mean_normal_error_degrees
+                <<",\"maximum_normal_error_degrees\":"
+                <<quality.maximum_normal_error_degrees
+                <<",\"mean_triangle_edge_aspect_ratio\":"
+                <<quality.mean_triangle_edge_aspect_ratio
+                <<",\"maximum_triangle_edge_aspect_ratio\":"
+                <<quality.maximum_triangle_edge_aspect_ratio
+                <<",\"lattice_field_samples\":"<<lattice_field_samples
+                <<",\"cold_patch_update_ms\":"<<cold_patch.update_milliseconds
+                <<",\"cold_end_to_end_update_ms\":"<<cold_end_to_end_ms
+                <<",\"update_field_samples\":"<<update_field_samples
+                <<",\"update_patch_ms\":"<<update_patch.update_milliseconds
+                <<",\"end_to_end_update_ms\":"<<update_end_to_end_ms
+                <<",\"retained_bytes\":"<<update_patch.retained_bytes
+                <<",\"patchable\":"
+                <<(surface_patch_dependency(method).patchable()?"true":"false")
+                <<",\"valid\":"<<(valid?"true":"false")<<"}\n";
+          if(!valid){
+            write_error(errors,"four-hexahedra quality benchmark row failed",
+                        surface_method_key(method));
+            return 1;
+          }
         }
       }
       continue;
