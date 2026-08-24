@@ -3731,12 +3731,13 @@ TEST_CASE("material rules are registered and select distinct full-tetrahedron vo
 }
 
 TEST_CASE("surface methods include a complete experimental tetrahedral layer") {
-  CHECK(tetra_viewer::surface_methods.size() == 6);
+  CHECK(tetra_viewer::surface_methods.size() == 7);
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::full_tetrahedra) == "full-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::marching_tetrahedra) == "marching-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::lattice_cleaving) == "lattice-cleaving");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::tetrahedral_layer) == "tetrahedral-layer");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::dual_contouring) == "dual-contouring");
+  CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::four_hexahedra) == "four-hexahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::surface_optimization) == "surface-optimization");
 
   auto mesh = tetra::TetMesh::make_unit_cube();
@@ -3775,6 +3776,8 @@ TEST_CASE("surface patch dependency contracts cover every registered method") {
                global,false},
       Expected{SurfaceMethod::dual_contouring,
                SurfacePatchNeighbourhood::incident_edge_star,1U,true},
+      Expected{SurfaceMethod::four_hexahedra,SurfacePatchNeighbourhood::owner,
+               0U,true},
       Expected{SurfaceMethod::surface_optimization,SurfacePatchNeighbourhood::global,
                global,false},
   };
@@ -3790,6 +3793,135 @@ TEST_CASE("surface patch dependency contracts cover every registered method") {
     CHECK(tetra_viewer::surface_patch_neighbourhood_key(
               dependency.neighbourhood)!="unknown");
   }
+}
+
+TEST_CASE("four-hexahedra extractor is closed and outward across BCC transition strategies") {
+  using Point=std::array<std::uint64_t,3>;
+  using Edge=std::array<Point,2>;
+  using Face=std::array<Point,3>;
+  const auto point_key=[](tetra::Vec3 point){
+    return Point{{std::bit_cast<std::uint64_t>(point.x==0.0?0.0:point.x),
+                  std::bit_cast<std::uint64_t>(point.y==0.0?0.0:point.y),
+                  std::bit_cast<std::uint64_t>(point.z==0.0?0.0:point.z)}};
+  };
+  for(const auto strategy:{tetra::BccTransitionStrategy::crystalline_restricted,
+                           tetra::BccTransitionStrategy::complete_minimal}){
+    CAPTURE(strategy);
+    auto mesh=tetra::TetMesh::make_unit_cube(
+        tetra::SubdivisionMethod::bcc_red_green);
+    if(strategy==tetra::BccTransitionStrategy::complete_minimal)
+      REQUIRE(mesh.set_transition_strategy(strategy));
+    const tetra::Sphere sphere{};
+    const tetra::Camera camera{};
+    static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,42.0,6));
+    const auto triangles=tetra::extract_four_hexahedra_isosurface(mesh,sphere);
+    REQUIRE_FALSE(triangles.empty());
+    std::map<Edge,std::size_t> edges;
+    std::map<Face,std::size_t> faces;
+    for(const auto& triangle:triangles){
+      const auto normal=[](tetra::Vec3 a,tetra::Vec3 b){
+        return tetra::Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
+                           a.x*b.y-a.y*b.x};
+      }(triangle.b-triangle.a,triangle.c-triangle.a);
+      const auto centre=(triangle.a+triangle.b+triangle.c)/3.0;
+      const auto outward=sphere.normal(centre);
+      CHECK(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z>0.0);
+      Face face{{point_key(triangle.a),point_key(triangle.b),point_key(triangle.c)}};
+      std::sort(face.begin(),face.end());
+      ++faces[face];
+      for(const auto pair:std::array<std::array<std::size_t,2>,3>{{
+              {{0U,1U}},{{1U,2U}},{{2U,0U}}}}){
+        Edge edge{{face[pair[0]],face[pair[1]]}};
+        if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+        ++edges[edge];
+      }
+    }
+    CHECK(std::ranges::all_of(faces,[](const auto& item){return item.second==1U;}));
+    CHECK(std::ranges::all_of(edges,[](const auto& item){return item.second==2U;}));
+  }
+}
+
+TEST_CASE("four-hexahedra owner patches retain field samples and invalidate locally") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,42.0,3));
+  tetra_viewer::SceneCache cache;
+  const auto update=[&](std::uint64_t field_revision,
+                        tetra_viewer::SurfaceMethod method){
+    return cache.update_scene(
+        mesh,sphere,field_revision,method,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  };
+  REQUIRE(update(12U,tetra_viewer::SurfaceMethod::four_hexahedra));
+  auto metrics=cache.surface_patch_metrics();
+  CHECK(metrics.active);
+  CHECK(metrics.full_rebuild);
+  CHECK(metrics.field_sample_records==mesh.conforming_volume().size());
+  CHECK(metrics.evaluated_field_samples==
+        metrics.field_sample_records*tetra::four_hexahedra_field_samples_per_cell);
+  CHECK(metrics.reused_field_samples==0U);
+  CHECK(cache.scene().four_hexahedra_triangles==metrics.output_triangles);
+  const auto monolithic=[&]{
+    return tetra_viewer::prepare_scene(
+        mesh,sphere,tetra_viewer::SurfaceMethod::four_hexahedra,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  };
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene())==
+        tetra_viewer::surface_geometry_hashes(monolithic()));
+
+  REQUIRE(update(12U,tetra_viewer::SurfaceMethod::marching_tetrahedra));
+  REQUIRE(update(12U,tetra_viewer::SurfaceMethod::four_hexahedra));
+  metrics=cache.surface_patch_metrics();
+  CHECK(metrics.full_rebuild);
+  CHECK(metrics.evaluated_field_samples==0U);
+  CHECK(metrics.reused_field_samples==
+        metrics.field_sample_records*tetra::four_hexahedra_field_samples_per_cell);
+
+  const auto split=std::ranges::find_if(
+      mesh.logical_red_owners(),[&](tetra::TetId owner){
+        return tetra::classify_tetrahedron(mesh,owner,sphere)==
+            tetra::SurfaceRelation::intersecting;
+      });
+  REQUIRE(split!=mesh.logical_red_owners().end());
+  REQUIRE(mesh.refine_selected_binary({*split}));
+  REQUIRE(update(12U,tetra_viewer::SurfaceMethod::four_hexahedra));
+  metrics=cache.surface_patch_metrics();
+  CHECK_FALSE(metrics.full_rebuild);
+  CHECK(metrics.rebuilt_patches>0U);
+  CHECK(metrics.rebuilt_patches<cache.surface_patch_records().size());
+  CHECK(metrics.reused_patches>0U);
+  CHECK(metrics.field_sample_records==mesh.conforming_volume().size());
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene())==
+        tetra_viewer::surface_geometry_hashes(monolithic()));
+
+  REQUIRE(update(13U,tetra_viewer::SurfaceMethod::four_hexahedra));
+  metrics=cache.surface_patch_metrics();
+  CHECK(metrics.full_rebuild);
+  CHECK(metrics.reused_field_samples==0U);
+  CHECK(metrics.evaluated_field_samples==
+        metrics.field_sample_records*tetra::four_hexahedra_field_samples_per_cell);
+}
+
+TEST_CASE("headless four-hexahedra selection reports cached surface output") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-maximum-depth=6,set-volume-connection=hierarchy-cells,"
+      "set-surface-method=four-hexahedra,prepare-scene",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"surface_method\":\"four-hexahedra\"")!=std::string::npos);
+  CHECK(text.find("\"four_hexahedra_triangles\":0")==std::string::npos);
+  CHECK(text.find("\"surface_patch_active\":true")!=std::string::npos);
+  CHECK(text.find("\"surface_patch_evaluated_field_samples\":0")==
+        std::string::npos);
+  CHECK(text.find("\"surface_patch_field_sample_records\":0")==
+        std::string::npos);
 }
 
 TEST_CASE("headless surface statistics expose patch dependency contracts") {

@@ -1171,9 +1171,9 @@ refined BCC cuts using both supported green-transition strategies.
 - [x] Specify the Scholz four-hexahedra construction for every supported BCC
   owner orientation and prove adjacent cells generate matching boundary
   samples.
-- [ ] Implement a CPU cell-local extractor as a separate surface dropdown
+- [x] Implement a CPU cell-local extractor as a separate surface dropdown
   option; do not replace existing methods silently.
-- [ ] Cache field samples and generated patches by logical owner and field
+- [x] Cache field samples and generated patches by logical owner and field
   revision.
 - [ ] Measure Hausdorff distance, normal-angle error, triangle aspect ratio,
   triangle count, field samples, patch time, and end-to-end update time.
@@ -1182,6 +1182,39 @@ refined BCC cuts using both supported green-transition strategies.
 
 Exit condition: retain the method only if it gives a meaningful quality benefit
 at a measured and acceptable CPU/update cost.
+
+#### Extractor and retained-cache contract
+
+`Four-hexahedra surface (Scholz-inspired)` is a separate surface selector entry
+with key `four-hexahedra`; it does not replace marching tetrahedra, dual
+contouring, or surface optimization. Each current `conforming_volume()` cell
+uses the exact four-hexahedra construction above. For an ambiguity-free CPU
+polygonizer, each hexahedron is partitioned into 24 tetrahedra by connecting
+its centre to the four-triangle fan around each face centre. Adjacent
+hexahedra therefore use the same face centre, corners, four boundary triangles,
+and contour segments regardless of local orientation.
+
+The extractor evaluates 60 fixed barycentric locations per conforming cell:
+the eight corners, six face centres, and centre of each of its four hexahedra.
+World-space evaluation sorts contributing global vertex IDs before summation,
+and edge intersection endpoints are likewise canonicalized. Shared positions
+and intersections are consequently bit-identical rather than merely close.
+
+Field records are fixed-size metadata in one sorted array keyed by logical
+owner and conforming-cell address. Their values occupy one flat, fixed-stride
+sample arena with reusable free slots; there are no vectors or allocations per
+tetrahedron. The record also contains the four source vertex IDs and field
+revision. Unchanged records reuse all 60 values. A field revision reevaluates
+every current record, while a topology revision regenerates only owners whose
+derived-cell hash changed. Generated triangles use the existing coalesced
+owner-patch arena and fixed-capacity draw chunks.
+
+Release tests prove closed, outward, duplicate-free surfaces with edge
+incidence two under both BCC transition strategies; patched and monolithic
+geometry hashes are exact after full construction and local refinement. They
+also prove method switching can rebuild every patch with zero field
+evaluations, field changes invalidate every sample, and the headless selector
+reports nonempty cached output.
 
 ### Gate 6 - Mixed-depth dual-ownership experiment
 

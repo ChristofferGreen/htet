@@ -1208,6 +1208,28 @@ void append_marching_tetrahedra(PreparedScene& scene, const tetra::TetMesh& mesh
   }
 }
 
+void append_four_hexahedra(PreparedScene& scene,const tetra::TetMesh& mesh,
+                           const tetra::Sphere& sphere,bool show_faces,
+                           bool show_surface_edges) {
+  const auto triangles=tetra::extract_four_hexahedra_isosurface(mesh,sphere);
+  scene.four_hexahedra_triangles=triangles.size();
+  if(!show_faces&&!show_surface_edges)return;
+  for(const auto& triangle:triangles){
+    auto normal=face_normal(triangle.a,triangle.b,triangle.c);
+    const auto centre=(triangle.a+triangle.b+triangle.c)/3.0;
+    const auto outward=sphere.normal(centre);
+    if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+      normal={-normal.x,-normal.y,-normal.z};
+    for(const auto point:{triangle.a,triangle.b,triangle.c})
+      scene.triangle_vertices.push_back({
+          {static_cast<float>(point.x),static_cast<float>(point.y),
+           static_cast<float>(point.z)},
+          {0.26F,0.72F,0.56F},
+          {static_cast<float>(normal.x),static_cast<float>(normal.y),
+           static_cast<float>(normal.z)}});
+  }
+}
+
 void build_lattice_cleaved_cells(PreparedScene& scene,const tetra::TetMesh& mesh,
                                  const tetra::Sphere& sphere) {
   // Only sign-changing leaves are replaced. For a single inside corner the
@@ -3267,6 +3289,9 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
       }else if(surface_method==SurfaceMethod::dual_contouring){
         scene.dual_contour_triangles=surface_override.size();
         colour={{0.22F,0.72F,0.52F}};
+      }else if(surface_method==SurfaceMethod::four_hexahedra){
+        scene.four_hexahedra_triangles=surface_override.size();
+        colour={{0.26F,0.72F,0.56F}};
       }
     }
     for(const auto& triangle:surface_override){
@@ -3304,6 +3329,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
     append_tetrahedral_layer(scene, mesh, sphere, show_faces, show_surface_edges);
   else if (surface_method == SurfaceMethod::dual_contouring)
     append_dual_contour(scene, mesh, sphere, show_faces, show_surface_edges);
+  else if (surface_method == SurfaceMethod::four_hexahedra)
+    append_four_hexahedra(scene,mesh,sphere,show_faces,show_surface_edges);
   else if (surface_method == SurfaceMethod::surface_optimization)
     append_surface_optimization(scene, mesh, sphere, show_faces, show_surface_edges);
   prepare_surface_render_attributes(scene);
@@ -3381,6 +3408,7 @@ void SceneCache::set_surface_patch_fallback(
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
       dual_patch_builder_.retained_bytes()+
+      four_hexahedra_patch_builder_.metrics().retained_bytes+
       dual_patch_dependencies_.capacity()*
           sizeof(tetra::DualContourPatchDependency)+
       dual_patch_triangle_scratch_.capacity()*
@@ -3394,6 +3422,7 @@ void SceneCache::update_surface_patches(
   surface_patch_metrics_={};
   surface_patch_metrics_.active=true;
   const bool dual_topology=surface_method==SurfaceMethod::dual_contouring;
+  const bool four_hexahedra=surface_method==SurfaceMethod::four_hexahedra;
 
   const bool bcc=mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green;
   surface_patch_owner_scratch_.clear();
@@ -3446,6 +3475,7 @@ void SceneCache::update_surface_patches(
       surface_patch_field_revision_!=field_revision||
       surface_patch_subdivision_method_!=mesh.subdivision_method()||
       surface_patch_dual_topology_!=dual_topology||
+      surface_patch_four_hexahedra_!=four_hexahedra||
       mesh.revision()<surface_patch_mesh_revision_;
   surface_patch_dirty_scratch_.clear();
   if(rebuild_all){
@@ -3513,6 +3543,7 @@ void SceneCache::update_surface_patches(
   }
   surface_patch_metrics_.full_rebuild=rebuild_all;
   surface_patch_metrics_.dirty_owners=surface_patch_dirty_scratch_.size();
+  if(four_hexahedra)four_hexahedra_patch_builder_.begin_update(field_revision);
 
   const auto normalize_free_ranges=[&]{
     std::sort(surface_patch_free_ranges_.begin(),surface_patch_free_ranges_.end(),
@@ -3625,6 +3656,7 @@ void SceneCache::update_surface_patches(
     const bool dirty=rebuild_all||!retained||std::binary_search(
         surface_patch_dirty_scratch_.begin(),surface_patch_dirty_scratch_.end(),owner);
     if(!dirty){
+      if(four_hexahedra)four_hexahedra_patch_builder_.retain_owner(owner);
       surface_patch_record_scratch_.push_back(*found);
       ++surface_patch_metrics_.reused_patches;
       surface_patch_metrics_.reused_triangles+=found->triangle_count;
@@ -3641,6 +3673,11 @@ void SceneCache::update_surface_patches(
       for(auto found=begin;found!=dual_patch_triangle_scratch_.end()&&
           found->patch_owner==owner;++found)
         surface_patch_triangle_scratch_.push_back(found->triangle);
+    }else if(four_hexahedra){
+      cells_for(owner_index);
+      four_hexahedra_patch_builder_.extract_owner(
+          mesh,sphere,owner,surface_patch_cell_scratch_,
+          surface_patch_triangle_scratch_);
     }else{
       cells_for(owner_index);
       tetra::extract_isosurface(
@@ -3667,6 +3704,13 @@ void SceneCache::update_surface_patches(
     surface_patch_metrics_.generated_triangles+=surface_patch_triangle_scratch_.size();
   }
   surface_patch_records_.swap(surface_patch_record_scratch_);
+  if(four_hexahedra){
+    four_hexahedra_patch_builder_.finish_update();
+    const auto& field_metrics=four_hexahedra_patch_builder_.metrics();
+    surface_patch_metrics_.evaluated_field_samples=field_metrics.evaluated_samples;
+    surface_patch_metrics_.reused_field_samples=field_metrics.reused_samples;
+    surface_patch_metrics_.field_sample_records=field_metrics.records;
+  }
 
   surface_patch_output_.clear();
   std::size_t triangle_count{};
@@ -3682,6 +3726,7 @@ void SceneCache::update_surface_patches(
   surface_patch_field_revision_=field_revision;
   surface_patch_subdivision_method_=mesh.subdivision_method();
   surface_patch_dual_topology_=dual_topology;
+  surface_patch_four_hexahedra_=four_hexahedra;
   surface_patch_initialized_=true;
   surface_patch_metrics_.output_triangles=surface_patch_output_.size();
   surface_patch_metrics_.arena_slots=surface_patch_arena_.size();
@@ -3701,6 +3746,7 @@ void SceneCache::update_surface_patches(
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
       dual_patch_builder_.retained_bytes()+
+      four_hexahedra_patch_builder_.metrics().retained_bytes+
       dual_patch_dependencies_.capacity()*
           sizeof(tetra::DualContourPatchDependency)+
       dual_patch_triangle_scratch_.capacity()*
@@ -3743,7 +3789,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
     const bool owner_patch_override=surface_override.empty()&&
         (surface_method==SurfaceMethod::marching_tetrahedra||
          surface_method==SurfaceMethod::lattice_cleaving||
-         surface_method==SurfaceMethod::dual_contouring);
+         surface_method==SurfaceMethod::dual_contouring||
+         surface_method==SurfaceMethod::four_hexahedra);
     if(owner_patch_override)
       update_surface_patches(mesh,sphere,sphere_revision,surface_method);
     else set_surface_patch_fallback(

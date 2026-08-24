@@ -1732,6 +1732,12 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"surface_patches_retired\":" << patches.retired_patches
              << ",\"surface_patch_generated_triangles\":" << patches.generated_triangles
              << ",\"surface_patch_reused_triangles\":" << patches.reused_triangles
+             << ",\"surface_patch_evaluated_field_samples\":"
+             << patches.evaluated_field_samples
+             << ",\"surface_patch_reused_field_samples\":"
+             << patches.reused_field_samples
+             << ",\"surface_patch_field_sample_records\":"
+             << patches.field_sample_records
              << ",\"surface_patch_output_triangles\":" << patches.output_triangles
              << ",\"surface_patch_arena_slots\":" << patches.arena_slots
              << ",\"surface_patch_free_slots\":" << patches.free_slots
@@ -1751,6 +1757,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"cleaved_volume\":" << scene.cleaved_volume
              << ",\"surface_layer_tetrahedra\":" << scene.surface_layer_tetrahedra
              << ",\"dual_contour_triangles\":" << scene.dual_contour_triangles
+             << ",\"four_hexahedra_triangles\":" << scene.four_hexahedra_triangles
              << ",\"optimized_surface_vertices\":" << scene.optimized_surface_vertices
              << ",\"rejected_surface_moves\":" << scene.rejected_surface_moves
              << ",\"optimized_volume_boundary_vertices\":" << scene.optimized_volume_boundary_vertices

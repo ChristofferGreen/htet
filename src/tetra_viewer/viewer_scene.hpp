@@ -1,5 +1,6 @@
 #pragma once
 
+#include "tetra_core/four_hexahedra.hpp"
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
 
@@ -234,7 +235,8 @@ inline constexpr std::array shading_models{
 }
 
 enum class SurfaceMethod { full_tetrahedra, marching_tetrahedra, lattice_cleaving,
-                           tetrahedral_layer, dual_contouring, surface_optimization };
+                           tetrahedral_layer, dual_contouring, four_hexahedra,
+                           surface_optimization };
 
 inline constexpr std::array surface_methods{
     SurfaceMethod::full_tetrahedra,
@@ -242,6 +244,7 @@ inline constexpr std::array surface_methods{
     SurfaceMethod::lattice_cleaving,
     SurfaceMethod::tetrahedral_layer,
     SurfaceMethod::dual_contouring,
+    SurfaceMethod::four_hexahedra,
     SurfaceMethod::surface_optimization,
 };
 
@@ -252,6 +255,7 @@ inline constexpr std::array surface_methods{
     case SurfaceMethod::lattice_cleaving: return "Lattice-cleaved boundary layer";
     case SurfaceMethod::tetrahedral_layer: return "Extracted tetrahedral layer (experimental)";
     case SurfaceMethod::dual_contouring: return "Dual contour surface (experimental)";
+    case SurfaceMethod::four_hexahedra: return "Four-hexahedra surface (Scholz-inspired)";
     case SurfaceMethod::surface_optimization: return "Surface optimization (TetWeave-inspired)";
   }
   return "Unknown";
@@ -264,6 +268,7 @@ inline constexpr std::array surface_methods{
     case SurfaceMethod::lattice_cleaving: return "lattice-cleaving";
     case SurfaceMethod::tetrahedral_layer: return "tetrahedral-layer";
     case SurfaceMethod::dual_contouring: return "dual-contouring";
+    case SurfaceMethod::four_hexahedra: return "four-hexahedra";
     case SurfaceMethod::surface_optimization: return "surface-optimization";
   }
   return "unknown";
@@ -312,6 +317,9 @@ struct SurfacePatchDependency {
     case SurfaceMethod::dual_contouring:
       return {SurfacePatchNeighbourhood::incident_edge_star,1U,
               "each dual polygon needs every cell incident to its primal edge"};
+    case SurfaceMethod::four_hexahedra:
+      return {SurfacePatchNeighbourhood::owner,0U,
+              "each conforming cell has an independent matching-boundary reference mesh"};
     case SurfaceMethod::full_tetrahedra:
       return {SurfacePatchNeighbourhood::global,
               std::numeric_limits<std::uint8_t>::max(),
@@ -583,6 +591,7 @@ struct PreparedScene {
   double cleaved_volume{};
   std::size_t surface_layer_tetrahedra{};
   std::size_t dual_contour_triangles{};
+  std::size_t four_hexahedra_triangles{};
   std::size_t optimized_surface_vertices{};
   std::size_t rejected_surface_moves{};
   std::size_t optimized_volume_boundary_vertices{};
@@ -698,6 +707,9 @@ struct SurfacePatchMetrics {
   std::size_t retired_patches{};
   std::size_t generated_triangles{};
   std::size_t reused_triangles{};
+  std::size_t evaluated_field_samples{};
+  std::size_t reused_field_samples{};
+  std::size_t field_sample_records{};
   std::size_t output_triangles{};
   std::size_t arena_slots{};
   std::size_t free_slots{};
@@ -1173,6 +1185,7 @@ class SceneCache {
   std::vector<tetra::TetId> surface_patch_cell_scratch_;
   std::vector<SurfacePatchOwnerCell> surface_patch_owner_cells_;
   tetra::DualContourPatchBuilder dual_patch_builder_;
+  tetra::FourHexahedraPatchBuilder four_hexahedra_patch_builder_;
   std::vector<tetra::DualContourPatchDependency> dual_patch_dependencies_;
   std::vector<tetra::DualContourPatchTriangle> dual_patch_triangle_scratch_;
   SurfacePatchMetrics surface_patch_metrics_;
@@ -1181,6 +1194,7 @@ class SceneCache {
   tetra::SubdivisionMethod surface_patch_subdivision_method_{
       tetra::SubdivisionMethod::maubach_diamond};
   bool surface_patch_dual_topology_{};
+  bool surface_patch_four_hexahedra_{};
   bool surface_patch_initialized_{};
 };
 

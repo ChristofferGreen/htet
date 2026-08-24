@@ -197,3 +197,13 @@
   resolutions, malformed inputs, both green-transition strategies, and every
   paired face in their refined conforming red/green cuts. Shared faces produce
   identical `3n^2+3n+1` sample sets without renderer or extractor changes.
+- [x] CPU-G5-2 cell-local four-hexahedra extractor and retained patch cache:
+  added a separate `four-hexahedra` surface option with an ambiguity-free
+  face-centred tetrahedralization of every barycentric hexahedron. Sixty fixed
+  field locations per conforming cell are retained in one flat fixed-stride
+  arena keyed by logical owner, cell, vertices, and field revision; generated
+  triangles reuse the existing packed owner-patch and draw-chunk path. Release
+  tests prove closed outward output under both BCC transition strategies,
+  exact patched/monolithic hashes, local topology invalidation, complete field
+  invalidation, zero-evaluation reuse after method switching, and headless
+  dropdown selection.

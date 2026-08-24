@@ -5,6 +5,9 @@
 - none
 
 ## Recent Test Runs
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 206 tests passed after CPU-G5-2 separate four-hexahedra surface extraction, flat retained field samples, and owner-local patch invalidation
+- 2026-08-24 local | pass | mode: release | command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "four-hexahedra|surface methods include|surface patch dependency|every implicit shape"` | failures: none | notes: ten focused construction, closed-surface, retained-field-cache, dropdown, registry, and all-shape tests passed
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation CPU-G5-2 four-hexahedra extractor and retained-cache baseline passed all 203 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: final CPU-G5-1 gate passed all 203 tests with overflow-safe exact rational sampling
 - 2026-08-24 local | pass | mode: release | command: `cmake --build build/release --target tetra_tests -j 8 && ctest --test-dir build/release --output-on-failure -R "Scholz|four-hexahedra"` | failures: none | notes: all three focused tests passed after adding exact-sample overflow rejection
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 203 tests passed after CPU-G5-1 exact four-hexahedra construction and symbolic red/green shared-boundary proof

@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G5-2 cell-local four-hexahedra extractor and retained patch cache.
-  - Scope: add a separate surface-method option and cache field samples and
-    generated owner patches by field/topology revision.
-  - Acceptance: exact deterministic local invalidation and closed output on all
-    supported BCC orientations, without replacing another method silently.
-  - Stop rule: finish functional extraction before quality benchmarking.
 - [ ] CPU-G5-3 four-hexahedra quality and update-cost benchmark.
   - Scope: measure Hausdorff distance, normal-angle error, aspect ratio,
     triangles, field samples, patch time, and end-to-end update time.
