@@ -6,6 +6,9 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 189 tests passed after CPU-G3-2, including exact patch hashes, cache lifecycle, headless fallback diagnostics, deterministic renderer output, and committed visual baselines
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "owner patches|owner patch arena|headless scene preparation reports local patch|batched implicit|surface extraction follows|scene cache"` | failures: none | notes: all 11 focused tests passed; exact patched hashes, retained ranges and bytes, split/merge retirement, zero-rebuild reuse, and local/global fallback metrics are covered
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation CPU-G3-2 marching/lattice packed patch-cache baseline passed all 186 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 186 tests passed after the surface patch dependency registry and headless locality diagnostics
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface patch dependency|headless surface statistics expose patch|headless events identify"` | failures: none | notes: all three focused tests passed; all six methods expose exact locality, halo, patchability, and rationale fields
 - 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface patch dependency|headless surface statistics expose patch|headless events identify"` | failures: headless surface statistics expose patch dependency contracts | notes: two of three passed; default connected volume rejects non-optimized surface selections in the diagnostic matrix

@@ -114,3 +114,11 @@
   tetrahedral-shell, and optimized surfaces retain conservative global
   fallback. Headless diagnostics and exhaustive registry tests expose and
   enforce the contract.
+- [x] CPU-G3-2 marching/lattice packed patch cache: retained sorted owner
+  records and one flat triangle arena with coalesced free ranges; invalidated
+  exact dirty owners through split and inverse merge; preserved unchanged
+  ranges, capacities, and bytes; and matched monolithic triangle and edge
+  hashes. Headless metrics distinguish rebuild/reuse/retirement, incident-star
+  monolithic fallback, and global fallback. The default 13,284-owner terrain
+  generated 6,784 triangles in 1.896 ms; switching methods reused every patch
+  with zero rebuilds in 0.666 ms.

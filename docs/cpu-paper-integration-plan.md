@@ -744,16 +744,16 @@ research comparison; classify-and-stream remains the fastest correct default.
 
 - [x] Define the local dependency radius for each existing surface method and
   mark methods as patchable or global.
-- [ ] Add packed patch records and retained patch arenas keyed by logical owner.
-- [ ] Reuse unchanged patches across split, merge, and stationary requests.
-- [ ] Invalidate changed owners plus the exact required face/transition
+- [x] Add packed patch records and retained patch arenas keyed by logical owner.
+- [x] Reuse unchanged patches across split, merge, and stationary requests.
+- [x] Invalidate changed owners plus the exact required face/transition
   neighbourhood.
 - [ ] Generate triangle edges from the same patch topology as the filled
   triangles so every visible surface triangle retains all three depth-tested
   edges.
 - [ ] Compare patched output against monolithic scene preparation for exact
   triangle, orientation, edge-incidence, and material-boundary hashes.
-- [ ] Keep a measured global fallback for non-local surface methods.
+- [x] Keep a measured global fallback for non-local surface methods.
 
 Exit condition: a local camera move rebuilds surface geometry in proportion to
 dirty owners and is bitwise-equivalent to the monolithic reference for every
@@ -784,6 +784,32 @@ contract used by later cache and fallback work. Headless events expose
 silently claim locality for a global method. Global assignments are
 conservative statements about the current algorithms, not claims that a future
 algorithm could never be localized.
+
+#### Packed owner-patch cache
+
+Marching tetrahedra and lattice cleaving now share a retained cache keyed by
+the stable logical red owner. Sorted `SurfacePatchRecord` entries refer into
+one flat triangle arena; a coalesced flat free-range table recycles retired
+ranges. Split and merge commits invalidate the authoritative dirty-owner set,
+while unchanged owners retain the same arena offset, capacity, and bytes. A
+field-revision discontinuity or non-consecutive mesh revision conservatively
+rebuilds the complete owner set. No owner, triangle, or free range has an
+individual allocation.
+
+The cache assembles its output in logical-owner order and matches monolithic
+marching/lattice triangle and canonical edge hashes through split and inverse
+merge operations. Switching between the two methods reuses the same topology
+without rebuilding any owner patches. Dual contouring currently reports a
+monolithic, non-global fallback pending the incident-edge-star cache; globally
+coupled shell and optimization methods report a global fallback. Retained
+owner storage survives either fallback and is immediately reusable when an
+owner-local method is selected again.
+
+On the 13,284-owner default terrain, the first marching build generated 6,784
+triangles in 1.896 ms and retained 2.86 MB. Switching to lattice cleaving
+rebuilt zero patches, reused all 13,284 records and 6,784 triangles, and spent
+0.666 ms in patch assembly. These are direct release/headless measurements;
+the complete camera-path comparison remains the CPU-G3-4 exit benchmark.
 
 ### Gate 4 - Independent fixed-capacity draw chunks
 

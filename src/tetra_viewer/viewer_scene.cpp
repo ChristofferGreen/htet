@@ -1206,9 +1206,8 @@ void append_marching_tetrahedra(PreparedScene& scene, const tetra::TetMesh& mesh
   }
 }
 
-void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
-                             const tetra::Sphere& sphere, bool show_faces,
-                             bool show_surface_edges) {
+void build_lattice_cleaved_cells(PreparedScene& scene,const tetra::TetMesh& mesh,
+                                 const tetra::Sphere& sphere) {
   // Only sign-changing leaves are replaced. For a single inside corner the
   // clipped material is one tetrahedron; the two- and three-inside cases are
   // triangular prisms with deterministic three-tetrahedron decompositions.
@@ -1253,6 +1252,12 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
     }
   }
   scene.cleaved_tetrahedra=scene.cleaved_cells.size();
+}
+
+void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
+                             const tetra::Sphere& sphere, bool show_faces,
+                             bool show_surface_edges) {
+  build_lattice_cleaved_cells(scene,mesh,sphere);
   const auto triangles = tetra::extract_isosurface(mesh, sphere);
   if (!show_faces && !show_surface_edges) return;
   for (const auto& triangle : triangles) {
@@ -2167,7 +2172,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                             StencilConstruction stencil_construction,
                             StencilSelectionObjective stencil_selection_objective,
                             ScenePreparationOptions preparation,
-                            std::span<const tetra::Triangle> surface_override) {
+                            std::span<const tetra::Triangle> surface_override,
+                            bool surface_override_is_owner_patches) {
   PreparedScene scene;
   const auto leaves = mesh.conforming_volume().addresses();
   scene.relations.reserve(leaves.size());
@@ -2325,10 +2331,25 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   const bool connected_optimized_surface=
       surface_method==SurfaceMethod::surface_optimization&&
       uses_connected_volume(volume_connection_method);
-  if(!surface_override.empty()){
+  if(!surface_override.empty()||surface_override_is_owner_patches){
+    std::array<float,3> colour{{0.24F,0.76F,0.38F}};
+    if(surface_override_is_owner_patches){
+      if(surface_method==SurfaceMethod::marching_tetrahedra){
+        scene.marching_tetrahedra_triangles=surface_override.size();
+        colour={{0.32F,0.76F,0.42F}};
+      }else if(surface_method==SurfaceMethod::lattice_cleaving){
+        build_lattice_cleaved_cells(scene,mesh,sphere);
+        colour={{0.80F,0.58F,0.24F}};
+      }
+    }
     for(const auto& triangle:surface_override){
-      const auto normal=face_normal(triangle.a,triangle.b,triangle.c);
-      constexpr std::array<float,3> colour{{0.24F,0.76F,0.38F}};
+      auto normal=face_normal(triangle.a,triangle.b,triangle.c);
+      if(surface_override_is_owner_patches){
+        const auto centre=(triangle.a+triangle.b+triangle.c)/3.0;
+        const auto outward=sphere.normal(centre);
+        if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+          normal={-normal.x,-normal.y,-normal.z};
+      }
       if(show_faces||show_surface_edges){
         add_triangle(triangle.a,colour,normal);
         add_triangle(triangle.b,colour,normal);
@@ -2411,6 +2432,257 @@ ProjectionStatistics prepare_projection_statistics(const tetra::TetMesh& mesh, c
   return statistics;
 }
 
+void SceneCache::set_surface_patch_fallback(
+    bool monolithic_fallback,bool global_fallback){
+  surface_patch_metrics_={};
+  surface_patch_metrics_.monolithic_fallback=monolithic_fallback;
+  surface_patch_metrics_.global_fallback=global_fallback;
+  surface_patch_metrics_.arena_slots=surface_patch_arena_.size();
+  for(const auto range:surface_patch_free_ranges_)
+    surface_patch_metrics_.free_slots+=range.count;
+  surface_patch_metrics_.retained_bytes=
+      surface_patch_records_.capacity()*sizeof(SurfacePatchRecord)+
+      surface_patch_record_scratch_.capacity()*sizeof(SurfacePatchRecord)+
+      surface_patch_arena_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_output_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_triangle_scratch_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
+      surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell);
+}
+
+void SceneCache::update_surface_patches(
+    const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
+    std::uint64_t field_revision){
+  const auto start=std::chrono::steady_clock::now();
+  surface_patch_metrics_={};
+  surface_patch_metrics_.active=true;
+
+  const bool bcc=mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green;
+  surface_patch_owner_scratch_.clear();
+  surface_patch_owner_cells_.clear();
+  if(bcc){
+    const auto& owners=mesh.logical_red_owners();
+    surface_patch_owner_scratch_.assign(owners.begin(),owners.end());
+  }else{
+    const auto volume=mesh.conforming_volume();
+    surface_patch_owner_cells_.reserve(volume.size());
+    for(std::size_t index=0;index<volume.size();++index){
+      const auto cell=volume.cell(index);
+      surface_patch_owner_cells_.push_back({cell.logical_owner,cell.address});
+    }
+    std::sort(surface_patch_owner_cells_.begin(),surface_patch_owner_cells_.end(),
+              [](const auto& left,const auto& right){
+                return left.owner<right.owner||
+                    (left.owner==right.owner&&left.cell<right.cell);
+              });
+    for(const auto entry:surface_patch_owner_cells_)
+      if(surface_patch_owner_scratch_.empty()||
+         surface_patch_owner_scratch_.back()!=entry.owner)
+        surface_patch_owner_scratch_.push_back(entry.owner);
+  }
+
+  bool rebuild_all=!surface_patch_initialized_||
+      surface_patch_field_revision_!=field_revision||
+      surface_patch_subdivision_method_!=mesh.subdivision_method()||
+      mesh.revision()<surface_patch_mesh_revision_||
+      (surface_patch_mesh_revision_!=std::numeric_limits<std::uint64_t>::max()&&
+       mesh.revision()>surface_patch_mesh_revision_+1U);
+  surface_patch_dirty_scratch_.clear();
+  if(rebuild_all){
+    surface_patch_dirty_scratch_=surface_patch_owner_scratch_;
+  }else if(mesh.revision()!=surface_patch_mesh_revision_){
+    const auto dirty=mesh.last_dirty_logical_owners();
+    surface_patch_dirty_scratch_.assign(dirty.begin(),dirty.end());
+    std::sort(surface_patch_dirty_scratch_.begin(),surface_patch_dirty_scratch_.end());
+    surface_patch_dirty_scratch_.erase(
+        std::unique(surface_patch_dirty_scratch_.begin(),
+                    surface_patch_dirty_scratch_.end()),
+        surface_patch_dirty_scratch_.end());
+    if(surface_patch_dirty_scratch_.empty()){
+      rebuild_all=true;
+      surface_patch_dirty_scratch_=surface_patch_owner_scratch_;
+    }
+  }
+  surface_patch_metrics_.full_rebuild=rebuild_all;
+  surface_patch_metrics_.dirty_owners=surface_patch_dirty_scratch_.size();
+
+  const auto normalize_free_ranges=[&]{
+    std::sort(surface_patch_free_ranges_.begin(),surface_patch_free_ranges_.end(),
+              [](const auto& left,const auto& right){return left.begin<right.begin;});
+    std::size_t output{};
+    for(const auto range:surface_patch_free_ranges_){
+      if(range.count==0U)continue;
+      if(output!=0U&&surface_patch_free_ranges_[output-1U].begin+
+             surface_patch_free_ranges_[output-1U].count>=range.begin){
+        auto& previous=surface_patch_free_ranges_[output-1U];
+        previous.count=std::max(previous.begin+previous.count,
+                                range.begin+range.count)-previous.begin;
+      }else surface_patch_free_ranges_[output++]=range;
+    }
+    surface_patch_free_ranges_.resize(output);
+    while(!surface_patch_free_ranges_.empty()){
+      const auto range=surface_patch_free_ranges_.back();
+      if(range.begin+range.count!=surface_patch_arena_.size())break;
+      surface_patch_arena_.resize(range.begin);
+      surface_patch_free_ranges_.pop_back();
+    }
+  };
+  const auto retire=[&](const SurfacePatchRecord& record){
+    if(record.triangle_capacity!=0U)
+      surface_patch_free_ranges_.push_back(
+          {record.triangle_begin,record.triangle_capacity});
+    ++surface_patch_metrics_.retired_patches;
+  };
+  for(const auto& record:surface_patch_records_)
+    if(!std::binary_search(surface_patch_owner_scratch_.begin(),
+                           surface_patch_owner_scratch_.end(),
+                           record.logical_owner))retire(record);
+  normalize_free_ranges();
+
+  const auto allocate=[&](std::size_t count){
+    if(count==0U)return std::size_t{};
+    std::size_t best=surface_patch_free_ranges_.size();
+    for(std::size_t index=0;index<surface_patch_free_ranges_.size();++index){
+      if(surface_patch_free_ranges_[index].count<count)continue;
+      if(best==surface_patch_free_ranges_.size()||
+         surface_patch_free_ranges_[index].count<surface_patch_free_ranges_[best].count)
+        best=index;
+    }
+    if(best!=surface_patch_free_ranges_.size()){
+      const auto begin=surface_patch_free_ranges_[best].begin;
+      surface_patch_free_ranges_[best].begin+=count;
+      surface_patch_free_ranges_[best].count-=count;
+      if(surface_patch_free_ranges_[best].count==0U)
+        surface_patch_free_ranges_.erase(
+            surface_patch_free_ranges_.begin()+static_cast<std::ptrdiff_t>(best));
+      return begin;
+    }
+    const auto begin=surface_patch_arena_.size();
+    surface_patch_arena_.resize(begin+count);
+    return begin;
+  };
+  const auto cells_for=[&](std::size_t owner_index){
+    surface_patch_cell_scratch_.clear();
+    const auto owner=surface_patch_owner_scratch_[owner_index];
+    if(bcc){
+      const auto offsets=mesh.logical_derived_offsets();
+      const auto addresses=mesh.logical_derived_addresses();
+      if(offsets.size()==surface_patch_owner_scratch_.size()+1U){
+        const auto begin=offsets[owner_index],end=offsets[owner_index+1U];
+        if(begin!=end){
+          surface_patch_cell_scratch_.assign(
+              addresses.begin()+static_cast<std::ptrdiff_t>(begin),
+              addresses.begin()+static_cast<std::ptrdiff_t>(end));
+          return;
+        }
+      }
+      surface_patch_cell_scratch_.push_back(owner);
+      return;
+    }
+    const auto begin=std::lower_bound(
+        surface_patch_owner_cells_.begin(),surface_patch_owner_cells_.end(),owner,
+        [](const auto& entry,tetra::TetId value){return entry.owner<value;});
+    for(auto found=begin;found!=surface_patch_owner_cells_.end()&&
+        found->owner==owner;++found)surface_patch_cell_scratch_.push_back(found->cell);
+  };
+  const auto patch_bounds=[&](SurfacePatchRecord& record){
+    const double infinity=std::numeric_limits<double>::infinity();
+    record.bounds_minimum={infinity,infinity,infinity};
+    record.bounds_maximum={-infinity,-infinity,-infinity};
+    const auto include=[&](tetra::Vec3 point){
+      record.bounds_minimum.x=std::min(record.bounds_minimum.x,point.x);
+      record.bounds_minimum.y=std::min(record.bounds_minimum.y,point.y);
+      record.bounds_minimum.z=std::min(record.bounds_minimum.z,point.z);
+      record.bounds_maximum.x=std::max(record.bounds_maximum.x,point.x);
+      record.bounds_maximum.y=std::max(record.bounds_maximum.y,point.y);
+      record.bounds_maximum.z=std::max(record.bounds_maximum.z,point.z);
+    };
+    for(std::size_t triangle=0;triangle<record.triangle_count;++triangle){
+      const auto& value=surface_patch_arena_[record.triangle_begin+triangle];
+      include(value.a);include(value.b);include(value.c);
+    }
+    if(record.triangle_count==0U)
+      for(const auto vertex:mesh.tetrahedron(record.logical_owner).vertices)
+        include(mesh.vertices()[vertex]);
+  };
+
+  surface_patch_record_scratch_.clear();
+  surface_patch_record_scratch_.reserve(surface_patch_owner_scratch_.size());
+  for(std::size_t owner_index=0;owner_index<surface_patch_owner_scratch_.size();++owner_index){
+    const auto owner=surface_patch_owner_scratch_[owner_index];
+    const auto found=std::lower_bound(
+        surface_patch_records_.begin(),surface_patch_records_.end(),owner,
+        [](const auto& record,tetra::TetId value){return record.logical_owner<value;});
+    const bool retained=found!=surface_patch_records_.end()&&found->logical_owner==owner;
+    const bool dirty=rebuild_all||!retained||std::binary_search(
+        surface_patch_dirty_scratch_.begin(),surface_patch_dirty_scratch_.end(),owner);
+    if(!dirty){
+      surface_patch_record_scratch_.push_back(*found);
+      ++surface_patch_metrics_.reused_patches;
+      surface_patch_metrics_.reused_triangles+=found->triangle_count;
+      continue;
+    }
+    cells_for(owner_index);
+    tetra::extract_isosurface(
+        mesh,sphere,surface_patch_cell_scratch_,surface_patch_triangle_scratch_);
+    SurfacePatchRecord record;
+    if(retained)record=*found;
+    else record.logical_owner=owner;
+    if(!retained||surface_patch_triangle_scratch_.size()>record.triangle_capacity){
+      if(retained){retire(record);normalize_free_ranges();}
+      record.triangle_begin=allocate(surface_patch_triangle_scratch_.size());
+      record.triangle_capacity=surface_patch_triangle_scratch_.size();
+    }
+    record.mesh_revision=mesh.revision();
+    record.field_revision=field_revision;
+    record.triangle_count=surface_patch_triangle_scratch_.size();
+    std::copy(surface_patch_triangle_scratch_.begin(),
+              surface_patch_triangle_scratch_.end(),
+              surface_patch_arena_.begin()+static_cast<std::ptrdiff_t>(record.triangle_begin));
+    patch_bounds(record);
+    surface_patch_record_scratch_.push_back(record);
+    ++surface_patch_metrics_.rebuilt_patches;
+    surface_patch_metrics_.generated_triangles+=surface_patch_triangle_scratch_.size();
+  }
+  surface_patch_records_.swap(surface_patch_record_scratch_);
+
+  surface_patch_output_.clear();
+  std::size_t triangle_count{};
+  for(const auto& record:surface_patch_records_)triangle_count+=record.triangle_count;
+  surface_patch_output_.reserve(triangle_count);
+  for(const auto& record:surface_patch_records_)
+    surface_patch_output_.insert(
+        surface_patch_output_.end(),
+        surface_patch_arena_.begin()+static_cast<std::ptrdiff_t>(record.triangle_begin),
+        surface_patch_arena_.begin()+static_cast<std::ptrdiff_t>(
+            record.triangle_begin+record.triangle_count));
+  surface_patch_mesh_revision_=mesh.revision();
+  surface_patch_field_revision_=field_revision;
+  surface_patch_subdivision_method_=mesh.subdivision_method();
+  surface_patch_initialized_=true;
+  surface_patch_metrics_.output_triangles=surface_patch_output_.size();
+  surface_patch_metrics_.arena_slots=surface_patch_arena_.size();
+  for(const auto range:surface_patch_free_ranges_)
+    surface_patch_metrics_.free_slots+=range.count;
+  surface_patch_metrics_.retained_bytes=
+      surface_patch_records_.capacity()*sizeof(SurfacePatchRecord)+
+      surface_patch_record_scratch_.capacity()*sizeof(SurfacePatchRecord)+
+      surface_patch_arena_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_output_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_triangle_scratch_.capacity()*sizeof(tetra::Triangle)+
+      surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
+      surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell);
+  surface_patch_metrics_.update_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-start).count();
+}
+
 bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
                               SurfaceMethod surface_method, MaterialRule material_rule,
                               bool show_faces, bool show_hierarchy_edges,
@@ -2441,11 +2713,21 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
   if (base_unchanged && cut_unchanged)
     return false;
   if (!base_unchanged) {
+    const bool owner_patch_override=surface_override.empty()&&
+        (surface_method==SurfaceMethod::marching_tetrahedra||
+         surface_method==SurfaceMethod::lattice_cleaving);
+    if(owner_patch_override)update_surface_patches(mesh,sphere,sphere_revision);
+    else set_surface_patch_fallback(
+        surface_override.empty(),surface_override.empty()&&
+        !surface_patch_dependency(surface_method).patchable());
+    const std::span<const tetra::Triangle> effective_surface=
+        owner_patch_override?std::span<const tetra::Triangle>(surface_patch_output_):
+                             surface_override;
     base_scene_ = prepare_scene(mesh, sphere, surface_method, material_rule, show_faces,
                                show_hierarchy_edges, show_surface_edges, depth_colours,
                                false, false, x_cut_position,volume_connection_method,
                                stencil_construction,stencil_selection_objective,preparation,
-                               surface_override);
+                               effective_surface,owner_patch_override);
     volume_classification_valid_ = false;
   }
   if(uses_connected_volume(volume_connection_method)&&

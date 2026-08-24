@@ -399,6 +399,9 @@ class SurfaceOnlyView {
 [[nodiscard]] std::vector<Triangle> extract_isosurface(const TetMesh& mesh, const Sphere& sphere);
 [[nodiscard]] std::vector<Triangle> extract_isosurface(
     const TetMesh& mesh,const Sphere& sphere,std::span<const TetId> tetrahedra);
+void extract_isosurface(
+    const TetMesh& mesh,const Sphere& sphere,std::span<const TetId> tetrahedra,
+    std::vector<Triangle>& triangles);
 // Tetrahedral dual contouring: one constrained QEF vertex per sign-changing
 // active leaf, connected into polygons around sign-changing primal edges.
 [[nodiscard]] std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sphere);

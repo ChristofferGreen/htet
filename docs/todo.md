@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G3-2 marching/lattice packed patch cache.
-  - Scope: add retained packed patch records and arenas keyed by logical owner,
-    including dirty-owner invalidation, reuse, retirement, and global fallback.
-  - Acceptance: marching and lattice surfaces exactly match monolithic triangle
-    and edge hashes while unchanged owners preserve patch ranges and bytes.
-  - Stop rule: dual contouring and global surface methods remain on fallback.
 - [ ] CPU-G3-3 dual-contour edge-star patches.
   - Scope: assign each crossed primal edge to one deterministic logical owner
     and invalidate its complete incident owner star.

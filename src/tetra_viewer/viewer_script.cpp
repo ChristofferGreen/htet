@@ -1060,6 +1060,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
   const auto initialization_start = Clock::now();
   const auto& initialized=initialized_script_state();
   ScriptState state=initialized.state;
+  SceneCache scene_cache;
   const auto initial_refinement=initialized.refinement;
   output << "{\"event\":\"initialized\",\"duration_ms\":" << std::fixed << std::setprecision(3)
          << milliseconds_since(initialization_start) << ",\"adaptive_iterations\":" << initial_refinement.iterations
@@ -1687,13 +1688,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
     }
     if (command == "prepare-scene") {
       const auto start = Clock::now();
-      const auto scene = prepare_scene(
-          state.mesh, state.sphere, state.surface_method, state.material_rule,
+      static_cast<void>(scene_cache.update_scene(
+          state.mesh, state.sphere, state.field_revision,
+          state.surface_method, state.material_rule,
           state.show_faces, state.show_hierarchy_edges, state.show_surface_edges, true,
           state.x_cutaway && state.show_volume_edges,
           state.x_cutaway && state.show_volume_faces, state.x_cut_position,
           state.volume_connection_method,state.stencil_construction,
-          state.stencil_selection_objective,{},state.surface_hierarchy_triangles);
+          state.stencil_selection_objective,{},state.surface_hierarchy_triangles,
+          state.surface_hierarchy.rebuild_count));
+      const auto& scene=scene_cache.scene();
+      const auto& patches=scene_cache.surface_patch_metrics();
       const auto projection = prepare_projection_statistics(
           state.mesh, scene, state.camera, state.pixel_threshold);
       const auto duration = milliseconds_since(start);
@@ -1711,6 +1716,24 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"connected_volume_vertices\":" << scene.connected_volume_vertices.size()
              << ",\"connected_volume_tetrahedra\":" << scene.connected_volume_tetrahedra.size()
              << ",\"upload_bytes\":" << (scene.triangle_vertices.size()+scene.hierarchy_line_vertices.size()+scene.surface_line_vertices.size())*sizeof(SceneVertex)
+             << ",\"surface_patch_active\":" << (patches.active?"true":"false")
+             << ",\"surface_patch_monolithic_fallback\":"
+             << (patches.monolithic_fallback?"true":"false")
+             << ",\"surface_patch_global_fallback\":"
+             << (patches.global_fallback?"true":"false")
+             << ",\"surface_patch_full_rebuild\":"
+             << (patches.full_rebuild?"true":"false")
+             << ",\"surface_patch_dirty_owners\":" << patches.dirty_owners
+             << ",\"surface_patches_rebuilt\":" << patches.rebuilt_patches
+             << ",\"surface_patches_reused\":" << patches.reused_patches
+             << ",\"surface_patches_retired\":" << patches.retired_patches
+             << ",\"surface_patch_generated_triangles\":" << patches.generated_triangles
+             << ",\"surface_patch_reused_triangles\":" << patches.reused_triangles
+             << ",\"surface_patch_output_triangles\":" << patches.output_triangles
+             << ",\"surface_patch_arena_slots\":" << patches.arena_slots
+             << ",\"surface_patch_free_slots\":" << patches.free_slots
+             << ",\"surface_patch_retained_bytes\":" << patches.retained_bytes
+             << ",\"surface_patch_update_ms\":" << patches.update_milliseconds
              << ",\"inside\":" << scene.inside_count
              << ",\"outside\":" << scene.outside_count
              << ",\"intersecting\":" << scene.intersecting_count

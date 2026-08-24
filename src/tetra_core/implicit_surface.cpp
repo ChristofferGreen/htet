@@ -2532,9 +2532,11 @@ PreorderRenderMetrics render_preorder_surface(
   return metrics;
 }
 
-std::vector<Triangle> extract_isosurface(
-    const TetMesh& mesh,const Sphere& sphere,std::span<const TetId> tetrahedra) {
-  std::vector<Triangle> triangles;
+void extract_isosurface(
+    const TetMesh& mesh,const Sphere& sphere,std::span<const TetId> tetrahedra,
+    std::vector<Triangle>& triangles) {
+  triangles.clear();
+  triangles.reserve(tetrahedra.size()*2U);
   constexpr std::array<std::array<int, 2>, 6> edges{{{{0, 1}}, {{0, 2}}, {{0, 3}}, {{1, 2}}, {{1, 3}}, {{2, 3}}}};
   const auto cross = [](Vec3 a, Vec3 b) { return Vec3{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x}; };
   const auto dot = [](Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
@@ -2546,26 +2548,37 @@ std::vector<Triangle> extract_isosurface(
       points[i] = mesh.vertices().at(tet[i]);
       distances[i] = sphere.signed_distance(points[i]);
     }
-    std::vector<Vec3> crossings;
+    std::array<Vec3,4> crossings{};
+    std::size_t crossing_count{};
     for (const auto& edge : edges) {
       const std::size_t first = static_cast<std::size_t>(edge[0]), second = static_cast<std::size_t>(edge[1]);
       if ((distances[first] < 0.0) == (distances[second] < 0.0)) continue;
-      crossings.push_back(sphere.edge_intersection(points[first],points[second]));
+      crossings[crossing_count++]=sphere.edge_intersection(points[first],points[second]);
     }
-    if (crossings.size() < 3) continue;
+    if (crossing_count < 3) continue;
     Vec3 centre{};
-    for (const Vec3 point : crossings) centre = centre + point;
-    centre = centre / static_cast<double>(crossings.size());
+    for(std::size_t crossing=0;crossing<crossing_count;++crossing)
+      centre=centre+crossings[crossing];
+    centre = centre / static_cast<double>(crossing_count);
     const Vec3 normal=sphere.normal(centre);
     const Vec3 reference = std::abs(normal.z) < 0.9 ? Vec3{0.0, 0.0, 1.0} : Vec3{0.0, 1.0, 0.0};
     const Vec3 axis_u = cross(reference, normal);
     const Vec3 axis_v = cross(normal, axis_u);
-    std::sort(crossings.begin(), crossings.end(), [&](Vec3 left, Vec3 right) {
+    std::sort(crossings.begin(),
+              crossings.begin()+static_cast<std::ptrdiff_t>(crossing_count),
+              [&](Vec3 left, Vec3 right) {
       const Vec3 left_offset = left - centre, right_offset = right - centre;
       return std::atan2(dot(left_offset, axis_v), dot(left_offset, axis_u)) < std::atan2(dot(right_offset, axis_v), dot(right_offset, axis_u));
     });
-    for (std::size_t index = 1; index + 1 < crossings.size(); ++index) triangles.push_back({crossings[0], crossings[index], crossings[index + 1]});
+    for (std::size_t index = 1; index + 1 < crossing_count; ++index)
+      triangles.push_back({crossings[0], crossings[index], crossings[index + 1]});
   }
+}
+
+std::vector<Triangle> extract_isosurface(
+    const TetMesh& mesh,const Sphere& sphere,std::span<const TetId> tetrahedra) {
+  std::vector<Triangle> triangles;
+  extract_isosurface(mesh,sphere,tetrahedra,triangles);
   return triangles;
 
   constexpr std::array<std::array<int, 2>, 6> legacy_edges{{{{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};

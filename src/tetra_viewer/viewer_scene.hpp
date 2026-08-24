@@ -666,6 +666,35 @@ struct ProjectionStatistics {
   std::size_t accepted_count{};
 };
 
+struct SurfacePatchRecord {
+  tetra::TetId logical_owner{tetra::invalid_tet};
+  std::uint64_t mesh_revision{};
+  std::uint64_t field_revision{};
+  std::size_t triangle_begin{};
+  std::size_t triangle_count{};
+  std::size_t triangle_capacity{};
+  tetra::Vec3 bounds_minimum{};
+  tetra::Vec3 bounds_maximum{};
+};
+
+struct SurfacePatchMetrics {
+  bool active{};
+  bool monolithic_fallback{};
+  bool global_fallback{};
+  bool full_rebuild{};
+  std::size_t dirty_owners{};
+  std::size_t rebuilt_patches{};
+  std::size_t reused_patches{};
+  std::size_t retired_patches{};
+  std::size_t generated_triangles{};
+  std::size_t reused_triangles{};
+  std::size_t output_triangles{};
+  std::size_t arena_slots{};
+  std::size_t free_slots{};
+  std::size_t retained_bytes{};
+  double update_milliseconds{};
+};
+
 // Geometry preparation is also used by headless research scripts, which need
 // all measurements.  The interactive viewer can explicitly omit measurements
 // that are neither displayed nor used by the selected shading model.
@@ -697,7 +726,8 @@ void expand_line_segments_for_upload(
                                           StencilSelectionObjective stencil_selection_objective =
                                               StencilSelectionObjective::balanced,
                                           ScenePreparationOptions preparation = {},
-                                          std::span<const tetra::Triangle> surface_override = {});
+                                          std::span<const tetra::Triangle> surface_override = {},
+                                          bool surface_override_is_owner_patches = false);
 [[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
                                                  SurfaceMethod surface_method, MaterialRule material_rule,
                                                  bool show_faces, bool show_edges, bool depth_colours) {
@@ -754,8 +784,31 @@ class SceneCache {
   [[nodiscard]] std::uint64_t projection_generation() const noexcept { return projection_generation_; }
   [[nodiscard]] bool initialized() const noexcept { return has_subdivision_method_; }
   [[nodiscard]] std::uint64_t mesh_revision() const noexcept { return mesh_revision_; }
+  [[nodiscard]] std::span<const SurfacePatchRecord> surface_patch_records() const noexcept {
+    return surface_patch_records_;
+  }
+  [[nodiscard]] std::span<const tetra::Triangle> surface_patch_arena() const noexcept {
+    return surface_patch_arena_;
+  }
+  [[nodiscard]] const SurfacePatchMetrics& surface_patch_metrics() const noexcept {
+    return surface_patch_metrics_;
+  }
 
  private:
+  struct SurfacePatchFreeRange {
+    std::size_t begin{};
+    std::size_t count{};
+  };
+  struct SurfacePatchOwnerCell {
+    tetra::TetId owner{tetra::invalid_tet};
+    tetra::TetId cell{tetra::invalid_tet};
+  };
+
+  void update_surface_patches(
+      const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
+      std::uint64_t field_revision);
+  void set_surface_patch_fallback(bool monolithic_fallback,bool global_fallback);
+
   PreparedScene scene_;
   PreparedScene base_scene_;
   ProjectionStatistics projection_;
@@ -787,6 +840,22 @@ class SceneCache {
   StencilSelectionObjective stencil_selection_objective_{StencilSelectionObjective::balanced};
   bool surface_diagnostics_available_{};
   bool summary_statistics_available_{};
+  std::vector<SurfacePatchRecord> surface_patch_records_;
+  std::vector<SurfacePatchRecord> surface_patch_record_scratch_;
+  std::vector<tetra::Triangle> surface_patch_arena_;
+  std::vector<tetra::Triangle> surface_patch_output_;
+  std::vector<tetra::Triangle> surface_patch_triangle_scratch_;
+  std::vector<SurfacePatchFreeRange> surface_patch_free_ranges_;
+  std::vector<tetra::TetId> surface_patch_owner_scratch_;
+  std::vector<tetra::TetId> surface_patch_dirty_scratch_;
+  std::vector<tetra::TetId> surface_patch_cell_scratch_;
+  std::vector<SurfacePatchOwnerCell> surface_patch_owner_cells_;
+  SurfacePatchMetrics surface_patch_metrics_;
+  std::uint64_t surface_patch_mesh_revision_{std::numeric_limits<std::uint64_t>::max()};
+  std::uint64_t surface_patch_field_revision_{std::numeric_limits<std::uint64_t>::max()};
+  tetra::SubdivisionMethod surface_patch_subdivision_method_{
+      tetra::SubdivisionMethod::maubach_diamond};
+  bool surface_patch_initialized_{};
 };
 
 }  // namespace tetra_viewer
