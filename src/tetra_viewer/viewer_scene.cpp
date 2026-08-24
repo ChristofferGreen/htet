@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <span>
 #include <stdexcept>
@@ -2738,26 +2739,37 @@ void SurfaceHostStagingStorage::stage(
   logical_vertex_offset=0U;
   for(const auto& chunk:source.chunks()){
     const auto vertex_count=chunk.triangle_count*3U;
+    const auto source_vertices=logical_vertices.subspan(
+        logical_vertex_offset,vertex_count);
     std::size_t retained_index=ranges_.size();
     for(std::size_t index=0;index<ranges_.size();++index){
       const auto& range=ranges_[index];
       if(range.source_arena_slot==chunk.arena_slot&&
          range.source_content_revision==chunk.content_revision&&
-         range.triangle_vertex_count==vertex_count){
+         range.triangle_vertex_count==vertex_count&&
+         (source_vertices.empty()||std::memcmp(
+             source_vertices.data(),
+             arena_.data()+static_cast<std::ptrdiff_t>(
+                 range.triangle_vertex_begin),
+             source_vertices.size_bytes())==0)){
         retained_index=index;
         break;
       }
     }
     std::size_t host_slot{};
+    std::uint64_t host_content_revision{};
     if(retained_index!=ranges_.size()){
       retained_ranges[retained_index]=true;
       host_slot=ranges_[retained_index].host_slot;
+      host_content_revision=ranges_[retained_index].host_content_revision;
       ++candidate_metrics.reused_ranges;
     }else{
       host_slot=allocate_slot(candidate_free_ranges,candidate_metrics);
+      host_content_revision=next_content_revision_++;
+      if(next_content_revision_==0U)next_content_revision_=1U;
       const auto destination=host_slot*vertex_slot_capacity();
       std::copy_n(
-          logical_vertices.begin()+static_cast<std::ptrdiff_t>(logical_vertex_offset),
+          source_vertices.begin(),
           vertex_count,
           arena_.begin()+static_cast<std::ptrdiff_t>(destination));
       ++candidate_metrics.dirty_ranges;
@@ -2771,6 +2783,7 @@ void SurfaceHostStagingStorage::stage(
         .host_slot=host_slot,
         .source_arena_slot=chunk.arena_slot,
         .source_content_revision=chunk.content_revision,
+        .host_content_revision=host_content_revision,
         .triangle_vertex_begin=begin,
         .triangle_vertex_count=vertex_count,
         .wire_vertex_begin=begin,
@@ -2830,6 +2843,154 @@ std::vector<SceneVertex> assemble_surface_host_staging(
         storage.arena().begin()+static_cast<std::ptrdiff_t>(
             range.triangle_vertex_begin+range.triangle_vertex_count));
   }
+  return assembled;
+}
+
+void SurfaceDeviceUploadPlanner::prepare(
+    const SurfaceHostStagingStorage& host,
+    std::size_t device_vertex_capacity) {
+  metrics_={};
+  metrics_.prepared=true;
+  metrics_.source_generation=host.metrics().publication_generation;
+  if(metrics_.source_generation==0U)
+    throw std::invalid_argument(
+        "surface device upload requires a published host generation");
+  if(host.metrics().retained_slots>
+     std::numeric_limits<std::size_t>::max()/host.vertex_slot_capacity())
+    throw std::overflow_error("surface device vertex capacity overflow");
+  metrics_.required_vertex_capacity=
+      host.metrics().retained_slots*host.vertex_slot_capacity();
+  metrics_.full_reallocation=
+      metrics_.required_vertex_capacity>device_vertex_capacity;
+  const auto slot_count=host.metrics().retained_slots;
+  slot_scratch_.assign(slot_count,{});
+  std::copy_n(published_slots_.begin(),
+              std::min(published_slots_.size(),slot_scratch_.size()),
+              slot_scratch_.begin());
+  std::vector<bool> active_slots(slot_count,false);
+  upload_scratch_.clear();
+  draw_scratch_.clear();
+  upload_scratch_.reserve(
+      std::max(upload_scratch_.capacity(),host.ranges().size()));
+  draw_scratch_.reserve(
+      std::max(draw_scratch_.capacity(),host.ranges().size()));
+  for(const auto& range:host.ranges()){
+    if(range.host_slot>=slot_count||active_slots[range.host_slot]||
+       range.host_content_revision==0U||
+       range.triangle_vertex_begin!=
+           range.host_slot*host.vertex_slot_capacity()||
+       range.triangle_vertex_count>host.vertex_slot_capacity()||
+       range.triangle_vertex_begin>host.arena().size()||
+       range.triangle_vertex_count>
+           host.arena().size()-range.triangle_vertex_begin||
+       range.triangle_vertex_begin>
+           std::numeric_limits<std::uint32_t>::max()||
+       range.triangle_vertex_count>
+           std::numeric_limits<std::uint32_t>::max()||
+       range.wire_vertex_begin!=range.triangle_vertex_begin||
+       range.wire_vertex_count!=range.triangle_vertex_count)
+      throw std::invalid_argument(
+          "surface device upload host range table is invalid");
+    active_slots[range.host_slot]=true;
+    const SlotKey key{range.host_content_revision,
+                      range.triangle_vertex_count};
+    const bool dirty=metrics_.full_reallocation||
+        range.host_slot>=published_slots_.size()||
+        published_slots_[range.host_slot]!=key;
+    if(dirty){
+      upload_scratch_.push_back({
+          range.triangle_vertex_begin,range.triangle_vertex_begin,
+          range.triangle_vertex_count});
+      metrics_.uploaded_bytes+=
+          range.triangle_vertex_count*sizeof(SceneVertex);
+    }else ++metrics_.reused_ranges;
+    slot_scratch_[range.host_slot]=key;
+    draw_scratch_.push_back({range.triangle_vertex_begin,
+                             range.triangle_vertex_count});
+  }
+  for(std::size_t slot=0;slot<slot_scratch_.size();++slot)
+    if(!active_slots[slot])slot_scratch_[slot]={};
+  metrics_.upload_ranges=upload_scratch_.size();
+  metrics_.draw_calls=draw_scratch_.size();
+}
+
+void SurfaceDeviceUploadPlanner::commit() {
+  if(!metrics_.prepared)
+    throw std::logic_error("surface device upload has no prepared publication");
+  published_slots_.swap(slot_scratch_);
+  published_draws_.swap(draw_scratch_);
+  published_generation_=metrics_.source_generation;
+  metrics_.prepared=false;
+}
+
+void SurfaceDeviceUploadPlanner::cancel() noexcept {
+  slot_scratch_.clear();
+  upload_scratch_.clear();
+  draw_scratch_.clear();
+  metrics_={};
+}
+
+void SurfaceDeviceUploadPlanner::reset() noexcept {
+  cancel();
+  published_slots_.clear();
+  published_draws_.clear();
+  published_generation_=0U;
+}
+
+void apply_surface_device_upload_plan(
+    SurfaceDeviceUploadPlanner& planner,
+    const SurfaceHostStagingStorage& host,
+    std::vector<SceneVertex>& device_arena) {
+  if(!planner.metrics().prepared)
+    throw std::logic_error("surface device upload plan is not prepared");
+  if(host.metrics().publication_generation!=planner.metrics().source_generation)
+    throw std::invalid_argument(
+        "surface device upload plan was superseded by a host publication");
+  const auto grown_capacity=std::max({
+      planner.metrics().required_vertex_capacity,
+      device_arena.size()<=std::numeric_limits<std::size_t>::max()/2U
+          ?device_arena.size()*2U:device_arena.size(),
+      std::size_t{4096U}});
+  std::vector<SceneVertex> candidate=planner.metrics().full_reallocation
+      ?std::vector<SceneVertex>(grown_capacity):device_arena;
+  if(candidate.size()<planner.metrics().required_vertex_capacity)
+    candidate.resize(planner.metrics().required_vertex_capacity);
+  for(const auto upload:planner.uploads()){
+    if(upload.source_vertex_begin>host.arena().size()||
+       upload.vertex_count>host.arena().size()-upload.source_vertex_begin||
+       upload.destination_vertex_begin>candidate.size()||
+       upload.vertex_count>candidate.size()-upload.destination_vertex_begin)
+      throw std::out_of_range("surface device upload range exceeds its arena");
+    std::copy_n(
+        host.arena().begin()+static_cast<std::ptrdiff_t>(
+            upload.source_vertex_begin),upload.vertex_count,
+        candidate.begin()+static_cast<std::ptrdiff_t>(
+            upload.destination_vertex_begin));
+  }
+  device_arena.swap(candidate);
+  planner.commit();
+}
+
+std::vector<SceneVertex> assemble_surface_device_publication(
+    const SurfaceDeviceUploadPlanner& planner,
+    std::span<const SceneVertex> device_arena) {
+  std::size_t vertex_count{};
+  for(const auto draw:planner.published_draws()){
+    if(draw.first_vertex>device_arena.size()||
+       draw.vertex_count>device_arena.size()-draw.first_vertex||
+       draw.vertex_count>
+           std::numeric_limits<std::size_t>::max()-vertex_count)
+      throw std::out_of_range("surface device draw range exceeds its arena");
+    vertex_count+=draw.vertex_count;
+  }
+  std::vector<SceneVertex> assembled;
+  assembled.reserve(vertex_count);
+  for(const auto draw:planner.published_draws())
+    assembled.insert(
+        assembled.end(),
+        device_arena.begin()+static_cast<std::ptrdiff_t>(draw.first_vertex),
+        device_arena.begin()+static_cast<std::ptrdiff_t>(
+            draw.first_vertex+draw.vertex_count));
   return assembled;
 }
 

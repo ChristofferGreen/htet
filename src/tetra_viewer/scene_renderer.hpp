@@ -18,6 +18,12 @@ class SceneRenderer {
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
               std::span<const SceneVertex> surface_line_vertices);
+  void upload_surface_ranges(
+      const SurfaceHostStagingStorage& surface,
+      std::span<const SceneVertex> hierarchy_line_vertices,
+      std::span<const SceneVertex> editor_line_vertices);
+  [[nodiscard]] const SurfaceDeviceUploadMetrics& surface_upload_metrics()
+      const noexcept { return surface_upload_planner_.metrics(); }
   // camera_data is a column-major view-projection matrix followed by a
   // camera-relative key-light direction and rendering-mode parameters.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view, std::uint32_t image_index, VkExtent2D extent, const float* camera_data) const;
@@ -42,6 +48,7 @@ class SceneRenderer {
   VertexBuffer triangles_;
   VertexBuffer hierarchy_lines_;
   VertexBuffer editor_lines_;
+  SurfaceDeviceUploadPlanner surface_upload_planner_;
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; };
   std::vector<DepthImage> depth_images_;
 };

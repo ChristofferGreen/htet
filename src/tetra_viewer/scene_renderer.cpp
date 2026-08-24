@@ -172,6 +172,120 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
   upload_buffer(triangles_, triangle_vertices);
   upload_buffer(hierarchy_lines_, hierarchy_ribbons);
   upload_buffer(editor_lines_, editor_ribbons);
+  surface_upload_planner_.reset();
+}
+
+void SceneRenderer::upload_surface_ranges(
+    const SurfaceHostStagingStorage& surface,
+    std::span<const SceneVertex> hierarchy_line_vertices,
+    std::span<const SceneVertex> editor_line_vertices) {
+  surface_upload_planner_.prepare(surface,triangles_.capacity);
+  VertexBuffer replacement;
+  const auto destroy_buffer=[this](VertexBuffer& buffer){
+    if(buffer.buffer!=VK_NULL_HANDLE)vkDestroyBuffer(device_,buffer.buffer,nullptr);
+    if(buffer.memory!=VK_NULL_HANDLE)vkFreeMemory(device_,buffer.memory,nullptr);
+    buffer={};
+  };
+  const auto allocate_buffer=[this,&destroy_buffer](std::size_t capacity){
+    VertexBuffer buffer;
+    buffer.capacity=capacity;
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size=capacity*sizeof(SceneVertex);
+    info.usage=VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if(vkCreateBuffer(device_,&info,nullptr,&buffer.buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create retained surface vertex buffer");
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_,buffer.buffer,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&buffer.memory)!=VK_SUCCESS){
+      vkDestroyBuffer(device_,buffer.buffer,nullptr);
+      throw std::runtime_error("unable to allocate retained surface vertex buffer");
+    }
+    if(vkBindBufferMemory(device_,buffer.buffer,buffer.memory,0)!=VK_SUCCESS){
+      destroy_buffer(buffer);
+      throw std::runtime_error("unable to bind retained surface vertex buffer");
+    }
+    return buffer;
+  };
+  const auto copy_uploads=[this,&surface](VertexBuffer& destination){
+    if(surface_upload_planner_.uploads().empty())return;
+    void* mapped{};
+    if(vkMapMemory(device_,destination.memory,0,
+                   destination.capacity*sizeof(SceneVertex),0,&mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map retained surface vertex buffer");
+    auto* vertices=static_cast<SceneVertex*>(mapped);
+    for(const auto upload:surface_upload_planner_.uploads())
+      std::memcpy(vertices+upload.destination_vertex_begin,
+                  surface.arena().data()+upload.source_vertex_begin,
+                  upload.vertex_count*sizeof(SceneVertex));
+    vkUnmapMemory(device_,destination.memory);
+  };
+  try{
+    if(surface_upload_planner_.metrics().full_reallocation){
+      const auto required=surface_upload_planner_.metrics().required_vertex_capacity;
+      const auto grown=std::max({required,triangles_.capacity*2U,
+                                 std::size_t{4096U}});
+      replacement=allocate_buffer(grown);
+      copy_uploads(replacement);
+      if(vkDeviceWaitIdle(device_)!=VK_SUCCESS)
+        throw std::runtime_error("unable to idle Vulkan before surface publication");
+      std::swap(triangles_,replacement);
+      destroy_buffer(replacement);
+    }else if(!surface_upload_planner_.uploads().empty()){
+      if(vkDeviceWaitIdle(device_)!=VK_SUCCESS)
+        throw std::runtime_error("unable to idle Vulkan before partial surface upload");
+      copy_uploads(triangles_);
+    }
+    triangles_.count=0U;
+    for(const auto draw:surface_upload_planner_.candidate_draws())
+      triangles_.count+=draw.vertex_count;
+    surface_upload_planner_.commit();
+  }catch(...){
+    destroy_buffer(replacement);
+    surface_upload_planner_.cancel();
+    throw;
+  }
+
+  const auto upload_lines=[this,&destroy_buffer](
+      VertexBuffer& destination,std::span<const SceneVertex> vertices){
+    destination.count=vertices.size();
+    if(vertices.size()>destination.capacity){
+      destroy_buffer(destination);
+      destination.capacity=std::max<std::size_t>(vertices.size(),4096U);
+      VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      buffer.size=destination.capacity*sizeof(SceneVertex);
+      buffer.usage=VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+      if(vkCreateBuffer(device_,&buffer,nullptr,&destination.buffer)!=VK_SUCCESS)
+        throw std::runtime_error("unable to create scene line buffer");
+      VkMemoryRequirements requirements{};
+      vkGetBufferMemoryRequirements(device_,destination.buffer,&requirements);
+      VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      allocation.allocationSize=requirements.size;
+      allocation.memoryTypeIndex=memory_type(
+          physical_device_,requirements.memoryTypeBits,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      if(vkAllocateMemory(device_,&allocation,nullptr,&destination.memory)!=VK_SUCCESS)
+        throw std::runtime_error("unable to allocate scene line buffer");
+      vkBindBufferMemory(device_,destination.buffer,destination.memory,0);
+    }
+    if(!vertices.empty()){
+      void* mapped{};
+      vkMapMemory(device_,destination.memory,0,vertices.size_bytes(),0,&mapped);
+      std::memcpy(mapped,vertices.data(),vertices.size_bytes());
+      vkUnmapMemory(device_,destination.memory);
+    }
+  };
+  std::vector<SceneVertex> hierarchy_ribbons,editor_ribbons;
+  expand_line_segments_for_upload(hierarchy_line_vertices,hierarchy_ribbons);
+  expand_line_segments_for_upload(editor_line_vertices,editor_ribbons);
+  upload_lines(hierarchy_lines_,hierarchy_ribbons);
+  upload_lines(editor_lines_,editor_ribbons);
 }
 
 void SceneRenderer::record(VkCommandBuffer command_buffer, VkImageView colour_view, std::uint32_t image_index, VkExtent2D extent, const float* camera_data) const {
@@ -193,18 +307,23 @@ void SceneRenderer::record(VkCommandBuffer command_buffer, VkImageView colour_vi
   // One-pixel half-extent provides the complete filter footprint for an
   // analytically antialiased one-pixel centre line.
   push_data[26]=1.0F;
-  const auto draw = [&](VkPipeline pipeline, const VertexBuffer& vertices) {
+  const auto draw = [&](VkPipeline pipeline, const VertexBuffer& vertices,
+                        std::span<const SurfaceDeviceDrawRange> ranges={}) {
     if (vertices.count == 0) return;
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertices.buffer, &offset);
     vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float) * 28, push_data.data());
-    vkCmdDraw(command_buffer, static_cast<std::uint32_t>(vertices.count), 1, 0, 0);
+    if(ranges.empty())
+      vkCmdDraw(command_buffer,static_cast<std::uint32_t>(vertices.count),1,0,0);
+    else for(const auto range:ranges)
+      vkCmdDraw(command_buffer,static_cast<std::uint32_t>(range.vertex_count),1,
+                static_cast<std::uint32_t>(range.first_vertex),0);
   };
   // Opaque geometry establishes visibility first. The native line-mode pass
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
-  draw(triangle_pipeline_, triangles_);
-  draw(triangle_wire_pipeline_, triangles_);
+  draw(triangle_pipeline_,triangles_,surface_upload_planner_.published_draws());
+  draw(triangle_wire_pipeline_,triangles_,surface_upload_planner_.published_draws());
   draw(line_pipeline_, hierarchy_lines_);
   draw(editor_line_pipeline_, editor_lines_);
   end_rendering(command_buffer);

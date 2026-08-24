@@ -569,10 +569,12 @@ int main(int argc, char** argv)
         (strcmp(argv[1], "--manipulator-move-check") == 0||manipulator_close_check||
          manipulator_distant_check||manipulator_edge_on_check||manipulator_panel_check);
     const bool manipulator_rotate_check = argc > 1 && strcmp(argv[1], "--manipulator-rotate-check") == 0;
+    const bool retained_upload_check = argc > 1 &&
+        strcmp(argv[1], "--retained-upload-check") == 0;
     const bool manipulator_visual_check=manipulator_move_check||manipulator_rotate_check;
     const bool deterministic_visual_check = wireframe_check || tetweave_cutaway_check ||
         selected_atlas_check || whole_cell_check || whole_cell_cutaway_check||
-        manipulator_visual_check;
+        manipulator_visual_check||retained_upload_check;
     const auto initial_subdivision_method=(whole_cell_check||whole_cell_cutaway_check)
         ?tetra::SubdivisionMethod::maubach_diamond
         :tetra_viewer::default_subdivision_method;
@@ -584,6 +586,8 @@ int main(int argc, char** argv)
     tetra_viewer::SurfaceMethod surface_method=tetra_viewer::default_surface_method;
     if(wireframe_check||whole_cell_check||whole_cell_cutaway_check)
         surface_method=tetra_viewer::SurfaceMethod::full_tetrahedra;
+    if(retained_upload_check)
+        surface_method=tetra_viewer::SurfaceMethod::marching_tetrahedra;
     tetra_viewer::VolumeConnectionMethod volume_connection_method =
         (tetweave_cutaway_check || selected_atlas_check)
             ? tetra_viewer::VolumeConnectionMethod::quality_stencils
@@ -591,6 +595,8 @@ int main(int argc, char** argv)
     if(!deterministic_visual_check)
         volume_connection_method=tetra_viewer::default_volume_connection_for_shape(
             tetra_viewer::default_implicit_shape);
+    if(retained_upload_check)
+        volume_connection_method=tetra_viewer::VolumeConnectionMethod::hierarchy_cells;
     tetra_viewer::StencilConstruction stencil_construction =
         (tetweave_cutaway_check || selected_atlas_check)
             ? tetra_viewer::StencilConstruction::selected
@@ -619,6 +625,7 @@ int main(int argc, char** argv)
     bool show_surface_edges = true;
     bool show_volume_edges = true;
     bool show_volume_faces = true;
+    if(retained_upload_check){show_volume_edges=false;show_volume_faces=false;}
     bool x_cutaway=deterministic_visual_check
         ?wireframe_check||tetweave_cutaway_check||whole_cell_cutaway_check
         :true;
@@ -648,6 +655,9 @@ int main(int argc, char** argv)
     double last_validation_milliseconds = -1.0;
     double last_scene_preparation_milliseconds = -1.0;
     tetra_viewer::SceneCache scene_cache;
+    tetra_viewer::SurfaceDrawChunkStorage surface_draw_chunks;
+    tetra_viewer::SurfaceHostStagingStorage surface_host_staging;
+    bool retained_surface_upload_ready=false;
     tetra::ImplicitValueCache implicit_value_cache;
     tetra::AdaptationPlanningCache adaptation_planning_cache;
     tetra::FixedFieldSurfaceHierarchy fixed_field_surface_hierarchy;
@@ -661,6 +671,7 @@ int main(int argc, char** argv)
     tetra::AdjacencyExperiment interactive_adjacency_experiment;
     std::uint64_t sphere_revision = 0;
     bool upload_dirty = true;
+    bool retained_upload_present_pending=false;
     enum class CameraDragMode { none, orbit, pan };
     CameraDragMode camera_drag_mode=CameraDragMode::none;
     bool lod_camera_selected=false;
@@ -1676,6 +1687,17 @@ int main(int argc, char** argv)
                                      fixed_field_surface_triangles,
                                      fixed_field_surface_cut_revision)) {
             last_scene_preparation_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
+            const auto& updated_scene=scene_cache.scene();
+            const auto& patch_metrics=scene_cache.surface_patch_metrics();
+            retained_surface_upload_ready=patch_metrics.active&&
+                updated_scene.triangle_vertices.size()==
+                    patch_metrics.output_triangles*3U;
+            if(retained_surface_upload_ready){
+                surface_draw_chunks.pack(scene_cache.surface_patch_records(),
+                                         scene_cache.surface_patch_arena());
+                surface_host_staging.stage(surface_draw_chunks,
+                                           updated_scene.triangle_vertices);
+            }
             upload_dirty = true;
         }
         if(statistics_open)
@@ -2113,9 +2135,15 @@ int main(int argc, char** argv)
                     }
                 }
             }
-            g_SceneRenderer.upload(prepared_scene.triangle_vertices,
-                                   prepared_scene.hierarchy_line_vertices,
-                                   overlay_lines);
+            if(retained_surface_upload_ready)
+                g_SceneRenderer.upload_surface_ranges(
+                    surface_host_staging,prepared_scene.hierarchy_line_vertices,
+                    overlay_lines);
+            else g_SceneRenderer.upload(prepared_scene.triangle_vertices,
+                                        prepared_scene.hierarchy_line_vertices,
+                                        overlay_lines);
+            if(retained_upload_check&&retained_surface_upload_ready)
+                retained_upload_present_pending=true;
             upload_dirty = false;
         }
 
@@ -2236,6 +2264,19 @@ int main(int argc, char** argv)
             wd->ClearValue.color.float32[3] = clear_color.w;
             FrameRender(wd, draw_data);
             FramePresent(wd);
+            if(retained_upload_present_pending){
+                const auto& upload=g_SceneRenderer.surface_upload_metrics();
+                std::cout<<"{\"event\":\"vulkan_retained_upload\","
+                         <<"\"source_generation\":"<<upload.source_generation
+                         <<",\"full_reallocation\":"
+                         <<(upload.full_reallocation?"true":"false")
+                         <<",\"uploaded_bytes\":"<<upload.uploaded_bytes
+                         <<",\"upload_ranges\":"<<upload.upload_ranges
+                         <<",\"reused_ranges\":"<<upload.reused_ranges
+                         <<",\"draw_calls\":"<<upload.draw_calls<<"}\n";
+                retained_upload_present_pending=false;
+                glfwSetWindowShouldClose(window,GLFW_TRUE);
+            }
         }
         // Avoid spinning the event loop when present returns immediately.
         ImGui_ImplGlfw_Sleep(16);

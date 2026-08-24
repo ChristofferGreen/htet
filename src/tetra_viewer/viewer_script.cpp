@@ -2154,6 +2154,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           SceneCache cache;
           SurfaceDrawChunkStorage chunks(chunk_capacity);
           SurfaceHostStagingStorage host_staging(chunk_capacity);
+          SurfaceDeviceUploadPlanner device_upload;
+          std::vector<SceneVertex> device_arena;
           std::size_t revisions{},exact_matches{},full_pack_bytes{},copied_bytes{};
           std::size_t dirty_patches{},dirty_chunks{},reused_chunks{},reused_bytes{};
           std::size_t local_repacks{},global_compactions{},overflow_splits{};
@@ -2163,9 +2165,13 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           std::size_t host_aliased_wire_bytes{},host_dirty_ranges{};
           std::size_t host_reused_ranges{},host_allocated_slots{};
           std::size_t host_reused_slots{},host_released_slots{};
+          std::size_t full_device_upload_bytes{},device_uploaded_bytes{};
+          std::size_t device_upload_ranges{},device_reused_ranges{};
+          std::size_t device_reallocations{},device_draw_calls{};
           double direct_milliseconds{},chunk_milliseconds{};
           double host_stage_milliseconds{};
           bool byte_match=true,layout_valid=true,host_byte_match=true;
+          bool device_byte_match=true;
           SurfaceGeometryHashes packed_hashes;
           for(const auto position:path.positions){
             point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
@@ -2207,6 +2213,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 (assembled_host.empty()||std::memcmp(
                      assembled_host.data(),packed_scene.triangle_vertices.data(),
                      assembled_host.size()*sizeof(SceneVertex))==0);
+            device_upload.prepare(host_staging,device_arena.size());
+            const auto device_metrics=device_upload.metrics();
+            apply_surface_device_upload_plan(
+                device_upload,host_staging,device_arena);
+            const auto assembled_device=
+                assemble_surface_device_publication(device_upload,device_arena);
+            const bool revision_device_byte_match=
+                assembled_device.size()==packed_scene.triangle_vertices.size()&&
+                (assembled_device.empty()||std::memcmp(
+                     assembled_device.data(),packed_scene.triangle_vertices.data(),
+                     assembled_device.size()*sizeof(SceneVertex))==0);
             const auto direct_hashes=surface_geometry_hashes(cache.scene());
             packed_hashes=surface_geometry_hashes(packed_scene);
             bool revision_layout_valid=
@@ -2237,12 +2254,14 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             revision_layout_valid&=
                 std::ranges::adjacent_find(slots)==slots.end();
             const bool revision_exact=revision_byte_match&&revision_layout_valid&&
-                revision_host_byte_match&&direct_hashes==packed_hashes;
+                revision_host_byte_match&&revision_device_byte_match&&
+                direct_hashes==packed_hashes;
             ++revisions;
             exact_matches+=revision_exact?1U:0U;
             byte_match&=revision_byte_match;
             layout_valid&=revision_layout_valid;
             host_byte_match&=revision_host_byte_match;
+            device_byte_match&=revision_device_byte_match;
             const auto& revision_metrics=chunks.metrics();
             full_pack_bytes+=direct.size()*sizeof(tetra::Triangle);
             copied_bytes+=revision_metrics.copied_bytes;
@@ -2269,6 +2288,13 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             host_reused_slots+=host_metrics.reused_slots;
             host_released_slots+=host_metrics.released_slots;
             host_stage_milliseconds+=host_metrics.stage_milliseconds;
+            full_device_upload_bytes+=packed_scene.triangle_vertices.size()*
+                sizeof(SceneVertex);
+            device_uploaded_bytes+=device_metrics.uploaded_bytes;
+            device_upload_ranges+=device_metrics.upload_ranges;
+            device_reused_ranges+=device_metrics.reused_ranges;
+            device_reallocations+=device_metrics.full_reallocation?1U:0U;
+            device_draw_calls+=device_metrics.draw_calls;
           }
           const bool exact=exact_matches==revisions;
           const auto& metrics=chunks.metrics();
@@ -2317,6 +2343,15 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"host_allocated_slots\":"<<host_allocated_slots
                 <<",\"host_reused_slots\":"<<host_reused_slots
                 <<",\"host_released_slots\":"<<host_released_slots
+                <<",\"device_publications\":"
+                <<device_upload.published_generation()
+                <<",\"full_device_upload_bytes\":"
+                <<full_device_upload_bytes
+                <<",\"device_uploaded_bytes\":"<<device_uploaded_bytes
+                <<",\"device_upload_ranges\":"<<device_upload_ranges
+                <<",\"device_reused_ranges\":"<<device_reused_ranges
+                <<",\"device_reallocations\":"<<device_reallocations
+                <<",\"device_draw_calls\":"<<device_draw_calls
                 <<",\"draw_calls\":"<<metrics.draw_calls
                 <<",\"triangle_hash\":"<<packed_hashes.triangle_hash
                 <<",\"wire_edge_hash\":"<<packed_hashes.wire_edge_hash
@@ -2324,6 +2359,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"layout_valid\":"<<(layout_valid?"true":"false")
                 <<",\"host_byte_match\":"
                 <<(host_byte_match?"true":"false")
+                <<",\"device_byte_match\":"
+                <<(device_byte_match?"true":"false")
                 <<",\"exact\":"<<(exact?"true":"false")
                 <<",\"occupancy\":"<<std::fixed<<std::setprecision(6)
                 <<metrics.occupancy

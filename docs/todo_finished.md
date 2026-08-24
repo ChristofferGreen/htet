@@ -2,6 +2,15 @@
 
 ## 2026-08-24
 
+- [x] CPU-G4-4 atomic Vulkan partial buffer uploads: mapped retained host slots
+  directly to reusable device offsets, uploaded only replacement ranges, and
+  atomically promoted complete draw tables after copies finished. Growth fills
+  a replacement buffer before swapping; non-growing updates write only slots
+  outside the preceding publication. Opaque and native wire passes share the
+  exact range table. All 159 depth-16 headless device publications were byte-
+  exact; uploads fell 34.4% for marching/lattice and 25.7% for dual contouring.
+  Focused rollback, supersession, style-only, empty/refill, and range-reuse
+  tests passed, as did a real release MoltenVK presentation smoke check.
 - [x] CPU-G4-3 retained host staging ranges: added transactional fixed-capacity
   host vertex slots and atomically published ordered solid/wire range tables.
   Unchanged chunks retain byte-stable slots; replacements are staged without

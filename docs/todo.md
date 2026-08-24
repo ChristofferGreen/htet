@@ -6,14 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G4-4 atomic Vulkan partial buffer uploads.
-  - Scope: map retained host chunks to reusable Vulkan ranges, upload only
-    replacements, and keep the preceding complete ranges renderable until the
-    new revision is ready.
-  - Acceptance: release Vulkan and headless-oracle tests agree on draw hashes,
-    uploaded bytes, draw calls, and complete-revision publication under split,
-    merge, fallback, and supersession.
-  - Stop rule: close the renderer integration without changing surface methods.
 - [ ] CPU-G4-5 draw-chunk strategy benchmark and selection.
   - Scope: compare direct monolithic packing, fixed-capacity chunks, and a
     hybrid large-patch path on all canonical camera traces.

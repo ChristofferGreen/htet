@@ -894,10 +894,10 @@ meets its exactness, locality, fallback, and visual exit conditions.
 - [x] Add a packed draw-chunk table separate from hierarchy and patch storage.
 - [x] Repack only chunks touched by changed patches.
 - [x] Reuse unchanged CPU staging ranges.
-- [ ] Reuse unchanged Vulkan buffer ranges.
-- [ ] Add partial buffer uploads and retain the preceding complete ranges until
+- [x] Reuse unchanged Vulkan buffer ranges.
+- [x] Add partial buffer uploads and retain the preceding complete ranges until
   the replacement revision is ready.
-- [ ] Track chunk occupancy, fragmentation, bytes copied, bytes uploaded,
+- [x] Track chunk occupancy, fragmentation, bytes copied, bytes uploaded,
   splits, merges, global compactions, and draw calls.
 - [ ] Compare direct monolithic packing, fixed-capacity chunks, and a hybrid
   large-patch path on the same camera traces.
@@ -1029,6 +1029,46 @@ Release/headless renders of marching tetrahedra, lattice cleaving, and dual
 contouring were visually inspected with opaque flat faces and triangle edges.
 All three remained closed and showed the expected method-specific topology;
 no staging seam, missing face, stale edge, or transparency artifact appeared.
+
+#### Atomic retained Vulkan range publication
+
+`SurfaceDeviceUploadPlanner` is now the shared renderer/headless publication
+contract. It translates fixed host slots into fixed Vulkan vertex offsets,
+builds replacement upload and ordered draw-range tables without changing the
+published front, and commits those tables only after every requested byte has
+been copied. Unchanged host content revisions reuse their device slots. A
+direct byte comparison at the host boundary detects presentation-only changes
+even when patch topology revisions are unchanged, while a monotonic host
+content revision avoids hashing the complete vertex stream on every update.
+
+Changed host chunks always occupy slots that were free in the preceding host
+publication, so partial writes cannot overwrite vertices referenced by the
+currently published Vulkan draw table. Buffer growth is also transactional: a
+complete replacement buffer is allocated and filled before the old buffer is
+retired. Non-growing uploads wait for prior device use to finish, write only
+the replacement slots, and then atomically publish the new range table. The
+opaque and native depth-tested wire passes issue the same ordered per-range
+draws. Falling back to the monolithic renderer path explicitly resets retained
+publication state.
+
+Focused release tests cover exact initial and partial publication, unchanged
+reuse, presentation-only invalidation, preservation of the preceding draw
+front before commit, cancellation and retry, superseded-generation rejection,
+empty/refill slot reuse, and malformed input. The persistent benchmark adds an
+independent byte-exact device-memory oracle at every split, merge, compaction
+fallback, reversal, teleport, and repeated-pose revision. All 159 production
+depth-16 publications matched exactly:
+
+| Method | Full device upload | Uploaded | Reduction | Upload / reused ranges | Reallocations | Draw calls | Host staging time |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Marching tetrahedra | 83.151 MB | 54.538 MB | 34.4% | 1,209 / 637 | 18 | 1,846 | 2.928 ms |
+| Lattice cleaving | 83.151 MB | 54.538 MB | 34.4% | 1,209 / 637 | 18 | 1,846 | 2.883 ms |
+| Dual contouring | 210.731 MB | 156.573 MB | 25.7% | 3,416 / 1,187 | 19 | 4,603 | 8.199 ms |
+
+The release wrapper also completed a real MoltenVK presentation smoke check
+with 27 uploaded ranges, 1.221 MB uploaded, 27 draw calls, and no Vulkan error.
+CPU-G4-4 therefore closes the retained device-range and atomic-publication
+portion of Gate 4 without changing any surface method.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 

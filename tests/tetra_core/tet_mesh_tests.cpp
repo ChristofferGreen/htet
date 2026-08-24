@@ -4790,6 +4790,82 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
   CHECK(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
                    valid_assembled));
 
+  tetra_viewer::SurfaceDeviceUploadPlanner device_planner;
+  std::vector<tetra_viewer::SceneVertex> device_arena;
+  device_planner.prepare(staging,device_arena.size());
+  CHECK(device_planner.metrics().full_reallocation);
+  CHECK(device_planner.metrics().upload_ranges==staging.ranges().size());
+  CHECK(device_planner.metrics().uploaded_bytes==
+        valid_assembled.size()*sizeof(tetra_viewer::SceneVertex));
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(device_planner.published_generation()==
+        staging.metrics().publication_generation);
+  CHECK(device_planner.published_draws().size()==staging.ranges().size());
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),valid_assembled));
+
+  patch_arena[0].a.x+=50.0;
+  patches[0].field_revision=3U;
+  patches[0].topology_hash=11U;
+  chunks.pack(patches,patch_arena);
+  const auto partial_vertices=make_vertices(chunks);
+  staging.stage(chunks,partial_vertices);
+  const auto previous_device=tetra_viewer::assemble_surface_device_publication(
+      device_planner,device_arena);
+  device_planner.prepare(staging,device_arena.size());
+  CHECK_FALSE(device_planner.metrics().full_reallocation);
+  CHECK(device_planner.metrics().upload_ranges==staging.metrics().dirty_ranges);
+  CHECK(device_planner.metrics().uploaded_bytes==
+        staging.metrics().staged_triangle_bytes);
+  CHECK(device_planner.metrics().uploaded_bytes<
+        partial_vertices.size()*sizeof(tetra_viewer::SceneVertex));
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),previous_device));
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),partial_vertices));
+
+  auto styled_vertices=partial_vertices;
+  styled_vertices.front().colour[0]=0.95F;
+  staging.stage(chunks,styled_vertices);
+  CHECK(staging.metrics().dirty_ranges==1U);
+  device_planner.prepare(staging,device_arena.size());
+  CHECK(device_planner.metrics().upload_ranges==1U);
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),styled_vertices));
+
+  auto superseded_vertices=styled_vertices;
+  superseded_vertices[1].colour[1]=0.15F;
+  staging.stage(chunks,superseded_vertices);
+  device_planner.prepare(staging,device_arena.size());
+  auto latest_vertices=superseded_vertices;
+  latest_vertices[2].colour[2]=0.85F;
+  staging.stage(chunks,latest_vertices);
+  CHECK_THROWS_AS(tetra_viewer::apply_surface_device_upload_plan(
+                      device_planner,staging,device_arena),
+                  std::invalid_argument);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),styled_vertices));
+  device_planner.cancel();
+  device_planner.prepare(staging,device_arena.size());
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),latest_vertices));
+
+  staging.stage(chunks,latest_vertices);
+  device_planner.prepare(staging,device_arena.size());
+  CHECK(device_planner.metrics().upload_ranges==0U);
+  CHECK(device_planner.metrics().reused_ranges==staging.ranges().size());
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),latest_vertices));
+
   chunks.pack({},patch_arena);
   staging.stage(chunks,{});
   CHECK(staging.ranges().empty());
@@ -4800,6 +4876,11 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
   CHECK(staging.metrics().reused_slots>0U);
   CHECK(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
                    restored_vertices));
+  device_planner.prepare(staging,device_arena.size());
+  tetra_viewer::apply_surface_device_upload_plan(
+      device_planner,staging,device_arena);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
+                       device_planner,device_arena),restored_vertices));
 
   tetra_viewer::SurfaceHostStagingStorage wrong_capacity(4U);
   CHECK_THROWS_AS(wrong_capacity.stage(chunks,restored_vertices),
@@ -5708,9 +5789,14 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
           std::stoull(field(event,"\"full_host_stage_bytes\":"));
       const auto host_staged_bytes=
           std::stoull(field(event,"\"host_staged_bytes\":"));
+      const auto full_device_upload_bytes=
+          std::stoull(field(event,"\"full_device_upload_bytes\":"));
+      const auto device_uploaded_bytes=
+          std::stoull(field(event,"\"device_uploaded_bytes\":"));
       CHECK(event.find("\"byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"layout_valid\":true")!=std::string::npos);
       CHECK(event.find("\"host_byte_match\":true")!=std::string::npos);
+      CHECK(event.find("\"device_byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"exact\":true")!=std::string::npos);
       CHECK(field(event,"\"chunk_capacity\":")=="256");
       CHECK(triangles>0U);
@@ -5731,6 +5817,12 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       CHECK(std::stoull(field(event,"\"host_retained_slots\":"))>=chunks);
       CHECK(std::stoull(field(event,"\"host_dirty_ranges\":"))>0U);
       CHECK(std::stoull(field(event,"\"host_reused_ranges\":"))>0U);
+      CHECK(std::stoull(field(event,"\"device_publications\":"))==revisions);
+      CHECK(full_device_upload_bytes==full_host_stage_bytes);
+      CHECK(device_uploaded_bytes<full_device_upload_bytes);
+      CHECK(std::stoull(field(event,"\"device_upload_ranges\":"))>0U);
+      CHECK(std::stoull(field(event,"\"device_reused_ranges\":"))>0U);
+      CHECK(std::stoull(field(event,"\"device_draw_calls\":"))>=revisions);
       total_local_repacks+=
           std::stoull(field(event,"\"local_repacks\":"));
       CHECK(std::stod(field(event,"\"occupancy\":"))>0.0);

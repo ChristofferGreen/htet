@@ -824,6 +824,7 @@ struct SurfaceHostDrawRange {
   std::size_t host_slot{};
   std::size_t source_arena_slot{};
   std::uint64_t source_content_revision{};
+  std::uint64_t host_content_revision{};
   std::size_t triangle_vertex_begin{};
   std::size_t triangle_vertex_count{};
   // The native wire pass reads the same vertices as the solid pass. Keeping
@@ -898,10 +899,85 @@ class SurfaceHostStagingStorage {
   std::vector<SurfaceHostFreeRange> free_ranges_;
   std::vector<SceneVertex> arena_;
   SurfaceHostStagingMetrics metrics_;
+  std::uint64_t next_content_revision_{1U};
 };
 
 [[nodiscard]] std::vector<SceneVertex> assemble_surface_host_staging(
     const SurfaceHostStagingStorage& storage);
+
+struct SurfaceDeviceUploadRange {
+  std::size_t source_vertex_begin{};
+  std::size_t destination_vertex_begin{};
+  std::size_t vertex_count{};
+};
+
+struct SurfaceDeviceDrawRange {
+  std::size_t first_vertex{};
+  std::size_t vertex_count{};
+  bool operator==(const SurfaceDeviceDrawRange&) const = default;
+};
+
+struct SurfaceDeviceUploadMetrics {
+  std::uint64_t source_generation{};
+  bool prepared{};
+  bool full_reallocation{};
+  std::size_t required_vertex_capacity{};
+  std::size_t upload_ranges{};
+  std::size_t reused_ranges{};
+  std::size_t uploaded_bytes{};
+  std::size_t draw_calls{};
+};
+
+// Shared by the Vulkan renderer and headless device-memory oracle. prepare()
+// builds a complete candidate without changing the published draw front;
+// commit() atomically promotes it after every requested range was copied.
+class SurfaceDeviceUploadPlanner {
+ public:
+  void prepare(const SurfaceHostStagingStorage& host,
+               std::size_t device_vertex_capacity);
+  void commit();
+  void cancel() noexcept;
+  void reset() noexcept;
+
+  [[nodiscard]] std::span<const SurfaceDeviceUploadRange> uploads() const noexcept {
+    return upload_scratch_;
+  }
+  [[nodiscard]] std::span<const SurfaceDeviceDrawRange> candidate_draws() const noexcept {
+    return draw_scratch_;
+  }
+  [[nodiscard]] std::span<const SurfaceDeviceDrawRange> published_draws() const noexcept {
+    return published_draws_;
+  }
+  [[nodiscard]] const SurfaceDeviceUploadMetrics& metrics() const noexcept {
+    return metrics_;
+  }
+  [[nodiscard]] std::uint64_t published_generation() const noexcept {
+    return published_generation_;
+  }
+
+ private:
+  struct SlotKey {
+    std::uint64_t content_revision{};
+    std::size_t vertex_count{};
+    bool operator==(const SlotKey&) const = default;
+  };
+
+  std::vector<SlotKey> published_slots_;
+  std::vector<SlotKey> slot_scratch_;
+  std::vector<SurfaceDeviceUploadRange> upload_scratch_;
+  std::vector<SurfaceDeviceDrawRange> published_draws_;
+  std::vector<SurfaceDeviceDrawRange> draw_scratch_;
+  SurfaceDeviceUploadMetrics metrics_;
+  std::uint64_t published_generation_{};
+};
+
+void apply_surface_device_upload_plan(
+    SurfaceDeviceUploadPlanner& planner,
+    const SurfaceHostStagingStorage& host,
+    std::vector<SceneVertex>& device_arena);
+[[nodiscard]] std::vector<SceneVertex> assemble_surface_device_publication(
+    const SurfaceDeviceUploadPlanner& planner,
+    std::span<const SceneVertex> device_arena);
 
 // Geometry preparation is also used by headless research scripts, which need
 // all measurements.  The interactive viewer can explicitly omit measurements
