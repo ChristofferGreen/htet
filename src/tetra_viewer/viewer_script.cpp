@@ -12,6 +12,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -1003,6 +1004,7 @@ void print_script_help(std::ostream& output) {
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
+            "  benchmark-cpu-draw-chunks[=<0..32>] Compare fixed chunks with direct surface packing\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
@@ -2120,6 +2122,132 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"monolithic_reference_ms\":"
                 <<total.monolithic_milliseconds
                 <<",\"valid\":true}\n";
+        }
+      }
+      continue;
+    }
+    constexpr std::string_view draw_chunk_benchmark=
+        "benchmark-cpu-draw-chunks";
+    if(command==draw_chunk_benchmark||
+       command.starts_with(std::string(draw_chunk_benchmark)+"=")){
+      unsigned int benchmark_depth=16U;
+      if(command.size()>draw_chunk_benchmark.size()){
+        const auto value=command.substr(draw_chunk_benchmark.size()+1U);
+        if(!parse_unsigned(value,benchmark_depth)||benchmark_depth>32U){
+          write_error(errors,"draw chunk benchmark depth outside the supported range",command);
+          return 2;
+        }
+      }
+      constexpr std::size_t chunk_capacity=256U;
+      constexpr std::array methods{
+          SurfaceMethod::marching_tetrahedra,
+          SurfaceMethod::lattice_cleaving,
+          SurfaceMethod::dual_contouring};
+      constexpr ScenePreparationOptions preparation{
+          .surface_diagnostics=false,.summary_statistics=false};
+      const auto baseline=cpu_benchmark_baseline(
+          default_implicit_shape,benchmark_depth);
+      const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
+      for(const auto& path:paths){
+        ScriptState benchmark=baseline;
+        for(const auto position:path.positions){
+          point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+          static_cast<void>(reconcile_to_current_surface(benchmark));
+        }
+        for(const auto method:methods){
+          SceneCache cache;
+          if(!cache.update_scene(
+                 benchmark.mesh,benchmark.sphere,benchmark.field_revision,
+                 method,MaterialRule::all_vertices_inside,
+                 true,false,true,false,false,false,1.0,
+                 VolumeConnectionMethod::hierarchy_cells,
+                 StencilConstruction::fixed,
+                 StencilSelectionObjective::balanced,preparation)){
+            write_error(errors,"draw chunk benchmark scene did not build",path.name);
+            return 1;
+          }
+          const auto direct_start=Clock::now();
+          const auto direct=direct_pack_surface_patches(
+              cache.surface_patch_records(),cache.surface_patch_arena());
+          const auto direct_milliseconds=milliseconds_since(direct_start);
+          SurfaceDrawChunkStorage chunks(chunk_capacity);
+          chunks.pack(cache.surface_patch_records(),cache.surface_patch_arena());
+          const auto assembled=assemble_surface_draw_chunks(chunks);
+          const bool byte_match=direct.size()==assembled.size()&&
+              (direct.empty()||std::memcmp(
+                   direct.data(),assembled.data(),
+                   direct.size()*sizeof(tetra::Triangle))==0);
+          const auto packed_scene=prepare_scene(
+              benchmark.mesh,benchmark.sphere,method,
+              MaterialRule::all_vertices_inside,
+              true,false,true,false,false,false,1.0,
+              VolumeConnectionMethod::hierarchy_cells,
+              StencilConstruction::fixed,
+              StencilSelectionObjective::balanced,preparation,
+              assembled,true);
+          const auto direct_hashes=surface_geometry_hashes(cache.scene());
+          const auto packed_hashes=surface_geometry_hashes(packed_scene);
+          bool layout_valid=chunks.metrics().draw_calls==chunks.chunks().size()&&
+              chunks.metrics().active_chunks==chunks.chunks().size()&&
+              chunks.metrics().patch_segments==chunks.segments().size();
+          std::vector<std::size_t> slots;
+          slots.reserve(chunks.chunks().size());
+          for(std::size_t chunk_index=0;
+              chunk_index<chunks.chunks().size();++chunk_index){
+            const auto& chunk=chunks.chunks()[chunk_index];
+            layout_valid&=chunk.triangle_count>0U&&
+                chunk.triangle_count<=chunk_capacity&&
+                chunk.segment_begin+chunk.segment_count<=chunks.segments().size()&&
+                (chunk.arena_slot+1U)*chunk_capacity<=chunks.arena().size();
+            slots.push_back(chunk.arena_slot);
+            for(std::size_t segment_index=chunk.segment_begin;
+                segment_index<chunk.segment_begin+chunk.segment_count;
+                ++segment_index){
+              const auto& segment=chunks.segments()[segment_index];
+              layout_valid&=segment.chunk_index==chunk_index&&
+                  segment.triangle_begin>=chunk.arena_slot*chunk_capacity&&
+                  segment.triangle_begin+segment.triangle_count<=
+                      chunk.arena_slot*chunk_capacity+chunk.triangle_count;
+            }
+          }
+          std::sort(slots.begin(),slots.end());
+          layout_valid&=std::ranges::adjacent_find(slots)==slots.end();
+          const bool exact=byte_match&&layout_valid&&direct_hashes==packed_hashes;
+          const auto& metrics=chunks.metrics();
+          output<<"{\"event\":\"cpu_draw_chunk_benchmark\",\"path\":\""
+                <<path.name<<"\",\"method\":\""<<surface_method_key(method)
+                <<"\",\"maximum_depth\":"<<benchmark_depth
+                <<",\"chunk_capacity\":"<<metrics.chunk_capacity
+                <<",\"source_patches\":"<<metrics.source_patches
+                <<",\"nonempty_patches\":"<<metrics.nonempty_patches
+                <<",\"patch_segments\":"<<metrics.patch_segments
+                <<",\"triangles\":"<<metrics.triangles
+                <<",\"active_chunks\":"<<metrics.active_chunks
+                <<",\"retained_slots\":"<<metrics.retained_slots
+                <<",\"free_slots\":"<<metrics.free_slots
+                <<",\"reused_slots\":"<<metrics.reused_slots
+                <<",\"allocated_slots\":"<<metrics.allocated_slots
+                <<",\"chunk_splits\":"<<metrics.chunk_splits
+                <<",\"chunk_merges\":"<<metrics.chunk_merges
+                <<",\"global_compactions\":"<<metrics.global_compactions
+                <<",\"fragmented_slots\":"<<metrics.fragmented_slots
+                <<",\"fragmentation_bytes\":"<<metrics.fragmentation_bytes
+                <<",\"copied_bytes\":"<<metrics.copied_bytes
+                <<",\"retained_bytes\":"<<metrics.retained_bytes
+                <<",\"draw_calls\":"<<metrics.draw_calls
+                <<",\"triangle_hash\":"<<packed_hashes.triangle_hash
+                <<",\"wire_edge_hash\":"<<packed_hashes.wire_edge_hash
+                <<",\"byte_match\":"<<(byte_match?"true":"false")
+                <<",\"layout_valid\":"<<(layout_valid?"true":"false")
+                <<",\"exact\":"<<(exact?"true":"false")
+                <<",\"occupancy\":"<<std::fixed<<std::setprecision(6)
+                <<metrics.occupancy
+                <<",\"direct_pack_ms\":"<<direct_milliseconds
+                <<",\"chunk_pack_ms\":"<<metrics.pack_milliseconds<<"}\n";
+          if(!exact){
+            write_error(errors,"draw chunk benchmark failed exact packing",path.name);
+            return 1;
+          }
         }
       }
       continue;

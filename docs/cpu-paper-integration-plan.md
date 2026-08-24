@@ -891,7 +891,7 @@ meets its exactness, locality, fallback, and visual exit conditions.
 
 ### Gate 4 - Independent fixed-capacity draw chunks
 
-- [ ] Add a packed draw-chunk table separate from hierarchy and patch storage.
+- [x] Add a packed draw-chunk table separate from hierarchy and patch storage.
 - [ ] Repack only chunks touched by changed patches.
 - [ ] Reuse unchanged CPU staging and Vulkan buffer ranges.
 - [ ] Add partial buffer uploads and retain the preceding complete ranges until
@@ -903,6 +903,53 @@ meets its exactness, locality, fallback, and visual exit conditions.
 
 Exit condition: changed upload bytes follow changed patch bytes rather than
 total scene size, with no missing triangles, stale edges, or partial revisions.
+
+#### Packed fixed-capacity draw-front baseline
+
+`SurfaceDrawChunkStorage` is independent of both the hierarchy and retained
+owner-patch arenas. Its geometry arena is divided into equal physical slots;
+the ordered chunk table maps draw order to those slots, and one flat segment
+table maps logical owner patches into chunk ranges. A patch may span several
+chunks and several patches may share a chunk, so fixed capacity does not impose
+an owner-size limit. All geometry, chunk records, segments, and coalesced free
+ranges use retained flat arrays with no allocation per patch, chunk, segment,
+or triangle.
+
+This first leaf performs a deterministic full compaction. It releases the old
+active slots into coalesced free ranges, reuses the lowest available physical
+slots, and copies patches in stable logical-owner order. Production storage
+does not retain a duplicate monolithic output vector; an explicit headless/test
+assembly oracle reads chunks in draw order and must match
+`direct_pack_surface_patches`. The storage records capacity,
+source/nonempty patches, segments, triangles, active/retained/free/reused/new
+slots, patch spills across chunk boundaries, patch boundaries coalesced into a
+chunk, compactions, fragmentation, copied bytes, retained bytes, occupancy,
+pack time, and prospective draw calls. Dirty-only repacking, retained host
+staging, and Vulkan uploads remain deliberately unchanged for later leaves.
+
+Release tests cover all three patchable surface methods. They require byte-
+identical direct and chunk streams; identical triangle, orientation,
+edge-incidence, material, and submitted-wire hashes; non-overlapping physical
+slots; exact segment coverage; capacity bounds; split/coalescing metrics; free-
+range reuse after an empty/full cycle; and explicit diagnostics for zero
+capacity, unsorted owners, and invalid source ranges.
+
+The release/headless command `benchmark-cpu-draw-chunks[=<maximum-depth>]`
+runs the canonical camera traces once and compares a fresh full chunk packing
+with the direct owner-patch concatenation oracle. All 24 production depth-16
+path/method rows were byte-, layout-, triangle-, and wire-exact:
+
+| Method | Paths | Triangles | Chunks / prospective draws | Patch spills / coalesced boundaries | Occupancy min / mean | Fragmentation | Copied bytes | Retained peak | Direct pack | Chunk pack |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Marching tetrahedra | 8 | 67,751 | 270 | 79 / 47,711 | 96.23% / 97.93% | 0.099 MB | 4.878 MB | 4.818 MB | 1.939 ms | 1.650 ms |
+| Lattice cleaving | 8 | 67,751 | 270 | 79 / 47,711 | 96.23% / 97.93% | 0.099 MB | 4.878 MB | 4.818 MB | 1.992 ms | 1.656 ms |
+| Dual contouring | 8 | 171,757 | 675 | 589 / 19,706 | 98.80% / 99.35% | 0.075 MB | 12.367 MB | 6.003 MB | 2.169 ms | 2.043 ms |
+
+The 256-triangle capacity is therefore a sound correctness and occupancy
+baseline. These draw counts are prospective CPU chunk ranges, not additional
+Vulkan calls yet. Full-pack copy volume still equals the complete triangle
+stream by design; CPU-G4-2 must demonstrate that dirty-patch repacking reduces
+that volume before the renderer consumes this storage.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <map>
 #include <span>
+#include <stdexcept>
 
 namespace tetra_viewer {
 
@@ -2187,6 +2188,185 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
       .edge_count=edges.size(),
       .edge_incidence_count=edge_incidence.size(),
       .wire_edge_count=wire_edges.size()};
+}
+
+SurfaceDrawChunkStorage::SurfaceDrawChunkStorage(std::size_t chunk_capacity)
+    :chunk_capacity_(chunk_capacity) {
+  if(chunk_capacity_==0U)
+    throw std::invalid_argument("surface draw chunk capacity must be positive");
+}
+
+void SurfaceDrawChunkStorage::normalize_free_ranges() {
+  std::sort(free_ranges_.begin(),free_ranges_.end(),
+            [](const auto& left,const auto& right){
+              return left.begin_slot<right.begin_slot;
+            });
+  std::size_t output{};
+  for(const auto range:free_ranges_){
+    if(range.slot_count==0U)continue;
+    if(output!=0U&&free_ranges_[output-1U].begin_slot+
+           free_ranges_[output-1U].slot_count>=range.begin_slot){
+      auto& previous=free_ranges_[output-1U];
+      previous.slot_count=std::max(
+          previous.begin_slot+previous.slot_count,
+          range.begin_slot+range.slot_count)-previous.begin_slot;
+    }else free_ranges_[output++]=range;
+  }
+  free_ranges_.resize(output);
+}
+
+void SurfaceDrawChunkStorage::release_active_slots() {
+  free_ranges_.reserve(free_ranges_.size()+chunks_.size());
+  for(const auto& chunk:chunks_)
+    free_ranges_.push_back({chunk.arena_slot,1U});
+  normalize_free_ranges();
+  chunks_.clear();
+  segments_.clear();
+}
+
+std::size_t SurfaceDrawChunkStorage::allocate_slot() {
+  if(!free_ranges_.empty()){
+    const auto slot=free_ranges_.front().begin_slot++;
+    if(--free_ranges_.front().slot_count==0U)free_ranges_.erase(free_ranges_.begin());
+    ++metrics_.reused_slots;
+    return slot;
+  }
+  const auto slot=arena_.size()/chunk_capacity_;
+  arena_.resize(arena_.size()+chunk_capacity_);
+  ++metrics_.allocated_slots;
+  return slot;
+}
+
+void SurfaceDrawChunkStorage::pack(
+    std::span<const SurfacePatchRecord> patches,
+    std::span<const tetra::Triangle> patch_arena) {
+  const auto start=std::chrono::steady_clock::now();
+  std::size_t triangle_count{};
+  tetra::TetId previous_owner=tetra::invalid_tet;
+  bool have_previous{};
+  for(const auto& patch:patches){
+    if(have_previous&&patch.logical_owner<=previous_owner)
+      throw std::invalid_argument("surface patches must be strictly owner sorted");
+    if(patch.triangle_begin>patch_arena.size()||
+       patch.triangle_count>patch_arena.size()-patch.triangle_begin)
+      throw std::out_of_range("surface patch triangle range exceeds its arena");
+    if(patch.triangle_count>
+       std::numeric_limits<std::size_t>::max()-triangle_count)
+      throw std::overflow_error("surface draw triangle count overflow");
+    triangle_count+=patch.triangle_count;
+    previous_owner=patch.logical_owner;
+    have_previous=true;
+  }
+
+  release_active_slots();
+  metrics_={};
+  metrics_.chunk_capacity=chunk_capacity_;
+  metrics_.source_patches=patches.size();
+  metrics_.triangles=triangle_count;
+  metrics_.global_compactions=1U;
+  const auto required_chunks=triangle_count/chunk_capacity_+
+      (triangle_count%chunk_capacity_==0U?0U:1U);
+  chunks_.reserve(std::max(chunks_.capacity(),required_chunks));
+  segments_.reserve(std::max(segments_.capacity(),patches.size()+required_chunks));
+
+  const auto begin_chunk=[&]{
+    SurfaceDrawChunkRecord chunk;
+    chunk.arena_slot=allocate_slot();
+    chunk.segment_begin=segments_.size();
+    chunks_.push_back(chunk);
+  };
+  for(const auto& patch:patches){
+    if(patch.triangle_count==0U)continue;
+    ++metrics_.nonempty_patches;
+    std::size_t source_offset{};
+    bool first_segment=true;
+    while(source_offset<patch.triangle_count){
+      if(chunks_.empty()||chunks_.back().triangle_count==chunk_capacity_)
+        begin_chunk();
+      auto& chunk=chunks_.back();
+      if(first_segment&&chunk.triangle_count!=0U)++metrics_.chunk_merges;
+      const auto count=std::min(
+          patch.triangle_count-source_offset,
+          chunk_capacity_-chunk.triangle_count);
+      const auto destination=chunk.arena_slot*chunk_capacity_+chunk.triangle_count;
+      std::copy_n(
+          patch_arena.begin()+static_cast<std::ptrdiff_t>(
+              patch.triangle_begin+source_offset),
+          count,arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      segments_.push_back({
+          patch.logical_owner,source_offset,chunks_.size()-1U,destination,count});
+      ++chunk.segment_count;
+      chunk.triangle_count+=count;
+      source_offset+=count;
+      if(source_offset<patch.triangle_count)++metrics_.chunk_splits;
+      first_segment=false;
+    }
+  }
+
+  metrics_.patch_segments=segments_.size();
+  metrics_.active_chunks=chunks_.size();
+  metrics_.retained_slots=arena_.size()/chunk_capacity_;
+  for(const auto range:free_ranges_)metrics_.free_slots+=range.slot_count;
+  metrics_.fragmented_slots=chunks_.size()*chunk_capacity_-triangle_count;
+  metrics_.fragmentation_bytes=
+      metrics_.fragmented_slots*sizeof(tetra::Triangle);
+  metrics_.copied_bytes=triangle_count*sizeof(tetra::Triangle);
+  metrics_.draw_calls=chunks_.size();
+  metrics_.occupancy=chunks_.empty()?0.0:
+      static_cast<double>(triangle_count)/
+          static_cast<double>(chunks_.size()*chunk_capacity_);
+  metrics_.retained_bytes=
+      chunks_.capacity()*sizeof(SurfaceDrawChunkRecord)+
+      segments_.capacity()*sizeof(SurfaceDrawPatchSegment)+
+      free_ranges_.capacity()*sizeof(SurfaceDrawChunkFreeRange)+
+      arena_.capacity()*sizeof(tetra::Triangle);
+  metrics_.pack_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-start).count();
+}
+
+std::vector<tetra::Triangle> direct_pack_surface_patches(
+    std::span<const SurfacePatchRecord> patches,
+    std::span<const tetra::Triangle> patch_arena) {
+  std::size_t triangle_count{};
+  for(const auto& patch:patches){
+    if(patch.triangle_begin>patch_arena.size()||
+       patch.triangle_count>patch_arena.size()-patch.triangle_begin)
+      throw std::out_of_range("surface patch triangle range exceeds its arena");
+    if(patch.triangle_count>
+       std::numeric_limits<std::size_t>::max()-triangle_count)
+      throw std::overflow_error("surface draw triangle count overflow");
+    triangle_count+=patch.triangle_count;
+  }
+  std::vector<tetra::Triangle> packed;
+  packed.reserve(triangle_count);
+  for(const auto& patch:patches)
+    packed.insert(
+        packed.end(),
+        patch_arena.begin()+static_cast<std::ptrdiff_t>(patch.triangle_begin),
+        patch_arena.begin()+static_cast<std::ptrdiff_t>(
+            patch.triangle_begin+patch.triangle_count));
+  return packed;
+}
+
+std::vector<tetra::Triangle> assemble_surface_draw_chunks(
+    const SurfaceDrawChunkStorage& storage) {
+  std::vector<tetra::Triangle> packed;
+  packed.reserve(storage.metrics().triangles);
+  for(const auto& chunk:storage.chunks()){
+    if(chunk.arena_slot>=storage.metrics().retained_slots||
+       chunk.triangle_count>storage.chunk_capacity())
+      throw std::out_of_range("surface draw chunk exceeds its arena slot");
+    const auto begin=chunk.arena_slot*storage.chunk_capacity();
+    if(begin>storage.arena().size()||
+       chunk.triangle_count>storage.arena().size()-begin)
+      throw std::out_of_range("surface draw chunk range exceeds its arena");
+    packed.insert(
+        packed.end(),
+        storage.arena().begin()+static_cast<std::ptrdiff_t>(begin),
+        storage.arena().begin()+static_cast<std::ptrdiff_t>(
+            begin+chunk.triangle_count));
+  }
+  return packed;
 }
 
 void expand_line_segments_for_upload(

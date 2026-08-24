@@ -6,16 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G4-1 packed draw-chunk storage and direct-packing baseline.
-  - Scope: add a flat fixed-capacity draw-chunk table, deterministic patch-to-
-    chunk assignment, free-range reuse, and direct monolithic packing oracle;
-    do not change renderer upload behavior yet.
-  - Acceptance: packed triangle and wire hashes match direct packing for every
-    patchable surface method, chunk ranges never overlap, and occupancy,
-    fragmentation, split/merge, compaction, copied-byte, and draw-count metrics
-    are exposed by a focused release/headless baseline.
-  - Stop rule: close the storage/oracle leaf without incremental repacking or
-    Vulkan buffer-range updates.
 - [ ] CPU-G4-2 dirty-patch incremental chunk repacking.
   - Scope: update only chunks whose assigned owner patches changed, including
     overflow splits, underfull merges, and bounded global compaction fallback.

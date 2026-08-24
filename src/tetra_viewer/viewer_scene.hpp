@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -702,6 +703,99 @@ struct SurfacePatchMetrics {
   std::size_t retained_bytes{};
   double update_milliseconds{};
 };
+
+struct SurfaceDrawChunkRecord {
+  std::size_t arena_slot{};
+  std::size_t triangle_count{};
+  std::size_t segment_begin{};
+  std::size_t segment_count{};
+};
+
+struct SurfaceDrawPatchSegment {
+  tetra::TetId logical_owner{tetra::invalid_tet};
+  std::size_t source_triangle_offset{};
+  std::size_t chunk_index{};
+  std::size_t triangle_begin{};
+  std::size_t triangle_count{};
+};
+
+struct SurfaceDrawChunkFreeRange {
+  std::size_t begin_slot{};
+  std::size_t slot_count{};
+};
+
+struct SurfaceDrawChunkMetrics {
+  std::size_t chunk_capacity{};
+  std::size_t source_patches{};
+  std::size_t nonempty_patches{};
+  std::size_t patch_segments{};
+  std::size_t triangles{};
+  std::size_t active_chunks{};
+  std::size_t retained_slots{};
+  std::size_t free_slots{};
+  std::size_t reused_slots{};
+  std::size_t allocated_slots{};
+  std::size_t chunk_splits{};
+  std::size_t chunk_merges{};
+  std::size_t global_compactions{};
+  std::size_t fragmented_slots{};
+  std::size_t fragmentation_bytes{};
+  std::size_t copied_bytes{};
+  std::size_t retained_bytes{};
+  std::size_t draw_calls{};
+  double occupancy{};
+  double pack_milliseconds{};
+};
+
+// Fixed-capacity storage is independent of the hierarchy and owner-patch
+// arenas. A patch may span several chunks and several patches may share one
+// chunk; all metadata and geometry remain in flat retained arrays.
+class SurfaceDrawChunkStorage {
+ public:
+  explicit SurfaceDrawChunkStorage(std::size_t chunk_capacity=256U);
+
+  void pack(std::span<const SurfacePatchRecord> patches,
+            std::span<const tetra::Triangle> patch_arena);
+
+  [[nodiscard]] std::size_t chunk_capacity() const noexcept {
+    return chunk_capacity_;
+  }
+  [[nodiscard]] std::span<const SurfaceDrawChunkRecord> chunks() const noexcept {
+    return chunks_;
+  }
+  [[nodiscard]] std::span<const SurfaceDrawPatchSegment> segments() const noexcept {
+    return segments_;
+  }
+  [[nodiscard]] std::span<const SurfaceDrawChunkFreeRange> free_ranges() const noexcept {
+    return free_ranges_;
+  }
+  [[nodiscard]] std::span<const tetra::Triangle> arena() const noexcept {
+    return arena_;
+  }
+  [[nodiscard]] const SurfaceDrawChunkMetrics& metrics() const noexcept {
+    return metrics_;
+  }
+
+ private:
+  [[nodiscard]] std::size_t allocate_slot();
+  void release_active_slots();
+  void normalize_free_ranges();
+
+  std::size_t chunk_capacity_{};
+  std::vector<SurfaceDrawChunkRecord> chunks_;
+  std::vector<SurfaceDrawPatchSegment> segments_;
+  std::vector<SurfaceDrawChunkFreeRange> free_ranges_;
+  std::vector<tetra::Triangle> arena_;
+  SurfaceDrawChunkMetrics metrics_;
+};
+
+// Deliberately simple full-packing oracle used to prove chunk storage before
+// later leaves introduce dirty-only repacking and retained upload ranges.
+[[nodiscard]] std::vector<tetra::Triangle> direct_pack_surface_patches(
+    std::span<const SurfacePatchRecord> patches,
+    std::span<const tetra::Triangle> patch_arena);
+[[nodiscard]] std::vector<tetra::Triangle> assemble_surface_draw_chunks(
+    const SurfaceDrawChunkStorage& storage);
 
 // Geometry preparation is also used by headless research scripts, which need
 // all measurements.  The interactive viewer can explicitly omit measurements

@@ -4380,6 +4380,124 @@ TEST_CASE("owner patches retain locality across multiple unpublished revisions")
   }
 }
 
+TEST_CASE("fixed surface draw chunks match direct packing for every local method") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,48.0,5));
+  constexpr std::array methods{
+      tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::SurfaceMethod::lattice_cleaving,
+      tetra_viewer::SurfaceMethod::dual_contouring};
+  const auto byte_equal=[](std::span<const tetra::Triangle> first,
+                           std::span<const tetra::Triangle> second){
+    return first.size()==second.size()&&
+        (first.empty()||std::memcmp(first.data(),second.data(),
+                                    first.size_bytes())==0);
+  };
+  for(const auto method:methods){
+    CAPTURE(tetra_viewer::surface_method_key(method));
+    tetra_viewer::SceneCache cache;
+    REQUIRE(cache.update_scene(
+        mesh,sphere,21,method,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+    const auto direct=tetra_viewer::direct_pack_surface_patches(
+        cache.surface_patch_records(),cache.surface_patch_arena());
+    tetra_viewer::SurfaceDrawChunkStorage chunks(3U);
+    chunks.pack(cache.surface_patch_records(),cache.surface_patch_arena());
+    const auto assembled=tetra_viewer::assemble_surface_draw_chunks(chunks);
+    REQUIRE(byte_equal(assembled,direct));
+
+    const auto packed_scene=tetra_viewer::prepare_scene(
+        mesh,sphere,method,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,{},
+        assembled,true);
+    CHECK(tetra_viewer::surface_geometry_hashes(packed_scene)==
+          tetra_viewer::surface_geometry_hashes(cache.scene()));
+
+    const auto& metrics=chunks.metrics();
+    CHECK(metrics.chunk_capacity==3U);
+    CHECK(metrics.source_patches==cache.surface_patch_records().size());
+    CHECK(metrics.triangles==direct.size());
+    CHECK(metrics.active_chunks==(direct.size()+2U)/3U);
+    CHECK(metrics.draw_calls==metrics.active_chunks);
+    CHECK(metrics.fragmented_slots==metrics.active_chunks*3U-direct.size());
+    CHECK(metrics.fragmentation_bytes==
+          metrics.fragmented_slots*sizeof(tetra::Triangle));
+    CHECK(metrics.copied_bytes==direct.size()*sizeof(tetra::Triangle));
+    CHECK(metrics.global_compactions==1U);
+    CHECK(metrics.occupancy>0.0);
+    CHECK(metrics.occupancy<=1.0);
+    CHECK(metrics.retained_bytes>0U);
+
+    std::vector<std::size_t> slots;
+    for(std::size_t chunk_index=0;chunk_index<chunks.chunks().size();++chunk_index){
+      const auto& chunk=chunks.chunks()[chunk_index];
+      CHECK(chunk.triangle_count>0U);
+      CHECK(chunk.triangle_count<=chunks.chunk_capacity());
+      CHECK(chunk.segment_begin+chunk.segment_count<=chunks.segments().size());
+      slots.push_back(chunk.arena_slot);
+      for(std::size_t segment_index=chunk.segment_begin;
+          segment_index<chunk.segment_begin+chunk.segment_count;++segment_index){
+        const auto& segment=chunks.segments()[segment_index];
+        CHECK(segment.chunk_index==chunk_index);
+        CHECK(segment.triangle_begin>=chunk.arena_slot*chunks.chunk_capacity());
+        CHECK(segment.triangle_begin+segment.triangle_count<=
+              chunk.arena_slot*chunks.chunk_capacity()+chunk.triangle_count);
+      }
+    }
+    std::sort(slots.begin(),slots.end());
+    CHECK(std::ranges::adjacent_find(slots)==slots.end());
+
+    const auto retained_slots=metrics.retained_slots;
+    chunks.pack({},cache.surface_patch_arena());
+    CHECK(chunks.metrics().active_chunks==0U);
+    CHECK(chunks.metrics().free_slots==retained_slots);
+    REQUIRE(chunks.free_ranges().size()==1U);
+    chunks.pack(cache.surface_patch_records(),cache.surface_patch_arena());
+    CHECK(chunks.metrics().allocated_slots==0U);
+    CHECK(chunks.metrics().reused_slots==chunks.metrics().active_chunks);
+    CHECK(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),direct));
+  }
+}
+
+TEST_CASE("surface draw chunks diagnose invalid ranges and report split merge packing") {
+  CHECK_THROWS_AS(tetra_viewer::SurfaceDrawChunkStorage(0U),std::invalid_argument);
+  std::array<tetra::Triangle,7> arena{};
+  std::array patches{
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=1U,.triangle_begin=0U,.triangle_count=5U,
+          .triangle_capacity=5U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=2U,.triangle_begin=5U,.triangle_count=2U,
+          .triangle_capacity=2U}};
+  tetra_viewer::SurfaceDrawChunkStorage chunks(3U);
+  chunks.pack(patches,arena);
+  CHECK(chunks.metrics().active_chunks==3U);
+  CHECK(chunks.metrics().patch_segments==4U);
+  CHECK(chunks.metrics().chunk_splits==2U);
+  CHECK(chunks.metrics().chunk_merges==1U);
+  CHECK(chunks.metrics().fragmented_slots==2U);
+  CHECK(tetra_viewer::assemble_surface_draw_chunks(chunks).size()==arena.size());
+
+  std::array unsorted{patches[1],patches[0]};
+  CHECK_THROWS_AS(chunks.pack(unsorted,arena),std::invalid_argument);
+  auto invalid=patches;
+  invalid[1].triangle_begin=arena.size();
+  invalid[1].triangle_count=1U;
+  CHECK_THROWS_AS(chunks.pack(invalid,arena),std::out_of_range);
+  CHECK_THROWS_AS(
+      static_cast<void>(tetra_viewer::direct_pack_surface_patches(invalid,arena)),
+      std::out_of_range);
+}
+
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -5234,6 +5352,67 @@ TEST_CASE("headless surface patch benchmark proves locality and exact output") {
   std::ostringstream invalid_output,invalid_errors;
   CHECK(tetra_viewer::run_script(
       "benchmark-cpu-surface-patches=33",invalid_output,invalid_errors)==2);
+  CHECK(invalid_errors.str().find("depth outside the supported range")!=
+        std::string::npos);
+}
+
+TEST_CASE("headless draw chunk benchmark matches direct packing on every path") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-cpu-draw-chunks=6",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  constexpr std::array paths{
+      "stationary","slow-orbit","rapid-orbit","near-to-far",
+      "far-to-near","teleport","reversal","repeated-pose"};
+  constexpr std::array methods{
+      "marching-tetrahedra","lattice-cleaving","dual-contouring"};
+  const auto event_for=[&](std::string_view path,std::string_view method){
+    const std::string marker="\"path\":\""+std::string(path)+
+        "\",\"method\":\""+std::string(method)+"\"";
+    const auto marker_position=text.find(marker);
+    REQUIRE(marker_position!=std::string::npos);
+    const auto begin=text.rfind('{',marker_position);
+    const auto end=text.find('\n',marker_position);
+    REQUIRE(begin!=std::string::npos);
+    REQUIRE(end!=std::string::npos);
+    return text.substr(begin,end-begin);
+  };
+  const auto field=[](const std::string& event,std::string_view key){
+    const auto begin=event.find(key);
+    REQUIRE(begin!=std::string::npos);
+    const auto value=begin+key.size();
+    return event.substr(value,event.find_first_of(",}",value)-value);
+  };
+  for(const auto path:paths){
+    for(const auto method:methods){
+      const auto event=event_for(path,method);
+      const auto triangles=std::stoull(field(event,"\"triangles\":"));
+      const auto chunks=std::stoull(field(event,"\"active_chunks\":"));
+      CHECK(event.find("\"byte_match\":true")!=std::string::npos);
+      CHECK(event.find("\"layout_valid\":true")!=std::string::npos);
+      CHECK(event.find("\"exact\":true")!=std::string::npos);
+      CHECK(field(event,"\"chunk_capacity\":")=="256");
+      CHECK(triangles>0U);
+      CHECK(chunks>0U);
+      CHECK(std::stoull(field(event,"\"retained_slots\":"))==chunks);
+      CHECK(std::stoull(field(event,"\"allocated_slots\":"))==chunks);
+      CHECK(field(event,"\"reused_slots\":")=="0");
+      CHECK(field(event,"\"free_slots\":")=="0");
+      CHECK(field(event,"\"global_compactions\":")=="1");
+      CHECK(std::stoull(field(event,"\"draw_calls\":"))==chunks);
+      CHECK(std::stoull(field(event,"\"copied_bytes\":"))==
+            triangles*sizeof(tetra::Triangle));
+      CHECK(std::stod(field(event,"\"occupancy\":"))>0.0);
+      CHECK(std::stod(field(event,"\"occupancy\":"))<=1.0);
+      CHECK(std::stod(field(event,"\"direct_pack_ms\":"))>=0.0);
+      CHECK(std::stod(field(event,"\"chunk_pack_ms\":"))>=0.0);
+    }
+  }
+
+  std::ostringstream invalid_output,invalid_errors;
+  CHECK(tetra_viewer::run_script(
+      "benchmark-cpu-draw-chunks=33",invalid_output,invalid_errors)==2);
   CHECK(invalid_errors.str().find("depth outside the supported range")!=
         std::string::npos);
 }

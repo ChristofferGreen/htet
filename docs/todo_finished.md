@@ -2,6 +2,17 @@
 
 ## 2026-08-24
 
+- [x] CPU-G4-1 packed draw-chunk storage and direct-packing baseline: added a
+  retained flat triangle arena with equal-capacity physical slots, ordered draw
+  records, flat owner-patch segments, and coalesced reusable free ranges.
+  Direct and chunk streams are byte-identical and produce identical filled and
+  submitted-wire hashes for marching, lattice, and dual contouring. A 24-row
+  depth-16 release benchmark found 97.93%-99.35% mean occupancy with a 96.23%
+  minimum, less than 0.10 MB aggregate fragmentation per method, and
+  270/270/675 prospective draw
+  ranges across eight paths while exposing capacity, split/coalescing,
+  compaction, copy, retention, occupancy, timing, and draw-count metrics. Host
+  staging and Vulkan upload behavior remain unchanged for later Gate 4 leaves.
 - [x] CPU-G3-4 patch-derived surface edges and Gate 3 benchmark: extended
   canonical geometry evidence with edge-incidence, material-boundary, and
   submitted-wire hashes/counts; proved every retained triangle owns all three
