@@ -1299,7 +1299,7 @@ hybrid variant. Gate 5 is closed.
 - [x] Implement the CPU extractor behind a separate surface dropdown option.
 - [x] Require a closed two-manifold where expected, edge incidence of two,
   consistent orientation, no duplicate triangles, and no cracks.
-- [ ] Compare topology and visual quality with whole-cell boundaries, direct
+- [x] Compare topology and visual quality with whole-cell boundaries, direct
   tetrahedral extraction, and the four-hexahedra method.
 
 Exit condition: the method is exposed only if the BCC ownership specification
@@ -1400,8 +1400,58 @@ are no degenerate or unmatched triangles. Additional fixtures prove complete
 dependency retention, selected-owner isolation, stale-index rejection, exact
 patched-versus-monolithic geometry before and after local refinement, headless
 selection, interactive registry exposure, and successful scene preparation
-for every implicit shape. CPU-G6-2 is complete; CPU-G6-3 still decides whether
-the method's measured cost and visual quality justify retaining that exposure.
+for every implicit shape. CPU-G6-2 is complete; the following comparison
+records the final retain-or-remove decision.
+
+#### Release comparison and Gate 6 decision
+
+CPU-G6-3 uses
+`benchmark-cpu-mixed-depth-dual=10:20` on terrain, sphere, merging spheres,
+cube, and capped cylinder. It compares the variational whole-cell boundary,
+direct marching tetrahedra, four-hexahedra, and mixed-depth barycentric dual
+surfaces. The complete 20-row release observation is stored in
+[`cpu-mixed-depth-dual-comparison.tsv`](cpu-mixed-depth-dual-comparison.tsv).
+The benchmark reports the existing sampled Hausdorff, face-normal, edge-aspect,
+triangle-count, retained-byte, field-sample, patch-update, and end-to-end
+metrics. Gate 7, rather than this experiment, remains responsible for repeated
+median and tail-latency selection.
+
+On the sphere, mixed-depth dual reduces direct marching's sampled Hausdorff
+distance from `0.00589` to `0.00156` and mean normal error from `2.95` to
+`1.33` degrees. It uses 11,208 rather than 1,020 triangles and updates in
+`7.26` rather than `0.53` ms. Four-hexahedra remains slightly more accurate at
+`0.00106` and `0.79` degrees, but uses 26,040 triangles, 6.90 MB retained
+storage, and `9.88` ms; mixed-depth dual uses 4.82 MB. Merging spheres and
+terrain show the same middle-ground result: mixed-depth dual is materially
+smoother than marching and materially less dense and faster than
+four-hexahedra. Cube gains no accuracy from either refined reference lattice.
+The cylinder's smooth regions improve, but its maximum edge aspect ratio
+(`1079`) is worse than four-hexahedra (`317`) and marching (`30`).
+
+The current implementation reevaluates every flag-tetrahedron endpoint rather
+than caching unique primal, edge, face, and cell samples. It therefore performs
+more field evaluations than four-hexahedra despite emitting fewer triangles:
+187,776 versus 131,760 on the sphere and 480,096 versus 368,640 on terrain.
+This is a clear future optimization boundary, not a topology defect.
+
+The release headless renderer was inspected at depth 10 from camera
+`(1.7,1.4,2.0)`, looking along `(-1.2,-0.9,-1.5)`, in studio-flat shading with
+hierarchy and volume edges disabled. Twenty edge-on comparison images and five
+mixed-depth edge-off images were inspected at full resolution. Whole-cell
+boundaries were predictably blocky; marching was sparse but visibly faceted;
+four-hexahedra was smooth but its wire density obscured geometry. Mixed-depth
+dual preserved smooth sphere and merging-sphere silhouettes with less wire
+density, and followed terrain detail well. Barycentric star patterns remain
+visible in wire mode and the capped cylinder has scalloped bands. No method
+switch exposed cracks, missing faces, transparency, inconsistent wire width,
+or LOD seams.
+
+Gate 6 retains `mixed-depth-dual` in the interactive and headless selectors as
+an explicitly experimental quality/reference method. It does not replace the
+current production defaults: the measured cost and remaining star/scallop
+artifacts are too high for that. The ownership specification, extractor,
+topology proof, comparison, and exposure decision are complete, so Gate 6 is
+closed.
 
 ### Gate 7 - Select production defaults
 

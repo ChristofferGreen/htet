@@ -90,6 +90,13 @@ struct MixedDepthDualPatchTriangle {
   Triangle triangle{};
 };
 
+struct MixedDepthDualPatchMetrics {
+  std::size_t accepted_candidates{};
+  std::size_t flag_tetrahedra{};
+  std::size_t evaluated_samples{};
+  std::size_t output_triangles{};
+};
+
 // Retains the complete packed vertex-star index. Each accepted candidate is
 // decomposed into six fixed barycentric flag tetrahedra per incident cell;
 // selected patches are keyed by the candidate's Wald-equivalent owner.
@@ -103,11 +110,15 @@ class MixedDepthDualPatchBuilder {
   [[nodiscard]] const MixedDepthDualIndex& index() const noexcept{return index_;}
   [[nodiscard]] std::span<const MixedDepthDualPatchDependency> dependencies()
       const noexcept{return dependencies_;}
+  [[nodiscard]] const MixedDepthDualPatchMetrics& metrics() const noexcept{
+    return metrics_;
+  }
   [[nodiscard]] std::size_t retained_bytes() const noexcept;
 
  private:
   MixedDepthDualIndex index_;
   std::vector<MixedDepthDualPatchDependency> dependencies_;
+  MixedDepthDualPatchMetrics metrics_;
 };
 
 [[nodiscard]] std::vector<Triangle> extract_mixed_depth_dual_isosurface(

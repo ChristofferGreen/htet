@@ -242,3 +242,11 @@
   two, unique non-degenerate triangles, and no mixed-depth cracks. Retained
   owner patches exactly match monolithic geometry before and after local
   refinement; headless, interactive-registry, and all-shape fixtures pass.
+- [x] CPU-G6-3 mixed-depth dual comparison and exposure decision: added a
+  deterministic five-shape/four-method release benchmark and stored its 20-row
+  quality, cost, sample, triangle, and retained-memory matrix. Full-resolution
+  edge-on and edge-off renders showed a smooth middle ground between marching
+  and four-hexahedra, with no cracks, missing faces, transparency, or wire
+  inconsistency, but retained barycentric stars, cylinder scalloping, and
+  7--50 ms field updates. Retained it as an explicitly experimental dropdown
+  method without changing production defaults; Gate 6 is closed.

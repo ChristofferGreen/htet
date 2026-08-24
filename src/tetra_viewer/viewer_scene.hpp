@@ -271,7 +271,7 @@ inline constexpr std::array headless_surface_methods{
     case SurfaceMethod::tetrahedral_layer: return "Extracted tetrahedral layer (experimental)";
     case SurfaceMethod::dual_contouring: return "Dual contour surface (experimental)";
     case SurfaceMethod::four_hexahedra: return "Four-hexahedra surface (Scholz-inspired)";
-    case SurfaceMethod::mixed_depth_dual: return "Mixed-depth barycentric dual";
+    case SurfaceMethod::mixed_depth_dual: return "Mixed-depth barycentric dual (experimental)";
     case SurfaceMethod::surface_optimization: return "Surface optimization (TetWeave-inspired)";
   }
   return "Unknown";

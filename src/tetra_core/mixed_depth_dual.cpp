@@ -243,6 +243,7 @@ MixedDepthDualIndex build_mixed_depth_dual_index(const TetMesh& mesh) {
 
 void MixedDepthDualPatchBuilder::rebuild_index(const TetMesh& mesh) {
   index_=build_mixed_depth_dual_index(mesh);
+  metrics_={};
   dependencies_.clear();
   dependencies_.reserve(index_.contenders.size());
   for(const auto& candidate:index_.candidates){
@@ -268,10 +269,12 @@ void MixedDepthDualPatchBuilder::generate_patches(
         selected_patch_owners.begin(),selected_patch_owners.end(),owner);
   };
   output.clear();
+  metrics_={};
   output.reserve(index_.incidents.size()*3U);
   for(const auto& candidate:index_.candidates){
     if(candidate.decision!=MixedDepthDualDecision::accepted||
        !selected(candidate.owner))continue;
+    ++metrics_.accepted_candidates;
     const auto incidents=std::span{index_.incidents}.subspan(
         candidate.incident_begin,candidate.incident_count);
     for(const auto& incident:incidents){
@@ -284,6 +287,8 @@ void MixedDepthDualPatchBuilder::generate_patches(
           "mixed-depth dual incident does not contain its candidate vertex");
       std::sort(others.begin(),others.end());
       do{
+        ++metrics_.flag_tetrahedra;
+        metrics_.evaluated_samples+=4U;
         const std::array<Vec3,4> flag{{
             mesh.vertices()[candidate.primal_vertex],
             canonical_barycentre(mesh,
@@ -298,6 +303,7 @@ void MixedDepthDualPatchBuilder::generate_patches(
   std::stable_sort(output.begin(),output.end(),[](const auto& left,const auto& right){
     return left.patch_owner<right.patch_owner;
   });
+  metrics_.output_triangles=output.size();
 }
 
 std::size_t MixedDepthDualPatchBuilder::retained_bytes() const noexcept {

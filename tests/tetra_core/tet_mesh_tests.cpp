@@ -6558,6 +6558,73 @@ TEST_CASE("four-hexahedra quality benchmark covers a deterministic matrix") {
   }
 }
 
+TEST_CASE("mixed-depth dual benchmark compares required reference methods") {
+  const auto run=[](std::string_view command){
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script(command,output,errors)==0);
+    CHECK(errors.str().empty());
+    return output.str();
+  };
+  const auto rows=[](const std::string& text){
+    std::vector<std::string> result;
+    std::istringstream lines(text);
+    for(std::string line;std::getline(lines,line);)
+      if(line.find("\"event\":\"cpu_mixed_depth_dual_benchmark\"")!=
+         std::string::npos)
+        result.push_back(std::move(line));
+    return result;
+  };
+  const auto first_rows=rows(run("benchmark-cpu-mixed-depth-dual=3:4"));
+  const auto second_rows=rows(run("benchmark-cpu-mixed-depth-dual=3:4"));
+  REQUIRE(first_rows.size()==20U);
+  REQUIRE(second_rows.size()==first_rows.size());
+  constexpr std::array<std::string_view,4> timing_fields{
+      "\"cold_patch_update_ms\":","\"cold_end_to_end_update_ms\":",
+      "\"update_patch_ms\":","\"end_to_end_update_ms\":"};
+  const auto without_timings=[&](std::string row){
+    for(const auto key:timing_fields){
+      const auto begin=row.find(key);
+      REQUIRE(begin!=std::string::npos);
+      const auto value=begin+key.size();
+      row.replace(value,row.find_first_of(",}",value)-value,"<timing>");
+    }
+    return row;
+  };
+  std::set<std::string> shapes,methods;
+  for(std::size_t index=0;index<first_rows.size();++index){
+    const auto& row=first_rows[index];
+    CHECK(row.find("\"valid\":true")!=std::string::npos);
+    const auto field=[&](std::string_view key){
+      const auto begin=row.find(key);
+      REQUIRE(begin!=std::string::npos);
+      const auto value=begin+key.size();
+      return row.substr(value,row.find_first_of(",}",value)-value);
+    };
+    shapes.insert(field("\"shape\":"));
+    methods.insert(field("\"method\":"));
+    CHECK(without_timings(row)==without_timings(second_rows[index]));
+    if(field("\"method\":")=="\"mixed-depth-dual\""){
+      CHECK(std::stoull(field("\"cold_field_samples\":"))>0U);
+      CHECK(std::stoull(field("\"update_field_samples\":"))>0U);
+      CHECK(field("\"patchable\":")=="true");
+    }
+  }
+  CHECK(shapes.size()==5U);
+  CHECK(methods==std::set<std::string>{
+      "\"four-hexahedra\"","\"full-tetrahedra\"",
+      "\"marching-tetrahedra\"","\"mixed-depth-dual\""});
+  CHECK(rows(run("benchmark-cpu-mixed-depth-dual=10:2")).size()==20U);
+
+  for(const auto command:{"benchmark-cpu-mixed-depth-dual=33:4",
+                          "benchmark-cpu-mixed-depth-dual=3:1",
+                          "benchmark-cpu-mixed-depth-dual=nope"}){
+    std::ostringstream output,errors;
+    CHECK(tetra_viewer::run_script(command,output,errors)==2);
+    CHECK(errors.str().find("parameters outside the supported range")!=
+          std::string::npos);
+  }
+}
+
 TEST_CASE("headless draw chunk benchmark matches direct packing on every path") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(

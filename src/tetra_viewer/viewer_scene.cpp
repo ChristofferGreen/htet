@@ -4047,6 +4047,11 @@ void SceneCache::update_surface_patches(
     surface_patch_metrics_.reused_field_samples=field_metrics.reused_samples;
     surface_patch_metrics_.field_sample_records=field_metrics.records;
   }
+  if(mixed_depth_dual){
+    const auto& field_metrics=mixed_depth_dual_patch_builder_.metrics();
+    surface_patch_metrics_.evaluated_field_samples=field_metrics.evaluated_samples;
+    surface_patch_metrics_.field_sample_records=field_metrics.flag_tetrahedra;
+  }
 
   surface_patch_output_.clear();
   std::size_t triangle_count{};

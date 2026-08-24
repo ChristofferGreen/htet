@@ -2264,6 +2264,126 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       continue;
     }
+    constexpr std::string_view mixed_depth_dual_benchmark=
+        "benchmark-cpu-mixed-depth-dual";
+    if(command==mixed_depth_dual_benchmark||
+       command.starts_with(std::string(mixed_depth_dual_benchmark)+"=")){
+      unsigned int benchmark_depth=10U;
+      unsigned int reference_grid=20U;
+      if(command.size()>mixed_depth_dual_benchmark.size()){
+        const auto value=command.substr(mixed_depth_dual_benchmark.size()+1U);
+        const auto separator=value.find(':');
+        if(!parse_unsigned(value.substr(0U,separator),benchmark_depth)||
+           benchmark_depth>32U||
+           (separator!=std::string_view::npos&&
+            (!parse_unsigned(value.substr(separator+1U),reference_grid)||
+             reference_grid<2U||reference_grid>64U))){
+          write_error(errors,
+              "mixed-depth dual benchmark parameters outside the supported range",
+              command);
+          return 2;
+        }
+      }
+      constexpr std::array shapes{
+          tetra::ImplicitShapeKind::perlin_terrain,
+          tetra::ImplicitShapeKind::sphere,
+          tetra::ImplicitShapeKind::merging_spheres,
+          tetra::ImplicitShapeKind::cube,
+          tetra::ImplicitShapeKind::capped_cylinder};
+      constexpr std::array methods{
+          SurfaceMethod::full_tetrahedra,
+          SurfaceMethod::marching_tetrahedra,
+          SurfaceMethod::four_hexahedra,
+          SurfaceMethod::mixed_depth_dual};
+      constexpr ScenePreparationOptions preparation{
+          .surface_diagnostics=false,.summary_statistics=false};
+      for(const auto shape:shapes){
+        const auto baseline=cpu_benchmark_baseline(shape,benchmark_depth);
+        for(const auto method:methods){
+          const auto material=method==SurfaceMethod::full_tetrahedra
+              ?MaterialRule::variational:MaterialRule::all_vertices_inside;
+          SceneCache cache;
+          const auto cold_start=Clock::now();
+          const bool cold_rebuilt=cache.update_scene(
+              baseline.mesh,baseline.sphere,baseline.field_revision,
+              method,material,
+              true,false,false,false,false,false,1.0,
+              VolumeConnectionMethod::hierarchy_cells,
+              StencilConstruction::fixed,
+              StencilSelectionObjective::balanced,preparation);
+          const double cold_end_to_end_ms=milliseconds_since(cold_start);
+          const auto cold_patch=cache.surface_patch_metrics();
+          const auto quality=evaluate_surface_quality(
+              cache.scene(),baseline.sphere,reference_grid);
+          const auto hashes=surface_geometry_hashes(cache.scene());
+
+          auto moved_surface=baseline.sphere;
+          moved_surface.centre.x+=1.0e-5;
+          const auto update_start=Clock::now();
+          const bool update_rebuilt=cache.update_scene(
+              baseline.mesh,moved_surface,baseline.field_revision+1U,
+              method,material,
+              true,false,false,false,false,false,1.0,
+              VolumeConnectionMethod::hierarchy_cells,
+              StencilConstruction::fixed,
+              StencilSelectionObjective::balanced,preparation);
+          const double update_end_to_end_ms=milliseconds_since(update_start);
+          const auto update_patch=cache.surface_patch_metrics();
+          const bool expected_samples=
+              method!=SurfaceMethod::mixed_depth_dual||
+              (cold_patch.evaluated_field_samples>0U&&
+               update_patch.evaluated_field_samples>0U&&
+               cold_patch.field_sample_records*4U==
+                   cold_patch.evaluated_field_samples&&
+               update_patch.field_sample_records*4U==
+                   update_patch.evaluated_field_samples);
+          const bool valid=cold_rebuilt&&update_rebuilt&&quality.valid&&
+              quality.triangle_count!=0U&&
+              hashes.triangle_count==quality.triangle_count&&expected_samples&&
+              std::isfinite(cold_end_to_end_ms)&&
+              std::isfinite(update_end_to_end_ms);
+          output<<"{\"event\":\"cpu_mixed_depth_dual_benchmark\""
+                <<",\"shape\":\""<<tetra::implicit_shape_key(shape)<<'"'
+                <<",\"method\":\""<<surface_method_key(method)<<'"'
+                <<",\"maximum_depth\":"<<benchmark_depth
+                <<",\"reference_grid\":"<<reference_grid
+                <<",\"conforming_cells\":"
+                <<baseline.mesh.conforming_volume().size()
+                <<",\"triangles\":"<<quality.triangle_count
+                <<",\"degenerate_triangles\":"
+                <<quality.degenerate_triangle_count
+                <<",\"sampled_hausdorff_distance\":"<<std::setprecision(9)
+                <<quality.sampled_hausdorff_distance
+                <<",\"mean_normal_error_degrees\":"
+                <<quality.mean_normal_error_degrees
+                <<",\"maximum_normal_error_degrees\":"
+                <<quality.maximum_normal_error_degrees
+                <<",\"mean_triangle_edge_aspect_ratio\":"
+                <<quality.mean_triangle_edge_aspect_ratio
+                <<",\"maximum_triangle_edge_aspect_ratio\":"
+                <<quality.maximum_triangle_edge_aspect_ratio
+                <<",\"cold_field_samples\":"
+                <<cold_patch.evaluated_field_samples
+                <<",\"cold_patch_update_ms\":"
+                <<cold_patch.update_milliseconds
+                <<",\"cold_end_to_end_update_ms\":"<<cold_end_to_end_ms
+                <<",\"update_field_samples\":"
+                <<update_patch.evaluated_field_samples
+                <<",\"update_patch_ms\":"<<update_patch.update_milliseconds
+                <<",\"end_to_end_update_ms\":"<<update_end_to_end_ms
+                <<",\"retained_bytes\":"<<update_patch.retained_bytes
+                <<",\"patchable\":"
+                <<(surface_patch_dependency(method).patchable()?"true":"false")
+                <<",\"valid\":"<<(valid?"true":"false")<<"}\n";
+          if(!valid){
+            write_error(errors,"mixed-depth dual benchmark row failed",
+                        surface_method_key(method));
+            return 1;
+          }
+        }
+      }
+      continue;
+    }
     constexpr std::string_view draw_chunk_benchmark=
         "benchmark-cpu-draw-chunks";
     if(command==draw_chunk_benchmark||
