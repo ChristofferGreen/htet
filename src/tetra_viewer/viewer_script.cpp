@@ -2153,13 +2153,19 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           ScriptState benchmark=baseline;
           SceneCache cache;
           SurfaceDrawChunkStorage chunks(chunk_capacity);
+          SurfaceHostStagingStorage host_staging(chunk_capacity);
           std::size_t revisions{},exact_matches{},full_pack_bytes{},copied_bytes{};
           std::size_t dirty_patches{},dirty_chunks{},reused_chunks{},reused_bytes{};
           std::size_t local_repacks{},global_compactions{},overflow_splits{};
           std::size_t underfull_merges{},reused_slots{},allocated_slots{};
           std::size_t released_slots{};
+          std::size_t full_host_stage_bytes{},host_staged_bytes{};
+          std::size_t host_aliased_wire_bytes{},host_dirty_ranges{};
+          std::size_t host_reused_ranges{},host_allocated_slots{};
+          std::size_t host_reused_slots{},host_released_slots{};
           double direct_milliseconds{},chunk_milliseconds{};
-          bool byte_match=true,layout_valid=true;
+          double host_stage_milliseconds{};
+          bool byte_match=true,layout_valid=true,host_byte_match=true;
           SurfaceGeometryHashes packed_hashes;
           for(const auto position:path.positions){
             point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
@@ -2193,6 +2199,14 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 StencilConstruction::fixed,
                 StencilSelectionObjective::balanced,preparation,
                 assembled,true);
+            host_staging.stage(chunks,packed_scene.triangle_vertices);
+            const auto assembled_host=
+                assemble_surface_host_staging(host_staging);
+            const bool revision_host_byte_match=
+                assembled_host.size()==packed_scene.triangle_vertices.size()&&
+                (assembled_host.empty()||std::memcmp(
+                     assembled_host.data(),packed_scene.triangle_vertices.data(),
+                     assembled_host.size()*sizeof(SceneVertex))==0);
             const auto direct_hashes=surface_geometry_hashes(cache.scene());
             packed_hashes=surface_geometry_hashes(packed_scene);
             bool revision_layout_valid=
@@ -2223,11 +2237,12 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             revision_layout_valid&=
                 std::ranges::adjacent_find(slots)==slots.end();
             const bool revision_exact=revision_byte_match&&revision_layout_valid&&
-                direct_hashes==packed_hashes;
+                revision_host_byte_match&&direct_hashes==packed_hashes;
             ++revisions;
             exact_matches+=revision_exact?1U:0U;
             byte_match&=revision_byte_match;
             layout_valid&=revision_layout_valid;
+            host_byte_match&=revision_host_byte_match;
             const auto& revision_metrics=chunks.metrics();
             full_pack_bytes+=direct.size()*sizeof(tetra::Triangle);
             copied_bytes+=revision_metrics.copied_bytes;
@@ -2243,6 +2258,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             allocated_slots+=revision_metrics.allocated_slots;
             released_slots+=revision_metrics.released_slots;
             chunk_milliseconds+=revision_metrics.pack_milliseconds;
+            const auto& host_metrics=host_staging.metrics();
+            full_host_stage_bytes+=packed_scene.triangle_vertices.size()*
+                sizeof(SceneVertex);
+            host_staged_bytes+=host_metrics.staged_triangle_bytes;
+            host_aliased_wire_bytes+=host_metrics.aliased_wire_bytes;
+            host_dirty_ranges+=host_metrics.dirty_ranges;
+            host_reused_ranges+=host_metrics.reused_ranges;
+            host_allocated_slots+=host_metrics.allocated_slots;
+            host_reused_slots+=host_metrics.reused_slots;
+            host_released_slots+=host_metrics.released_slots;
+            host_stage_milliseconds+=host_metrics.stage_milliseconds;
           }
           const bool exact=exact_matches==revisions;
           const auto& metrics=chunks.metrics();
@@ -2277,16 +2303,33 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"full_pack_bytes\":"<<full_pack_bytes
                 <<",\"copied_bytes\":"<<copied_bytes
                 <<",\"retained_bytes\":"<<metrics.retained_bytes
+                <<",\"host_publications\":"
+                <<host_staging.metrics().publication_generation
+                <<",\"full_host_stage_bytes\":"<<full_host_stage_bytes
+                <<",\"host_staged_bytes\":"<<host_staged_bytes
+                <<",\"host_staged_wire_bytes\":0"
+                <<",\"host_aliased_wire_bytes\":"<<host_aliased_wire_bytes
+                <<",\"host_dirty_ranges\":"<<host_dirty_ranges
+                <<",\"host_reused_ranges\":"<<host_reused_ranges
+                <<",\"host_retained_slots\":"
+                <<host_staging.metrics().retained_slots
+                <<",\"host_free_slots\":"<<host_staging.metrics().free_slots
+                <<",\"host_allocated_slots\":"<<host_allocated_slots
+                <<",\"host_reused_slots\":"<<host_reused_slots
+                <<",\"host_released_slots\":"<<host_released_slots
                 <<",\"draw_calls\":"<<metrics.draw_calls
                 <<",\"triangle_hash\":"<<packed_hashes.triangle_hash
                 <<",\"wire_edge_hash\":"<<packed_hashes.wire_edge_hash
                 <<",\"byte_match\":"<<(byte_match?"true":"false")
                 <<",\"layout_valid\":"<<(layout_valid?"true":"false")
+                <<",\"host_byte_match\":"
+                <<(host_byte_match?"true":"false")
                 <<",\"exact\":"<<(exact?"true":"false")
                 <<",\"occupancy\":"<<std::fixed<<std::setprecision(6)
                 <<metrics.occupancy
                 <<",\"direct_pack_ms\":"<<direct_milliseconds
-                <<",\"chunk_pack_ms\":"<<chunk_milliseconds<<"}\n";
+                <<",\"chunk_pack_ms\":"<<chunk_milliseconds
+                <<",\"host_stage_ms\":"<<host_stage_milliseconds<<"}\n";
           if(!exact){
             write_error(errors,"draw chunk benchmark failed exact packing",path.name);
             return 1;

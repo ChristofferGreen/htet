@@ -2,6 +2,15 @@
 
 ## 2026-08-24
 
+- [x] CPU-G4-3 retained host staging ranges: added transactional fixed-capacity
+  host vertex slots and atomically published ordered solid/wire range tables.
+  Unchanged chunks retain byte-stable slots; replacements are staged without
+  overwriting the preceding complete publication; retired slots are coalesced
+  and reused. Native wire ranges alias solid triangle vertices, adding zero
+  duplicate staging bytes. All 159 depth-16 publications were byte-exact while
+  staged bytes fell 38.6% for marching/lattice and 27.8% for dual contouring.
+  Release renders of all three methods showed closed opaque surfaces and
+  complete edges. Vulkan upload behavior remains unchanged for CPU-G4-4.
 - [x] CPU-G4-2 dirty-patch incremental chunk repacking: retained owner
   signatures and physical slots, rewrote exact segments for same-count patch
   changes, and locally repacked bounded owner neighbourhoods for insertion,

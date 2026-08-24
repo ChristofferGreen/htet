@@ -893,7 +893,8 @@ meets its exactness, locality, fallback, and visual exit conditions.
 
 - [x] Add a packed draw-chunk table separate from hierarchy and patch storage.
 - [x] Repack only chunks touched by changed patches.
-- [ ] Reuse unchanged CPU staging and Vulkan buffer ranges.
+- [x] Reuse unchanged CPU staging ranges.
+- [ ] Reuse unchanged Vulkan buffer ranges.
 - [ ] Add partial buffer uploads and retain the preceding complete ranges until
   the replacement revision is ready.
 - [ ] Track chunk occupancy, fragmentation, bytes copied, bytes uploaded,
@@ -989,6 +990,45 @@ Copy volume is therefore below complete-stream packing on every canonical path
 and method while retaining high occupancy. Dual contouring reaches the bounded
 fallback more often because an edge-star change invalidates a much larger
 owner set; it remains exact and still avoids 27.8% of full-pack copying.
+
+#### Transactional retained host staging
+
+`SurfaceHostStagingStorage` maps each source draw-chunk content revision to a
+fixed-capacity host vertex slot. Unchanged chunks retain their host slot and
+bytes even when their logical draw-table position moves. A changed chunk is
+staged into a free or newly appended slot while every range in the preceding
+publication remains untouched; only after all replacement bytes and ordered
+ranges are complete does one table swap publish the new generation. Retired
+slots are coalesced after publication and reused by later generations.
+
+The opaque and native depth-tested wire passes intentionally consume the same
+triangle vertex buffer. Each published range therefore exposes identical
+solid and wire offsets/counts, and wire staging aliases those bytes rather than
+creating a second copy. Non-triangle hierarchy/editor overlays remain outside
+this surface-draw-front storage. Vulkan buffers and uploads are unchanged until
+CPU-G4-4.
+
+Validation occurs before staging. Capacity mismatch, malformed source chunks,
+and incomplete logical vertex streams leave the prior generation, table, and
+referenced bytes intact. Focused release tests cover no-op reuse, selective
+replacement, byte-stable old publications, paired solid/wire ranges, failed
+publication rollback, empty publication, free-slot reuse, and capacity
+diagnostics.
+
+The persistent depth-16 benchmark stages every exact CPU-G4-2 publication.
+All 159 host assemblies were byte-identical to the complete prepared vertex
+stream, and every wire range exactly aliased its solid range:
+
+| Method | Full host staging | Retained staging | Reduction | Dirty / reused ranges | Host staging time | Duplicate wire staging |
+|---|---:|---:|---:|---:|---:|---:|
+| Marching tetrahedra | 83.151 MB | 51.062 MB | 38.6% | 1,132 / 714 | 4.004 ms | 0 B |
+| Lattice cleaving | 83.151 MB | 51.062 MB | 38.6% | 1,132 / 714 | 4.904 ms | 0 B |
+| Dual contouring | 210.731 MB | 152.149 MB | 27.8% | 3,320 / 1,283 | 9.853 ms | 0 B |
+
+Release/headless renders of marching tetrahedra, lattice cleaving, and dual
+contouring were visually inspected with opaque flat faces and triangle edges.
+All three remained closed and showed the expected method-specific topology;
+no staging seam, missing face, stale edge, or transparency artifact appeared.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 

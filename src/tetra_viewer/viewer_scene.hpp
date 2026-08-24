@@ -710,6 +710,7 @@ struct SurfaceDrawChunkRecord {
   std::size_t triangle_count{};
   std::size_t segment_begin{};
   std::size_t segment_count{};
+  std::uint64_t content_revision{};
 };
 
 struct SurfaceDrawPatchSegment {
@@ -808,6 +809,7 @@ class SurfaceDrawChunkStorage {
   std::vector<tetra::Triangle> arena_;
   std::vector<RetainedPatch> retained_patches_;
   SurfaceDrawChunkMetrics metrics_;
+  std::uint64_t next_content_revision_{1U};
 };
 
 // Deliberately simple full-packing oracle used to prove retained chunk output
@@ -817,6 +819,89 @@ class SurfaceDrawChunkStorage {
     std::span<const tetra::Triangle> patch_arena);
 [[nodiscard]] std::vector<tetra::Triangle> assemble_surface_draw_chunks(
     const SurfaceDrawChunkStorage& storage);
+
+struct SurfaceHostDrawRange {
+  std::size_t host_slot{};
+  std::size_t source_arena_slot{};
+  std::uint64_t source_content_revision{};
+  std::size_t triangle_vertex_begin{};
+  std::size_t triangle_vertex_count{};
+  // The native wire pass reads the same vertices as the solid pass. Keeping
+  // the alias explicit prevents a second staging copy from creeping back in.
+  std::size_t wire_vertex_begin{};
+  std::size_t wire_vertex_count{};
+};
+
+struct SurfaceHostFreeRange {
+  std::size_t begin_slot{};
+  std::size_t slot_count{};
+};
+
+struct SurfaceHostStagingMetrics {
+  std::uint64_t publication_generation{};
+  std::size_t source_chunks{};
+  std::size_t active_ranges{};
+  std::size_t retained_slots{};
+  std::size_t free_slots{};
+  std::size_t dirty_ranges{};
+  std::size_t reused_ranges{};
+  std::size_t allocated_slots{};
+  std::size_t reused_slots{};
+  std::size_t released_slots{};
+  std::size_t staged_triangle_bytes{};
+  std::size_t staged_wire_bytes{};
+  std::size_t aliased_wire_bytes{};
+  std::size_t retained_bytes{};
+  double stage_milliseconds{};
+};
+
+// Transactional retained CPU staging for the surface draw front. New or
+// changed source chunks are copied into unused host slots, then the complete
+// ordered table is published in one swap. The preceding ranges and bytes are
+// never overwritten while the replacement is being assembled.
+class SurfaceHostStagingStorage {
+ public:
+  explicit SurfaceHostStagingStorage(std::size_t triangle_chunk_capacity=256U);
+
+  void stage(const SurfaceDrawChunkStorage& source,
+             std::span<const SceneVertex> logical_vertices);
+
+  [[nodiscard]] std::size_t triangle_chunk_capacity() const noexcept {
+    return triangle_chunk_capacity_;
+  }
+  [[nodiscard]] std::size_t vertex_slot_capacity() const noexcept {
+    return triangle_chunk_capacity_*3U;
+  }
+  [[nodiscard]] std::span<const SurfaceHostDrawRange> ranges() const noexcept {
+    return ranges_;
+  }
+  [[nodiscard]] std::span<const SurfaceHostFreeRange> free_ranges() const noexcept {
+    return free_ranges_;
+  }
+  [[nodiscard]] std::span<const SceneVertex> arena() const noexcept {
+    return arena_;
+  }
+  [[nodiscard]] const SurfaceHostStagingMetrics& metrics() const noexcept {
+    return metrics_;
+  }
+
+ private:
+  [[nodiscard]] std::size_t allocate_slot(
+      std::vector<SurfaceHostFreeRange>& candidate_free_ranges,
+      SurfaceHostStagingMetrics& candidate_metrics);
+  static void normalize_free_ranges(
+      std::vector<SurfaceHostFreeRange>& ranges);
+
+  std::size_t triangle_chunk_capacity_{};
+  std::vector<SurfaceHostDrawRange> ranges_;
+  std::vector<SurfaceHostDrawRange> range_scratch_;
+  std::vector<SurfaceHostFreeRange> free_ranges_;
+  std::vector<SceneVertex> arena_;
+  SurfaceHostStagingMetrics metrics_;
+};
+
+[[nodiscard]] std::vector<SceneVertex> assemble_surface_host_staging(
+    const SurfaceHostStagingStorage& storage);
 
 // Geometry preparation is also used by headless research scripts, which need
 // all measurements.  The interactive viewer can explicitly omit measurements

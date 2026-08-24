@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G4-3 retained host staging ranges.
-  - Scope: preserve unchanged triangle and wire staging ranges across complete
-    revisions and atomically publish a complete chunk table.
-  - Acceptance: unchanged ranges remain byte-stable, no stale edges or partial
-    revision is observable, and staged bytes follow dirty chunks.
-  - Stop rule: do not add Vulkan partial uploads in this leaf.
 - [ ] CPU-G4-4 atomic Vulkan partial buffer uploads.
   - Scope: map retained host chunks to reusable Vulkan ranges, upload only
     replacements, and keep the preceding complete ranges renderable until the

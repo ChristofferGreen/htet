@@ -4680,6 +4680,134 @@ TEST_CASE("surface draw chunks repack only bounded dirty owner neighbourhoods") 
                          replaced.first,replaced.second)));
 }
 
+TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
+  const auto make_vertices=[](const tetra_viewer::SurfaceDrawChunkStorage& chunks){
+    std::vector<tetra_viewer::SceneVertex> vertices;
+    const auto triangles=tetra_viewer::assemble_surface_draw_chunks(chunks);
+    vertices.reserve(triangles.size()*3U);
+    for(const auto& triangle:triangles){
+      for(const auto point:{triangle.a,triangle.b,triangle.c}){
+        tetra_viewer::SceneVertex vertex{};
+        vertex.position[0]=static_cast<float>(point.x);
+        vertex.position[1]=static_cast<float>(point.y);
+        vertex.position[2]=static_cast<float>(point.z);
+        vertex.colour[0]=0.2F;vertex.colour[1]=0.7F;vertex.colour[2]=0.4F;
+        vertex.edge_flags=7.0F;
+        vertices.push_back(vertex);
+      }
+    }
+    return vertices;
+  };
+  const auto byte_equal=[](std::span<const tetra_viewer::SceneVertex> first,
+                           std::span<const tetra_viewer::SceneVertex> second){
+    return first.size()==second.size()&&
+        (first.empty()||std::memcmp(first.data(),second.data(),
+                                    first.size_bytes())==0);
+  };
+  std::vector<tetra::Triangle> patch_arena;
+  for(std::size_t index=0;index<10U;++index){
+    const auto marker=static_cast<double>(index+1U);
+    patch_arena.push_back({{marker,0.0,0.0},{0.0,marker,0.0},
+                           {0.0,0.0,marker}});
+  }
+  std::array patches{
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=10U,.field_revision=1U,.topology_hash=10U,
+          .triangle_begin=0U,.triangle_count=2U,.triangle_capacity=2U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=20U,.field_revision=1U,.topology_hash=20U,
+          .triangle_begin=2U,.triangle_count=2U,.triangle_capacity=2U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=30U,.field_revision=1U,.topology_hash=30U,
+          .triangle_begin=4U,.triangle_count=2U,.triangle_capacity=2U},
+      tetra_viewer::SurfacePatchRecord{
+          .logical_owner=40U,.field_revision=1U,.topology_hash=40U,
+          .triangle_begin=6U,.triangle_count=4U,.triangle_capacity=4U}};
+  tetra_viewer::SurfaceDrawChunkStorage chunks(3U);
+  chunks.pack(patches,patch_arena);
+  const auto initial_vertices=make_vertices(chunks);
+  tetra_viewer::SurfaceHostStagingStorage staging(3U);
+  staging.stage(chunks,initial_vertices);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
+                     initial_vertices));
+  CHECK(staging.metrics().dirty_ranges==chunks.chunks().size());
+  CHECK(staging.metrics().reused_ranges==0U);
+  CHECK(staging.metrics().staged_triangle_bytes==
+        initial_vertices.size()*sizeof(tetra_viewer::SceneVertex));
+  CHECK(staging.metrics().staged_wire_bytes==0U);
+  CHECK(staging.metrics().aliased_wire_bytes==
+        initial_vertices.size()*sizeof(tetra_viewer::SceneVertex));
+  for(const auto& range:staging.ranges()){
+    CHECK(range.triangle_vertex_begin==range.wire_vertex_begin);
+    CHECK(range.triangle_vertex_count==range.wire_vertex_count);
+  }
+
+  const std::vector initial_ranges(staging.ranges().begin(),staging.ranges().end());
+  const std::vector initial_host_arena(staging.arena().begin(),staging.arena().end());
+  staging.stage(chunks,initial_vertices);
+  CHECK(staging.metrics().dirty_ranges==0U);
+  CHECK(staging.metrics().reused_ranges==chunks.chunks().size());
+  CHECK(staging.metrics().staged_triangle_bytes==0U);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
+                   initial_vertices));
+
+  for(std::size_t index=2U;index<4U;++index){
+    const auto marker=static_cast<double>(100U+index);
+    patch_arena[index]={{marker,0.0,0.0},{0.0,marker,0.0},
+                        {0.0,0.0,marker}};
+  }
+  patches[1].field_revision=2U;
+  patches[1].topology_hash=21U;
+  chunks.pack(patches,patch_arena);
+  const auto changed_vertices=make_vertices(chunks);
+  staging.stage(chunks,changed_vertices);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
+                     changed_vertices));
+  CHECK(staging.metrics().dirty_ranges==chunks.metrics().dirty_chunks);
+  CHECK(staging.metrics().reused_ranges+staging.metrics().dirty_ranges==
+        chunks.chunks().size());
+  CHECK(staging.metrics().dirty_ranges>0U);
+  CHECK(staging.metrics().reused_ranges>0U);
+  CHECK(staging.metrics().staged_triangle_bytes<
+        changed_vertices.size()*sizeof(tetra_viewer::SceneVertex));
+  for(const auto& old_range:initial_ranges){
+    const auto begin=old_range.host_slot*staging.vertex_slot_capacity();
+    CHECK(std::memcmp(staging.arena().data()+begin,
+                      initial_host_arena.data()+begin,
+                      old_range.triangle_vertex_count*
+                          sizeof(tetra_viewer::SceneVertex))==0);
+  }
+
+  const auto valid_generation=staging.metrics().publication_generation;
+  const std::vector valid_ranges(staging.ranges().begin(),staging.ranges().end());
+  const auto valid_assembled=tetra_viewer::assemble_surface_host_staging(staging);
+  CHECK_THROWS_AS(
+      staging.stage(chunks,std::span<const tetra_viewer::SceneVertex>(
+          changed_vertices.data(),changed_vertices.size()-1U)),
+      std::invalid_argument);
+  CHECK(staging.metrics().publication_generation==valid_generation);
+  CHECK(staging.ranges().size()==valid_ranges.size());
+  CHECK(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
+                   valid_assembled));
+
+  chunks.pack({},patch_arena);
+  staging.stage(chunks,{});
+  CHECK(staging.ranges().empty());
+  CHECK(staging.metrics().released_slots==valid_ranges.size());
+  chunks.pack(patches,patch_arena);
+  const auto restored_vertices=make_vertices(chunks);
+  staging.stage(chunks,restored_vertices);
+  CHECK(staging.metrics().reused_slots>0U);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
+                   restored_vertices));
+
+  tetra_viewer::SurfaceHostStagingStorage wrong_capacity(4U);
+  CHECK_THROWS_AS(wrong_capacity.stage(chunks,restored_vertices),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(tetra_viewer::SurfaceHostStagingStorage(0U),
+                  std::invalid_argument);
+}
+
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -5576,8 +5704,13 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       const auto full_pack_bytes=
           std::stoull(field(event,"\"full_pack_bytes\":"));
       const auto copied_bytes=std::stoull(field(event,"\"copied_bytes\":"));
+      const auto full_host_stage_bytes=
+          std::stoull(field(event,"\"full_host_stage_bytes\":"));
+      const auto host_staged_bytes=
+          std::stoull(field(event,"\"host_staged_bytes\":"));
       CHECK(event.find("\"byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"layout_valid\":true")!=std::string::npos);
+      CHECK(event.find("\"host_byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"exact\":true")!=std::string::npos);
       CHECK(field(event,"\"chunk_capacity\":")=="256");
       CHECK(triangles>0U);
@@ -5590,12 +5723,21 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       CHECK(std::stoull(field(event,"\"draw_calls\":"))==chunks);
       CHECK(full_pack_bytes>=revisions*triangles*sizeof(tetra::Triangle)/2U);
       CHECK(copied_bytes<full_pack_bytes);
+      CHECK(std::stoull(field(event,"\"host_publications\":"))==revisions);
+      CHECK(host_staged_bytes<full_host_stage_bytes);
+      CHECK(field(event,"\"host_staged_wire_bytes\":")=="0");
+      CHECK(std::stoull(field(event,"\"host_aliased_wire_bytes\":"))==
+            host_staged_bytes);
+      CHECK(std::stoull(field(event,"\"host_retained_slots\":"))>=chunks);
+      CHECK(std::stoull(field(event,"\"host_dirty_ranges\":"))>0U);
+      CHECK(std::stoull(field(event,"\"host_reused_ranges\":"))>0U);
       total_local_repacks+=
           std::stoull(field(event,"\"local_repacks\":"));
       CHECK(std::stod(field(event,"\"occupancy\":"))>0.0);
       CHECK(std::stod(field(event,"\"occupancy\":"))<=1.0);
       CHECK(std::stod(field(event,"\"direct_pack_ms\":"))>=0.0);
       CHECK(std::stod(field(event,"\"chunk_pack_ms\":"))>=0.0);
+      CHECK(std::stod(field(event,"\"host_stage_ms\":"))>=0.0);
     }
   }
   CHECK(total_local_repacks>0U);

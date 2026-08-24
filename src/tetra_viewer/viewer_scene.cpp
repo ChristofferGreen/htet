@@ -2288,6 +2288,8 @@ void SurfaceDrawChunkStorage::compact(
     SurfaceDrawChunkRecord chunk;
     chunk.arena_slot=allocate_slot();
     chunk.segment_begin=segments_.size();
+    chunk.content_revision=next_content_revision_++;
+    if(next_content_revision_==0U)next_content_revision_=1U;
     chunks_.push_back(chunk);
   };
   for(const auto& patch:patches){
@@ -2404,6 +2406,11 @@ void SurfaceDrawChunkStorage::pack(
     }
     metrics_.dirty_chunks=static_cast<std::size_t>(
         std::ranges::count(dirty_chunks,true));
+    for(std::size_t index=0;index<dirty_chunks.size();++index){
+      if(!dirty_chunks[index])continue;
+      chunks_[index].content_revision=next_content_revision_++;
+      if(next_content_revision_==0U)next_content_revision_=1U;
+    }
     metrics_.reused_chunks=chunks_.size()-metrics_.dirty_chunks;
     metrics_.reused_bytes=(triangle_count-
         metrics_.copied_bytes/sizeof(tetra::Triangle))*sizeof(tetra::Triangle);
@@ -2520,6 +2527,8 @@ void SurfaceDrawChunkStorage::pack(
     SurfaceDrawChunkRecord chunk;
     chunk.arena_slot=local_slots[replacement_chunks.size()];
     chunk.segment_begin=replacement_segments.size();
+    chunk.content_revision=next_content_revision_++;
+    if(next_content_revision_==0U)next_content_revision_=1U;
     replacement_chunks.push_back(chunk);
   };
   for(std::size_t patch_index=patch_begin;patch_index<patch_end;++patch_index){
@@ -2636,6 +2645,192 @@ std::vector<tetra::Triangle> assemble_surface_draw_chunks(
             begin+chunk.triangle_count));
   }
   return packed;
+}
+
+SurfaceHostStagingStorage::SurfaceHostStagingStorage(
+    std::size_t triangle_chunk_capacity)
+    :triangle_chunk_capacity_(triangle_chunk_capacity) {
+  if(triangle_chunk_capacity_==0U||
+     triangle_chunk_capacity_>std::numeric_limits<std::size_t>::max()/3U)
+    throw std::invalid_argument(
+        "surface host staging triangle capacity must be positive and bounded");
+}
+
+void SurfaceHostStagingStorage::normalize_free_ranges(
+    std::vector<SurfaceHostFreeRange>& ranges) {
+  std::sort(ranges.begin(),ranges.end(),[](const auto& left,const auto& right){
+    return left.begin_slot<right.begin_slot;
+  });
+  std::size_t output{};
+  for(const auto range:ranges){
+    if(range.slot_count==0U)continue;
+    if(output!=0U&&ranges[output-1U].begin_slot+
+           ranges[output-1U].slot_count>=range.begin_slot){
+      auto& previous=ranges[output-1U];
+      previous.slot_count=std::max(
+          previous.begin_slot+previous.slot_count,
+          range.begin_slot+range.slot_count)-previous.begin_slot;
+    }else ranges[output++]=range;
+  }
+  ranges.resize(output);
+}
+
+std::size_t SurfaceHostStagingStorage::allocate_slot(
+    std::vector<SurfaceHostFreeRange>& candidate_free_ranges,
+    SurfaceHostStagingMetrics& candidate_metrics) {
+  if(!candidate_free_ranges.empty()){
+    const auto slot=candidate_free_ranges.front().begin_slot++;
+    if(--candidate_free_ranges.front().slot_count==0U)
+      candidate_free_ranges.erase(candidate_free_ranges.begin());
+    ++candidate_metrics.reused_slots;
+    return slot;
+  }
+  const auto slot=arena_.size()/vertex_slot_capacity();
+  if(slot==std::numeric_limits<std::size_t>::max()||
+     vertex_slot_capacity()>std::numeric_limits<std::size_t>::max()-arena_.size())
+    throw std::overflow_error("surface host staging arena size overflow");
+  arena_.resize(arena_.size()+vertex_slot_capacity());
+  ++candidate_metrics.allocated_slots;
+  return slot;
+}
+
+void SurfaceHostStagingStorage::stage(
+    const SurfaceDrawChunkStorage& source,
+    std::span<const SceneVertex> logical_vertices) {
+  const auto start=std::chrono::steady_clock::now();
+  if(source.chunk_capacity()!=triangle_chunk_capacity_)
+    throw std::invalid_argument(
+        "surface host staging capacity differs from its source chunks");
+  if(source.metrics().triangles>
+     std::numeric_limits<std::size_t>::max()/3U||
+     logical_vertices.size()!=source.metrics().triangles*3U)
+    throw std::invalid_argument(
+        "surface host staging vertices do not cover the source triangles");
+  std::vector<bool> source_slots(source.metrics().retained_slots,false);
+  std::size_t logical_vertex_offset{};
+  for(const auto& chunk:source.chunks()){
+    if(chunk.arena_slot>=source_slots.size()||source_slots[chunk.arena_slot]||
+       chunk.triangle_count==0U||
+       chunk.triangle_count>triangle_chunk_capacity_||
+       chunk.content_revision==0U)
+      throw std::invalid_argument(
+          "surface host staging source chunk table is invalid");
+    source_slots[chunk.arena_slot]=true;
+    const auto vertex_count=chunk.triangle_count*3U;
+    if(vertex_count>logical_vertices.size()-logical_vertex_offset)
+      throw std::invalid_argument(
+          "surface host staging source order exceeds its vertices");
+    logical_vertex_offset+=vertex_count;
+  }
+  if(logical_vertex_offset!=logical_vertices.size())
+    throw std::invalid_argument(
+        "surface host staging source order leaves unmatched vertices");
+
+  SurfaceHostStagingMetrics candidate_metrics;
+  candidate_metrics.publication_generation=metrics_.publication_generation+1U;
+  if(candidate_metrics.publication_generation==0U)
+    candidate_metrics.publication_generation=1U;
+  candidate_metrics.source_chunks=source.chunks().size();
+  std::vector<SurfaceHostFreeRange> candidate_free_ranges=free_ranges_;
+  std::vector<bool> retained_ranges(ranges_.size(),false);
+  range_scratch_.clear();
+  range_scratch_.reserve(std::max(range_scratch_.capacity(),source.chunks().size()));
+  logical_vertex_offset=0U;
+  for(const auto& chunk:source.chunks()){
+    const auto vertex_count=chunk.triangle_count*3U;
+    std::size_t retained_index=ranges_.size();
+    for(std::size_t index=0;index<ranges_.size();++index){
+      const auto& range=ranges_[index];
+      if(range.source_arena_slot==chunk.arena_slot&&
+         range.source_content_revision==chunk.content_revision&&
+         range.triangle_vertex_count==vertex_count){
+        retained_index=index;
+        break;
+      }
+    }
+    std::size_t host_slot{};
+    if(retained_index!=ranges_.size()){
+      retained_ranges[retained_index]=true;
+      host_slot=ranges_[retained_index].host_slot;
+      ++candidate_metrics.reused_ranges;
+    }else{
+      host_slot=allocate_slot(candidate_free_ranges,candidate_metrics);
+      const auto destination=host_slot*vertex_slot_capacity();
+      std::copy_n(
+          logical_vertices.begin()+static_cast<std::ptrdiff_t>(logical_vertex_offset),
+          vertex_count,
+          arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      ++candidate_metrics.dirty_ranges;
+      candidate_metrics.staged_triangle_bytes+=
+          vertex_count*sizeof(SceneVertex);
+      candidate_metrics.aliased_wire_bytes+=
+          vertex_count*sizeof(SceneVertex);
+    }
+    const auto begin=host_slot*vertex_slot_capacity();
+    range_scratch_.push_back({
+        .host_slot=host_slot,
+        .source_arena_slot=chunk.arena_slot,
+        .source_content_revision=chunk.content_revision,
+        .triangle_vertex_begin=begin,
+        .triangle_vertex_count=vertex_count,
+        .wire_vertex_begin=begin,
+        .wire_vertex_count=vertex_count});
+    logical_vertex_offset+=vertex_count;
+  }
+
+  for(std::size_t index=0;index<ranges_.size();++index){
+    if(retained_ranges[index])continue;
+    candidate_free_ranges.push_back({ranges_[index].host_slot,1U});
+    ++candidate_metrics.released_slots;
+  }
+  normalize_free_ranges(candidate_free_ranges);
+  ranges_.swap(range_scratch_);
+  free_ranges_.swap(candidate_free_ranges);
+  candidate_metrics.active_ranges=ranges_.size();
+  candidate_metrics.retained_slots=arena_.size()/vertex_slot_capacity();
+  for(const auto range:free_ranges_)
+    candidate_metrics.free_slots+=range.slot_count;
+  candidate_metrics.retained_bytes=
+      ranges_.capacity()*sizeof(SurfaceHostDrawRange)+
+      range_scratch_.capacity()*sizeof(SurfaceHostDrawRange)+
+      free_ranges_.capacity()*sizeof(SurfaceHostFreeRange)+
+      arena_.capacity()*sizeof(SceneVertex);
+  candidate_metrics.stage_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-start).count();
+  metrics_=candidate_metrics;
+}
+
+std::vector<SceneVertex> assemble_surface_host_staging(
+    const SurfaceHostStagingStorage& storage) {
+  std::size_t vertex_count{};
+  for(const auto& range:storage.ranges()){
+    if(range.host_slot>=storage.metrics().retained_slots||
+       range.triangle_vertex_count>storage.vertex_slot_capacity()||
+       range.triangle_vertex_begin!=
+           range.host_slot*storage.vertex_slot_capacity()||
+       range.wire_vertex_begin!=range.triangle_vertex_begin||
+       range.wire_vertex_count!=range.triangle_vertex_count||
+       range.triangle_vertex_count>
+           std::numeric_limits<std::size_t>::max()-vertex_count)
+      throw std::out_of_range("surface host staging range is invalid");
+    vertex_count+=range.triangle_vertex_count;
+  }
+  std::vector<SceneVertex> assembled;
+  assembled.reserve(vertex_count);
+  for(const auto& range:storage.ranges()){
+    if(range.triangle_vertex_begin>storage.arena().size()||
+       range.triangle_vertex_count>
+           storage.arena().size()-range.triangle_vertex_begin)
+      throw std::out_of_range("surface host staging range exceeds its arena");
+    assembled.insert(
+        assembled.end(),
+        storage.arena().begin()+static_cast<std::ptrdiff_t>(
+            range.triangle_vertex_begin),
+        storage.arena().begin()+static_cast<std::ptrdiff_t>(
+            range.triangle_vertex_begin+range.triangle_vertex_count));
+  }
+  return assembled;
 }
 
 void expand_line_segments_for_upload(
