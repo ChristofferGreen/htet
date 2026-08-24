@@ -234,3 +234,11 @@
   interior roots, mixed depths, both transition strategies, input-order
   invariance, unique spans, and deterministic rejection without renderer
   changes.
+- [x] CPU-G6-2 mixed-depth dual extractor and topology proof: decomposed every
+  accepted primal-vertex star into canonical barycentric flag tetrahedra,
+  retained flat incident-vertex patch dependencies, and exposed the separate
+  `mixed-depth-dual` research method only after topology passed. Both BCC
+  transition strategies produce closed outward surfaces with edge incidence
+  two, unique non-degenerate triangles, and no mixed-depth cracks. Retained
+  owner patches exactly match monolithic geometry before and after local
+  refinement; headless, interactive-registry, and all-shape fixtures pass.

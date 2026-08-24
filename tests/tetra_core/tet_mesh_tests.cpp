@@ -3202,6 +3202,169 @@ TEST_CASE("packed mixed-depth dual stars resolve BCC transitions deterministical
   }
 }
 
+TEST_CASE("mixed-depth barycentric dual extraction is closed outward and unique") {
+  using Point=std::array<std::uint64_t,3>;
+  using Edge=std::array<Point,2>;
+  using Face=std::array<Point,3>;
+  const auto point_key=[](tetra::Vec3 point){
+    return Point{{std::bit_cast<std::uint64_t>(point.x==0.0?0.0:point.x),
+                  std::bit_cast<std::uint64_t>(point.y==0.0?0.0:point.y),
+                  std::bit_cast<std::uint64_t>(point.z==0.0?0.0:point.z)}};
+  };
+  for(const auto strategy:{tetra::BccTransitionStrategy::crystalline_restricted,
+                           tetra::BccTransitionStrategy::complete_minimal}){
+    CAPTURE(static_cast<unsigned int>(strategy));
+    auto mesh=tetra::TetMesh::make_unit_cube(
+        tetra::SubdivisionMethod::bcc_red_green);
+    if(strategy!=mesh.transition_strategy())REQUIRE(mesh.set_transition_strategy(strategy));
+    tetra::Sphere sphere{{0.5,0.5,0.5},0.27};
+    tetra::Camera camera;
+    camera.position={0.35,0.55,1.4};
+    REQUIRE(tetra::refine_to_sphere(mesh,sphere,camera,45.0,9).iterations>0);
+    const auto triangles=tetra::extract_mixed_depth_dual_isosurface(mesh,sphere);
+    REQUIRE_FALSE(triangles.empty());
+    std::map<Edge,std::size_t> edges;
+    std::map<Face,std::size_t> faces;
+    for(const auto& triangle:triangles){
+      const auto normal=[](tetra::Vec3 a,tetra::Vec3 b){
+        return tetra::Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,
+                           a.x*b.y-a.y*b.x};
+      }(triangle.b-triangle.a,triangle.c-triangle.a);
+      const auto centre=(triangle.a+triangle.b+triangle.c)/3.0;
+      const auto outward=sphere.normal(centre);
+      CHECK(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z>0.0);
+      Face face{{point_key(triangle.a),point_key(triangle.b),point_key(triangle.c)}};
+      std::sort(face.begin(),face.end());
+      ++faces[face];
+      for(const auto pair:std::array<std::array<std::size_t,2>,3>{{
+              {{0U,1U}},{{1U,2U}},{{2U,0U}}}}){
+        Edge edge{{face[pair[0]],face[pair[1]]}};
+        if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+        ++edges[edge];
+      }
+    }
+    CHECK(std::ranges::all_of(faces,[](const auto& item){return item.second==1U;}));
+    CHECK(std::ranges::all_of(edges,[](const auto& item){return item.second==2U;}));
+  }
+}
+
+TEST_CASE("mixed-depth dual patches retain complete vertex-star dependencies") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.27};
+  tetra::Camera camera;
+  camera.position={0.4,0.6,1.3};
+  REQUIRE(tetra::refine_to_sphere(mesh,sphere,camera,44.0,9).iterations>0);
+  tetra::MixedDepthDualPatchBuilder builder;
+  builder.rebuild_index(mesh);
+  REQUIRE(builder.retained_bytes()>0U);
+  REQUIRE_FALSE(builder.dependencies().empty());
+  for(const auto& candidate:builder.index().candidates){
+    if(candidate.decision!=tetra::MixedDepthDualDecision::accepted)continue;
+    const auto contenders=std::span{builder.index().contenders}.subspan(
+        candidate.contender_begin,candidate.contender_count);
+    for(const auto& contender:contenders)
+      CHECK(std::binary_search(
+          builder.dependencies().begin(),builder.dependencies().end(),
+          tetra::MixedDepthDualPatchDependency{
+              candidate.owner,contender.logical_owner}));
+  }
+  std::vector<tetra::MixedDepthDualPatchTriangle> all,selected;
+  builder.generate_patches(mesh,sphere,{},all);
+  REQUIRE_FALSE(all.empty());
+  const auto selected_owner=all[all.size()/2U].patch_owner;
+  const std::array selected_owners{selected_owner};
+  builder.generate_patches(mesh,sphere,selected_owners,selected);
+  REQUIRE_FALSE(selected.empty());
+  CHECK(std::ranges::all_of(selected,[&](const auto& triangle){
+    return triangle.patch_owner==selected_owner;
+  }));
+  CHECK(std::ranges::count(all,selected_owner,
+      &tetra::MixedDepthDualPatchTriangle::patch_owner)==selected.size());
+  const auto monolithic=tetra::extract_mixed_depth_dual_isosurface(mesh,sphere);
+  REQUIRE(monolithic.size()==all.size());
+  for(std::size_t index=0;index<all.size();++index){
+    CHECK(all[index].triangle.a.x==monolithic[index].a.x);
+    CHECK(all[index].triangle.a.y==monolithic[index].a.y);
+    CHECK(all[index].triangle.a.z==monolithic[index].a.z);
+    CHECK(all[index].triangle.b.x==monolithic[index].b.x);
+    CHECK(all[index].triangle.b.y==monolithic[index].b.y);
+    CHECK(all[index].triangle.b.z==monolithic[index].b.z);
+    CHECK(all[index].triangle.c.x==monolithic[index].c.x);
+    CHECK(all[index].triangle.c.y==monolithic[index].c.y);
+    CHECK(all[index].triangle.c.z==monolithic[index].c.z);
+  }
+  REQUIRE(mesh.refine_selected_binary({mesh.logical_red_owners().front()}));
+  CHECK_THROWS_AS(builder.generate_patches(mesh,sphere,{},all),std::logic_error);
+}
+
+TEST_CASE("mixed-depth dual owner patches match monolithic topology through refinement") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.27};
+  tetra::Camera camera;
+  camera.position={0.4,0.6,1.3};
+  REQUIRE(tetra::refine_to_sphere(mesh,sphere,camera,44.0,6).iterations>0);
+  tetra_viewer::SceneCache cache;
+  const auto update=[&]{
+    return cache.update_scene(
+        mesh,sphere,17U,tetra_viewer::SurfaceMethod::mixed_depth_dual,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  };
+  const auto monolithic=[&]{
+    return tetra_viewer::prepare_scene(
+        mesh,sphere,tetra_viewer::SurfaceMethod::mixed_depth_dual,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  };
+  REQUIRE(update());
+  auto metrics=cache.surface_patch_metrics();
+  CHECK(metrics.active);
+  CHECK(metrics.full_rebuild);
+  CHECK(metrics.output_triangles>0U);
+  CHECK(cache.scene().mixed_depth_dual_triangles==metrics.output_triangles);
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene())==
+        tetra_viewer::surface_geometry_hashes(monolithic()));
+
+  const auto split=std::ranges::find_if(
+      mesh.logical_red_owners(),[&](tetra::TetId owner){
+        return tetra::classify_tetrahedron(mesh,owner,sphere)==
+            tetra::SurfaceRelation::intersecting;
+      });
+  REQUIRE(split!=mesh.logical_red_owners().end());
+  REQUIRE(mesh.refine_selected_binary({*split}));
+  REQUIRE(update());
+  metrics=cache.surface_patch_metrics();
+  CHECK_FALSE(metrics.full_rebuild);
+  CHECK(metrics.rebuilt_patches>0U);
+  CHECK(metrics.reused_patches>0U);
+  CHECK(metrics.rebuilt_patches<cache.surface_patch_records().size());
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene())==
+        tetra_viewer::surface_geometry_hashes(monolithic()));
+}
+
+TEST_CASE("mixed-depth dual is selectable in headless and interactive registries") {
+  CHECK(std::ranges::find(
+      tetra_viewer::surface_methods,
+      tetra_viewer::SurfaceMethod::mixed_depth_dual)!=
+      tetra_viewer::surface_methods.end());
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-maximum-depth=6,set-volume-connection=hierarchy-cells,"
+      "set-surface-method=mixed-depth-dual,prepare-scene,stats",
+      output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"surface_method\":\"mixed-depth-dual\"")!=std::string::npos);
+  CHECK(text.find("\"mixed_depth_dual_triangles\":0")==std::string::npos);
+  CHECK(text.find("\"surface_patch_neighbourhood\":\"incident-vertex-star\"")!=
+        std::string::npos);
+  CHECK(text.find("\"surface_patch_active\":true")!=std::string::npos);
+}
+
 TEST_CASE("parallel cavity policies preserve serial topology and command hashes") {
   const auto source=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   tetra::Sphere shape{};
@@ -3885,18 +4048,22 @@ TEST_CASE("material rules are registered and select distinct full-tetrahedron vo
 }
 
 TEST_CASE("surface methods include a complete experimental tetrahedral layer") {
-  CHECK(tetra_viewer::surface_methods.size() == 6);
+  CHECK(tetra_viewer::surface_methods.size() == 7);
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::full_tetrahedra) == "full-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::marching_tetrahedra) == "marching-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::lattice_cleaving) == "lattice-cleaving");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::tetrahedral_layer) == "tetrahedral-layer");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::dual_contouring) == "dual-contouring");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::four_hexahedra) == "four-hexahedra");
+  CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::mixed_depth_dual) == "mixed-depth-dual");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::surface_optimization) == "surface-optimization");
   CHECK(std::ranges::find(tetra_viewer::surface_methods,
         tetra_viewer::SurfaceMethod::four_hexahedra)==
         tetra_viewer::surface_methods.end());
-  CHECK(tetra_viewer::headless_surface_methods.size()==7U);
+  CHECK(std::ranges::find(tetra_viewer::surface_methods,
+        tetra_viewer::SurfaceMethod::mixed_depth_dual)!=
+        tetra_viewer::surface_methods.end());
+  CHECK(tetra_viewer::headless_surface_methods.size()==8U);
   CHECK(std::ranges::find(tetra_viewer::headless_surface_methods,
         tetra_viewer::SurfaceMethod::four_hexahedra)!=
         tetra_viewer::headless_surface_methods.end());
@@ -3937,6 +4104,8 @@ TEST_CASE("surface patch dependency contracts cover every registered method") {
                global,false},
       Expected{SurfaceMethod::dual_contouring,
                SurfacePatchNeighbourhood::incident_edge_star,1U,true},
+      Expected{SurfaceMethod::mixed_depth_dual,
+               SurfacePatchNeighbourhood::incident_vertex_star,1U,true},
       Expected{SurfaceMethod::surface_optimization,SurfacePatchNeighbourhood::global,
                global,false},
   };

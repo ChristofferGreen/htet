@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tetra_core/tet_mesh.hpp"
+#include "tetra_core/implicit_surface.hpp"
 
 #include <cstdint>
 #include <span>
@@ -78,5 +78,39 @@ struct MixedDepthDualIndex {
 
 [[nodiscard]] MixedDepthDualIndex build_mixed_depth_dual_index(
     const TetMesh& mesh);
+
+struct MixedDepthDualPatchDependency {
+  TetId patch_owner{invalid_tet};
+  TetId incident_owner{invalid_tet};
+  auto operator<=>(const MixedDepthDualPatchDependency&) const = default;
+};
+
+struct MixedDepthDualPatchTriangle {
+  TetId patch_owner{invalid_tet};
+  Triangle triangle{};
+};
+
+// Retains the complete packed vertex-star index. Each accepted candidate is
+// decomposed into six fixed barycentric flag tetrahedra per incident cell;
+// selected patches are keyed by the candidate's Wald-equivalent owner.
+class MixedDepthDualPatchBuilder {
+ public:
+  void rebuild_index(const TetMesh& mesh);
+  void generate_patches(
+      const TetMesh& mesh,const Sphere& surface,
+      std::span<const TetId> selected_patch_owners,
+      std::vector<MixedDepthDualPatchTriangle>& output);
+  [[nodiscard]] const MixedDepthDualIndex& index() const noexcept{return index_;}
+  [[nodiscard]] std::span<const MixedDepthDualPatchDependency> dependencies()
+      const noexcept{return dependencies_;}
+  [[nodiscard]] std::size_t retained_bytes() const noexcept;
+
+ private:
+  MixedDepthDualIndex index_;
+  std::vector<MixedDepthDualPatchDependency> dependencies_;
+};
+
+[[nodiscard]] std::vector<Triangle> extract_mixed_depth_dual_isosurface(
+    const TetMesh& mesh,const Sphere& surface);
 
 } // namespace tetra

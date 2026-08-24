@@ -1759,6 +1759,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"surface_layer_tetrahedra\":" << scene.surface_layer_tetrahedra
              << ",\"dual_contour_triangles\":" << scene.dual_contour_triangles
              << ",\"four_hexahedra_triangles\":" << scene.four_hexahedra_triangles
+             << ",\"mixed_depth_dual_triangles\":" << scene.mixed_depth_dual_triangles
              << ",\"optimized_surface_vertices\":" << scene.optimized_surface_vertices
              << ",\"rejected_surface_moves\":" << scene.rejected_surface_moves
              << ",\"optimized_volume_boundary_vertices\":" << scene.optimized_volume_boundary_vertices

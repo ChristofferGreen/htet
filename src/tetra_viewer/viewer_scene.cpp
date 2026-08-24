@@ -1231,6 +1231,28 @@ void append_four_hexahedra(PreparedScene& scene,const tetra::TetMesh& mesh,
   }
 }
 
+void append_mixed_depth_dual(PreparedScene& scene,const tetra::TetMesh& mesh,
+                             const tetra::Sphere& sphere,bool show_faces,
+                             bool show_surface_edges) {
+  const auto triangles=tetra::extract_mixed_depth_dual_isosurface(mesh,sphere);
+  scene.mixed_depth_dual_triangles=triangles.size();
+  if(!show_faces&&!show_surface_edges)return;
+  for(const auto& triangle:triangles){
+    auto normal=face_normal(triangle.a,triangle.b,triangle.c);
+    const auto centre=(triangle.a+triangle.b+triangle.c)/3.0;
+    const auto outward=sphere.normal(centre);
+    if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+      normal={-normal.x,-normal.y,-normal.z};
+    for(const auto point:{triangle.a,triangle.b,triangle.c})
+      scene.triangle_vertices.push_back({
+          {static_cast<float>(point.x),static_cast<float>(point.y),
+           static_cast<float>(point.z)},
+          {0.20F,0.74F,0.60F},
+          {static_cast<float>(normal.x),static_cast<float>(normal.y),
+           static_cast<float>(normal.z)}});
+  }
+}
+
 void build_lattice_cleaved_cells(PreparedScene& scene,const tetra::TetMesh& mesh,
                                  const tetra::Sphere& sphere) {
   // Only sign-changing leaves are replaced. For a single inside corner the
@@ -3543,6 +3565,9 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
       }else if(surface_method==SurfaceMethod::four_hexahedra){
         scene.four_hexahedra_triangles=surface_override.size();
         colour={{0.26F,0.72F,0.56F}};
+      }else if(surface_method==SurfaceMethod::mixed_depth_dual){
+        scene.mixed_depth_dual_triangles=surface_override.size();
+        colour={{0.20F,0.74F,0.60F}};
       }
     }
     for(const auto& triangle:surface_override){
@@ -3582,6 +3607,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
     append_dual_contour(scene, mesh, sphere, show_faces, show_surface_edges);
   else if (surface_method == SurfaceMethod::four_hexahedra)
     append_four_hexahedra(scene,mesh,sphere,show_faces,show_surface_edges);
+  else if (surface_method == SurfaceMethod::mixed_depth_dual)
+    append_mixed_depth_dual(scene,mesh,sphere,show_faces,show_surface_edges);
   else if (surface_method == SurfaceMethod::surface_optimization)
     append_surface_optimization(scene, mesh, sphere, show_faces, show_surface_edges);
   prepare_surface_render_attributes(scene);
@@ -3660,10 +3687,15 @@ void SceneCache::set_surface_patch_fallback(
       surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
       dual_patch_builder_.retained_bytes()+
       four_hexahedra_patch_builder_.metrics().retained_bytes+
+      mixed_depth_dual_patch_builder_.retained_bytes()+
       dual_patch_dependencies_.capacity()*
           sizeof(tetra::DualContourPatchDependency)+
       dual_patch_triangle_scratch_.capacity()*
-          sizeof(tetra::DualContourPatchTriangle);
+          sizeof(tetra::DualContourPatchTriangle)+
+      mixed_depth_dual_patch_dependencies_.capacity()*
+          sizeof(tetra::MixedDepthDualPatchDependency)+
+      mixed_depth_dual_patch_triangle_scratch_.capacity()*
+          sizeof(tetra::MixedDepthDualPatchTriangle);
 }
 
 void SceneCache::update_surface_patches(
@@ -3674,6 +3706,7 @@ void SceneCache::update_surface_patches(
   surface_patch_metrics_.active=true;
   const bool dual_topology=surface_method==SurfaceMethod::dual_contouring;
   const bool four_hexahedra=surface_method==SurfaceMethod::four_hexahedra;
+  const bool mixed_depth_dual=surface_method==SurfaceMethod::mixed_depth_dual;
 
   const bool bcc=mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green;
   surface_patch_owner_scratch_.clear();
@@ -3727,6 +3760,7 @@ void SceneCache::update_surface_patches(
       surface_patch_subdivision_method_!=mesh.subdivision_method()||
       surface_patch_dual_topology_!=dual_topology||
       surface_patch_four_hexahedra_!=four_hexahedra||
+      surface_patch_mixed_depth_dual_!=mixed_depth_dual||
       mesh.revision()<surface_patch_mesh_revision_;
   surface_patch_dirty_scratch_.clear();
   if(rebuild_all){
@@ -3791,6 +3825,44 @@ void SceneCache::update_surface_patches(
   }else{
     dual_patch_dependencies_.clear();
     dual_patch_triangle_scratch_.clear();
+  }
+  if(mixed_depth_dual){
+    mixed_depth_dual_patch_builder_.rebuild_index(mesh);
+    if(!rebuild_all&&mesh.revision()!=surface_patch_mesh_revision_){
+      surface_patch_incident_dirty_scratch_=surface_patch_dirty_scratch_;
+      surface_patch_dirty_scratch_.clear();
+      for(const auto owner:surface_patch_incident_dirty_scratch_)
+        if(std::binary_search(surface_patch_owner_scratch_.begin(),
+                              surface_patch_owner_scratch_.end(),owner))
+          surface_patch_dirty_scratch_.push_back(owner);
+      const auto add_dependent=[&](const auto& dependency){
+        if(std::binary_search(surface_patch_incident_dirty_scratch_.begin(),
+                              surface_patch_incident_dirty_scratch_.end(),
+                              dependency.incident_owner))
+          surface_patch_dirty_scratch_.push_back(dependency.patch_owner);
+      };
+      for(const auto dependency:mixed_depth_dual_patch_dependencies_)
+        add_dependent(dependency);
+      for(const auto dependency:mixed_depth_dual_patch_builder_.dependencies())
+        add_dependent(dependency);
+      std::sort(surface_patch_dirty_scratch_.begin(),
+                surface_patch_dirty_scratch_.end());
+      surface_patch_dirty_scratch_.erase(
+          std::unique(surface_patch_dirty_scratch_.begin(),
+                      surface_patch_dirty_scratch_.end()),
+          surface_patch_dirty_scratch_.end());
+    }
+    mixed_depth_dual_patch_dependencies_.assign(
+        mixed_depth_dual_patch_builder_.dependencies().begin(),
+        mixed_depth_dual_patch_builder_.dependencies().end());
+    if(!surface_patch_dirty_scratch_.empty())
+      mixed_depth_dual_patch_builder_.generate_patches(
+          mesh,sphere,surface_patch_dirty_scratch_,
+          mixed_depth_dual_patch_triangle_scratch_);
+    else mixed_depth_dual_patch_triangle_scratch_.clear();
+  }else{
+    mixed_depth_dual_patch_dependencies_.clear();
+    mixed_depth_dual_patch_triangle_scratch_.clear();
   }
   surface_patch_metrics_.full_rebuild=rebuild_all;
   surface_patch_metrics_.dirty_owners=surface_patch_dirty_scratch_.size();
@@ -3926,6 +3998,17 @@ void SceneCache::update_surface_patches(
       for(auto found=begin;found!=dual_patch_triangle_scratch_.end()&&
           found->patch_owner==owner;++found)
         surface_patch_triangle_scratch_.push_back(found->triangle);
+    }else if(mixed_depth_dual){
+      const auto begin=std::lower_bound(
+          mixed_depth_dual_patch_triangle_scratch_.begin(),
+          mixed_depth_dual_patch_triangle_scratch_.end(),owner,
+          [](const auto& value,tetra::TetId target){
+            return value.patch_owner<target;
+          });
+      for(auto found=begin;
+          found!=mixed_depth_dual_patch_triangle_scratch_.end()&&
+          found->patch_owner==owner;++found)
+        surface_patch_triangle_scratch_.push_back(found->triangle);
     }else if(four_hexahedra){
       cells_for(owner_index);
       four_hexahedra_patch_builder_.extract_owner(
@@ -3980,6 +4063,7 @@ void SceneCache::update_surface_patches(
   surface_patch_subdivision_method_=mesh.subdivision_method();
   surface_patch_dual_topology_=dual_topology;
   surface_patch_four_hexahedra_=four_hexahedra;
+  surface_patch_mixed_depth_dual_=mixed_depth_dual;
   surface_patch_initialized_=true;
   surface_patch_metrics_.output_triangles=surface_patch_output_.size();
   surface_patch_metrics_.arena_slots=surface_patch_arena_.size();
@@ -4000,10 +4084,15 @@ void SceneCache::update_surface_patches(
       surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
       dual_patch_builder_.retained_bytes()+
       four_hexahedra_patch_builder_.metrics().retained_bytes+
+      mixed_depth_dual_patch_builder_.retained_bytes()+
       dual_patch_dependencies_.capacity()*
           sizeof(tetra::DualContourPatchDependency)+
       dual_patch_triangle_scratch_.capacity()*
-          sizeof(tetra::DualContourPatchTriangle);
+          sizeof(tetra::DualContourPatchTriangle)+
+      mixed_depth_dual_patch_dependencies_.capacity()*
+          sizeof(tetra::MixedDepthDualPatchDependency)+
+      mixed_depth_dual_patch_triangle_scratch_.capacity()*
+          sizeof(tetra::MixedDepthDualPatchTriangle);
   surface_patch_metrics_.update_milliseconds=
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-start).count();
@@ -4043,7 +4132,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
         (surface_method==SurfaceMethod::marching_tetrahedra||
          surface_method==SurfaceMethod::lattice_cleaving||
          surface_method==SurfaceMethod::dual_contouring||
-         surface_method==SurfaceMethod::four_hexahedra);
+         surface_method==SurfaceMethod::four_hexahedra||
+         surface_method==SurfaceMethod::mixed_depth_dual);
     if(owner_patch_override)
       update_surface_patches(mesh,sphere,sphere_revision,surface_method);
     else set_surface_patch_fallback(

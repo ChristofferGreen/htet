@@ -1296,8 +1296,8 @@ hybrid variant. Gate 5 is closed.
   finer-level-owner, and same-level-order rules.
 - [x] Enumerate boundary, mixed-depth, degenerate, transition, and root-domain
   cases before implementing rendering.
-- [ ] Implement the CPU extractor behind a separate surface dropdown option.
-- [ ] Require a closed two-manifold where expected, edge incidence of two,
+- [x] Implement the CPU extractor behind a separate surface dropdown option.
+- [x] Require a closed two-manifold where expected, edge incidence of two,
   consistent orientation, no duplicate triangles, and no cracks.
 - [ ] Compare topology and visual quality with whole-cell boundaries, direct
   tetrahedral extraction, and the four-hexahedra method.
@@ -1364,6 +1364,44 @@ both BCC transition strategies, mixed-depth adaptive stars, monotonic packed
 spans, unique incident addresses and contenders, and exactly one accepted
 owner for every valid candidate. This specification adds no renderer or
 surface-selection path; extraction remains CPU-G6-2.
+
+#### Barycentric dual extractor and topology proof
+
+The `mixed-depth-dual` research method realizes each accepted primal-vertex
+star as a barycentric dual cell. For every conforming incident tetrahedron and
+each of the six permutations of its other vertices, it emits the fixed flag
+simplex
+
+```text
+[primal vertex, edge midpoint, face centroid, tetrahedron centroid].
+```
+
+The 24 flag simplices contributed by the four primal vertices partition one
+tetrahedron exactly. Edge, face, and cell barycentres are computed in canonical
+`VertexId` order, so adjacent logical owners, red cells, and green transition
+cells generate bit-identical shared samples. Ordinary marching-tetrahedra
+extraction on these fixed-size simplices then has matching traces on both sides
+of every shared face. Open domain-boundary candidates remain explicitly absent
+under the frozen missing-corner rule; closed implicit surfaces inside the unit
+domain never rely on those rejected stars.
+
+`MixedDepthDualPatchBuilder` retains the packed candidate, incident, contender,
+and `(patch owner, incident owner)` dependency arrays. A patch is the complete
+dual cell owned by the smallest deepest logical owner. Local hierarchy changes
+invalidate dependencies from both the old and new incident-vertex stars; clean
+owners keep their packed triangle ranges. The scene cache reports this as the
+`incident-vertex-star` neighbourhood with a one-star halo, and patched output
+must match a fresh monolithic extraction exactly.
+
+Release tests exercise both BCC transition strategies on an adaptive
+mixed-depth sphere. Canonical triangle keys occur once, every undirected edge
+has incidence two, every triangle has positive outward orientation, and there
+are no degenerate or unmatched triangles. Additional fixtures prove complete
+dependency retention, selected-owner isolation, stale-index rejection, exact
+patched-versus-monolithic geometry before and after local refinement, headless
+selection, interactive registry exposure, and successful scene preparation
+for every implicit shape. CPU-G6-2 is complete; CPU-G6-3 still decides whether
+the method's measured cost and visual quality justify retaining that exposure.
 
 ### Gate 7 - Select production defaults
 
