@@ -411,6 +411,7 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
   const auto logical=state.mesh.logical_cut();
   const auto conforming=state.mesh.conforming_volume();
   const auto quality=conforming_quality(state.mesh);
+  const auto patch_dependency=surface_patch_dependency(state.surface_method);
   output << "\"adaptation_configuration_schema\":"
          << tetra::adaptation_configuration_schema_version
          << ",\"benchmark_schema\":" << tetra::adaptation_benchmark_schema_version
@@ -428,6 +429,14 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"operation_budget\":" << state.adaptation.operation_budget
          << ",\"subdivision_method\":\"" << tetra::subdivision_method_key(state.mesh.subdivision_method()) << '"'
          << ",\"surface_method\":\"" << surface_method_key(state.surface_method) << '"'
+         << ",\"surface_patchable\":"
+         << (patch_dependency.patchable()?"true":"false")
+         << ",\"surface_patch_neighbourhood\":\""
+         << surface_patch_neighbourhood_key(patch_dependency.neighbourhood) << '"'
+         << ",\"surface_patch_halo_steps\":";
+  if(patch_dependency.patchable())output << static_cast<unsigned int>(patch_dependency.halo_steps);
+  else output << "null";
+  output << ",\"surface_patch_reason\":\"" << patch_dependency.reason << '"'
          << ",\"volume_connection\":\"" << volume_connection_method_key(state.volume_connection_method) << '"'
          << ",\"stencil_construction\":\"" << stencil_construction_key(state.stencil_construction) << '"'
          << ",\"stencil_objective\":\"" << stencil_selection_objective_key(state.stencil_selection_objective) << '"'

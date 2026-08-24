@@ -3546,6 +3546,69 @@ TEST_CASE("surface methods include a complete experimental tetrahedral layer") {
   CHECK_FALSE(scene.hierarchy_line_vertices.empty());
 }
 
+TEST_CASE("surface patch dependency contracts cover every registered method") {
+  using tetra_viewer::SurfaceMethod;
+  using tetra_viewer::SurfacePatchNeighbourhood;
+  struct Expected {
+    SurfaceMethod method;
+    SurfacePatchNeighbourhood neighbourhood;
+    unsigned int halo_steps;
+    bool patchable;
+  };
+  constexpr auto global=std::numeric_limits<std::uint8_t>::max();
+  constexpr std::array expected{
+      Expected{SurfaceMethod::full_tetrahedra,SurfacePatchNeighbourhood::global,
+               global,false},
+      Expected{SurfaceMethod::marching_tetrahedra,SurfacePatchNeighbourhood::owner,
+               0U,true},
+      Expected{SurfaceMethod::lattice_cleaving,SurfacePatchNeighbourhood::owner,
+               0U,true},
+      Expected{SurfaceMethod::tetrahedral_layer,SurfacePatchNeighbourhood::global,
+               global,false},
+      Expected{SurfaceMethod::dual_contouring,
+               SurfacePatchNeighbourhood::incident_edge_star,1U,true},
+      Expected{SurfaceMethod::surface_optimization,SurfacePatchNeighbourhood::global,
+               global,false},
+  };
+  REQUIRE(expected.size()==tetra_viewer::surface_methods.size());
+  for(std::size_t index=0;index<expected.size();++index){
+    CAPTURE(tetra_viewer::surface_method_key(expected[index].method));
+    CHECK(expected[index].method==tetra_viewer::surface_methods[index]);
+    const auto dependency=tetra_viewer::surface_patch_dependency(expected[index].method);
+    CHECK(dependency.neighbourhood==expected[index].neighbourhood);
+    CHECK(static_cast<unsigned int>(dependency.halo_steps)==expected[index].halo_steps);
+    CHECK(dependency.patchable()==expected[index].patchable);
+    CHECK_FALSE(dependency.reason.empty());
+    CHECK(tetra_viewer::surface_patch_neighbourhood_key(
+              dependency.neighbourhood)!="unknown");
+  }
+}
+
+TEST_CASE("headless surface statistics expose patch dependency contracts") {
+  for(const auto method:tetra_viewer::surface_methods){
+    CAPTURE(tetra_viewer::surface_method_key(method));
+    const auto dependency=tetra_viewer::surface_patch_dependency(method);
+    const auto neighbourhood=std::string(
+        tetra_viewer::surface_patch_neighbourhood_key(dependency.neighbourhood));
+    const auto script="set-volume-connection=hierarchy-cells,set-surface-method="+
+        std::string(tetra_viewer::surface_method_key(method))+",stats";
+    std::ostringstream output,errors;
+    REQUIRE(tetra_viewer::run_script(script,output,errors)==0);
+    CHECK(errors.str().empty());
+    const auto text=output.str();
+    CHECK(text.find("\"event\":\"stats\"")!=std::string::npos);
+    CHECK(text.find("\"surface_patch_neighbourhood\":\""+neighbourhood+"\"")!=
+          std::string::npos);
+    CHECK(text.find(std::string("\"surface_patchable\":")+
+          (dependency.patchable()?"true":"false"))!=std::string::npos);
+    const auto halo=dependency.patchable()?
+        std::to_string(dependency.halo_steps):std::string("null");
+    CHECK(text.find("\"surface_patch_halo_steps\":"+halo)!=std::string::npos);
+    CHECK(text.find("\"surface_patch_reason\":\""+
+          std::string(dependency.reason)+"\"")!=std::string::npos);
+  }
+}
+
 TEST_CASE("marching tetrahedra is a directly selectable primal surface") {
   auto mesh = tetra::TetMesh::make_unit_cube();
   const tetra::Sphere sphere{};

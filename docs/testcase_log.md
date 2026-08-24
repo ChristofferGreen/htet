@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 186 tests passed after the surface patch dependency registry and headless locality diagnostics
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface patch dependency|headless surface statistics expose patch|headless events identify"` | failures: none | notes: all three focused tests passed; all six methods expose exact locality, halo, patchability, and rationale fields
+- 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface patch dependency|headless surface statistics expose patch|headless events identify"` | failures: headless surface statistics expose patch dependency contracts | notes: two of three passed; default connected volume rejects non-optimized surface selections in the diagnostic matrix
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation CPU-G3-1 surface dependency contract baseline passed all 184 tests
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 184 tests passed after independent persistent candidate discovery, kinetic priority bounds, and production streamed-oracle comparison
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler|controlled five-shape adaptation matrix|headless CPU camera benchmark|headless events identify"` | failures: none | notes: ten focused tests passed, including 100 small camera moves and exact logical/conforming hash equality on every production camera path
 - 2026-08-24 local | fail | mode: release | command: `tetra_viewer_bin --script "set-update-scheduler=persistent-split-merge-queues,benchmark-cpu-camera-paths"` | failures: near-to-far, far-to-near, reversal hash equality | notes: production-depth benchmark found three final hash mismatches despite valid conforming meshes
@@ -90,6 +94,7 @@
 
 ## Resolved Failures
 
+- [x] headless surface statistics expose patch dependency contracts | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface patch dependency|headless surface statistics expose patch|headless events identify"` | notes: the matrix now selects hierarchy-cells before cycling methods and validates each method's stats event independently
 - [x] production persistent scheduler hashes for near-to-far, far-to-near, and reversal | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark"` | notes: widened the deterministic translation fallback and production benchmark now compares persistent against streamed hashes for all eight paths
 - [x] persistent scheduler refreshes camera priority only at queue fronts; persistent scheduler reseeds once after a camera teleport | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | notes: replaced obsolete one-pop shadow-queue assertions with independent initial-front, converged uncertainty-band, depth-reactivation, and one-shot reseed checks
 - [x] persistent scheduler reseeds after an excessive stale pop ratio | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | notes: changed the fixture's injected invalid entries to an old priority epoch; all six focused scheduler tests passed

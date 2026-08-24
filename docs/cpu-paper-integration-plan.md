@@ -742,7 +742,7 @@ research comparison; classify-and-stream remains the fastest correct default.
 
 ### Gate 3 - Dirty-owner surface patches
 
-- [ ] Define the local dependency radius for each existing surface method and
+- [x] Define the local dependency radius for each existing surface method and
   mark methods as patchable or global.
 - [ ] Add packed patch records and retained patch arenas keyed by logical owner.
 - [ ] Reuse unchanged patches across split, merge, and stationary requests.
@@ -758,6 +758,32 @@ research comparison; classify-and-stream remains the fastest correct default.
 Exit condition: a local camera move rebuilds surface geometry in proportion to
 dirty owners and is bitwise-equivalent to the monolithic reference for every
 method declared patchable.
+
+#### Surface dependency contract
+
+Patch locality is defined over stable logical hierarchy owners, not transient
+conforming green cells. A radius-zero owner patch may inspect all conforming
+children derived from that owner. An incident-edge-star patch expands once to
+every logical owner whose conforming children touch the same primal edge.
+`global` means the current implementation cannot reproduce its monolithic
+output from any bounded owner halo and must retain the measured fallback.
+
+| Surface method | Locality | Halo | Patchable now | Current dependency |
+|---|---|---:|---|---|
+| Full-tetrahedron boundary | Global | - | No | Material selection includes global variational cuts and exposed faces are canceled over the selected complex |
+| Marching tetrahedra | Owner | 0 | Yes | Each triangle is determined by one conforming tetrahedron and its field samples |
+| Lattice-cleaved boundary layer | Owner | 0 | Yes | Displayed surface topology is the same owner-local marching intersection; cleaved-volume summaries remain separate |
+| Extracted tetrahedral layer | Global | - | No | Welded surface vertices, prism decomposition, and exterior shell-face cancellation are constructed globally |
+| Dual contour surface | Incident edge star | 1 | Yes | A polygon requires the dual vertex from every cut cell incident to one crossed primal edge |
+| Surface optimization | Global | - | No | Global welding, ordered iterative smoothing, and optional connected-shell construction couple the surface |
+
+The compile-time `surface_patch_dependency` registry is the authoritative
+contract used by later cache and fallback work. Headless events expose
+`surface_patchable`, `surface_patch_neighbourhood`,
+`surface_patch_halo_steps`, and `surface_patch_reason`, so benchmarks cannot
+silently claim locality for a global method. Global assignments are
+conservative statements about the current algorithms, not claims that a future
+algorithm could never be localized.
 
 ### Gate 4 - Independent fixed-capacity draw chunks
 

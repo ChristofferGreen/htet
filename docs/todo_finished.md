@@ -107,3 +107,10 @@
   hashes. Three-run release medians show the experimental scheduler avoids
   substantial classification but remains slower, so classify-and-stream stays
   the default.
+- [x] CPU-G3-1 surface dependency contract: registered all six current surface
+  methods as owner-local, incident-edge-star, or global with an explicit halo
+  and rationale. Marching and lattice extraction are radius-zero patchable;
+  dual contouring requires one complete incident edge star; full-cell,
+  tetrahedral-shell, and optimized surfaces retain conservative global
+  fallback. Headless diagnostics and exhaustive registry tests expose and
+  enforce the contract.

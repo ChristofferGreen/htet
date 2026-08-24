@@ -267,6 +267,65 @@ inline constexpr std::array surface_methods{
   return "unknown";
 }
 
+// Patch locality is expressed in terms of logical hierarchy owners. An
+// owner-local extractor can regenerate one owner's conforming children in
+// isolation. An incident-edge-star extractor must also see every logical owner
+// whose conforming children touch the same primal edge. Global methods cannot
+// currently reproduce the monolithic result from a bounded owner halo.
+enum class SurfacePatchNeighbourhood : std::uint8_t {
+  owner,
+  incident_edge_star,
+  global,
+};
+
+struct SurfacePatchDependency {
+  SurfacePatchNeighbourhood neighbourhood{SurfacePatchNeighbourhood::global};
+  std::uint8_t halo_steps{std::numeric_limits<std::uint8_t>::max()};
+  std::string_view reason{};
+
+  [[nodiscard]] constexpr bool patchable() const noexcept {
+    return neighbourhood!=SurfacePatchNeighbourhood::global;
+  }
+};
+
+[[nodiscard]] constexpr std::string_view surface_patch_neighbourhood_key(
+    SurfacePatchNeighbourhood neighbourhood) {
+  switch(neighbourhood){
+    case SurfacePatchNeighbourhood::owner:return "owner";
+    case SurfacePatchNeighbourhood::incident_edge_star:return "incident-edge-star";
+    case SurfacePatchNeighbourhood::global:return "global";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr SurfacePatchDependency surface_patch_dependency(
+    SurfaceMethod method) {
+  switch(method){
+    case SurfaceMethod::marching_tetrahedra:
+      return {SurfacePatchNeighbourhood::owner,0U,
+              "triangles depend only on one conforming cell"};
+    case SurfaceMethod::lattice_cleaving:
+      return {SurfacePatchNeighbourhood::owner,0U,
+              "displayed boundary uses owner-local marching intersections"};
+    case SurfaceMethod::dual_contouring:
+      return {SurfacePatchNeighbourhood::incident_edge_star,1U,
+              "each dual polygon needs every cell incident to its primal edge"};
+    case SurfaceMethod::full_tetrahedra:
+      return {SurfacePatchNeighbourhood::global,
+              std::numeric_limits<std::uint8_t>::max(),
+              "material selection and exposed-face cancellation may be global"};
+    case SurfaceMethod::tetrahedral_layer:
+      return {SurfacePatchNeighbourhood::global,
+              std::numeric_limits<std::uint8_t>::max(),
+              "surface welding and shell exterior extraction are global"};
+    case SurfaceMethod::surface_optimization:
+      return {SurfacePatchNeighbourhood::global,
+              std::numeric_limits<std::uint8_t>::max(),
+              "welded iterative smoothing and connected shells are globally coupled"};
+  }
+  return {};
+}
+
 // These methods use the same marching-tetrahedra boundary topology as the
 // adaptively cleaved volume. They can therefore own a solid cutaway boundary
 // without introducing a second, disconnected display surface.
