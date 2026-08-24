@@ -221,6 +221,31 @@ double field_lipschitz_bound(const Sphere& shape) {
   return 1.0;
 }
 
+bool scheduler_camera_teleported(const Camera& previous,const Camera& current,
+                                 Vec3 surface_centre){
+  const auto length_squared=[](Vec3 value){
+    return value.x*value.x+value.y*value.y+value.z*value.z;
+  };
+  const double previous_distance=std::sqrt(
+      length_squared(previous.position-surface_centre));
+  const double current_distance=std::sqrt(
+      length_squared(current.position-surface_centre));
+  const double translation_limit=
+      std::max(0.5,0.75*std::min(previous_distance,current_distance));
+  if(length_squared(current.position-previous.position)>
+     translation_limit*translation_limit)return true;
+  const double previous_forward_length=std::sqrt(length_squared(previous.forward));
+  const double current_forward_length=std::sqrt(length_squared(current.forward));
+  if(previous_forward_length<=1.0e-15||current_forward_length<=1.0e-15)
+    return true;
+  const double forward_cosine=
+      (previous.forward.x*current.forward.x+
+       previous.forward.y*current.forward.y+
+       previous.forward.z*current.forward.z)/
+      (previous_forward_length*current_forward_length);
+  return forward_cosine<0.5;
+}
+
 std::size_t scheduler_key_hash(TetId key){
   key^=key>>30U;key*=0xbf58476d1ce4e5b9ULL;
   key^=key>>27U;key*=0x94d049bb133111ebULL;
@@ -292,8 +317,12 @@ void scheduler_membership_erase(
 void scheduler_membership_reset(
     PersistentSchedulerMembership& membership,
     std::span<const PersistentSchedulerEntry> entries){
-  membership={};
-  scheduler_membership_rehash(membership,std::max<std::size_t>(16U,entries.size()*2U));
+  std::size_t capacity=16U;
+  while(capacity<entries.size()*2U)capacity*=2U;
+  if(membership.keys.size()!=capacity)membership.keys.assign(capacity,0U);
+  else std::fill(membership.keys.begin(),membership.keys.end(),0U);
+  membership.count=0U;
+  membership.tombstones=0U;
   for(const auto& entry:entries)
     static_cast<void>(scheduler_membership_insert_without_growth(
         membership,entry.address));
@@ -1022,6 +1051,12 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         first.up.y==second.up.y&&first.up.z==second.up.z&&
         first.aspect_ratio==second.aspect_ratio;
   };
+  const bool scheduler_teleport=
+      configuration.update_scheduler!=UpdateScheduler::classify_and_stream&&
+      summaries.has_scheduler_priority_camera&&
+      !same_camera(summaries.scheduler_priority_camera,camera)&&
+      scheduler_camera_teleported(
+          summaries.scheduler_priority_camera,camera,sphere.centre);
   const auto split_origin_matches=[&]{
     return planning_cache&&summaries.has_split_pose&&
         summaries.split_pose_field_revision==field_revision&&
@@ -1094,11 +1129,13 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     }
     return true;
   };
-  const auto seed_scheduler=[&]{
+  const auto seed_scheduler=[&](bool force_reseed){
     if(configuration.update_scheduler==UpdateScheduler::classify_and_stream||
-       summaries.scheduler_seeded)return;
-    std::vector<PersistentSchedulerEntry> split_seed;
-    std::vector<PersistentSchedulerEntry> merge_seed;
+       (summaries.scheduler_seeded&&!force_reseed))return;
+    auto& split_seed=summaries.scheduler_split_seed_scratch;
+    auto& merge_seed=summaries.scheduler_merge_seed_scratch;
+    split_seed.clear();
+    merge_seed.clear();
     split_seed.reserve(logical.size());
     for(const TetId owner:logical){
       if(cancel())return;
@@ -1117,19 +1154,28 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       if(complete_merge_parent(parent))
         merge_seed.push_back({parent,mesh.revision(),0U,0.0});
     }
-    summaries.split_queue=std::move(split_seed);
-    summaries.merge_queue=std::move(merge_seed);
     scheduler_membership_reset(
-        summaries.split_queue_membership,summaries.split_queue);
+        summaries.scheduler_split_membership_scratch,split_seed);
     scheduler_membership_reset(
-        summaries.merge_queue_membership,summaries.merge_queue);
+        summaries.scheduler_merge_membership_scratch,merge_seed);
+    summaries.split_queue.swap(split_seed);
+    summaries.merge_queue.swap(merge_seed);
+    std::swap(summaries.split_queue_membership,
+              summaries.scheduler_split_membership_scratch);
+    std::swap(summaries.merge_queue_membership,
+              summaries.scheduler_merge_membership_scratch);
+    split_seed.clear();
+    merge_seed.clear();
     summaries.scheduler_seeded=true;
-    plan.scheduler_seed_scans=1U;
-    plan.scheduler_seed_candidates=logical.size();
-    plan.scheduler_queue_pushes=
+    summaries.scheduler_useful_pops_since_reseed=0U;
+    summaries.scheduler_stale_pops_since_reseed=0U;
+    plan.scheduler_seed_scans+=1U;
+    plan.scheduler_seed_candidates+=logical.size();
+    plan.scheduler_queue_pushes+=
         summaries.split_queue.size()+summaries.merge_queue.size();
+    plan.scheduler_fallbacks+=force_reseed?1U:0U;
   };
-  seed_scheduler();
+  seed_scheduler(scheduler_teleport);
   if(cancel())return plan;
   const auto apply_scheduler=[&](std::span<const TetId> owners){
     if(cancel())return;
@@ -1177,6 +1223,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       if(!current_entry(entry.address)){
         scheduler_membership_erase(membership,entry.address);
         ++plan.scheduler_stale_pops;
+        ++summaries.scheduler_stale_pops_since_reseed;
         continue;
       }
       if(entry.priority_epoch!=priority_epoch){
@@ -1187,9 +1234,18 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       }
       entry.state_revision=mesh.revision();
       ++plan.scheduler_useful_pops;
+      ++summaries.scheduler_useful_pops_since_reseed;
       processed.push_back(entry);
     }
     restore_processed();
+    constexpr std::size_t minimum_fallback_sample=64U;
+    constexpr double maximum_stale_ratio=0.25;
+    const auto sampled_pops=summaries.scheduler_useful_pops_since_reseed+
+                            summaries.scheduler_stale_pops_since_reseed;
+    if(summaries.scheduler_stale_pops_since_reseed>=minimum_fallback_sample&&
+       static_cast<double>(summaries.scheduler_stale_pops_since_reseed)>
+           maximum_stale_ratio*static_cast<double>(sampled_pops))
+      seed_scheduler(true);
     if(configuration.update_scheduler==UpdateScheduler::hybrid_queued_blocks){
       std::vector<std::uint64_t> blocks;
       blocks.reserve(plan.commands.size());

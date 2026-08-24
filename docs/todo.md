@@ -6,8 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 2: add deterministic streamed reseeding for teleports and excessive
-  stale-pop ratios.
 - [ ] Gate 2: prove oracle-equivalent convergence and compare avoided scans,
   useful/stale pops, priority recomputations, and fallbacks on canonical paths.
 

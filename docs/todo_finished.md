@@ -94,3 +94,8 @@
   queues. Flat membership tables prevent duplicate addresses without
   per-tetrahedron allocation. The canonical two-camera path retained both mesh
   hashes while reporting 46,368 family and 5,748 conformity candidates.
+- [x] Gate 2 deterministic fallback reseeding: detect large translation or
+  rotation discontinuities and accumulated stale-pop ratios, then atomically
+  rebuild retained flat fronts once. An opposite-side production camera jump
+  reported one fallback and preserved both canonical mesh hashes; focused tests
+  also cover stable continuations and stale-front recovery.

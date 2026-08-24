@@ -157,18 +157,24 @@ struct AdaptationPlanningCache {
   std::uint64_t spatial_index_field_revision{std::numeric_limits<std::uint64_t>::max()};
   std::vector<PersistentSchedulerEntry> split_queue;
   std::vector<PersistentSchedulerEntry> merge_queue;
+  std::vector<PersistentSchedulerEntry> scheduler_split_seed_scratch;
+  std::vector<PersistentSchedulerEntry> scheduler_merge_seed_scratch;
   std::vector<PersistentSchedulerEntry> scheduler_entry_scratch;
   std::vector<TetId> scheduler_family_scratch;
   std::vector<TetId> scheduler_conformity_scratch;
   std::vector<TetId> scheduler_candidate_scratch;
   PersistentSchedulerMembership split_queue_membership;
   PersistentSchedulerMembership merge_queue_membership;
+  PersistentSchedulerMembership scheduler_split_membership_scratch;
+  PersistentSchedulerMembership scheduler_merge_membership_scratch;
   // Persistent schedulers scan the active cut exactly once to establish both
   // fronts. Ordinary camera requests retain these arrays.
   bool scheduler_seeded{};
   bool has_scheduler_priority_camera{};
   Camera scheduler_priority_camera{};
   std::uint64_t scheduler_priority_epoch{};
+  std::size_t scheduler_useful_pops_since_reseed{};
+  std::size_t scheduler_stale_pops_since_reseed{};
   std::size_t pending_scheduler_queue_pushes{};
   std::size_t pending_scheduler_incremental_candidates{};
   std::size_t pending_scheduler_conformity_candidates{};
@@ -210,15 +216,21 @@ struct AdaptationPlanningCache {
     spatial_index_field_revision=std::numeric_limits<std::uint64_t>::max();
     split_queue.clear();
     merge_queue.clear();
+    scheduler_split_seed_scratch.clear();
+    scheduler_merge_seed_scratch.clear();
     scheduler_entry_scratch.clear();
     scheduler_family_scratch.clear();
     scheduler_conformity_scratch.clear();
     scheduler_candidate_scratch.clear();
     split_queue_membership={};
     merge_queue_membership={};
+    scheduler_split_membership_scratch={};
+    scheduler_merge_membership_scratch={};
     scheduler_seeded=false;
     has_scheduler_priority_camera=false;
     scheduler_priority_epoch=0U;
+    scheduler_useful_pops_since_reseed=0U;
+    scheduler_stale_pops_since_reseed=0U;
     pending_scheduler_queue_pushes=0U;
     pending_scheduler_incremental_candidates=0U;
     pending_scheduler_conformity_candidates=0U;

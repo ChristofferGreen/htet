@@ -6,6 +6,9 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 183 tests passed after deterministic teleport and stale-ratio scheduler fallback reseeding
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: none | notes: all six scheduler tests passed for one-time seeding, lazy refresh, incremental maintenance, teleport fallback, stale-ratio recovery, and streamed hash equivalence
+- 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: persistent scheduler reseeds after an excessive stale pop ratio | notes: 5 of 6 passed; stale fixture must use an old priority epoch to reach the front
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 181 tests passed after incremental changed-family and conformity-neighbour scheduler-front maintenance
 - 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: persistent schedulers seed the active cut once across camera requests | notes: 2 of 3 passed; update the old no-reseed assertion to accept separately measured incremental pushes
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 180 tests passed after deterministic camera-epoch heap refresh and retained queue-front scratch
@@ -82,6 +85,7 @@
 
 ## Resolved Failures
 
+- [x] persistent scheduler reseeds after an excessive stale pop ratio | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | notes: changed the fixture's injected invalid entries to an old priority epoch; all six focused scheduler tests passed
 - [x] persistent schedulers seed the active cut once across camera requests | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler|headless events identify"` | notes: replaced the obsolete zero-push assertion with separate incremental family, conformity-neighbour, and queue-push diagnostics; all five focused tests passed
 - [x] release workflow entry point | resolved: 2026-08-24 06:00 local | validating command: `./scripts/compile.sh --release` | notes: added the missing root release build/test script; workflow reached and executed all tests
 - [x] default terrain cutaway visual baselines remain stable for both transitions | resolved: 2026-08-24 06:02 local | validating command: `./scripts/compile.sh --release` | notes: doctest cases now run with the repository root as their working directory

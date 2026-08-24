@@ -2387,6 +2387,78 @@ TEST_CASE("persistent scheduler refreshes camera priority only at queue fronts")
   CHECK(moved.scheduler_priority_recomputations==1U);
 }
 
+TEST_CASE("persistent scheduler reseeds once after a camera teleport") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=1U;
+  configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+  camera.position={0.5,0.5,2.0};
+
+  const auto initial=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,12,&cache);
+  REQUIRE(initial.scheduler_seed_scans==1U);
+  CHECK(initial.scheduler_fallbacks==0U);
+
+  camera.position={0.5,0.5,-2.0};
+  camera.forward={0.0,0.0,1.0};
+  const auto teleported=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,12,&cache);
+  CHECK(teleported.scheduler_fallbacks==1U);
+  CHECK(teleported.scheduler_seed_scans==1U);
+  CHECK(teleported.scheduler_seed_candidates==mesh.logical_red_owners().size());
+  CHECK(cache.scheduler_useful_pops_since_reseed==1U);
+  CHECK(cache.scheduler_stale_pops_since_reseed==0U);
+
+  const auto continuation=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,12,&cache);
+  CHECK(continuation.scheduler_fallbacks==0U);
+  CHECK(continuation.scheduler_seed_scans==0U);
+}
+
+TEST_CASE("persistent scheduler reseeds after an excessive stale pop ratio") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=1U;
+  configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.5};
+
+  const auto initial=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,13,&cache);
+  REQUIRE(initial.scheduler_seed_scans==1U);
+  for(std::size_t index=0;index<64U;++index)
+    cache.split_queue.push_back({
+        tetra::invalid_tet,mesh.revision(),0U,
+        1.0e30+static_cast<double>(index)});
+
+  const auto recovered=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,13,&cache);
+  CHECK(recovered.scheduler_stale_pops==64U);
+  CHECK(recovered.scheduler_fallbacks==1U);
+  CHECK(recovered.scheduler_seed_scans==1U);
+  CHECK(cache.scheduler_stale_pops_since_reseed==0U);
+  CHECK(cache.scheduler_useful_pops_since_reseed==0U);
+  CHECK(std::ranges::none_of(cache.split_queue,[](const auto& entry){
+    return entry.address==tetra::invalid_tet;
+  }));
+
+  const auto continuation=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,3,configuration,13,&cache);
+  CHECK(continuation.scheduler_fallbacks==0U);
+  CHECK(continuation.scheduler_seed_scans==0U);
+}
+
 TEST_CASE("persistent scheduler enqueues only committed families and conformity neighbours") {
   tetra::Sphere shape;
   shape.kind=tetra::ImplicitShapeKind::perlin_terrain;

@@ -584,7 +584,7 @@ differs from the independent oracle.
   front.
 - [x] After a split or merge, enqueue only the changed owner, parent, children,
   sibling family, and conservatively expanded conformity neighbours.
-- [ ] Detect camera teleports or excessive stale-pop ratios and fall back to one
+- [x] Detect camera teleports or excessive stale-pop ratios and fall back to one
   deterministic streamed reseed.
 - [ ] Prove slow motion, teleport, reversal, and repeated paths converge to the
   streamed oracle's logical and conforming hashes.
@@ -664,6 +664,31 @@ count. Deterministic fallback reseeding remains the next Gate 2 leaf.
 The streamed classifier still supplies plan commands as the correctness oracle;
 the final Gate 2 proof leaf must switch independent discovery to these fronts
 before measuring candidates avoided.
+
+#### Deterministic fallback reseeding
+
+Persistent schedulers now compare each new camera pose with the preceding queue
+priority pose. Translation beyond 75% of the nearer camera-to-surface-centre
+distance (with a 0.5 world-unit floor), or a view-direction change beyond 60
+degrees, is a teleport. A teleport rebuilds both fronts exactly once from the
+current sorted logical cut before normal queue processing; an unchanged
+continuation at that pose does not reseed again.
+
+Useful and stale pops also accumulate across requests. After at least 64 stale
+pops, a stale fraction above 25% rebuilds the fronts and resets both counters.
+Both fallback paths construct temporary flat fronts and membership tables and
+publish them only after the complete deterministic scan, retaining the previous
+fronts if cancellation interrupts the scan. `scheduler_fallbacks`, seed scans,
+seed candidates, and queue pushes expose the recovery cost.
+
+The production opposite-side camera jump reseeded once over the current 46,128
+logical owners and then returned to incremental operation. Together with the
+initial 13,284-owner seed it reported two scans, 59,412 seed candidates, 108,440
+queue pushes, and one fallback while preserving logical hash
+`13682450355903576323` and conforming hash `15065136194667184043`. Focused tests
+prove one-shot teleport recovery, no repeated fallback at an unchanged pose,
+stale-ratio recovery, and streamed-oracle equality through reversal and
+teleport paths.
 
 ### Gate 3 - Dirty-owner surface patches
 
