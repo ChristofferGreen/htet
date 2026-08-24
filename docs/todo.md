@@ -6,13 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G6-1 mixed-depth dual query and ownership specification.
-  - Scope: define the exact BCC incident-cell query, deterministic
-    missing-corner/finer-level/same-level ownership, and the complete boundary,
-    mixed-depth, degenerate, transition, and root-domain case catalogue.
-  - Acceptance: exhaustive release fixtures prove one deterministic owner or
-    an explicit rejection for every enumerated case without rendering changes.
-  - Stop rule: freeze the query and ownership contract before extraction.
 - [ ] CPU-G6-2 mixed-depth dual extractor and topology proof.
   - Scope: implement the specified CPU extractor behind a separate research
     surface method and retain packed owner-local or incident-star state.

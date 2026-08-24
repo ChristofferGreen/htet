@@ -224,3 +224,13 @@
   preserving the headless research path, extractor, cache, tests, benchmark,
   matrix, and construction evidence. No cracks, missing faces, transparency,
   or inconsistent edge coverage appeared in the fixed views.
+- [x] CPU-G6-1 mixed-depth dual query and ownership specification: adapted
+  Wald's missing-corner, finer-level, and same-level rules to complete BCC
+  primal-vertex stars. The executable query retains one packed candidate array
+  and globally flat incident/contender arrays, maps green cells to logical red
+  owners, explicitly rejects open, degenerate, non-manifold, and malformed
+  stars, and selects exactly one smallest deepest owner for every valid star.
+  Exhaustive synthetic and real release fixtures cover root boundaries,
+  interior roots, mixed depths, both transition strategies, input-order
+  invariance, unique spans, and deterministic rejection without renderer
+  changes.

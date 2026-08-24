@@ -1290,11 +1290,11 @@ hybrid variant. Gate 5 is closed.
 
 ### Gate 6 - Mixed-depth dual-ownership experiment
 
-- [ ] Define an exact BCC query for all active cells incident to a candidate
+- [x] Define an exact BCC query for all active cells incident to a candidate
   dual location.
-- [ ] Define deterministic ownership equivalent to Wald's missing-corner,
+- [x] Define deterministic ownership equivalent to Wald's missing-corner,
   finer-level-owner, and same-level-order rules.
-- [ ] Enumerate boundary, mixed-depth, degenerate, transition, and root-domain
+- [x] Enumerate boundary, mixed-depth, degenerate, transition, and root-domain
   cases before implementing rendering.
 - [ ] Implement the CPU extractor behind a separate surface dropdown option.
 - [ ] Require a closed two-manifold where expected, edge incidence of two,
@@ -1304,6 +1304,66 @@ hybrid variant. Gate 5 is closed.
 
 Exit condition: the method is exposed only if the BCC ownership specification
 is complete and exhaustive tests contain no unmatched mixed-depth faces.
+
+#### Frozen BCC incident-star and ownership contract
+
+The CPU experiment follows Wald et al., *GPU-Friendly Dual Meshes for Adaptive
+Mesh Refinement* (2020), Sections 3.2 and 4.1--4.4. Wald snaps every logical
+dual corner to the cell that contains it, rejects a shape when a corner is
+missing, defers to any finer snapped cell, and otherwise lets the
+lexicographically first same-level cell emit it. Degenerate snapped shapes are
+legal in that construction. The BCC substitution is exact at the topological
+level: a candidate dual location is one primal `VertexId`, and its snapped
+support is the complete star of current conforming tetrahedra incident to that
+vertex.
+
+`build_mixed_depth_dual_index()` scans the authoritative
+`ConformingVolumeView`, emits four `(vertex, conforming cell)` incidences per
+tetrahedron, and sorts them into one candidate array plus globally flat
+incident and contender arrays. Candidate spans are offsets and counts; there
+is no vector or allocation per candidate or tetrahedron. The geometric star
+retains every distinct conforming cell. Ownership contenders are the unique
+`ConformingCellRef::logical_owner` values, so a terminal green transition cell
+contributes geometry but can never own independently.
+
+This repository counts greater path depth as finer, the inverse of Wald's
+level numbering. For a complete valid star, the unique owner is therefore the
+smallest packed `TetId` among contenders at the maximum `tet_depth()`. Viewed
+from each contender, a shallower contender receives `finer_level_owner`, a
+later deepest contender receives `same_level_predecessor`, and exactly one
+receives `accepted`. Numeric `TetId` order is the stable total order for
+same-depth BCC cells. Duplicate green contributions from one logical owner are
+collapsed only in the contender span, never in the geometric incident span.
+
+The query determines completeness from conforming half-facet multiplicity,
+not floating-point position or epsilon tests. A face in the candidate star
+with one incident cell makes it an open domain-boundary star and produces
+`missing_incident_cell`, Wald's missing-corner equivalent. Multiplicity above
+two produces `nonmanifold_star`. A closed manifold star with fewer than four
+incident tetrahedra or fewer than four unique neighbouring primal vertices
+produces `degenerate_star`; unlike Wald's collapsed structured shapes, this is
+insufficient three-dimensional BCC support rather than a harmless collapsed
+edge. Empty/invalid owners and a non-incident proposed owner produce
+`malformed_incident`. Rejection precedence is malformed, missing, non-manifold,
+then degenerate, so diagnostics are deterministic.
+
+| Case | Required result |
+|---|---|
+| Uniform interior star | Smallest same-depth logical owner accepts. |
+| Mixed-depth star | Smallest deepest logical owner accepts; every coarser owner defers. |
+| Several deepest owners | Stable packed-address order selects exactly one. |
+| Green transition cells | All cells remain in the star and map to their red logical owner. |
+| Boundary/root-domain vertex | An open star rejects as `missing_incident_cell`. |
+| Interior root-domain vertex | A complete star is owned normally, even at depth zero. |
+| Degenerate synthetic star | Explicit `degenerate_star` rejection. |
+| Non-manifold or malformed input | Explicit diagnostic rejection. |
+
+Release fixtures cover permutation and duplicate-owner invariance, individual
+Wald-rule decisions, all rejection classes, root boundary and interior stars,
+both BCC transition strategies, mixed-depth adaptive stars, monotonic packed
+spans, unique incident addresses and contenders, and exactly one accepted
+owner for every valid candidate. This specification adds no renderer or
+surface-selection path; extraction remains CPU-G6-2.
 
 ### Gate 7 - Select production defaults
 

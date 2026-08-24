@@ -23,6 +23,7 @@ add_library(tetra_core
   src/tetra_core/four_hexahedra.cpp
   src/tetra_core/green_templates.cpp
   src/tetra_core/layer_storage.cpp
+  src/tetra_core/mixed_depth_dual.cpp
   src/tetra_core/parallel_commit.cpp
   src/tetra_core/tet_mesh.cpp
   src/tetra_core/implicit_surface.cpp

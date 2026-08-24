@@ -6,6 +6,7 @@
 #include "tetra_core/four_hexahedra.hpp"
 #include "tetra_core/green_templates.hpp"
 #include "tetra_core/layer_storage.hpp"
+#include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/parallel_commit.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
@@ -3045,6 +3046,159 @@ TEST_CASE("packed adjacency representations agree for transitions boundaries and
       multiplicity_hash=experiment.metrics.owner_multiplicity_hash;
       adjacency_hash=experiment.metrics.oriented_adjacency_hash;
     }
+  }
+}
+
+TEST_CASE("mixed-depth dual ownership exactly applies missing finer and ordering rules") {
+  const auto id=[](std::uint8_t root,unsigned int depth,tetra::TetId suffix=0U){
+    return tetra::make_tet_id(
+        root,(tetra::TetId{1}<<depth)|(suffix&((tetra::TetId{1}<<depth)-1U)));
+  };
+  const tetra::MixedDepthDualStarTopology complete{true,true,8U,6U};
+  const tetra::TetId same_first=id(1U,3U,2U);
+  const tetra::TetId same_second=id(2U,3U,1U);
+  const std::array same_depth{same_second,same_first,same_second};
+  auto resolved=tetra::resolve_mixed_depth_dual_owner(same_depth,complete);
+  CHECK(resolved.decision==tetra::MixedDepthDualDecision::accepted);
+  CHECK(resolved.owner==std::min(same_first,same_second));
+  CHECK(tetra::evaluate_mixed_depth_dual_contender(
+      same_depth,resolved.owner,complete)==tetra::MixedDepthDualDecision::accepted);
+  CHECK(tetra::evaluate_mixed_depth_dual_contender(
+      same_depth,std::max(same_first,same_second),complete)==
+      tetra::MixedDepthDualDecision::same_level_predecessor);
+
+  const tetra::TetId coarse=id(0U,3U,7U);
+  const tetra::TetId fine_second=id(3U,6U,5U);
+  const tetra::TetId fine_first=id(2U,6U,63U);
+  std::array mixed{fine_second,coarse,fine_first,coarse};
+  resolved=tetra::resolve_mixed_depth_dual_owner(mixed,complete);
+  CHECK(resolved.owner==std::min(fine_first,fine_second));
+  CHECK(tetra::evaluate_mixed_depth_dual_contender(mixed,coarse,complete)==
+        tetra::MixedDepthDualDecision::finer_level_owner);
+  CHECK(tetra::evaluate_mixed_depth_dual_contender(
+      mixed,std::max(fine_first,fine_second),complete)==
+      tetra::MixedDepthDualDecision::same_level_predecessor);
+  std::ranges::reverse(mixed);
+  CHECK(tetra::resolve_mixed_depth_dual_owner(mixed,complete).owner==resolved.owner);
+
+  CHECK(tetra::resolve_mixed_depth_dual_owner(
+      mixed,{false,true,8U,6U}).decision==
+      tetra::MixedDepthDualDecision::missing_incident_cell);
+  CHECK(tetra::resolve_mixed_depth_dual_owner(
+      mixed,{true,false,8U,6U}).decision==
+      tetra::MixedDepthDualDecision::nonmanifold_star);
+  CHECK(tetra::resolve_mixed_depth_dual_owner(
+      mixed,{true,true,3U,4U}).decision==
+      tetra::MixedDepthDualDecision::degenerate_star);
+  CHECK(tetra::resolve_mixed_depth_dual_owner(
+      mixed,{true,true,4U,3U}).decision==
+      tetra::MixedDepthDualDecision::degenerate_star);
+  const std::array malformed{tetra::invalid_tet};
+  CHECK(tetra::resolve_mixed_depth_dual_owner(malformed,complete).decision==
+        tetra::MixedDepthDualDecision::malformed_incident);
+  CHECK(tetra::evaluate_mixed_depth_dual_contender(mixed,id(5U,3U),complete)==
+        tetra::MixedDepthDualDecision::malformed_incident);
+}
+
+TEST_CASE("mixed-depth dual root-domain stars distinguish boundary and interior") {
+  const auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const auto index=tetra::build_mixed_depth_dual_index(mesh);
+  REQUIRE_FALSE(index.candidates.empty());
+  CHECK(index.hierarchy_revision==mesh.revision());
+  std::size_t boundary{},interior{};
+  for(const auto& candidate:index.candidates){
+    const auto& point=mesh.vertices()[candidate.primal_vertex];
+    const bool on_domain_boundary=point.x==0.0||point.x==1.0||
+        point.y==0.0||point.y==1.0||point.z==0.0||point.z==1.0;
+    if(on_domain_boundary){
+      ++boundary;
+      CHECK(candidate.owner==tetra::invalid_tet);
+      CHECK(candidate.decision==
+            tetra::MixedDepthDualDecision::missing_incident_cell);
+    }else{
+      ++interior;
+      CHECK(candidate.owner!=tetra::invalid_tet);
+      CHECK(candidate.decision==tetra::MixedDepthDualDecision::accepted);
+    }
+  }
+  CHECK(boundary>0U);
+  CHECK(interior>0U);
+}
+
+TEST_CASE("packed mixed-depth dual stars resolve BCC transitions deterministically") {
+  for(const auto strategy:{tetra::BccTransitionStrategy::crystalline_restricted,
+                           tetra::BccTransitionStrategy::complete_minimal}){
+    CAPTURE(static_cast<unsigned int>(strategy));
+    auto mesh=tetra::TetMesh::make_unit_cube(
+        tetra::SubdivisionMethod::bcc_red_green);
+    if(strategy!=mesh.transition_strategy())REQUIRE(mesh.set_transition_strategy(strategy));
+    tetra::Sphere shape{{0.5,0.5,0.5},0.31};
+    tetra::Camera camera;
+    camera.position={0.3,0.6,1.4};
+    REQUIRE(tetra::refine_to_sphere(mesh,shape,camera,44.0,9).iterations>0);
+    const auto index=tetra::build_mixed_depth_dual_index(mesh);
+    REQUIRE_FALSE(index.candidates.empty());
+    CHECK(index.hierarchy_revision==mesh.revision());
+    CHECK(index.incidents.size()==mesh.conforming_volume().size()*4U);
+    std::size_t accepted{},boundary{},transition_incidents{},mixed_depth{};
+    std::uint32_t previous_incident_end{},previous_contender_end{};
+    tetra::VertexId previous_vertex{};
+    bool first=true;
+    for(const auto& candidate:index.candidates){
+      CHECK(candidate.incident_begin==previous_incident_end);
+      CHECK(candidate.contender_begin==previous_contender_end);
+      CHECK(candidate.incident_count>0U);
+      CHECK(candidate.contender_count>0U);
+      if(!first)CHECK(previous_vertex<candidate.primal_vertex);
+      first=false;previous_vertex=candidate.primal_vertex;
+      const auto incidents=std::span{index.incidents}.subspan(
+          candidate.incident_begin,candidate.incident_count);
+      const auto contenders=std::span{index.contenders}.subspan(
+          candidate.contender_begin,candidate.contender_count);
+      std::set<tetra::TetId> incident_addresses,owner_addresses;
+      std::set<std::uint32_t> depths;
+      for(const auto& incident:incidents){
+        CHECK(incident_addresses.insert(incident.conforming_cell).second);
+        CHECK(incident.owner_depth==tetra::tet_depth(incident.logical_owner));
+        if(incident.transition){
+          ++transition_incidents;
+          CHECK(incident.conforming_cell!=incident.logical_owner);
+        }
+      }
+      std::size_t accepted_contenders{};
+      for(const auto& contender:contenders){
+        CHECK(owner_addresses.insert(contender.logical_owner).second);
+        CHECK(contender.owner_depth==tetra::tet_depth(contender.logical_owner));
+        depths.insert(contender.owner_depth);
+        accepted_contenders+=contender.decision==
+            tetra::MixedDepthDualDecision::accepted?1U:0U;
+      }
+      mixed_depth+=depths.size()>1U?1U:0U;
+      if(candidate.decision==tetra::MixedDepthDualDecision::accepted){
+        ++accepted;
+        CHECK(candidate.owner!=tetra::invalid_tet);
+        CHECK(accepted_contenders==1U);
+        const auto found=std::ranges::find_if(contenders,[](const auto& contender){
+          return contender.decision==tetra::MixedDepthDualDecision::accepted;
+        });
+        REQUIRE(found!=contenders.end());
+        CHECK(found->logical_owner==candidate.owner);
+      }else{
+        CHECK(candidate.owner==tetra::invalid_tet);
+        CHECK(accepted_contenders==0U);
+        boundary+=candidate.decision==
+            tetra::MixedDepthDualDecision::missing_incident_cell?1U:0U;
+      }
+      previous_incident_end=candidate.incident_begin+candidate.incident_count;
+      previous_contender_end=candidate.contender_begin+candidate.contender_count;
+    }
+    CHECK(previous_incident_end==index.incidents.size());
+    CHECK(previous_contender_end==index.contenders.size());
+    CHECK(accepted>0U);
+    CHECK(boundary>0U);
+    CHECK(transition_incidents>0U);
+    CHECK(mixed_depth>0U);
   }
 }
 
