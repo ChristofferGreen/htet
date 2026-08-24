@@ -11,6 +11,9 @@
 - 2026-08-24 06:02 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 166 tests passed
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark"` | failures: none | notes: the focused benchmark test passed; all eight motion paths were valid and deterministic
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 167 tests passed after adding the CPU camera-path baseline
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation baseline remained green at 167 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark|headless and Vulkan uploads"` | failures: none | notes: both focused publication-stage timing tests passed
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 168 tests passed after publication-stage instrumentation
 
 ## Resolved Failures
 

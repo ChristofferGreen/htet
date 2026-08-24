@@ -162,7 +162,7 @@ count. Compact globally only when fragmentation crosses a measured threshold.
 - [x] Record a release benchmark for the current defaults over stationary,
   slow orbit, rapid orbit, near-to-far, far-to-near, teleport, reversal, and
   repeated-pose paths.
-- [ ] Record planning, family resolution, commit, closure, derived-green
+- [x] Record planning, family resolution, commit, closure, derived-green
   generation, scene preparation, upload, and end-to-end publication time.
 - [ ] Record active/resident owners, requested/admissible/committed splits and
   merges, rejected operations, dirty owners, exact field evaluations, copied
@@ -196,6 +196,28 @@ introducing incompatible benchmark scripts.
 | teleport | 6 | 761.750 | 6497 | 2449 | 7982904738747822154 | 9287830994776944529 |
 | reversal | 7 | 134.553 | 1350 | 0 | 8574200701652014340 | 9946433227311532595 |
 | repeated pose | 8 | 22.450 | 13 | 0 | 17612503117663115496 | 14683475872280492951 |
+
+The next Gate 0 instrumentation pass extended each event with the complete CPU
+publication pipeline. `adaptation_ms` contains the existing `plan_ms` and
+`commit_ms`; planning separately reports family resolution, while commit
+separately reports conformity closure and derived-green generation. Scene
+preparation uses the lightweight production settings used when the statistics
+panel is closed. `upload_ms` is explicitly tagged `upload_backend=host-mirror`:
+it copies the upload-ready triangles and performs the exact screen-space line
+expansion shared with the Vulkan renderer, but intentionally excludes Vulkan
+driver and device synchronization time. `publication_ms` covers the complete
+camera request through the retained staging-buffer swap.
+
+| Path | Adaptation (ms) | Plan (ms) | Family (ms) | Commit (ms) | Closure (ms) | Green (ms) | Scene (ms) | Upload (ms) | End to end (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| stationary | 3.455 | 3.226 | 0.022 | 0.228 | 0.000 | 0.000 | 0.000 | 0.000 | 3.455 |
+| slow orbit | 148.208 | 50.441 | 24.508 | 97.762 | 36.637 | 33.657 | 619.807 | 1.514 | 769.555 |
+| rapid orbit | 1194.698 | 666.032 | 607.081 | 528.648 | 98.398 | 128.299 | 1614.699 | 2.658 | 2812.108 |
+| near to far | 2835.691 | 963.048 | 878.857 | 1872.611 | 204.690 | 254.689 | 1488.964 | 2.412 | 4327.104 |
+| far to near | 2163.471 | 683.614 | 609.757 | 1479.831 | 133.943 | 160.917 | 960.143 | 1.461 | 3125.100 |
+| teleport | 757.607 | 357.241 | 319.656 | 400.350 | 62.596 | 83.752 | 1088.792 | 1.695 | 1848.131 |
+| reversal | 135.617 | 52.076 | 28.050 | 83.535 | 31.737 | 27.473 | 516.003 | 0.810 | 652.453 |
+| repeated pose | 21.940 | 3.549 | 0.000 | 18.389 | 6.897 | 6.595 | 122.662 | 0.188 | 144.803 |
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 

@@ -609,6 +609,35 @@ void point_camera_at(tetra::Camera& camera, tetra::Vec3 position, tetra::Vec3 ta
   if (length > 1.0e-15) camera.forward = direction / length;
 }
 
+struct BenchmarkUploadBuffers {
+  std::vector<SceneVertex> triangles;
+  std::vector<SceneVertex> hierarchy_ribbons;
+  std::vector<SceneVertex> surface_ribbons;
+
+  void reserve_for(const PreparedScene& scene) {
+    triangles.reserve(scene.triangle_vertices.size());
+    hierarchy_ribbons.reserve(scene.hierarchy_line_vertices.size()*3);
+    surface_ribbons.reserve(scene.surface_line_vertices.size()*3);
+  }
+
+  void stage(const PreparedScene& scene) {
+    triangles.assign(scene.triangle_vertices.begin(),scene.triangle_vertices.end());
+    expand_line_segments_for_upload(scene.hierarchy_line_vertices,hierarchy_ribbons);
+    expand_line_segments_for_upload(scene.surface_line_vertices,surface_ribbons);
+  }
+
+  [[nodiscard]] std::size_t size_bytes() const noexcept {
+    return (triangles.size()+hierarchy_ribbons.size()+surface_ribbons.size())*
+        sizeof(SceneVertex);
+  }
+
+  void swap(BenchmarkUploadBuffers& other) noexcept {
+    triangles.swap(other.triangles);
+    hierarchy_ribbons.swap(other.hierarchy_ribbons);
+    surface_ribbons.swap(other.surface_ribbons);
+  }
+};
+
 void write_error(std::ostream& errors, std::string_view message, std::string_view command = {}) {
   errors << "{\"event\":\"error\",\"message\":\"" << message << '"';
   if (!command.empty()) errors << ",\"command\":\"" << command << '"';
@@ -1661,21 +1690,66 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       baseline.sphere.secondary=tetra::implicit_shape_default_secondary(default_implicit_shape);
       baseline.volume_connection_method=default_volume_connection_for_shape(default_implicit_shape);
       static_cast<void>(refine_to_current_surface(baseline));
+      const ScenePreparationOptions benchmark_preparation{
+          .surface_diagnostics=false,.summary_statistics=false};
+      const auto prepare_benchmark_scene=[&](const ScriptState& benchmark){
+        return prepare_scene(
+            benchmark.mesh,benchmark.sphere,benchmark.surface_method,
+            benchmark.material_rule,benchmark.show_faces,
+            benchmark.show_hierarchy_edges,benchmark.show_surface_edges,true,
+            benchmark.x_cutaway&&benchmark.show_volume_edges,
+            benchmark.x_cutaway&&benchmark.show_volume_faces,
+            benchmark.x_cut_position,benchmark.volume_connection_method,
+            benchmark.stencil_construction,benchmark.stencil_selection_objective,
+            benchmark_preparation,benchmark.surface_hierarchy_triangles);
+      };
+      const auto baseline_scene=prepare_benchmark_scene(baseline);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
         ScriptState benchmark=baseline;
+        BenchmarkUploadBuffers published_upload,staged_upload;
+        published_upload.reserve_for(baseline_scene);
+        staged_upload.reserve_for(baseline_scene);
+        std::uint64_t published_mesh_revision=benchmark.mesh.revision();
         std::size_t transactions{};
         std::size_t zero_work_updates{};
+        std::size_t published_revisions{};
+        std::size_t uploaded_bytes{};
         bool reached_depth_limit{};
-        const auto start=Clock::now();
+        double adaptation_milliseconds{};
+        double scene_preparation_milliseconds{};
+        double scene_statistics_milliseconds{};
+        double scene_geometry_milliseconds{};
+        double upload_milliseconds{};
+        double publish_commit_milliseconds{};
+        double publication_milliseconds{};
         for(const auto position:path.positions){
+          const auto publication_start=Clock::now();
           point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+          const auto adaptation_start=Clock::now();
           const auto result=reconcile_to_current_surface(benchmark);
+          adaptation_milliseconds+=milliseconds_since(adaptation_start);
           transactions+=result.iterations;
           zero_work_updates+=result.iterations==0?1U:0U;
           reached_depth_limit|=result.reached_depth_limit;
+          if(benchmark.mesh.revision()!=published_mesh_revision){
+            const auto scene_start=Clock::now();
+            const auto scene=prepare_benchmark_scene(benchmark);
+            scene_preparation_milliseconds+=milliseconds_since(scene_start);
+            scene_statistics_milliseconds+=scene.statistics_milliseconds;
+            scene_geometry_milliseconds+=scene.upload_preparation_milliseconds;
+            const auto upload_start=Clock::now();
+            staged_upload.stage(scene);
+            upload_milliseconds+=milliseconds_since(upload_start);
+            uploaded_bytes+=staged_upload.size_bytes();
+            const auto publish_start=Clock::now();
+            published_upload.swap(staged_upload);
+            published_mesh_revision=benchmark.mesh.revision();
+            publish_commit_milliseconds+=milliseconds_since(publish_start);
+            ++published_revisions;
+          }
+          publication_milliseconds+=milliseconds_since(publication_start);
         }
-        const auto duration=milliseconds_since(start);
         const bool valid=benchmark.mesh.has_positive_active_volumes()&&
                          benchmark.mesh.has_conforming_active_faces();
         output<<"{\"event\":\"cpu_camera_path_benchmark\",\"path\":\""
@@ -1684,9 +1758,20 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<"\",\"updates\":"<<path.positions.size()
               <<",\"transactions\":"<<transactions
               <<",\"zero_work_updates\":"<<zero_work_updates
+              <<",\"published_revisions\":"<<published_revisions
+              <<",\"uploaded_bytes\":"<<uploaded_bytes
+              <<",\"upload_backend\":\"host-mirror\""
               <<",\"reached_depth_limit\":"<<(reached_depth_limit?"true":"false")
               <<",\"valid\":"<<(valid?"true":"false")
-              <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)<<duration<<',';
+              <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+              <<adaptation_milliseconds
+              <<",\"adaptation_ms\":"<<adaptation_milliseconds
+              <<",\"scene_preparation_ms\":"<<scene_preparation_milliseconds
+              <<",\"scene_statistics_ms\":"<<scene_statistics_milliseconds
+              <<",\"scene_geometry_ms\":"<<scene_geometry_milliseconds
+              <<",\"upload_ms\":"<<upload_milliseconds
+              <<",\"publish_commit_ms\":"<<publish_commit_milliseconds
+              <<",\"publication_ms\":"<<publication_milliseconds<<',';
         write_mesh_fields(output,benchmark);output<<"}\n";
         if(!valid){
           write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);

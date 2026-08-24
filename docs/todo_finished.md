@@ -9,3 +9,9 @@
   reports deterministic logical and conforming hashes, and validates mesh
   conformity. A focused release test covers all paths, hash repeatability, and
   the stationary/repeated-pose zero-work behavior.
+- [x] Gate 0 publication-stage timing: extended every CPU camera-path event
+  with adaptation, scene preparation, renderer-identical host upload staging,
+  atomic publication, and end-to-end time. Existing planning, family
+  resolution, commit, conformity-closure, and derived-green timings complete
+  the breakdown. The Vulkan renderer now shares the tested line-ribbon
+  expansion routine with the headless benchmark.

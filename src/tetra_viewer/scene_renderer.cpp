@@ -165,27 +165,10 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
     }
     if (!vertices.empty()) { void* mapped{}; vkMapMemory(device_, destination.memory, 0, vertices.size_bytes(), 0, &mapped); std::memcpy(mapped, vertices.data(), vertices.size_bytes()); vkUnmapMemory(device_, destination.memory); }
   };
-  const auto expand_edges=[](std::span<const SceneVertex> line_vertices){
-    std::vector<SceneVertex> ribbons;
-    ribbons.reserve((line_vertices.size()/2)*6);
-    constexpr std::array<std::array<float,2>,6> corners{{
-        {{0.0F,-1.0F}},{{1.0F,-1.0F}},{{1.0F,1.0F}},
-        {{0.0F,-1.0F}},{{1.0F,1.0F}},{{0.0F,1.0F}}}};
-    for(std::size_t line=0;line+1<line_vertices.size();line+=2){
-      for(const auto corner:corners){
-        SceneVertex vertex{};
-        std::copy_n(line_vertices[line].position,3,vertex.position);
-        std::copy_n(line_vertices[line+1].position,3,vertex.normal);
-        std::copy_n(line_vertices[line].colour,3,vertex.colour);
-        vertex.diagnostics[0]=corner[0];
-        vertex.diagnostics[1]=corner[1];
-        ribbons.push_back(vertex);
-      }
-    }
-    return ribbons;
-  };
-  const auto hierarchy_ribbons=expand_edges(hierarchy_line_vertices);
-  const auto editor_ribbons=expand_edges(surface_line_vertices);
+  std::vector<SceneVertex> hierarchy_ribbons;
+  std::vector<SceneVertex> editor_ribbons;
+  expand_line_segments_for_upload(hierarchy_line_vertices,hierarchy_ribbons);
+  expand_line_segments_for_upload(surface_line_vertices,editor_ribbons);
   upload_buffer(triangles_, triangle_vertices);
   upload_buffer(hierarchy_lines_, hierarchy_ribbons);
   upload_buffer(editor_lines_, editor_ribbons);

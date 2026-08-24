@@ -602,6 +602,13 @@ struct ScenePreparationOptions {
   bool summary_statistics{true};
 };
 
+// Expands each two-vertex line segment into the six vertices consumed by the
+// screen-space ribbon pipeline. The headless publication benchmark and Vulkan
+// renderer share this exact CPU upload-staging operation.
+void expand_line_segments_for_upload(
+    std::span<const SceneVertex> line_vertices,
+    std::vector<SceneVertex>& ribbons);
+
 // Builds camera-independent CPU scene data. Packed 64-bit edge keys are
 // sorted once per revision; there are no per-edge node allocations.
 [[nodiscard]] PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,

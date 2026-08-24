@@ -6,7 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 0: record per-stage planning, conformity, scene, upload, and publication timing.
 - [ ] Gate 0: record the complete adaptation, ownership, byte, and field-evaluation counters.
 - [ ] Gate 0: store logical, conforming, surface-triangle, and surface-edge hashes for every path and shape.
 - [ ] Gate 0: record first-complete-revision and final-convergence latency.

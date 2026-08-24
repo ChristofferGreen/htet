@@ -2950,6 +2950,39 @@ TEST_CASE("headless viewer scene preparation emits upload-ready cached geometry"
   CHECK(text.find("\"upload_bytes\":0") == std::string::npos);
 }
 
+TEST_CASE("headless and Vulkan uploads share exact screen-space line expansion") {
+  std::array<tetra_viewer::SceneVertex,2> line{};
+  line[0].position[0]=1.0F;
+  line[0].position[1]=2.0F;
+  line[0].position[2]=3.0F;
+  line[1].position[0]=4.0F;
+  line[1].position[1]=5.0F;
+  line[1].position[2]=6.0F;
+  line[0].colour[0]=0.25F;
+  line[0].colour[1]=0.50F;
+  line[0].colour[2]=0.75F;
+  std::vector<tetra_viewer::SceneVertex> ribbons;
+  tetra_viewer::expand_line_segments_for_upload(line,ribbons);
+  REQUIRE(ribbons.size()==6U);
+  for(const auto& vertex:ribbons){
+    CHECK(vertex.position[0]==1.0F);
+    CHECK(vertex.position[1]==2.0F);
+    CHECK(vertex.position[2]==3.0F);
+    CHECK(vertex.normal[0]==4.0F);
+    CHECK(vertex.normal[1]==5.0F);
+    CHECK(vertex.normal[2]==6.0F);
+    CHECK(vertex.colour[0]==0.25F);
+    CHECK(vertex.colour[1]==0.50F);
+    CHECK(vertex.colour[2]==0.75F);
+  }
+  CHECK(ribbons[0].diagnostics[0]==0.0F);
+  CHECK(ribbons[0].diagnostics[1]==-1.0F);
+  CHECK(ribbons[2].diagnostics[0]==1.0F);
+  CHECK(ribbons[2].diagnostics[1]==1.0F);
+  tetra_viewer::expand_line_segments_for_upload({},ribbons);
+  CHECK(ribbons.empty());
+}
+
 TEST_CASE("viewer submits only exposed faces of full-tetrahedron material") {
   const tetra::Sphere containing_sphere{{0.5, 0.5, 0.5}, 2.0};
   const auto six = tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::maubach_diamond);
@@ -3592,6 +3625,14 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
     const auto second_event=event_for(second,path);
     CHECK(first_event.find("\"shape\":\"perlin-terrain\"")!=std::string::npos);
     CHECK(first_event.find("\"valid\":true")!=std::string::npos);
+    CHECK(first_event.find("\"upload_backend\":\"host-mirror\"")!=std::string::npos);
+    for(const auto key:{"\"adaptation_ms\":","\"scene_preparation_ms\":",
+                        "\"scene_statistics_ms\":","\"scene_geometry_ms\":",
+                        "\"upload_ms\":","\"publish_commit_ms\":",
+                        "\"publication_ms\":"})
+      CHECK(field(first_event,key).find('-')==std::string::npos);
+    CHECK(std::stod(field(first_event,"\"publication_ms\":"))>=
+          std::stod(field(first_event,"\"adaptation_ms\":")));
     CHECK(field(first_event,"\"logical_cut_hash\":")==
           field(second_event,"\"logical_cut_hash\":"));
     CHECK(field(first_event,"\"conforming_volume_hash\":")==
@@ -3599,8 +3640,12 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   }
   const auto stationary=event_for(first,"stationary");
   CHECK(field(stationary,"\"updates\":")==field(stationary,"\"zero_work_updates\":"));
+  CHECK(field(stationary,"\"published_revisions\":")=="0");
+  CHECK(field(stationary,"\"uploaded_bytes\":")=="0");
   const auto repeated=event_for(first,"repeated-pose");
   CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=7U);
+  CHECK(std::stoul(field(repeated,"\"published_revisions\":"))==1U);
+  CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
 }
 
 TEST_CASE("headless camera stress path is deterministic and conforming") {

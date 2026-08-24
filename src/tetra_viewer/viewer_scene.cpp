@@ -2083,6 +2083,27 @@ void append_screen_space_edges(PreparedScene& scene, bool show_surface_edges,
 
 }  // namespace
 
+void expand_line_segments_for_upload(
+    std::span<const SceneVertex> line_vertices,
+    std::vector<SceneVertex>& ribbons) {
+  ribbons.clear();
+  ribbons.reserve((line_vertices.size()/2)*6);
+  constexpr std::array<std::array<float,2>,6> corners{{
+      {{0.0F,-1.0F}},{{1.0F,-1.0F}},{{1.0F,1.0F}},
+      {{0.0F,-1.0F}},{{1.0F,1.0F}},{{0.0F,1.0F}}}};
+  for(std::size_t line=0;line+1<line_vertices.size();line+=2){
+    for(const auto corner:corners){
+      SceneVertex vertex{};
+      std::copy_n(line_vertices[line].position,3,vertex.position);
+      std::copy_n(line_vertices[line+1].position,3,vertex.normal);
+      std::copy_n(line_vertices[line].colour,3,vertex.colour);
+      vertex.diagnostics[0]=corner[0];
+      vertex.diagnostics[1]=corner[1];
+      ribbons.push_back(vertex);
+    }
+  }
+}
+
 PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
                             SurfaceMethod surface_method, MaterialRule material_rule,
                             bool show_faces, bool show_hierarchy_edges,
