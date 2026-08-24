@@ -1430,6 +1430,34 @@ TEST_CASE("adaptation planning is budgeted non-mutating and revision checked") {
   CHECK(mesh.logical_cut().owners==owners_after_external_change);
 }
 
+TEST_CASE("canceled adaptation planning never commits partial topology") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  tetra::AdaptationConfiguration configuration;
+  tetra::AdaptationPlanningCache cache;
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto revision=mesh.revision();
+  const auto owners=mesh.logical_cut().owners;
+  const auto plan=tetra::plan_adaptation(
+      mesh,sphere,camera,4.0,9U,configuration,0U,&cache,
+      cancellation.get_token());
+  CHECK(plan.canceled);
+  CHECK(plan.commands.empty());
+  CHECK(mesh.revision()==revision);
+  CHECK(mesh.logical_cut().owners==owners);
+  const auto result=tetra::adapt_to_surface(
+      mesh,sphere,camera,4.0,9U,configuration,0U,&cache,
+      cancellation.get_token());
+  CHECK(result.canceled);
+  CHECK(result.status==tetra::AdaptationCommitStatus::no_change);
+  CHECK(result.resulting_revision==revision);
+  CHECK(mesh.revision()==revision);
+  CHECK(mesh.logical_cut().owners==owners);
+}
+
 TEST_CASE("adaptation commit metrics cover the complete operation lifecycle") {
   auto mesh=tetra::TetMesh::make_unit_cube(
       tetra::SubdivisionMethod::bcc_red_green);
@@ -3794,6 +3822,20 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"resumed_without_rebuild\":true")!=std::string::npos);
   CHECK(text.find("\"published_revisions\":5")!=std::string::npos);
   CHECK(text.find("\"intermediate_revisions\":4")!=std::string::npos);
+}
+
+TEST_CASE("headless worker supersession keeps only the latest camera request") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-cpu-worker-supersession",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"event\":\"cpu_worker_supersession_benchmark\"")!=
+        std::string::npos);
+  CHECK(text.find("\"rapid_requests\":8")!=std::string::npos);
+  CHECK(text.find("\"latest_wins\":true")!=std::string::npos);
+  CHECK(text.find("\"prompt_boundary\":true")!=std::string::npos);
+  CHECK(text.find("\"stale_publications\":0")!=std::string::npos);
 }
 
 TEST_CASE("lightweight scene preparation preserves render geometry without research diagnostics") {

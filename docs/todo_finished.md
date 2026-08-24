@@ -51,3 +51,10 @@
   mesh and packed cache into the next 4 ms worker slice, rebuilds the scene for
   each revision, and reports cumulative chain metrics. Tests observe four
   improving intermediate scenes before hash-identical final convergence.
+- [x] Gate 1 prompt supersession: added cancellation polling throughout
+  non-mutating adaptation planning, safe generation checks after each atomic
+  commit, and worker metrics for pending, running, and completed supersession.
+  An eight-request headless stress run canceled seven active planners in at
+  most 0.007 ms, published no stale revision, and converged only the latest
+  chain to independent oracle hashes. A racing private atomic commit may finish
+  but is discarded before publication.

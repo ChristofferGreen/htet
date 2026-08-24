@@ -112,6 +112,20 @@ struct MeshPublicationResult {
   }
 };
 
+struct MeshUpdateWorkerMetrics {
+  std::size_t submitted_requests{};
+  std::size_t submitted_continuations{};
+  std::size_t superseded_pending_requests{};
+  std::size_t superseded_running_requests{};
+  std::size_t superseded_completed_results{};
+  std::size_t canceled_requests{};
+  std::size_t canceled_plans{};
+  std::size_t atomic_transactions_after_supersession{};
+  std::size_t completed_requests{};
+  std::uint64_t latest_completed_request_id{};
+  double maximum_cancellation_latency_milliseconds{};
+};
+
 // Owns all mutation of its private mesh snapshot. The render thread keeps
 // using the last published mesh and atomically adopts only a completed result.
 class MeshUpdateWorker {
@@ -133,17 +147,24 @@ class MeshUpdateWorker {
   [[nodiscard]] std::optional<MeshUpdateResult> wait_for_completed(
       std::chrono::milliseconds timeout);
   [[nodiscard]] bool busy() const;
+  [[nodiscard]] MeshUpdateWorkerMetrics metrics() const;
   void cancel();
 
  private:
   void run(std::stop_token stop);
   [[nodiscard]] bool current(std::uint64_t request_id) const;
+  void supersede_locked();
 
   mutable std::mutex mutex_;
   std::condition_variable_any condition_;
   std::optional<MeshUpdateRequest> pending_;
   std::optional<MeshUpdateResult> completed_;
   std::uint64_t latest_request_id_{};
+  std::uint64_t active_request_id_{};
+  std::stop_source active_cancellation_;
+  bool active_superseded_{};
+  std::chrono::steady_clock::time_point active_superseded_at_{};
+  MeshUpdateWorkerMetrics metrics_;
   bool running_{};
   std::jthread thread_;
 };

@@ -299,7 +299,7 @@ complete-revision latency while preserving the same final hashes.
   `converged=false` and enough continuation state to resume the same request.
 - [x] Make the viewer publish that revision and continue the request without
   rebuilding planning state from the roots.
-- [ ] Cancel superseded continuations promptly and prove the latest request
+- [x] Cancel superseded continuations promptly and prove the latest request
   eventually wins.
 - [ ] Add a configurable low-yield cutoff based on committed useful edits per
   pass and per millisecond; never use it to skip required conformity closure.
@@ -428,6 +428,42 @@ improving intermediate logical cuts, before reaching the same logical and
 conforming hashes as both unsliced policies. A release integration test also
 builds the surface scene at every intermediate revision and verifies that the
 scene cache tracks each published mesh revision.
+
+#### Prompt supersession and latest-request wins
+
+Each active worker request now owns a cancellation source. Submitting a newer
+camera request immediately stops the older request's non-mutating planner;
+candidate scans, hierarchy-summary construction, spatial runs, scheduler work,
+and merge-family selection poll that token at bounded intervals. A canceled
+plan returns no commands and never enters commit. If supersession races with an
+already-entered atomic conformity commit, that one transaction may finish, but
+the worker checks the generation immediately afterward and never begins a
+second stale transaction or publishes the result.
+
+Worker metrics distinguish pending requests, running planners, and completed
+but unconsumed results that were superseded. They also report canceled requests,
+planner exits, atomic transactions that finished across the supersession
+boundary, the latest completed request, and maximum observed cancellation
+latency. This makes cancellation behavior testable without weakening the rule
+that only complete face-conforming revisions can be published.
+
+The headless command
+`tetra_viewer --script "benchmark-cpu-worker-supersession"` begins a sliced
+continuation, rapidly replaces it with eight camera requests, resumes only the
+winning chain, and compares its final cut with an independent unsliced worker
+started from the same published source revision. The following release result
+was recorded on 2026-08-24 on an Apple M3 Pro:
+
+| Rapid requests | Superseded | Pending | Running | Completed | Canceled plans | Atomic completions after supersession | Max cancel latency (ms) | Winning publications | Latest hashes match |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 8 | 8 | 1 | 7 | 0 | 7 | 0 | 0.007 | 4 | yes |
+
+The winning logical hash is `16825792801125746743`; the conforming hash is
+`1178652062429369095`. A core test separately proves that a pre-canceled plan
+and adaptation leave both mesh revision and logical owners unchanged. The
+benchmark fails if cancellation exceeds 50 ms, if more than one atomic
+transaction finishes per superseded running request, or if any final hash
+differs from the independent oracle.
 
 ### Gate 2 - Independent persistent candidate discovery
 

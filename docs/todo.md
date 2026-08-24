@@ -6,7 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 1: cancel superseded continuations and prove the latest request wins.
 - [ ] Gate 1: add a configurable low-yield cutoff that never skips conformity closure.
 - [ ] Gate 1: measure snapshot-copy and worker-handoff costs separately.
 

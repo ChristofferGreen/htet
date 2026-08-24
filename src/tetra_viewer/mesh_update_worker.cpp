@@ -1,5 +1,6 @@
 #include "tetra_viewer/mesh_update_worker.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace tetra_viewer {
@@ -41,6 +42,10 @@ MeshUpdateWorker::MeshUpdateWorker()
     :thread_([this](std::stop_token stop){run(stop);}) {}
 
 MeshUpdateWorker::~MeshUpdateWorker() {
+  {
+    std::lock_guard lock(mutex_);
+    active_cancellation_.request_stop();
+  }
   thread_.request_stop();
   condition_.notify_all();
 }
@@ -49,6 +54,7 @@ std::uint64_t MeshUpdateWorker::submit(
     tetra::TetMesh mesh,MeshUpdateParameters parameters,
     MeshUpdateOperation operation) {
   std::lock_guard lock(mutex_);
+  supersede_locked();
   const std::uint64_t request_id=++latest_request_id_;
   const std::uint64_t source_revision=mesh.revision();
   pending_.emplace(MeshUpdateRequest{
@@ -57,6 +63,7 @@ std::uint64_t MeshUpdateWorker::submit(
       .source_mesh_revision=source_revision,
       .slice_source_mesh_revision=source_revision});
   completed_.reset();
+  ++metrics_.submitted_requests;
   condition_.notify_all();
   return request_id;
 }
@@ -85,6 +92,8 @@ MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
           result.cumulative_admissible_operations,
       .continuation=true});
   completed_.reset();
+  ++metrics_.submitted_requests;
+  ++metrics_.submitted_continuations;
   condition_.notify_all();
   return {MeshContinuationStatus::accepted,request_id};
 }
@@ -112,8 +121,25 @@ bool MeshUpdateWorker::busy() const {
   return running_||pending_.has_value();
 }
 
+MeshUpdateWorkerMetrics MeshUpdateWorker::metrics() const {
+  std::lock_guard lock(mutex_);
+  return metrics_;
+}
+
+void MeshUpdateWorker::supersede_locked() {
+  if(pending_)++metrics_.superseded_pending_requests;
+  if(completed_)++metrics_.superseded_completed_results;
+  if(running_&&active_request_id_!=0U&&!active_superseded_){
+    active_superseded_=true;
+    active_superseded_at_=std::chrono::steady_clock::now();
+    active_cancellation_.request_stop();
+    ++metrics_.superseded_running_requests;
+  }
+}
+
 void MeshUpdateWorker::cancel() {
   std::lock_guard lock(mutex_);
+  supersede_locked();
   ++latest_request_id_;
   pending_.reset();
   completed_.reset();
@@ -128,6 +154,7 @@ bool MeshUpdateWorker::current(std::uint64_t request_id) const {
 void MeshUpdateWorker::run(std::stop_token stop) {
   while(!stop.stop_requested()){
     std::optional<MeshUpdateRequest> request;
+    std::stop_token request_cancellation;
     {
       std::unique_lock lock(mutex_);
       condition_.wait(lock,stop,[&]{return pending_.has_value();});
@@ -135,6 +162,10 @@ void MeshUpdateWorker::run(std::stop_token stop) {
       request=std::move(pending_);
       pending_.reset();
       running_=true;
+      active_request_id_=request->request_id;
+      active_cancellation_=std::stop_source{};
+      active_superseded_=false;
+      request_cancellation=active_cancellation_.get_token();
     }
 
     const auto start=std::chrono::steady_clock::now();
@@ -163,6 +194,8 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     std::size_t admissible_operations{};
     bool time_budget_reached=false;
     bool converged=false;
+    bool canceled_plan=false;
+    std::size_t transactions_after_supersession{};
     constexpr std::size_t transaction_limit=4096U;
     if(request->operation==MeshUpdateOperation::refine_all_once){
       request->mesh.refine_all_binary();
@@ -178,7 +211,11 @@ void MeshUpdateWorker::run(std::stop_token stop) {
           request->mesh,request->parameters.surface,request->parameters.camera,
           request->parameters.pixel_threshold,request->parameters.maximum_depth,
           transaction_configuration,request->parameters.field_revision,
-          &planning_cache);
+          &planning_cache,request_cancellation);
+      if(commit.canceled){
+        canceled_plan=true;
+        break;
+      }
       admissible_operations+=commit.operations.admissible_splits+
           commit.operations.admissible_merges;
       if(commit.status==tetra::AdaptationCommitStatus::no_change){
@@ -191,6 +228,13 @@ void MeshUpdateWorker::run(std::stop_token stop) {
       }
       ++adaptation.iterations;
       adaptation.refined_leaves+=commit.accepted_splits;
+      {
+        std::lock_guard lock(mutex_);
+        if(latest_request_id_!=request->request_id){
+          ++transactions_after_supersession;
+          break;
+        }
+      }
       if(request->parameters.budget.target_milliseconds>0.0&&
          std::chrono::duration<double,std::milli>(
              std::chrono::steady_clock::now()-start).count()>=
@@ -214,6 +258,7 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     {
       std::lock_guard lock(mutex_);
       running_=false;
+      active_request_id_=0U;
       if(latest_request_id_==request->request_id){
         completed_.emplace(MeshUpdateResult{
             .mesh=std::move(request->mesh),
@@ -231,7 +276,21 @@ void MeshUpdateWorker::run(std::stop_token stop) {
             .cumulative_admissible_operations=cumulative_admissible,
             .transaction_operation_budget=transaction_operation_budget,
             .time_budget_reached=time_budget_reached,.converged=converged});
+        ++metrics_.completed_requests;
+        metrics_.latest_completed_request_id=request->request_id;
+      }else{
+        ++metrics_.canceled_requests;
+        if(canceled_plan)++metrics_.canceled_plans;
+        metrics_.atomic_transactions_after_supersession+=
+            transactions_after_supersession;
+        if(active_superseded_){
+          const double latency=std::chrono::duration<double,std::milli>(
+              std::chrono::steady_clock::now()-active_superseded_at_).count();
+          metrics_.maximum_cancellation_latency_milliseconds=std::max(
+              metrics_.maximum_cancellation_latency_milliseconds,latency);
+        }
       }
+      active_superseded_=false;
     }
     condition_.notify_all();
   }

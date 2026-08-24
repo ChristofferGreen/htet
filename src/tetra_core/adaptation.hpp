@@ -280,6 +280,7 @@ struct AdaptationPlan {
   double summary_build_ms{};
   double spatial_index_build_ms{};
   bool over_budget{};
+  bool canceled{};
 };
 
 [[nodiscard]] inline std::uint64_t logical_owner_hash(std::span<const TetId> owners) {
@@ -329,6 +330,7 @@ struct AdaptationCommitResult {
   AdaptationReplayRecord replay;
   BccUpdateMetrics bcc_metrics;
   AdaptationOperationMetrics operations;
+  bool canceled{};
 };
 
 } // namespace tetra

@@ -975,6 +975,7 @@ void print_script_help(std::ostream& output) {
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark all standard CPU camera motion paths\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
+            "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
             "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
@@ -2067,6 +2068,131 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       if(!resumed_valid||!resumed_matches){
         write_error(errors,"CPU worker continuations changed final hashes",
                     "resumed-slices");
+        return 1;
+      }
+      continue;
+    }
+    if(command=="benchmark-cpu-worker-supersession"){
+      const tetra::Sphere surface{};
+      tetra::Camera initial_camera;
+      initial_camera.position={0.5,0.5,1.25};
+      initial_camera.forward={0.0,0.0,-1.0};
+      tetra::AdaptationConfiguration configuration;
+      MeshUpdateParameters initial_parameters{
+          surface,initial_camera,4.0,9U,configuration,0U,
+          {.maximum_operations_per_transaction=64U,
+           .target_milliseconds=1.0e-9}};
+      auto published_mesh=tetra::TetMesh::make_unit_cube(
+          tetra::SubdivisionMethod::bcc_red_green);
+      tetra::AdaptationPlanningCache published_cache;
+      MeshUpdateWorker worker;
+      auto expected_request=worker.submit(published_mesh,initial_parameters);
+      auto first=worker.wait_for_completed(std::chrono::seconds(10));
+      if(!first){
+        write_error(errors,"supersession benchmark initial slice timed out",command);
+        return 1;
+      }
+      const auto first_publication=publish_mesh_update_result(
+          worker,std::move(*first),published_mesh,published_cache,
+          expected_request,MeshUpdateOperation::reconcile_lod,
+          initial_parameters);
+      if(first_publication.status!=MeshPublicationStatus::intermediate){
+        write_error(errors,"supersession benchmark did not start a continuation",command);
+        return 1;
+      }
+
+      const auto winning_source=published_mesh;
+      MeshUpdateParameters winning_parameters=initial_parameters;
+      constexpr std::array positions{
+          tetra::Vec3{0.5,0.5,1.1},tetra::Vec3{0.2,0.5,1.5},
+          tetra::Vec3{0.8,0.5,2.0},tetra::Vec3{0.5,0.2,3.0},
+          tetra::Vec3{0.5,0.8,4.0},tetra::Vec3{0.5,0.5,6.0},
+          tetra::Vec3{0.1,0.1,8.0},tetra::Vec3{0.5,0.5,10.0}};
+      for(const auto position:positions){
+        point_camera_at(winning_parameters.camera,position,surface.centre);
+        expected_request=worker.submit(published_mesh,winning_parameters);
+      }
+      const auto winning_chain=expected_request;
+      MeshPublicationResult final_publication;
+      std::size_t winning_publications{};
+      for(std::size_t slice=0;slice<128U;++slice){
+        auto completed=worker.wait_for_completed(std::chrono::seconds(10));
+        if(!completed){
+          write_error(errors,"latest superseding request timed out",command);
+          return 1;
+        }
+        const auto publication=publish_mesh_update_result(
+            worker,std::move(*completed),published_mesh,published_cache,
+            expected_request,MeshUpdateOperation::reconcile_lod,
+            winning_parameters);
+        if(!publication.published()||publication.chain_id!=winning_chain||
+           !published_mesh.has_positive_active_volumes()||
+           !published_mesh.has_conforming_active_faces()){
+          write_error(errors,"supersession published a stale or invalid result",command);
+          return 1;
+        }
+        ++winning_publications;
+        if(publication.status==MeshPublicationStatus::converged){
+          final_publication=publication;
+          break;
+        }
+        expected_request=publication.request_id;
+      }
+      if(final_publication.status!=MeshPublicationStatus::converged){
+        write_error(errors,"latest superseding request did not converge",command);
+        return 1;
+      }
+
+      auto oracle_parameters=winning_parameters;
+      oracle_parameters.budget.target_milliseconds=0.0;
+      MeshUpdateWorker oracle_worker;
+      static_cast<void>(oracle_worker.submit(winning_source,oracle_parameters));
+      auto oracle=oracle_worker.wait_for_completed(std::chrono::seconds(10));
+      if(!oracle||!oracle->converged){
+        write_error(errors,"supersession oracle did not converge",command);
+        return 1;
+      }
+      const auto logical_hash=address_hash(published_mesh.logical_cut().owners);
+      const auto conforming_hash=address_hash(
+          published_mesh.conforming_volume().addresses());
+      const bool oracle_match=
+          logical_hash==address_hash(oracle->mesh.logical_cut().owners)&&
+          conforming_hash==address_hash(
+              oracle->mesh.conforming_volume().addresses());
+      const auto metrics=worker.metrics();
+      const auto superseded=metrics.superseded_pending_requests+
+          metrics.superseded_running_requests+
+          metrics.superseded_completed_results;
+      const bool prompt=metrics.atomic_transactions_after_supersession<=
+          metrics.superseded_running_requests&&
+          metrics.maximum_cancellation_latency_milliseconds<50.0;
+      output<<"{\"event\":\"cpu_worker_supersession_benchmark\""
+            <<",\"rapid_requests\":"<<positions.size()
+            <<",\"superseded_requests\":"<<superseded
+            <<",\"superseded_pending\":"
+            <<metrics.superseded_pending_requests
+            <<",\"superseded_running\":"
+            <<metrics.superseded_running_requests
+            <<",\"superseded_completed\":"
+            <<metrics.superseded_completed_results
+            <<",\"canceled_requests\":"<<metrics.canceled_requests
+            <<",\"canceled_plans\":"<<metrics.canceled_plans
+            <<",\"atomic_transactions_after_supersession\":"
+            <<metrics.atomic_transactions_after_supersession
+            <<",\"maximum_cancellation_latency_ms\":"<<std::fixed
+            <<std::setprecision(3)
+            <<metrics.maximum_cancellation_latency_milliseconds
+            <<",\"winning_publications\":"<<winning_publications
+            <<",\"stale_publications\":0"
+            <<",\"winning_chain\":"<<winning_chain
+            <<",\"latest_completed_request\":"
+            <<metrics.latest_completed_request_id
+            <<",\"latest_wins\":"<<(oracle_match?"true":"false")
+            <<",\"prompt_boundary\":"<<(prompt?"true":"false")
+            <<",\"logical_cut_hash\":"<<logical_hash
+            <<",\"conforming_volume_hash\":"<<conforming_hash<<"}\n";
+      if(superseded<positions.size()||!oracle_match||!prompt){
+        write_error(errors,"worker supersession boundary failed",command);
         return 1;
       }
       continue;

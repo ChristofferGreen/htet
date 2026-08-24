@@ -6,6 +6,11 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation worker-supersession baseline passed all 176 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "canceled adaptation|worker supersession|background mesh updates|worker revisions resume|viewer publishes every"` | failures: none | notes: five focused cancellation, worker, and publication tests passed
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-supersession"` | failures: none | notes: eight rapid requests superseded one pending and seven running requests; seven planners canceled, zero atomic transactions finished after supersession, and the latest hashes matched the oracle
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 178 tests passed after prompt worker supersession and latest-request-wins validation
+
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation progressive-publication baseline passed all 176 tests
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "background mesh updates|worker revisions resume|viewer publishes every|headless worker budget"` | failures: none | notes: four focused worker and publication tests passed, including scene generation for every complete intermediate revision
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: canonical publication handoff exposed five valid revisions, four improving intermediates, and the unsliced final hashes

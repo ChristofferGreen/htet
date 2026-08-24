@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <span>
+#include <stop_token>
 
 namespace tetra {
 
@@ -277,7 +278,8 @@ struct PreorderRenderMetrics {
     double pixel_threshold,unsigned int maximum_depth,
     const AdaptationConfiguration& configuration={},
     std::uint64_t field_revision=0,
-    AdaptationPlanningCache* planning_cache=nullptr);
+    AdaptationPlanningCache* planning_cache=nullptr,
+    std::stop_token cancellation={});
 
 // Commit only a plan made against the current hierarchy revision. Complete
 // BCC sibling families are merged before the disjoint split frontier is
@@ -292,7 +294,8 @@ struct PreorderRenderMetrics {
     double pixel_threshold,unsigned int maximum_depth,
     const AdaptationConfiguration& configuration={},
     std::uint64_t field_revision=0,
-    AdaptationPlanningCache* planning_cache=nullptr);
+    AdaptationPlanningCache* planning_cache=nullptr,
+    std::stop_token cancellation={});
 
 [[nodiscard]] AdaptationCommitResult replay_adaptation(
     TetMesh& mesh,const AdaptationReplayRecord& record,bool reverse,

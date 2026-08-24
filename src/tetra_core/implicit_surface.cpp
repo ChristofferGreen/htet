@@ -805,8 +805,16 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
                                unsigned int maximum_depth,
                                const AdaptationConfiguration& configuration,
                                std::uint64_t field_revision,
-                               AdaptationPlanningCache* planning_cache) {
+                               AdaptationPlanningCache* planning_cache,
+                               std::stop_token cancellation) {
   AdaptationPlan plan;
+  const auto cancel=[&]{
+    if(!cancellation.stop_requested())return false;
+    plan.commands.clear();
+    plan.canceled=true;
+    return true;
+  };
+  if(cancel())return plan;
   const auto plan_start=std::chrono::steady_clock::now();
   const auto elapsed_ms=[](auto start){
     return std::chrono::duration<double,std::milli>(
@@ -827,6 +835,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     return plan;
   }
   const auto prepared_camera=prepare_camera_projection(camera);
+  if(cancel())return plan;
 
   AdaptationPlanningCache local_planning_cache;
   auto& summaries=planning_cache?*planning_cache:local_planning_cache;
@@ -902,12 +911,14 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.stationary_maximum_depth=maximum_depth;
   };
   const auto apply_scheduler=[&](std::span<const TetId> owners){
+    if(cancel())return;
     if(configuration.update_scheduler==UpdateScheduler::classify_and_stream||
        plan.commands.empty())return;
     const auto kind=plan.commands.front().kind;
     auto& queue=kind==AdaptationCommandKind::split
         ?summaries.split_queue:summaries.merge_queue;
     for(const auto& command:plan.commands){
+      if(cancel())return;
       const bool already=std::ranges::any_of(queue,[&](const auto& entry){
         return entry.address==command.logical_owner&&
             entry.state_revision==mesh.revision();
@@ -926,6 +937,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     });
     std::size_t stale{};
     for(auto& entry:queue){
+      if(cancel())return;
       if(entry.state_revision!=mesh.revision()){
         ++plan.scheduler_stale_pops;++stale;continue;
       }
@@ -968,6 +980,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.spatial_runs.reserve((logical.size()+run_size-1U)/run_size);
     const double lipschitz=field_lipschitz_bound(sphere);
     for(std::size_t begin=0;begin<logical.size();begin+=run_size){
+      if(cancel())return plan;
       SpatialOwnerRun run;
       run.begin=static_cast<std::uint32_t>(begin);
       run.count=static_cast<std::uint32_t>(
@@ -1016,6 +1029,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.layers.resize(mesh.layers().size());
     const double lipschitz=field_lipschitz_bound(sphere);
     for(std::size_t depth=0;depth<mesh.layers().size();++depth){
+      if(cancel())return plan;
       const auto& records=mesh.layers()[depth].tetrahedra;
       auto& summary=summaries.layers[depth];
       summary.addresses.reserve(records.size());
@@ -1026,6 +1040,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       summary.deepest_resident_depth.reserve(records.size());
       summary.deepest_active_depth.reserve(records.size());
       for(std::size_t index=0;index<records.size();++index){
+        if((index&255U)==0U&&cancel())return plan;
         if(records[index].transition_parent!=invalid_tet)continue;
         Vec3 centre{};
         Vec3 minimum{std::numeric_limits<double>::infinity(),
@@ -1077,6 +1092,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       return static_cast<std::size_t>(found-layer.addresses.begin());
     };
     for(std::size_t depth=summaries.layers.size();depth-->3U;){
+      if(cancel())return plan;
       const auto& child_layer=summaries.layers[depth];
       for(std::size_t index=0;index<child_layer.addresses.size();++index){
         const TetId child=child_layer.addresses[index];
@@ -1107,6 +1123,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     for(auto& layer:summaries.layers)
       std::fill(layer.deepest_active_depth.begin(),layer.deepest_active_depth.end(),0U);
     for(const TetId owner:logical){
+      if(cancel())return plan;
       TetId descendant=owner;
       while(true){
         const auto depth=tet_depth(descendant);
@@ -1163,9 +1180,13 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       splits.push_back({owner,diameter/split_threshold});
   };
   if(configuration.candidate_traversal==CandidateTraversal::active_cut_scan){
-    for(const TetId owner:logical)consider_split(owner);
+    for(const TetId owner:logical){
+      if(cancel())return plan;
+      consider_split(owner);
+    }
   }else if(configuration.candidate_traversal==CandidateTraversal::spatial_runs){
     for(const auto& run:summaries.spatial_runs){
+      if(cancel())return plan;
       ++plan.spatial_run_bound_tests;
       if(run.field_minimum>0.0||run.field_maximum<0.0){
         ++plan.field_subtrees_rejected;
@@ -1187,6 +1208,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
           found->transition_parent==invalid_tet;
     };
     std::function<void(TetId)> visit=[&](TetId owner){
+      if(cancel())return;
       ++plan.hierarchy_nodes_visited;
       ++plan.projection_evaluations;
       const double diameter=projected_tetrahedron_diameter(
@@ -1217,9 +1239,12 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         if(resident(address))visit(address);
       }
     };
-    for(const auto& root:mesh.layers().front().tetrahedra)
+    for(const auto& root:mesh.layers().front().tetrahedra){
+      if(cancel())return plan;
       if(root.transition_parent==invalid_tet)visit(root.address);
+    }
   }
+  if(cancel())return plan;
   std::sort(splits.begin(),splits.end(),[](const Candidate& left,const Candidate& right){
     if(left.priority!=right.priority)return left.priority>right.priority;
     return left.address<right.address;
@@ -1243,6 +1268,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       std::vector<ClusterMember> members;
       members.reserve(logical.size());
       for(const TetId owner:logical){
+        if(cancel())return plan;
         const TetId key=tet_depth(owner)>=3U
             ?make_tet_id(tet_root(owner),tet_path(owner)>>3U):invalid_tet;
         members.push_back({key,owner});
@@ -1256,6 +1282,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
                 [](const auto& left,const auto& right){return left.address<right.address;});
       std::vector<Cluster> clusters;
       for(std::size_t begin=0;begin<members.size();){
+        if(cancel())return plan;
         std::size_t end=begin+1U;
         while(end<members.size()&&members[end].cluster==members[begin].cluster)++end;
         // A non-root red cluster is usable only while all eight siblings are
@@ -1280,6 +1307,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       });
       plan.requested_splits=0U;
       for(const auto& cluster:clusters){
+        if(cancel())return plan;
         const auto count=cluster.end-cluster.begin;
         plan.requested_splits+=count;
         if(plan.commands.size()+count>configuration.operation_budget){
@@ -1301,6 +1329,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     plan.family_resolution_ms=elapsed_ms(plan_start)-plan.classification_ms;
     order_mark_pass_fine_to_coarse(plan.commands);
     apply_scheduler(logical);
+    if(cancel())return plan;
     pack_transaction_frontier(summaries,mesh.layers().size(),logical,plan.commands);
     if(planning_cache){
       summaries.has_split_pose=true;
@@ -1324,8 +1353,11 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   if(mesh.subdivision_method()!=SubdivisionMethod::bcc_red_green)return plan;
   std::vector<TetId> possible_parents;
   possible_parents.reserve(logical.size());
-  for(const TetId owner:logical)if(tet_depth(owner)>=3U)
-    possible_parents.push_back(make_tet_id(tet_root(owner),tet_path(owner)>>3U));
+  for(const TetId owner:logical){
+    if(cancel())return plan;
+    if(tet_depth(owner)>=3U)
+      possible_parents.push_back(make_tet_id(tet_root(owner),tet_path(owner)>>3U));
+  }
   std::sort(possible_parents.begin(),possible_parents.end());
   possible_parents.erase(std::unique(possible_parents.begin(),possible_parents.end()),
                          possible_parents.end());
@@ -1333,6 +1365,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   std::vector<Candidate> merges;
   const double merge_threshold=pixel_threshold*configuration.merge_hysteresis;
   for(const TetId parent:possible_parents){
+    if(cancel())return plan;
     if(mesh.has_pinned_descendant(parent))continue;
     bool complete=true;
     for(std::uint32_t child=0;child<8U;++child){
@@ -1369,6 +1402,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   depths.erase(std::unique(depths.begin(),depths.end()),depths.end());
   std::vector<TetId> accepted;
   for(const unsigned int depth:depths){
+    if(cancel())return plan;
     std::vector<TetId> band;
     for(const auto& candidate:merges)
       if(tet_depth(candidate.address)==depth)band.push_back(candidate.address);
@@ -1391,6 +1425,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       continue;
     }
     while(!band.empty()){
+      if(cancel())return plan;
       std::vector<TetId> blocked;
       if(mesh.can_coarsen_selected_red(band,&blocked)){
         accepted=std::move(band);
@@ -1416,6 +1451,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   if(planning_cache&&plan.commands.empty())summaries.pose_merge_pending=false;
   order_mark_pass_fine_to_coarse(plan.commands);
   apply_scheduler(logical);
+  if(cancel())return plan;
   pack_transaction_frontier(summaries,mesh.layers().size(),logical,plan.commands);
   return plan;
 }
@@ -1628,10 +1664,17 @@ AdaptationCommitResult adapt_to_surface(TetMesh& mesh,const Sphere& sphere,
                                         unsigned int maximum_depth,
                                         const AdaptationConfiguration& configuration,
                                         std::uint64_t field_revision,
-                                        AdaptationPlanningCache* planning_cache) {
+                                        AdaptationPlanningCache* planning_cache,
+                                        std::stop_token cancellation) {
   const auto plan=plan_adaptation(mesh,sphere,camera,pixel_threshold,
                                   maximum_depth,configuration,
-                                  field_revision,planning_cache);
+                                  field_revision,planning_cache,cancellation);
+  if(plan.canceled||cancellation.stop_requested()){
+    AdaptationCommitResult canceled;
+    canceled.resulting_revision=mesh.revision();
+    canceled.canceled=true;
+    return canceled;
+  }
   auto result=commit_adaptation(mesh,plan,configuration,field_revision);
   if(planning_cache&&result.status==AdaptationCommitStatus::no_change&&
      !plan.commands.empty())planning_cache->pose_merge_pending=false;
