@@ -40,10 +40,18 @@ void main() {
   // selected per cell on the CPU, so every retained tetrahedron stays whole
   // and lies completely on the visible side of the plane.
   if (!volume_cut && world_x > camera.rendering.w) discard;
+  const int triangle_edge_flags = int(in_edge_flags+0.5);
+  const bool wire_only_volume = volume_cut && (triangle_edge_flags & 8) != 0;
+  const bool show_solid_faces = wire_only_volume ? false :
+      (connected_surface ? camera.rendering.z > 0.5 :
+       (volume_cut || camera.rendering.z > 0.5));
+  const vec3 hidden_face_colour = vec3(0.06,0.08,0.11);
   const vec3 light_direction = normalize(camera.light_direction.xyz);
   const float normal_length = length(normal);
   if (normal_length <= 0.0001) {
-    out_colour = vec4(colour, 1.0);
+    // Degenerate or deliberately unlit geometry must still obey the face
+    // visibility controls. Lighting validity is not a draw-control escape.
+    out_colour = vec4(show_solid_faces ? colour : hidden_face_colour, 1.0);
     return;
   }
   const vec3 unit_normal = normal/normal_length;
@@ -76,10 +84,5 @@ void main() {
   // Geometry establishes an opaque visibility buffer. Wire-only modes retain
   // a background-coloured depth mask; the dedicated screen-space edge pass
   // can then draw the front mesh without revealing rear edges.
-  const int triangle_edge_flags = int(in_edge_flags+0.5);
-  const bool wire_only_volume = volume_cut && (triangle_edge_flags & 8) != 0;
-  const bool show_solid_faces = wire_only_volume ? false :
-      (connected_surface ? camera.rendering.z > 0.5 :
-       (volume_cut || camera.rendering.z > 0.5));
-  out_colour=vec4(show_solid_faces ? shaded_colour : vec3(0.06,0.08,0.11),1.0);
+  out_colour=vec4(show_solid_faces ? shaded_colour : hidden_face_colour,1.0);
 }

@@ -4205,6 +4205,11 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
                              surface_method==SurfaceMethod::full_tetrahedra);
     }
   }
+  // The cached path assembles cutaway/connected-volume geometry after the
+  // reusable base surface. Finalize that complete publication just like the
+  // monolithic prepare_scene path; otherwise refined faces retain tiny raw
+  // area vectors that the fragment shader can mistake for missing normals.
+  prepare_surface_render_attributes(scene_);
   mesh_revision_ = mesh.revision();
   subdivision_method_ = mesh.subdivision_method();
   has_subdivision_method_ = true;

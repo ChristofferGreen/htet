@@ -7374,6 +7374,42 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
   check_scene();
   static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,14.0,12U));
   check_scene();
+
+  tetra_viewer::SceneCache cache;
+  REQUIRE(cache.update_scene(
+      mesh,terrain,0U,tetra_viewer::default_surface_method,
+      tetra_viewer::MaterialRule::variational_smooth,
+      false,false,true,false,true,true,1.0,
+      tetra_viewer::default_volume_connection_for_shape(terrain.kind)));
+  std::size_t refined_small_faces{};
+  for(std::size_t triangle=0;
+      triangle+2U<cache.scene().triangle_vertices.size();triangle+=3U){
+    const auto* vertices=cache.scene().triangle_vertices.data()+triangle;
+    const tetra::Vec3 a{vertices[0].position[0],vertices[0].position[1],
+                        vertices[0].position[2]};
+    const tetra::Vec3 b{vertices[1].position[0],vertices[1].position[1],
+                        vertices[1].position[2]};
+    const tetra::Vec3 c{vertices[2].position[0],vertices[2].position[1],
+                        vertices[2].position[2]};
+    const auto ab=b-a,ac=c-a;
+    const tetra::Vec3 area_normal{
+        ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,
+        ab.x*ac.y-ab.y*ac.x};
+    const double area_normal_length=std::sqrt(
+        area_normal.x*area_normal.x+area_normal.y*area_normal.y+
+        area_normal.z*area_normal.z);
+    refined_small_faces+=area_normal_length<=1.0e-4?1U:0U;
+    for(std::size_t corner=0;corner<3U;++corner){
+      const double normal_length=std::sqrt(
+          vertices[corner].normal[0]*vertices[corner].normal[0]+
+          vertices[corner].normal[1]*vertices[corner].normal[1]+
+          vertices[corner].normal[2]*vertices[corner].normal[2]);
+      CHECK(normal_length==doctest::Approx(1.0).epsilon(1.0e-5));
+    }
+  }
+  // These are the faces that previously took the shader's zero-normal early
+  // return and remained bright even while solid surface faces were disabled.
+  CHECK(refined_small_faces>0U);
 }
 
 TEST_CASE("fixed optimized shell validates across every packed hierarchy family") {
