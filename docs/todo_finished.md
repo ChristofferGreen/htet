@@ -259,3 +259,13 @@
   fixed-capacity chunks, and bounded complete worker transactions remain the
   fastest correct production candidates. Persistent queues remain
   research-only, hybrid chunks rejected, and direct packing reference-only.
+- [x] CPU-G7-2 production visual audit and default selection: inspected 80
+  edge-on/edge-off fixed views across five shapes and all eight retained
+  surface methods, plus 32 near/far/return LOD frames. Every return image was
+  byte-identical and no method showed cracks, missing faces, transparency, or
+  topology seams. Recorded an explicit disposition for every method and
+  regression-enforced the selected streamed, packed, fixed-chunk, complete-
+  transaction defaults. Retained surface optimization as the quality default
+  because its terrain and curved surfaces visibly improve over faster
+  marching, which remains the production speed option. Gate 7 and the full
+  CPU paper-integration plan are closed.

@@ -958,6 +958,7 @@ TEST_CASE("interactive smooth cutaway preserves the selected whole hierarchy cel
 }
 
 TEST_CASE("viewer defaults pair terrain with a compatible BCC volume method") {
+  constexpr tetra::AdaptationConfiguration adaptation;
   CHECK(tetra_viewer::default_subdivision_method==tetra::SubdivisionMethod::bcc_red_green);
   CHECK(tetra_viewer::default_implicit_shape==tetra::ImplicitShapeKind::perlin_terrain);
   CHECK(tetra_viewer::default_volume_connection_for_shape(
@@ -968,6 +969,16 @@ TEST_CASE("viewer defaults pair terrain with a compatible BCC volume method") {
   CHECK(tetra_viewer::default_surface_method==tetra_viewer::SurfaceMethod::surface_optimization);
   CHECK(tetra_viewer::default_volume_connection_method==
         tetra_viewer::VolumeConnectionMethod::fixed_surface_shell);
+  CHECK(adaptation.update_scheduler==tetra::UpdateScheduler::classify_and_stream);
+  CHECK(adaptation.candidate_traversal==tetra::CandidateTraversal::active_cut_scan);
+  CHECK(adaptation.closure_execution==tetra::ClosureExecution::sparse_frontier);
+  CHECK(adaptation.layer_storage==tetra::LayerStorage::flat_packed);
+  CHECK(adaptation.adjacency==tetra::AdjacencyRepresentation::logical_face_table);
+  CHECK(adaptation.kernel_order==tetra::KernelOrder::address_order);
+  CHECK(tetra_viewer::default_surface_draw_chunk_strategy==
+        tetra_viewer::SurfaceDrawChunkStrategy::fixed_capacity);
+  CHECK(tetra_viewer::default_mesh_update_time_budget_milliseconds==
+        doctest::Approx(4.0));
 
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script("stats",output,errors)==0);

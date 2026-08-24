@@ -1,0 +1,9 @@
+method	edge_on_views	edge_off_views	lod_frames	cracks	missing_faces	transparency	lod_return_exact	disposition	observation
+full-tetrahedra	5	5	4	no	no	no	yes	diagnostic-only	whole-cell boundary is intentionally coarse and blocky
+marching-tetrahedra	5	5	4	no	no	no	yes	production-speed-option	fastest local surface but visibly faceted on curved shapes
+lattice-cleaving	5	5	4	no	no	no	yes	connected-volume-diagnostic	matches sparse marching topology while exposing the cleaved boundary-layer construction
+tetrahedral-layer	5	5	4	no	no	no	yes	experimental-diagnostic	readable sparse shell but no quality advantage over marching in the fixed views
+dual-contouring	5	5	4	no	no	no	yes	interactive-quality-alternative	smoother curved silhouettes than marching at moderate extra cost
+four-hexahedra	5	5	4	no	no	no	yes	headless-research-only	smoothest reference surface but wire density and retained memory obscure practical inspection
+mixed-depth-dual	5	5	4	no	no	no	yes	interactive-experimental-quality	smooth middle ground with visible barycentric stars and cylinder scalloping
+surface-optimization	5	5	4	no	no	no	yes	production-quality-default	best readable terrain and curved-shape surface; cube corners visibly warp so marching remains available

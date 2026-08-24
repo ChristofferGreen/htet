@@ -15,6 +15,10 @@ namespace tetra_viewer {
 
 enum class MeshUpdateOperation { reconcile_lod, refine_all_once };
 
+// Selected by the release CPU qualification: keep render-thread handoff
+// responsive while committing only complete conforming transactions.
+inline constexpr double default_mesh_update_time_budget_milliseconds=4.0;
+
 struct MeshUpdateBudget {
   // Zero inherits AdaptationConfiguration::operation_budget. A positive value
   // fixes the maximum admissible logical commands in each transaction.

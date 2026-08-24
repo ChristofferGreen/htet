@@ -1463,9 +1463,9 @@ closed.
   oracle for the production adaptation path.
 - [x] Require exact patched-versus-monolithic surface hashes for methods marked
   patchable.
-- [ ] Visually inspect every retained surface method for cracks, missing faces,
+- [x] Visually inspect every retained surface method for cracks, missing faces,
   transparency, inconsistent wire width, and LOD popping.
-- [ ] Make the fastest correct CPU configuration the default and retain slower
+- [x] Make the fastest correct CPU configuration the default and retain slower
   alternatives only when they provide a measurable quality or diagnostic
   benefit.
 
@@ -1517,6 +1517,56 @@ chunks, and direct packing retain explicit research, rejected, and reference
 roles. The production defaults are not changed until CPU-G7-2 completes the
 fixed visual matrix and checks that the fastest qualified combination has no
 quality regression.
+
+#### Production visual audit and final defaults
+
+CPU-G7-2 rendered every one of the eight retained surface methods against the
+same depth-10 camera for terrain, sphere, merging spheres, cube, and capped
+cylinder. Both edge-on and edge-off images were inspected, for 80 fixed views
+in total. A separate near/far/return sequence added four LOD frames per method.
+The complete disposition table is stored in
+[`cpu-surface-visual-audit.tsv`](cpu-surface-visual-audit.tsv). All start and
+return images were byte-identical. No view showed a surface crack, missing
+face, transparency, topology seam, or inconsistent method-switch result. The
+native Vulkan path retains its fixed one-pixel, depth-tested polygon edges;
+the reduced contact sheets can make those single-pixel lines appear stippled,
+so full-resolution images and the existing worst-placement raster tests were
+used for wire coverage decisions.
+
+The visual matrix confirms that surface choice is a quality policy rather
+than a single speed ranking. Marching tetrahedra is the fastest local surface
+and remains the production speed option, but its curved silhouettes and
+terrain are visibly more faceted. Surface optimization is roughly three times
+slower on the summed camera matrix yet gives the clearest terrain, sphere, and
+merging-sphere surfaces at practical wire density, so it retains the default
+quality role requested by this application's mesh-evaluation workflow. Its
+warped cube corners are explicit evidence for retaining marching as a direct
+alternative rather than treating optimization as universally superior.
+
+Dual contouring remains an interactive moderate-cost quality alternative.
+Lattice cleaving remains a connected-volume diagnostic; the extracted
+tetrahedral layer and full-tetrahedron boundary remain construction
+diagnostics. Mixed-depth dual remains an interactive experimental quality
+method because its smoother surface still carries barycentric stars and
+cylinder scalloping. Four-hexahedra remains headless-only: it is a useful
+smooth reference, but its edge density, 230 MB retained high-water mark, and
+15.16-second median patch matrix make it unsuitable for interactive default
+use.
+
+The fastest correct infrastructure configuration is now explicitly enforced
+by release tests: classify-and-stream scheduling, active-cut traversal,
+sparse-frontier closure, flat packed layers, logical face-table adjacency,
+address-order kernels, and fixed-capacity draw chunks. The worker's selected
+four-millisecond slice target is a named compiled default and still stops only
+after complete conforming transactions. Surface optimization, the one slower
+default, is retained for its measured visual benefit; every other slower path
+has the production, quality, diagnostic, experimental, research-only,
+reference, or rejected role recorded in the two qualification tables.
+
+All seven gates are complete. The CPU path now adapts on a private worker,
+publishes only complete revisions, updates local surface patches and retained
+draw chunks where supported, preserves exact oracle topology and hashes, and
+has release evidence explaining every retained default and alternative.
 
 ## Required tests
 

@@ -1,12 +1,12 @@
 category	candidate	workload	repetitions	median_ms	maximum_ms	reference_median_ms	exact	retained_high_water_bytes	stable	qualification
 adaptation	classify-and-stream	eight production camera paths, summed adaptation	3	5685.438	5704.253	-	yes	7688984	yes	production-qualified
 adaptation	persistent-split-merge-queues	eight production camera paths, summed adaptation	3	7834.059	7852.760	5685.438	yes	7688984	yes	research-only-slower
-surface	marching-tetrahedra	eight production camera paths, summed patch update	3	1387.825	1813.812	2319.850	yes	30578384	yes	production-qualified
-surface	dual-contouring	eight production camera paths, summed patch update	3	2177.337	2912.548	3057.571	yes	44531952	yes	quality-candidate
-surface	lattice-cleaving	eight production camera paths, summed patch update	3	3091.888	3506.432	4025.871	yes	30578384	yes	diagnostic-candidate
-surface	surface-optimization	eight production camera paths, summed global rebuild	3	4178.290	4696.082	4161.486	yes	0	yes	quality-candidate-global
-surface	mixed-depth-dual	eight production camera paths, summed patch update	3	12469.558	16974.106	25835.446	yes	223111920	yes	experimental-quality
-surface	four-hexahedra	eight production camera paths, summed patch update	3	15161.683	21084.405	43760.778	yes	230424000	yes	headless-research
+surface	marching-tetrahedra	eight production camera paths, summed patch update	3	1387.825	1813.812	2319.850	yes	30578384	yes	production-speed-option
+surface	dual-contouring	eight production camera paths, summed patch update	3	2177.337	2912.548	3057.571	yes	44531952	yes	interactive-quality-alternative
+surface	lattice-cleaving	eight production camera paths, summed patch update	3	3091.888	3506.432	4025.871	yes	30578384	yes	connected-volume-diagnostic
+surface	surface-optimization	eight production camera paths, summed global rebuild	3	4178.290	4696.082	4161.486	yes	0	yes	production-quality-default
+surface	mixed-depth-dual	eight production camera paths, summed patch update	3	12469.558	16974.106	25835.446	yes	223111920	yes	interactive-experimental-quality
+surface	four-hexahedra	eight production camera paths, summed patch update	3	15161.683	21084.405	43760.778	yes	230424000	yes	headless-research-only
 draw	fixed-capacity	five local surfaces, summed retained pack and host stage	3	339.266	367.674	-	yes	-	yes	production-qualified
 draw	hybrid-large-patches	five local surfaces, summed retained pack and host stage	3	2472.764	2637.096	339.266	yes	-	yes	rejected-low-occupancy
 draw	direct-monolithic	five local surfaces, complete stream reference	3	-	-	339.266	yes	-	yes	reference-only

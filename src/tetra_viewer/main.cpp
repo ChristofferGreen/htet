@@ -843,7 +843,8 @@ int main(int argc, char** argv)
         return tetra_viewer::MeshUpdateParameters{
             sphere,camera,static_cast<double>(pixel_threshold),
             static_cast<unsigned int>(maximum_depth),adaptation_configuration,
-            sphere_revision,{.target_milliseconds=4.0}};
+            sphere_revision,{.target_milliseconds=
+                tetra_viewer::default_mesh_update_time_budget_milliseconds}};
     };
 
     // Main loop
