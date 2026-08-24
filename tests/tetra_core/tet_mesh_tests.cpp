@@ -3541,6 +3541,70 @@ TEST_CASE("background mesh updates publish only the latest converged snapshot") 
   CHECK(coarse.revision()==coarse_revision);
 }
 
+TEST_CASE("worker budgets stop only at complete transactions and preserve final hashes") {
+  const auto source=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.25};
+  camera.forward={0.0,0.0,-1.0};
+  tetra::AdaptationConfiguration configuration;
+  tetra_viewer::MeshUpdateParameters wide_parameters{
+      sphere,camera,4.0,9U,configuration,0U,
+      {.maximum_operations_per_transaction=4096U}};
+  auto narrow_parameters=wide_parameters;
+  narrow_parameters.budget.maximum_operations_per_transaction=64U;
+  CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(
+      wide_parameters,narrow_parameters));
+
+  tetra_viewer::MeshUpdateWorker worker;
+  static_cast<void>(worker.submit(source,wide_parameters));
+  auto wide=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(wide.has_value());
+  REQUIRE(wide->converged);
+  CHECK_FALSE(wide->time_budget_reached);
+  CHECK(wide->transaction_operation_budget==4096U);
+
+  static_cast<void>(worker.submit(source,narrow_parameters));
+  auto narrow=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(narrow.has_value());
+  REQUIRE(narrow->converged);
+  CHECK_FALSE(narrow->time_budget_reached);
+  CHECK(narrow->transaction_operation_budget==64U);
+  CHECK(narrow->adaptation.iterations>=wide->adaptation.iterations);
+  CHECK(narrow->mesh.logical_cut().owners==wide->mesh.logical_cut().owners);
+  CHECK(std::ranges::equal(narrow->mesh.conforming_volume().addresses(),
+                           wide->mesh.conforming_volume().addresses()));
+
+  auto timed_parameters=narrow_parameters;
+  timed_parameters.budget.target_milliseconds=1.0e-9;
+  static_cast<void>(worker.submit(source,timed_parameters));
+  auto timed=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(timed.has_value());
+  CHECK_FALSE(timed->converged);
+  CHECK(timed->time_budget_reached);
+  CHECK(timed->adaptation.iterations==1U);
+  CHECK(timed->admissible_operations>0U);
+  CHECK(timed->admissible_operations<=64U);
+  CHECK(timed->mesh.revision()!=source.revision());
+  CHECK(timed->mesh.has_positive_active_volumes());
+  CHECK(timed->mesh.has_conforming_active_faces());
+}
+
+TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent policies") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-cpu-worker-budgets",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"variant\":\"wide\"")!=std::string::npos);
+  CHECK(text.find("\"variant\":\"bounded\"")!=std::string::npos);
+  CHECK(text.find("\"variant\":\"timed-slice\"")!=std::string::npos);
+  CHECK(text.find("\"transaction_operation_budget\":64")!=std::string::npos);
+  CHECK(text.find("\"time_budget_reached\":true,\"converged\":false,\"valid\":true")
+        !=std::string::npos);
+}
+
 TEST_CASE("lightweight scene preparation preserves render geometry without research diagnostics") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::maubach_diamond);
   const tetra::Sphere sphere{};

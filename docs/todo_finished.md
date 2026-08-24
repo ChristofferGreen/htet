@@ -35,3 +35,8 @@
   conformity-expanded counters to every commit result. Planner conformity
   rejections and genuinely deferred work are now distinct, benchmark events
   expose all states, and release tests prove both accounting identities.
+- [x] Gate 1 worker budgets: added an explicit per-transaction admissible
+  command cap and an elapsed worker target checked only after complete
+  conformity commits. Wide and 64-command runs converge to identical hashes;
+  the timed slice returns a valid unconverged revision. Added a reproducible
+  headless benchmark and diagnostics for effective budgets and exhaustion.

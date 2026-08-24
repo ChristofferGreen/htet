@@ -1,6 +1,7 @@
 #include "tetra_viewer/viewer_script.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
+#include "tetra_viewer/mesh_update_worker.hpp"
 
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
@@ -973,6 +974,7 @@ void print_script_help(std::ostream& output) {
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark all standard CPU camera motion paths\n"
+            "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
             "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
@@ -1904,6 +1906,83 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         write_mesh_fields(output,benchmark);output<<"}\n";
         if(!valid){
           write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);
+          return 1;
+        }
+      }
+      continue;
+    }
+    if(command=="benchmark-cpu-worker-budgets"){
+      const auto source=tetra::TetMesh::make_unit_cube(
+          tetra::SubdivisionMethod::bcc_red_green);
+      const tetra::Sphere surface{};
+      tetra::Camera camera;
+      camera.position={0.5,0.5,1.25};
+      camera.forward={0.0,0.0,-1.0};
+      tetra::AdaptationConfiguration configuration;
+      struct Variant {
+        std::string_view name;
+        std::uint32_t operations;
+        double target_milliseconds;
+        bool expect_converged;
+      };
+      constexpr std::array variants{
+          Variant{"wide",4096U,0.0,true},
+          Variant{"bounded",64U,0.0,true},
+          Variant{"timed-slice",64U,1.0e-9,false}};
+      std::optional<std::uint64_t> final_logical_hash;
+      std::optional<std::uint64_t> final_conforming_hash;
+      MeshUpdateWorker worker;
+      for(const auto& variant:variants){
+        MeshUpdateParameters parameters{
+            surface,camera,4.0,9U,configuration,0U,
+            {.maximum_operations_per_transaction=variant.operations,
+             .target_milliseconds=variant.target_milliseconds}};
+        static_cast<void>(worker.submit(source,parameters));
+        auto result=worker.wait_for_completed(std::chrono::seconds(10));
+        if(!result){
+          write_error(errors,"CPU worker budget benchmark timed out",variant.name);
+          return 1;
+        }
+        const auto logical=result->mesh.logical_cut();
+        const auto conforming=result->mesh.conforming_volume();
+        const auto logical_hash=address_hash(logical.owners);
+        const auto conforming_hash=address_hash(conforming.addresses());
+        const bool valid=result->mesh.has_positive_active_volumes()&&
+            result->mesh.has_conforming_active_faces();
+        output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":\""
+              <<variant.name<<"\",\"transaction_operation_budget\":"
+              <<result->transaction_operation_budget
+              <<",\"worker_time_target_ms\":"<<std::setprecision(9)
+              <<variant.target_milliseconds
+              <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+              <<result->duration_milliseconds
+              <<",\"transactions\":"<<result->adaptation.iterations
+              <<",\"admissible_operations\":"<<result->admissible_operations
+              <<",\"time_budget_reached\":"
+              <<(result->time_budget_reached?"true":"false")
+              <<",\"converged\":"<<(result->converged?"true":"false")
+              <<",\"valid\":"<<(valid?"true":"false")
+              <<",\"logical_cut_hash\":"<<logical_hash
+              <<",\"conforming_volume_hash\":"<<conforming_hash<<"}\n";
+        if(!valid||result->converged!=variant.expect_converged||
+           (variant.expect_converged&&result->time_budget_reached)){
+          write_error(errors,"CPU worker budget benchmark violated its boundary",
+                      variant.name);
+          return 1;
+        }
+        if(variant.expect_converged){
+          if(!final_logical_hash){
+            final_logical_hash=logical_hash;
+            final_conforming_hash=conforming_hash;
+          }else if(*final_logical_hash!=logical_hash||
+                   *final_conforming_hash!=conforming_hash){
+            write_error(errors,"CPU worker operation budgets changed final hashes",
+                        variant.name);
+            return 1;
+          }
+        }else if(!result->time_budget_reached){
+          write_error(errors,"CPU worker elapsed target did not stop the slice",
+                      variant.name);
           return 1;
         }
       }

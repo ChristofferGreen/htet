@@ -33,7 +33,8 @@ bool same_mesh_update_parameters(const MeshUpdateParameters& first,
       first.pixel_threshold==second.pixel_threshold&&
       first.maximum_depth==second.maximum_depth&&
       first.configuration==second.configuration&&
-      first.field_revision==second.field_revision;
+      first.field_revision==second.field_revision&&
+      first.budget==second.budget;
 }
 
 MeshUpdateWorker::MeshUpdateWorker()
@@ -120,6 +121,14 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     planning_cache.last_request_forward=request->parameters.camera.forward;
     planning_cache.last_request_up=request->parameters.camera.up;
     tetra::AdaptiveResult adaptation;
+    auto transaction_configuration=request->parameters.configuration;
+    if(request->parameters.budget.maximum_operations_per_transaction>0U)
+      transaction_configuration.operation_budget=
+          request->parameters.budget.maximum_operations_per_transaction;
+    const std::size_t transaction_operation_budget=
+        transaction_configuration.operation_budget;
+    std::size_t admissible_operations{};
+    bool time_budget_reached=false;
     bool converged=false;
     constexpr std::size_t transaction_limit=4096U;
     if(request->operation==MeshUpdateOperation::refine_all_once){
@@ -135,8 +144,10 @@ void MeshUpdateWorker::run(std::stop_token stop) {
       const auto commit=tetra::adapt_to_surface(
           request->mesh,request->parameters.surface,request->parameters.camera,
           request->parameters.pixel_threshold,request->parameters.maximum_depth,
-          request->parameters.configuration,request->parameters.field_revision,
+          transaction_configuration,request->parameters.field_revision,
           &planning_cache);
+      admissible_operations+=commit.operations.admissible_splits+
+          commit.operations.admissible_merges;
       if(commit.status==tetra::AdaptationCommitStatus::no_change){
         converged=true;
         break;
@@ -147,6 +158,13 @@ void MeshUpdateWorker::run(std::stop_token stop) {
       }
       ++adaptation.iterations;
       adaptation.refined_leaves+=commit.accepted_splits;
+      if(request->parameters.budget.target_milliseconds>0.0&&
+         std::chrono::duration<double,std::milli>(
+             std::chrono::steady_clock::now()-start).count()>=
+             request->parameters.budget.target_milliseconds){
+        time_budget_reached=true;
+        break;
+      }
     }
     const double duration=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-start).count();
@@ -158,7 +176,8 @@ void MeshUpdateWorker::run(std::stop_token stop) {
         completed_.emplace(MeshUpdateResult{
             std::move(request->mesh),std::move(planning_cache),
             request->parameters,request->operation,adaptation,request->request_id,
-            request->source_mesh_revision,duration,converged});
+            request->source_mesh_revision,duration,admissible_operations,
+            transaction_operation_budget,time_budget_reached,converged});
       }
     }
     condition_.notify_all();

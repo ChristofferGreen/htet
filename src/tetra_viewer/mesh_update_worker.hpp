@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -14,6 +15,16 @@ namespace tetra_viewer {
 
 enum class MeshUpdateOperation { reconcile_lod, refine_all_once };
 
+struct MeshUpdateBudget {
+  // Zero inherits AdaptationConfiguration::operation_budget. A positive value
+  // fixes the maximum admissible logical commands in each transaction.
+  std::uint32_t maximum_operations_per_transaction{};
+  // Zero disables the elapsed target. Positive targets are checked only after
+  // a complete conforming transaction has committed.
+  double target_milliseconds{};
+  friend bool operator==(const MeshUpdateBudget&,const MeshUpdateBudget&)=default;
+};
+
 struct MeshUpdateParameters {
   tetra::Sphere surface{};
   tetra::Camera camera{};
@@ -21,6 +32,7 @@ struct MeshUpdateParameters {
   unsigned int maximum_depth{};
   tetra::AdaptationConfiguration configuration{};
   std::uint64_t field_revision{};
+  MeshUpdateBudget budget{};
 };
 
 [[nodiscard]] bool same_mesh_update_parameters(
@@ -44,6 +56,9 @@ struct MeshUpdateResult {
   std::uint64_t request_id{};
   std::uint64_t source_mesh_revision{};
   double duration_milliseconds{};
+  std::size_t admissible_operations{};
+  std::size_t transaction_operation_budget{};
+  bool time_budget_reached{};
   bool converged{};
 };
 

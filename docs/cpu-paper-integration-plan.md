@@ -293,7 +293,7 @@ complete-revision latency while preserving the same final hashes.
 
 - [x] Extend commit metrics with requested, admissible, committed, rejected,
   stale, and conformity-expanded edits for both splitting and merging.
-- [ ] Add a deterministic transaction-operation budget and a worker-time target
+- [x] Add a deterministic transaction-operation budget and a worker-time target
   without changing final hashes.
 - [ ] Allow the worker to return a complete intermediate revision with
   `converged=false` and enough continuation state to resume the same request.
@@ -348,6 +348,34 @@ closure work that was previously hidden inside the final cut delta.
 | teleport | 7705 | 2449 | 2449 | 5256 | 5256 | 0 |
 | reversal | 36 | 0 | 0 | 36 | 36 | 0 |
 | repeated pose | 0 | 0 | 0 | 0 | 0 | 0 |
+
+#### Transaction and elapsed worker budgets
+
+`MeshUpdateBudget` now controls the maximum admissible logical commands in each
+adaptation transaction and an optional elapsed worker target. A zero operation
+cap inherits `AdaptationConfiguration::operation_budget`; a zero time target is
+unlimited, preserving the previous interactive defaults. Positive time targets
+are checked only after an atomic conformity transaction has committed, so they
+are soft by at most one complete transaction and can never expose a partially
+closed mesh.
+
+The worker result reports the effective command cap, total admissible commands,
+whether the elapsed target fired, convergence, and complete mesh validity. A
+cap smaller than an indivisible conformity band is reported as a limit rather
+than silently exceeded. The headless command
+`tetra_viewer --script "benchmark-cpu-worker-budgets"` compares a wide policy,
+a 64-command policy, and a one-transaction elapsed slice. The following release
+run was recorded on 2026-08-24 on an Apple M3 Pro:
+
+| Policy | Command cap | Time target (ms) | Time (ms) | Transactions | Admissible operations | Converged | Logical hash | Conforming hash |
+|---|---:|---:|---:|---:|---:|---|---:|---:|
+| wide | 4096 | unlimited | 1.986 | 3 | 192 | yes | 16825792801125746743 | 1178652062429369095 |
+| bounded | 64 | unlimited | 2.614 | 4 | 164 | yes | 16825792801125746743 | 1178652062429369095 |
+| timed slice | 64 | 0.000000001 | 0.076 | 1 | 12 | no | 9996456822648810115 | 9996456822648810115 |
+
+The two converged policies have identical final hashes. The timed slice is
+unconverged but positive-volume and face-conforming, establishing the complete
+revision boundary needed by the next continuation-state gate.
 
 ### Gate 2 - Independent persistent candidate discovery
 
