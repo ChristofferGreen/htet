@@ -3731,7 +3731,7 @@ TEST_CASE("material rules are registered and select distinct full-tetrahedron vo
 }
 
 TEST_CASE("surface methods include a complete experimental tetrahedral layer") {
-  CHECK(tetra_viewer::surface_methods.size() == 7);
+  CHECK(tetra_viewer::surface_methods.size() == 6);
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::full_tetrahedra) == "full-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::marching_tetrahedra) == "marching-tetrahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::lattice_cleaving) == "lattice-cleaving");
@@ -3739,6 +3739,13 @@ TEST_CASE("surface methods include a complete experimental tetrahedral layer") {
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::dual_contouring) == "dual-contouring");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::four_hexahedra) == "four-hexahedra");
   CHECK(tetra_viewer::surface_method_key(tetra_viewer::SurfaceMethod::surface_optimization) == "surface-optimization");
+  CHECK(std::ranges::find(tetra_viewer::surface_methods,
+        tetra_viewer::SurfaceMethod::four_hexahedra)==
+        tetra_viewer::surface_methods.end());
+  CHECK(tetra_viewer::headless_surface_methods.size()==7U);
+  CHECK(std::ranges::find(tetra_viewer::headless_surface_methods,
+        tetra_viewer::SurfaceMethod::four_hexahedra)!=
+        tetra_viewer::headless_surface_methods.end());
 
   auto mesh = tetra::TetMesh::make_unit_cube();
   const tetra::Sphere sphere{};
@@ -3776,8 +3783,6 @@ TEST_CASE("surface patch dependency contracts cover every registered method") {
                global,false},
       Expected{SurfaceMethod::dual_contouring,
                SurfacePatchNeighbourhood::incident_edge_star,1U,true},
-      Expected{SurfaceMethod::four_hexahedra,SurfacePatchNeighbourhood::owner,
-               0U,true},
       Expected{SurfaceMethod::surface_optimization,SurfacePatchNeighbourhood::global,
                global,false},
   };
@@ -3793,6 +3798,11 @@ TEST_CASE("surface patch dependency contracts cover every registered method") {
     CHECK(tetra_viewer::surface_patch_neighbourhood_key(
               dependency.neighbourhood)!="unknown");
   }
+  const auto research=tetra_viewer::surface_patch_dependency(
+      SurfaceMethod::four_hexahedra);
+  CHECK(research.neighbourhood==SurfacePatchNeighbourhood::owner);
+  CHECK(research.halo_steps==0U);
+  CHECK(research.patchable());
 }
 
 TEST_CASE("four-hexahedra extractor is closed and outward across BCC transition strategies") {
@@ -3908,7 +3918,7 @@ TEST_CASE("four-hexahedra owner patches retain field samples and invalidate loca
         metrics.field_sample_records*tetra::four_hexahedra_field_samples_per_cell);
 }
 
-TEST_CASE("headless four-hexahedra selection reports cached surface output") {
+TEST_CASE("four-hexahedra remains headless after leaving the viewer selector") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
       "set-maximum-depth=6,set-volume-connection=hierarchy-cells,"
@@ -6206,6 +6216,7 @@ TEST_CASE("four-hexahedra quality benchmark covers a deterministic matrix") {
   }
   CHECK(shapes.size()==5U);
   CHECK(methods.size()==5U);
+  CHECK(methods.contains("\"four-hexahedra\""));
 
   std::ostringstream deep_output,deep_errors;
   REQUIRE(tetra_viewer::run_script(

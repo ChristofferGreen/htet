@@ -1177,7 +1177,7 @@ refined BCC cuts using both supported green-transition strategies.
   revision.
 - [x] Measure Hausdorff distance, normal-angle error, triangle aspect ratio,
   triangle count, field samples, patch time, and end-to-end update time.
-- [ ] Visually compare terrain, sphere, merging spheres, cube, and cylinder with
+- [x] Visually compare terrain, sphere, merging spheres, cube, and cylinder with
   flat shading and triangle edges.
 
 Exit condition: retain the method only if it gives a meaningful quality benefit
@@ -1185,14 +1185,15 @@ at a measured and acceptable CPU/update cost.
 
 #### Extractor and retained-cache contract
 
-`Four-hexahedra surface (Scholz-inspired)` is a separate surface selector entry
-with key `four-hexahedra`; it does not replace marching tetrahedra, dual
-contouring, or surface optimization. Each current `conforming_volume()` cell
-uses the exact four-hexahedra construction above. For an ambiguity-free CPU
-polygonizer, each hexahedron is partitioned into 24 tetrahedra by connecting
-its centre to the four-triangle fan around each face centre. Adjacent
-hexahedra therefore use the same face centre, corners, four boundary triangles,
-and contour segments regardless of local orientation.
+`Four-hexahedra surface (Scholz-inspired)` remains available to headless
+research scripts with key `four-hexahedra`, but the Gate 5 decision below
+removes it from the interactive surface selector. It does not replace marching
+tetrahedra, dual contouring, or surface optimization. Each current
+`conforming_volume()` cell uses the exact four-hexahedra construction above.
+For an ambiguity-free CPU polygonizer, each hexahedron is partitioned into 24
+tetrahedra by connecting its centre to the four-triangle fan around each face
+centre. Adjacent hexahedra therefore use the same face centre, corners, four
+boundary triangles, and contour segments regardless of local orientation.
 
 The extractor evaluates 60 fixed barycentric locations per conforming cell:
 the eight corners, six face centres, and centre of each of its four hexahedra.
@@ -1253,6 +1254,39 @@ aspect ratio above 70,000. Cube and capped-cylinder reverse-distance values
 are dominated by the deliberately coarse, grid-aligned reference sampling;
 the raw directed metrics remain available in the command output. No method is
 retained or rejected from these numbers alone.
+
+#### Visual audit and Gate 5 decision
+
+The release headless renderer was run at depth 10 from camera
+`(1.7,1.4,2.0)`, looking along `(-1.2,-0.9,-1.5)`, with X cutaway and hierarchy
+edges disabled, studio-flat shading enabled, and triangle edges enabled. Each
+required shape was compared across marching tetrahedra, lattice cleaving, dual
+contouring, four-hexahedra, and surface optimization. Full-resolution images
+and five-method contact sheets were inspected rather than relying on hashes.
+The reproducible command template is:
+
+```text
+tetra_viewer_bin --script "set-maximum-depth=10,set-shape=<shape>,set-volume-connection=hierarchy-cells,set-surface-method=<method>,set-camera=1.7:1.4:2.0,set-camera-direction=-1.2:-0.9:-1.5,set-x-cut=off,set-shading-model=studio-flat,set-solid-faces=on,set-surface-edges=on,set-hierarchy-edges=off,set-volume-edges=off,render-image=<path.ppm>"
+```
+
+| Shape | Four-hexahedra visual result |
+|---|---|
+| Terrain | Follows fine hills more closely, but dense irregular micro-triangles and extreme slivers obscure the larger surface structure. |
+| Sphere | Clearly smoother silhouette and lighting than direct extraction, but approximately 26,000 visible triangle edges collapse into dark screen-space noise. |
+| Merging spheres | Smoothest neck and lobe silhouettes, with the same unreadable edge density and concentrated star patterns. |
+| Cube | No meaningful shape improvement over the exact planar baseline; roughly 46,000 triangles make the faces visually noisy. |
+| Capped cylinder | Smoother curved wall, but planar caps do not benefit and dense/sliver edges obscure the useful curvature signal. |
+
+No cracks, missing faces, transparency, or inconsistent edge coverage were
+seen in the fixed views. The problem is the method's intrinsic output density
+and quality distribution, not a renderer failure. Its useful curved-surface
+gain is therefore real, but it is not acceptable as a production viewer path:
+it requires 15 times the field samples, about 10--25 times the triangles, up to
+115 ms per field update, and produces an unreadable diagnostic wireframe. Gate
+5 rejects it from the interactive dropdown. The exact construction, flat
+cache, extractor tests, headless selection, quality benchmark, and TSV matrix
+remain as research evidence and as building blocks for a future adaptive or
+hybrid variant. Gate 5 is closed.
 
 ### Gate 6 - Mixed-depth dual-ownership experiment
 

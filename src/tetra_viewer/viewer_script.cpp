@@ -1419,10 +1419,10 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
     constexpr std::string_view surface_method_prefix = "set-surface-method=";
     if (command.starts_with(surface_method_prefix)) {
       const auto key = command.substr(surface_method_prefix.size());
-      const auto method = std::ranges::find_if(surface_methods, [key](SurfaceMethod candidate) {
+      const auto method = std::ranges::find_if(headless_surface_methods, [key](SurfaceMethod candidate) {
         return surface_method_key(candidate) == key;
       });
-      if (method == surface_methods.end()) {
+      if (method == headless_surface_methods.end()) {
         write_error(errors, "unknown surface method", command);
         return 2;
       }

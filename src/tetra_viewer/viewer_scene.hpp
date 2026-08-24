@@ -238,7 +238,19 @@ enum class SurfaceMethod { full_tetrahedra, marching_tetrahedra, lattice_cleavin
                            tetrahedral_layer, dual_contouring, four_hexahedra,
                            surface_optimization };
 
+// User-selectable production and diagnostic methods. Research-only methods
+// may remain in SurfaceMethod so headless experiments can preserve evidence
+// without exposing a failed production candidate in the viewer.
 inline constexpr std::array surface_methods{
+    SurfaceMethod::full_tetrahedra,
+    SurfaceMethod::marching_tetrahedra,
+    SurfaceMethod::lattice_cleaving,
+    SurfaceMethod::tetrahedral_layer,
+    SurfaceMethod::dual_contouring,
+    SurfaceMethod::surface_optimization,
+};
+
+inline constexpr std::array headless_surface_methods{
     SurfaceMethod::full_tetrahedra,
     SurfaceMethod::marching_tetrahedra,
     SurfaceMethod::lattice_cleaving,

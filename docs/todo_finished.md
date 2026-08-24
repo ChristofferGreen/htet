@@ -215,3 +215,12 @@
   as TSV without making the visual retain/reject decision; release regressions
   also enforce all 25 rows, deterministic non-timing fields, parameter
   diagnostics, finite metrics, and sorted deep BCC owner-cell ranges.
+- [x] CPU-G5-4 four-hexahedra visual audit and retain-or-reject decision:
+  inspected release depth-10 studio-flat renders with triangle edges for all
+  five benchmark shapes and all five compared surface methods. Four-hexahedra
+  improved curved silhouettes but produced unreadable edge density, extreme
+  terrain slivers, 10--25 times the triangles, 15 times the field samples, and
+  updates as high as 115 ms. Removed it from the interactive dropdown while
+  preserving the headless research path, extractor, cache, tests, benchmark,
+  matrix, and construction evidence. No cracks, missing faces, transparency,
+  or inconsistent edge coverage appeared in the fixed views.
