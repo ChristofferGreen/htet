@@ -6,7 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] Gate 1: return complete unconverged worker revisions with resumable continuation state.
 - [ ] Gate 1: publish intermediate revisions and resume without rebuilding planning state.
 - [ ] Gate 1: cancel superseded continuations and prove the latest request wins.
 - [ ] Gate 1: add a configurable low-yield cutoff that never skips conformity closure.

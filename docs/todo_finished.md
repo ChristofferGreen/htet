@@ -40,3 +40,8 @@
   conformity commits. Wide and 64-command runs converge to identical hashes;
   the timed slice returns a valid unconverged revision. Added a reproducible
   headless benchmark and diagnostics for effective budgets and exhaustion.
+- [x] Gate 1 resumable worker revisions: retained the private mesh and packed
+  planning cache across complete timed slices, added stable chain and slice
+  identities plus cumulative metrics, and rejected reused, superseded, and
+  converged continuations. Five timed release slices converge to the unsliced
+  logical and conforming hashes while every intermediate mesh remains valid.

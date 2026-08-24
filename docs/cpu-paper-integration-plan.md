@@ -295,7 +295,7 @@ complete-revision latency while preserving the same final hashes.
   stale, and conformity-expanded edits for both splitting and merging.
 - [x] Add a deterministic transaction-operation budget and a worker-time target
   without changing final hashes.
-- [ ] Allow the worker to return a complete intermediate revision with
+- [x] Allow the worker to return a complete intermediate revision with
   `converged=false` and enough continuation state to resume the same request.
 - [ ] Make the viewer publish that revision and continue the request without
   rebuilding planning state from the roots.
@@ -375,7 +375,35 @@ run was recorded on 2026-08-24 on an Apple M3 Pro:
 
 The two converged policies have identical final hashes. The timed slice is
 unconverged but positive-volume and face-conforming, establishing the complete
-revision boundary needed by the next continuation-state gate.
+revision boundary needed by continuation state.
+
+#### Resumable complete revisions
+
+Every worker result now identifies a stable adaptation chain and a monotonically
+increasing slice, while retaining the private mesh and packed
+`AdaptationPlanningCache`. Resuming moves both directly into the next worker
+request; it does not seed a new merge phase or rebuild planning state from the
+root. Per-slice metrics remain available and cumulative duration, transaction,
+refined-leaf, limit, and admissible-operation totals describe the full chain.
+The original source revision and each slice's immediate source revision make
+the handoff boundary auditable.
+
+Only the latest unconverged result can be resumed. Reusing a consumed slice or
+submitting one superseded by a newer request is rejected, as is attempting to
+resume an already converged result. These checks happen before worker state is
+changed.
+
+The `resumed-slices` headless benchmark repeatedly applies the one-transaction
+time target until convergence. The following release run was recorded on
+2026-08-24 on an Apple M3 Pro:
+
+| Policy | Slices | Transactions | Admissible operations | Cumulative time (ms) | Converged | Logical hash | Conforming hash |
+|---|---:|---:|---:|---:|---|---:|---:|
+| resumed slices | 5 | 4 | 164 | 2.223 | yes | 16825792801125746743 | 1178652062429369095 |
+
+Every intermediate slice passed positive-volume and face-conformity checks.
+The final hashes equal both unsliced policies, and hierarchy-bound tests prove
+that populated packed cache layers retain their allocations across slices.
 
 ### Gate 2 - Independent persistent candidate discovery
 

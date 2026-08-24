@@ -1986,6 +1986,59 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           return 1;
         }
       }
+      MeshUpdateParameters resumed_parameters{
+          surface,camera,4.0,9U,configuration,0U,
+          {.maximum_operations_per_transaction=64U,
+           .target_milliseconds=1.0e-9}};
+      static_cast<void>(worker.submit(source,resumed_parameters));
+      auto resumed=worker.wait_for_completed(std::chrono::seconds(10));
+      std::size_t slice_count{};
+      while(resumed&&!resumed->converged&&slice_count<64U){
+        ++slice_count;
+        const auto submission=worker.submit_continuation(std::move(*resumed));
+        if(!submission){
+          write_error(errors,"CPU worker rejected a current continuation",
+                      "resumed-slices");
+          return 1;
+        }
+        resumed=worker.wait_for_completed(std::chrono::seconds(10));
+      }
+      if(!resumed||!resumed->converged){
+        write_error(errors,"CPU worker continuation did not converge",
+                    "resumed-slices");
+        return 1;
+      }
+      ++slice_count;
+      const auto resumed_logical_hash=address_hash(
+          resumed->mesh.logical_cut().owners);
+      const auto resumed_conforming_hash=address_hash(
+          resumed->mesh.conforming_volume().addresses());
+      const bool resumed_valid=resumed->mesh.has_positive_active_volumes()&&
+          resumed->mesh.has_conforming_active_faces();
+      const bool resumed_matches=final_logical_hash&&final_conforming_hash&&
+          resumed_logical_hash==*final_logical_hash&&
+          resumed_conforming_hash==*final_conforming_hash;
+      output<<"{\"event\":\"cpu_worker_budget_benchmark\",\"variant\":"
+            "\"resumed-slices\",\"transaction_operation_budget\":"
+            <<resumed->transaction_operation_budget
+            <<",\"worker_time_target_ms\":"<<std::setprecision(9)
+            <<resumed_parameters.budget.target_milliseconds
+            <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
+            <<resumed->cumulative_duration_milliseconds
+            <<",\"slices\":"<<slice_count
+            <<",\"transactions\":"
+            <<resumed->cumulative_adaptation.iterations
+            <<",\"admissible_operations\":"
+            <<resumed->cumulative_admissible_operations
+            <<",\"resumed_without_rebuild\":true,\"converged\":true,\"valid\":"
+            <<(resumed_valid?"true":"false")
+            <<",\"logical_cut_hash\":"<<resumed_logical_hash
+            <<",\"conforming_volume_hash\":"<<resumed_conforming_hash<<"}\n";
+      if(!resumed_valid||!resumed_matches){
+        write_error(errors,"CPU worker continuations changed final hashes",
+                    "resumed-slices");
+        return 1;
+      }
       continue;
     }
     constexpr std::string_view shape_hash_prefix="benchmark-cpu-shape-hashes=";

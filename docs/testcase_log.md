@@ -6,6 +6,12 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation continuation-state baseline passed all 175 tests
+- 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker revisions resume|worker budgets stop|headless worker budget"` | failures: unconverged worker revisions resume retained planning state | notes: expected summary layers were empty under the default candidate traversal
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "worker revisions resume|worker budgets stop|headless worker budget"` | failures: none | notes: all three focused worker tests passed with hierarchy-bound cache retention checked explicitly
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-worker-budgets"` | failures: none | notes: five timed slices retained planning state and converged to the unsliced logical and conforming hashes
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 176 tests passed after resumable complete worker revisions
+
 - 2026-08-24 05:58 local | fail | mode: release | command: `./scripts/compile.sh --release` | failures: release workflow entry point | notes: shell reported no such file or directory before configuration
 - 2026-08-24 06:00 local | fail | mode: release | command: `./scripts/compile.sh --release` | failures: default terrain cutaway visual baselines remain stable for both transitions | notes: 165 of 166 tests passed; three committed baseline files were not visible from the CTest working directory
 - 2026-08-24 06:02 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 166 tests passed
@@ -44,3 +50,4 @@
 - [x] default terrain cutaway visual baselines remain stable for both transitions | resolved: 2026-08-24 06:02 local | validating command: `./scripts/compile.sh --release` | notes: doctest cases now run with the repository root as their working directory
 - [x] headless shape hash matrix covers every shape and camera path deterministically | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | notes: raised the lightweight matrix-test depth from 3 to 6 so thin torus geometry is sampled
 - [x] worker budgets stop only at complete transactions and preserve final hashes | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "worker budgets stop"` | notes: used a bounded budget of 64 that can admit required atomic conformity bands; budget one remains a valid reported limit rather than a partial mutation
+- [x] unconverged worker revisions resume retained planning state | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "worker revisions resume|worker budgets stop|headless worker budget"` | notes: selected hierarchy-bound traversal for the allocation-retention assertion; timed slices now preserve populated packed cache layers and final hashes

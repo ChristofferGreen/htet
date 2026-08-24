@@ -3591,6 +3591,112 @@ TEST_CASE("worker budgets stop only at complete transactions and preserve final 
   CHECK(timed->mesh.has_conforming_active_faces());
 }
 
+TEST_CASE("unconverged worker revisions resume retained planning state") {
+  const auto source=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.25};
+  camera.forward={0.0,0.0,-1.0};
+  tetra::AdaptationConfiguration configuration;
+  configuration.candidate_traversal=
+      tetra::CandidateTraversal::hierarchy_bounds;
+  tetra_viewer::MeshUpdateParameters wide_parameters{
+      sphere,camera,4.0,9U,configuration,0U,
+      {.maximum_operations_per_transaction=4096U}};
+  auto sliced_parameters=wide_parameters;
+  sliced_parameters.budget.maximum_operations_per_transaction=64U;
+  sliced_parameters.budget.target_milliseconds=1.0e-9;
+
+  tetra_viewer::MeshUpdateWorker worker;
+  static_cast<void>(worker.submit(source,wide_parameters));
+  auto wide=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(wide.has_value());
+  REQUIRE(wide->converged);
+
+  const auto first_request=worker.submit(source,sliced_parameters);
+  auto slice=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(slice.has_value());
+  REQUIRE_FALSE(slice->converged);
+  CHECK(slice->request_id==first_request);
+  CHECK(slice->chain_id==first_request);
+  CHECK(slice->slice_index==0U);
+  CHECK(slice->source_mesh_revision==source.revision());
+  CHECK(slice->slice_source_mesh_revision==source.revision());
+  REQUIRE_FALSE(slice->planning_cache.layers.empty());
+
+  const auto retained_capacity=[](const tetra::AdaptationPlanningCache& cache){
+    std::size_t capacity=cache.layers.capacity()+
+        cache.transaction_layers.capacity()+cache.spatial_runs.capacity()+
+        cache.split_queue.capacity()+cache.merge_queue.capacity();
+    for(const auto& layer:cache.layers)
+      capacity+=layer.addresses.capacity()+layer.spatial_minimum.capacity()+
+          layer.spatial_maximum.capacity()+layer.field_minimum.capacity()+
+          layer.field_maximum.capacity()+
+          layer.deepest_resident_depth.capacity()+
+          layer.deepest_active_depth.capacity()+
+          layer.pinned_descendant_words.capacity();
+    for(const auto& layer:cache.transaction_layers)
+      capacity+=layer.addresses.capacity()+
+          layer.current_status_words.capacity()+
+          layer.desired_mark_words.capacity()+layer.command_words.capacity();
+    return capacity;
+  };
+
+  auto reused_first=*slice;
+  const auto chain_id=slice->chain_id;
+  auto previous_request=slice->request_id;
+  auto previous_revision=slice->mesh.revision();
+  auto previous_capacity=retained_capacity(slice->planning_cache);
+  std::size_t summed_transactions=slice->adaptation.iterations;
+  std::size_t summed_admissible=slice->admissible_operations;
+  double summed_duration=slice->duration_milliseconds;
+  std::size_t completed_slices=1U;
+  while(!slice->converged&&completed_slices<64U){
+    const auto submission=worker.submit_continuation(std::move(*slice));
+    REQUIRE(submission.status==
+            tetra_viewer::MeshContinuationStatus::accepted);
+    CHECK(submission.request_id>previous_request);
+    if(completed_slices==1U){
+      const auto reused=worker.submit_continuation(std::move(reused_first));
+      CHECK(reused.status==tetra_viewer::MeshContinuationStatus::superseded);
+      CHECK(reused.request_id==0U);
+    }
+    slice=worker.wait_for_completed(std::chrono::seconds(10));
+    REQUIRE(slice.has_value());
+    ++completed_slices;
+    CHECK(slice->chain_id==chain_id);
+    CHECK(slice->slice_index==completed_slices-1U);
+    CHECK(slice->request_id==submission.request_id);
+    CHECK(slice->slice_source_mesh_revision==previous_revision);
+    CHECK(slice->source_mesh_revision==source.revision());
+    CHECK(slice->mesh.has_positive_active_volumes());
+    CHECK(slice->mesh.has_conforming_active_faces());
+    CHECK(slice->planning_cache.field_revision==0U);
+    CHECK(retained_capacity(slice->planning_cache)>=previous_capacity);
+    summed_transactions+=slice->adaptation.iterations;
+    summed_admissible+=slice->admissible_operations;
+    summed_duration+=slice->duration_milliseconds;
+    CHECK(slice->cumulative_adaptation.iterations==summed_transactions);
+    CHECK(slice->cumulative_admissible_operations==summed_admissible);
+    CHECK(slice->cumulative_duration_milliseconds==
+          doctest::Approx(summed_duration));
+    previous_request=slice->request_id;
+    previous_revision=slice->mesh.revision();
+    previous_capacity=retained_capacity(slice->planning_cache);
+  }
+  REQUIRE(slice->converged);
+  CHECK(completed_slices>1U);
+  CHECK(slice->mesh.logical_cut().owners==wide->mesh.logical_cut().owners);
+  CHECK(std::ranges::equal(slice->mesh.conforming_volume().addresses(),
+                           wide->mesh.conforming_volume().addresses()));
+
+  const auto finished=worker.submit_continuation(std::move(*slice));
+  CHECK(finished.status==
+        tetra_viewer::MeshContinuationStatus::already_converged);
+  CHECK(finished.request_id==0U);
+}
+
 TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent policies") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -3600,9 +3706,11 @@ TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent poli
   CHECK(text.find("\"variant\":\"wide\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"bounded\"")!=std::string::npos);
   CHECK(text.find("\"variant\":\"timed-slice\"")!=std::string::npos);
+  CHECK(text.find("\"variant\":\"resumed-slices\"")!=std::string::npos);
   CHECK(text.find("\"transaction_operation_budget\":64")!=std::string::npos);
   CHECK(text.find("\"time_budget_reached\":true,\"converged\":false,\"valid\":true")
         !=std::string::npos);
+  CHECK(text.find("\"resumed_without_rebuild\":true")!=std::string::npos);
 }
 
 TEST_CASE("lightweight scene preparation preserves render geometry without research diagnostics") {

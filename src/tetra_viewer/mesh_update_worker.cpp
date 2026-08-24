@@ -52,10 +52,41 @@ std::uint64_t MeshUpdateWorker::submit(
   const std::uint64_t request_id=++latest_request_id_;
   const std::uint64_t source_revision=mesh.revision();
   pending_.emplace(MeshUpdateRequest{
-      std::move(mesh),std::move(parameters),operation,request_id,source_revision});
+      .mesh=std::move(mesh),.parameters=std::move(parameters),
+      .operation=operation,.request_id=request_id,.chain_id=request_id,
+      .source_mesh_revision=source_revision,
+      .slice_source_mesh_revision=source_revision});
   completed_.reset();
   condition_.notify_all();
   return request_id;
+}
+
+MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
+    MeshUpdateResult&& result) {
+  std::lock_guard lock(mutex_);
+  if(latest_request_id_!=result.request_id)
+    return {MeshContinuationStatus::superseded,0U};
+  if(result.converged)
+    return {MeshContinuationStatus::already_converged,0U};
+  const std::uint64_t request_id=++latest_request_id_;
+  const std::uint64_t slice_source_revision=result.mesh.revision();
+  pending_.emplace(MeshUpdateRequest{
+      .mesh=std::move(result.mesh),
+      .planning_cache=std::move(result.planning_cache),
+      .parameters=std::move(result.parameters),.operation=result.operation,
+      .request_id=request_id,.chain_id=result.chain_id,
+      .slice_index=result.slice_index+1U,
+      .source_mesh_revision=result.source_mesh_revision,
+      .slice_source_mesh_revision=slice_source_revision,
+      .cumulative_adaptation=result.cumulative_adaptation,
+      .cumulative_duration_milliseconds=
+          result.cumulative_duration_milliseconds,
+      .cumulative_admissible_operations=
+          result.cumulative_admissible_operations,
+      .continuation=true});
+  completed_.reset();
+  condition_.notify_all();
+  return {MeshContinuationStatus::accepted,request_id};
 }
 
 std::optional<MeshUpdateResult> MeshUpdateWorker::take_completed() {
@@ -107,19 +138,21 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     }
 
     const auto start=std::chrono::steady_clock::now();
-    tetra::AdaptationPlanningCache planning_cache;
+    auto planning_cache=std::move(request->planning_cache);
     // A worker request starts from a published mesh produced for an earlier
     // UI state. Open a complete merge phase even though this fresh private
     // cache did not observe that earlier pose itself. Without this seed, a
     // request that first splits can become stationary before obsolete detail
     // from the source pose is removed.
-    planning_cache.has_last_request_origin=true;
-    planning_cache.last_request_origin={
-        request->parameters.camera.position.x+1.0,
-        request->parameters.camera.position.y,
-        request->parameters.camera.position.z};
-    planning_cache.last_request_forward=request->parameters.camera.forward;
-    planning_cache.last_request_up=request->parameters.camera.up;
+    if(!request->continuation){
+      planning_cache.has_last_request_origin=true;
+      planning_cache.last_request_origin={
+          request->parameters.camera.position.x+1.0,
+          request->parameters.camera.position.y,
+          request->parameters.camera.position.z};
+      planning_cache.last_request_forward=request->parameters.camera.forward;
+      planning_cache.last_request_up=request->parameters.camera.up;
+    }
     tetra::AdaptiveResult adaptation;
     auto transaction_configuration=request->parameters.configuration;
     if(request->parameters.budget.maximum_operations_per_transaction>0U)
@@ -168,16 +201,36 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     }
     const double duration=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-start).count();
+    auto cumulative_adaptation=request->cumulative_adaptation;
+    cumulative_adaptation.iterations+=adaptation.iterations;
+    cumulative_adaptation.refined_leaves+=adaptation.refined_leaves;
+    cumulative_adaptation.reached_depth_limit=
+        cumulative_adaptation.reached_depth_limit||adaptation.reached_depth_limit;
+    const double cumulative_duration=
+        request->cumulative_duration_milliseconds+duration;
+    const std::size_t cumulative_admissible=
+        request->cumulative_admissible_operations+admissible_operations;
 
     {
       std::lock_guard lock(mutex_);
       running_=false;
       if(latest_request_id_==request->request_id){
         completed_.emplace(MeshUpdateResult{
-            std::move(request->mesh),std::move(planning_cache),
-            request->parameters,request->operation,adaptation,request->request_id,
-            request->source_mesh_revision,duration,admissible_operations,
-            transaction_operation_budget,time_budget_reached,converged});
+            .mesh=std::move(request->mesh),
+            .planning_cache=std::move(planning_cache),
+            .parameters=request->parameters,.operation=request->operation,
+            .adaptation=adaptation,
+            .cumulative_adaptation=cumulative_adaptation,
+            .request_id=request->request_id,.chain_id=request->chain_id,
+            .slice_index=request->slice_index,
+            .source_mesh_revision=request->source_mesh_revision,
+            .slice_source_mesh_revision=request->slice_source_mesh_revision,
+            .duration_milliseconds=duration,
+            .cumulative_duration_milliseconds=cumulative_duration,
+            .admissible_operations=admissible_operations,
+            .cumulative_admissible_operations=cumulative_admissible,
+            .transaction_operation_budget=transaction_operation_budget,
+            .time_budget_reached=time_budget_reached,.converged=converged});
       }
     }
     condition_.notify_all();

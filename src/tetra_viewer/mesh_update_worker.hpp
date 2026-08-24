@@ -41,10 +41,18 @@ struct MeshUpdateParameters {
 
 struct MeshUpdateRequest {
   tetra::TetMesh mesh;
+  tetra::AdaptationPlanningCache planning_cache;
   MeshUpdateParameters parameters;
   MeshUpdateOperation operation{MeshUpdateOperation::reconcile_lod};
   std::uint64_t request_id{};
+  std::uint64_t chain_id{};
+  std::size_t slice_index{};
   std::uint64_t source_mesh_revision{};
+  std::uint64_t slice_source_mesh_revision{};
+  tetra::AdaptiveResult cumulative_adaptation;
+  double cumulative_duration_milliseconds{};
+  std::size_t cumulative_admissible_operations{};
+  bool continuation{};
 };
 
 struct MeshUpdateResult {
@@ -53,13 +61,33 @@ struct MeshUpdateResult {
   MeshUpdateParameters parameters;
   MeshUpdateOperation operation{MeshUpdateOperation::reconcile_lod};
   tetra::AdaptiveResult adaptation;
+  tetra::AdaptiveResult cumulative_adaptation;
   std::uint64_t request_id{};
+  std::uint64_t chain_id{};
+  std::size_t slice_index{};
   std::uint64_t source_mesh_revision{};
+  std::uint64_t slice_source_mesh_revision{};
   double duration_milliseconds{};
+  double cumulative_duration_milliseconds{};
   std::size_t admissible_operations{};
+  std::size_t cumulative_admissible_operations{};
   std::size_t transaction_operation_budget{};
   bool time_budget_reached{};
   bool converged{};
+};
+
+enum class MeshContinuationStatus {
+  accepted,
+  superseded,
+  already_converged
+};
+
+struct MeshContinuationSubmission {
+  MeshContinuationStatus status{MeshContinuationStatus::superseded};
+  std::uint64_t request_id{};
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return status==MeshContinuationStatus::accepted;
+  }
 };
 
 // Owns all mutation of its private mesh snapshot. The render thread keeps
@@ -74,6 +102,11 @@ class MeshUpdateWorker {
   [[nodiscard]] std::uint64_t submit(
       tetra::TetMesh mesh,MeshUpdateParameters parameters,
       MeshUpdateOperation operation=MeshUpdateOperation::reconcile_lod);
+  // Consumes a complete unconverged result and resumes its private mesh and
+  // packed planning state. Only the latest slice in the active chain can be
+  // resumed; reused and superseded results are rejected without mutation.
+  [[nodiscard]] MeshContinuationSubmission submit_continuation(
+      MeshUpdateResult&& result);
   [[nodiscard]] std::optional<MeshUpdateResult> take_completed();
   [[nodiscard]] std::optional<MeshUpdateResult> wait_for_completed(
       std::chrono::milliseconds timeout);
