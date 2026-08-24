@@ -748,10 +748,10 @@ research comparison; classify-and-stream remains the fastest correct default.
 - [x] Reuse unchanged patches across split, merge, and stationary requests.
 - [x] Invalidate changed owners plus the exact required face/transition
   neighbourhood.
-- [ ] Generate triangle edges from the same patch topology as the filled
+- [x] Generate triangle edges from the same patch topology as the filled
   triangles so every visible surface triangle retains all three depth-tested
   edges.
-- [ ] Compare patched output against monolithic scene preparation for exact
+- [x] Compare patched output against monolithic scene preparation for exact
   triangle, orientation, edge-incidence, and material-boundary hashes.
 - [x] Keep a measured global fallback for non-local surface methods.
 
@@ -792,9 +792,11 @@ the stable logical red owner. Sorted `SurfacePatchRecord` entries refer into
 one flat triangle arena; a coalesced flat free-range table recycles retired
 ranges. Split and merge commits invalidate the authoritative dirty-owner set,
 while unchanged owners retain the same arena offset, capacity, and bytes. A
-field-revision discontinuity or non-consecutive mesh revision conservatively
-rebuilds the complete owner set. No owner, triangle, or free range has an
-individual allocation.
+field-revision discontinuity rebuilds the complete owner set. Arbitrary mesh
+revision gaps instead compare exact retained topology hashes per logical owner,
+so several adaptation transactions may complete before scene publication
+without losing locality. No owner, triangle, or free range has an individual
+allocation or requires a retained dirty-history log.
 
 The cache assembles its output in logical-owner order and matches monolithic
 marching/lattice triangle and canonical edge hashes through split and inverse
@@ -808,7 +810,7 @@ On the 13,284-owner default terrain, the first marching build generated 6,784
 triangles in 1.896 ms and retained 2.86 MB. Switching to lattice cleaving
 rebuilt zero patches, reused all 13,284 records and 6,784 triangles, and spent
 0.666 ms in patch assembly. These are direct release/headless measurements;
-the complete camera-path comparison remains the CPU-G3-4 exit benchmark.
+the complete camera-path comparison is recorded below.
 
 #### Dual-contour incident-edge-star cache
 
@@ -830,16 +832,62 @@ for selected dirty patch stars. Split, inverse merge, field revision, and bulk
 multi-owner tests match monolithic topology, orientation, triangle hashes, and
 canonical edge hashes.
 
+The expanded dirty set retains every current owner whose topology changed as
+well as its old and new edge-star dependents. This updates empty patch records
+and their topology hashes too; otherwise an owner with no currently crossed
+edge could remain permanently stale while actual rebuilt work exceeded the
+reported dirty set.
+
 On the 13,284-owner default terrain, the initial release build generated
 17,276 triangles in 6.084 ms and retained 7.35 MB. Returning to dual contouring
 after a global-method fallback rebuilt zero patches, reused all 13,284 records
 and 17,276 triangles, and spent 2.339 ms rebuilding the flat dependency index
 and assembling retained output. A production camera transaction that grew the
 cut to 46,128 owners rebuilt 37,704 records, reused 8,424, and generated the
-correct 49,188-triangle output in 24.203 ms. The full path comparison remains
-part of CPU-G3-4. A deterministic release render was also inspected with and
+correct 49,188-triangle output in 24.203 ms. The full path comparison is
+recorded below. A deterministic release render was also inspected with and
 without surface edges: the retained result is a closed, opaque, consistently
 oriented faceted sphere with no patch seams or missing regions.
+
+#### Patch-derived edge contract and Gate 3 benchmark
+
+`surface_geometry_hashes` now verifies five independent representations:
+canonical oriented triangles, unique topology edges, all edge incidences with
+multiplicity, geometry-bound material/classification records, and the unique
+line segments actually submitted to the depth-tested wire overlay. Retained
+and monolithic scenes must match every hash and count. In addition, each
+submitted surface triangle must carry the three canonical barycentric corners
+and all three enabled edge bits, and its submitted wire-edge hash/count must
+equal its topology-edge hash/count. Filled geometry and visible edges therefore
+cannot silently diverge.
+
+The release/headless command
+`benchmark-cpu-surface-patches[=<maximum-depth>]` runs each canonical camera
+trace once while maintaining independent persistent caches for marching
+tetrahedra, lattice cleaving, dual contouring, and the global surface optimizer.
+Every complete changed mesh is compared with direct monolithic preparation;
+the command fails immediately on a hash, wire, locality, or fallback-contract
+mismatch. Depth 6 is covered by a focused test, including invalid-depth
+diagnostics. The production depth-16 run produced 32 valid path/method rows and
+the following aggregate over 42 complete revisions per method:
+
+| Method | Exact revisions | Dirty / rebuilt / reused patches | Retained peak | Retained update | Monolithic reference | Time reduction | Global fallbacks |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Marching tetrahedra | 42 / 42 | 911,244 / 717,362 / 2,154,332 | 30.58 MB | 1,316.416 ms | 2,178.792 ms | 39.6% | 0 |
+| Lattice cleaving | 42 / 42 | 911,244 / 717,362 / 2,154,332 | 30.58 MB | 2,921.051 ms | 3,768.506 ms | 22.5% | 0 |
+| Dual contouring | 42 / 42 | 729,463 / 719,035 / 2,152,659 | 44.53 MB | 2,033.140 ms | 2,867.291 ms | 29.1% | 0 |
+| Surface optimization | 42 / 42 | 0 / 0 / 0 | 0 MB | 3,963.134 ms | 3,996.679 ms | 0.8% | 42 |
+
+The eight full rebuilds for each local method are the independent initial cache
+builds, one per camera trace; all 34 later publications remained local across
+arbitrary revision gaps. Dirty totals may exceed rebuilt totals because removed
+owners are dirty but have no current patch to regenerate. Marching, lattice,
+and dual contouring were also rendered deterministically after a scripted local
+camera update, with the edge overlay both enabled and disabled. Visual
+inspection confirmed closed opaque surfaces, flat facets, no patch seams, and
+no missing filled triangles; apparent dark slivers in the edged images were
+steeply lit triangles plus one-pixel line sampling, not holes. Gate 3 therefore
+meets its exactness, locality, fallback, and visual exit conditions.
 
 ### Gate 4 - Independent fixed-capacity draw chunks
 

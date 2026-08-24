@@ -627,13 +627,20 @@ struct PreparedScene {
 struct SurfaceGeometryHashes {
   std::uint64_t triangle_hash{};
   std::uint64_t edge_hash{};
+  std::uint64_t edge_incidence_hash{};
+  std::uint64_t material_boundary_hash{};
+  std::uint64_t wire_edge_hash{};
   std::size_t triangle_count{};
   std::size_t edge_count{};
+  std::size_t edge_incidence_count{};
+  std::size_t wire_edge_count{};
+  bool operator==(const SurfaceGeometryHashes&) const = default;
 };
 
 // Canonical hashes of physical surface geometry. Triangle buffer order and
 // cyclic corner rotation do not matter, while winding, coordinates, duplicate
-// triangles, missing edges, and cracks remain observable.
+// triangles, missing edges, incidence multiplicity, classification changes,
+// incomplete submitted wire edges, and cracks remain observable.
 [[nodiscard]] SurfaceGeometryHashes surface_geometry_hashes(
     const PreparedScene& scene);
 
@@ -670,6 +677,7 @@ struct SurfacePatchRecord {
   tetra::TetId logical_owner{tetra::invalid_tet};
   std::uint64_t mesh_revision{};
   std::uint64_t field_revision{};
+  std::uint64_t topology_hash{};
   std::size_t triangle_begin{};
   std::size_t triangle_count{};
   std::size_t triangle_capacity{};
@@ -847,6 +855,7 @@ class SceneCache {
   std::vector<tetra::Triangle> surface_patch_triangle_scratch_;
   std::vector<SurfacePatchFreeRange> surface_patch_free_ranges_;
   std::vector<tetra::TetId> surface_patch_owner_scratch_;
+  std::vector<std::uint64_t> surface_patch_topology_hash_scratch_;
   std::vector<tetra::TetId> surface_patch_dirty_scratch_;
   std::vector<tetra::TetId> surface_patch_incident_dirty_scratch_;
   std::vector<tetra::TetId> surface_patch_cell_scratch_;

@@ -3447,9 +3447,13 @@ TEST_CASE("surface geometry hashes ignore draw order but preserve winding and ed
   const auto c=vertex(1.0F,1.0F,0.0F),d=vertex(0.0F,1.0F,0.0F);
   tetra_viewer::PreparedScene first;
   first.triangle_vertices={a,b,c,a,c,d};
+  first.surface_line_vertices={a,b,b,c,a,c,c,d,a,d};
   const auto first_hashes=tetra_viewer::surface_geometry_hashes(first);
   CHECK(first_hashes.triangle_count==2U);
   CHECK(first_hashes.edge_count==5U);
+  CHECK(first_hashes.edge_incidence_count==6U);
+  CHECK(first_hashes.wire_edge_count==first_hashes.edge_count);
+  CHECK(first_hashes.wire_edge_hash==first_hashes.edge_hash);
 
   tetra_viewer::PreparedScene reordered;
   reordered.triangle_vertices={c,d,a,b,c,a};
@@ -3463,6 +3467,31 @@ TEST_CASE("surface geometry hashes ignore draw order but preserve winding and ed
   const auto reversed_hashes=tetra_viewer::surface_geometry_hashes(reversed);
   CHECK(reversed_hashes.triangle_hash!=first_hashes.triangle_hash);
   CHECK(reversed_hashes.edge_hash==first_hashes.edge_hash);
+  CHECK(reversed_hashes.edge_incidence_hash==first_hashes.edge_incidence_hash);
+
+  auto duplicated=first;
+  duplicated.triangle_vertices.insert(
+      duplicated.triangle_vertices.end(),{a,b,c});
+  const auto duplicated_hashes=tetra_viewer::surface_geometry_hashes(duplicated);
+  CHECK(duplicated_hashes.edge_hash==first_hashes.edge_hash);
+  CHECK(duplicated_hashes.edge_incidence_hash!=first_hashes.edge_incidence_hash);
+  CHECK(duplicated_hashes.edge_incidence_count==9U);
+
+  auto reclassified=first;
+  for(std::size_t corner=0;corner<3U;++corner)
+    reclassified.triangle_vertices[corner].colour[0]=1.0F;
+  const auto reclassified_hashes=tetra_viewer::surface_geometry_hashes(reclassified);
+  CHECK(reclassified_hashes.triangle_hash==first_hashes.triangle_hash);
+  CHECK(reclassified_hashes.material_boundary_hash!=
+        first_hashes.material_boundary_hash);
+
+  auto missing_wire=first;
+  missing_wire.surface_line_vertices.resize(
+      missing_wire.surface_line_vertices.size()-2U);
+  const auto missing_wire_hashes=tetra_viewer::surface_geometry_hashes(missing_wire);
+  CHECK(missing_wire_hashes.edge_hash==first_hashes.edge_hash);
+  CHECK(missing_wire_hashes.wire_edge_hash!=first_hashes.wire_edge_hash);
+  CHECK(missing_wire_hashes.wire_edge_count+1U==first_hashes.wire_edge_count);
 
   const auto volume_a=vertex(2.0F,0.0F,0.0F,-1.0F);
   const auto volume_b=vertex(2.0F,1.0F,0.0F,-1.0F);
@@ -3934,10 +3963,27 @@ TEST_CASE("marching and lattice owner patches match monolithic surface hashes") 
         tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
     const auto patched_hashes=tetra_viewer::surface_geometry_hashes(cache.scene());
     const auto monolithic_hashes=tetra_viewer::surface_geometry_hashes(monolithic);
+    CHECK(patched_hashes==monolithic_hashes);
     CHECK(patched_hashes.triangle_hash==monolithic_hashes.triangle_hash);
     CHECK(patched_hashes.edge_hash==monolithic_hashes.edge_hash);
+    CHECK(patched_hashes.edge_incidence_hash==
+          monolithic_hashes.edge_incidence_hash);
+    CHECK(patched_hashes.material_boundary_hash==
+          monolithic_hashes.material_boundary_hash);
+    CHECK(patched_hashes.wire_edge_hash==patched_hashes.edge_hash);
     CHECK(patched_hashes.triangle_count==monolithic_hashes.triangle_count);
     CHECK(patched_hashes.edge_count==monolithic_hashes.edge_count);
+    CHECK(patched_hashes.edge_incidence_count==patched_hashes.triangle_count*3U);
+    CHECK(patched_hashes.wire_edge_count==patched_hashes.edge_count);
+    for(std::size_t begin=0;begin+2U<cache.scene().triangle_vertices.size();begin+=3U){
+      const auto* vertices=cache.scene().triangle_vertices.data()+begin;
+      CHECK(static_cast<int>(vertices[0].edge_flags+0.5F)==7);
+      for(std::size_t corner=0;corner<3U;++corner){
+        CHECK(vertices[corner].barycentric[corner]==doctest::Approx(1.0F));
+        CHECK(vertices[corner].barycentric[(corner+1U)%3U]==doctest::Approx(0.0F));
+        CHECK(vertices[corner].barycentric[(corner+2U)%3U]==doctest::Approx(0.0F));
+      }
+    }
     const auto& metrics=cache.surface_patch_metrics();
     CHECK(metrics.active);
     CHECK_FALSE(metrics.global_fallback);
@@ -4100,10 +4146,18 @@ TEST_CASE("dual contour edge-star patches match monolithic mixed-depth topology"
       false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
   const auto patched_hashes=tetra_viewer::surface_geometry_hashes(cache.scene());
   const auto monolithic_hashes=tetra_viewer::surface_geometry_hashes(monolithic);
+  CHECK(patched_hashes==monolithic_hashes);
   CHECK(patched_hashes.triangle_hash==monolithic_hashes.triangle_hash);
   CHECK(patched_hashes.edge_hash==monolithic_hashes.edge_hash);
+  CHECK(patched_hashes.edge_incidence_hash==
+        monolithic_hashes.edge_incidence_hash);
+  CHECK(patched_hashes.material_boundary_hash==
+        monolithic_hashes.material_boundary_hash);
+  CHECK(patched_hashes.wire_edge_hash==patched_hashes.edge_hash);
   CHECK(patched_hashes.triangle_count==monolithic_hashes.triangle_count);
   CHECK(patched_hashes.edge_count==monolithic_hashes.edge_count);
+  CHECK(patched_hashes.edge_incidence_count==patched_hashes.triangle_count*3U);
+  CHECK(patched_hashes.wire_edge_count==patched_hashes.edge_count);
   CHECK(cache.scene().dual_contour_triangles==monolithic.dual_contour_triangles);
   CHECK(cache.surface_patch_metrics().active);
   CHECK_FALSE(cache.surface_patch_metrics().monolithic_fallback);
@@ -4266,6 +4320,64 @@ TEST_CASE("dual edge-star patches cover bulk owner-set changes") {
   CHECK_FALSE(cache.surface_patch_metrics().full_rebuild);
   CHECK(cache.surface_patch_metrics().generated_triangles>0U);
   CHECK(cache.surface_patch_metrics().reused_patches>0U);
+}
+
+TEST_CASE("owner patches retain locality across multiple unpublished revisions") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,48.0,4));
+  constexpr std::array methods{
+      tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::SurfaceMethod::lattice_cleaving,
+      tetra_viewer::SurfaceMethod::dual_contouring};
+  std::array<tetra_viewer::SceneCache,methods.size()> caches;
+  for(std::size_t index=0;index<methods.size();++index)
+    REQUIRE(caches[index].update_scene(
+        mesh,sphere,13,methods[index],
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+
+  const auto initial_revision=mesh.revision();
+  for(std::size_t transaction=0;transaction<2U;++transaction){
+    std::vector<tetra::TetId> candidates;
+    for(const auto owner:mesh.logical_red_owners())
+      if(tetra::classify_tetrahedron(mesh,owner,sphere)==
+         tetra::SurfaceRelation::intersecting)
+        candidates.push_back(owner);
+    bool committed{};
+    for(const auto owner:candidates)
+      if(mesh.refine_selected_binary({owner})){
+        committed=true;
+        break;
+      }
+    REQUIRE(committed);
+  }
+  REQUIRE(mesh.revision()>=initial_revision+2U);
+
+  for(std::size_t index=0;index<methods.size();++index){
+    CAPTURE(tetra_viewer::surface_method_key(methods[index]));
+    REQUIRE(caches[index].update_scene(
+        mesh,sphere,13,methods[index],
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+    const auto monolithic=tetra_viewer::prepare_scene(
+        mesh,sphere,methods[index],
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+    const auto patched=tetra_viewer::surface_geometry_hashes(caches[index].scene());
+    const auto direct=tetra_viewer::surface_geometry_hashes(monolithic);
+    CHECK(patched==direct);
+    CHECK(patched.wire_edge_hash==patched.edge_hash);
+    CHECK(patched.wire_edge_count==patched.edge_count);
+    CHECK_FALSE(caches[index].surface_patch_metrics().full_rebuild);
+    CHECK(caches[index].surface_patch_metrics().rebuilt_patches>0U);
+    CHECK(caches[index].surface_patch_metrics().reused_patches>0U);
+  }
 }
 
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
@@ -5071,6 +5183,59 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   CHECK(std::stoull(field(repeated,"\"generated_surface_bytes\":"))>0U);
   CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
   CHECK(std::stoull(field(repeated,"\"dirty_owners\":"))>0U);
+}
+
+TEST_CASE("headless surface patch benchmark proves locality and exact output") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-cpu-surface-patches=6",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  constexpr std::array paths{
+      "stationary","slow-orbit","rapid-orbit","near-to-far",
+      "far-to-near","teleport","reversal","repeated-pose"};
+  constexpr std::array local_methods{
+      "marching-tetrahedra","lattice-cleaving","dual-contouring"};
+  const auto event_for=[&](std::string_view path,std::string_view method){
+    const std::string marker="\"path\":\""+std::string(path)+
+        "\",\"method\":\""+std::string(method)+"\"";
+    const auto marker_position=text.find(marker);
+    REQUIRE(marker_position!=std::string::npos);
+    const auto begin=text.rfind('{',marker_position);
+    const auto end=text.find('\n',marker_position);
+    REQUIRE(begin!=std::string::npos);
+    REQUIRE(end!=std::string::npos);
+    return text.substr(begin,end-begin);
+  };
+  const auto field=[](const std::string& event,std::string_view key){
+    const auto begin=event.find(key);
+    REQUIRE(begin!=std::string::npos);
+    const auto value=begin+key.size();
+    return event.substr(value,event.find_first_of(",}",value)-value);
+  };
+  for(const auto path:paths){
+    for(const auto method:local_methods){
+      const auto event=event_for(path,method);
+      const auto revisions=std::stoull(field(event,"\"revisions\":"));
+      CHECK(event.find("\"valid\":true")!=std::string::npos);
+      CHECK(revisions>0U);
+      CHECK(std::stoull(field(event,"\"exact_matches\":"))==revisions);
+      CHECK(std::stoull(field(event,"\"full_rebuilds\":"))==1U);
+      CHECK(std::stoull(field(event,"\"global_fallbacks\":"))==0U);
+      CHECK(std::stod(field(event,"\"patch_update_ms\":"))>=0.0);
+      CHECK(std::stod(field(event,"\"monolithic_reference_ms\":"))>=0.0);
+    }
+    const auto fallback=event_for(path,"surface-optimization");
+    const auto revisions=std::stoull(field(fallback,"\"revisions\":"));
+    CHECK(std::stoull(field(fallback,"\"exact_matches\":"))==revisions);
+    CHECK(std::stoull(field(fallback,"\"global_fallbacks\":"))==revisions);
+  }
+
+  std::ostringstream invalid_output,invalid_errors;
+  CHECK(tetra_viewer::run_script(
+      "benchmark-cpu-surface-patches=33",invalid_output,invalid_errors)==2);
+  CHECK(invalid_errors.str().find("depth outside the supported range")!=
+        std::string::npos);
 }
 
 TEST_CASE("headless shape hash matrix covers every shape and camera path deterministically") {

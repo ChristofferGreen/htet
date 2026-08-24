@@ -2092,6 +2092,7 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
   using PointKey=std::array<std::uint32_t,3>;
   using TriangleKey=std::array<PointKey,3>;
   using EdgeKey=std::array<PointKey,2>;
+  using MaterialTriangleKey=std::array<std::uint32_t,13>;
   const auto point_key=[](const SceneVertex& vertex){
     PointKey key{};
     for(std::size_t axis=0;axis<3U;++axis){
@@ -2101,7 +2102,9 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
     return key;
   };
   std::vector<TriangleKey> triangles;
+  std::vector<MaterialTriangleKey> material_triangles;
   triangles.reserve(scene.triangle_vertices.size()/3U);
+  material_triangles.reserve(scene.triangle_vertices.size()/3U);
   for(std::size_t begin=0;begin+2U<scene.triangle_vertices.size();begin+=3U){
     const auto* vertices=scene.triangle_vertices.data()+begin;
     const float marker=vertices[0].diagnostics[0];
@@ -2112,21 +2115,49 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
     const TriangleKey third{{key[2],key[0],key[1]}};
     key=std::min({key,second,third});
     triangles.push_back(key);
+    MaterialTriangleKey material{};
+    std::size_t output{};
+    for(const auto& point:key)
+      for(const auto coordinate:point)material[output++]=coordinate;
+    for(std::size_t channel=0;channel<3U;++channel){
+      const float colour=vertices[0].colour[channel]==0.0F
+          ?0.0F:vertices[0].colour[channel];
+      material[output++]=std::bit_cast<std::uint32_t>(colour);
+    }
+    material[output]=marker<-1.5F?2U:0U;
+    material_triangles.push_back(material);
   }
   std::sort(triangles.begin(),triangles.end());
-  std::vector<EdgeKey> edges;
-  edges.reserve(triangles.size()*3U);
+  std::sort(material_triangles.begin(),material_triangles.end());
+  std::vector<EdgeKey> edge_incidence;
+  edge_incidence.reserve(triangles.size()*3U);
   constexpr std::array<std::array<std::size_t,2>,3> edge_corners{{
       {{0U,1U}},{{1U,2U}},{{2U,0U}}}};
   for(const auto& triangle:triangles){
     for(const auto corners:edge_corners){
       EdgeKey edge{{triangle[corners[0]],triangle[corners[1]]}};
       if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
-      edges.push_back(edge);
+      edge_incidence.push_back(edge);
     }
   }
+  std::sort(edge_incidence.begin(),edge_incidence.end());
+  auto edges=edge_incidence;
   std::sort(edges.begin(),edges.end());
   edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+  std::vector<EdgeKey> wire_edges;
+  wire_edges.reserve(scene.surface_line_vertices.size()/2U);
+  for(std::size_t begin=0;begin+1U<scene.surface_line_vertices.size();begin+=2U){
+    const auto* vertices=scene.surface_line_vertices.data()+begin;
+    const float marker=vertices[0].diagnostics[0];
+    const bool diagnostic_volume_face=marker<-0.5F&&marker>=-1.5F;
+    if(diagnostic_volume_face)continue;
+    EdgeKey edge{{point_key(vertices[0]),point_key(vertices[1])}};
+    if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+    wire_edges.push_back(edge);
+  }
+  std::sort(wire_edges.begin(),wire_edges.end());
+  wire_edges.erase(std::unique(wire_edges.begin(),wire_edges.end()),
+                   wire_edges.end());
   constexpr std::uint64_t offset=1469598103934665603ULL;
   constexpr std::uint64_t prime=1099511628211ULL;
   const auto hash_keys=[=](const auto& keys){
@@ -2138,7 +2169,24 @@ SurfaceGeometryHashes surface_geometry_hashes(const PreparedScene& scene) {
         for(const auto coordinate:point)append(coordinate);
     return hash;
   };
-  return {hash_keys(triangles),hash_keys(edges),triangles.size(),edges.size()};
+  const auto hash_scalars=[=](const auto& keys){
+    std::uint64_t hash=offset;
+    const auto append=[&](std::uint64_t value){hash^=value;hash*=prime;};
+    append(keys.size());
+    for(const auto& key:keys)
+      for(const auto value:key)append(value);
+    return hash;
+  };
+  return {
+      .triangle_hash=hash_keys(triangles),
+      .edge_hash=hash_keys(edges),
+      .edge_incidence_hash=hash_keys(edge_incidence),
+      .material_boundary_hash=hash_scalars(material_triangles),
+      .wire_edge_hash=hash_keys(wire_edges),
+      .triangle_count=triangles.size(),
+      .edge_count=edges.size(),
+      .edge_incidence_count=edge_incidence.size(),
+      .wire_edge_count=wire_edges.size()};
 }
 
 void expand_line_segments_for_upload(
@@ -2451,6 +2499,7 @@ void SceneCache::set_surface_patch_fallback(
       surface_patch_triangle_scratch_.capacity()*sizeof(tetra::Triangle)+
       surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
       surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_topology_hash_scratch_.capacity()*sizeof(std::uint64_t)+
       surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_incident_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
@@ -2476,6 +2525,10 @@ void SceneCache::update_surface_patches(
   if(bcc){
     const auto& owners=mesh.logical_red_owners();
     surface_patch_owner_scratch_.assign(owners.begin(),owners.end());
+    const auto hashes=mesh.logical_derived_hashes();
+    if(hashes.size()!=owners.size())
+      throw std::logic_error("logical owner topology hashes are incomplete");
+    surface_patch_topology_hash_scratch_.assign(hashes.begin(),hashes.end());
   }else{
     const auto volume=mesh.conforming_volume();
     surface_patch_owner_cells_.reserve(volume.size());
@@ -2492,56 +2545,68 @@ void SceneCache::update_surface_patches(
       if(surface_patch_owner_scratch_.empty()||
          surface_patch_owner_scratch_.back()!=entry.owner)
         surface_patch_owner_scratch_.push_back(entry.owner);
+    surface_patch_topology_hash_scratch_.clear();
+    surface_patch_topology_hash_scratch_.reserve(
+        surface_patch_owner_scratch_.size());
+    constexpr std::uint64_t offset=1469598103934665603ULL;
+    constexpr std::uint64_t prime=1099511628211ULL;
+    for(const auto owner:surface_patch_owner_scratch_){
+      std::uint64_t hash=offset;
+      const auto begin=std::lower_bound(
+          surface_patch_owner_cells_.begin(),surface_patch_owner_cells_.end(),owner,
+          [](const auto& entry,tetra::TetId target){return entry.owner<target;});
+      for(auto found=begin;found!=surface_patch_owner_cells_.end()&&
+          found->owner==owner;++found){
+        hash^=found->cell;hash*=prime;
+        for(const auto vertex:mesh.tetrahedron(found->cell).vertices){
+          hash^=vertex;hash*=prime;
+        }
+      }
+      surface_patch_topology_hash_scratch_.push_back(hash);
+    }
   }
 
   bool rebuild_all=!surface_patch_initialized_||
       surface_patch_field_revision_!=field_revision||
       surface_patch_subdivision_method_!=mesh.subdivision_method()||
       surface_patch_dual_topology_!=dual_topology||
-      mesh.revision()<surface_patch_mesh_revision_||
-      (surface_patch_mesh_revision_!=std::numeric_limits<std::uint64_t>::max()&&
-       mesh.revision()>surface_patch_mesh_revision_+1U);
+      mesh.revision()<surface_patch_mesh_revision_;
   surface_patch_dirty_scratch_.clear();
   if(rebuild_all){
     surface_patch_dirty_scratch_=surface_patch_owner_scratch_;
   }else if(mesh.revision()!=surface_patch_mesh_revision_){
-    const auto dirty=mesh.last_dirty_logical_owners();
-    surface_patch_dirty_scratch_.assign(dirty.begin(),dirty.end());
+    for(std::size_t owner_index=0;
+        owner_index<surface_patch_owner_scratch_.size();++owner_index){
+      const auto owner=surface_patch_owner_scratch_[owner_index];
+      const auto found=std::lower_bound(
+          surface_patch_records_.begin(),surface_patch_records_.end(),owner,
+          [](const auto& record,tetra::TetId target){
+            return record.logical_owner<target;
+          });
+      if(found==surface_patch_records_.end()||found->logical_owner!=owner||
+         found->topology_hash!=surface_patch_topology_hash_scratch_[owner_index])
+        surface_patch_dirty_scratch_.push_back(owner);
+    }
+    for(const auto& record:surface_patch_records_)
+      if(!std::binary_search(surface_patch_owner_scratch_.begin(),
+                             surface_patch_owner_scratch_.end(),
+                             record.logical_owner))
+        surface_patch_dirty_scratch_.push_back(record.logical_owner);
     std::sort(surface_patch_dirty_scratch_.begin(),surface_patch_dirty_scratch_.end());
     surface_patch_dirty_scratch_.erase(
         std::unique(surface_patch_dirty_scratch_.begin(),
                     surface_patch_dirty_scratch_.end()),
         surface_patch_dirty_scratch_.end());
-    if(surface_patch_dirty_scratch_.empty()){
-      rebuild_all=true;
-      surface_patch_dirty_scratch_=surface_patch_owner_scratch_;
-    }
   }
   if(dual_topology){
     dual_patch_builder_.rebuild_index(mesh,sphere);
     if(!rebuild_all&&mesh.revision()!=surface_patch_mesh_revision_){
       surface_patch_incident_dirty_scratch_=surface_patch_dirty_scratch_;
-      for(const auto owner:surface_patch_owner_scratch_){
-        const auto found=std::lower_bound(
-            surface_patch_records_.begin(),surface_patch_records_.end(),owner,
-            [](const auto& record,tetra::TetId target){
-              return record.logical_owner<target;
-            });
-        if(found==surface_patch_records_.end()||found->logical_owner!=owner)
-          surface_patch_incident_dirty_scratch_.push_back(owner);
-      }
-      for(const auto& record:surface_patch_records_)
-        if(!std::binary_search(surface_patch_owner_scratch_.begin(),
-                               surface_patch_owner_scratch_.end(),
-                               record.logical_owner))
-          surface_patch_incident_dirty_scratch_.push_back(record.logical_owner);
-      std::sort(surface_patch_incident_dirty_scratch_.begin(),
-                surface_patch_incident_dirty_scratch_.end());
-      surface_patch_incident_dirty_scratch_.erase(
-          std::unique(surface_patch_incident_dirty_scratch_.begin(),
-                      surface_patch_incident_dirty_scratch_.end()),
-          surface_patch_incident_dirty_scratch_.end());
       surface_patch_dirty_scratch_.clear();
+      for(const auto owner:surface_patch_incident_dirty_scratch_)
+        if(std::binary_search(surface_patch_owner_scratch_.begin(),
+                              surface_patch_owner_scratch_.end(),owner))
+          surface_patch_dirty_scratch_.push_back(owner);
       const auto add_dependent=[&](const auto& dependency){
         if(std::binary_search(surface_patch_incident_dirty_scratch_.begin(),
                               surface_patch_incident_dirty_scratch_.end(),
@@ -2551,15 +2616,6 @@ void SceneCache::update_surface_patches(
       for(const auto dependency:dual_patch_dependencies_)add_dependent(dependency);
       for(const auto dependency:dual_patch_builder_.dependencies())
         add_dependent(dependency);
-      for(const auto owner:surface_patch_owner_scratch_){
-        const auto found=std::lower_bound(
-            surface_patch_records_.begin(),surface_patch_records_.end(),owner,
-            [](const auto& record,tetra::TetId target){
-              return record.logical_owner<target;
-            });
-        if(found==surface_patch_records_.end()||found->logical_owner!=owner)
-          surface_patch_dirty_scratch_.push_back(owner);
-      }
       std::sort(surface_patch_dirty_scratch_.begin(),
                 surface_patch_dirty_scratch_.end());
       surface_patch_dirty_scratch_.erase(
@@ -2724,6 +2780,7 @@ void SceneCache::update_surface_patches(
     }
     record.mesh_revision=mesh.revision();
     record.field_revision=field_revision;
+    record.topology_hash=surface_patch_topology_hash_scratch_[owner_index];
     record.triangle_count=surface_patch_triangle_scratch_.size();
     std::copy(surface_patch_triangle_scratch_.begin(),
               surface_patch_triangle_scratch_.end(),
@@ -2762,6 +2819,7 @@ void SceneCache::update_surface_patches(
       surface_patch_triangle_scratch_.capacity()*sizeof(tetra::Triangle)+
       surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
       surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_topology_hash_scratch_.capacity()*sizeof(std::uint64_t)+
       surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_incident_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+

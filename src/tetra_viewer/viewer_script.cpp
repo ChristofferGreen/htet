@@ -1002,6 +1002,7 @@ void print_script_help(std::ostream& output) {
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
+            "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
@@ -1967,6 +1968,158 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         if(!valid){
           write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);
           return 1;
+        }
+      }
+      continue;
+    }
+    constexpr std::string_view surface_patch_benchmark=
+        "benchmark-cpu-surface-patches";
+    if(command==surface_patch_benchmark||
+       command.starts_with(std::string(surface_patch_benchmark)+"=")){
+      unsigned int benchmark_depth=16U;
+      if(command.size()>surface_patch_benchmark.size()){
+        const auto value=command.substr(surface_patch_benchmark.size()+1U);
+        if(!parse_unsigned(value,benchmark_depth)||benchmark_depth>32U){
+          write_error(errors,"surface patch benchmark depth outside the supported range",command);
+          return 2;
+        }
+      }
+      constexpr std::array methods{
+          SurfaceMethod::marching_tetrahedra,
+          SurfaceMethod::lattice_cleaving,
+          SurfaceMethod::dual_contouring,
+          SurfaceMethod::surface_optimization};
+      constexpr ScenePreparationOptions preparation{
+          .surface_diagnostics=false,.summary_statistics=false};
+      struct Totals {
+        std::size_t revisions{};
+        std::size_t exact_matches{};
+        std::size_t dirty_owners{};
+        std::size_t rebuilt_patches{};
+        std::size_t reused_patches{};
+        std::size_t retired_patches{};
+        std::size_t generated_triangles{};
+        std::size_t reused_triangles{};
+        std::size_t output_triangles{};
+        std::size_t retained_bytes{};
+        std::size_t full_rebuilds{};
+        std::size_t global_fallbacks{};
+        double patch_milliseconds{};
+        double monolithic_milliseconds{};
+      };
+      const auto baseline=cpu_benchmark_baseline(
+          default_implicit_shape,benchmark_depth);
+      const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
+      for(const auto& path:paths){
+        ScriptState benchmark=baseline;
+        std::array<SceneCache,methods.size()> caches;
+        std::array<Totals,methods.size()> totals;
+        std::uint64_t published_revision=std::numeric_limits<std::uint64_t>::max();
+        const auto publish=[&](bool initial){
+          for(std::size_t index=0;index<methods.size();++index){
+            const auto method=methods[index];
+            auto& total=totals[index];
+            const auto patch_start=Clock::now();
+            const bool rebuilt=caches[index].update_scene(
+                benchmark.mesh,benchmark.sphere,benchmark.field_revision,
+                method,MaterialRule::all_vertices_inside,
+                true,false,true,false,false,false,1.0,
+                VolumeConnectionMethod::hierarchy_cells,
+                StencilConstruction::fixed,
+                StencilSelectionObjective::balanced,preparation);
+            total.patch_milliseconds+=milliseconds_since(patch_start);
+            if(!rebuilt)return false;
+            const auto monolithic_start=Clock::now();
+            const auto monolithic=prepare_scene(
+                benchmark.mesh,benchmark.sphere,method,
+                MaterialRule::all_vertices_inside,
+                true,false,true,false,false,false,1.0,
+                VolumeConnectionMethod::hierarchy_cells,
+                StencilConstruction::fixed,
+                StencilSelectionObjective::balanced,preparation);
+            total.monolithic_milliseconds+=milliseconds_since(monolithic_start);
+            const auto patched_hashes=surface_geometry_hashes(caches[index].scene());
+            const auto monolithic_hashes=surface_geometry_hashes(monolithic);
+            const auto& metrics=caches[index].surface_patch_metrics();
+            const auto dependency=surface_patch_dependency(method);
+            const bool hashes_match=patched_hashes==monolithic_hashes;
+            const bool complete_edges=
+                patched_hashes.wire_edge_hash==patched_hashes.edge_hash&&
+                patched_hashes.wire_edge_count==patched_hashes.edge_count&&
+                patched_hashes.edge_incidence_count==
+                    patched_hashes.triangle_count*3U;
+            const bool locality=initial||!dependency.patchable()||
+                (!metrics.full_rebuild&&
+                 metrics.rebuilt_patches<=metrics.dirty_owners&&
+                 metrics.rebuilt_patches<=caches[index].surface_patch_records().size());
+            const bool fallback=dependency.patchable()
+                ?metrics.active&&!metrics.global_fallback
+                :!metrics.active&&metrics.global_fallback;
+            if(!hashes_match||!complete_edges||!locality||!fallback){
+              errors<<"{\"event\":\"cpu_surface_patch_failure\",\"path\":\""
+                    <<path.name<<"\",\"method\":\""<<surface_method_key(method)
+                    <<"\",\"hashes_match\":"<<(hashes_match?"true":"false")
+                    <<",\"complete_edges\":"<<(complete_edges?"true":"false")
+                    <<",\"locality\":"<<(locality?"true":"false")
+                    <<",\"fallback\":"<<(fallback?"true":"false")
+                    <<",\"full_rebuild\":"<<(metrics.full_rebuild?"true":"false")
+                    <<",\"dirty_owners\":"<<metrics.dirty_owners
+                    <<",\"rebuilt_patches\":"<<metrics.rebuilt_patches
+                    <<",\"records\":"<<caches[index].surface_patch_records().size()
+                    <<"}\n";
+              return false;
+            }
+            ++total.revisions;
+            total.exact_matches+=hashes_match?1U:0U;
+            total.dirty_owners+=metrics.dirty_owners;
+            total.rebuilt_patches+=metrics.rebuilt_patches;
+            total.reused_patches+=metrics.reused_patches;
+            total.retired_patches+=metrics.retired_patches;
+            total.generated_triangles+=metrics.generated_triangles;
+            total.reused_triangles+=metrics.reused_triangles;
+            total.output_triangles+=metrics.output_triangles;
+            total.retained_bytes=std::max(total.retained_bytes,metrics.retained_bytes);
+            total.full_rebuilds+=metrics.full_rebuild?1U:0U;
+            total.global_fallbacks+=metrics.global_fallback?1U:0U;
+          }
+          published_revision=benchmark.mesh.revision();
+          return true;
+        };
+        if(!publish(true)){
+          write_error(errors,"initial surface patch benchmark comparison failed",path.name);
+          return 1;
+        }
+        for(const auto position:path.positions){
+          point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+          static_cast<void>(reconcile_to_current_surface(benchmark));
+          if(benchmark.mesh.revision()==published_revision)continue;
+          if(!publish(false)){
+            write_error(errors,"incremental surface patch benchmark comparison failed",path.name);
+            return 1;
+          }
+        }
+        for(std::size_t index=0;index<methods.size();++index){
+          const auto& total=totals[index];
+          output<<"{\"event\":\"cpu_surface_patch_benchmark\",\"path\":\""
+                <<path.name<<"\",\"method\":\""<<surface_method_key(methods[index])
+                <<"\",\"maximum_depth\":"<<benchmark_depth
+                <<",\"revisions\":"<<total.revisions
+                <<",\"exact_matches\":"<<total.exact_matches
+                <<",\"dirty_owners\":"<<total.dirty_owners
+                <<",\"rebuilt_patches\":"<<total.rebuilt_patches
+                <<",\"reused_patches\":"<<total.reused_patches
+                <<",\"retired_patches\":"<<total.retired_patches
+                <<",\"generated_triangles\":"<<total.generated_triangles
+                <<",\"reused_triangles\":"<<total.reused_triangles
+                <<",\"output_triangles\":"<<total.output_triangles
+                <<",\"retained_bytes\":"<<total.retained_bytes
+                <<",\"full_rebuilds\":"<<total.full_rebuilds
+                <<",\"global_fallbacks\":"<<total.global_fallbacks
+                <<",\"patch_update_ms\":"<<std::fixed<<std::setprecision(3)
+                <<total.patch_milliseconds
+                <<",\"monolithic_reference_ms\":"
+                <<total.monolithic_milliseconds
+                <<",\"valid\":true}\n";
         }
       }
       continue;

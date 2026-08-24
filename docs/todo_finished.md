@@ -2,6 +2,17 @@
 
 ## 2026-08-24
 
+- [x] CPU-G3-4 patch-derived surface edges and Gate 3 benchmark: extended
+  canonical geometry evidence with edge-incidence, material-boundary, and
+  submitted-wire hashes/counts; proved every retained triangle owns all three
+  barycentric depth-tested edges; retained locality across arbitrary unpublished
+  mesh revision gaps through exact per-owner topology hashes; and corrected
+  dual invalidation to include changed current records plus old/new edge-star
+  dependents. The depth-16 release matrix matched monolithic output on all 42
+  revisions for marching, lattice, dual contouring, and measured global
+  optimization fallback, reducing aggregate retained preparation time by
+  39.6%, 22.5%, and 29.1% respectively. Scripted solid/edge renders of all
+  retained methods were visually inspected as closed, opaque, and seam-free.
 - [x] Gate 0 CPU camera-path baseline: added the release-only
   `benchmark-cpu-camera-paths` headless command for stationary, slow orbit,
   rapid orbit, near-to-far, far-to-near, teleport, reversal, and repeated-pose
