@@ -2217,8 +2217,10 @@ void SurfaceDrawChunkStorage::normalize_free_ranges() {
 
 void SurfaceDrawChunkStorage::release_active_slots() {
   free_ranges_.reserve(free_ranges_.size()+chunks_.size());
-  for(const auto& chunk:chunks_)
+  for(const auto& chunk:chunks_){
     free_ranges_.push_back({chunk.arena_slot,1U});
+    ++metrics_.released_slots;
+  }
   normalize_free_ranges();
   chunks_.clear();
   segments_.clear();
@@ -2237,35 +2239,48 @@ std::size_t SurfaceDrawChunkStorage::allocate_slot() {
   return slot;
 }
 
-void SurfaceDrawChunkStorage::pack(
+void SurfaceDrawChunkStorage::finish_metrics(
+    std::size_t triangle_count,
+    std::chrono::steady_clock::time_point start) {
+  metrics_.patch_segments=segments_.size();
+  metrics_.triangles=triangle_count;
+  metrics_.active_chunks=chunks_.size();
+  metrics_.retained_slots=arena_.size()/chunk_capacity_;
+  metrics_.free_slots=0U;
+  for(const auto range:free_ranges_)metrics_.free_slots+=range.slot_count;
+  metrics_.fragmented_slots=chunks_.size()*chunk_capacity_-triangle_count;
+  metrics_.fragmentation_bytes=
+      metrics_.fragmented_slots*sizeof(tetra::Triangle);
+  metrics_.draw_calls=chunks_.size();
+  metrics_.occupancy=chunks_.empty()?0.0:
+      static_cast<double>(triangle_count)/
+          static_cast<double>(chunks_.size()*chunk_capacity_);
+  metrics_.chunk_splits=0U;
+  metrics_.chunk_merges=0U;
+  for(const auto& segment:segments_){
+    if(segment.source_triangle_offset!=0U)++metrics_.chunk_splits;
+    const auto slot_begin=chunks_[segment.chunk_index].arena_slot*chunk_capacity_;
+    if(segment.source_triangle_offset==0U&&segment.triangle_begin!=slot_begin)
+      ++metrics_.chunk_merges;
+  }
+  metrics_.retained_bytes=
+      chunks_.capacity()*sizeof(SurfaceDrawChunkRecord)+
+      segments_.capacity()*sizeof(SurfaceDrawPatchSegment)+
+      free_ranges_.capacity()*sizeof(SurfaceDrawChunkFreeRange)+
+      arena_.capacity()*sizeof(tetra::Triangle)+
+      retained_patches_.capacity()*sizeof(RetainedPatch);
+  metrics_.pack_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-start).count();
+}
+
+void SurfaceDrawChunkStorage::compact(
     std::span<const SurfacePatchRecord> patches,
     std::span<const tetra::Triangle> patch_arena) {
-  const auto start=std::chrono::steady_clock::now();
-  std::size_t triangle_count{};
-  tetra::TetId previous_owner=tetra::invalid_tet;
-  bool have_previous{};
-  for(const auto& patch:patches){
-    if(have_previous&&patch.logical_owner<=previous_owner)
-      throw std::invalid_argument("surface patches must be strictly owner sorted");
-    if(patch.triangle_begin>patch_arena.size()||
-       patch.triangle_count>patch_arena.size()-patch.triangle_begin)
-      throw std::out_of_range("surface patch triangle range exceeds its arena");
-    if(patch.triangle_count>
-       std::numeric_limits<std::size_t>::max()-triangle_count)
-      throw std::overflow_error("surface draw triangle count overflow");
-    triangle_count+=patch.triangle_count;
-    previous_owner=patch.logical_owner;
-    have_previous=true;
-  }
-
   release_active_slots();
-  metrics_={};
-  metrics_.chunk_capacity=chunk_capacity_;
-  metrics_.source_patches=patches.size();
-  metrics_.triangles=triangle_count;
-  metrics_.global_compactions=1U;
-  const auto required_chunks=triangle_count/chunk_capacity_+
-      (triangle_count%chunk_capacity_==0U?0U:1U);
+  ++metrics_.global_compactions;
+  std::size_t triangle_count{};
+  for(const auto& patch:patches)triangle_count+=patch.triangle_count;
+  const auto required_chunks=(triangle_count+chunk_capacity_-1U)/chunk_capacity_;
   chunks_.reserve(std::max(chunks_.capacity(),required_chunks));
   segments_.reserve(std::max(segments_.capacity(),patches.size()+required_chunks));
 
@@ -2302,26 +2317,280 @@ void SurfaceDrawChunkStorage::pack(
       first_segment=false;
     }
   }
-
-  metrics_.patch_segments=segments_.size();
-  metrics_.active_chunks=chunks_.size();
-  metrics_.retained_slots=arena_.size()/chunk_capacity_;
-  for(const auto range:free_ranges_)metrics_.free_slots+=range.slot_count;
-  metrics_.fragmented_slots=chunks_.size()*chunk_capacity_-triangle_count;
-  metrics_.fragmentation_bytes=
-      metrics_.fragmented_slots*sizeof(tetra::Triangle);
   metrics_.copied_bytes=triangle_count*sizeof(tetra::Triangle);
-  metrics_.draw_calls=chunks_.size();
-  metrics_.occupancy=chunks_.empty()?0.0:
-      static_cast<double>(triangle_count)/
-          static_cast<double>(chunks_.size()*chunk_capacity_);
-  metrics_.retained_bytes=
-      chunks_.capacity()*sizeof(SurfaceDrawChunkRecord)+
-      segments_.capacity()*sizeof(SurfaceDrawPatchSegment)+
-      free_ranges_.capacity()*sizeof(SurfaceDrawChunkFreeRange)+
-      arena_.capacity()*sizeof(tetra::Triangle);
-  metrics_.pack_milliseconds=std::chrono::duration<double,std::milli>(
-      std::chrono::steady_clock::now()-start).count();
+}
+
+void SurfaceDrawChunkStorage::pack(
+    std::span<const SurfacePatchRecord> patches,
+    std::span<const tetra::Triangle> patch_arena) {
+  const auto start=std::chrono::steady_clock::now();
+  std::size_t triangle_count{};
+  tetra::TetId previous_owner=tetra::invalid_tet;
+  bool have_previous{};
+  std::vector<RetainedPatch> next_patches;
+  next_patches.reserve(patches.size());
+  for(const auto& patch:patches){
+    if(have_previous&&patch.logical_owner<=previous_owner)
+      throw std::invalid_argument("surface patches must be strictly owner sorted");
+    if(patch.triangle_begin>patch_arena.size()||
+       patch.triangle_count>patch_arena.size()-patch.triangle_begin)
+      throw std::out_of_range("surface patch triangle range exceeds its arena");
+    if(patch.triangle_count>
+       std::numeric_limits<std::size_t>::max()-triangle_count)
+      throw std::overflow_error("surface draw triangle count overflow");
+    triangle_count+=patch.triangle_count;
+    next_patches.push_back({patch.logical_owner,patch.field_revision,
+                            patch.topology_hash,patch.triangle_count});
+    previous_owner=patch.logical_owner;
+    have_previous=true;
+  }
+
+  metrics_={};
+  metrics_.chunk_capacity=chunk_capacity_;
+  metrics_.source_patches=patches.size();
+  metrics_.nonempty_patches=static_cast<std::size_t>(std::ranges::count_if(
+      patches,[](const auto& patch){return patch.triangle_count!=0U;}));
+  const auto same_patch=[](const RetainedPatch& old_patch,
+                           const RetainedPatch& new_patch){
+    return old_patch.logical_owner==new_patch.logical_owner&&
+        old_patch.field_revision==new_patch.field_revision&&
+        old_patch.topology_hash==new_patch.topology_hash&&
+        old_patch.triangle_count==new_patch.triangle_count;
+  };
+
+  if(retained_patches_.empty()&&chunks_.empty()){
+    compact(patches,patch_arena);
+    retained_patches_=std::move(next_patches);
+    finish_metrics(triangle_count,start);
+    return;
+  }
+
+  bool identical=retained_patches_.size()==next_patches.size();
+  bool same_layout=identical;
+  std::vector<bool> dirty(next_patches.size(),false);
+  if(identical){
+    for(std::size_t index=0;index<next_patches.size();++index){
+      same_layout&=retained_patches_[index].logical_owner==
+                       next_patches[index].logical_owner&&
+          retained_patches_[index].triangle_count==next_patches[index].triangle_count;
+      dirty[index]=!same_patch(retained_patches_[index],next_patches[index]);
+      identical&=!dirty[index];
+    }
+  }
+  if(identical){
+    metrics_.reused_chunks=chunks_.size();
+    metrics_.reused_bytes=triangle_count*sizeof(tetra::Triangle);
+    retained_patches_=std::move(next_patches);
+    finish_metrics(triangle_count,start);
+    return;
+  }
+
+  if(same_layout){
+    std::vector<bool> dirty_chunks(chunks_.size(),false);
+    for(std::size_t patch_index=0;patch_index<patches.size();++patch_index){
+      if(!dirty[patch_index])continue;
+      ++metrics_.dirty_patches;
+      const auto& patch=patches[patch_index];
+      for(const auto& segment:segments_){
+        if(segment.logical_owner!=patch.logical_owner)continue;
+        std::copy_n(
+            patch_arena.begin()+static_cast<std::ptrdiff_t>(
+                patch.triangle_begin+segment.source_triangle_offset),
+            segment.triangle_count,
+            arena_.begin()+static_cast<std::ptrdiff_t>(segment.triangle_begin));
+        dirty_chunks[segment.chunk_index]=true;
+        metrics_.copied_bytes+=segment.triangle_count*sizeof(tetra::Triangle);
+      }
+    }
+    metrics_.dirty_chunks=static_cast<std::size_t>(
+        std::ranges::count(dirty_chunks,true));
+    metrics_.reused_chunks=chunks_.size()-metrics_.dirty_chunks;
+    metrics_.reused_bytes=(triangle_count-
+        metrics_.copied_bytes/sizeof(tetra::Triangle))*sizeof(tetra::Triangle);
+    ++metrics_.local_repacks;
+    retained_patches_=std::move(next_patches);
+    finish_metrics(triangle_count,start);
+    return;
+  }
+
+  tetra::TetId low=std::numeric_limits<tetra::TetId>::max();
+  tetra::TetId high{};
+  std::size_t old_index{},new_index{};
+  while(old_index<retained_patches_.size()||new_index<next_patches.size()){
+    if(new_index==next_patches.size()||
+       (old_index<retained_patches_.size()&&
+        retained_patches_[old_index].logical_owner<next_patches[new_index].logical_owner)){
+      low=std::min(low,retained_patches_[old_index].logical_owner);
+      high=std::max(high,retained_patches_[old_index].logical_owner);
+      ++metrics_.dirty_patches;
+      ++old_index;
+    }else if(old_index==retained_patches_.size()||
+             next_patches[new_index].logical_owner<
+                 retained_patches_[old_index].logical_owner){
+      low=std::min(low,next_patches[new_index].logical_owner);
+      high=std::max(high,next_patches[new_index].logical_owner);
+      ++metrics_.dirty_patches;
+      ++new_index;
+    }else{
+      if(!same_patch(retained_patches_[old_index],next_patches[new_index])){
+        low=std::min(low,next_patches[new_index].logical_owner);
+        high=std::max(high,next_patches[new_index].logical_owner);
+        ++metrics_.dirty_patches;
+      }
+      ++old_index;
+      ++new_index;
+    }
+  }
+
+  constexpr std::size_t local_chunk_budget=64U;
+  if(chunks_.empty()||low==std::numeric_limits<tetra::TetId>::max()){
+    compact(patches,patch_arena);
+    retained_patches_=std::move(next_patches);
+    finish_metrics(triangle_count,start);
+    return;
+  }
+
+  const auto chunk_first_owner=[&](std::size_t chunk_index){
+    return segments_[chunks_[chunk_index].segment_begin].logical_owner;
+  };
+  const auto chunk_last_owner=[&](std::size_t chunk_index){
+    const auto& chunk=chunks_[chunk_index];
+    return segments_[chunk.segment_begin+chunk.segment_count-1U].logical_owner;
+  };
+  std::size_t first_chunk=0U;
+  while(first_chunk+1U<chunks_.size()&&chunk_last_owner(first_chunk)<low)
+    ++first_chunk;
+  std::size_t last_chunk=first_chunk;
+  while(last_chunk+1U<chunks_.size()&&chunk_first_owner(last_chunk+1U)<=high)
+    ++last_chunk;
+  if(first_chunk>0U)--first_chunk;
+  if(last_chunk+1U<chunks_.size())++last_chunk;
+  while(first_chunk>0U&&
+        chunk_last_owner(first_chunk-1U)==chunk_first_owner(first_chunk))
+    --first_chunk;
+  while(last_chunk+1U<chunks_.size()&&
+        chunk_first_owner(last_chunk+1U)==chunk_last_owner(last_chunk))
+    ++last_chunk;
+  low=std::min(low,chunk_first_owner(first_chunk));
+  high=std::max(high,chunk_last_owner(last_chunk));
+
+  const auto patch_begin=static_cast<std::size_t>(std::distance(
+      next_patches.begin(),std::lower_bound(
+          next_patches.begin(),next_patches.end(),low,
+          [](const auto& patch,tetra::TetId owner){
+            return patch.logical_owner<owner;
+          })));
+  const auto patch_end=static_cast<std::size_t>(std::distance(
+      next_patches.begin(),std::upper_bound(
+          next_patches.begin(),next_patches.end(),high,
+          [](tetra::TetId owner,const auto& patch){
+            return owner<patch.logical_owner;
+          })));
+  std::size_t local_triangles{};
+  for(std::size_t index=patch_begin;index<patch_end;++index)
+    local_triangles+=patches[index].triangle_count;
+  const auto required_chunks=(local_triangles+chunk_capacity_-1U)/chunk_capacity_;
+  const auto replaced_chunks=last_chunk-first_chunk+1U;
+  if(replaced_chunks>local_chunk_budget||required_chunks>local_chunk_budget||
+     metrics_.dirty_patches*2U>std::max(retained_patches_.size(),next_patches.size())){
+    compact(patches,patch_arena);
+    retained_patches_=std::move(next_patches);
+    finish_metrics(triangle_count,start);
+    return;
+  }
+
+  std::vector<std::size_t> local_slots;
+  local_slots.reserve(required_chunks);
+  for(std::size_t index=first_chunk;
+      index<=last_chunk&&local_slots.size()<required_chunks;++index)
+    local_slots.push_back(chunks_[index].arena_slot);
+  while(local_slots.size()<required_chunks)local_slots.push_back(allocate_slot());
+  for(std::size_t index=first_chunk+std::min(required_chunks,replaced_chunks);
+      index<=last_chunk;++index){
+    free_ranges_.push_back({chunks_[index].arena_slot,1U});
+    ++metrics_.released_slots;
+  }
+  normalize_free_ranges();
+
+  std::vector<SurfaceDrawChunkRecord> replacement_chunks;
+  std::vector<SurfaceDrawPatchSegment> replacement_segments;
+  replacement_chunks.reserve(required_chunks);
+  replacement_segments.reserve((patch_end-patch_begin)+required_chunks);
+  const auto begin_replacement_chunk=[&]{
+    SurfaceDrawChunkRecord chunk;
+    chunk.arena_slot=local_slots[replacement_chunks.size()];
+    chunk.segment_begin=replacement_segments.size();
+    replacement_chunks.push_back(chunk);
+  };
+  for(std::size_t patch_index=patch_begin;patch_index<patch_end;++patch_index){
+    const auto& patch=patches[patch_index];
+    std::size_t source_offset{};
+    while(source_offset<patch.triangle_count){
+      if(replacement_chunks.empty()||
+         replacement_chunks.back().triangle_count==chunk_capacity_)
+        begin_replacement_chunk();
+      auto& chunk=replacement_chunks.back();
+      const auto count=std::min(
+          patch.triangle_count-source_offset,
+          chunk_capacity_-chunk.triangle_count);
+      const auto destination=chunk.arena_slot*chunk_capacity_+chunk.triangle_count;
+      std::copy_n(
+          patch_arena.begin()+static_cast<std::ptrdiff_t>(
+              patch.triangle_begin+source_offset),count,
+          arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      replacement_segments.push_back({patch.logical_owner,source_offset,
+          replacement_chunks.size()-1U,destination,count});
+      ++chunk.segment_count;
+      chunk.triangle_count+=count;
+      source_offset+=count;
+    }
+  }
+
+  std::vector<SurfaceDrawChunkRecord> next_chunks;
+  std::vector<SurfaceDrawPatchSegment> next_segments;
+  next_chunks.reserve(chunks_.size()-replaced_chunks+replacement_chunks.size());
+  next_segments.reserve(segments_.size()+replacement_segments.size());
+  const auto append_old_chunk=[&](std::size_t old_chunk_index){
+    auto chunk=chunks_[old_chunk_index];
+    const auto new_chunk_index=next_chunks.size();
+    const auto old_segment_begin=chunk.segment_begin;
+    chunk.segment_begin=next_segments.size();
+    next_chunks.push_back(chunk);
+    for(std::size_t offset=0;offset<chunk.segment_count;++offset){
+      auto segment=segments_[old_segment_begin+offset];
+      segment.chunk_index=new_chunk_index;
+      next_segments.push_back(segment);
+    }
+  };
+  for(std::size_t index=0;index<first_chunk;++index)append_old_chunk(index);
+  for(std::size_t index=0;index<replacement_chunks.size();++index){
+    auto chunk=replacement_chunks[index];
+    const auto new_chunk_index=next_chunks.size();
+    const auto replacement_begin=chunk.segment_begin;
+    chunk.segment_begin=next_segments.size();
+    next_chunks.push_back(chunk);
+    for(std::size_t offset=0;offset<chunk.segment_count;++offset){
+      auto segment=replacement_segments[replacement_begin+offset];
+      segment.chunk_index=new_chunk_index;
+      next_segments.push_back(segment);
+    }
+  }
+  for(std::size_t index=last_chunk+1U;index<chunks_.size();++index)
+    append_old_chunk(index);
+  chunks_=std::move(next_chunks);
+  segments_=std::move(next_segments);
+
+  metrics_.dirty_chunks=replaced_chunks;
+  metrics_.reused_chunks=chunks_.size()-replacement_chunks.size();
+  metrics_.reused_bytes=(triangle_count-local_triangles)*sizeof(tetra::Triangle);
+  metrics_.copied_bytes=local_triangles*sizeof(tetra::Triangle);
+  metrics_.local_repacks=1U;
+  metrics_.overflow_splits=required_chunks>replaced_chunks?
+      required_chunks-replaced_chunks:0U;
+  metrics_.underfull_merges=replaced_chunks>required_chunks?
+      replaced_chunks-required_chunks:0U;
+  retained_patches_=std::move(next_patches);
+  finish_metrics(triangle_count,start);
 }
 
 std::vector<tetra::Triangle> direct_pack_surface_patches(

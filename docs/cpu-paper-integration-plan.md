@@ -892,7 +892,7 @@ meets its exactness, locality, fallback, and visual exit conditions.
 ### Gate 4 - Independent fixed-capacity draw chunks
 
 - [x] Add a packed draw-chunk table separate from hierarchy and patch storage.
-- [ ] Repack only chunks touched by changed patches.
+- [x] Repack only chunks touched by changed patches.
 - [ ] Reuse unchanged CPU staging and Vulkan buffer ranges.
 - [ ] Add partial buffer uploads and retain the preceding complete ranges until
   the replacement revision is ready.
@@ -947,9 +947,48 @@ path/method rows were byte-, layout-, triangle-, and wire-exact:
 
 The 256-triangle capacity is therefore a sound correctness and occupancy
 baseline. These draw counts are prospective CPU chunk ranges, not additional
-Vulkan calls yet. Full-pack copy volume still equals the complete triangle
-stream by design; CPU-G4-2 must demonstrate that dirty-patch repacking reduces
-that volume before the renderer consumes this storage.
+Vulkan calls yet.
+
+#### Dirty-patch incremental chunk repacking
+
+`SurfaceDrawChunkStorage` now retains owner signatures and physical slot
+assignments across complete revisions. If only patch contents change without a
+count change, it overwrites exactly those patch segments in place. Insertions,
+removals, growth, and shrinkage close over the affected owner/chunk boundary,
+include one adjacent chunk on each side for packing quality, and rewrite only
+that bounded neighbourhood. Growth takes the lowest reusable free slots;
+shrinkage coalesces released slots. Changes exceeding 64 old or replacement
+chunks, or half the retained owner set, use an explicit deterministic global
+compaction fallback. Logical draw order is independent of physical slot order.
+
+The operation is validation-first: unsorted owners, invalid source ranges, and
+triangle-count overflow leave the preceding valid chunk publication intact.
+Metrics distinguish dirty/reused chunks and bytes, local repacks, allocated,
+reused and released slots, overflow splits, underfull merges, and global
+compactions. Host staging and Vulkan upload behavior remain unchanged for the
+next two Gate 4 leaves.
+
+Focused release tests cover byte-stable unchanged slots, same-count patch
+replacement, insertion, removal, growth, shrinkage, free-slot reuse, forced
+global fallback, multiple revision gaps, and invalid-input rollback. Every
+result is byte-identical to direct packing and produces the same triangle,
+orientation, incidence, material, and submitted-wire evidence.
+
+The persistent depth-16 benchmark now updates one retained scene cache and
+chunk store at every camera pose rather than packing only each path's final
+mesh. All 159 revisions (53 per method) were byte-, layout-, triangle-, and
+wire-exact:
+
+| Method | Full-pack bytes | Incremental copied bytes | Reduction | Local repacks / global compactions | Overflow splits / underfull merges | Occupancy min / mean | Aggregate fragmentation |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Marching tetrahedra | 33.261 MB | 20.425 MB | 38.6% | 26 / 10 | 78 / 31 | 96.23% / 97.67% | 0.117 MB |
+| Lattice cleaving | 33.261 MB | 20.425 MB | 38.6% | 26 / 10 | 78 / 31 | 96.23% / 97.67% | 0.117 MB |
+| Dual contouring | 84.292 MB | 60.860 MB | 27.8% | 6 / 30 | 1 / 0 | 98.80% / 99.35% | 0.075 MB |
+
+Copy volume is therefore below complete-stream packing on every canonical path
+and method while retaining high occupancy. Dual contouring reaches the bounded
+fallback more often because an edge-star change invalidates a much larger
+owner set; it remains exact and still avoids 27.8% of full-pack copying.
 
 ### Gate 5 - Four-hexahedra surface-quality experiment
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -735,6 +736,14 @@ struct SurfaceDrawChunkMetrics {
   std::size_t free_slots{};
   std::size_t reused_slots{};
   std::size_t allocated_slots{};
+  std::size_t released_slots{};
+  std::size_t dirty_patches{};
+  std::size_t dirty_chunks{};
+  std::size_t reused_chunks{};
+  std::size_t reused_bytes{};
+  std::size_t local_repacks{};
+  std::size_t overflow_splits{};
+  std::size_t underfull_merges{};
   std::size_t chunk_splits{};
   std::size_t chunk_merges{};
   std::size_t global_compactions{};
@@ -777,20 +786,32 @@ class SurfaceDrawChunkStorage {
   }
 
  private:
+  struct RetainedPatch {
+    tetra::TetId logical_owner{tetra::invalid_tet};
+    std::uint64_t field_revision{};
+    std::uint64_t topology_hash{};
+    std::size_t triangle_count{};
+  };
+
   [[nodiscard]] std::size_t allocate_slot();
   void release_active_slots();
   void normalize_free_ranges();
+  void compact(std::span<const SurfacePatchRecord> patches,
+               std::span<const tetra::Triangle> patch_arena);
+  void finish_metrics(std::size_t triangle_count,
+                      std::chrono::steady_clock::time_point start);
 
   std::size_t chunk_capacity_{};
   std::vector<SurfaceDrawChunkRecord> chunks_;
   std::vector<SurfaceDrawPatchSegment> segments_;
   std::vector<SurfaceDrawChunkFreeRange> free_ranges_;
   std::vector<tetra::Triangle> arena_;
+  std::vector<RetainedPatch> retained_patches_;
   SurfaceDrawChunkMetrics metrics_;
 };
 
-// Deliberately simple full-packing oracle used to prove chunk storage before
-// later leaves introduce dirty-only repacking and retained upload ranges.
+// Deliberately simple full-packing oracle used to prove retained chunk output
+// independently of incremental packing and later retained upload ranges.
 [[nodiscard]] std::vector<tetra::Triangle> direct_pack_surface_patches(
     std::span<const SurfacePatchRecord> patches,
     std::span<const tetra::Triangle> patch_arena);

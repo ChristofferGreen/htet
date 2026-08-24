@@ -6,13 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G4-2 dirty-patch incremental chunk repacking.
-  - Scope: update only chunks whose assigned owner patches changed, including
-    overflow splits, underfull merges, and bounded global compaction fallback.
-  - Acceptance: all canonical camera traces remain hash-identical to direct
-    packing and copied bytes follow changed patch bytes.
-  - Stop rule: retain whole-scene host upload staging until CPU chunk locality
-    is independently proven.
 - [ ] CPU-G4-3 retained host staging ranges.
   - Scope: preserve unchanged triangle and wire staging ranges across complete
     revisions and atomically publish a complete chunk table.

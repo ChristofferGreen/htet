@@ -4498,6 +4498,188 @@ TEST_CASE("surface draw chunks diagnose invalid ranges and report split merge pa
       std::out_of_range);
 }
 
+TEST_CASE("surface draw chunks repack only bounded dirty owner neighbourhoods") {
+  using Patch=tetra_viewer::SurfacePatchRecord;
+  const auto make_state=[](const std::vector<tetra::TetId>& owners,
+                           const std::vector<std::size_t>& counts,
+                           std::uint64_t revision){
+    std::pair<std::vector<Patch>,std::vector<tetra::Triangle>> state;
+    REQUIRE(owners.size()==counts.size());
+    for(std::size_t patch_index=0;patch_index<owners.size();++patch_index){
+      const auto begin=state.second.size();
+      for(std::size_t triangle_index=0;
+          triangle_index<counts[patch_index];++triangle_index){
+        const auto marker=static_cast<double>(
+            owners[patch_index]*1000U+revision*100U+triangle_index);
+        state.second.push_back({{marker,1.0,2.0},{3.0,marker,4.0},
+                                {5.0,6.0,marker}});
+      }
+      state.first.push_back({
+          .logical_owner=owners[patch_index],
+          .mesh_revision=revision,
+          .field_revision=revision,
+          .topology_hash=owners[patch_index]*37U+revision,
+          .triangle_begin=begin,
+          .triangle_count=counts[patch_index],
+          .triangle_capacity=counts[patch_index]});
+    }
+    return state;
+  };
+  const auto byte_equal=[](std::span<const tetra::Triangle> first,
+                           std::span<const tetra::Triangle> second){
+    return first.size()==second.size()&&
+        (first.empty()||std::memcmp(first.data(),second.data(),
+                                    first.size_bytes())==0);
+  };
+  const std::vector<tetra::TetId> owners{10,20,30,40,50,60,70,80,90,100};
+  std::vector<std::size_t> counts(owners.size(),2U);
+  auto state=make_state(owners,counts,1U);
+  tetra_viewer::SurfaceDrawChunkStorage chunks(4U);
+  chunks.pack(state.first,state.second);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         state.first,state.second)));
+
+  const std::vector initial_chunks(chunks.chunks().begin(),chunks.chunks().end());
+  const std::vector initial_arena(chunks.arena().begin(),chunks.arena().end());
+  auto same_layout=make_state(owners,counts,2U);
+  for(std::size_t index=0;index<same_layout.first.size();++index){
+    if(owners[index]==50U)continue;
+    same_layout.first[index].field_revision=state.first[index].field_revision;
+    same_layout.first[index].topology_hash=state.first[index].topology_hash;
+    std::copy_n(state.second.begin()+static_cast<std::ptrdiff_t>(
+                    state.first[index].triangle_begin),
+                state.first[index].triangle_count,
+                same_layout.second.begin()+static_cast<std::ptrdiff_t>(
+                    same_layout.first[index].triangle_begin));
+  }
+  chunks.pack(same_layout.first,same_layout.second);
+  CHECK(chunks.metrics().dirty_patches==1U);
+  CHECK(chunks.metrics().dirty_chunks==1U);
+  CHECK(chunks.metrics().copied_bytes==2U*sizeof(tetra::Triangle));
+  CHECK(chunks.metrics().copied_bytes<
+        chunks.metrics().triangles*sizeof(tetra::Triangle));
+  CHECK(chunks.metrics().global_compactions==0U);
+  REQUIRE(chunks.chunks().size()==initial_chunks.size());
+  for(std::size_t index=0;index<chunks.chunks().size();++index){
+    const auto& chunk=chunks.chunks()[index];
+    if(index==2U)continue;
+    CHECK(chunk.arena_slot==initial_chunks[index].arena_slot);
+    CHECK(chunk.triangle_count==initial_chunks[index].triangle_count);
+    const auto begin=chunk.arena_slot*chunks.chunk_capacity();
+    CHECK(std::memcmp(chunks.arena().data()+begin,
+                      initial_arena.data()+begin,
+                      chunk.triangle_count*sizeof(tetra::Triangle))==0);
+  }
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         same_layout.first,same_layout.second)));
+
+  counts[4]=20U;
+  auto grown=make_state(owners,counts,3U);
+  for(std::size_t index=0;index<grown.first.size();++index){
+    if(index==4U)continue;
+    grown.first[index].field_revision=same_layout.first[index].field_revision;
+    grown.first[index].topology_hash=same_layout.first[index].topology_hash;
+    std::copy_n(same_layout.second.begin()+static_cast<std::ptrdiff_t>(
+                    same_layout.first[index].triangle_begin),
+                same_layout.first[index].triangle_count,
+                grown.second.begin()+static_cast<std::ptrdiff_t>(
+                    grown.first[index].triangle_begin));
+  }
+  chunks.pack(grown.first,grown.second);
+  CHECK(chunks.metrics().local_repacks==1U);
+  CHECK(chunks.metrics().global_compactions==0U);
+  CHECK(chunks.metrics().overflow_splits>0U);
+  CHECK(chunks.metrics().reused_chunks>0U);
+  CHECK(chunks.metrics().copied_bytes<
+        chunks.metrics().triangles*sizeof(tetra::Triangle));
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         grown.first,grown.second)));
+
+  counts[4]=2U;
+  auto shrunk=make_state(owners,counts,4U);
+  for(std::size_t index=0;index<shrunk.first.size();++index){
+    if(index==4U)continue;
+    shrunk.first[index].field_revision=grown.first[index].field_revision;
+    shrunk.first[index].topology_hash=grown.first[index].topology_hash;
+    std::copy_n(grown.second.begin()+static_cast<std::ptrdiff_t>(
+                    grown.first[index].triangle_begin),
+                grown.first[index].triangle_count,
+                shrunk.second.begin()+static_cast<std::ptrdiff_t>(
+                    shrunk.first[index].triangle_begin));
+  }
+  chunks.pack(shrunk.first,shrunk.second);
+  CHECK(chunks.metrics().underfull_merges>0U);
+  CHECK(chunks.metrics().released_slots>0U);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         shrunk.first,shrunk.second)));
+
+  auto inserted_owners=owners;
+  inserted_owners.insert(inserted_owners.begin()+5,55U);
+  std::vector<std::size_t> inserted_counts(inserted_owners.size(),2U);
+  auto inserted=make_state(inserted_owners,inserted_counts,5U);
+  for(std::size_t index=0;index<inserted.first.size();++index){
+    const auto found=std::ranges::find(owners,inserted_owners[index]);
+    if(found==owners.end())continue;
+    const auto old_index=static_cast<std::size_t>(std::distance(owners.begin(),found));
+    inserted.first[index].field_revision=shrunk.first[old_index].field_revision;
+    inserted.first[index].topology_hash=shrunk.first[old_index].topology_hash;
+    std::copy_n(shrunk.second.begin()+static_cast<std::ptrdiff_t>(
+                    shrunk.first[old_index].triangle_begin),
+                shrunk.first[old_index].triangle_count,
+                inserted.second.begin()+static_cast<std::ptrdiff_t>(
+                    inserted.first[index].triangle_begin));
+  }
+  chunks.pack(inserted.first,inserted.second);
+  CHECK(chunks.metrics().local_repacks==1U);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         inserted.first,inserted.second)));
+  chunks.pack(shrunk.first,shrunk.second);
+  CHECK(chunks.metrics().local_repacks==1U);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         shrunk.first,shrunk.second)));
+
+  counts[4]=20U;
+  auto regrown=make_state(owners,counts,6U);
+  for(std::size_t index=0;index<regrown.first.size();++index){
+    if(index==4U)continue;
+    regrown.first[index].field_revision=shrunk.first[index].field_revision;
+    regrown.first[index].topology_hash=shrunk.first[index].topology_hash;
+    std::copy_n(shrunk.second.begin()+static_cast<std::ptrdiff_t>(
+                    shrunk.first[index].triangle_begin),
+                shrunk.first[index].triangle_count,
+                regrown.second.begin()+static_cast<std::ptrdiff_t>(
+                    regrown.first[index].triangle_begin));
+  }
+  chunks.pack(regrown.first,regrown.second);
+  CHECK(chunks.metrics().reused_slots>0U);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         regrown.first,regrown.second)));
+
+  const auto valid_before=tetra_viewer::assemble_surface_draw_chunks(chunks);
+  auto invalid=regrown.first;
+  invalid[4].triangle_begin=regrown.second.size();
+  invalid[4].triangle_count=1U;
+  CHECK_THROWS_AS(chunks.pack(invalid,regrown.second),std::out_of_range);
+  CHECK(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),valid_before));
+
+  std::vector<tetra::TetId> replaced_owners{11,21,31,41,51,61,71,81,91,101};
+  std::vector<std::size_t> replaced_counts(replaced_owners.size(),2U);
+  auto replaced=make_state(replaced_owners,replaced_counts,7U);
+  chunks.pack(replaced.first,replaced.second);
+  CHECK(chunks.metrics().global_compactions==1U);
+  CHECK(chunks.metrics().local_repacks==0U);
+  REQUIRE(byte_equal(tetra_viewer::assemble_surface_draw_chunks(chunks),
+                     tetra_viewer::direct_pack_surface_patches(
+                         replaced.first,replaced.second)));
+}
+
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -5384,31 +5566,39 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
     const auto value=begin+key.size();
     return event.substr(value,event.find_first_of(",}",value)-value);
   };
+  std::size_t total_local_repacks{};
   for(const auto path:paths){
     for(const auto method:methods){
       const auto event=event_for(path,method);
       const auto triangles=std::stoull(field(event,"\"triangles\":"));
       const auto chunks=std::stoull(field(event,"\"active_chunks\":"));
+      const auto revisions=std::stoull(field(event,"\"revisions\":"));
+      const auto full_pack_bytes=
+          std::stoull(field(event,"\"full_pack_bytes\":"));
+      const auto copied_bytes=std::stoull(field(event,"\"copied_bytes\":"));
       CHECK(event.find("\"byte_match\":true")!=std::string::npos);
       CHECK(event.find("\"layout_valid\":true")!=std::string::npos);
       CHECK(event.find("\"exact\":true")!=std::string::npos);
       CHECK(field(event,"\"chunk_capacity\":")=="256");
       CHECK(triangles>0U);
       CHECK(chunks>0U);
-      CHECK(std::stoull(field(event,"\"retained_slots\":"))==chunks);
-      CHECK(std::stoull(field(event,"\"allocated_slots\":"))==chunks);
-      CHECK(field(event,"\"reused_slots\":")=="0");
-      CHECK(field(event,"\"free_slots\":")=="0");
-      CHECK(field(event,"\"global_compactions\":")=="1");
+      CHECK(std::stoull(field(event,"\"retained_slots\":"))>=chunks);
+      CHECK(std::stoull(field(event,"\"allocated_slots\":"))>=chunks);
+      CHECK(std::stoull(field(event,"\"global_compactions\":"))>=1U);
+      CHECK(std::stoull(field(event,"\"exact_matches\":"))==revisions);
+      CHECK(revisions>1U);
       CHECK(std::stoull(field(event,"\"draw_calls\":"))==chunks);
-      CHECK(std::stoull(field(event,"\"copied_bytes\":"))==
-            triangles*sizeof(tetra::Triangle));
+      CHECK(full_pack_bytes>=revisions*triangles*sizeof(tetra::Triangle)/2U);
+      CHECK(copied_bytes<full_pack_bytes);
+      total_local_repacks+=
+          std::stoull(field(event,"\"local_repacks\":"));
       CHECK(std::stod(field(event,"\"occupancy\":"))>0.0);
       CHECK(std::stod(field(event,"\"occupancy\":"))<=1.0);
       CHECK(std::stod(field(event,"\"direct_pack_ms\":"))>=0.0);
       CHECK(std::stod(field(event,"\"chunk_pack_ms\":"))>=0.0);
     }
   }
+  CHECK(total_local_repacks>0U);
 
   std::ostringstream invalid_output,invalid_errors;
   CHECK(tetra_viewer::run_script(

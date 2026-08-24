@@ -2,6 +2,15 @@
 
 ## 2026-08-24
 
+- [x] CPU-G4-2 dirty-patch incremental chunk repacking: retained owner
+  signatures and physical slots, rewrote exact segments for same-count patch
+  changes, and locally repacked bounded owner neighbourhoods for insertion,
+  removal, growth, and shrinkage with reusable overflow slots, underfull
+  merges, and deterministic global fallback. All 159 persistent depth-16
+  camera revisions were byte-, layout-, triangle-, incidence-, material-, and
+  wire-exact. Copied bytes fell 38.6% for marching/lattice and 27.8% for dual
+  contouring while minimum occupancy remained 96.23%. Host staging and Vulkan
+  uploads remain unchanged for CPU-G4-3 and CPU-G4-4.
 - [x] CPU-G4-1 packed draw-chunk storage and direct-packing baseline: added a
   retained flat triangle arena with equal-capacity physical slots, ordered draw
   records, flat owner-patch segments, and coalesced reusable free ranges.

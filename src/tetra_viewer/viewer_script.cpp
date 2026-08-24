@@ -2149,70 +2149,102 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           default_implicit_shape,benchmark_depth);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
-        ScriptState benchmark=baseline;
-        for(const auto position:path.positions){
-          point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
-          static_cast<void>(reconcile_to_current_surface(benchmark));
-        }
         for(const auto method:methods){
+          ScriptState benchmark=baseline;
           SceneCache cache;
-          if(!cache.update_scene(
-                 benchmark.mesh,benchmark.sphere,benchmark.field_revision,
-                 method,MaterialRule::all_vertices_inside,
-                 true,false,true,false,false,false,1.0,
-                 VolumeConnectionMethod::hierarchy_cells,
-                 StencilConstruction::fixed,
-                 StencilSelectionObjective::balanced,preparation)){
-            write_error(errors,"draw chunk benchmark scene did not build",path.name);
-            return 1;
-          }
-          const auto direct_start=Clock::now();
-          const auto direct=direct_pack_surface_patches(
-              cache.surface_patch_records(),cache.surface_patch_arena());
-          const auto direct_milliseconds=milliseconds_since(direct_start);
           SurfaceDrawChunkStorage chunks(chunk_capacity);
-          chunks.pack(cache.surface_patch_records(),cache.surface_patch_arena());
-          const auto assembled=assemble_surface_draw_chunks(chunks);
-          const bool byte_match=direct.size()==assembled.size()&&
-              (direct.empty()||std::memcmp(
-                   direct.data(),assembled.data(),
-                   direct.size()*sizeof(tetra::Triangle))==0);
-          const auto packed_scene=prepare_scene(
-              benchmark.mesh,benchmark.sphere,method,
-              MaterialRule::all_vertices_inside,
-              true,false,true,false,false,false,1.0,
-              VolumeConnectionMethod::hierarchy_cells,
-              StencilConstruction::fixed,
-              StencilSelectionObjective::balanced,preparation,
-              assembled,true);
-          const auto direct_hashes=surface_geometry_hashes(cache.scene());
-          const auto packed_hashes=surface_geometry_hashes(packed_scene);
-          bool layout_valid=chunks.metrics().draw_calls==chunks.chunks().size()&&
-              chunks.metrics().active_chunks==chunks.chunks().size()&&
-              chunks.metrics().patch_segments==chunks.segments().size();
-          std::vector<std::size_t> slots;
-          slots.reserve(chunks.chunks().size());
-          for(std::size_t chunk_index=0;
-              chunk_index<chunks.chunks().size();++chunk_index){
-            const auto& chunk=chunks.chunks()[chunk_index];
-            layout_valid&=chunk.triangle_count>0U&&
-                chunk.triangle_count<=chunk_capacity&&
-                chunk.segment_begin+chunk.segment_count<=chunks.segments().size()&&
-                (chunk.arena_slot+1U)*chunk_capacity<=chunks.arena().size();
-            slots.push_back(chunk.arena_slot);
-            for(std::size_t segment_index=chunk.segment_begin;
-                segment_index<chunk.segment_begin+chunk.segment_count;
-                ++segment_index){
-              const auto& segment=chunks.segments()[segment_index];
-              layout_valid&=segment.chunk_index==chunk_index&&
-                  segment.triangle_begin>=chunk.arena_slot*chunk_capacity&&
-                  segment.triangle_begin+segment.triangle_count<=
-                      chunk.arena_slot*chunk_capacity+chunk.triangle_count;
+          std::size_t revisions{},exact_matches{},full_pack_bytes{},copied_bytes{};
+          std::size_t dirty_patches{},dirty_chunks{},reused_chunks{},reused_bytes{};
+          std::size_t local_repacks{},global_compactions{},overflow_splits{};
+          std::size_t underfull_merges{},reused_slots{},allocated_slots{};
+          std::size_t released_slots{};
+          double direct_milliseconds{},chunk_milliseconds{};
+          bool byte_match=true,layout_valid=true;
+          SurfaceGeometryHashes packed_hashes;
+          for(const auto position:path.positions){
+            point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+            static_cast<void>(reconcile_to_current_surface(benchmark));
+            const bool scene_updated=cache.update_scene(
+                   benchmark.mesh,benchmark.sphere,benchmark.field_revision,
+                   method,MaterialRule::all_vertices_inside,
+                   true,false,true,false,false,false,1.0,
+                   VolumeConnectionMethod::hierarchy_cells,
+                   StencilConstruction::fixed,
+                   StencilSelectionObjective::balanced,preparation);
+            if(!scene_updated&&revisions==0U){
+              write_error(errors,"draw chunk benchmark scene did not build",path.name);
+              return 1;
             }
+            const auto direct_start=Clock::now();
+            const auto direct=direct_pack_surface_patches(
+                cache.surface_patch_records(),cache.surface_patch_arena());
+            direct_milliseconds+=milliseconds_since(direct_start);
+            chunks.pack(cache.surface_patch_records(),cache.surface_patch_arena());
+            const auto assembled=assemble_surface_draw_chunks(chunks);
+            const bool revision_byte_match=direct.size()==assembled.size()&&
+                (direct.empty()||std::memcmp(
+                     direct.data(),assembled.data(),
+                     direct.size()*sizeof(tetra::Triangle))==0);
+            const auto packed_scene=prepare_scene(
+                benchmark.mesh,benchmark.sphere,method,
+                MaterialRule::all_vertices_inside,
+                true,false,true,false,false,false,1.0,
+                VolumeConnectionMethod::hierarchy_cells,
+                StencilConstruction::fixed,
+                StencilSelectionObjective::balanced,preparation,
+                assembled,true);
+            const auto direct_hashes=surface_geometry_hashes(cache.scene());
+            packed_hashes=surface_geometry_hashes(packed_scene);
+            bool revision_layout_valid=
+                chunks.metrics().draw_calls==chunks.chunks().size()&&
+                chunks.metrics().active_chunks==chunks.chunks().size()&&
+                chunks.metrics().patch_segments==chunks.segments().size();
+            std::vector<std::size_t> slots;
+            slots.reserve(chunks.chunks().size());
+            for(std::size_t chunk_index=0;
+                chunk_index<chunks.chunks().size();++chunk_index){
+              const auto& chunk=chunks.chunks()[chunk_index];
+              revision_layout_valid&=chunk.triangle_count>0U&&
+                  chunk.triangle_count<=chunk_capacity&&
+                  chunk.segment_begin+chunk.segment_count<=chunks.segments().size()&&
+                  (chunk.arena_slot+1U)*chunk_capacity<=chunks.arena().size();
+              slots.push_back(chunk.arena_slot);
+              for(std::size_t segment_index=chunk.segment_begin;
+                  segment_index<chunk.segment_begin+chunk.segment_count;
+                  ++segment_index){
+                const auto& segment=chunks.segments()[segment_index];
+                revision_layout_valid&=segment.chunk_index==chunk_index&&
+                    segment.triangle_begin>=chunk.arena_slot*chunk_capacity&&
+                    segment.triangle_begin+segment.triangle_count<=
+                        chunk.arena_slot*chunk_capacity+chunk.triangle_count;
+              }
+            }
+            std::sort(slots.begin(),slots.end());
+            revision_layout_valid&=
+                std::ranges::adjacent_find(slots)==slots.end();
+            const bool revision_exact=revision_byte_match&&revision_layout_valid&&
+                direct_hashes==packed_hashes;
+            ++revisions;
+            exact_matches+=revision_exact?1U:0U;
+            byte_match&=revision_byte_match;
+            layout_valid&=revision_layout_valid;
+            const auto& revision_metrics=chunks.metrics();
+            full_pack_bytes+=direct.size()*sizeof(tetra::Triangle);
+            copied_bytes+=revision_metrics.copied_bytes;
+            dirty_patches+=revision_metrics.dirty_patches;
+            dirty_chunks+=revision_metrics.dirty_chunks;
+            reused_chunks+=revision_metrics.reused_chunks;
+            reused_bytes+=revision_metrics.reused_bytes;
+            local_repacks+=revision_metrics.local_repacks;
+            global_compactions+=revision_metrics.global_compactions;
+            overflow_splits+=revision_metrics.overflow_splits;
+            underfull_merges+=revision_metrics.underfull_merges;
+            reused_slots+=revision_metrics.reused_slots;
+            allocated_slots+=revision_metrics.allocated_slots;
+            released_slots+=revision_metrics.released_slots;
+            chunk_milliseconds+=revision_metrics.pack_milliseconds;
           }
-          std::sort(slots.begin(),slots.end());
-          layout_valid&=std::ranges::adjacent_find(slots)==slots.end();
-          const bool exact=byte_match&&layout_valid&&direct_hashes==packed_hashes;
+          const bool exact=exact_matches==revisions;
           const auto& metrics=chunks.metrics();
           output<<"{\"event\":\"cpu_draw_chunk_benchmark\",\"path\":\""
                 <<path.name<<"\",\"method\":\""<<surface_method_key(method)
@@ -2225,14 +2257,25 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"active_chunks\":"<<metrics.active_chunks
                 <<",\"retained_slots\":"<<metrics.retained_slots
                 <<",\"free_slots\":"<<metrics.free_slots
-                <<",\"reused_slots\":"<<metrics.reused_slots
-                <<",\"allocated_slots\":"<<metrics.allocated_slots
+                <<",\"reused_slots\":"<<reused_slots
+                <<",\"allocated_slots\":"<<allocated_slots
+                <<",\"released_slots\":"<<released_slots
                 <<",\"chunk_splits\":"<<metrics.chunk_splits
                 <<",\"chunk_merges\":"<<metrics.chunk_merges
-                <<",\"global_compactions\":"<<metrics.global_compactions
+                <<",\"dirty_patches\":"<<dirty_patches
+                <<",\"dirty_chunks\":"<<dirty_chunks
+                <<",\"reused_chunks\":"<<reused_chunks
+                <<",\"reused_bytes\":"<<reused_bytes
+                <<",\"local_repacks\":"<<local_repacks
+                <<",\"overflow_splits\":"<<overflow_splits
+                <<",\"underfull_merges\":"<<underfull_merges
+                <<",\"global_compactions\":"<<global_compactions
                 <<",\"fragmented_slots\":"<<metrics.fragmented_slots
                 <<",\"fragmentation_bytes\":"<<metrics.fragmentation_bytes
-                <<",\"copied_bytes\":"<<metrics.copied_bytes
+                <<",\"revisions\":"<<revisions
+                <<",\"exact_matches\":"<<exact_matches
+                <<",\"full_pack_bytes\":"<<full_pack_bytes
+                <<",\"copied_bytes\":"<<copied_bytes
                 <<",\"retained_bytes\":"<<metrics.retained_bytes
                 <<",\"draw_calls\":"<<metrics.draw_calls
                 <<",\"triangle_hash\":"<<packed_hashes.triangle_hash
@@ -2243,7 +2286,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                 <<",\"occupancy\":"<<std::fixed<<std::setprecision(6)
                 <<metrics.occupancy
                 <<",\"direct_pack_ms\":"<<direct_milliseconds
-                <<",\"chunk_pack_ms\":"<<metrics.pack_milliseconds<<"}\n";
+                <<",\"chunk_pack_ms\":"<<chunk_milliseconds<<"}\n";
           if(!exact){
             write_error(errors,"draw chunk benchmark failed exact packing",path.name);
             return 1;
