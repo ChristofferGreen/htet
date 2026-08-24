@@ -228,17 +228,4 @@ class MeshUpdateWorker {
     MeshUpdateOperation expected_operation,
     const MeshUpdateParameters& current_parameters);
 
-// Advances a sliced update without exposing its locally incomplete cuts.
-// Intermediate meshes stay worker-owned; only the converged result replaces
-// the displayed mesh. expected_slice_source_revision follows the private
-// chain and therefore remains independent of the displayed mesh revision.
-[[nodiscard]] MeshPublicationResult publish_converged_mesh_update_result(
-    MeshUpdateWorker& worker,MeshUpdateResult&& result,
-    tetra::TetMesh& published_mesh,
-    tetra::AdaptationPlanningCache& published_planning_cache,
-    std::uint64_t& expected_slice_source_revision,
-    std::uint64_t expected_request_id,
-    MeshUpdateOperation expected_operation,
-    const MeshUpdateParameters& current_parameters);
-
 }  // namespace tetra_viewer

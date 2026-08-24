@@ -717,7 +717,6 @@ int main(int argc, char** argv)
         tetra_viewer::MeshUpdateOperation::reconcile_lod;
     std::uint64_t submitted_mesh_request_id{};
     std::uint64_t submitted_mesh_revision{};
-    std::uint64_t expected_mesh_slice_source_revision{};
     bool lod_reconcile_before_drag=false;
     bool previous_left_pressed=false;
     double previous_cursor_x = 0.0;
@@ -875,22 +874,11 @@ int main(int argc, char** argv)
         // continues presenting the previous complete scene.
         if(auto completed=mesh_update_worker.take_completed()){
             const auto current_parameters=mesh_update_parameters();
-            const auto publication=
-                tetra_viewer::publish_converged_mesh_update_result(
+            const auto publication=tetra_viewer::publish_mesh_update_result(
                 mesh_update_worker,std::move(*completed),mesh,
-                adaptation_planning_cache,expected_mesh_slice_source_revision,
-                submitted_mesh_request_id,
+                adaptation_planning_cache,submitted_mesh_request_id,
                 submitted_mesh_operation,current_parameters);
-            if(publication.status==
-               tetra_viewer::MeshPublicationStatus::intermediate){
-                last_adaptive_result=publication.adaptation;
-                last_refine_milliseconds=publication.duration_milliseconds;
-                has_adaptive_result=true;
-                submitted_mesh_request_id=publication.request_id;
-                mesh_update_in_flight=true;
-                lod_reconcile_pending=true;
-            }else if(publication.status==
-                     tetra_viewer::MeshPublicationStatus::converged){
+            if(publication.published()){
                 last_adaptive_result=publication.adaptation;
                 last_refine_milliseconds=publication.duration_milliseconds;
                 has_adaptive_result=true;
@@ -898,10 +886,17 @@ int main(int argc, char** argv)
                 mesh_validation_current=false;
                 if(retained_upload_check)upload_dirty=true;
                 submitted_mesh_revision=mesh.revision();
-                mesh_update_in_flight=false;
-                submitted_mesh_update.reset();
-                submitted_mesh_request_id=0U;
-                lod_reconcile_pending=false;
+                if(publication.status==
+                   tetra_viewer::MeshPublicationStatus::intermediate){
+                    submitted_mesh_request_id=publication.request_id;
+                    mesh_update_in_flight=true;
+                    lod_reconcile_pending=true;
+                }else{
+                    mesh_update_in_flight=false;
+                    submitted_mesh_update.reset();
+                    submitted_mesh_request_id=0U;
+                    lod_reconcile_pending=false;
+                }
             }else{
                 // A camera, field, setting, or direct mesh edit superseded the
                 // snapshot. Never publish stale geometry.
@@ -1633,7 +1628,6 @@ int main(int argc, char** argv)
             submitted_mesh_operation=
                 tetra_viewer::MeshUpdateOperation::refine_all_once;
             submitted_mesh_revision=mesh.revision();
-            expected_mesh_slice_source_revision=mesh.revision();
             mesh_update_in_flight=true;
             lod_reconcile_pending=false;
             has_adaptive_result=false;
@@ -2053,7 +2047,6 @@ int main(int argc, char** argv)
                     submitted_mesh_operation=
                         tetra_viewer::MeshUpdateOperation::reconcile_lod;
                     submitted_mesh_revision=mesh.revision();
-                    expected_mesh_slice_source_revision=mesh.revision();
                     mesh_update_in_flight=true;
                 }
             }else{

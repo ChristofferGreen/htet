@@ -6095,7 +6095,7 @@ TEST_CASE("viewer publishes every complete worker slice before convergence") {
   CHECK(published_mesh.revision()==final_revision);
 }
 
-TEST_CASE("viewer keeps the displayed cut unchanged until LOD convergence") {
+TEST_CASE("production terrain LOD publishes visible progress before convergence") {
   const auto source=tetra::TetMesh::make_unit_cube(
       tetra::SubdivisionMethod::bcc_red_green);
   tetra::Sphere terrain;
@@ -6107,62 +6107,28 @@ TEST_CASE("viewer keeps the displayed cut unchanged until LOD convergence") {
   configuration.candidate_traversal=
       tetra::CandidateTraversal::hierarchy_bounds;
   tetra_viewer::MeshUpdateParameters parameters{
-      terrain,camera,13.0,12U,configuration,0U,
-      {.maximum_operations_per_transaction=64U,
-       .target_milliseconds=1.0e-9}};
-
-  tetra_viewer::MeshUpdateWorker oracle_worker;
-  auto oracle_parameters=parameters;
-  oracle_parameters.budget={.maximum_operations_per_transaction=4096U};
-  static_cast<void>(oracle_worker.submit(source,oracle_parameters));
-  auto oracle=oracle_worker.wait_for_completed(std::chrono::seconds(20));
-  REQUIRE(oracle.has_value());
-  while(!oracle->converged){
-    auto continuation=oracle_worker.submit_continuation(std::move(*oracle));
-    REQUIRE(continuation);
-    oracle=oracle_worker.wait_for_completed(std::chrono::seconds(20));
-    REQUIRE(oracle.has_value());
-  }
+      terrain,camera,13.0,21U,configuration,0U,
+      {.target_milliseconds=
+           tetra_viewer::default_mesh_update_time_budget_milliseconds}};
 
   tetra_viewer::MeshUpdateWorker worker;
   auto displayed_mesh=source;
   tetra::AdaptationPlanningCache planning_cache;
-  auto expected_request=worker.submit(source,parameters);
-  auto expected_source_revision=source.revision();
   const auto displayed_revision=displayed_mesh.revision();
-  const auto initial_addresses=displayed_mesh.conforming_volume().addresses();
-  const auto displayed_addresses=std::vector<tetra::TetId>(
-      initial_addresses.begin(),initial_addresses.end());
-  std::size_t intermediate_slices{};
-  for(std::size_t slice=0;slice<256U;++slice){
-    auto completed=worker.wait_for_completed(std::chrono::seconds(20));
-    REQUIRE(completed.has_value());
-    const auto publication=
-        tetra_viewer::publish_converged_mesh_update_result(
-            worker,std::move(*completed),displayed_mesh,planning_cache,
-            expected_source_revision,expected_request,
-            tetra_viewer::MeshUpdateOperation::reconcile_lod,parameters);
-    REQUIRE(publication.published());
-    if(publication.status==
-       tetra_viewer::MeshPublicationStatus::intermediate){
-      ++intermediate_slices;
-      CHECK(displayed_mesh.revision()==displayed_revision);
-      CHECK(std::ranges::equal(displayed_mesh.conforming_volume().addresses(),
-                               displayed_addresses));
-      CHECK(publication.snapshot_copy_bytes==0U);
-      CHECK(publication.cumulative_snapshot_copy_count==1U);
-      expected_request=publication.request_id;
-      continue;
-    }
-    REQUIRE(publication.status==
-            tetra_viewer::MeshPublicationStatus::converged);
-    break;
-  }
-  CHECK(intermediate_slices>1U);
+  const auto expected_request=worker.submit(source,parameters);
+  auto completed=worker.wait_for_completed(std::chrono::seconds(20));
+  REQUIRE(completed.has_value());
+  REQUIRE_FALSE(completed->converged);
+  const auto publication=tetra_viewer::publish_mesh_update_result(
+      worker,std::move(*completed),displayed_mesh,planning_cache,
+      expected_request,tetra_viewer::MeshUpdateOperation::reconcile_lod,
+      parameters);
+  REQUIRE(publication.status==
+          tetra_viewer::MeshPublicationStatus::intermediate);
   CHECK(displayed_mesh.revision()!=displayed_revision);
-  CHECK(std::ranges::equal(displayed_mesh.conforming_volume().addresses(),
-                           oracle->mesh.conforming_volume().addresses()));
-  CHECK_FALSE(planning_cache.layers.empty());
+  CHECK(displayed_mesh.logical_cut().owners.size()>
+        source.logical_cut().owners.size());
+  CHECK(worker.busy());
 }
 
 TEST_CASE("scene preparation worker publishes only the latest complete scene") {
