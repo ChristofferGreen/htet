@@ -1,0 +1,17 @@
+category	candidate	workload	repetitions	median_ms	maximum_ms	reference_median_ms	exact	retained_high_water_bytes	stable	qualification
+adaptation	classify-and-stream	eight production camera paths, summed adaptation	3	5685.438	5704.253	-	yes	7688984	yes	production-qualified
+adaptation	persistent-split-merge-queues	eight production camera paths, summed adaptation	3	7834.059	7852.760	5685.438	yes	7688984	yes	research-only-slower
+surface	marching-tetrahedra	eight production camera paths, summed patch update	3	1387.825	1813.812	2319.850	yes	30578384	yes	production-qualified
+surface	dual-contouring	eight production camera paths, summed patch update	3	2177.337	2912.548	3057.571	yes	44531952	yes	quality-candidate
+surface	lattice-cleaving	eight production camera paths, summed patch update	3	3091.888	3506.432	4025.871	yes	30578384	yes	diagnostic-candidate
+surface	surface-optimization	eight production camera paths, summed global rebuild	3	4178.290	4696.082	4161.486	yes	0	yes	quality-candidate-global
+surface	mixed-depth-dual	eight production camera paths, summed patch update	3	12469.558	16974.106	25835.446	yes	223111920	yes	experimental-quality
+surface	four-hexahedra	eight production camera paths, summed patch update	3	15161.683	21084.405	43760.778	yes	230424000	yes	headless-research
+draw	fixed-capacity	five local surfaces, summed retained pack and host stage	3	339.266	367.674	-	yes	-	yes	production-qualified
+draw	hybrid-large-patches	five local surfaces, summed retained pack and host stage	3	2472.764	2637.096	339.266	yes	-	yes	rejected-low-occupancy
+draw	direct-monolithic	five local surfaces, complete stream reference	3	-	-	339.266	yes	-	yes	reference-only
+worker	wide	unbounded convergence	3	1.522	1.558	-	yes	1611256	yes	reference-only
+worker	bounded	64-operation complete transactions	3	2.118	2.628	1.522	yes	1787900	yes	production-qualified
+worker	timed-slice	one intentionally unconverged complete transaction	3	0.051	0.057	-	yes	74456	yes	production-intermediate
+worker	resumed-slices	bounded slices to convergence	3	3.022	3.074	1.522	yes	1787900	yes	production-qualified
+worker	low-yield-slices	adversarial repeated bounded slices	3	3.017	3.121	1.522	yes	1787900	yes	production-qualified

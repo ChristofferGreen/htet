@@ -1455,19 +1455,68 @@ closed.
 
 ### Gate 7 - Select production defaults
 
-- [ ] Run all retained paths in the release binary on the fixed camera and shape
+- [x] Run all retained paths in the release binary on the fixed camera and shape
   matrix.
-- [ ] Compare medians and tail latency, not only the fastest individual run.
-- [ ] Require no post-warm-up tetrahedron-level allocations.
-- [ ] Require identical final logical and conforming-volume hashes to the full
+- [x] Compare medians and tail latency, not only the fastest individual run.
+- [x] Require no post-warm-up tetrahedron-level allocations.
+- [x] Require identical final logical and conforming-volume hashes to the full
   oracle for the production adaptation path.
-- [ ] Require exact patched-versus-monolithic surface hashes for methods marked
+- [x] Require exact patched-versus-monolithic surface hashes for methods marked
   patchable.
 - [ ] Visually inspect every retained surface method for cracks, missing faces,
   transparency, inconsistent wire width, and LOD popping.
 - [ ] Make the fastest correct CPU configuration the default and retain slower
   alternatives only when they provide a measurable quality or diagnostic
   benefit.
+
+#### Retained-path release qualification
+
+CPU-G7-1 ran three independent release repetitions of every retained
+adaptation scheduler, local surface cache, draw-publication strategy, and
+worker budget on the fixed production camera matrix. The complete comparable
+data is stored in
+[`cpu-retained-release-qualification.tsv`](cpu-retained-release-qualification.tsv).
+Each timing sample is the sum across all eight paths; `maximum_ms` is the worst
+of the three complete repetitions, not the fastest individual path.
+
+Both adaptation schedulers produced identical logical and conforming-volume
+hashes on every path in every repetition. Classify-and-stream remained the
+clear production choice: its median summed adaptation time was `5685.438` ms
+against `7834.059` ms for persistent queues, and its median summed end-to-end
+convergence time was `11621.386` ms against `14277.459` ms. Both ended at the
+same `7,688,984`-byte packed hierarchy high-water mark. The 72-row five-shape
+hash matrix was also wholly valid at depth 16. Existing hundred-update,
+terrain-cycle, queue-capacity, patch-arena, and chunk-arena release tests prove
+that warmed production storage stops growing; all hierarchy and cache storage
+remains flat arrays rather than per-tetrahedron allocations.
+
+The common patch benchmark now includes four-hexahedra and mixed-depth dual in
+addition to marching, lattice cleaving, dual contouring, and the global
+surface-optimization reference. Every method matched its monolithic triangle,
+winding, and complete visible-edge hashes on all 42 published revisions in
+all three repetitions. Retained byte high-water marks were identical between
+runs. Marching was the fastest local surface at a `1387.825` ms median. Mixed
+depth dual and four-hexahedra remained correct but cost `12469.558` and
+`15161.683` ms respectively and retained roughly 223 and 230 MB at their
+largest paths, so neither can advance as a speed default.
+
+The expanded draw benchmark exercised all five local surfaces. Fixed-capacity
+chunks remained exact, reduced uploads for every method, held at least
+`96.2290%` occupancy, and had a `339.266` ms median summed packing/staging
+cost. Hybrid chunks were also exact but fell to `13.0377%` minimum occupancy
+and cost `2472.764` ms, so they remain rejected. Direct monolithic packing is
+retained only as the byte oracle. Wide, bounded, interrupted, resumed, and
+low-yield worker policies also repeated deterministically; every converged
+policy reached the same hashes, and the intentionally interrupted policy
+published one valid complete transaction before resumption.
+
+CPU-G7-1 therefore advances classify-and-stream, fixed-capacity draw chunks,
+bounded complete worker transactions, and every correctness-qualified surface
+method to the final visual/disposition audit. Persistent queues, hybrid
+chunks, and direct packing retain explicit research, rejected, and reference
+roles. The production defaults are not changed until CPU-G7-2 completes the
+fixed visual matrix and checks that the fastest qualified combination has no
+quality regression.
 
 ## Required tests
 

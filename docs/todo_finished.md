@@ -250,3 +250,12 @@
   inconsistency, but retained barycentric stars, cylinder scalloping, and
   7--50 ms field updates. Retained it as an explicitly experimental dropdown
   method without changing production defaults; Gate 6 is closed.
+- [x] CPU-G7-1 retained-path release qualification: extended the common exact
+  patch and retained draw benchmarks to four-hexahedra and mixed-depth dual,
+  then ran every retained adaptation, surface, draw, worker, and shape path
+  three times at production depth in release mode. Stored comparable medians,
+  worst observed timings, exactness, and stable high-water evidence. All
+  qualified paths preserve their oracle hashes; classify-and-stream,
+  fixed-capacity chunks, and bounded complete worker transactions remain the
+  fastest correct production candidates. Persistent queues remain
+  research-only, hybrid chunks rejected, and direct packing reference-only.

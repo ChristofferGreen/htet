@@ -6418,7 +6418,8 @@ TEST_CASE("headless surface patch benchmark proves locality and exact output") {
       "stationary","slow-orbit","rapid-orbit","near-to-far",
       "far-to-near","teleport","reversal","repeated-pose"};
   constexpr std::array local_methods{
-      "marching-tetrahedra","lattice-cleaving","dual-contouring"};
+      "marching-tetrahedra","lattice-cleaving","dual-contouring",
+      "four-hexahedra","mixed-depth-dual"};
   const auto event_for=[&](std::string_view path,std::string_view method){
     const std::string marker="\"path\":\""+std::string(path)+
         "\",\"method\":\""+std::string(method)+"\"";
@@ -6635,7 +6636,8 @@ TEST_CASE("headless draw chunk benchmark matches direct packing on every path") 
       "stationary","slow-orbit","rapid-orbit","near-to-far",
       "far-to-near","teleport","reversal","repeated-pose"};
   constexpr std::array methods{
-      "marching-tetrahedra","lattice-cleaving","dual-contouring"};
+      "marching-tetrahedra","lattice-cleaving","dual-contouring",
+      "four-hexahedra","mixed-depth-dual"};
   const auto event_for=[&](std::string_view path,std::string_view method,
                            std::string_view strategy="fixed-capacity"){
     const std::string marker="\"path\":\""+std::string(path)+

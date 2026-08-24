@@ -1999,6 +1999,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           SurfaceMethod::marching_tetrahedra,
           SurfaceMethod::lattice_cleaving,
           SurfaceMethod::dual_contouring,
+          SurfaceMethod::four_hexahedra,
+          SurfaceMethod::mixed_depth_dual,
           SurfaceMethod::surface_optimization};
       constexpr ScenePreparationOptions preparation{
           .surface_diagnostics=false,.summary_statistics=false};
@@ -2412,7 +2414,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       constexpr std::array methods{
           SurfaceMethod::marching_tetrahedra,
           SurfaceMethod::lattice_cleaving,
-          SurfaceMethod::dual_contouring};
+          SurfaceMethod::dual_contouring,
+          SurfaceMethod::four_hexahedra,
+          SurfaceMethod::mixed_depth_dual};
       constexpr std::array retained_strategies{
           SurfaceDrawChunkStrategy::fixed_capacity,
           SurfaceDrawChunkStrategy::hybrid_large_patches};
