@@ -56,10 +56,16 @@ struct ScriptState {
   bool show_volume_faces{true};
   bool x_cutaway{true};
   double x_cut_position{1.0};
+  std::size_t requested_splits{};
+  std::size_t requested_merges{};
   std::size_t planned_splits{};
   std::size_t planned_merges{};
   std::size_t accepted_splits{};
   std::size_t accepted_merges{};
+  std::size_t rejected_split_operations{};
+  std::size_t rejected_merge_operations{};
+  std::size_t dirty_owner_events{};
+  std::size_t maximum_dirty_owners{};
   std::size_t adaptation_transactions{};
   std::size_t stale_plans{};
   std::size_t rejected_plans{};
@@ -67,6 +73,7 @@ struct ScriptState {
   std::size_t field_classifications{};
   std::size_t exact_field_evaluations{};
   std::size_t projection_evaluations{};
+  std::size_t depth_rejections{};
   std::size_t conformity_rejections{};
   std::size_t hierarchy_nodes_visited{};
   std::size_t frustum_subtrees_rejected{};
@@ -172,6 +179,8 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
           state.mesh,state.sphere,state.camera,state.pixel_threshold,
           state.maximum_depth,state.adaptation,state.field_revision,&state.planning_cache);
       state.plan_milliseconds+=milliseconds_since(plan_start);
+      state.requested_splits+=plan.requested_splits;
+      state.requested_merges+=plan.requested_merges;
       state.planned_splits+=plan.planned_splits;
       state.planned_merges+=plan.planned_merges;
       state.last_plan_revision=plan.base_revision;
@@ -179,7 +188,9 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       state.field_classifications+=plan.field_classifications;
       state.exact_field_evaluations+=plan.exact_field_evaluations;
       state.projection_evaluations+=plan.projection_evaluations;
+      state.depth_rejections+=plan.depth_rejections;
       state.conformity_rejections+=plan.conformity_rejections;
+      state.rejected_merge_operations+=plan.conformity_rejections;
       state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
@@ -206,8 +217,16 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
          !plan.commands.empty())state.planning_cache.pose_merge_pending=false;
       state.commit_milliseconds+=milliseconds_since(commit_start);
       state.last_result_revision=commit.resulting_revision;
-      if(commit.status==tetra::AdaptationCommitStatus::no_change)break;
+      if(commit.status==tetra::AdaptationCommitStatus::no_change){
+        if(!plan.commands.empty()){
+          state.rejected_split_operations+=plan.planned_splits;
+          state.rejected_merge_operations+=plan.planned_merges;
+        }
+        break;
+      }
       if(commit.status!=tetra::AdaptationCommitStatus::committed){
+        state.rejected_split_operations+=plan.planned_splits;
+        state.rejected_merge_operations+=plan.planned_merges;
         state.stale_plans+=commit.status==tetra::AdaptationCommitStatus::stale_plan?1U:0U;
         state.rejected_plans+=commit.status==tetra::AdaptationCommitStatus::rejected?1U:0U;
         result.reached_depth_limit=true;
@@ -218,6 +237,9 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       accumulate(state.bcc_metrics,commit.bcc_metrics);
       state.accepted_splits+=commit.accepted_splits;
       state.accepted_merges+=commit.accepted_merges;
+      state.dirty_owner_events+=state.mesh.last_dirty_logical_owners().size();
+      state.maximum_dirty_owners=std::max(
+          state.maximum_dirty_owners,state.mesh.last_dirty_logical_owners().size());
       ++result.iterations;
       result.refined_leaves+=commit.accepted_splits;
     }
@@ -352,6 +374,16 @@ std::size_t retained_layer_bytes(const tetra::TetMesh& mesh){
   return bytes;
 }
 
+std::size_t resident_logical_owner_count(const tetra::TetMesh& mesh){
+  std::size_t count{};
+  for(const auto& layer:mesh.layers())
+    count+=static_cast<std::size_t>(std::ranges::count_if(
+        layer.tetrahedra,[](const auto& tet){
+          return tet.transition_parent==tetra::invalid_tet;
+        }));
+  return count;
+}
+
 void write_mesh_fields(std::ostream& output, const ScriptState& state) {
   const auto logical=state.mesh.logical_cut();
   const auto conforming=state.mesh.conforming_volume();
@@ -396,6 +428,24 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"vertices\":" << state.mesh.vertices().size()
          << ",\"layers\":" << state.mesh.layers().size()
          << ",\"maximum_active_depth\":" << maximum_active_depth(state.mesh)
+         << ",\"active_logical_owners\":" << logical.owners.size()
+         << ",\"resident_logical_owners\":" << resident_logical_owner_count(state.mesh)
+         << ",\"requested_splits\":" << state.requested_splits
+         << ",\"requested_merges\":" << state.requested_merges
+         << ",\"admissible_splits\":" << state.planned_splits
+         << ",\"admissible_merges\":" << state.planned_merges
+         << ",\"committed_splits\":" << state.accepted_splits
+         << ",\"committed_merges\":" << state.accepted_merges
+         << ",\"rejected_split_operations\":" << state.rejected_split_operations
+         << ",\"rejected_merge_operations\":" << state.rejected_merge_operations
+         << ",\"deferred_splits\":"
+         << (state.requested_splits>state.planned_splits
+                 ?state.requested_splits-state.planned_splits:0U)
+         << ",\"deferred_merges\":"
+         << (state.requested_merges>state.planned_merges
+                 ?state.requested_merges-state.planned_merges:0U)
+         << ",\"dirty_owners\":" << state.dirty_owner_events
+         << ",\"maximum_dirty_owners\":" << state.maximum_dirty_owners
          << ",\"planned_splits\":" << state.planned_splits
          << ",\"planned_merges\":" << state.planned_merges
          << ",\"accepted_splits\":" << state.accepted_splits
@@ -407,6 +457,7 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"field_classifications\":" << state.field_classifications
          << ",\"exact_field_evaluations\":" << state.exact_field_evaluations
          << ",\"projection_evaluations\":" << state.projection_evaluations
+         << ",\"depth_rejections\":" << state.depth_rejections
          << ",\"conformity_rejections\":" << state.conformity_rejections
          << ",\"hierarchy_nodes_visited\":" << state.hierarchy_nodes_visited
          << ",\"frustum_subtrees_rejected\":" << state.frustum_subtrees_rejected
@@ -1443,13 +1494,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const auto plan=tetra::plan_adaptation(
           state.mesh,state.sphere,state.camera,state.pixel_threshold,
           state.maximum_depth,state.adaptation,state.field_revision,&state.planning_cache);
+      state.requested_splits+=plan.requested_splits;
+      state.requested_merges+=plan.requested_merges;
       state.planned_splits+=plan.planned_splits;
       state.planned_merges+=plan.planned_merges;
       state.logical_candidates+=plan.logical_candidates;
       state.field_classifications+=plan.field_classifications;
       state.exact_field_evaluations+=plan.exact_field_evaluations;
       state.projection_evaluations+=plan.projection_evaluations;
+      state.depth_rejections+=plan.depth_rejections;
       state.conformity_rejections+=plan.conformity_rejections;
+      state.rejected_merge_operations+=plan.conformity_rejections;
       state.hierarchy_nodes_visited+=plan.hierarchy_nodes_visited;
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
@@ -1473,11 +1528,24 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           state.mesh,plan,state.adaptation,state.field_revision);
       if(commit.status==tetra::AdaptationCommitStatus::rejected||
          commit.status==tetra::AdaptationCommitStatus::stale_plan){
+        state.rejected_split_operations+=plan.planned_splits;
+        state.rejected_merge_operations+=plan.planned_merges;
         write_error(errors,"incremental adaptation transaction was rejected",command);
         return 2;
       }
-      if(commit.status==tetra::AdaptationCommitStatus::committed)
-        {state.last_replay=commit.replay;accumulate(state.bcc_metrics,commit.bcc_metrics);}
+      if(commit.status==tetra::AdaptationCommitStatus::committed){
+        state.last_replay=commit.replay;
+        accumulate(state.bcc_metrics,commit.bcc_metrics);
+        state.accepted_splits+=commit.accepted_splits;
+        state.accepted_merges+=commit.accepted_merges;
+        state.dirty_owner_events+=state.mesh.last_dirty_logical_owners().size();
+        state.maximum_dirty_owners=std::max(
+            state.maximum_dirty_owners,state.mesh.last_dirty_logical_owners().size());
+        ++state.adaptation_transactions;
+      }else if(!plan.commands.empty()){
+        state.rejected_split_operations+=plan.planned_splits;
+        state.rejected_merge_operations+=plan.planned_merges;
+      }
       write_command_event(output,command,milliseconds_since(start),state);
       continue;
     }
@@ -1714,9 +1782,12 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         std::size_t transactions{};
         std::size_t zero_work_updates{};
         std::size_t published_revisions{};
+        std::size_t mesh_snapshot_copied_bytes{};
+        std::size_t generated_surface_bytes{};
         std::size_t uploaded_bytes{};
         bool reached_depth_limit{};
         double adaptation_milliseconds{};
+        double snapshot_copy_milliseconds{};
         double scene_preparation_milliseconds{};
         double scene_statistics_milliseconds{};
         double scene_geometry_milliseconds{};
@@ -1725,6 +1796,11 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         double publication_milliseconds{};
         for(const auto position:path.positions){
           const auto publication_start=Clock::now();
+          mesh_snapshot_copied_bytes+=benchmark.mesh.snapshot_copy_bytes();
+          const auto snapshot_start=Clock::now();
+          tetra::TetMesh private_mesh=benchmark.mesh;
+          benchmark.mesh=std::move(private_mesh);
+          snapshot_copy_milliseconds+=milliseconds_since(snapshot_start);
           point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
           const auto adaptation_start=Clock::now();
           const auto result=reconcile_to_current_surface(benchmark);
@@ -1738,6 +1814,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             scene_preparation_milliseconds+=milliseconds_since(scene_start);
             scene_statistics_milliseconds+=scene.statistics_milliseconds;
             scene_geometry_milliseconds+=scene.upload_preparation_milliseconds;
+            generated_surface_bytes+=(scene.triangle_vertices.size()+
+                scene.surface_line_vertices.size())*sizeof(SceneVertex);
             const auto upload_start=Clock::now();
             staged_upload.stage(scene);
             upload_milliseconds+=milliseconds_since(upload_start);
@@ -1759,13 +1837,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<",\"transactions\":"<<transactions
               <<",\"zero_work_updates\":"<<zero_work_updates
               <<",\"published_revisions\":"<<published_revisions
+              <<",\"mesh_snapshot_copied_bytes\":"<<mesh_snapshot_copied_bytes
+              <<",\"generated_surface_bytes\":"<<generated_surface_bytes
               <<",\"uploaded_bytes\":"<<uploaded_bytes
+              <<",\"copied_bytes\":"<<(mesh_snapshot_copied_bytes+uploaded_bytes)
               <<",\"upload_backend\":\"host-mirror\""
               <<",\"reached_depth_limit\":"<<(reached_depth_limit?"true":"false")
               <<",\"valid\":"<<(valid?"true":"false")
               <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
               <<adaptation_milliseconds
               <<",\"adaptation_ms\":"<<adaptation_milliseconds
+              <<",\"snapshot_copy_ms\":"<<snapshot_copy_milliseconds
               <<",\"scene_preparation_ms\":"<<scene_preparation_milliseconds
               <<",\"scene_statistics_ms\":"<<scene_statistics_milliseconds
               <<",\"scene_geometry_ms\":"<<scene_geometry_milliseconds

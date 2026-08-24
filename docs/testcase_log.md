@@ -14,6 +14,9 @@
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation baseline remained green at 167 tests
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark|headless and Vulkan uploads"` | failures: none | notes: both focused publication-stage timing tests passed
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 168 tests passed after publication-stage instrumentation
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation accounting baseline remained green at 168 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "adaptation planning is budgeted|mesh snapshot byte accounting|headless CPU camera benchmark"` | failures: none | notes: all three focused work-accounting tests passed
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 169 tests passed after complete work and byte accounting
 
 ## Resolved Failures
 

@@ -15,3 +15,8 @@
   resolution, commit, conformity-closure, and derived-green timings complete
   the breakdown. The Vulkan renderer now shares the tested line-ribbon
   expansion routine with the headless benchmark.
+- [x] Gate 0 complete work accounting: added requested, admissible, committed,
+  rejected, and deferred split/merge counts; active and resident logical-owner
+  counts; exact field, dirty-owner, packed snapshot-copy, generated-surface,
+  staged-upload, and aggregate copied-byte counts. Snapshot byte accounting is
+  derived from every live packed array copied by `TetMesh`.

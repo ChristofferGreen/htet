@@ -248,6 +248,8 @@ struct AdaptationPlan {
   AdaptationConfiguration configuration{};
   bool supported{true};
   std::vector<AdaptationCommand> commands;
+  std::size_t requested_splits{};
+  std::size_t requested_merges{};
   std::size_t planned_splits{};
   std::size_t planned_merges{};
   std::size_t logical_candidates{};

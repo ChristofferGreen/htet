@@ -1225,6 +1225,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     return left.address<right.address;
   });
   plan.classification_ms=elapsed_ms(plan_start);
+  plan.requested_splits=splits.size();
 
   // A split frontier takes precedence for a transaction. This keeps commit
   // atomic without copying the hierarchy and prevents conformity closure from
@@ -1277,8 +1278,10 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         if(left.priority!=right.priority)return left.priority>right.priority;
         return left.key<right.key;
       });
+      plan.requested_splits=0U;
       for(const auto& cluster:clusters){
         const auto count=cluster.end-cluster.begin;
+        plan.requested_splits+=count;
         if(plan.commands.size()+count>configuration.operation_budget){
           plan.over_budget=true;
           continue;
@@ -1354,6 +1357,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     if(left.priority!=right.priority)return left.priority>right.priority;
     return left.address<right.address;
   });
+  plan.requested_merges=merges.size();
   const double classification_end=elapsed_ms(plan_start);
   plan.classification_ms=classification_end;
   // BCC midpoint ownership is shared by a same-generation closure cluster.

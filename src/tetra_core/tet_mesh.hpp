@@ -216,6 +216,9 @@ class TetMesh {
   [[nodiscard]] BccScratchCapacities bcc_scratch_capacities() const noexcept;
   [[nodiscard]] unsigned int refinement_depth(TetId address) const;
   [[nodiscard]] std::size_t tetrahedron_count() const noexcept;
+  // Bytes copied by the default value snapshot, including live packed vector
+  // elements but excluding allocator bookkeeping and unused capacity.
+  [[nodiscard]] std::size_t snapshot_copy_bytes() const noexcept;
   // Legacy access retained while tests and hierarchy internals migrate. New
   // consumers must choose logical_cut() or conforming_volume().
   [[nodiscard]] const std::vector<TetId>& active_leaves() const noexcept { return active_leaves_; }

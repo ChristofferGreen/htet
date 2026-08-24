@@ -7,6 +7,7 @@
 #include <chrono>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace tetra {
 namespace {
@@ -926,6 +927,65 @@ std::array<std::array<VertexId, 4>, 2> TetMesh::bisect_vertices(
 bool TetMesh::is_active(TetId address) const {
   const auto index = record_index(address);
   return index && !is_split(tet_depth(address), *index);
+}
+
+std::size_t TetMesh::snapshot_copy_bytes() const noexcept {
+  std::size_t bytes=sizeof(TetMesh);
+  const auto add=[&bytes](const auto& values){
+    using Value=typename std::decay_t<decltype(values)>::value_type;
+    bytes+=values.size()*sizeof(Value);
+  };
+  add(vertices_);
+  add(root_orientations_);
+  bytes+=layers_.size()*sizeof(TetLayer);
+  for(const auto& layer:layers_){
+    add(layer.tetrahedra);
+    add(layer.tetrahedra_scratch);
+    add(layer.split_words);
+    add(layer.pinned_words);
+    add(layer.pinned_descendant_words);
+    add(layer.address_slots);
+    add(layer.split_words_scratch);
+    add(layer.pinned_words_scratch);
+  }
+  add(active_leaves_);
+  add(logical_red_owners_);
+  add(logical_red_scratch_);
+  add(logical_midpoint_masks_);
+  add(logical_stencil_choices_);
+  add(logical_midpoint_mask_scratch_);
+  add(logical_stencil_choice_scratch_);
+  add(logical_derived_hashes_);
+  add(logical_derived_hash_scratch_);
+  add(logical_derived_offsets_);
+  add(logical_derived_offset_scratch_);
+  add(logical_derived_addresses_);
+  add(logical_derived_address_scratch_);
+  add(last_dirty_logical_owners_);
+  add(midpoint_keys_);
+  add(midpoint_values_);
+  add(active_midpoint_keys_);
+  add(logical_edge_keys_);
+  add(logical_edge_reference_counts_);
+  add(active_edge_keys_);
+  add(active_edge_heads_);
+  add(active_edge_nodes_);
+  add(active_edge_free_nodes_);
+  add(closure_edge_keys_);
+  add(closure_edge_heads_);
+  add(closure_edge_nodes_);
+  add(closure_dirty_edge_slots_);
+  add(closure_dirty_owners_);
+  add(closure_selected_words_);
+  add(closure_queued_edge_words_);
+  add(closure_queued_owner_words_);
+  add(closure_face_slots_);
+  add(closure_face_nodes_);
+  add(closure_face_free_nodes_);
+  add(closure_occupied_face_slots_);
+  add(closure_face_repairs_);
+  add(closure_queued_face_words_);
+  return bytes;
 }
 
 bool TetMesh::refine_selected_binary(const std::vector<TetId>& requests) {

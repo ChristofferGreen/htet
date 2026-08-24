@@ -164,7 +164,7 @@ count. Compact globally only when fragmentation crosses a measured threshold.
   repeated-pose paths.
 - [x] Record planning, family resolution, commit, closure, derived-green
   generation, scene preparation, upload, and end-to-end publication time.
-- [ ] Record active/resident owners, requested/admissible/committed splits and
+- [x] Record active/resident owners, requested/admissible/committed splits and
   merges, rejected operations, dirty owners, exact field evaluations, copied
   bytes, generated surface bytes, and uploaded bytes.
 - [ ] Store final logical, conforming-volume, surface-triangle, and surface-edge
@@ -218,6 +218,32 @@ camera request through the retained staging-buffer swap.
 | teleport | 757.607 | 357.241 | 319.656 | 400.350 | 62.596 | 83.752 | 1088.792 | 1.695 | 1848.131 |
 | reversal | 135.617 | 52.076 | 28.050 | 83.535 | 31.737 | 27.473 | 516.003 | 0.810 | 652.453 |
 | repeated pose | 21.940 | 3.549 | 0.000 | 18.389 | 6.897 | 6.595 | 122.662 | 0.188 | 144.803 |
+
+Work accounting uses explicit lifecycle definitions. Requested operations are
+LOD-qualified candidates before budgets and conformity filtering. Admissible
+operations are commands emitted by the planner. Committed operations are exact
+hierarchy-family edits recovered from the cut delta, so conformity may make
+committed splits exceed requested splits. Explicit conformity or failed-commit
+rejections are separate from deferred candidates that were not emitted in the
+current bounded transaction. Dirty owners come from the derived-green owner
+frontier after each commit.
+
+`mesh_snapshot_copied_bytes` measures live packed bytes copied by the current
+per-request mesh snapshot, excluding allocator bookkeeping and unused
+capacity. `generated_surface_bytes` measures raw surface triangles and edge
+records. `uploaded_bytes` measures the final host upload payload after line
+expansion. `copied_bytes` is the mesh snapshot plus that staged payload.
+
+| Path | Active / resident owners | Requested / admissible / committed splits | Requested / admissible / committed merges | Rejected merges | Dirty owners | Exact field evaluations | Copied bytes | Surface bytes | Uploaded bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| stationary | 45981 / 52548 | 0 / 0 / 0 | 0 / 0 / 0 | 0 | 0 | 18380 | 177765512 | 0 | 0 |
+| slow orbit | 46730 / 53404 | 54 / 54 / 107 | 26 / 0 / 0 | 26 | 312 | 231962 | 434343052 | 12124800 | 24249600 |
+| rapid orbit | 90886 / 104060 | 3024 / 3024 / 6537 | 6335 / 122 / 122 | 6213 | 13221 | 388408 | 677519114 | 30335760 | 60671520 |
+| near to far | 55487 / 142052 | 11068 / 9614 / 12248 | 34836 / 11142 / 10890 | 11648 | 109248 | 866540 | 687934744 | 27386640 | 54773280 |
+| far to near | 78237 / 142052 | 8731 / 8382 / 11188 | 10881 / 7154 / 6580 | 2230 | 66190 | 901606 | 537996534 | 17760240 | 35520480 |
+| teleport | 74317 / 100548 | 3035 / 3035 / 6497 | 7705 / 2449 / 2449 | 5256 | 35036 | 242022 | 448571808 | 20871360 | 41742720 |
+| reversal | 55431 / 63348 | 633 / 633 / 1350 | 36 / 0 / 0 | 36 | 2640 | 194698 | 391437846 | 10147680 | 20295360 |
+| repeated pose | 46072 / 52652 | 5 / 5 / 13 | 0 / 0 / 0 | 0 | 39 | 34564 | 414921432 | 2424240 | 4848480 |
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 

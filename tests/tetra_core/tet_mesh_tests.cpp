@@ -1361,6 +1361,7 @@ TEST_CASE("adaptation planner retains packed current mark and command layers") {
   const auto split=tetra::plan_adaptation(
       mesh,shape,camera,28.0,6,configuration,0,&cache);
   REQUIRE(split.planned_splits>0U);
+  CHECK(split.requested_splits>=split.planned_splits);
   verify(split);
   std::vector<std::array<std::size_t,4>> capacities;
   for(const auto& layer:cache.transaction_layers)
@@ -1387,6 +1388,7 @@ TEST_CASE("adaptation planner retains packed current mark and command layers") {
   const auto merge=tetra::plan_adaptation(
       mesh,shape,camera,28.0,6,configuration,0,&cache);
   REQUIRE(merge.planned_merges>0U);
+  CHECK(merge.requested_merges>=merge.planned_merges);
   verify(merge);
 }
 
@@ -1401,6 +1403,8 @@ TEST_CASE("adaptation planning is budgeted non-mutating and revision checked") {
   CHECK(mesh.revision()==revision);
   CHECK(plan.base_revision==revision);
   CHECK(plan.field_revision==17);
+  CHECK(plan.requested_splits>=plan.planned_splits);
+  CHECK(plan.requested_splits>configuration.operation_budget);
   CHECK(plan.planned_splits<=configuration.operation_budget);
   REQUIRE(plan.planned_splits>0);
   CHECK(plan.planned_merges==0);
@@ -1418,6 +1422,19 @@ TEST_CASE("adaptation planning is budgeted non-mutating and revision checked") {
   const auto stale=tetra::commit_adaptation(mesh,plan,configuration,17);
   CHECK(stale.status==tetra::AdaptationCommitStatus::stale_plan);
   CHECK(mesh.logical_cut().owners==owners_after_external_change);
+}
+
+TEST_CASE("mesh snapshot byte accounting follows live packed storage") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const auto initial_bytes=mesh.snapshot_copy_bytes();
+  CHECK(initial_bytes>=sizeof(tetra::TetMesh));
+  auto initial_copy=mesh;
+  CHECK(initial_copy.snapshot_copy_bytes()==initial_bytes);
+  REQUIRE(mesh.refine_selected_binary({mesh.logical_cut().owners.front()}));
+  const auto refined_bytes=mesh.snapshot_copy_bytes();
+  CHECK(refined_bytes>initial_bytes);
+  auto refined_copy=mesh;
+  CHECK(refined_copy.snapshot_copy_bytes()==refined_bytes);
 }
 
 TEST_CASE("incremental BCC adaptation splits nearby and derefines for a distant camera") {
@@ -3620,6 +3637,9 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
     const auto value=begin+key.size();
     return event.substr(value,event.find_first_of(",}",value)-value);
   };
+  const auto number=[&](const std::string& event,std::string_view key){
+    return std::stoull(field(event,key));
+  };
   for(const auto path:paths){
     const auto first_event=event_for(first,path);
     const auto second_event=event_for(second,path);
@@ -3633,6 +3653,22 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
       CHECK(field(first_event,key).find('-')==std::string::npos);
     CHECK(std::stod(field(first_event,"\"publication_ms\":"))>=
           std::stod(field(first_event,"\"adaptation_ms\":")));
+    CHECK(number(first_event,"\"active_logical_owners\":")<=
+          number(first_event,"\"resident_logical_owners\":"));
+    CHECK(number(first_event,"\"requested_splits\":")>=
+          number(first_event,"\"admissible_splits\":"));
+    CHECK(number(first_event,"\"requested_merges\":")>=
+          number(first_event,"\"admissible_merges\":"));
+    CHECK(number(first_event,"\"mesh_snapshot_copied_bytes\":")>0U);
+    CHECK(number(first_event,"\"copied_bytes\":")==
+          number(first_event,"\"mesh_snapshot_copied_bytes\":")+
+          number(first_event,"\"uploaded_bytes\":"));
+    CHECK(number(first_event,"\"uploaded_bytes\":")>=
+          number(first_event,"\"generated_surface_bytes\":"));
+    CHECK(first_event.find("\"exact_field_evaluations\":")!=std::string::npos);
+    CHECK(first_event.find("\"dirty_owners\":")!=std::string::npos);
+    CHECK(first_event.find("\"rejected_split_operations\":")!=std::string::npos);
+    CHECK(first_event.find("\"rejected_merge_operations\":")!=std::string::npos);
     CHECK(field(first_event,"\"logical_cut_hash\":")==
           field(second_event,"\"logical_cut_hash\":"));
     CHECK(field(first_event,"\"conforming_volume_hash\":")==
@@ -3641,11 +3677,15 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   const auto stationary=event_for(first,"stationary");
   CHECK(field(stationary,"\"updates\":")==field(stationary,"\"zero_work_updates\":"));
   CHECK(field(stationary,"\"published_revisions\":")=="0");
+  CHECK(field(stationary,"\"generated_surface_bytes\":")=="0");
   CHECK(field(stationary,"\"uploaded_bytes\":")=="0");
+  CHECK(field(stationary,"\"dirty_owners\":")=="0");
   const auto repeated=event_for(first,"repeated-pose");
   CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=7U);
   CHECK(std::stoul(field(repeated,"\"published_revisions\":"))==1U);
+  CHECK(std::stoull(field(repeated,"\"generated_surface_bytes\":"))>0U);
   CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
+  CHECK(std::stoull(field(repeated,"\"dirty_owners\":"))>0U);
 }
 
 TEST_CASE("headless camera stress path is deterministic and conforming") {
