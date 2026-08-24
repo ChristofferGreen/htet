@@ -22,6 +22,9 @@ class SceneRenderer {
       const SurfaceHostStagingStorage& surface,
       std::span<const SceneVertex> hierarchy_line_vertices,
       std::span<const SceneVertex> editor_line_vertices);
+  // Refresh view-dependent camera/manipulator overlays without touching the
+  // substantially larger retained mesh buffers.
+  void upload_editor_lines(std::span<const SceneVertex> editor_line_vertices);
   [[nodiscard]] const SurfaceDeviceUploadMetrics& surface_upload_metrics()
       const noexcept { return surface_upload_planner_.metrics(); }
   // camera_data is a column-major view-projection matrix followed by a

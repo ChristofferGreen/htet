@@ -675,6 +675,38 @@ TEST_CASE("LOD camera frustum uses the exact field of view aspect and pose") {
         doctest::Approx(std::tan(camera.vertical_fov_radians*0.5)).epsilon(1.0e-12));
 }
 
+TEST_CASE("LOD camera frustum retains its screen shape across editor zoom") {
+  tetra_viewer::LodCameraPose pose;
+  pose.position={0.0,0.0,-1.0};
+  tetra::Camera camera;
+  camera.aspect_ratio=1.5;
+  const auto screen_shape=[&](double view_z){
+    tetra_viewer::ManipulatorView view;
+    view.position={0.0,0.0,view_z};
+    view.forward={0.0,0.0,-1.0};
+    view.viewport_width=1200.0;
+    view.viewport_height=800.0;
+    view.vertical_fov_radians=camera.vertical_fov_radians;
+    const auto frustum=tetra_viewer::build_lod_camera_frustum(pose,camera,view);
+    REQUIRE(frustum.segments.size()==9U);
+    std::array<tetra_viewer::ViewportPoint,4> corners{};
+    for(std::size_t corner=0;corner<corners.size();++corner)
+      corners[corner]=tetra_viewer::project_to_vulkan_viewport(
+          frustum.segments[corner].second,view.position,view.forward,
+          view.right,view.up,view.vertical_fov_radians,
+          view.viewport_width,view.viewport_height);
+    return std::array<double,2>{
+        std::hypot(corners[0].x-corners[1].x,
+                   corners[0].y-corners[1].y),
+        std::hypot(corners[0].x-corners[3].x,
+                   corners[0].y-corners[3].y)};
+  };
+  const auto close=screen_shape(2.0);
+  const auto distant=screen_shape(8.0);
+  CHECK(distant[0]==doctest::Approx(close[0]).epsilon(1.0e-12));
+  CHECK(distant[1]==doctest::Approx(close[1]).epsilon(1.0e-12));
+}
+
 TEST_CASE("camera manipulator survives long rotations poles and edge-on fallback") {
   tetra_viewer::LodCameraPose pose;
   for(std::size_t turn=0;turn<10000U;++turn){

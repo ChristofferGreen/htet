@@ -671,6 +671,7 @@ int main(int argc, char** argv)
     tetra::AdjacencyExperiment interactive_adjacency_experiment;
     std::uint64_t sphere_revision = 0;
     bool upload_dirty = true;
+    bool overlay_dirty = true;
     bool retained_upload_present_pending=false;
     enum class CameraDragMode { none, orbit, pan };
     CameraDragMode camera_drag_mode=CameraDragMode::none;
@@ -1581,8 +1582,10 @@ int main(int argc, char** argv)
         const double viewport_aspect=
             static_cast<double>(std::max(1.0F,ImGui::GetIO().DisplaySize.x))/viewport_height;
         if(camera.viewport_height_pixels!=viewport_height||
-           camera.aspect_ratio!=viewport_aspect)
+           camera.aspect_ratio!=viewport_aspect){
             lod_reconcile_pending=true;
+            overlay_dirty=true;
+        }
         camera.viewport_height_pixels = viewport_height;
         camera.aspect_ratio=viewport_aspect;
         if (ImGui::BeginTable("mesh actions", 2, ImGuiTableFlags_SizingStretchSame)) {
@@ -1932,6 +1935,7 @@ int main(int argc, char** argv)
                         orbit_camera.orbit(delta_x,delta_y,precision);
                     else orbit_camera.pan(delta_x,delta_y,viewport_height,
                                           camera.vertical_fov_radians,precision);
+                    if(delta_x!=0.0||delta_y!=0.0)overlay_dirty=true;
                 }
             }else{
                 if(previous_left_pressed&&camera_manipulator.dragging()){
@@ -1950,7 +1954,7 @@ int main(int argc, char** argv)
             previous_left_pressed=left_pressed;
             const float wheel=input.MouseWheel!=0.0f?input.MouseWheel:
                 (shift_pressed?input.MouseWheelH:0.0f);
-            if(wheel!=0.0f)orbit_camera.dolly(wheel,precision);
+            if(wheel!=0.0f){orbit_camera.dolly(wheel,precision);overlay_dirty=true;}
         }else{
             camera_drag_mode=CameraDragMode::none;
             empty_viewport_gesture.cancel();
@@ -2037,7 +2041,7 @@ int main(int argc, char** argv)
             static_cast<float>(-f.x), static_cast<float>(-f.y), static_cast<float>(-f.z), show_volume_edges ? 1.0F : 0.0F,
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
             show_faces ? 1.0F : 0.0F, x_cutaway ? x_cut_position : 2.0F};
-        if (upload_dirty) {
+        if (upload_dirty||overlay_dirty) {
             // Editor overlays deliberately do not include mesh surface-edge
             // segments. The mesh wireframe has its own depth-tested native
             // line pass; mixing it here would recreate the see-through bug.
@@ -2136,16 +2140,19 @@ int main(int argc, char** argv)
                     }
                 }
             }
-            if(retained_surface_upload_ready)
-                g_SceneRenderer.upload_surface_ranges(
-                    surface_host_staging,prepared_scene.hierarchy_line_vertices,
-                    overlay_lines);
-            else g_SceneRenderer.upload(prepared_scene.triangle_vertices,
-                                        prepared_scene.hierarchy_line_vertices,
-                                        overlay_lines);
-            if(retained_upload_check&&retained_surface_upload_ready)
-                retained_upload_present_pending=true;
+            if(upload_dirty){
+                if(retained_surface_upload_ready)
+                    g_SceneRenderer.upload_surface_ranges(
+                        surface_host_staging,prepared_scene.hierarchy_line_vertices,
+                        overlay_lines);
+                else g_SceneRenderer.upload(prepared_scene.triangle_vertices,
+                                            prepared_scene.hierarchy_line_vertices,
+                                            overlay_lines);
+                if(retained_upload_check&&retained_surface_upload_ready)
+                    retained_upload_present_pending=true;
+            }else g_SceneRenderer.upload_editor_lines(overlay_lines);
             upload_dirty = false;
+            overlay_dirty = false;
         }
 
         if((!deterministic_visual_check||manipulator_visual_check)&&lod_camera_selected&&

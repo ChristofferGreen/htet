@@ -175,6 +175,41 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
   surface_upload_planner_.reset();
 }
 
+void SceneRenderer::upload_editor_lines(
+    std::span<const SceneVertex> editor_line_vertices) {
+  std::vector<SceneVertex> ribbons;
+  expand_line_segments_for_upload(editor_line_vertices,ribbons);
+  editor_lines_.count=ribbons.size();
+  if(ribbons.size()>editor_lines_.capacity){
+    if(editor_lines_.buffer!=VK_NULL_HANDLE)
+      vkDestroyBuffer(device_,editor_lines_.buffer,nullptr);
+    if(editor_lines_.memory!=VK_NULL_HANDLE)
+      vkFreeMemory(device_,editor_lines_.memory,nullptr);
+    editor_lines_.capacity=std::max<std::size_t>(ribbons.size(),4096U);
+    VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size=editor_lines_.capacity*sizeof(SceneVertex);
+    buffer.usage=VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if(vkCreateBuffer(device_,&buffer,nullptr,&editor_lines_.buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create editor line buffer");
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_,editor_lines_.buffer,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&editor_lines_.memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate editor line buffer");
+    vkBindBufferMemory(device_,editor_lines_.buffer,editor_lines_.memory,0);
+  }
+  if(!ribbons.empty()){
+    void* mapped{};
+    vkMapMemory(device_,editor_lines_.memory,0,ribbons.size()*sizeof(SceneVertex),0,&mapped);
+    std::memcpy(mapped,ribbons.data(),ribbons.size()*sizeof(SceneVertex));
+    vkUnmapMemory(device_,editor_lines_.memory);
+  }
+}
+
 void SceneRenderer::upload_surface_ranges(
     const SurfaceHostStagingStorage& surface,
     std::span<const SceneVertex> hierarchy_line_vertices,
