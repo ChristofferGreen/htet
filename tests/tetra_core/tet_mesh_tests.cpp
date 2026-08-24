@@ -7362,6 +7362,11 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
         CHECK(vertex.normal[1]==doctest::Approx(first.normal[1]));
         CHECK(vertex.normal[2]==doctest::Approx(first.normal[2]));
       }
+      if(first.diagnostics[0]<-1.5F){
+        const auto analytic=terrain.normal((a+b+c)/3.0);
+        CHECK(first.normal[0]*analytic.x+first.normal[1]*analytic.y+
+              first.normal[2]*analytic.z>0.0);
+      }
     }
   };
 
