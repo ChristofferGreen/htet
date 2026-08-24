@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 181 tests passed after incremental changed-family and conformity-neighbour scheduler-front maintenance
+- 2026-08-24 local | fail | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: persistent schedulers seed the active cut once across camera requests | notes: 2 of 3 passed; update the old no-reseed assertion to accept separately measured incremental pushes
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 180 tests passed after deterministic camera-epoch heap refresh and retained queue-front scratch
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler"` | failures: none | notes: three tests passed for one-time seeding, lazy unique-front refresh, current-epoch reuse, stale-front removal, camera epoch changes, and streamed hash equivalence
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "set-update-scheduler=persistent-split-merge-queues,set-camera=0.55:0.5:1.5,adapt-once,set-camera=0.6:0.5:1.5,adapt-once,stats"` | failures: none | notes: priority recomputations fell from 14,508 to 3,256 with identical logical and conforming hashes
@@ -80,6 +82,7 @@
 
 ## Resolved Failures
 
+- [x] persistent schedulers seed the active cut once across camera requests | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "persistent scheduler|headless events identify"` | notes: replaced the obsolete zero-push assertion with separate incremental family, conformity-neighbour, and queue-push diagnostics; all five focused tests passed
 - [x] release workflow entry point | resolved: 2026-08-24 06:00 local | validating command: `./scripts/compile.sh --release` | notes: added the missing root release build/test script; workflow reached and executed all tests
 - [x] default terrain cutaway visual baselines remain stable for both transitions | resolved: 2026-08-24 06:02 local | validating command: `./scripts/compile.sh --release` | notes: doctest cases now run with the repository root as their working directory
 - [x] headless shape hash matrix covers every shape and camera path deterministically | resolved: 2026-08-24 local | validating command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | notes: raised the lightweight matrix-test depth from 3 to 6 so thin torus geometry is sampled

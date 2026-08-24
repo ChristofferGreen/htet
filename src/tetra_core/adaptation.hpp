@@ -271,6 +271,8 @@ struct AdaptationPlan {
   std::size_t spatial_run_candidates{};
   std::size_t scheduler_seed_scans{};
   std::size_t scheduler_seed_candidates{};
+  std::size_t scheduler_incremental_candidates{};
+  std::size_t scheduler_conformity_candidates{};
   std::size_t scheduler_queue_pushes{};
   std::size_t scheduler_useful_pops{};
   std::size_t scheduler_stale_pops{};

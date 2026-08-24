@@ -132,6 +132,14 @@ struct PersistentSchedulerEntry {
   double last_priority{};
 };
 
+// Flat open-addressed membership for one retained scheduler front. Zero is an
+// empty slot and invalid_tet is a tombstone; neither is a valid stable address.
+struct PersistentSchedulerMembership {
+  std::vector<TetId> keys;
+  std::size_t count{};
+  std::size_t tombstones{};
+};
+
 // Field intervals are stored in packed arrays aligned with the resident mesh
 // layers. They are rebuilt only when resident red storage grows or the field
 // revision changes; camera motion reuses them.
@@ -150,12 +158,20 @@ struct AdaptationPlanningCache {
   std::vector<PersistentSchedulerEntry> split_queue;
   std::vector<PersistentSchedulerEntry> merge_queue;
   std::vector<PersistentSchedulerEntry> scheduler_entry_scratch;
+  std::vector<TetId> scheduler_family_scratch;
+  std::vector<TetId> scheduler_conformity_scratch;
+  std::vector<TetId> scheduler_candidate_scratch;
+  PersistentSchedulerMembership split_queue_membership;
+  PersistentSchedulerMembership merge_queue_membership;
   // Persistent schedulers scan the active cut exactly once to establish both
   // fronts. Ordinary camera requests retain these arrays.
   bool scheduler_seeded{};
   bool has_scheduler_priority_camera{};
   Camera scheduler_priority_camera{};
   std::uint64_t scheduler_priority_epoch{};
+  std::size_t pending_scheduler_queue_pushes{};
+  std::size_t pending_scheduler_incremental_candidates{};
+  std::size_t pending_scheduler_conformity_candidates{};
   // A converged stationary request is an exact no-op until either the mesh,
   // field, camera, or adaptation settings change.
   bool has_stationary_no_change{};
@@ -195,9 +211,17 @@ struct AdaptationPlanningCache {
     split_queue.clear();
     merge_queue.clear();
     scheduler_entry_scratch.clear();
+    scheduler_family_scratch.clear();
+    scheduler_conformity_scratch.clear();
+    scheduler_candidate_scratch.clear();
+    split_queue_membership={};
+    merge_queue_membership={};
     scheduler_seeded=false;
     has_scheduler_priority_camera=false;
     scheduler_priority_epoch=0U;
+    pending_scheduler_queue_pushes=0U;
+    pending_scheduler_incremental_candidates=0U;
+    pending_scheduler_conformity_candidates=0U;
     has_stationary_no_change=false;
     has_split_pose=false;
     has_last_request_origin=false;
@@ -299,7 +323,8 @@ struct PreorderRenderMetrics {
 [[nodiscard]] AdaptationCommitResult commit_adaptation(
     TetMesh& mesh,const AdaptationPlan& plan,
     const AdaptationConfiguration& current_configuration,
-    std::uint64_t current_field_revision=0);
+    std::uint64_t current_field_revision=0,
+    AdaptationPlanningCache* planning_cache=nullptr);
 
 [[nodiscard]] AdaptationCommitResult adapt_to_surface(
     TetMesh& mesh,const Sphere& sphere,const Camera& camera,

@@ -2253,12 +2253,12 @@ TEST_CASE("persistent schedulers match streamed hashes through motion reversals 
       useful+=queued_plan.scheduler_useful_pops;
       recomputations+=queued_plan.scheduler_priority_recomputations;
       const auto queued_result=tetra::commit_adaptation(
-          queued,queued_plan,queued_configuration,5);
+          queued,queued_plan,queued_configuration,5,&queued_cache);
       const auto blocks_plan=tetra::plan_adaptation(
           blocks,shape,camera,48.0,3,blocks_configuration,5,&blocks_cache);
       block_streams+=blocks_plan.scheduler_block_streams;
       const auto blocks_result=tetra::commit_adaptation(
-          blocks,blocks_plan,blocks_configuration,5);
+          blocks,blocks_plan,blocks_configuration,5,&blocks_cache);
       REQUIRE(queued_result.status==baseline.status);
       REQUIRE(blocks_result.status==baseline.status);
       CHECK(queued.logical_cut().owners==streamed.logical_cut().owners);
@@ -2313,13 +2313,15 @@ TEST_CASE("persistent schedulers seed the active cut once across camera requests
   CHECK(cache.split_queue.capacity()==split_capacity);
   CHECK(cache.merge_queue.capacity()==merge_capacity);
 
-  REQUIRE(tetra::commit_adaptation(mesh,second,configuration,9).status==
+  REQUIRE(tetra::commit_adaptation(mesh,second,configuration,9,&cache).status==
           tetra::AdaptationCommitStatus::committed);
   const auto after_commit=tetra::plan_adaptation(
       mesh,shape,moved_camera,48.0,3,configuration,9,&cache);
   CHECK(after_commit.scheduler_seed_scans==0U);
   CHECK(after_commit.scheduler_seed_candidates==0U);
-  CHECK(after_commit.scheduler_queue_pushes==0U);
+  CHECK(after_commit.scheduler_incremental_candidates>0U);
+  CHECK(after_commit.scheduler_conformity_candidates>0U);
+  CHECK(after_commit.scheduler_queue_pushes>0U);
 
   tetra::AdaptationPlanningCache canceled_cache;
   std::stop_source stop;
@@ -2383,6 +2385,83 @@ TEST_CASE("persistent scheduler refreshes camera priority only at queue fronts")
       mesh,shape,camera,48.0,3,configuration,10,&cache);
   CHECK(moved.scheduler_useful_pops==1U);
   CHECK(moved.scheduler_priority_recomputations==1U);
+}
+
+TEST_CASE("persistent scheduler enqueues only committed families and conformity neighbours") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=4096U;
+  configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera near_camera;
+  near_camera.position={0.5,0.5,1.5};
+
+  const auto split_plan=tetra::plan_adaptation(
+      mesh,shape,near_camera,48.0,3,configuration,11,&cache);
+  REQUIRE_FALSE(split_plan.commands.empty());
+  const auto split=tetra::commit_adaptation(
+      mesh,split_plan,configuration,11,&cache);
+  REQUIRE(split.status==tetra::AdaptationCommitStatus::committed);
+  REQUIRE(split.accepted_splits>0U);
+  CHECK(cache.pending_scheduler_incremental_candidates>0U);
+  CHECK(cache.pending_scheduler_conformity_candidates>=
+        mesh.last_dirty_logical_owners().size());
+  CHECK(cache.pending_scheduler_queue_pushes>0U);
+  const auto queued=[&](const auto& queue,tetra::TetId address){
+    return std::ranges::any_of(queue,[&](const auto& entry){
+      return entry.address==address;
+    });
+  };
+  for(const auto& command:split.replay.forward_commands){
+    if(command.kind!=tetra::AdaptationCommandKind::split)continue;
+    CHECK(queued(cache.merge_queue,command.logical_owner));
+    for(std::uint32_t child=0;child<8U;++child)
+      CHECK(queued(cache.split_queue,tetra::make_tet_id(
+          tetra::tet_root(command.logical_owner),
+          (tetra::tet_path(command.logical_owner)<<3U)|child)));
+  }
+  const auto unique_queue=[&](const auto& queue,std::size_t membership_count){
+    std::vector<tetra::TetId> addresses;
+    addresses.reserve(queue.size());
+    for(const auto& entry:queue)addresses.push_back(entry.address);
+    std::sort(addresses.begin(),addresses.end());
+    CHECK(std::adjacent_find(addresses.begin(),addresses.end())==addresses.end());
+    CHECK(addresses.size()==membership_count);
+  };
+  unique_queue(cache.split_queue,cache.split_queue_membership.count);
+  unique_queue(cache.merge_queue,cache.merge_queue_membership.count);
+
+  const auto reported=tetra::plan_adaptation(
+      mesh,shape,near_camera,48.0,3,configuration,11,&cache);
+  CHECK(reported.scheduler_seed_scans==0U);
+  CHECK(reported.scheduler_incremental_candidates>0U);
+  CHECK(reported.scheduler_conformity_candidates>0U);
+  CHECK(reported.scheduler_queue_pushes>0U);
+  CHECK(cache.pending_scheduler_queue_pushes==0U);
+
+  auto far_camera=near_camera;
+  far_camera.position={8.0,8.0,8.0};
+  bool merged=false;
+  for(std::size_t iteration=0;iteration<8U&&!merged;++iteration){
+    const auto plan=tetra::plan_adaptation(
+        mesh,shape,far_camera,48.0,3,configuration,11,&cache);
+    const auto result=tetra::commit_adaptation(
+        mesh,plan,configuration,11,&cache);
+    if(result.status==tetra::AdaptationCommitStatus::no_change)break;
+    REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
+    if(result.accepted_merges==0U)continue;
+    merged=true;
+    for(const auto& command:result.replay.forward_commands)
+      if(command.kind==tetra::AdaptationCommandKind::merge)
+        CHECK(queued(cache.split_queue,command.logical_owner));
+  }
+  CHECK(merged);
+  unique_queue(cache.split_queue,cache.split_queue_membership.count);
+  unique_queue(cache.merge_queue,cache.merge_queue_membership.count);
 }
 
 TEST_CASE("adaptation capabilities reject surface-only volume claims") {
@@ -5188,6 +5267,8 @@ TEST_CASE("headless events identify adaptation schemas strategies and both cut v
   CHECK(text.find("\"exact_field_evaluations\":")!=std::string::npos);
   CHECK(text.find("\"scheduler_seed_scans\":")!=std::string::npos);
   CHECK(text.find("\"scheduler_seed_candidates\":")!=std::string::npos);
+  CHECK(text.find("\"scheduler_incremental_candidates\":")!=std::string::npos);
+  CHECK(text.find("\"scheduler_conformity_candidates\":")!=std::string::npos);
   CHECK(text.find("\"plan_ms\":")!=std::string::npos);
   CHECK(text.find("\"commit_ms\":")!=std::string::npos);
   CHECK(text.find("\"logical_cut_hash\":")!=std::string::npos);

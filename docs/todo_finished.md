@@ -89,3 +89,8 @@
   retained heaps, refreshed projected size only for unique popped entries, and
   reused current priorities without projection. The production two-move path
   fell from 14,508 to 3,256 recomputations while preserving both mesh hashes.
+- [x] Gate 2 incremental post-commit fronts: expanded exact committed families
+  and authoritative dirty conformity neighbours into retained split and merge
+  queues. Flat membership tables prevent duplicate addresses without
+  per-tetrahedron allocation. The canonical two-camera path retained both mesh
+  hashes while reporting 46,368 family and 5,748 conformity candidates.

@@ -582,7 +582,7 @@ differs from the independent oracle.
   camera requests.
 - [x] Recompute camera-dependent priority lazily when an entry reaches a queue
   front.
-- [ ] After a split or merge, enqueue only the changed owner, parent, children,
+- [x] After a split or merge, enqueue only the changed owner, parent, children,
   sibling family, and conservatively expanded conformity neighbours.
 - [ ] Detect camera teleports or excessive stale-pop ratios and fall back to one
   deterministic streamed reseed.
@@ -603,12 +603,10 @@ split front receives each current logical owner and the merge front receives
 each complete active sibling parent. Temporary seed arrays are published only
 after the pass finishes, so cancellation cannot retain a partial seed.
 
-Ordinary camera requests retain those flat arrays and never insert their
-streamed `plan.commands` back into the queues. Entries carry their last
+Ordinary camera requests retain those flat arrays. Entries carry their last
 observed mesh revision, are checked against the current cut, and are compacted
 in place when stale. That seed leaf left camera-priority refresh eager; the
-following section replaces it. Post-commit family and neighbour insertion
-remains the next Gate 2 leaf.
+following section replaces it. Commit-driven insertion is described below.
 
 A production-default mesh followed through two camera moves reported one seed
 scan over 13,284 logical owners, 14,780 total split/merge-front insertions, and
@@ -640,7 +638,32 @@ while preserving logical hash `13682450355903576323` and conforming hash
 `15065136194667184043`. Focused tests use a one-command budget to prove one
 refresh per unique front, zero recomputation after the epoch is current,
 deterministic stale-front removal, and exactly one new refresh after camera
-motion. Queue-driven candidate discovery remains the next Gate 2 leaf.
+motion.
+
+#### Incremental post-commit front maintenance
+
+Successful commits now update both retained fronts from the exact replay log
+and the mesh's authoritative dirty-logical-owner list. The changed owner,
+parent, children, sibling family, and the same expansion around conservative
+conformity neighbours form one sorted unique candidate array. Current owners
+enter the split front; parents whose eight children are all current enter the
+merge front. A flat open-addressed membership table per front prevents duplicate
+entries without introducing per-tetrahedron allocation, and all temporary
+candidate arrays remain retained in the planning cache.
+
+The headless diagnostics distinguish changed-family candidates, expanded
+conformity candidates, and actual unique queue pushes. On the canonical
+two-camera production sequence, the initial 13,284-owner scan occurred once;
+later commits considered 46,368 family candidates and 5,748 conformity
+candidates. They produced 57,008 total seed and incremental pushes, 3,256
+useful pops, and 88 stale pops while preserving logical hash
+`13682450355903576323` and conforming hash `15065136194667184043`. Focused
+split/merge tests verify child, parent, and dirty-neighbour insertion and prove
+that every retained front address remains unique and agrees with its membership
+count. Deterministic fallback reseeding remains the next Gate 2 leaf.
+The streamed classifier still supplies plan commands as the correctness oracle;
+the final Gate 2 proof leaf must switch independent discovery to these fronts
+before measuring candidates avoided.
 
 ### Gate 3 - Dirty-owner surface patches
 

@@ -221,6 +221,165 @@ double field_lipschitz_bound(const Sphere& shape) {
   return 1.0;
 }
 
+std::size_t scheduler_key_hash(TetId key){
+  key^=key>>30U;key*=0xbf58476d1ce4e5b9ULL;
+  key^=key>>27U;key*=0x94d049bb133111ebULL;
+  key^=key>>31U;
+  return static_cast<std::size_t>(key);
+}
+
+bool scheduler_membership_insert_without_growth(
+    PersistentSchedulerMembership& membership,TetId key){
+  const auto mask=membership.keys.size()-1U;
+  auto slot=scheduler_key_hash(key)&mask;
+  std::size_t tombstone=membership.keys.size();
+  while(membership.keys[slot]!=0U){
+    if(membership.keys[slot]==key)return false;
+    if(membership.keys[slot]==invalid_tet&&tombstone==membership.keys.size())
+      tombstone=slot;
+    slot=(slot+1U)&mask;
+  }
+  if(tombstone!=membership.keys.size()){
+    slot=tombstone;
+    --membership.tombstones;
+  }
+  membership.keys[slot]=key;
+  ++membership.count;
+  return true;
+}
+
+void scheduler_membership_rehash(
+    PersistentSchedulerMembership& membership,std::size_t requested_capacity){
+  std::size_t capacity=16U;
+  while(capacity<requested_capacity)capacity*=2U;
+  auto previous=std::move(membership.keys);
+  membership.keys.assign(capacity,0U);
+  membership.count=0U;
+  membership.tombstones=0U;
+  for(const TetId key:previous)
+    if(key!=0U&&key!=invalid_tet)
+      static_cast<void>(scheduler_membership_insert_without_growth(membership,key));
+}
+
+bool scheduler_membership_insert(
+    PersistentSchedulerMembership& membership,TetId key){
+  if(key==0U||key==invalid_tet)return false;
+  if(membership.keys.empty())scheduler_membership_rehash(membership,16U);
+  if((membership.count+membership.tombstones+1U)*2U>=membership.keys.size()){
+    const auto capacity=(membership.count+1U)*2U>=membership.keys.size()
+        ?membership.keys.size()*2U:membership.keys.size();
+    scheduler_membership_rehash(membership,capacity);
+  }
+  return scheduler_membership_insert_without_growth(membership,key);
+}
+
+void scheduler_membership_erase(
+    PersistentSchedulerMembership& membership,TetId key){
+  if(membership.keys.empty()||key==0U||key==invalid_tet)return;
+  const auto mask=membership.keys.size()-1U;
+  auto slot=scheduler_key_hash(key)&mask;
+  while(membership.keys[slot]!=0U){
+    if(membership.keys[slot]==key){
+      membership.keys[slot]=invalid_tet;
+      --membership.count;
+      ++membership.tombstones;
+      return;
+    }
+    slot=(slot+1U)&mask;
+  }
+}
+
+void scheduler_membership_reset(
+    PersistentSchedulerMembership& membership,
+    std::span<const PersistentSchedulerEntry> entries){
+  membership={};
+  scheduler_membership_rehash(membership,std::max<std::size_t>(16U,entries.size()*2U));
+  for(const auto& entry:entries)
+    static_cast<void>(scheduler_membership_insert_without_growth(
+        membership,entry.address));
+}
+
+void update_persistent_scheduler_after_commit(
+    AdaptationPlanningCache& cache,const TetMesh& mesh,
+    const AdaptationCommitResult& commit){
+  if(!cache.scheduler_seeded||commit.status!=AdaptationCommitStatus::committed)
+    return;
+  auto& family_candidates=cache.scheduler_family_scratch;
+  auto& conformity_candidates=cache.scheduler_conformity_scratch;
+  auto& candidates=cache.scheduler_candidate_scratch;
+  family_candidates.clear();
+  conformity_candidates.assign(
+      mesh.last_dirty_logical_owners().begin(),
+      mesh.last_dirty_logical_owners().end());
+  candidates.clear();
+  const auto expand_family=[&](TetId address,std::vector<TetId>& output){
+    output.push_back(address);
+    const auto depth=tet_depth(address);
+    if(depth>=3U){
+      const TetId parent=make_tet_id(tet_root(address),tet_path(address)>>3U);
+      output.push_back(parent);
+      for(std::uint32_t child=0;child<8U;++child)
+        output.push_back(make_tet_id(
+            tet_root(parent),(tet_path(parent)<<3U)|static_cast<TetId>(child)));
+    }
+    if(depth+3U<tet_root_shift)
+      for(std::uint32_t child=0;child<8U;++child)
+        output.push_back(make_tet_id(
+            tet_root(address),(tet_path(address)<<3U)|static_cast<TetId>(child)));
+  };
+  for(const auto& command:commit.replay.forward_commands)
+    expand_family(command.logical_owner,family_candidates);
+  const auto original_conformity_count=conformity_candidates.size();
+  for(std::size_t index=0;index<original_conformity_count;++index)
+    expand_family(conformity_candidates[index],conformity_candidates);
+  const auto sort_unique=[](std::vector<TetId>& values){
+    std::sort(values.begin(),values.end());
+    values.erase(std::unique(values.begin(),values.end()),values.end());
+  };
+  sort_unique(family_candidates);
+  sort_unique(conformity_candidates);
+  cache.pending_scheduler_incremental_candidates+=family_candidates.size();
+  cache.pending_scheduler_conformity_candidates+=conformity_candidates.size();
+  candidates.reserve(family_candidates.size()+conformity_candidates.size());
+  std::set_union(family_candidates.begin(),family_candidates.end(),
+                 conformity_candidates.begin(),conformity_candidates.end(),
+                 std::back_inserter(candidates));
+  const auto& logical=mesh.logical_red_owners();
+  const auto current=[&](TetId owner){
+    return std::binary_search(logical.begin(),logical.end(),owner);
+  };
+  const auto complete_family=[&](TetId parent){
+    if(tet_depth(parent)+3U>=tet_root_shift)return false;
+    for(std::uint32_t child=0;child<8U;++child){
+      const TetId address=make_tet_id(
+          tet_root(parent),(tet_path(parent)<<3U)|static_cast<TetId>(child));
+      if(!current(address))return false;
+    }
+    return true;
+  };
+  const auto enqueue=[&](std::vector<PersistentSchedulerEntry>& queue,
+                         PersistentSchedulerMembership& membership,TetId address){
+    if(!scheduler_membership_insert(membership,address))return;
+    queue.push_back({address,mesh.revision(),0U,0.0});
+    ++cache.pending_scheduler_queue_pushes;
+  };
+  for(const TetId candidate:candidates){
+    if(current(candidate))enqueue(
+        cache.split_queue,cache.split_queue_membership,candidate);
+    if(complete_family(candidate))enqueue(
+        cache.merge_queue,cache.merge_queue_membership,candidate);
+    if(tet_depth(candidate)>=3U){
+      const TetId parent=make_tet_id(
+          tet_root(candidate),tet_path(candidate)>>3U);
+      if(complete_family(parent))enqueue(
+          cache.merge_queue,cache.merge_queue_membership,parent);
+    }
+  }
+  family_candidates.clear();
+  conformity_candidates.clear();
+  candidates.clear();
+}
+
 void pack_transaction_frontier(
     AdaptationPlanningCache& cache,std::size_t layer_count,
     std::span<const TetId> logical_owners,
@@ -839,6 +998,14 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
 
   AdaptationPlanningCache local_planning_cache;
   auto& summaries=planning_cache?*planning_cache:local_planning_cache;
+  plan.scheduler_queue_pushes=summaries.pending_scheduler_queue_pushes;
+  plan.scheduler_incremental_candidates=
+      summaries.pending_scheduler_incremental_candidates;
+  plan.scheduler_conformity_candidates=
+      summaries.pending_scheduler_conformity_candidates;
+  summaries.pending_scheduler_queue_pushes=0U;
+  summaries.pending_scheduler_incremental_candidates=0U;
+  summaries.pending_scheduler_conformity_candidates=0U;
   const auto same_surface=[](const Sphere& first,const Sphere& second){
     return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
         first.centre.z==second.centre.z&&first.radius==second.radius&&
@@ -952,6 +1119,10 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     }
     summaries.split_queue=std::move(split_seed);
     summaries.merge_queue=std::move(merge_seed);
+    scheduler_membership_reset(
+        summaries.split_queue_membership,summaries.split_queue);
+    scheduler_membership_reset(
+        summaries.merge_queue_membership,summaries.merge_queue);
     summaries.scheduler_seeded=true;
     plan.scheduler_seed_scans=1U;
     plan.scheduler_seed_candidates=logical.size();
@@ -967,6 +1138,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     const auto kind=plan.commands.front().kind;
     auto& queue=kind==AdaptationCommandKind::split
         ?summaries.split_queue:summaries.merge_queue;
+    auto& membership=kind==AdaptationCommandKind::split
+        ?summaries.split_queue_membership:summaries.merge_queue_membership;
     const auto priority_epoch=summaries.scheduler_priority_epoch;
     const auto lower_priority=[priority_epoch](const auto& left,const auto& right){
       const bool left_stale=left.priority_epoch!=priority_epoch;
@@ -1002,6 +1175,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       auto entry=queue.back();
       queue.pop_back();
       if(!current_entry(entry.address)){
+        scheduler_membership_erase(membership,entry.address);
         ++plan.scheduler_stale_pops;
         continue;
       }
@@ -1523,7 +1697,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
 AdaptationCommitResult commit_adaptation(
     TetMesh& mesh,const AdaptationPlan& plan,
     const AdaptationConfiguration& current_configuration,
-    std::uint64_t current_field_revision) {
+    std::uint64_t current_field_revision,
+    AdaptationPlanningCache* planning_cache) {
   AdaptationCommitResult result;
   result.resulting_revision=mesh.revision();
   result.operations.requested_splits=plan.requested_splits;
@@ -1677,6 +1852,9 @@ AdaptationCommitResult commit_adaptation(
   result.status=AdaptationCommitStatus::committed;
   result.resulting_revision=mesh.revision();
   result.bcc_metrics=mesh.last_bcc_update_metrics();
+  if(planning_cache&&
+     current_configuration.update_scheduler!=UpdateScheduler::classify_and_stream)
+    update_persistent_scheduler_after_commit(*planning_cache,mesh,result);
   return result;
 }
 
@@ -1739,7 +1917,8 @@ AdaptationCommitResult adapt_to_surface(TetMesh& mesh,const Sphere& sphere,
     canceled.canceled=true;
     return canceled;
   }
-  auto result=commit_adaptation(mesh,plan,configuration,field_revision);
+  auto result=commit_adaptation(
+      mesh,plan,configuration,field_revision,planning_cache);
   if(planning_cache&&result.status==AdaptationCommitStatus::no_change&&
      !plan.commands.empty())planning_cache->pose_merge_pending=false;
   return result;
