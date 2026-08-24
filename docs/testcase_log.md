@@ -21,6 +21,10 @@
 - 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "surface geometry hashes|headless shape hash"` | failures: none | notes: all three focused tests passed at depth 6, the minimum test depth that resolves the torus surface
 - 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-shape-hashes=all"` | failures: none | notes: all 72 shape/path rows were valid at production depth 16 and stored in docs/cpu-shape-path-hashes.tsv
 - 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 172 tests passed after canonical shape/path geometry hashing and baseline storage
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: pre-implementation latency-instrumentation baseline passed all 172 tests
+- 2026-08-24 local | pass | mode: release | command: `ctest --test-dir build/release --output-on-failure -R "headless CPU camera benchmark"` | failures: none | notes: latency fields and publication-boundary invariants passed in the focused release test
+- 2026-08-24 local | pass | mode: release | command: `tetra_viewer_bin --script "benchmark-cpu-camera-paths"` | failures: none | notes: recorded first-complete-revision and final-convergence latency for all eight production-depth camera paths
+- 2026-08-24 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 172 tests passed after complete-revision latency instrumentation and Gate 0 closure
 
 ## Resolved Failures
 

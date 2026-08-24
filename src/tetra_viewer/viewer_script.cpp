@@ -1785,6 +1785,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const auto baseline_scene=prepare_cpu_benchmark_scene(baseline);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
+        const auto path_start=Clock::now();
         ScriptState benchmark=baseline;
         BenchmarkUploadBuffers published_upload,staged_upload;
         published_upload.reserve_for(baseline_scene);
@@ -1805,7 +1806,11 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         double upload_milliseconds{};
         double publish_commit_milliseconds{};
         double publication_milliseconds{};
+        double first_complete_revision_milliseconds{};
+        std::size_t first_complete_revision_update{};
+        std::size_t update_index{};
         for(const auto position:path.positions){
+          ++update_index;
           const auto publication_start=Clock::now();
           mesh_snapshot_copied_bytes+=benchmark.mesh.snapshot_copy_bytes();
           const auto snapshot_start=Clock::now();
@@ -1836,9 +1841,14 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             published_mesh_revision=benchmark.mesh.revision();
             publish_commit_milliseconds+=milliseconds_since(publish_start);
             ++published_revisions;
+            if(first_complete_revision_update==0U){
+              first_complete_revision_milliseconds=milliseconds_since(path_start);
+              first_complete_revision_update=update_index;
+            }
           }
           publication_milliseconds+=milliseconds_since(publication_start);
         }
+        const double final_convergence_milliseconds=milliseconds_since(path_start);
         const bool valid=benchmark.mesh.has_positive_active_volumes()&&
                          benchmark.mesh.has_conforming_active_faces();
         output<<"{\"event\":\"cpu_camera_path_benchmark\",\"path\":\""
@@ -1848,6 +1858,10 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<",\"transactions\":"<<transactions
               <<",\"zero_work_updates\":"<<zero_work_updates
               <<",\"published_revisions\":"<<published_revisions
+              <<",\"first_complete_revision_observed\":"
+              <<(first_complete_revision_update!=0U?"true":"false")
+              <<",\"first_complete_revision_update\":"
+              <<first_complete_revision_update
               <<",\"mesh_snapshot_copied_bytes\":"<<mesh_snapshot_copied_bytes
               <<",\"generated_surface_bytes\":"<<generated_surface_bytes
               <<",\"uploaded_bytes\":"<<uploaded_bytes
@@ -1864,7 +1878,11 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<",\"scene_geometry_ms\":"<<scene_geometry_milliseconds
               <<",\"upload_ms\":"<<upload_milliseconds
               <<",\"publish_commit_ms\":"<<publish_commit_milliseconds
-              <<",\"publication_ms\":"<<publication_milliseconds<<',';
+              <<",\"publication_ms\":"<<publication_milliseconds
+              <<",\"first_complete_revision_ms\":"
+              <<first_complete_revision_milliseconds
+              <<",\"final_convergence_ms\":"
+              <<final_convergence_milliseconds<<',';
         write_mesh_fields(output,benchmark);output<<"}\n";
         if(!valid){
           write_error(errors,"CPU camera benchmark path lost mesh conformity",path.name);

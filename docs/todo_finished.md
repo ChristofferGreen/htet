@@ -25,3 +25,8 @@
   shapes and eight camera paths, deterministic and diagnostic tests, and a
   durable 72-row depth-16 release baseline alongside logical-cut and
   conforming-volume hashes.
+- [x] Gate 0 complete-revision latency baseline: extended each CPU camera-path
+  event with observed-first-revision state, revision/update counts, time to the
+  first changed complete conforming publication, and time to final convergence.
+  Recorded all eight release baselines and defined stationary zero-work
+  semantics so bounded worker slices can be compared against the same boundary.

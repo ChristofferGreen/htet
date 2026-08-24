@@ -3688,10 +3688,27 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
     for(const auto key:{"\"adaptation_ms\":","\"scene_preparation_ms\":",
                         "\"scene_statistics_ms\":","\"scene_geometry_ms\":",
                         "\"upload_ms\":","\"publish_commit_ms\":",
-                        "\"publication_ms\":"})
+                        "\"publication_ms\":",
+                        "\"first_complete_revision_ms\":",
+                        "\"final_convergence_ms\":"})
       CHECK(field(first_event,key).find('-')==std::string::npos);
     CHECK(std::stod(field(first_event,"\"publication_ms\":"))>=
           std::stod(field(first_event,"\"adaptation_ms\":")));
+    CHECK(std::stod(field(first_event,"\"final_convergence_ms\":"))>=
+          std::stod(field(first_event,"\"publication_ms\":")));
+    const bool first_revision_observed=
+        field(first_event,"\"first_complete_revision_observed\":")=="true";
+    CHECK(first_revision_observed==
+          (number(first_event,"\"published_revisions\":")>0U));
+    CHECK(first_revision_observed==
+          (number(first_event,"\"first_complete_revision_update\":")>0U));
+    if(first_revision_observed){
+      CHECK(std::stod(field(first_event,"\"first_complete_revision_ms\":"))>0.0);
+      CHECK(std::stod(field(first_event,"\"final_convergence_ms\":"))>=
+            std::stod(field(first_event,"\"first_complete_revision_ms\":")));
+      CHECK(number(first_event,"\"first_complete_revision_update\":")<=
+            number(first_event,"\"updates\":"));
+    }
     CHECK(number(first_event,"\"active_logical_owners\":")<=
           number(first_event,"\"resident_logical_owners\":"));
     CHECK(number(first_event,"\"requested_splits\":")>=
@@ -3716,12 +3733,17 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   const auto stationary=event_for(first,"stationary");
   CHECK(field(stationary,"\"updates\":")==field(stationary,"\"zero_work_updates\":"));
   CHECK(field(stationary,"\"published_revisions\":")=="0");
+  CHECK(field(stationary,"\"first_complete_revision_observed\":")=="false");
+  CHECK(field(stationary,"\"first_complete_revision_update\":")=="0");
+  CHECK(std::stod(field(stationary,"\"first_complete_revision_ms\":"))==0.0);
   CHECK(field(stationary,"\"generated_surface_bytes\":")=="0");
   CHECK(field(stationary,"\"uploaded_bytes\":")=="0");
   CHECK(field(stationary,"\"dirty_owners\":")=="0");
   const auto repeated=event_for(first,"repeated-pose");
   CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=7U);
   CHECK(std::stoul(field(repeated,"\"published_revisions\":"))==1U);
+  CHECK(field(repeated,"\"first_complete_revision_observed\":")=="true");
+  CHECK(field(repeated,"\"first_complete_revision_update\":")=="1");
   CHECK(std::stoull(field(repeated,"\"generated_surface_bytes\":"))>0U);
   CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
   CHECK(std::stoull(field(repeated,"\"dirty_owners\":"))>0U);

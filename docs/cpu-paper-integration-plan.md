@@ -169,7 +169,7 @@ count. Compact globally only when fragmentation crosses a measured threshold.
   bytes, generated surface bytes, and uploaded bytes.
 - [x] Store final logical, conforming-volume, surface-triangle, and surface-edge
   hashes for every path and implicit shape.
-- [ ] Add a benchmark event for time to first complete intermediate revision
+- [x] Add a benchmark event for time to first complete intermediate revision
   and time to final convergence.
 
 Exit condition: the release benchmark can distinguish adaptation work, surface
@@ -260,6 +260,34 @@ rotation. Winding, vertex coordinates, duplicates, missing triangles, cracks,
 and the canonical unique edge set remain observable. The lightweight release
 test exercises the complete matrix at depth 6, which is the minimum depth that
 samples all shapes including the torus, and verifies deterministic output.
+
+#### Complete-revision latency baseline
+
+The camera-path benchmark also records publication latency from the start of a
+path. `first_complete_revision_ms` ends when the first changed, complete,
+conforming revision has finished scene preparation, host-mirror upload staging,
+and atomic publication. `final_convergence_ms` ends after the final camera
+request has converged and its complete revision has been published. A
+stationary path explicitly reports `first_complete_revision_observed=false`
+and zero first-revision latency because the previously published mesh already
+satisfies every request.
+
+The following release baseline was recorded on 2026-08-24 on an Apple M3 Pro.
+It captures the current unsliced behaviour: intermediate revisions occur only
+between distinct camera positions, never within one long update. Gate 1 can
+therefore measure whether bounded worker slices materially reduce the first
+complete-revision latency while preserving the same final hashes.
+
+| Path | Complete revisions | First update | First complete revision (ms) | Final convergence (ms) |
+|---|---:|---:|---:|---:|
+| stationary | 0 | 0 | 0.000 | 17.384 |
+| slow orbit | 5 | 1 | 169.256 | 926.875 |
+| rapid orbit | 8 | 1 | 165.439 | 3572.238 |
+| near to far | 6 | 1 | 406.815 | 5531.050 |
+| far to near | 4 | 3 | 442.670 | 4032.768 |
+| teleport | 6 | 1 | 230.863 | 2412.368 |
+| reversal | 4 | 1 | 168.309 | 781.610 |
+| repeated pose | 1 | 1 | 166.314 | 179.443 |
 
 ### Gate 1 - Useful-work accounting and bounded worker slices
 
