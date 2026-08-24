@@ -130,6 +130,10 @@ struct PersistentSchedulerEntry {
   std::uint64_t state_revision{};
   std::uint64_t priority_epoch{};
   double last_priority{};
+  double priority_motion_budget{};
+  bool has_priority{};
+  bool may_intersect_surface{true};
+  bool surface_relation_known{};
 };
 
 // Flat open-addressed membership for one retained scheduler front. Zero is an
@@ -160,6 +164,9 @@ struct AdaptationPlanningCache {
   std::vector<PersistentSchedulerEntry> scheduler_split_seed_scratch;
   std::vector<PersistentSchedulerEntry> scheduler_merge_seed_scratch;
   std::vector<PersistentSchedulerEntry> scheduler_entry_scratch;
+  std::vector<TetId> scheduler_projection_address_scratch;
+  std::vector<double> scheduler_projection_value_scratch;
+  std::vector<std::uint32_t> scheduler_projection_index_scratch;
   std::vector<TetId> scheduler_family_scratch;
   std::vector<TetId> scheduler_conformity_scratch;
   std::vector<TetId> scheduler_candidate_scratch;
@@ -170,9 +177,15 @@ struct AdaptationPlanningCache {
   // Persistent schedulers scan the active cut exactly once to establish both
   // fronts. Ordinary camera requests retain these arrays.
   bool scheduler_seeded{};
+  bool scheduler_heaps_valid{};
   bool has_scheduler_priority_camera{};
   Camera scheduler_priority_camera{};
   std::uint64_t scheduler_priority_epoch{};
+  double scheduler_motion_budget{};
+  unsigned int scheduler_maximum_depth{};
+  bool has_scheduler_maximum_depth{};
+  std::uint64_t scheduler_field_revision{std::numeric_limits<std::uint64_t>::max()};
+  std::array<std::size_t,tet_root_shift> scheduler_active_depth_counts{};
   std::size_t scheduler_useful_pops_since_reseed{};
   std::size_t scheduler_stale_pops_since_reseed{};
   std::size_t pending_scheduler_queue_pushes{};
@@ -219,6 +232,9 @@ struct AdaptationPlanningCache {
     scheduler_split_seed_scratch.clear();
     scheduler_merge_seed_scratch.clear();
     scheduler_entry_scratch.clear();
+    scheduler_projection_address_scratch.clear();
+    scheduler_projection_value_scratch.clear();
+    scheduler_projection_index_scratch.clear();
     scheduler_family_scratch.clear();
     scheduler_conformity_scratch.clear();
     scheduler_candidate_scratch.clear();
@@ -227,8 +243,14 @@ struct AdaptationPlanningCache {
     scheduler_split_membership_scratch={};
     scheduler_merge_membership_scratch={};
     scheduler_seeded=false;
+    scheduler_heaps_valid=false;
     has_scheduler_priority_camera=false;
     scheduler_priority_epoch=0U;
+    scheduler_motion_budget=0.0;
+    scheduler_maximum_depth=0U;
+    has_scheduler_maximum_depth=false;
+    scheduler_field_revision=std::numeric_limits<std::uint64_t>::max();
+    scheduler_active_depth_counts.fill(0U);
     scheduler_useful_pops_since_reseed=0U;
     scheduler_stale_pops_since_reseed=0U;
     pending_scheduler_queue_pushes=0U;

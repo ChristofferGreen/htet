@@ -231,7 +231,7 @@ bool scheduler_camera_teleported(const Camera& previous,const Camera& current,
   const double current_distance=std::sqrt(
       length_squared(current.position-surface_centre));
   const double translation_limit=
-      std::max(0.5,0.75*std::min(previous_distance,current_distance));
+      std::max(0.25,0.25*std::min(previous_distance,current_distance));
   if(length_squared(current.position-previous.position)>
      translation_limit*translation_limit)return true;
   const double previous_forward_length=std::sqrt(length_squared(previous.forward));
@@ -244,6 +244,84 @@ bool scheduler_camera_teleported(const Camera& previous,const Camera& current,
        previous.forward.z*current.forward.z)/
       (previous_forward_length*current_forward_length);
   return forward_cosine<0.5;
+}
+
+double scheduler_camera_motion_bound(const TetMesh& mesh,const Camera& previous,
+                                     const Camera& current){
+  Vec3 minimum{std::numeric_limits<double>::infinity(),
+               std::numeric_limits<double>::infinity(),
+               std::numeric_limits<double>::infinity()};
+  Vec3 maximum{-std::numeric_limits<double>::infinity(),
+               -std::numeric_limits<double>::infinity(),
+               -std::numeric_limits<double>::infinity()};
+  for(const auto& root:mesh.layers().front().tetrahedra)
+    if(root.transition_parent==invalid_tet)
+      for(const VertexId vertex:root.vertices){
+        const auto& point=mesh.vertices()[vertex];
+        minimum.x=std::min(minimum.x,point.x);
+        minimum.y=std::min(minimum.y,point.y);
+        minimum.z=std::min(minimum.z,point.z);
+        maximum.x=std::max(maximum.x,point.x);
+        maximum.y=std::max(maximum.y,point.y);
+        maximum.z=std::max(maximum.z,point.z);
+      }
+  const Vec3 centre=(minimum+maximum)/2.0;
+  const Vec3 half_extent=maximum-centre;
+  const double radius=std::sqrt(half_extent.x*half_extent.x+
+                                half_extent.y*half_extent.y+
+                                half_extent.z*half_extent.z);
+  const auto first=prepare_camera_projection(previous);
+  const auto second=prepare_camera_projection(current);
+  const auto dot=[](Vec3 left,Vec3 right){
+    return left.x*right.x+left.y*right.y+left.z*right.z;
+  };
+  const auto length=[&](Vec3 value){return std::sqrt(dot(value,value));};
+  const auto angle=[&](Vec3 first_axis,Vec3 second_axis){
+    return std::acos(std::clamp(dot(first_axis,second_axis),-1.0,1.0));
+  };
+  const double camera_distance=std::max(
+      radius,std::min(length(previous.position-centre),
+                      length(current.position-centre)));
+  const double translation=length(current.position-previous.position)/
+                           camera_distance;
+  const double orientation=std::max(
+      angle(first.forward,second.forward),angle(first.up,second.up));
+  const double focal_change=std::abs(std::log(
+      std::max(second.focal_length,1.0e-12)/
+      std::max(first.focal_length,1.0e-12)));
+  return translation+orientation+focal_change;
+}
+
+double scheduler_split_key(const PersistentSchedulerEntry& entry){
+  if(!entry.may_intersect_surface)
+    return -std::numeric_limits<double>::infinity();
+  return entry.has_priority
+      ?std::log(std::max(entry.last_priority,1.0e-12))-
+           entry.priority_motion_budget
+      :std::numeric_limits<double>::infinity();
+}
+
+bool scheduler_split_lower_priority(const PersistentSchedulerEntry& left,
+                                    const PersistentSchedulerEntry& right){
+  const double left_key=scheduler_split_key(left);
+  const double right_key=scheduler_split_key(right);
+  if(left_key!=right_key)return left_key<right_key;
+  return left.address>right.address;
+}
+
+double scheduler_merge_key(const PersistentSchedulerEntry& entry){
+  return entry.has_priority
+      ?std::log(std::max(entry.last_priority,1.0e-12))+
+           entry.priority_motion_budget
+      :-std::numeric_limits<double>::infinity();
+}
+
+bool scheduler_merge_lower_priority(const PersistentSchedulerEntry& left,
+                                    const PersistentSchedulerEntry& right){
+  const double left_key=scheduler_merge_key(left);
+  const double right_key=scheduler_merge_key(right);
+  if(left_key!=right_key)return left_key>right_key;
+  return left.address>right.address;
 }
 
 std::size_t scheduler_key_hash(TetId key){
@@ -333,6 +411,18 @@ void update_persistent_scheduler_after_commit(
     const AdaptationCommitResult& commit){
   if(!cache.scheduler_seeded||commit.status!=AdaptationCommitStatus::committed)
     return;
+  for(const auto& command:commit.replay.forward_commands){
+    const auto depth=tet_depth(command.logical_owner);
+    if(command.kind==AdaptationCommandKind::split){
+      if(cache.scheduler_active_depth_counts[depth]>0U)
+        --cache.scheduler_active_depth_counts[depth];
+      cache.scheduler_active_depth_counts[depth+3U]+=8U;
+    }else{
+      if(cache.scheduler_active_depth_counts[depth+3U]>=8U)
+        cache.scheduler_active_depth_counts[depth+3U]-=8U;
+      ++cache.scheduler_active_depth_counts[depth];
+    }
+  }
   auto& family_candidates=cache.scheduler_family_scratch;
   auto& conformity_candidates=cache.scheduler_conformity_scratch;
   auto& candidates=cache.scheduler_candidate_scratch;
@@ -387,21 +477,28 @@ void update_persistent_scheduler_after_commit(
     return true;
   };
   const auto enqueue=[&](std::vector<PersistentSchedulerEntry>& queue,
-                         PersistentSchedulerMembership& membership,TetId address){
+                         PersistentSchedulerMembership& membership,TetId address,
+                         bool split){
     if(!scheduler_membership_insert(membership,address))return;
     queue.push_back({address,mesh.revision(),0U,0.0});
+    if(cache.scheduler_heaps_valid){
+      if(split)std::push_heap(
+          queue.begin(),queue.end(),scheduler_split_lower_priority);
+      else std::push_heap(
+          queue.begin(),queue.end(),scheduler_merge_lower_priority);
+    }
     ++cache.pending_scheduler_queue_pushes;
   };
   for(const TetId candidate:candidates){
     if(current(candidate))enqueue(
-        cache.split_queue,cache.split_queue_membership,candidate);
+        cache.split_queue,cache.split_queue_membership,candidate,true);
     if(complete_family(candidate))enqueue(
-        cache.merge_queue,cache.merge_queue_membership,candidate);
+        cache.merge_queue,cache.merge_queue_membership,candidate,false);
     if(tet_depth(candidate)>=3U){
       const TetId parent=make_tet_id(
           tet_root(candidate),tet_path(candidate)>>3U);
       if(complete_family(parent))enqueue(
-          cache.merge_queue,cache.merge_queue_membership,parent);
+          cache.merge_queue,cache.merge_queue_membership,parent,false);
     }
   }
   family_candidates.clear();
@@ -1051,12 +1148,20 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         first.up.y==second.up.y&&first.up.z==second.up.z&&
         first.aspect_ratio==second.aspect_ratio;
   };
-  const bool scheduler_teleport=
+  bool scheduler_teleport=
       configuration.update_scheduler!=UpdateScheduler::classify_and_stream&&
       summaries.has_scheduler_priority_camera&&
       !same_camera(summaries.scheduler_priority_camera,camera)&&
       scheduler_camera_teleported(
           summaries.scheduler_priority_camera,camera,sphere.centre);
+  double scheduler_motion_delta{};
+  if(configuration.update_scheduler!=UpdateScheduler::classify_and_stream&&
+     summaries.has_scheduler_priority_camera&&!scheduler_teleport&&
+     !same_camera(summaries.scheduler_priority_camera,camera)){
+    scheduler_motion_delta=scheduler_camera_motion_bound(
+        mesh,summaries.scheduler_priority_camera,camera);
+    if(!std::isfinite(scheduler_motion_delta))scheduler_teleport=true;
+  }
   const auto split_origin_matches=[&]{
     return planning_cache&&summaries.has_split_pose&&
         summaries.split_pose_field_revision==field_revision&&
@@ -1103,6 +1208,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
      summaries.stationary_configuration==configuration&&
      same_surface(summaries.stationary_surface,sphere)&&
      same_camera(summaries.stationary_camera,camera)){
+    if(configuration.update_scheduler!=UpdateScheduler::classify_and_stream)
+      plan.scheduler_candidates_avoided=mesh.logical_red_owners().size();
     pack_transaction_frontier(summaries,mesh.layers().size(),
                               mesh.logical_red_owners(),{});
     return plan;
@@ -1120,7 +1227,9 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.stationary_maximum_depth=maximum_depth;
   };
   const auto& logical=mesh.logical_red_owners();
-  plan.logical_candidates=logical.size();
+  const bool queue_discovery=
+      configuration.update_scheduler!=UpdateScheduler::classify_and_stream;
+  plan.logical_candidates=queue_discovery?0U:logical.size();
   const auto complete_merge_parent=[&](TetId parent){
     for(std::uint32_t child=0;child<8U;++child){
       const TetId address=make_tet_id(
@@ -1164,9 +1273,18 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
               summaries.scheduler_split_membership_scratch);
     std::swap(summaries.merge_queue_membership,
               summaries.scheduler_merge_membership_scratch);
+    std::make_heap(summaries.split_queue.begin(),summaries.split_queue.end(),
+                   scheduler_split_lower_priority);
+    std::make_heap(summaries.merge_queue.begin(),summaries.merge_queue.end(),
+                   scheduler_merge_lower_priority);
     split_seed.clear();
     merge_seed.clear();
     summaries.scheduler_seeded=true;
+    summaries.scheduler_heaps_valid=true;
+    summaries.scheduler_motion_budget=0.0;
+    summaries.scheduler_active_depth_counts.fill(0U);
+    for(const TetId owner:logical)
+      ++summaries.scheduler_active_depth_counts[tet_depth(owner)];
     summaries.scheduler_useful_pops_since_reseed=0U;
     summaries.scheduler_stale_pops_since_reseed=0U;
     plan.scheduler_seed_scans+=1U;
@@ -1176,68 +1294,10 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     plan.scheduler_fallbacks+=force_reseed?1U:0U;
   };
   seed_scheduler(scheduler_teleport);
+  if(!scheduler_teleport)
+    summaries.scheduler_motion_budget+=scheduler_motion_delta;
   if(cancel())return plan;
-  const auto apply_scheduler=[&](std::span<const TetId> owners){
-    if(cancel())return;
-    if(configuration.update_scheduler==UpdateScheduler::classify_and_stream||
-       plan.commands.empty())return;
-    const auto kind=plan.commands.front().kind;
-    auto& queue=kind==AdaptationCommandKind::split
-        ?summaries.split_queue:summaries.merge_queue;
-    auto& membership=kind==AdaptationCommandKind::split
-        ?summaries.split_queue_membership:summaries.merge_queue_membership;
-    const auto priority_epoch=summaries.scheduler_priority_epoch;
-    const auto lower_priority=[priority_epoch](const auto& left,const auto& right){
-      const bool left_stale=left.priority_epoch!=priority_epoch;
-      const bool right_stale=right.priority_epoch!=priority_epoch;
-      if(left_stale!=right_stale)return !left_stale;
-      if(left.last_priority!=right.last_priority)
-        return left.last_priority<right.last_priority;
-      return left.address>right.address;
-    };
-    std::make_heap(queue.begin(),queue.end(),lower_priority);
-    const auto current_entry=[&](TetId address){
-      return kind==AdaptationCommandKind::split
-          ?std::binary_search(owners.begin(),owners.end(),address)
-          :complete_merge_parent(address);
-    };
-    auto& processed=summaries.scheduler_entry_scratch;
-    processed.clear();
-    processed.reserve(std::min(queue.size(),plan.commands.size()));
-    const auto restore_processed=[&]{
-      for(const auto& entry:processed){
-        queue.push_back(entry);
-        std::push_heap(queue.begin(),queue.end(),lower_priority);
-      }
-      processed.clear();
-    };
-    const std::size_t useful_budget=std::min(queue.size(),plan.commands.size());
-    while(processed.size()<useful_budget&&!queue.empty()){
-      if(cancel()){
-        restore_processed();
-        return;
-      }
-      std::pop_heap(queue.begin(),queue.end(),lower_priority);
-      auto entry=queue.back();
-      queue.pop_back();
-      if(!current_entry(entry.address)){
-        scheduler_membership_erase(membership,entry.address);
-        ++plan.scheduler_stale_pops;
-        ++summaries.scheduler_stale_pops_since_reseed;
-        continue;
-      }
-      if(entry.priority_epoch!=priority_epoch){
-        entry.last_priority=projected_tetrahedron_diameter(
-            mesh,entry.address,prepared_camera);
-        entry.priority_epoch=priority_epoch;
-        ++plan.scheduler_priority_recomputations;
-      }
-      entry.state_revision=mesh.revision();
-      ++plan.scheduler_useful_pops;
-      ++summaries.scheduler_useful_pops_since_reseed;
-      processed.push_back(entry);
-    }
-    restore_processed();
+  const auto reseed_if_stale=[&]{
     constexpr std::size_t minimum_fallback_sample=64U;
     constexpr double maximum_stale_ratio=0.25;
     const auto sampled_pops=summaries.scheduler_useful_pops_since_reseed+
@@ -1246,25 +1306,58 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
        static_cast<double>(summaries.scheduler_stale_pops_since_reseed)>
            maximum_stale_ratio*static_cast<double>(sampled_pops))
       seed_scheduler(true);
-    if(configuration.update_scheduler==UpdateScheduler::hybrid_queued_blocks){
-      std::vector<std::uint64_t> blocks;
-      blocks.reserve(plan.commands.size());
-      for(const auto& command:plan.commands)
-        blocks.push_back((static_cast<std::uint64_t>(tet_depth(command.logical_owner))<<56U)|
-                         (command.logical_owner>>6U));
-      std::sort(blocks.begin(),blocks.end());
-      blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
-      plan.scheduler_block_streams=blocks.size();
-    }
+  };
+  const auto record_scheduler_blocks=[&]{
+    if(configuration.update_scheduler!=UpdateScheduler::hybrid_queued_blocks)
+      return;
+    std::vector<std::uint64_t> blocks;
+    blocks.reserve(plan.commands.size());
+    for(const auto& command:plan.commands)
+      blocks.push_back(
+          (static_cast<std::uint64_t>(tet_depth(command.logical_owner))<<56U)|
+          (command.logical_owner>>6U));
+    std::sort(blocks.begin(),blocks.end());
+    blocks.erase(std::unique(blocks.begin(),blocks.end()),blocks.end());
+    plan.scheduler_block_streams=blocks.size();
   };
 
   struct Candidate { TetId address{invalid_tet}; double priority{}; };
   std::vector<Candidate> splits;
-  const bool has_overdepth=std::ranges::any_of(logical,[&](TetId owner){
+  bool has_overdepth{};
+  if(queue_discovery){
+    for(std::size_t depth=0;
+        depth<summaries.scheduler_active_depth_counts.size();++depth)
+      if(depth>maximum_depth)
+        has_overdepth|=summaries.scheduler_active_depth_counts[depth]!=0U;
+  }else has_overdepth=std::ranges::any_of(logical,[&](TetId owner){
     return tet_depth(owner)>maximum_depth;
   });
   const unsigned int increment=subdivision_depth_increment(mesh.subdivision_method());
   const double split_threshold=pixel_threshold*configuration.split_hysteresis;
+  if(queue_discovery&&summaries.scheduler_field_revision!=field_revision){
+    for(auto& entry:summaries.split_queue){
+      entry.may_intersect_surface=true;
+      entry.surface_relation_known=false;
+    }
+    summaries.scheduler_field_revision=field_revision;
+    summaries.scheduler_heaps_valid=false;
+  }
+  if(queue_discovery&&
+     (!summaries.has_scheduler_maximum_depth||
+      summaries.scheduler_maximum_depth!=maximum_depth)){
+    for(auto& entry:summaries.split_queue){
+      if(tet_depth(entry.address)+increment>maximum_depth){
+        entry.last_priority=0.0;
+        entry.priority_motion_budget=summaries.scheduler_motion_budget;
+        entry.has_priority=true;
+      }else if(summaries.has_scheduler_maximum_depth&&
+               maximum_depth>summaries.scheduler_maximum_depth&&
+               entry.last_priority==0.0)entry.has_priority=false;
+    }
+    summaries.scheduler_maximum_depth=maximum_depth;
+    summaries.has_scheduler_maximum_depth=true;
+    summaries.scheduler_heaps_valid=false;
+  }
   if(configuration.candidate_traversal==CandidateTraversal::spatial_runs&&
      (summaries.spatial_index_active_revision!=mesh.revision()||
       summaries.spatial_index_field_revision!=field_revision)){
@@ -1473,7 +1566,110 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     if(classify_owner(owner)==SurfaceRelation::intersecting)
       splits.push_back({owner,diameter/split_threshold});
   };
-  if(configuration.candidate_traversal==CandidateTraversal::active_cut_scan){
+  const auto discover_scheduler_splits=[&]{
+    auto& queue=summaries.split_queue;
+    auto& membership=summaries.split_queue_membership;
+    const double motion_budget=summaries.scheduler_motion_budget;
+    if(!summaries.scheduler_heaps_valid){
+      std::make_heap(queue.begin(),queue.end(),scheduler_split_lower_priority);
+      std::make_heap(summaries.merge_queue.begin(),summaries.merge_queue.end(),
+                     scheduler_merge_lower_priority);
+      summaries.scheduler_heaps_valid=true;
+    }
+    auto& processed=summaries.scheduler_entry_scratch;
+    auto& projection_addresses=summaries.scheduler_projection_address_scratch;
+    auto& projection_values=summaries.scheduler_projection_value_scratch;
+    auto& projection_indices=summaries.scheduler_projection_index_scratch;
+    processed.clear();
+    projection_addresses.clear();
+    projection_indices.clear();
+    processed.reserve(queue.size());
+    const auto restore=[&]{
+      const bool dense_restore=processed.size()>queue.size()/8U;
+      if(dense_restore){
+        queue.insert(queue.end(),processed.begin(),processed.end());
+        std::make_heap(queue.begin(),queue.end(),scheduler_split_lower_priority);
+      }else for(const auto& entry:processed){
+          queue.push_back(entry);
+          std::push_heap(queue.begin(),queue.end(),scheduler_split_lower_priority);
+        }
+      processed.clear();
+    };
+    while(!queue.empty()){
+      if(cancel()){restore();return;}
+      std::pop_heap(queue.begin(),queue.end(),scheduler_split_lower_priority);
+      auto entry=queue.back();
+      queue.pop_back();
+      if(!std::binary_search(logical.begin(),logical.end(),entry.address)){
+        scheduler_membership_erase(membership,entry.address);
+        ++plan.scheduler_stale_pops;
+        ++summaries.scheduler_stale_pops_since_reseed;
+        continue;
+      }
+      ++plan.logical_candidates;
+      ++plan.scheduler_useful_pops;
+      ++summaries.scheduler_useful_pops_since_reseed;
+      const double upper_bound=entry.has_priority
+          ?entry.last_priority*std::exp(
+               motion_budget-entry.priority_motion_budget)
+          :std::numeric_limits<double>::infinity();
+      if(upper_bound<=split_threshold){
+        processed.push_back(entry);
+        break;
+      }
+      if(tet_depth(entry.address)+increment>maximum_depth){
+        entry.last_priority=0.0;
+        entry.priority_motion_budget=motion_budget;
+        entry.priority_epoch=summaries.scheduler_priority_epoch;
+        entry.state_revision=mesh.revision();
+        entry.has_priority=true;
+        ++plan.depth_rejections;
+        processed.push_back(entry);
+        continue;
+      }
+      processed.push_back(entry);
+      projection_addresses.push_back(entry.address);
+      projection_indices.push_back(
+          static_cast<std::uint32_t>(processed.size()-1U));
+    }
+    projection_values.resize(projection_addresses.size());
+    constexpr std::size_t projection_batch_size=256U;
+    for(std::size_t begin=0;begin<projection_addresses.size();
+        begin+=projection_batch_size){
+      if(cancel()){restore();return;}
+      const auto count=std::min(
+          projection_batch_size,projection_addresses.size()-begin);
+      projected_tetrahedron_diameters(
+          mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
+          std::span(projection_values).subspan(begin,count));
+    }
+    plan.projection_evaluations+=projection_addresses.size();
+    plan.scheduler_priority_recomputations+=projection_addresses.size();
+    for(std::size_t index=0;index<projection_addresses.size();++index){
+      auto& entry=processed[projection_indices[index]];
+      const double diameter=projection_values[index];
+      entry.last_priority=diameter;
+      entry.priority_motion_budget=motion_budget;
+      entry.priority_epoch=summaries.scheduler_priority_epoch;
+      entry.state_revision=mesh.revision();
+      entry.has_priority=true;
+      if(diameter<=split_threshold)continue;
+      if(!entry.surface_relation_known){
+        entry.may_intersect_surface=
+            classify_owner(entry.address)==SurfaceRelation::intersecting;
+        entry.surface_relation_known=true;
+      }
+      if(entry.may_intersect_surface)
+        splits.push_back({entry.address,diameter/split_threshold});
+    }
+    restore();
+    plan.scheduler_candidates_avoided=
+        logical.size()-std::min(logical.size(),plan.logical_candidates);
+  };
+  if(queue_discovery){
+    discover_scheduler_splits();
+    reseed_if_stale();
+  }else if(configuration.candidate_traversal==CandidateTraversal::active_cut_scan){
     for(const TetId owner:logical){
       if(cancel())return plan;
       consider_split(owner);
@@ -1560,12 +1756,45 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       struct ClusterMember { TetId cluster{},owner{}; };
       struct Cluster { TetId key{};std::size_t begin{},end{};double priority{}; };
       std::vector<ClusterMember> members;
-      members.reserve(logical.size());
-      for(const TetId owner:logical){
-        if(cancel())return plan;
-        const TetId key=tet_depth(owner)>=3U
-            ?make_tet_id(tet_root(owner),tet_path(owner)>>3U):invalid_tet;
-        members.push_back({key,owner});
+      if(queue_discovery){
+        std::vector<TetId> touched_clusters;
+        touched_clusters.reserve(splits.size());
+        for(const auto& split:splits)
+          touched_clusters.push_back(tet_depth(split.address)>=3U
+              ?make_tet_id(tet_root(split.address),tet_path(split.address)>>3U)
+              :invalid_tet);
+        std::sort(touched_clusters.begin(),touched_clusters.end());
+        touched_clusters.erase(
+            std::unique(touched_clusters.begin(),touched_clusters.end()),
+            touched_clusters.end());
+        members.reserve(touched_clusters.size()*8U);
+        for(const TetId cluster:touched_clusters){
+          if(cancel())return plan;
+          if(cluster==invalid_tet){
+            for(const auto& root:mesh.layers().front().tetrahedra)
+              if(root.transition_parent==invalid_tet&&
+                 std::binary_search(logical.begin(),logical.end(),root.address))
+                members.push_back({cluster,root.address});
+            continue;
+          }
+          bool complete=true;
+          const auto begin=members.size();
+          for(std::uint32_t child=0;child<8U;++child){
+            const TetId owner=make_tet_id(
+                tet_root(cluster),(tet_path(cluster)<<3U)|child);
+            complete&=std::binary_search(logical.begin(),logical.end(),owner);
+            members.push_back({cluster,owner});
+          }
+          if(!complete)members.resize(begin);
+        }
+      }else{
+        members.reserve(logical.size());
+        for(const TetId owner:logical){
+          if(cancel())return plan;
+          const TetId key=tet_depth(owner)>=3U
+              ?make_tet_id(tet_root(owner),tet_path(owner)>>3U):invalid_tet;
+          members.push_back({key,owner});
+        }
       }
       std::sort(members.begin(),members.end(),[](const auto& left,const auto& right){
         if(left.cluster!=right.cluster)return left.cluster<right.cluster;
@@ -1622,7 +1851,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     }
     plan.family_resolution_ms=elapsed_ms(plan_start)-plan.classification_ms;
     order_mark_pass_fine_to_coarse(plan.commands);
-    apply_scheduler(logical);
+    record_scheduler_blocks();
     if(cancel())return plan;
     pack_transaction_frontier(summaries,mesh.layers().size(),logical,plan.commands);
     if(planning_cache){
@@ -1646,40 +1875,127 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
 
   if(mesh.subdivision_method()!=SubdivisionMethod::bcc_red_green)return plan;
   std::vector<TetId> possible_parents;
-  possible_parents.reserve(logical.size());
-  for(const TetId owner:logical){
-    if(cancel())return plan;
-    if(tet_depth(owner)>=3U)
-      possible_parents.push_back(make_tet_id(tet_root(owner),tet_path(owner)>>3U));
+  if(!queue_discovery){
+    possible_parents.reserve(logical.size());
+    for(const TetId owner:logical){
+      if(cancel())return plan;
+      if(tet_depth(owner)>=3U)
+        possible_parents.push_back(make_tet_id(tet_root(owner),tet_path(owner)>>3U));
+    }
+    std::sort(possible_parents.begin(),possible_parents.end());
+    possible_parents.erase(
+        std::unique(possible_parents.begin(),possible_parents.end()),
+        possible_parents.end());
   }
-  std::sort(possible_parents.begin(),possible_parents.end());
-  possible_parents.erase(std::unique(possible_parents.begin(),possible_parents.end()),
-                         possible_parents.end());
 
   std::vector<Candidate> merges;
   const double merge_threshold=pixel_threshold*configuration.merge_hysteresis;
-  for(const TetId parent:possible_parents){
-    if(cancel())return plan;
-    if(mesh.has_pinned_descendant(parent))continue;
-    bool complete=true;
-    for(std::uint32_t child=0;child<8U;++child){
-      const TetId address=make_tet_id(tet_root(parent),
-          (tet_path(parent)<<3U)|static_cast<TetId>(child));
-      complete&=std::binary_search(logical.begin(),logical.end(),address);
+  if(queue_discovery){
+    auto& queue=summaries.merge_queue;
+    auto& membership=summaries.merge_queue_membership;
+    const double motion_budget=summaries.scheduler_motion_budget;
+    const auto forced_depth=[&](TetId parent){
+      return tet_depth(parent)+increment>maximum_depth;
+    };
+    if(!summaries.scheduler_heaps_valid){
+      std::make_heap(summaries.split_queue.begin(),summaries.split_queue.end(),
+                     scheduler_split_lower_priority);
+      std::make_heap(queue.begin(),queue.end(),scheduler_merge_lower_priority);
+      summaries.scheduler_heaps_valid=true;
     }
-    if(!complete)continue;
-    ++plan.projection_evaluations;
-    const double diameter=projected_tetrahedron_diameter(
-        mesh,parent,prepared_camera);
-    const bool forced_depth=tet_depth(parent)+increment>maximum_depth;
-    const bool size_merge=diameter<merge_threshold;
-    if(forced_depth||size_merge){
-      const double priority=forced_depth
-          ?2.0e6+static_cast<double>(tet_depth(parent))
-          :merge_threshold/std::max(diameter,1.0e-12);
-      merges.push_back({parent,priority});
+    auto& processed=summaries.scheduler_entry_scratch;
+    auto& projection_addresses=summaries.scheduler_projection_address_scratch;
+    auto& projection_values=summaries.scheduler_projection_value_scratch;
+    auto& projection_indices=summaries.scheduler_projection_index_scratch;
+    processed.clear();
+    projection_addresses.clear();
+    projection_indices.clear();
+    processed.reserve(queue.size());
+    const auto restore=[&]{
+      const bool dense_restore=processed.size()>queue.size()/8U;
+      if(dense_restore){
+        queue.insert(queue.end(),processed.begin(),processed.end());
+        std::make_heap(queue.begin(),queue.end(),scheduler_merge_lower_priority);
+      }else for(const auto& entry:processed){
+          queue.push_back(entry);
+          std::push_heap(queue.begin(),queue.end(),scheduler_merge_lower_priority);
+        }
+      processed.clear();
+    };
+    while(!queue.empty()){
+      if(cancel()){restore();return plan;}
+      std::pop_heap(queue.begin(),queue.end(),scheduler_merge_lower_priority);
+      auto entry=queue.back();
+      queue.pop_back();
+      if(!complete_merge_parent(entry.address)){
+        scheduler_membership_erase(membership,entry.address);
+        ++plan.scheduler_stale_pops;
+        ++summaries.scheduler_stale_pops_since_reseed;
+        continue;
+      }
+      ++plan.scheduler_useful_pops;
+      ++summaries.scheduler_useful_pops_since_reseed;
+      const bool forced=forced_depth(entry.address);
+      const double lower_bound=entry.has_priority
+          ?entry.last_priority*std::exp(
+               -(motion_budget-entry.priority_motion_budget))
+          :-std::numeric_limits<double>::infinity();
+      if(!has_overdepth&&!forced&&lower_bound>=merge_threshold){
+        processed.push_back(entry);
+        break;
+      }
+      processed.push_back(entry);
+      projection_addresses.push_back(entry.address);
+      projection_indices.push_back(
+          static_cast<std::uint32_t>(processed.size()-1U));
     }
-  }
+    projection_values.resize(projection_addresses.size());
+    constexpr std::size_t projection_batch_size=256U;
+    for(std::size_t begin=0;begin<projection_addresses.size();
+        begin+=projection_batch_size){
+      if(cancel()){restore();return plan;}
+      const auto count=std::min(
+          projection_batch_size,projection_addresses.size()-begin);
+      projected_tetrahedron_diameters(
+          mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
+          std::span(projection_values).subspan(begin,count));
+    }
+    plan.projection_evaluations+=projection_addresses.size();
+    plan.scheduler_priority_recomputations+=projection_addresses.size();
+    for(std::size_t index=0;index<projection_addresses.size();++index){
+      auto& entry=processed[projection_indices[index]];
+      const double diameter=projection_values[index];
+      entry.last_priority=diameter;
+      entry.priority_motion_budget=motion_budget;
+      entry.priority_epoch=summaries.scheduler_priority_epoch;
+      entry.state_revision=mesh.revision();
+      entry.has_priority=true;
+      const bool forced=forced_depth(entry.address);
+      if(!mesh.has_pinned_descendant(entry.address)&&
+         (forced||diameter<merge_threshold)){
+        const double priority=forced
+            ?2.0e6+static_cast<double>(tet_depth(entry.address))
+            :merge_threshold/std::max(diameter,1.0e-12);
+        merges.push_back({entry.address,priority});
+      }
+    }
+    restore();
+    reseed_if_stale();
+  }else for(const TetId parent:possible_parents){
+      if(cancel())return plan;
+      if(mesh.has_pinned_descendant(parent))continue;
+      if(!complete_merge_parent(parent))continue;
+      ++plan.projection_evaluations;
+      const double diameter=projected_tetrahedron_diameter(
+          mesh,parent,prepared_camera);
+      const bool forced=tet_depth(parent)+increment>maximum_depth;
+      if(forced||diameter<merge_threshold){
+        const double priority=forced
+            ?2.0e6+static_cast<double>(tet_depth(parent))
+            :merge_threshold/std::max(diameter,1.0e-12);
+        merges.push_back({parent,priority});
+      }
+    }
   std::sort(merges.begin(),merges.end(),[](const Candidate& left,const Candidate& right){
     if(left.priority!=right.priority)return left.priority>right.priority;
     return left.address<right.address;
@@ -1744,7 +2060,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   remember_stationary_result(plan.commands.empty());
   if(planning_cache&&plan.commands.empty())summaries.pose_merge_pending=false;
   order_mark_pass_fine_to_coarse(plan.commands);
-  apply_scheduler(logical);
+  record_scheduler_blocks();
   if(cancel())return plan;
   pack_transaction_frontier(summaries,mesh.layers().size(),logical,plan.commands);
   return plan;

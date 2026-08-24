@@ -4,11 +4,6 @@ The active execution queue is the gate sequence in
 [`cpu-paper-integration-plan.md`](cpu-paper-integration-plan.md). Complete it in
 order so every optimization is measured against the same correctness baseline.
 
-## Next closable leaves
-
-- [ ] Gate 2: prove oracle-equivalent convergence and compare avoided scans,
-  useful/stale pops, priority recomputations, and fallbacks on canonical paths.
-
 ## Later gates
 
 - [ ] Gate 3: dirty-owner surface patches.

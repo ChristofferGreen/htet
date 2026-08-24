@@ -2228,7 +2228,7 @@ TEST_CASE("persistent schedulers match streamed hashes through motion reversals 
   shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
   shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
   tetra::AdaptationConfiguration streamed_configuration;
-  streamed_configuration.operation_budget=4096;
+  streamed_configuration.operation_budget=64;
   auto queued_configuration=streamed_configuration;
   queued_configuration.update_scheduler=
       tetra::UpdateScheduler::persistent_split_merge_queues;
@@ -2237,45 +2237,55 @@ TEST_CASE("persistent schedulers match streamed hashes through motion reversals 
   auto streamed=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   auto queued=streamed,blocks=streamed;
   tetra::AdaptationPlanningCache queued_cache,blocks_cache;
-  const std::array<tetra::Vec3,8> path{{
-      {0.5,0.5,2.0},{0.52,0.5,1.7},{0.56,0.55,1.4},{2.0,2.0,3.0},
-      {0.56,0.55,1.4},{0.52,0.5,1.7},{0.5,0.5,2.0},{-1.0,0.2,2.5}}};
-  std::size_t pushes{},useful{},recomputations{},block_streams{};
+  const std::array<tetra::Vec3,12> path{{
+      {0.50,0.50,2.00},{0.51,0.50,1.95},{0.52,0.51,1.90},
+      {2.00,2.00,3.00},{-1.00,0.20,2.50},{0.52,0.51,1.90},
+      {0.51,0.50,1.95},{0.50,0.50,2.00},{0.50,0.50,2.00},
+      {0.51,0.50,1.95},{0.52,0.51,1.90},{0.52,0.51,1.90}}};
+  std::size_t pushes{},useful{},recomputations{},block_streams{},avoided{};
+  const auto converge=[&](tetra::TetMesh& mesh,const auto& configuration,
+                          tetra::AdaptationPlanningCache* cache,
+                          const tetra::Camera& camera){
+    for(std::size_t frame=0;frame<128U;++frame){
+      const auto plan=tetra::plan_adaptation(
+          mesh,shape,camera,48.0,6,configuration,5,cache);
+      if(cache==&queued_cache){
+        pushes+=plan.scheduler_queue_pushes;
+        useful+=plan.scheduler_useful_pops;
+        recomputations+=plan.scheduler_priority_recomputations;
+        avoided+=plan.scheduler_candidates_avoided;
+      }else if(cache==&blocks_cache)block_streams+=plan.scheduler_block_streams;
+      const auto result=tetra::commit_adaptation(
+          mesh,plan,configuration,5,cache);
+      if(result.status==tetra::AdaptationCommitStatus::no_change)return true;
+      REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
+    }
+    return false;
+  };
   for(const auto position:path){
     tetra::Camera camera;
     camera.position=position;
-    for(std::size_t frame=0;frame<32;++frame){
-      const auto baseline=tetra::adapt_to_surface(
-          streamed,shape,camera,48.0,3,streamed_configuration,5);
-      const auto queued_plan=tetra::plan_adaptation(
-          queued,shape,camera,48.0,3,queued_configuration,5,&queued_cache);
-      pushes+=queued_plan.scheduler_queue_pushes;
-      useful+=queued_plan.scheduler_useful_pops;
-      recomputations+=queued_plan.scheduler_priority_recomputations;
-      const auto queued_result=tetra::commit_adaptation(
-          queued,queued_plan,queued_configuration,5,&queued_cache);
-      const auto blocks_plan=tetra::plan_adaptation(
-          blocks,shape,camera,48.0,3,blocks_configuration,5,&blocks_cache);
-      block_streams+=blocks_plan.scheduler_block_streams;
-      const auto blocks_result=tetra::commit_adaptation(
-          blocks,blocks_plan,blocks_configuration,5,&blocks_cache);
-      REQUIRE(queued_result.status==baseline.status);
-      REQUIRE(blocks_result.status==baseline.status);
-      CHECK(queued.logical_cut().owners==streamed.logical_cut().owners);
-      CHECK(blocks.logical_cut().owners==streamed.logical_cut().owners);
-      CHECK(std::ranges::equal(queued.conforming_volume().addresses(),
-                               streamed.conforming_volume().addresses()));
-      CHECK(std::ranges::equal(blocks.conforming_volume().addresses(),
-                               streamed.conforming_volume().addresses()));
-      if(baseline.status==tetra::AdaptationCommitStatus::no_change)break;
-      REQUIRE(frame<31);
-    }
+    const auto direction=shape.centre-position;
+    const double length=std::sqrt(direction.x*direction.x+
+                                  direction.y*direction.y+
+                                  direction.z*direction.z);
+    camera.forward=direction/length;
+    REQUIRE(converge(streamed,streamed_configuration,nullptr,camera));
+    REQUIRE(converge(queued,queued_configuration,&queued_cache,camera));
+    REQUIRE(converge(blocks,blocks_configuration,&blocks_cache,camera));
+    CHECK(queued.logical_cut().owners==streamed.logical_cut().owners);
+    CHECK(blocks.logical_cut().owners==streamed.logical_cut().owners);
+    CHECK(std::ranges::equal(queued.conforming_volume().addresses(),
+                             streamed.conforming_volume().addresses()));
+    CHECK(std::ranges::equal(blocks.conforming_volume().addresses(),
+                             streamed.conforming_volume().addresses()));
   }
   CHECK(pushes>0);
   CHECK(useful>0);
   CHECK(recomputations>0);
   CHECK(recomputations<=useful);
   CHECK(block_streams>0);
+  CHECK(avoided>0);
 }
 
 TEST_CASE("persistent schedulers seed the active cut once across camera requests") {
@@ -2335,12 +2345,12 @@ TEST_CASE("persistent schedulers seed the active cut once across camera requests
   CHECK(canceled_cache.merge_queue.empty());
 }
 
-TEST_CASE("persistent scheduler refreshes camera priority only at queue fronts") {
+TEST_CASE("persistent scheduler narrows independent discovery after convergence") {
   tetra::Sphere shape;
   shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
   shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
   tetra::AdaptationConfiguration configuration;
-  configuration.operation_budget=1U;
+  configuration.operation_budget=4096U;
   configuration.update_scheduler=
       tetra::UpdateScheduler::persistent_split_merge_queues;
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
@@ -2348,43 +2358,48 @@ TEST_CASE("persistent scheduler refreshes camera priority only at queue fronts")
   tetra::Camera camera;
   camera.position={0.5,0.5,1.5};
 
-  const auto first=tetra::plan_adaptation(
-      mesh,shape,camera,48.0,3,configuration,10,&cache);
-  REQUIRE(first.commands.size()==1U);
-  REQUIRE(cache.split_queue.size()>1U);
-  CHECK(first.scheduler_useful_pops==1U);
-  CHECK(first.scheduler_priority_recomputations==1U);
-  CHECK(cache.scheduler_entry_scratch.empty());
-  const auto front_size=cache.split_queue.size();
-  for(std::size_t index=1;index<front_size;++index){
+  bool converged=false;
+  for(std::size_t iteration=0;iteration<16U;++iteration){
     const auto plan=tetra::plan_adaptation(
         mesh,shape,camera,48.0,3,configuration,10,&cache);
-    REQUIRE(plan.commands.size()==1U);
-    CHECK(plan.scheduler_useful_pops==1U);
-    CHECK(plan.scheduler_priority_recomputations==1U);
-    CHECK(cache.scheduler_entry_scratch.empty());
+    const auto result=tetra::commit_adaptation(
+        mesh,plan,configuration,10,&cache);
+    if(result.status==tetra::AdaptationCommitStatus::no_change){
+      converged=true;
+      break;
+    }
+    REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
   }
+  REQUIRE(converged);
+  const auto owner_count=mesh.logical_red_owners().size();
+  CHECK(std::accumulate(cache.scheduler_active_depth_counts.begin(),
+                        cache.scheduler_active_depth_counts.end(),
+                        std::size_t{})==owner_count);
 
-  const auto already_current=tetra::plan_adaptation(
+  const auto stationary=tetra::plan_adaptation(
       mesh,shape,camera,48.0,3,configuration,10,&cache);
-  CHECK(already_current.scheduler_useful_pops==1U);
-  CHECK(already_current.scheduler_priority_recomputations==0U);
+  CHECK(stationary.commands.empty());
+  CHECK(stationary.logical_candidates==0U);
+  CHECK(stationary.scheduler_priority_recomputations==0U);
+  const auto active_priority_count=static_cast<std::size_t>(std::ranges::count_if(
+      cache.split_queue,[](const auto& entry){
+        return entry.has_priority&&entry.last_priority>0.0;
+      }));
+  INFO("active split priorities after convergence: ",active_priority_count);
+  CHECK(active_priority_count==0U);
 
-  cache.split_queue.push_back({
-      tetra::invalid_tet,mesh.revision(),cache.scheduler_priority_epoch,1.0e30});
-  const auto stale_front=tetra::plan_adaptation(
-      mesh,shape,camera,48.0,3,configuration,10,&cache);
-  CHECK(stale_front.scheduler_stale_pops==1U);
-  CHECK(stale_front.scheduler_useful_pops==1U);
-  CHECK(std::ranges::none_of(cache.split_queue,[](const auto& entry){
-    return entry.address==tetra::invalid_tet;
-  }));
-
-  camera.position.x+=0.05;
+  camera.position.x+=0.001;
   const auto moved=tetra::plan_adaptation(
       mesh,shape,camera,48.0,3,configuration,10,&cache);
-  CHECK(moved.scheduler_useful_pops==1U);
-  CHECK(moved.scheduler_priority_recomputations==1U);
+  CHECK(moved.logical_candidates<owner_count);
+  CHECK(moved.scheduler_candidates_avoided==owner_count-moved.logical_candidates);
+  CHECK(moved.scheduler_candidates_avoided>0U);
+  CHECK(cache.scheduler_entry_scratch.empty());
+
+  const auto raised_depth=tetra::plan_adaptation(
+      mesh,shape,camera,48.0,6,configuration,10,&cache);
+  CHECK_FALSE(raised_depth.commands.empty());
+  CHECK(raised_depth.scheduler_priority_recomputations>0U);
 }
 
 TEST_CASE("persistent scheduler reseeds once after a camera teleport") {
@@ -2412,7 +2427,8 @@ TEST_CASE("persistent scheduler reseeds once after a camera teleport") {
   CHECK(teleported.scheduler_fallbacks==1U);
   CHECK(teleported.scheduler_seed_scans==1U);
   CHECK(teleported.scheduler_seed_candidates==mesh.logical_red_owners().size());
-  CHECK(cache.scheduler_useful_pops_since_reseed==1U);
+  CHECK(cache.scheduler_useful_pops_since_reseed==
+        mesh.logical_red_owners().size());
   CHECK(cache.scheduler_stale_pops_since_reseed==0U);
 
   const auto continuation=tetra::plan_adaptation(
@@ -2440,7 +2456,8 @@ TEST_CASE("persistent scheduler reseeds after an excessive stale pop ratio") {
   for(std::size_t index=0;index<64U;++index)
     cache.split_queue.push_back({
         tetra::invalid_tet,mesh.revision(),0U,
-        1.0e30+static_cast<double>(index)});
+        1.0e30+static_cast<double>(index),0.0,true});
+  cache.scheduler_heaps_valid=false;
 
   const auto recovered=tetra::plan_adaptation(
       mesh,shape,camera,48.0,3,configuration,13,&cache);
@@ -2534,6 +2551,64 @@ TEST_CASE("persistent scheduler enqueues only committed families and conformity 
   CHECK(merged);
   unique_queue(cache.split_queue,cache.split_queue_membership.count);
   unique_queue(cache.merge_queue,cache.merge_queue_membership.count);
+}
+
+TEST_CASE("persistent scheduler matches streamed oracle through small-motion stress") {
+  tetra::Sphere shape;
+  shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
+  tetra::AdaptationConfiguration streamed_configuration;
+  streamed_configuration.operation_budget=64U;
+  auto queued_configuration=streamed_configuration;
+  queued_configuration.update_scheduler=
+      tetra::UpdateScheduler::persistent_split_merge_queues;
+  auto streamed=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  auto queued=streamed;
+  tetra::AdaptationPlanningCache cache;
+  std::size_t avoided{},fallbacks{};
+  const auto converge_streamed=[&](const tetra::Camera& camera){
+    for(std::size_t transaction=0;transaction<64U;++transaction){
+      const auto result=tetra::adapt_to_surface(
+          streamed,shape,camera,48.0,6,streamed_configuration,14);
+      if(result.status==tetra::AdaptationCommitStatus::no_change)return true;
+      REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
+    }
+    return false;
+  };
+  const auto converge_queued=[&](const tetra::Camera& camera){
+    for(std::size_t transaction=0;transaction<64U;++transaction){
+      const auto plan=tetra::plan_adaptation(
+          queued,shape,camera,48.0,6,queued_configuration,14,&cache);
+      avoided+=plan.scheduler_candidates_avoided;
+      fallbacks+=plan.scheduler_fallbacks;
+      const auto result=tetra::commit_adaptation(
+          queued,plan,queued_configuration,14,&cache);
+      if(result.status==tetra::AdaptationCommitStatus::no_change)return true;
+      REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
+    }
+    return false;
+  };
+  for(std::size_t update=0;update<100U;++update){
+    const double angle=0.01*static_cast<double>(update);
+    tetra::Camera camera;
+    camera.position={0.5+1.5*std::sin(angle),
+                     0.75+0.1*std::sin(2.0*angle),
+                     0.5+1.5*std::cos(angle)};
+    const auto direction=shape.centre-camera.position;
+    const double length=std::sqrt(direction.x*direction.x+
+                                  direction.y*direction.y+
+                                  direction.z*direction.z);
+    camera.forward=direction/length;
+    REQUIRE(converge_streamed(camera));
+    REQUIRE(converge_queued(camera));
+    CHECK(queued.logical_cut().owners==streamed.logical_cut().owners);
+    CHECK(std::ranges::equal(queued.conforming_volume().addresses(),
+                             streamed.conforming_volume().addresses()));
+    CHECK(cache.split_queue.size()==cache.split_queue_membership.count);
+    CHECK(cache.merge_queue.size()==cache.merge_queue_membership.count);
+  }
+  CHECK(avoided>0U);
+  CHECK(fallbacks==0U);
 }
 
 TEST_CASE("adaptation capabilities reject surface-only volume claims") {
@@ -4383,14 +4458,17 @@ TEST_CASE("headless refinement benchmark reports every increasing pass") {
 }
 
 TEST_CASE("headless CPU camera benchmark covers every deterministic motion path") {
-  const auto run=[] {
+  const auto run=[](std::string_view script="benchmark-cpu-camera-paths") {
     std::ostringstream output,errors;
-    REQUIRE(tetra_viewer::run_script("benchmark-cpu-camera-paths",output,errors)==0);
+    REQUIRE(tetra_viewer::run_script(script,output,errors)==0);
     CHECK(errors.str().empty());
     return output.str();
   };
   const auto first=run();
   const auto second=run();
+  const auto persistent=run(
+      "set-update-scheduler=persistent-split-merge-queues,"
+      "benchmark-cpu-camera-paths");
   constexpr std::array paths{
       "stationary","slow-orbit","rapid-orbit","near-to-far",
       "far-to-near","teleport","reversal","repeated-pose"};
@@ -4424,6 +4502,7 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   for(const auto path:paths){
     const auto first_event=event_for(first,path);
     const auto second_event=event_for(second,path);
+    const auto persistent_event=event_for(persistent,path);
     CHECK(first_event.find("\"shape\":\"perlin-terrain\"")!=std::string::npos);
     CHECK(first_event.find("\"valid\":true")!=std::string::npos);
     CHECK(first_event.find("\"upload_backend\":\"host-mirror\"")!=std::string::npos);
@@ -4494,6 +4573,13 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
           field(second_event,"\"logical_cut_hash\":"));
     CHECK(field(first_event,"\"conforming_volume_hash\":")==
           field(second_event,"\"conforming_volume_hash\":"));
+    CHECK(field(first_event,"\"logical_cut_hash\":")==
+          field(persistent_event,"\"logical_cut_hash\":"));
+    CHECK(field(first_event,"\"conforming_volume_hash\":")==
+          field(persistent_event,"\"conforming_volume_hash\":"));
+    CHECK(field(persistent_event,"\"update_scheduler\":")==
+          "\"persistent-split-merge-queues\"");
+    CHECK(number(persistent_event,"\"scheduler_candidates_avoided\":")>0U);
   }
   const auto stationary=event_for(first,"stationary");
   CHECK(field(stationary,"\"updates\":")==field(stationary,"\"zero_work_updates\":"));
@@ -4509,6 +4595,10 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   CHECK(std::stoul(field(repeated,"\"published_revisions\":"))==1U);
   CHECK(field(repeated,"\"first_complete_revision_observed\":")=="true");
   CHECK(field(repeated,"\"first_complete_revision_update\":")=="1");
+  CHECK(number(event_for(persistent,"slow-orbit"),
+               "\"scheduler_fallbacks\":")==0U);
+  CHECK(number(event_for(persistent,"teleport"),
+               "\"scheduler_fallbacks\":")>0U);
   CHECK(std::stoull(field(repeated,"\"generated_surface_bytes\":"))>0U);
   CHECK(std::stoul(field(repeated,"\"uploaded_bytes\":"))>0U);
   CHECK(std::stoull(field(repeated,"\"dirty_owners\":"))>0U);
@@ -5341,6 +5431,7 @@ TEST_CASE("headless events identify adaptation schemas strategies and both cut v
   CHECK(text.find("\"scheduler_seed_candidates\":")!=std::string::npos);
   CHECK(text.find("\"scheduler_incremental_candidates\":")!=std::string::npos);
   CHECK(text.find("\"scheduler_conformity_candidates\":")!=std::string::npos);
+  CHECK(text.find("\"scheduler_candidates_avoided\":")!=std::string::npos);
   CHECK(text.find("\"plan_ms\":")!=std::string::npos);
   CHECK(text.find("\"commit_ms\":")!=std::string::npos);
   CHECK(text.find("\"logical_cut_hash\":")!=std::string::npos);

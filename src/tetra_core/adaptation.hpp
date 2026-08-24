@@ -277,6 +277,7 @@ struct AdaptationPlan {
   std::size_t scheduler_useful_pops{};
   std::size_t scheduler_stale_pops{};
   std::size_t scheduler_priority_recomputations{};
+  std::size_t scheduler_candidates_avoided{};
   std::size_t scheduler_block_streams{};
   std::size_t scheduler_fallbacks{};
   double classification_ms{};

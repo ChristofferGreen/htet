@@ -99,6 +99,7 @@ struct ScriptState {
   std::size_t scheduler_useful_pops{};
   std::size_t scheduler_stale_pops{};
   std::size_t scheduler_priority_recomputations{};
+  std::size_t scheduler_candidates_avoided{};
   std::size_t scheduler_block_streams{};
   std::size_t scheduler_fallbacks{};
   double plan_milliseconds{};
@@ -229,6 +230,7 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       state.scheduler_useful_pops+=plan.scheduler_useful_pops;
       state.scheduler_stale_pops+=plan.scheduler_stale_pops;
       state.scheduler_priority_recomputations+=plan.scheduler_priority_recomputations;
+      state.scheduler_candidates_avoided+=plan.scheduler_candidates_avoided;
       state.scheduler_block_streams+=plan.scheduler_block_streams;
       state.scheduler_fallbacks+=plan.scheduler_fallbacks;
       state.classification_milliseconds+=plan.classification_ms;
@@ -516,6 +518,8 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"scheduler_stale_pops\":" << state.scheduler_stale_pops
          << ",\"scheduler_priority_recomputations\":"
          << state.scheduler_priority_recomputations
+         << ",\"scheduler_candidates_avoided\":"
+         << state.scheduler_candidates_avoided
          << ",\"scheduler_block_streams\":" << state.scheduler_block_streams
          << ",\"scheduler_fallbacks\":" << state.scheduler_fallbacks
          << ",\"last_plan_revision\":" << state.last_plan_revision
@@ -988,7 +992,7 @@ void print_script_help(std::ostream& output) {
             "  prepare-scene               Build cached CPU geometry and statistics\n"
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
-            "  benchmark-cpu-camera-paths Benchmark all standard CPU camera motion paths\n"
+            "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-cpu-worker-budgets Compare bounded worker transaction policies\n"
             "  benchmark-cpu-worker-supersession Verify prompt latest-request wins\n"
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
@@ -1590,6 +1594,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       state.scheduler_useful_pops+=plan.scheduler_useful_pops;
       state.scheduler_stale_pops+=plan.scheduler_stale_pops;
       state.scheduler_priority_recomputations+=plan.scheduler_priority_recomputations;
+      state.scheduler_candidates_avoided+=plan.scheduler_candidates_avoided;
       state.scheduler_block_streams+=plan.scheduler_block_streams;
       state.scheduler_fallbacks+=plan.scheduler_fallbacks;
       state.classification_milliseconds+=plan.classification_ms;
@@ -1822,7 +1827,9 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       continue;
     }
     if(command=="benchmark-cpu-camera-paths"){
-      const auto baseline=cpu_benchmark_baseline(default_implicit_shape);
+      auto baseline=cpu_benchmark_baseline(default_implicit_shape);
+      baseline.adaptation=state.adaptation;
+      baseline.planning_cache.clear();
       const auto baseline_scene=prepare_cpu_benchmark_scene(baseline);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){

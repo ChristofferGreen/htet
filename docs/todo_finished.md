@@ -99,3 +99,11 @@
   rebuild retained flat fronts once. An opposite-side production camera jump
   reported one fallback and preserved both canonical mesh hashes; focused tests
   also cover stable continuations and stale-front recovery.
+- [x] Gate 2 independent persistent discovery: drove split and merge planning
+  directly from retained kinetic fronts, cached camera-invariant field relation
+  and depth-cap dormancy, maintained heaps and active-depth counts after each
+  commit, and exposed candidates avoided. A 100-pose stress test and all eight
+  production camera paths match classify-and-stream logical and conforming
+  hashes. Three-run release medians show the experimental scheduler avoids
+  substantial classification but remains slower, so classify-and-stream stays
+  the default.

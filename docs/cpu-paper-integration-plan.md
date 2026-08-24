@@ -55,9 +55,12 @@ extended rather than reimplemented:
 - release benchmarks, deterministic camera replays, hashes, and conformity
   tests.
 
-The current persistent queues still receive candidates from a complete streamed
-classification. Scene preparation also remains largely monolithic. Those are
-the two main algorithmic gaps addressed by this plan.
+The persistent schedulers now discover candidates independently from retained
+split and merge fronts. Release measurements show that this avoids most
+camera-invariant classification work but is slower than the classify-and-stream
+path on the current mesh sizes, so classify-and-stream remains the default.
+Scene preparation remains largely monolithic and is the next main algorithmic
+gap addressed by this plan.
 
 ## Paper-to-implementation map
 
@@ -586,9 +589,9 @@ differs from the independent oracle.
   sibling family, and conservatively expanded conformity neighbours.
 - [x] Detect camera teleports or excessive stale-pop ratios and fall back to one
   deterministic streamed reseed.
-- [ ] Prove slow motion, teleport, reversal, and repeated paths converge to the
+- [x] Prove slow motion, teleport, reversal, and repeated paths converge to the
   streamed oracle's logical and conforming hashes.
-- [ ] Compare queue work against the full active-cut scan using useful pops,
+- [x] Compare queue work against the full active-cut scan using useful pops,
   stale pops, priority recomputations, fallback count, and candidates avoided.
 
 Exit condition: small camera movements discover complete refine and merge work
@@ -597,7 +600,7 @@ bounded fallback.
 
 #### One-time persistent-front seed
 
-The persistent and queued-block schedulers now establish both fronts in one
+The persistent and queued-block schedulers establish both fronts in one
 transactional active-cut pass when their planning cache is first used. The
 split front receives each current logical owner and the merge front receives
 each complete active sibling parent. Temporary seed arrays are published only
@@ -605,8 +608,7 @@ after the pass finishes, so cancellation cannot retain a partial seed.
 
 Ordinary camera requests retain those flat arrays. Entries carry their last
 observed mesh revision, are checked against the current cut, and are compacted
-in place when stale. That seed leaf left camera-priority refresh eager; the
-following section replaces it. Commit-driven insertion is described below.
+in place when stale. Commit-driven insertion is described below.
 
 A production-default mesh followed through two camera moves reported one seed
 scan over 13,284 logical owners, 14,780 total split/merge-front insertions, and
@@ -618,19 +620,20 @@ conforming hashes.
 
 #### Lazy camera-priority refresh
 
-Persistent entries now carry the camera epoch of their last projected-size
-evaluation. A complete camera change advances the retained epoch without
-touching the queues. Each split or merge front is maintained as a deterministic
-binary heap: stale-epoch entries rank ahead of already refreshed entries,
-projected size is recomputed only after a valid entry is popped, and stable
-address order breaks equal-priority ties.
+Persistent entries carry their last exact projected size and the accumulated
+camera-motion uncertainty at that evaluation. Each split or merge front is a
+deterministic binary heap. The split heap orders conservative projected-size
+upper bounds; the merge heap orders lower bounds. Exact projection is refreshed
+only when an entry's bound can cross the relevant hysteresis threshold, and
+stable address order breaks equal-priority ties.
 
-Valid popped entries live temporarily in one retained flat scratch array so a
-single planning transaction cannot select the same front entry twice. They are
-restored to the heap before publication or cancellation. The useful-pop budget
-is the current atomic command budget; unchanged-camera entries retain their
-priority and incur no projection work, while a new camera refreshes distinct
-entries over successive bounded transactions.
+Valid popped entries live temporarily in retained flat scratch arrays so a
+single planning transaction cannot select the same front entry twice. Batched
+projection uses retained address, value, and index arrays and polls cancellation
+every 256 entries. Processed entries are restored before publication or
+cancellation: sparse restoration uses incremental heap insertion, while dense
+restoration rebuilds the heap once. Camera-invariant field classification also
+marks non-intersecting owners dormant until the field revision changes.
 
 On the same two-move production sequence used for the seed baseline, lazy
 refresh reduced queue projection recomputations from 14,508 to 3,256 (77.6%)
@@ -660,16 +663,13 @@ useful pops, and 88 stale pops while preserving logical hash
 `13682450355903576323` and conforming hash `15065136194667184043`. Focused
 split/merge tests verify child, parent, and dirty-neighbour insertion and prove
 that every retained front address remains unique and agrees with its membership
-count. Deterministic fallback reseeding remains the next Gate 2 leaf.
-The streamed classifier still supplies plan commands as the correctness oracle;
-the final Gate 2 proof leaf must switch independent discovery to these fronts
-before measuring candidates avoided.
+count.
 
 #### Deterministic fallback reseeding
 
-Persistent schedulers now compare each new camera pose with the preceding queue
-priority pose. Translation beyond 75% of the nearer camera-to-surface-centre
-distance (with a 0.5 world-unit floor), or a view-direction change beyond 60
+Persistent schedulers compare each new camera pose with the preceding queue
+priority pose. Translation beyond 25% of the nearer camera-to-surface-centre
+distance (with a 0.25 world-unit floor), or a view-direction change beyond 60
 degrees, is a teleport. A teleport rebuilds both fronts exactly once from the
 current sorted logical cut before normal queue processing; an unchanged
 continuation at that pose does not reseed again.
@@ -689,6 +689,56 @@ queue pushes, and one fallback while preserving logical hash
 prove one-shot teleport recovery, no repeated fallback at an unchanged pose,
 stale-ratio recovery, and streamed-oracle equality through reversal and
 teleport paths.
+
+#### Independent-discovery result
+
+The final Gate 2 implementation no longer shadows streamed commands. Split
+owners and complete merge families are discovered directly from the retained
+fronts. Camera-invariant surface relation is cached with each split entry;
+entries wholly inside or outside the field become dormant until the field
+revision changes. Depth-capped entries likewise remain dormant until maximum
+depth increases. A retained per-depth active-owner count detects over-depth
+work without scanning the cut. After commits, heap insertion and flat
+open-addressed membership remain incremental and allocate no per tetrahedron.
+
+A 100-step small-orbit stress test converges both schedulers after every pose,
+checks exact logical and conforming hashes, validates queue/membership counts,
+and requires zero fallback scans. The production benchmark independently runs
+classify-and-stream twice and the persistent scheduler once. All eight paths
+match the streamed oracle exactly; the resulting hashes are:
+
+| Path | Logical hash | Conforming hash |
+|---|---:|---:|
+| stationary | 10771159108319399354 | 8306739072152298354 |
+| slow orbit | 10511304919572425217 | 15684681851838777602 |
+| rapid orbit | 11188254276063111597 | 10446292943243739664 |
+| near to far | 9631812835180593406 | 369648173658669266 |
+| far to near | 5085705718518191816 | 3862747607337303755 |
+| teleport | 7982904738747822154 | 9287830994776944529 |
+| reversal | 8574200701652014340 | 9946433227311532595 |
+| repeated pose | 17612503117663115496 | 14683475872280492951 |
+
+Three release runs produced these median adaptation times and persistent-front
+work counters. `Candidates avoided` is the number of active owners whose field
+relation and projected size were not reclassified. On every moving path,
+logical candidates plus avoided candidates equals classify-and-stream's full
+candidate work.
+
+| Path | Streamed ms | Persistent ms | Logical candidates | Candidates avoided | Useful pops | Stale pops | Priority recomputations | Fallbacks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| stationary | 3.315 | 9.771 | 27,366 | 156,558 | 32,851 | 0 | 32,850 | 0 |
+| slow orbit | 144.975 | 175.420 | 111,809 | 487,477 | 125,385 | 92 | 124,510 | 0 |
+| rapid orbit | 1,079.557 | 1,280.801 | 614,966 | 818,267 | 685,403 | 4,381 | 259,003 | 7 |
+| near to far | 2,599.014 | 3,009.547 | 685,213 | 1,291,302 | 778,379 | 21,834 | 223,309 | 5 |
+| far to near | 2,050.248 | 2,246.147 | 525,699 | 951,962 | 591,898 | 16,822 | 208,049 | 5 |
+| teleport | 701.734 | 822.625 | 421,785 | 453,910 | 469,250 | 6,729 | 198,376 | 5 |
+| reversal | 132.216 | 189.036 | 343,575 | 202,354 | 380,856 | 914 | 224,619 | 6 |
+| repeated pose | 22.139 | 26.311 | 27,471 | 387,086 | 27,471 | 5 | 27,365 | 0 |
+
+Independent fronts therefore avoid substantial full-cut classification while
+preserving exact convergence, but their heap and retained-front overhead is
+larger than the saved work on every canonical path. They remain available for
+research comparison; classify-and-stream remains the fastest correct default.
 
 ### Gate 3 - Dirty-owner surface patches
 
