@@ -2673,191 +2673,273 @@ std::vector<Triangle> extract_isosurface(const TetMesh& mesh, const Sphere& sphe
   return extract_isosurface(mesh,sphere,mesh.conforming_volume().addresses());
 }
 
-std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sphere) {
-  constexpr std::array<std::array<std::size_t, 2>, 6> tet_edges{{
-      {{0, 1}}, {{0, 2}}, {{0, 3}}, {{1, 2}}, {{1, 3}}, {{2, 3}}}};
-  const auto dot = [](Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
-  const auto cross = [](Vec3 a, Vec3 b) {
-    return Vec3{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
-  };
-  const auto length_squared = [&dot](Vec3 value) { return dot(value, value); };
-  const auto normalize = [&length_squared](Vec3 value) {
-    const double length = std::sqrt(length_squared(value));
-    return length > 1e-15 ? value / length : Vec3{};
-  };
-  const auto packed_edge = [](VertexId first, VertexId second) {
-    if (second < first) std::swap(first, second);
-    return (static_cast<std::uint64_t>(first) << 32U) | static_cast<std::uint64_t>(second);
-  };
-  const auto edge_crossing = [&sphere](Vec3 first, Vec3 second) {
-    return sphere.edge_intersection(first,second);
-  };
+namespace {
 
-  struct EdgeIncident {
-    std::uint64_t edge{};
-    std::uint32_t cell{};
-  };
-  std::vector<Vec3> dual_vertices;
-  std::vector<EdgeIncident> incidents;
-  dual_vertices.reserve(mesh.conforming_volume().size()/4);
-  incidents.reserve(mesh.conforming_volume().size());
+constexpr std::array<std::array<std::size_t,2>,6> dual_tet_edges{{
+    {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
 
-  for (const TetId id : mesh.conforming_volume().addresses()) {
-    const auto& tet = mesh.tetrahedron(id);
-    std::array<Vec3, 4> points{};
-    std::array<double, 4> distances{};
-    for (std::size_t index = 0; index < 4; ++index) {
-      points[index] = mesh.vertices()[tet.vertices[index]];
-      distances[index] = sphere.signed_distance(points[index]);
-    }
+std::uint64_t packed_dual_edge(VertexId first,VertexId second){
+  if(second<first)std::swap(first,second);
+  return (static_cast<std::uint64_t>(first)<<32U)|
+      static_cast<std::uint64_t>(second);
+}
 
-    std::array<Vec3, 6> crossings{};
-    std::array<Vec3, 6> normals{};
-    std::size_t crossing_count = 0;
-    std::array<std::uint64_t, 6> crossed_edges{};
-    std::size_t crossed_edge_count = 0;
-    for (const auto edge : tet_edges) {
-      const auto first = edge[0], second = edge[1];
-      if ((distances[first] < 0.0) == (distances[second] < 0.0)) continue;
-      const Vec3 crossing = edge_crossing(points[first], points[second]);
-      crossings[crossing_count] = crossing;
-      normals[crossing_count] = sphere.normal(crossing);
-      ++crossing_count;
-      crossed_edges[crossed_edge_count++] = packed_edge(tet.vertices[first], tet.vertices[second]);
-    }
-    if (crossing_count < 3) continue;
+Vec3 solve_dual_cell_vertex(
+    const TetMesh& mesh,const Sphere& sphere,TetId address){
+  const auto dot=[](Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
+  const auto& tet=mesh.tetrahedron(address);
+  std::array<Vec3,4> points{};
+  std::array<double,4> distances{};
+  for(std::size_t index=0;index<4;++index){
+    points[index]=mesh.vertices()[tet.vertices[index]];
+    distances[index]=sphere.signed_distance(points[index]);
+  }
+  std::array<Vec3,6> crossings{},normals{};
+  std::size_t crossing_count{};
+  for(const auto edge:dual_tet_edges){
+    const auto first=edge[0],second=edge[1];
+    if((distances[first]<0.0)==(distances[second]<0.0))continue;
+    crossings[crossing_count]=sphere.edge_intersection(
+        points[first],points[second]);
+    normals[crossing_count]=sphere.normal(crossings[crossing_count]);
+    ++crossing_count;
+  }
+  Vec3 mass_point{};
+  for(std::size_t sample=0;sample<crossing_count;++sample)
+    mass_point=mass_point+crossings[sample];
+  mass_point=mass_point/static_cast<double>(crossing_count);
 
-    Vec3 mass_point{};
-    for (std::size_t sample = 0; sample < crossing_count; ++sample)
-      mass_point = mass_point+crossings[sample];
-    mass_point = mass_point/static_cast<double>(crossing_count);
-
-    // Minimize the Hermite plane error. A small pull toward the mass point
-    // regularizes the nearly parallel normals found in small smooth cells.
-    double augmented[3][4]{};
-    for (std::size_t sample = 0; sample < crossing_count; ++sample) {
-      const double n[3]{normals[sample].x, normals[sample].y, normals[sample].z};
-      const double plane = dot(normals[sample], crossings[sample]);
-      for (std::size_t row = 0; row < 3; ++row) {
-        for (std::size_t column = 0; column < 3; ++column)
-          augmented[row][column] += n[row]*n[column];
-        augmented[row][3] += n[row]*plane;
-      }
+  double augmented[3][4]{};
+  for(std::size_t sample=0;sample<crossing_count;++sample){
+    const double normal[3]{normals[sample].x,normals[sample].y,
+                           normals[sample].z};
+    const double plane=dot(normals[sample],crossings[sample]);
+    for(std::size_t row=0;row<3;++row){
+      for(std::size_t column=0;column<3;++column)
+        augmented[row][column]+=normal[row]*normal[column];
+      augmented[row][3]+=normal[row]*plane;
     }
-    const double regularization = 1e-2*static_cast<double>(crossing_count);
-    const double mass[3]{mass_point.x, mass_point.y, mass_point.z};
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-      augmented[axis][axis] += regularization;
-      augmented[axis][3] += regularization*mass[axis];
+  }
+  const double regularization=1e-2*static_cast<double>(crossing_count);
+  const double mass[3]{mass_point.x,mass_point.y,mass_point.z};
+  for(std::size_t axis=0;axis<3;++axis){
+    augmented[axis][axis]+=regularization;
+    augmented[axis][3]+=regularization*mass[axis];
+  }
+  bool solvable=true;
+  for(std::size_t column=0;column<3;++column){
+    std::size_t pivot=column;
+    for(std::size_t row=column+1;row<3;++row)
+      if(std::abs(augmented[row][column])>
+         std::abs(augmented[pivot][column]))pivot=row;
+    if(std::abs(augmented[pivot][column])<1e-12){solvable=false;break;}
+    if(pivot!=column)
+      for(std::size_t entry=column;entry<4;++entry)
+        std::swap(augmented[pivot][entry],augmented[column][entry]);
+    const double divisor=augmented[column][column];
+    for(std::size_t entry=column;entry<4;++entry)
+      augmented[column][entry]/=divisor;
+    for(std::size_t row=0;row<3;++row){
+      if(row==column)continue;
+      const double factor=augmented[row][column];
+      for(std::size_t entry=column;entry<4;++entry)
+        augmented[row][entry]-=factor*augmented[column][entry];
     }
-    bool solvable = true;
-    for (std::size_t column = 0; column < 3; ++column) {
-      std::size_t pivot = column;
-      for (std::size_t row = column+1; row < 3; ++row)
-        if (std::abs(augmented[row][column]) > std::abs(augmented[pivot][column])) pivot = row;
-      if (std::abs(augmented[pivot][column]) < 1e-12) {
-        solvable = false;
-        break;
-      }
-      if (pivot != column) for (std::size_t entry = column; entry < 4; ++entry)
-        std::swap(augmented[pivot][entry], augmented[column][entry]);
-      const double divisor = augmented[column][column];
-      for (std::size_t entry = column; entry < 4; ++entry) augmented[column][entry] /= divisor;
-      for (std::size_t row = 0; row < 3; ++row) {
-        if (row == column) continue;
-        const double factor = augmented[row][column];
-        for (std::size_t entry = column; entry < 4; ++entry)
-          augmented[row][entry] -= factor*augmented[column][entry];
-      }
+  }
+  Vec3 dual=solvable?Vec3{augmented[0][3],augmented[1][3],augmented[2][3]}:
+                          mass_point;
+  if(!contains_point(mesh,tet,dual)){
+    double lower=0.0,upper=1.0;
+    for(unsigned int iteration=0;iteration<48;++iteration){
+      const double t=(lower+upper)*0.5;
+      const Vec3 candidate{
+          mass_point.x+t*(dual.x-mass_point.x),
+          mass_point.y+t*(dual.y-mass_point.y),
+          mass_point.z+t*(dual.z-mass_point.z)};
+      if(contains_point(mesh,tet,candidate))lower=t;
+      else upper=t;
     }
-    Vec3 dual = solvable ? Vec3{augmented[0][3], augmented[1][3], augmented[2][3]} : mass_point;
-    if (!contains_point(mesh, tet, dual)) {
-      // The cell owns its dual vertex. Constrain an outlying QEF solution by
-      // walking back toward the crossing mass point, which is inside the
-      // convex tetrahedron.
-      double lower = 0.0, upper = 1.0;
-      for (unsigned int iteration = 0; iteration < 48; ++iteration) {
-        const double t = (lower+upper)*0.5;
-        const Vec3 candidate{mass_point.x+t*(dual.x-mass_point.x),
-                             mass_point.y+t*(dual.y-mass_point.y),
-                             mass_point.z+t*(dual.z-mass_point.z)};
-        if (contains_point(mesh, tet, candidate)) lower = t;
-        else upper = t;
-      }
-      dual = {mass_point.x+lower*(dual.x-mass_point.x),
-              mass_point.y+lower*(dual.y-mass_point.y),
-              mass_point.z+lower*(dual.z-mass_point.z)};
-    }
-    Vec3 tet_centre{};
-    for (const Vec3 point : points) tet_centre=tet_centre+point;
-    tet_centre=tet_centre/4.0;
-    // Dual topology assigns a distinct vertex to every cut cell. Keep it
-    // strictly inside its owner so adjacent constrained QEF solutions cannot
-    // collapse onto the same face and create zero-area dual polygons.
-    constexpr double ownership_inset = 1e-4;
-    dual={dual.x*(1.0-ownership_inset)+tet_centre.x*ownership_inset,
+    dual={mass_point.x+lower*(dual.x-mass_point.x),
+          mass_point.y+lower*(dual.y-mass_point.y),
+          mass_point.z+lower*(dual.z-mass_point.z)};
+  }
+  Vec3 tet_centre{};
+  for(const auto point:points)tet_centre=tet_centre+point;
+  tet_centre=tet_centre/4.0;
+  constexpr double ownership_inset=1e-4;
+  return {dual.x*(1.0-ownership_inset)+tet_centre.x*ownership_inset,
           dual.y*(1.0-ownership_inset)+tet_centre.y*ownership_inset,
           dual.z*(1.0-ownership_inset)+tet_centre.z*ownership_inset};
+}
 
-    const auto cell = static_cast<std::uint32_t>(dual_vertices.size());
-    dual_vertices.push_back(dual);
-    for (std::size_t edge = 0; edge < crossed_edge_count; ++edge)
-      incidents.push_back({crossed_edges[edge], cell});
+} // namespace
+
+void DualContourPatchBuilder::rebuild_index(
+    const TetMesh& mesh,const Sphere& sphere){
+  cells_.clear();
+  incidents_.clear();
+  edge_groups_.clear();
+  dependencies_.clear();
+  const auto volume=mesh.conforming_volume();
+  cells_.reserve(volume.size()/4U);
+  incidents_.reserve(volume.size());
+  for(std::size_t cell_index=0;cell_index<volume.size();++cell_index){
+    const auto cell=volume.cell(cell_index);
+    const auto& tet=mesh.tetrahedron(cell.address);
+    std::array<double,4> distances{};
+    for(std::size_t vertex=0;vertex<4;++vertex)
+      distances[vertex]=sphere.signed_distance(
+          mesh.vertices()[tet.vertices[vertex]]);
+    std::array<std::uint64_t,6> crossed_edges{};
+    std::size_t crossing_count{};
+    for(const auto edge:dual_tet_edges){
+      const auto first=edge[0],second=edge[1];
+      if((distances[first]<0.0)==(distances[second]<0.0))continue;
+      crossed_edges[crossing_count++]=packed_dual_edge(
+          tet.vertices[first],tet.vertices[second]);
+    }
+    if(crossing_count<3U)continue;
+    const auto dense_cell=static_cast<std::uint32_t>(cells_.size());
+    cells_.push_back({cell.address,cell.logical_owner});
+    for(std::size_t edge=0;edge<crossing_count;++edge)
+      incidents_.push_back({crossed_edges[edge],dense_cell});
   }
-
-  std::sort(incidents.begin(), incidents.end(), [](const EdgeIncident& first, const EdgeIncident& second) {
-    return first.edge < second.edge || (first.edge == second.edge && first.cell < second.cell);
+  std::sort(incidents_.begin(),incidents_.end(),[&](const auto& left,
+                                                    const auto& right){
+    return left.edge<right.edge||
+        (left.edge==right.edge&&
+         cells_[left.cell].address<cells_[right.cell].address);
   });
-  std::vector<Triangle> triangles;
-  triangles.reserve(incidents.size()*2);
-  std::vector<Vec3> polygon;
-  polygon.reserve(16);
-  for (std::size_t begin = 0; begin < incidents.size();) {
-    std::size_t end = begin+1;
-    while (end < incidents.size() && incidents[end].edge == incidents[begin].edge) ++end;
-    if (end-begin < 3) {
-      begin = end;
-      continue;
+  for(std::size_t begin=0;begin<incidents_.size();){
+    std::size_t end=begin+1U;
+    while(end<incidents_.size()&&incidents_[end].edge==incidents_[begin].edge)
+      ++end;
+    if(end-begin>=3U){
+      TetId owner=invalid_tet;
+      for(std::size_t incident=begin;incident<end;++incident)
+        owner=std::min(owner,cells_[incidents_[incident].cell].logical_owner);
+      edge_groups_.push_back(
+          {incidents_[begin].edge,owner,begin,end-begin});
+      for(std::size_t incident=begin;incident<end;++incident)
+        dependencies_.push_back(
+            {owner,cells_[incidents_[incident].cell].logical_owner});
     }
-
-    const VertexId first_id = static_cast<VertexId>(incidents[begin].edge >> 32U);
-    const VertexId second_id = static_cast<VertexId>(incidents[begin].edge);
-    const Vec3 first = mesh.vertices()[first_id], second = mesh.vertices()[second_id];
-    const Vec3 edge_point = edge_crossing(first, second);
-    const Vec3 axis = normalize(second-first);
-    const Vec3 reference = std::abs(axis.z) < 0.9 ? Vec3{0.0, 0.0, 1.0} : Vec3{0.0, 1.0, 0.0};
-    const Vec3 basis_u = normalize(cross(reference, axis));
-    const Vec3 basis_v = cross(axis, basis_u);
-    polygon.clear();
-    polygon.reserve(end-begin);
-    for (std::size_t incident = begin; incident < end; ++incident)
-      polygon.push_back(dual_vertices[incidents[incident].cell]);
-    std::sort(polygon.begin(), polygon.end(), [&](Vec3 left, Vec3 right) {
-      const Vec3 left_offset = left-edge_point, right_offset = right-edge_point;
-      return std::atan2(dot(left_offset, basis_v), dot(left_offset, basis_u)) <
-             std::atan2(dot(right_offset, basis_v), dot(right_offset, basis_u));
-    });
-
-    const Vec3 polygon_normal = cross(polygon[1]-polygon[0], polygon[2]-polygon[0]);
-    if (dot(polygon_normal, sphere.normal(edge_point)) < 0.0)
-      std::reverse(polygon.begin(), polygon.end());
-    // A ring of constrained QEF vertices is not necessarily convex. A fan
-    // from one ring vertex can cross outside the dual face and overlap other
-    // faces. The exact field crossing on the primal edge lies in every local
-    // edge wedge, so triangulating consecutive ring vertices through it keeps
-    // every triangle local and exposes the complete surface wireframe.
-    for (std::size_t index = 0; index < polygon.size(); ++index) {
-      Triangle triangle{edge_point,polygon[index],polygon[(index+1)%polygon.size()]};
-      const Vec3 triangle_normal=cross(triangle.b-triangle.a,triangle.c-triangle.a);
-      const Vec3 triangle_centre{(triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
-                                 (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
-                                 (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
-      if (dot(triangle_normal,sphere.normal(triangle_centre)) < 0.0)
-        std::swap(triangle.b,triangle.c);
-      if (length_squared(triangle_normal) > 1e-24) triangles.push_back(triangle);
-    }
-    begin = end;
+    begin=end;
   }
+  std::sort(dependencies_.begin(),dependencies_.end());
+  dependencies_.erase(
+      std::unique(dependencies_.begin(),dependencies_.end()),
+      dependencies_.end());
+}
+
+void DualContourPatchBuilder::generate_patches(
+    const TetMesh& mesh,const Sphere& sphere,
+    std::span<const TetId> selected_patch_owners,
+    std::vector<DualContourPatchTriangle>& output){
+  const auto selected=[&](TetId owner){
+    return selected_patch_owners.empty()||
+        std::binary_search(selected_patch_owners.begin(),
+                           selected_patch_owners.end(),owner);
+  };
+  selected_cells_.clear();
+  for(const auto& group:edge_groups_){
+    if(!selected(group.patch_owner))continue;
+    for(std::size_t index=0;index<group.incident_count;++index)
+      selected_cells_.push_back(
+          incidents_[group.incident_begin+index].cell);
+  }
+  std::sort(selected_cells_.begin(),selected_cells_.end());
+  selected_cells_.erase(
+      std::unique(selected_cells_.begin(),selected_cells_.end()),
+      selected_cells_.end());
+  cell_vertices_.clear();
+  cell_vertices_.reserve(selected_cells_.size());
+  for(const auto cell:selected_cells_)
+    cell_vertices_.push_back(
+        {cell,solve_dual_cell_vertex(mesh,sphere,cells_[cell].address)});
+
+  const auto dot=[](Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
+  const auto cross=[](Vec3 a,Vec3 b){
+    return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
+  };
+  const auto length_squared=[&](Vec3 value){return dot(value,value);};
+  const auto normalize=[&](Vec3 value){
+    const double length=std::sqrt(length_squared(value));
+    return length>1e-15?value/length:Vec3{};
+  };
+  output.clear();
+  output.reserve(selected_cells_.size()*2U);
+  polygon_.reserve(16U);
+  for(const auto& group:edge_groups_){
+    if(!selected(group.patch_owner))continue;
+    const auto first_id=static_cast<VertexId>(group.edge>>32U);
+    const auto second_id=static_cast<VertexId>(group.edge);
+    const auto first=mesh.vertices()[first_id];
+    const auto second=mesh.vertices()[second_id];
+    const auto edge_point=sphere.edge_intersection(first,second);
+    const auto axis=normalize(second-first);
+    const auto reference=std::abs(axis.z)<0.9?Vec3{0.0,0.0,1.0}:
+                                               Vec3{0.0,1.0,0.0};
+    const auto basis_u=normalize(cross(reference,axis));
+    const auto basis_v=cross(axis,basis_u);
+    polygon_.clear();
+    for(std::size_t index=0;index<group.incident_count;++index){
+      const auto cell=incidents_[group.incident_begin+index].cell;
+      const auto found=std::lower_bound(
+          cell_vertices_.begin(),cell_vertices_.end(),cell,
+          [](const auto& value,std::uint32_t target){return value.cell<target;});
+      polygon_.push_back(found->vertex);
+    }
+    std::sort(polygon_.begin(),polygon_.end(),[&](Vec3 left,Vec3 right){
+      const auto left_offset=left-edge_point;
+      const auto right_offset=right-edge_point;
+      return std::atan2(dot(left_offset,basis_v),dot(left_offset,basis_u))<
+          std::atan2(dot(right_offset,basis_v),dot(right_offset,basis_u));
+    });
+    const auto polygon_normal=cross(
+        polygon_[1]-polygon_[0],polygon_[2]-polygon_[0]);
+    if(dot(polygon_normal,sphere.normal(edge_point))<0.0)
+      std::reverse(polygon_.begin(),polygon_.end());
+    for(std::size_t index=0;index<polygon_.size();++index){
+      Triangle triangle{
+          edge_point,polygon_[index],polygon_[(index+1U)%polygon_.size()]};
+      const auto triangle_normal=cross(
+          triangle.b-triangle.a,triangle.c-triangle.a);
+      const Vec3 centre{
+          (triangle.a.x+triangle.b.x+triangle.c.x)/3.0,
+          (triangle.a.y+triangle.b.y+triangle.c.y)/3.0,
+          (triangle.a.z+triangle.b.z+triangle.c.z)/3.0};
+      if(dot(triangle_normal,sphere.normal(centre))<0.0)
+        std::swap(triangle.b,triangle.c);
+      if(length_squared(triangle_normal)>1e-24)
+        output.push_back({group.patch_owner,triangle});
+    }
+  }
+  std::stable_sort(output.begin(),output.end(),[](const auto& left,
+                                                   const auto& right){
+    return left.patch_owner<right.patch_owner;
+  });
+}
+
+std::size_t DualContourPatchBuilder::retained_bytes() const noexcept{
+  return cells_.capacity()*sizeof(CellRecord)+
+      incidents_.capacity()*sizeof(EdgeIncident)+
+      edge_groups_.capacity()*sizeof(EdgeGroup)+
+      dependencies_.capacity()*sizeof(DualContourPatchDependency)+
+      selected_cells_.capacity()*sizeof(std::uint32_t)+
+      cell_vertices_.capacity()*sizeof(CellVertex)+
+      polygon_.capacity()*sizeof(Vec3);
+}
+
+std::vector<Triangle> extract_dual_contour(
+    const TetMesh& mesh,const Sphere& sphere){
+  DualContourPatchBuilder builder;
+  builder.rebuild_index(mesh,sphere);
+  std::vector<DualContourPatchTriangle> patched;
+  builder.generate_patches(mesh,sphere,{},patched);
+  std::vector<Triangle> triangles;
+  triangles.reserve(patched.size());
+  for(const auto& value:patched)triangles.push_back(value.triangle);
   return triangles;
 }
 

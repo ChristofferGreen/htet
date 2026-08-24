@@ -406,6 +406,63 @@ void extract_isosurface(
 // active leaf, connected into polygons around sign-changing primal edges.
 [[nodiscard]] std::vector<Triangle> extract_dual_contour(const TetMesh& mesh, const Sphere& sphere);
 
+struct DualContourPatchDependency {
+  TetId patch_owner{invalid_tet};
+  TetId incident_owner{invalid_tet};
+  auto operator<=>(const DualContourPatchDependency&) const = default;
+};
+
+struct DualContourPatchTriangle {
+  TetId patch_owner{invalid_tet};
+  Triangle triangle{};
+};
+
+// Retained flat scratch for dual-contour patch extraction. Every crossed
+// primal edge is owned by the minimum logical owner in its complete incident
+// star. Rebuilding the index scans the conforming cut but performs QEF solves
+// only for cells needed by generate_patches(). A nonempty patch-owner span is
+// sorted and unique; an empty span requests every patch.
+class DualContourPatchBuilder {
+ public:
+  void rebuild_index(const TetMesh& mesh,const Sphere& sphere);
+  void generate_patches(
+      const TetMesh& mesh,const Sphere& sphere,
+      std::span<const TetId> selected_patch_owners,
+      std::vector<DualContourPatchTriangle>& output);
+  [[nodiscard]] std::span<const DualContourPatchDependency> dependencies() const noexcept {
+    return dependencies_;
+  }
+  [[nodiscard]] std::size_t retained_bytes() const noexcept;
+
+ private:
+  struct CellRecord {
+    TetId address{invalid_tet};
+    TetId logical_owner{invalid_tet};
+  };
+  struct EdgeIncident {
+    std::uint64_t edge{};
+    std::uint32_t cell{};
+  };
+  struct EdgeGroup {
+    std::uint64_t edge{};
+    TetId patch_owner{invalid_tet};
+    std::size_t incident_begin{};
+    std::size_t incident_count{};
+  };
+  struct CellVertex {
+    std::uint32_t cell{};
+    Vec3 vertex{};
+  };
+
+  std::vector<CellRecord> cells_;
+  std::vector<EdgeIncident> incidents_;
+  std::vector<EdgeGroup> edge_groups_;
+  std::vector<DualContourPatchDependency> dependencies_;
+  std::vector<std::uint32_t> selected_cells_;
+  std::vector<CellVertex> cell_vertices_;
+  std::vector<Vec3> polygon_;
+};
+
 enum class SurfaceRelation { inside, outside, intersecting };
 
 // Conservative classification: a tetrahedron may be reported as intersecting

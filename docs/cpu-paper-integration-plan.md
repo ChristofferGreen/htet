@@ -799,17 +799,47 @@ individual allocation.
 The cache assembles its output in logical-owner order and matches monolithic
 marching/lattice triangle and canonical edge hashes through split and inverse
 merge operations. Switching between the two methods reuses the same topology
-without rebuilding any owner patches. Dual contouring currently reports a
-monolithic, non-global fallback pending the incident-edge-star cache; globally
-coupled shell and optimization methods report a global fallback. Retained
-owner storage survives either fallback and is immediately reusable when an
-owner-local method is selected again.
+without rebuilding any owner patches. Dual contouring uses the incident-edge
+cache described below, while globally coupled shell and optimization methods
+report a global fallback. Retained owner storage survives fallback and is
+immediately reusable when a patchable method is selected again.
 
 On the 13,284-owner default terrain, the first marching build generated 6,784
 triangles in 1.896 ms and retained 2.86 MB. Switching to lattice cleaving
 rebuilt zero patches, reused all 13,284 records and 6,784 triangles, and spent
 0.666 ms in patch assembly. These are direct release/headless measurements;
 the complete camera-path comparison remains the CPU-G3-4 exit benchmark.
+
+#### Dual-contour incident-edge-star cache
+
+Dual contouring now builds a retained flat index of sign-changing conforming
+cells, crossed primal-edge incidents, edge groups, and patch dependencies.
+Each crossed edge is assigned to the minimum stable logical owner in its
+complete incident star. Its polygon and all resulting triangles therefore
+live in exactly one deterministic owner patch, including across BCC green
+transitions and mixed hierarchy depths.
+
+The flat dependency table stores unique `(patch owner, incident owner)` pairs.
+After a topology transaction, invalidation expands the authoritative dirty
+owners and the exact old/new logical-owner set difference through both the
+previous and current dependency tables. Consulting both revisions retires
+polygons for disappeared primal edges and generates polygons for new edges
+without rebuilding unrelated patches. Index construction scans the conforming
+cut, but constrained QEF vertices and polygon triangulation are computed only
+for selected dirty patch stars. Split, inverse merge, field revision, and bulk
+multi-owner tests match monolithic topology, orientation, triangle hashes, and
+canonical edge hashes.
+
+On the 13,284-owner default terrain, the initial release build generated
+17,276 triangles in 6.084 ms and retained 7.35 MB. Returning to dual contouring
+after a global-method fallback rebuilt zero patches, reused all 13,284 records
+and 17,276 triangles, and spent 2.339 ms rebuilding the flat dependency index
+and assembling retained output. A production camera transaction that grew the
+cut to 46,128 owners rebuilt 37,704 records, reused 8,424, and generated the
+correct 49,188-triangle output in 24.203 ms. The full path comparison remains
+part of CPU-G3-4. A deterministic release render was also inspected with and
+without surface edges: the retained result is a closed, opaque, consistently
+oriented faceted sphere with no patch seams or missing regions.
 
 ### Gate 4 - Independent fixed-capacity draw chunks
 

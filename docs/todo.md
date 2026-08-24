@@ -6,12 +6,6 @@ order so every optimization is measured against the same correctness baseline.
 
 ## Next closable leaves
 
-- [ ] CPU-G3-3 dual-contour edge-star patches.
-  - Scope: assign each crossed primal edge to one deterministic logical owner
-    and invalidate its complete incident owner star.
-  - Acceptance: patched dual contouring exactly matches monolithic topology,
-    orientation, triangle, and edge hashes across mixed-depth transitions.
-  - Stop rule: do not redesign global optimization or shell methods.
 - [ ] CPU-G3-4 patch-derived surface edges and Gate 3 benchmark.
   - Scope: derive filled triangles and all three depth-tested edges from the
     same patch topology and measure local rebuilds against global fallback.

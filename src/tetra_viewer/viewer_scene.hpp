@@ -806,7 +806,7 @@ class SceneCache {
 
   void update_surface_patches(
       const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
-      std::uint64_t field_revision);
+      std::uint64_t field_revision,SurfaceMethod surface_method);
   void set_surface_patch_fallback(bool monolithic_fallback,bool global_fallback);
 
   PreparedScene scene_;
@@ -848,13 +848,18 @@ class SceneCache {
   std::vector<SurfacePatchFreeRange> surface_patch_free_ranges_;
   std::vector<tetra::TetId> surface_patch_owner_scratch_;
   std::vector<tetra::TetId> surface_patch_dirty_scratch_;
+  std::vector<tetra::TetId> surface_patch_incident_dirty_scratch_;
   std::vector<tetra::TetId> surface_patch_cell_scratch_;
   std::vector<SurfacePatchOwnerCell> surface_patch_owner_cells_;
+  tetra::DualContourPatchBuilder dual_patch_builder_;
+  std::vector<tetra::DualContourPatchDependency> dual_patch_dependencies_;
+  std::vector<tetra::DualContourPatchTriangle> dual_patch_triangle_scratch_;
   SurfacePatchMetrics surface_patch_metrics_;
   std::uint64_t surface_patch_mesh_revision_{std::numeric_limits<std::uint64_t>::max()};
   std::uint64_t surface_patch_field_revision_{std::numeric_limits<std::uint64_t>::max()};
   tetra::SubdivisionMethod surface_patch_subdivision_method_{
       tetra::SubdivisionMethod::maubach_diamond};
+  bool surface_patch_dual_topology_{};
   bool surface_patch_initialized_{};
 };
 

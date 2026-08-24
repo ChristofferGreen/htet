@@ -2340,6 +2340,9 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
       }else if(surface_method==SurfaceMethod::lattice_cleaving){
         build_lattice_cleaved_cells(scene,mesh,sphere);
         colour={{0.80F,0.58F,0.24F}};
+      }else if(surface_method==SurfaceMethod::dual_contouring){
+        scene.dual_contour_triangles=surface_override.size();
+        colour={{0.22F,0.72F,0.52F}};
       }
     }
     for(const auto& triangle:surface_override){
@@ -2449,16 +2452,23 @@ void SceneCache::set_surface_patch_fallback(
       surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
       surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_incident_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
-      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell);
+      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
+      dual_patch_builder_.retained_bytes()+
+      dual_patch_dependencies_.capacity()*
+          sizeof(tetra::DualContourPatchDependency)+
+      dual_patch_triangle_scratch_.capacity()*
+          sizeof(tetra::DualContourPatchTriangle);
 }
 
 void SceneCache::update_surface_patches(
     const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
-    std::uint64_t field_revision){
+    std::uint64_t field_revision,SurfaceMethod surface_method){
   const auto start=std::chrono::steady_clock::now();
   surface_patch_metrics_={};
   surface_patch_metrics_.active=true;
+  const bool dual_topology=surface_method==SurfaceMethod::dual_contouring;
 
   const bool bcc=mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green;
   surface_patch_owner_scratch_.clear();
@@ -2487,6 +2497,7 @@ void SceneCache::update_surface_patches(
   bool rebuild_all=!surface_patch_initialized_||
       surface_patch_field_revision_!=field_revision||
       surface_patch_subdivision_method_!=mesh.subdivision_method()||
+      surface_patch_dual_topology_!=dual_topology||
       mesh.revision()<surface_patch_mesh_revision_||
       (surface_patch_mesh_revision_!=std::numeric_limits<std::uint64_t>::max()&&
        mesh.revision()>surface_patch_mesh_revision_+1U);
@@ -2505,6 +2516,68 @@ void SceneCache::update_surface_patches(
       rebuild_all=true;
       surface_patch_dirty_scratch_=surface_patch_owner_scratch_;
     }
+  }
+  if(dual_topology){
+    dual_patch_builder_.rebuild_index(mesh,sphere);
+    if(!rebuild_all&&mesh.revision()!=surface_patch_mesh_revision_){
+      surface_patch_incident_dirty_scratch_=surface_patch_dirty_scratch_;
+      for(const auto owner:surface_patch_owner_scratch_){
+        const auto found=std::lower_bound(
+            surface_patch_records_.begin(),surface_patch_records_.end(),owner,
+            [](const auto& record,tetra::TetId target){
+              return record.logical_owner<target;
+            });
+        if(found==surface_patch_records_.end()||found->logical_owner!=owner)
+          surface_patch_incident_dirty_scratch_.push_back(owner);
+      }
+      for(const auto& record:surface_patch_records_)
+        if(!std::binary_search(surface_patch_owner_scratch_.begin(),
+                               surface_patch_owner_scratch_.end(),
+                               record.logical_owner))
+          surface_patch_incident_dirty_scratch_.push_back(record.logical_owner);
+      std::sort(surface_patch_incident_dirty_scratch_.begin(),
+                surface_patch_incident_dirty_scratch_.end());
+      surface_patch_incident_dirty_scratch_.erase(
+          std::unique(surface_patch_incident_dirty_scratch_.begin(),
+                      surface_patch_incident_dirty_scratch_.end()),
+          surface_patch_incident_dirty_scratch_.end());
+      surface_patch_dirty_scratch_.clear();
+      const auto add_dependent=[&](const auto& dependency){
+        if(std::binary_search(surface_patch_incident_dirty_scratch_.begin(),
+                              surface_patch_incident_dirty_scratch_.end(),
+                              dependency.incident_owner))
+          surface_patch_dirty_scratch_.push_back(dependency.patch_owner);
+      };
+      for(const auto dependency:dual_patch_dependencies_)add_dependent(dependency);
+      for(const auto dependency:dual_patch_builder_.dependencies())
+        add_dependent(dependency);
+      for(const auto owner:surface_patch_owner_scratch_){
+        const auto found=std::lower_bound(
+            surface_patch_records_.begin(),surface_patch_records_.end(),owner,
+            [](const auto& record,tetra::TetId target){
+              return record.logical_owner<target;
+            });
+        if(found==surface_patch_records_.end()||found->logical_owner!=owner)
+          surface_patch_dirty_scratch_.push_back(owner);
+      }
+      std::sort(surface_patch_dirty_scratch_.begin(),
+                surface_patch_dirty_scratch_.end());
+      surface_patch_dirty_scratch_.erase(
+          std::unique(surface_patch_dirty_scratch_.begin(),
+                      surface_patch_dirty_scratch_.end()),
+          surface_patch_dirty_scratch_.end());
+    }
+    dual_patch_dependencies_.assign(
+        dual_patch_builder_.dependencies().begin(),
+        dual_patch_builder_.dependencies().end());
+    if(!surface_patch_dirty_scratch_.empty())
+      dual_patch_builder_.generate_patches(
+          mesh,sphere,surface_patch_dirty_scratch_,
+          dual_patch_triangle_scratch_);
+    else dual_patch_triangle_scratch_.clear();
+  }else{
+    dual_patch_dependencies_.clear();
+    dual_patch_triangle_scratch_.clear();
   }
   surface_patch_metrics_.full_rebuild=rebuild_all;
   surface_patch_metrics_.dirty_owners=surface_patch_dirty_scratch_.size();
@@ -2625,9 +2698,22 @@ void SceneCache::update_surface_patches(
       surface_patch_metrics_.reused_triangles+=found->triangle_count;
       continue;
     }
-    cells_for(owner_index);
-    tetra::extract_isosurface(
-        mesh,sphere,surface_patch_cell_scratch_,surface_patch_triangle_scratch_);
+    surface_patch_triangle_scratch_.clear();
+    if(dual_topology){
+      const auto begin=std::lower_bound(
+          dual_patch_triangle_scratch_.begin(),
+          dual_patch_triangle_scratch_.end(),owner,
+          [](const auto& value,tetra::TetId target){
+            return value.patch_owner<target;
+          });
+      for(auto found=begin;found!=dual_patch_triangle_scratch_.end()&&
+          found->patch_owner==owner;++found)
+        surface_patch_triangle_scratch_.push_back(found->triangle);
+    }else{
+      cells_for(owner_index);
+      tetra::extract_isosurface(
+          mesh,sphere,surface_patch_cell_scratch_,surface_patch_triangle_scratch_);
+    }
     SurfacePatchRecord record;
     if(retained)record=*found;
     else record.logical_owner=owner;
@@ -2662,6 +2748,7 @@ void SceneCache::update_surface_patches(
   surface_patch_mesh_revision_=mesh.revision();
   surface_patch_field_revision_=field_revision;
   surface_patch_subdivision_method_=mesh.subdivision_method();
+  surface_patch_dual_topology_=dual_topology;
   surface_patch_initialized_=true;
   surface_patch_metrics_.output_triangles=surface_patch_output_.size();
   surface_patch_metrics_.arena_slots=surface_patch_arena_.size();
@@ -2676,8 +2763,14 @@ void SceneCache::update_surface_patches(
       surface_patch_free_ranges_.capacity()*sizeof(SurfacePatchFreeRange)+
       surface_patch_owner_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
+      surface_patch_incident_dirty_scratch_.capacity()*sizeof(tetra::TetId)+
       surface_patch_cell_scratch_.capacity()*sizeof(tetra::TetId)+
-      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell);
+      surface_patch_owner_cells_.capacity()*sizeof(SurfacePatchOwnerCell)+
+      dual_patch_builder_.retained_bytes()+
+      dual_patch_dependencies_.capacity()*
+          sizeof(tetra::DualContourPatchDependency)+
+      dual_patch_triangle_scratch_.capacity()*
+          sizeof(tetra::DualContourPatchTriangle);
   surface_patch_metrics_.update_milliseconds=
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-start).count();
@@ -2715,8 +2808,10 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
   if (!base_unchanged) {
     const bool owner_patch_override=surface_override.empty()&&
         (surface_method==SurfaceMethod::marching_tetrahedra||
-         surface_method==SurfaceMethod::lattice_cleaving);
-    if(owner_patch_override)update_surface_patches(mesh,sphere,sphere_revision);
+         surface_method==SurfaceMethod::lattice_cleaving||
+         surface_method==SurfaceMethod::dual_contouring);
+    if(owner_patch_override)
+      update_surface_patches(mesh,sphere,sphere_revision,surface_method);
     else set_surface_patch_fallback(
         surface_override.empty(),surface_override.empty()&&
         !surface_patch_dependency(surface_method).patchable());

@@ -122,3 +122,11 @@
   monolithic fallback, and global fallback. The default 13,284-owner terrain
   generated 6,784 triangles in 1.896 ms; switching methods reused every patch
   with zero rebuilds in 0.666 ms.
+- [x] CPU-G3-3 dual-contour edge-star patches: assigned every crossed primal
+  edge to the minimum logical owner in its complete incident star, retained a
+  flat old/new owner-dependency table, and invalidated disappearing and newly
+  created edge stars through split, inverse merge, field revision, and bulk
+  owner-set changes. Patched output exactly matches monolithic topology,
+  orientation, triangle, and canonical edge hashes across mixed-depth BCC
+  transitions. The default 13,284-owner build generated 17,276 triangles in
+  6.084 ms; fallback return reused every record and triangle in 2.339 ms.

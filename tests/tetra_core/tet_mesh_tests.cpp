@@ -4075,6 +4075,199 @@ TEST_CASE("owner patch arena preserves unchanged ranges through split merge and 
   CHECK(cache.surface_patch_metrics().reused_patches==retained_records);
 }
 
+TEST_CASE("dual contour edge-star patches match monolithic mixed-depth topology") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,48.0,4));
+  const auto split=std::ranges::find_if(
+      mesh.logical_red_owners(),[&](tetra::TetId owner){
+        return tetra::classify_tetrahedron(mesh,owner,sphere)==
+            tetra::SurfaceRelation::intersecting;
+      });
+  REQUIRE(split!=mesh.logical_red_owners().end());
+  REQUIRE(mesh.refine_selected_binary({*split}));
+
+  tetra_viewer::SceneCache cache;
+  REQUIRE(cache.update_scene(
+      mesh,sphere,3,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+  const auto monolithic=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  const auto patched_hashes=tetra_viewer::surface_geometry_hashes(cache.scene());
+  const auto monolithic_hashes=tetra_viewer::surface_geometry_hashes(monolithic);
+  CHECK(patched_hashes.triangle_hash==monolithic_hashes.triangle_hash);
+  CHECK(patched_hashes.edge_hash==monolithic_hashes.edge_hash);
+  CHECK(patched_hashes.triangle_count==monolithic_hashes.triangle_count);
+  CHECK(patched_hashes.edge_count==monolithic_hashes.edge_count);
+  CHECK(cache.scene().dual_contour_triangles==monolithic.dual_contour_triangles);
+  CHECK(cache.surface_patch_metrics().active);
+  CHECK_FALSE(cache.surface_patch_metrics().monolithic_fallback);
+  CHECK_FALSE(cache.surface_patch_metrics().global_fallback);
+  CHECK(cache.surface_patch_metrics().full_rebuild);
+  CHECK(cache.surface_patch_metrics().rebuilt_patches==
+        mesh.logical_red_owners().size());
+
+  tetra::DualContourPatchBuilder builder;
+  builder.rebuild_index(mesh,sphere);
+  const auto dependencies=builder.dependencies();
+  REQUIRE_FALSE(dependencies.empty());
+  CHECK(std::ranges::is_sorted(dependencies));
+  CHECK(std::ranges::adjacent_find(dependencies)==dependencies.end());
+  for(const auto dependency:dependencies){
+    CHECK(dependency.patch_owner<=dependency.incident_owner);
+    CHECK(std::binary_search(mesh.logical_red_owners().begin(),
+                             mesh.logical_red_owners().end(),
+                             dependency.patch_owner));
+  }
+}
+
+TEST_CASE("dual edge-star cache invalidates locally through split and inverse merge") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,48.0,4));
+  tetra_viewer::SceneCache cache;
+  const auto update=[&](std::uint64_t field_revision){
+    return cache.update_scene(
+        mesh,sphere,field_revision,
+        tetra_viewer::SurfaceMethod::dual_contouring,
+        tetra_viewer::MaterialRule::all_vertices_inside,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  };
+  REQUIRE(update(8));
+  struct Snapshot {
+    std::size_t begin{},count{},capacity{};
+    std::vector<unsigned char> bytes;
+  };
+  std::map<tetra::TetId,Snapshot> before;
+  const auto capture=[&](auto& destination){
+    const auto arena=cache.surface_patch_arena();
+    for(const auto& record:cache.surface_patch_records()){
+      Snapshot snapshot{record.triangle_begin,record.triangle_count,
+                        record.triangle_capacity,{}};
+      snapshot.bytes.resize(record.triangle_capacity*sizeof(tetra::Triangle));
+      if(!snapshot.bytes.empty())std::memcpy(
+          snapshot.bytes.data(),arena.data()+record.triangle_begin,
+          snapshot.bytes.size());
+      destination.emplace(record.logical_owner,std::move(snapshot));
+    }
+  };
+  capture(before);
+  const auto split=std::ranges::find_if(
+      mesh.logical_red_owners(),[&](tetra::TetId owner){
+        const auto record=before.find(owner);
+        return record!=before.end()&&record->second.count!=0U;
+      });
+  REQUIRE(split!=mesh.logical_red_owners().end());
+  const auto split_parent=*split;
+  REQUIRE(mesh.refine_selected_binary({split_parent}));
+  REQUIRE(update(8));
+  const auto split_monolithic=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene()).triangle_hash==
+        tetra_viewer::surface_geometry_hashes(split_monolithic).triangle_hash);
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene()).edge_hash==
+        tetra_viewer::surface_geometry_hashes(split_monolithic).edge_hash);
+  const auto split_metrics=cache.surface_patch_metrics();
+  CHECK_FALSE(split_metrics.full_rebuild);
+  CHECK(split_metrics.rebuilt_patches>0U);
+  CHECK(split_metrics.rebuilt_patches<cache.surface_patch_records().size());
+  CHECK(split_metrics.reused_patches>0U);
+  CHECK(split_metrics.retired_patches>0U);
+  std::size_t stable_records{};
+  const auto split_arena=cache.surface_patch_arena();
+  for(const auto& record:cache.surface_patch_records()){
+    const auto found=before.find(record.logical_owner);
+    if(found==before.end()||
+       record.triangle_begin!=found->second.begin||
+       record.triangle_count!=found->second.count||
+       record.triangle_capacity!=found->second.capacity)continue;
+    std::vector<unsigned char> bytes(
+        record.triangle_capacity*sizeof(tetra::Triangle));
+    if(!bytes.empty())std::memcpy(
+        bytes.data(),split_arena.data()+record.triangle_begin,bytes.size());
+    if(bytes==found->second.bytes)++stable_records;
+  }
+  CHECK(stable_records>=split_metrics.reused_patches);
+
+  std::vector<tetra::TetId> removed_parents;
+  for(const auto& [owner,snapshot]:before){
+    static_cast<void>(snapshot);
+    if(!std::binary_search(mesh.logical_red_owners().begin(),
+                           mesh.logical_red_owners().end(),owner))
+      removed_parents.push_back(owner);
+  }
+  REQUIRE(std::binary_search(removed_parents.begin(),removed_parents.end(),
+                             split_parent));
+  REQUIRE(mesh.coarsen_selected_red(removed_parents));
+  REQUIRE(update(8));
+  const auto merged_monolithic=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene()).triangle_hash==
+        tetra_viewer::surface_geometry_hashes(merged_monolithic).triangle_hash);
+  CHECK(tetra_viewer::surface_geometry_hashes(cache.scene()).edge_hash==
+        tetra_viewer::surface_geometry_hashes(merged_monolithic).edge_hash);
+  CHECK_FALSE(cache.surface_patch_metrics().full_rebuild);
+  CHECK(cache.surface_patch_metrics().rebuilt_patches>0U);
+  CHECK(cache.surface_patch_metrics().reused_patches>0U);
+  CHECK(cache.surface_patch_metrics().retired_patches>0U);
+
+  REQUIRE(update(9));
+  CHECK(cache.surface_patch_metrics().full_rebuild);
+  CHECK(cache.surface_patch_metrics().rebuilt_patches==
+        cache.surface_patch_records().size());
+}
+
+TEST_CASE("dual edge-star patches cover bulk owner-set changes") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere sphere;
+  tetra::Camera camera;
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,48.0,5));
+  tetra_viewer::SceneCache cache;
+  REQUIRE(cache.update_scene(
+      mesh,sphere,11,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+  const auto owners_before=mesh.logical_red_owners().size();
+  std::vector<tetra::TetId> requests;
+  for(const auto& record:cache.surface_patch_records()){
+    if(record.triangle_count!=0U)requests.push_back(record.logical_owner);
+    if(requests.size()==16U)break;
+  }
+  REQUIRE(requests.size()>=4U);
+  REQUIRE(mesh.refine_selected_binary(requests));
+  REQUIRE(mesh.logical_red_owners().size()!=owners_before);
+  REQUIRE(cache.update_scene(
+      mesh,sphere,11,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells));
+  const auto monolithic=tetra_viewer::prepare_scene(
+      mesh,sphere,tetra_viewer::SurfaceMethod::dual_contouring,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,1.0,tetra_viewer::VolumeConnectionMethod::hierarchy_cells);
+  const auto patched_hashes=tetra_viewer::surface_geometry_hashes(cache.scene());
+  const auto monolithic_hashes=tetra_viewer::surface_geometry_hashes(monolithic);
+  CHECK(patched_hashes.triangle_hash==monolithic_hashes.triangle_hash);
+  CHECK(patched_hashes.edge_hash==monolithic_hashes.edge_hash);
+  CHECK(patched_hashes.triangle_count==monolithic_hashes.triangle_count);
+  CHECK(patched_hashes.edge_count==monolithic_hashes.edge_count);
+  CHECK_FALSE(cache.surface_patch_metrics().full_rebuild);
+  CHECK(cache.surface_patch_metrics().generated_triangles>0U);
+  CHECK(cache.surface_patch_metrics().reused_patches>0U);
+}
+
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -4114,7 +4307,9 @@ TEST_CASE("headless scene preparation reports local patch reuse and global fallb
   CHECK_FALSE(has(scenes[1],"\"surface_patches_reused\":0"));
 
   CHECK(has(scenes[2],"\"surface_method\":\"dual-contouring\""));
-  CHECK(has(scenes[2],"\"surface_patch_monolithic_fallback\":true"));
+  CHECK(has(scenes[2],"\"surface_patch_active\":true"));
+  CHECK(has(scenes[2],"\"surface_patch_full_rebuild\":true"));
+  CHECK_FALSE(has(scenes[2],"\"surface_patch_monolithic_fallback\":true"));
   CHECK(has(scenes[2],"\"surface_patch_global_fallback\":false"));
 
   CHECK(has(scenes[3],"\"surface_method\":\"surface-optimization\""));
