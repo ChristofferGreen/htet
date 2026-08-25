@@ -87,6 +87,7 @@ struct ScriptState {
   std::size_t frustum_subtrees_rejected{};
   std::size_t field_subtrees_rejected{};
   std::size_t projected_subtrees_rejected{};
+  std::array<std::size_t,6> camera_demand_evaluations{};
   std::size_t exact_field_evaluations_avoided{};
   std::size_t spatial_index_bytes{};
   std::size_t spatial_run_count{};
@@ -141,6 +142,36 @@ void accumulate(tetra::BccUpdateMetrics& total,const tetra::BccUpdateMetrics& up
   total.repair_iterations+=update.repair_iterations;
   total.sparse_frontier_pops+=update.sparse_frontier_pops;
   total.dense_sweeps+=update.dense_sweeps;
+}
+
+void reset_adaptation_telemetry(ScriptState& state){
+  state.requested_splits=state.requested_merges=0U;
+  state.planned_splits=state.planned_merges=0U;
+  state.accepted_splits=state.accepted_merges=0U;
+  state.rejected_split_operations=state.rejected_merge_operations=0U;
+  state.stale_split_operations=state.stale_merge_operations=0U;
+  state.conformity_expanded_splits=state.conformity_expanded_merges=0U;
+  state.conformity_rejected_splits=state.conformity_rejected_merges=0U;
+  state.dirty_owner_events=state.maximum_dirty_owners=0U;
+  state.adaptation_transactions=state.stale_plans=state.rejected_plans=0U;
+  state.logical_candidates=state.field_classifications=0U;
+  state.exact_field_evaluations=state.projection_evaluations=0U;
+  state.depth_rejections=state.conformity_rejections=0U;
+  state.hierarchy_nodes_visited=state.frustum_subtrees_rejected=0U;
+  state.field_subtrees_rejected=state.projected_subtrees_rejected=0U;
+  state.camera_demand_evaluations.fill(0U);
+  state.exact_field_evaluations_avoided=0U;
+  state.spatial_run_bound_tests=state.spatial_run_candidates=0U;
+  state.scheduler_seed_scans=state.scheduler_seed_candidates=0U;
+  state.scheduler_incremental_candidates=state.scheduler_conformity_candidates=0U;
+  state.scheduler_queue_pushes=state.scheduler_useful_pops=0U;
+  state.scheduler_stale_pops=state.scheduler_priority_recomputations=0U;
+  state.scheduler_candidates_avoided=state.scheduler_block_streams=0U;
+  state.scheduler_fallbacks=0U;
+  state.plan_milliseconds=state.commit_milliseconds=0.0;
+  state.classification_milliseconds=state.family_resolution_milliseconds=0.0;
+  state.summary_build_milliseconds=state.spatial_index_build_milliseconds=0.0;
+  state.bcc_metrics={};
 }
 
 void enforce_conforming_smooth_cutaway(ScriptState& state){
@@ -218,6 +249,8 @@ tetra::AdaptiveResult reconcile_to_current_surface(ScriptState& state){
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
       state.projected_subtrees_rejected+=plan.projected_subtrees_rejected;
+      for(std::size_t zone=0;zone<state.camera_demand_evaluations.size();++zone)
+        state.camera_demand_evaluations[zone]+=plan.camera_demand_evaluations[zone];
       state.exact_field_evaluations_avoided+=plan.exact_field_evaluations_avoided;
       state.spatial_index_bytes=std::max(state.spatial_index_bytes,plan.spatial_index_bytes);
       state.spatial_run_count=plan.spatial_run_count;
@@ -285,6 +318,14 @@ const InitializedScriptState& initialized_script_state(){
   static const InitializedScriptState initialized=[] {
     InitializedScriptState value;
     value.refinement=refine_to_current_surface(value.state);
+    const auto camera_lod=reconcile_to_current_surface(value.state);
+    value.refinement.iterations+=camera_lod.iterations;
+    value.refinement.refined_leaves+=camera_lod.refined_leaves;
+    value.refinement.reached_depth_limit|=camera_lod.reached_depth_limit;
+    // The initial state is a fully qualified default camera cut. Keep its
+    // temporal working-set metadata, but do not charge setup work to the first
+    // scripted operation or benchmark path.
+    reset_adaptation_telemetry(value.state);
     return value;
   }();
   return initialized;
@@ -328,6 +369,14 @@ bool parse_unsigned(std::string_view text, unsigned int& value) {
   const char* end = begin + text.size();
   const auto result = std::from_chars(begin, end, value);
   return result.ec == std::errc{} && result.ptr == end;
+}
+
+bool parse_uint64(std::string_view text,std::uint64_t& value){
+  text=trim(text);
+  const char* begin=text.data();
+  const char* end=begin+text.size();
+  const auto result=std::from_chars(begin,end,value);
+  return result.ec==std::errc{}&&result.ptr==end;
 }
 
 bool parse_vec3(std::string_view text, tetra::Vec3& value) {
@@ -428,6 +477,21 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"merge_hysteresis\":" << state.adaptation.merge_hysteresis
          << ",\"hybrid_frontier_ratio\":" << state.adaptation.hybrid_frontier_ratio
          << ",\"operation_budget\":" << state.adaptation.operation_budget
+         << ",\"camera_lod_policy\":\""
+         << tetra::strategy_key(state.adaptation.camera_lod_policy) << '"'
+         << ",\"camera_lod_metric\":\""
+         << tetra::strategy_key(state.adaptation.camera_lod_metric) << '"'
+         << ",\"camera_lod_policy_applied\":"
+         << ((state.adaptation.lod_update==
+                  tetra::LodUpdateStrategy::transactional_active_cut||
+              state.adaptation.lod_update==
+                  tetra::LodUpdateStrategy::saturated_clusters)?"true":"false")
+         << ",\"camera_complexity_target_owners\":"
+         << state.adaptation.complexity_target_owners
+         << ",\"camera_prediction_mode\":\""
+         << tetra::strategy_key(state.adaptation.prediction_mode) << '"'
+         << ",\"camera_soft_quality_multiplier\":"
+         << state.planning_cache.camera_soft_quality_multiplier
          << ",\"subdivision_method\":\"" << tetra::subdivision_method_key(state.mesh.subdivision_method()) << '"'
          << ",\"surface_method\":\"" << surface_method_key(state.surface_method) << '"'
          << ",\"surface_patchable\":"
@@ -506,6 +570,19 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"frustum_subtrees_rejected\":" << state.frustum_subtrees_rejected
          << ",\"field_subtrees_rejected\":" << state.field_subtrees_rejected
          << ",\"projected_subtrees_rejected\":" << state.projected_subtrees_rejected
+         << ",\"camera_demand_evaluations\":{"
+         << "\"cold\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::cold)]
+         << ",\"predicted\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::predicted)]
+         << ",\"recent\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::recent)]
+         << ",\"guard\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::guard)]
+         << ",\"near\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::near)]
+         << ",\"visible\":" << state.camera_demand_evaluations[
+                static_cast<std::size_t>(tetra::CameraLodZone::visible)] << '}'
          << ",\"exact_field_evaluations_avoided\":" << state.exact_field_evaluations_avoided
          << ",\"plan_ms\":" << state.plan_milliseconds
          << ",\"commit_ms\":" << state.commit_milliseconds
@@ -625,6 +702,12 @@ void write_mesh_fields(std::ostream& output, const ScriptState& state) {
          << ",\"bcc_conformity_closure_ms\":" << state.bcc_metrics.conformity_closure_ms
          << ",\"bcc_cut_transform_ms\":" << state.bcc_metrics.cut_transform_ms
          << ",\"bcc_green_generation_ms\":" << state.bcc_metrics.green_generation_ms
+         << ",\"bcc_parallel_green_generation_ms\":"
+         << state.bcc_metrics.parallel_green_generation_ms
+         << ",\"bcc_parallel_green_tasks\":"
+         << state.bcc_metrics.parallel_green_tasks
+         << ",\"bcc_parallel_green_workers\":"
+         << state.bcc_metrics.parallel_green_workers
          << ",\"bcc_incidence_update_ms\":" << state.bcc_metrics.incidence_update_ms
          << ",\"bcc_face_repair_ms\":" << state.bcc_metrics.face_repair_ms
          << ",\"bcc_full_cut_cells_scanned\":" << state.bcc_metrics.full_cut_cells_scanned
@@ -664,6 +747,7 @@ void write_stats(std::ostream& output, const ScriptState& state) {
 struct CameraBenchmarkPath {
   std::string_view name;
   std::vector<tetra::Vec3> positions;
+  std::vector<tetra::Vec3> directions{};
 };
 
 std::vector<CameraBenchmarkPath> cpu_camera_benchmark_paths(const tetra::Vec3& centre) {
@@ -699,7 +783,11 @@ std::vector<CameraBenchmarkPath> cpu_camera_benchmark_paths(const tetra::Vec3& c
         position(1.607, 0.27, 1.915), position(2.165, 0.30, 1.250),
         position(1.607, 0.27, 1.915), position(0.855, 0.24, 2.349),
         position(0.000, 0.20, 2.500)}},
-      {"repeated-pose", std::vector<tetra::Vec3>(8, position(1.25, 0.25, 2.165))},
+      {"repeated-pose",std::vector<tetra::Vec3>(8,position(1.25,0.25,2.165)),
+       {{0.0,0.0,-1.0},{0.7071067811865475,0.0,-0.7071067811865475},
+        {1.0,0.0,0.0},{0.0,0.0,1.0},{1.0,0.0,0.0},
+        {0.7071067811865475,0.0,-0.7071067811865475},
+        {0.0,0.0,-1.0},{0.0,0.0,-1.0}}},
   };
 }
 
@@ -751,6 +839,7 @@ ScriptState cpu_benchmark_baseline(
   baseline.volume_connection_method=
       default_volume_connection_for_shape(default_implicit_shape);
   static_cast<void>(refine_to_current_surface(baseline));
+  static_cast<void>(reconcile_to_current_surface(baseline));
   return baseline;
 }
 
@@ -1003,6 +1092,7 @@ void print_script_help(std::ostream& output) {
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
+            "  benchmark-multithreaded-geometry[=<1..64>] Compare deterministic planning worker counts\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
             "  benchmark-cpu-four-hexahedra-quality[=<0..32>[:<2..64>]] Compare five shapes and retained surfaces\n"
             "  benchmark-cpu-draw-chunks[=<0..32>[:<1..256>]] Compare monolithic, fixed, and hybrid draw packing\n"
@@ -1011,8 +1101,11 @@ void print_script_help(std::ostream& output) {
             "  benchmark-cpu-shape-hashes=<all|shape>[:depth] Hash every path and shape\n"
             "  stress-camera=<1..1000>     Run a deterministic orbit adaptation stress path\n"
             "  stats                       Print mesh and hierarchy statistics\n"
+            "  diagnose-owner=<address|first> Report camera projection, demand, depth, and pending LOD decision\n"
             "  set-method=<key>            Reset using a registered subdivision method\n"
             "  set-lod-update=<key>        Select a registered capability-compatible LOD strategy\n"
+            "  set-camera-lod-policy=<key> Select exact-frustum, guarded, guarded-recent, or guarded-predicted\n"
+            "  set-camera-lod-metric=<key> Select projected-diameter or geometric-error\n"
             "  set-candidate-traversal=<key> Select active-cut-scan, hierarchy-bounds, or spatial-runs\n"
             "  set-transition-strategy=<key> Select crystalline-restricted or complete-minimal\n"
             "  set-surface-method=<key>    Select a registered surface generation method\n"
@@ -1034,6 +1127,12 @@ void print_script_help(std::ostream& output) {
             "  gizmo-rotate=<world|local>:<x|y|z>:<degrees> Apply a scripted camera manipulator rotation\n"
             "  set-radius=<0.001..1.0>     Change the implicit shape scale\n"
             "  set-pixel-threshold=<value> Change the projected-size threshold\n"
+            "  set-guard-scale=<1..3>      Expand the camera guard frustum\n"
+            "  set-near-lod-radius=<0..4>  Set direction-independent near-camera demand\n"
+            "  set-recent-lod-epochs=<1..64> Retain recently visible demand\n"
+            "  set-prediction-factor=<0..2> Extrapolate camera motion for LOD preparation\n"
+            "  set-prediction-mode=<key>   Select none, translation, or translation-rotation\n"
+            "  set-complexity-target=<n>    Set soft active-owner target; zero disables it\n"
             "  set-maximum-depth=<0..32>   Change the adaptive iteration limit\n"
             "  set-split-hysteresis=<v>    Set the split threshold multiplier\n"
             "  set-merge-hysteresis=<v>    Set the merge threshold multiplier\n"
@@ -1272,6 +1371,71 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       const auto start=Clock::now();
       static_cast<void>(reconcile_to_current_surface(state));
       write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view camera_lod_prefix="set-camera-lod-policy=";
+    if(command.starts_with(camera_lod_prefix)){
+      const auto previous=state.adaptation.camera_lod_policy;
+      const auto key=command.substr(camera_lod_prefix.size());
+      const auto set=[&](tetra::CameraLodPolicy policy){
+        if(key!=tetra::strategy_key(policy))return false;
+        state.adaptation.camera_lod_policy=policy;
+        return true;
+      };
+      if(!(set(tetra::CameraLodPolicy::exact_frustum)||
+           set(tetra::CameraLodPolicy::guarded)||
+           set(tetra::CameraLodPolicy::guarded_recent)||
+           set(tetra::CameraLodPolicy::guarded_predicted))){
+        write_error(errors,"unknown camera LOD policy",command);
+        return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.camera_lod_policy=previous;
+        write_error(errors,"camera LOD policy is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view camera_lod_metric_prefix="set-camera-lod-metric=";
+    if(command.starts_with(camera_lod_metric_prefix)){
+      const auto previous=state.adaptation.camera_lod_metric;
+      const auto key=command.substr(camera_lod_metric_prefix.size());
+      if(key==tetra::strategy_key(tetra::CameraLodMetric::projected_diameter))
+        state.adaptation.camera_lod_metric=
+            tetra::CameraLodMetric::projected_diameter;
+      else if(key==tetra::strategy_key(tetra::CameraLodMetric::geometric_error))
+        state.adaptation.camera_lod_metric=tetra::CameraLodMetric::geometric_error;
+      else{
+        write_error(errors,"unknown camera LOD metric",command);
+        return 2;
+      }
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.camera_lod_metric=previous;
+        write_error(errors,"camera LOD metric is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      write_command_event(output,command,0.0,state);
+      continue;
+    }
+    constexpr std::string_view prediction_mode_prefix="set-prediction-mode=";
+    if(command.starts_with(prediction_mode_prefix)){
+      const auto key=command.substr(prediction_mode_prefix.size());
+      const auto set=[&](tetra::CameraPredictionMode mode){
+        if(key!=tetra::strategy_key(mode))return false;
+        state.adaptation.prediction_mode=mode;
+        return true;
+      };
+      if(!(set(tetra::CameraPredictionMode::none)||
+           set(tetra::CameraPredictionMode::translation)||
+           set(tetra::CameraPredictionMode::translation_rotation))){
+        write_error(errors,"unknown camera prediction mode",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      write_command_event(output,command,0.0,state);
       continue;
     }
     constexpr std::string_view shape_prefix="set-shape=";
@@ -1595,6 +1759,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       state.frustum_subtrees_rejected+=plan.frustum_subtrees_rejected;
       state.field_subtrees_rejected+=plan.field_subtrees_rejected;
       state.projected_subtrees_rejected+=plan.projected_subtrees_rejected;
+      for(std::size_t zone=0;zone<state.camera_demand_evaluations.size();++zone)
+        state.camera_demand_evaluations[zone]+=plan.camera_demand_evaluations[zone];
       state.exact_field_evaluations_avoided+=plan.exact_field_evaluations_avoided;
       state.spatial_index_bytes=std::max(state.spatial_index_bytes,plan.spatial_index_bytes);
       state.spatial_run_count=plan.spatial_run_count;
@@ -1671,6 +1837,59 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"reached_depth_limit\":" << (result.reached_depth_limit ? "true" : "false") << ',';
       write_mesh_fields(output, state);
       output << "}\n";
+      continue;
+    }
+    constexpr std::string_view diagnose_owner_prefix="diagnose-owner=";
+    if(command.starts_with(diagnose_owner_prefix)){
+      const auto owners=state.mesh.logical_red_owners();
+      if(owners.empty()){
+        write_error(errors,"active logical cut is empty",command);
+        return 2;
+      }
+      std::uint64_t raw_owner{};
+      const auto owner_text=command.substr(diagnose_owner_prefix.size());
+      if(owner_text=="first")raw_owner=owners.front();
+      else if(!parse_uint64(owner_text,raw_owner)){
+        write_error(errors,"owner address must be an unsigned integer",command);
+        return 2;
+      }
+      const auto owner=static_cast<tetra::TetId>(raw_owner);
+      if(std::find(owners.begin(),owners.end(),owner)==owners.end()){
+        write_error(errors,"owner address is not in the active logical cut",command);
+        return 2;
+      }
+      const auto projection=tetra::projected_tetrahedron(
+          state.mesh,owner,state.camera);
+      const auto demand=tetra::camera_lod_demand(
+          state.mesh,owner,state.camera,state.adaptation);
+      auto diagnostic_cache=state.planning_cache;
+      const auto plan=tetra::plan_adaptation(
+          state.mesh,state.sphere,state.camera,state.pixel_threshold,
+          state.maximum_depth,state.adaptation,state.field_revision,
+          &diagnostic_cache);
+      tetra::AdaptationCommandKind decision=tetra::AdaptationCommandKind::keep;
+      if(const auto found=std::find_if(plan.commands.begin(),plan.commands.end(),
+             [&](const auto& item){return item.logical_owner==owner;});
+         found!=plan.commands.end())decision=found->kind;
+      const auto decision_name=[&]{
+        switch(decision){
+          case tetra::AdaptationCommandKind::split:return "split";
+          case tetra::AdaptationCommandKind::merge:return "merge";
+          case tetra::AdaptationCommandKind::keep:return "keep";
+        }
+        return "keep";
+      };
+      output<<"{\"event\":\"camera_lod_owner_diagnostic\",\"owner\":"
+            <<raw_owner<<",\"selected_depth\":"<<tetra::tet_depth(owner)
+            <<",\"projected_diameter\":"<<std::setprecision(12)
+            <<projection.diameter_pixels
+            <<",\"intersects_exact_frustum\":"
+            <<(projection.intersects_frustum?"true":"false")
+            <<",\"instantaneous_zone\":\""<<tetra::strategy_key(demand.zone)
+            <<"\",\"quality_multiplier\":"<<demand.quality_multiplier
+            <<",\"effective_target\":"
+            <<state.pixel_threshold*demand.quality_multiplier
+            <<",\"decision\":\""<<decision_name()<<"\"}\n";
       continue;
     }
     if (command == "validate") {
@@ -1874,6 +2093,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       auto baseline=cpu_benchmark_baseline(default_implicit_shape);
       baseline.adaptation=state.adaptation;
       baseline.planning_cache.clear();
+      static_cast<void>(reconcile_to_current_surface(baseline));
+      reset_adaptation_telemetry(baseline);
       const auto baseline_scene=prepare_cpu_benchmark_scene(baseline);
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
@@ -1901,6 +2122,16 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         double first_complete_revision_milliseconds{};
         std::size_t first_complete_revision_update{};
         std::size_t update_index{};
+        std::size_t minimum_active_owners=std::numeric_limits<std::size_t>::max();
+        std::size_t maximum_active_owners{};
+        double active_owner_sum{},active_owner_square_sum{};
+        std::size_t minimum_surface_triangles=std::numeric_limits<std::size_t>::max();
+        std::size_t maximum_surface_triangles{};
+        double surface_triangle_sum{},surface_triangle_square_sum{};
+        std::size_t current_surface_triangles=baseline_scene.triangle_vertices.size()/3U;
+        double turn_readiness_sum{};
+        std::size_t turn_readiness_samples{};
+        std::vector<double> visible_errors;
         for(const auto position:path.positions){
           ++update_index;
           const auto publication_start=Clock::now();
@@ -1910,6 +2141,22 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
           benchmark.mesh=std::move(private_mesh);
           snapshot_copy_milliseconds+=milliseconds_since(snapshot_start);
           point_camera_at(benchmark.camera,position,benchmark.sphere.centre);
+          if(path.directions.size()==path.positions.size())
+            benchmark.camera.forward=path.directions[update_index-1U];
+          std::size_t visible_before{},ready_before{};
+          for(const auto owner:benchmark.mesh.logical_red_owners()){
+            const auto demand=tetra::camera_lod_demand(
+                benchmark.mesh,owner,benchmark.camera,benchmark.adaptation);
+            if(demand.zone!=tetra::CameraLodZone::visible)continue;
+            ++visible_before;
+            ready_before+=demand.projected_diameter_pixels<=
+                benchmark.pixel_threshold*benchmark.adaptation.split_hysteresis;
+          }
+          if(visible_before>0U){
+            turn_readiness_sum+=static_cast<double>(ready_before)/
+                                static_cast<double>(visible_before);
+            ++turn_readiness_samples;
+          }
           const auto adaptation_start=Clock::now();
           const auto result=reconcile_to_current_surface(benchmark);
           adaptation_milliseconds+=milliseconds_since(adaptation_start);
@@ -1924,6 +2171,7 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             scene_geometry_milliseconds+=scene.upload_preparation_milliseconds;
             generated_surface_bytes+=(scene.triangle_vertices.size()+
                 scene.surface_line_vertices.size())*sizeof(SceneVertex);
+            current_surface_triangles=scene.triangle_vertices.size()/3U;
             const auto upload_start=Clock::now();
             staged_upload.stage(scene);
             upload_milliseconds+=milliseconds_since(upload_start);
@@ -1938,9 +2186,45 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               first_complete_revision_update=update_index;
             }
           }
+          const auto active_owners=benchmark.mesh.logical_red_owners().size();
+          minimum_active_owners=std::min(minimum_active_owners,active_owners);
+          maximum_active_owners=std::max(maximum_active_owners,active_owners);
+          active_owner_sum+=static_cast<double>(active_owners);
+          active_owner_square_sum+=static_cast<double>(active_owners)*
+                                   static_cast<double>(active_owners);
+          minimum_surface_triangles=std::min(
+              minimum_surface_triangles,current_surface_triangles);
+          maximum_surface_triangles=std::max(
+              maximum_surface_triangles,current_surface_triangles);
+          surface_triangle_sum+=static_cast<double>(current_surface_triangles);
+          surface_triangle_square_sum+=
+              static_cast<double>(current_surface_triangles)*
+              static_cast<double>(current_surface_triangles);
+          for(const auto owner:benchmark.mesh.logical_red_owners()){
+            const auto demand=tetra::camera_lod_demand(
+                benchmark.mesh,owner,benchmark.camera,benchmark.adaptation);
+            if(demand.zone==tetra::CameraLodZone::visible)
+              visible_errors.push_back(demand.projected_diameter_pixels);
+          }
           publication_milliseconds+=milliseconds_since(publication_start);
         }
         const double final_convergence_milliseconds=milliseconds_since(path_start);
+        const double sample_count=static_cast<double>(path.positions.size());
+        const double mean_active_owners=active_owner_sum/sample_count;
+        const double active_owner_variance=std::max(
+            0.0,active_owner_square_sum/sample_count-
+                mean_active_owners*mean_active_owners);
+        const double mean_surface_triangles=surface_triangle_sum/sample_count;
+        const double surface_triangle_variance=std::max(
+            0.0,surface_triangle_square_sum/sample_count-
+                mean_surface_triangles*mean_surface_triangles);
+        std::sort(visible_errors.begin(),visible_errors.end());
+        const auto percentile=[&](double fraction){
+          if(visible_errors.empty())return 0.0;
+          const auto index=static_cast<std::size_t>(std::floor(
+              fraction*static_cast<double>(visible_errors.size()-1U)));
+          return visible_errors[index];
+        };
         const bool valid=benchmark.mesh.has_positive_active_volumes()&&
                          benchmark.mesh.has_conforming_active_faces();
         output<<"{\"event\":\"cpu_camera_path_benchmark\",\"path\":\""
@@ -1960,6 +2244,25 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
               <<",\"copied_bytes\":"<<(mesh_snapshot_copied_bytes+uploaded_bytes)
               <<",\"upload_backend\":\"host-mirror\""
               <<",\"reached_depth_limit\":"<<(reached_depth_limit?"true":"false")
+              <<",\"turn_readiness\":"
+              <<(turn_readiness_samples>0U
+                    ?turn_readiness_sum/static_cast<double>(turn_readiness_samples):1.0)
+              <<",\"visible_error_max\":"
+              <<(visible_errors.empty()?0.0:visible_errors.back())
+              <<",\"visible_error_p95\":"<<percentile(0.95)
+              <<",\"visible_error_p99\":"<<percentile(0.99)
+              <<",\"minimum_active_owners\":"<<minimum_active_owners
+              <<",\"maximum_active_owners\":"<<maximum_active_owners
+              <<",\"mean_active_owners\":"<<mean_active_owners
+              <<",\"active_owner_cv\":"
+              <<(mean_active_owners>0.0
+                    ?std::sqrt(active_owner_variance)/mean_active_owners:0.0)
+              <<",\"minimum_surface_triangles\":"<<minimum_surface_triangles
+              <<",\"maximum_surface_triangles\":"<<maximum_surface_triangles
+              <<",\"mean_surface_triangles\":"<<mean_surface_triangles
+              <<",\"surface_triangle_cv\":"
+              <<(mean_surface_triangles>0.0
+                    ?std::sqrt(surface_triangle_variance)/mean_surface_triangles:0.0)
               <<",\"valid\":"<<(valid?"true":"false")
               <<",\"duration_ms\":"<<std::fixed<<std::setprecision(3)
               <<adaptation_milliseconds
@@ -2020,8 +2323,14 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         double patch_milliseconds{};
         double monolithic_milliseconds{};
       };
-      const auto baseline=cpu_benchmark_baseline(
+      auto baseline=cpu_benchmark_baseline(
           default_implicit_shape,benchmark_depth);
+      baseline.adaptation.camera_lod_policy=
+          tetra::CameraLodPolicy::exact_frustum;
+      baseline.adaptation.camera_lod_metric=
+          tetra::CameraLodMetric::projected_diameter;
+      baseline.planning_cache.clear();
+      static_cast<void>(reconcile_to_current_surface(baseline));
       const auto paths=cpu_camera_benchmark_paths(baseline.sphere.centre);
       for(const auto& path:paths){
         ScriptState benchmark=baseline;
@@ -2435,10 +2744,17 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       };
       std::array<StrategySelectionMetrics,retained_strategies.size()>
           selection_metrics;
+      auto draw_baseline=baseline;
+      draw_baseline.adaptation.camera_lod_policy=
+          tetra::CameraLodPolicy::exact_frustum;
+      draw_baseline.adaptation.camera_lod_metric=
+          tetra::CameraLodMetric::projected_diameter;
+      draw_baseline.planning_cache.clear();
+      static_cast<void>(reconcile_to_current_surface(draw_baseline));
       for(const auto& path:paths){
         for(const auto method:methods){
          for(const auto strategy:retained_strategies){
-          ScriptState benchmark=baseline;
+          ScriptState benchmark=draw_baseline;
           SceneCache cache;
           SurfaceDrawChunkStorage chunks(
               chunk_capacity,strategy,large_patch_threshold);
@@ -3235,6 +3551,247 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
       }
       continue;
     }
+    constexpr std::string_view multithreaded_geometry_prefix=
+        "benchmark-multithreaded-geometry";
+    if(command==multithreaded_geometry_prefix||
+       command.starts_with("benchmark-multithreaded-geometry=")){
+      std::vector<std::size_t> worker_counts;
+      if(command.size()>multithreaded_geometry_prefix.size()){
+        unsigned int requested{};
+        if(!parse_unsigned(command.substr(
+               multithreaded_geometry_prefix.size()+1U),requested)||
+           requested==0U||requested>64U){
+          write_error(errors,"geometry worker count outside supported range",command);
+          return 2;
+        }
+        worker_counts.push_back(requested);
+      }else{
+        const std::size_t hardware=std::max(
+            1U,std::thread::hardware_concurrency());
+        for(const std::size_t workers:{1U,2U,4U,8U,10U,12U})
+          if(workers<=hardware)worker_counts.push_back(workers);
+        if(worker_counts.empty()||worker_counts.back()!=hardware)
+          worker_counts.push_back(std::min<std::size_t>(hardware,12U));
+        std::sort(worker_counts.begin(),worker_counts.end());
+        worker_counts.erase(
+            std::unique(worker_counts.begin(),worker_counts.end()),
+            worker_counts.end());
+      }
+
+      auto benchmark_mesh=tetra::TetMesh::make_unit_cube(
+          tetra::SubdivisionMethod::bcc_red_green);
+      for(unsigned int generation=0;generation<3U;++generation)
+        benchmark_mesh.refine_all_binary();
+      tetra::AdaptationConfiguration configuration;
+      configuration.operation_budget=4096U;
+      tetra::Camera benchmark_camera;
+      benchmark_camera.position={0.5,0.5,1.8};
+      const tetra::Sphere benchmark_surface{};
+      const auto command_hash=[](const tetra::AdaptationPlan& plan){
+        std::uint64_t hash=1469598103934665603ULL;
+        for(const auto& planned:plan.commands){
+          hash^=planned.logical_owner;hash*=1099511628211ULL;
+          hash^=static_cast<std::uint8_t>(planned.kind);
+          hash*=1099511628211ULL;
+        }
+        return hash;
+      };
+      const auto oracle=tetra::plan_adaptation(
+          benchmark_mesh,benchmark_surface,benchmark_camera,18.0,12U,
+          configuration,5U);
+      const auto oracle_hash=command_hash(oracle);
+      constexpr std::size_t repetitions=5U;
+      for(const std::size_t workers:worker_counts){
+        tetra::GeometryExecutor executor({
+            .worker_count=workers,.blocks_per_worker=4U});
+        std::vector<double> timings;
+        timings.reserve(repetitions);
+        tetra::AdaptationPlan measured;
+        bool hashes_match=true;
+        for(std::size_t repetition=0;repetition<repetitions;++repetition){
+          const auto start=Clock::now();
+          measured=tetra::plan_adaptation(
+              benchmark_mesh,benchmark_surface,benchmark_camera,18.0,12U,
+              configuration,5U,nullptr,{},&executor);
+          timings.push_back(milliseconds_since(start));
+          hashes_match&=command_hash(measured)==oracle_hash&&
+              measured.commands==oracle.commands;
+        }
+        std::sort(timings.begin(),timings.end());
+        const auto executor_metrics=executor.metrics();
+        output<<"{\"event\":\"multithreaded_geometry_benchmark\""
+              <<",\"workers\":"<<workers
+              <<",\"repetitions\":"<<repetitions
+              <<",\"owners\":"<<benchmark_mesh.logical_red_owners().size()
+              <<",\"commands\":"<<measured.commands.size()
+              <<",\"parallel_tasks\":"<<measured.parallel_tasks
+              <<",\"parallel_candidates\":"<<measured.parallel_candidates
+              <<",\"median_plan_ms\":"<<std::fixed<<std::setprecision(3)
+              <<timings[timings.size()/2U]
+              <<",\"minimum_plan_ms\":"<<timings.front()
+              <<",\"queue_wait_ms\":"
+              <<executor_metrics.total_queue_wait_milliseconds
+              <<",\"task_ms\":"<<executor_metrics.total_task_milliseconds
+              <<",\"maximum_active_workers\":"
+              <<executor_metrics.maximum_active_workers
+              <<",\"maximum_queued_tasks\":"
+              <<executor_metrics.maximum_queued_tasks
+              <<",\"maximum_task_ms\":"
+              <<executor_metrics.maximum_task_milliseconds
+              <<",\"idle_worker_ms\":"
+              <<executor_metrics.total_idle_milliseconds
+              <<",\"command_hash\":"<<command_hash(measured)
+              <<",\"hashes_match\":"<<(hashes_match?"true":"false")
+              <<"}\n";
+        if(!hashes_match){
+          write_error(errors,
+              "multithreaded planning differs from serial oracle",command);
+          return 1;
+        }
+      }
+
+      // The small fixture above isolates scheduling overhead. Repeat the
+      // measurement on the actual initialized terrain cut so the automatic
+      // policy is not selected from a toy workload alone. Planning and scene
+      // geometry use immutable snapshots; commit remains the serial oracle.
+      tetra::Camera production_camera=state.camera;
+      point_camera_at(production_camera,{0.5,0.5,1.35},state.sphere.centre);
+      auto production_configuration=state.adaptation;
+      production_configuration.operation_budget=4096U;
+      const auto production_oracle=tetra::plan_adaptation(
+          state.mesh,state.sphere,production_camera,state.pixel_threshold,
+          state.maximum_depth,production_configuration,state.field_revision);
+      const auto production_command_hash=command_hash(production_oracle);
+      const auto serial_scene=prepare_scene(
+          state.mesh,state.sphere,SurfaceMethod::marching_tetrahedra,
+          state.material_rule,true,false,true,false,false,false,1.0,
+          VolumeConnectionMethod::hierarchy_cells,
+          StencilConstruction::fixed,StencilSelectionObjective::balanced,
+          {.surface_diagnostics=false,.summary_statistics=true},{},false);
+      const auto serial_scene_hash=surface_geometry_hashes(serial_scene);
+      constexpr std::size_t production_repetitions=3U;
+      for(const std::size_t workers:worker_counts){
+        tetra::GeometryExecutor executor({
+            .worker_count=workers,.blocks_per_worker=4U});
+        std::vector<double> plan_timings;
+        plan_timings.reserve(production_repetitions);
+        tetra::AdaptationPlan measured;
+        bool hashes_match=true;
+        for(std::size_t repetition=0;repetition<production_repetitions;
+            ++repetition){
+          const auto start=Clock::now();
+          measured=tetra::plan_adaptation(
+              state.mesh,state.sphere,production_camera,state.pixel_threshold,
+              state.maximum_depth,production_configuration,
+              state.field_revision,nullptr,{},&executor);
+          plan_timings.push_back(milliseconds_since(start));
+          hashes_match&=command_hash(measured)==production_command_hash&&
+              measured.commands==production_oracle.commands;
+        }
+        std::sort(plan_timings.begin(),plan_timings.end());
+        auto commit_mesh=state.mesh;
+        const auto commit_start=Clock::now();
+        const auto commit=tetra::commit_adaptation(
+            commit_mesh,measured,production_configuration,
+            state.field_revision,nullptr,&executor);
+        const double commit_ms=milliseconds_since(commit_start);
+        const auto scene_start=Clock::now();
+        const auto scene=prepare_scene(
+            state.mesh,state.sphere,SurfaceMethod::marching_tetrahedra,
+            state.material_rule,true,false,true,false,false,false,1.0,
+            VolumeConnectionMethod::hierarchy_cells,
+            StencilConstruction::fixed,StencilSelectionObjective::balanced,
+            {.surface_diagnostics=false,.summary_statistics=true},{},false,
+            &executor);
+        const double scene_ms=milliseconds_since(scene_start);
+        const auto scene_hash=surface_geometry_hashes(scene);
+        hashes_match&=scene_hash==serial_scene_hash;
+        SceneCache patch_cache;
+        const auto patch_start=Clock::now();
+        const bool patch_updated=patch_cache.update_scene(
+            state.mesh,state.sphere,state.field_revision,
+            SurfaceMethod::marching_tetrahedra,state.material_rule,
+            true,false,true,false,false,false,1.0,
+            VolumeConnectionMethod::hierarchy_cells,
+            StencilConstruction::fixed,StencilSelectionObjective::balanced,
+            {.surface_diagnostics=false,.summary_statistics=true},{},0U,
+            &executor);
+        const double patch_scene_ms=milliseconds_since(patch_start);
+        hashes_match&=patch_updated&&
+            surface_geometry_hashes(patch_cache.scene())==serial_scene_hash;
+        SurfaceDrawChunkStorage chunks;
+        const auto pack_start=Clock::now();
+        chunks.pack(patch_cache.surface_patch_records(),
+                    patch_cache.surface_patch_arena(),&executor);
+        const double pack_ms=milliseconds_since(pack_start);
+        SurfaceHostStagingStorage staging;
+        const auto stage_start=Clock::now();
+        staging.stage(
+            chunks,patch_cache.scene().triangle_vertices,&executor);
+        const double stage_ms=milliseconds_since(stage_start);
+        const auto bcc=commit_mesh.last_bcc_update_metrics();
+        const auto executor_metrics=executor.metrics();
+        output<<"{\"event\":\"multithreaded_geometry_benchmark\""
+              <<",\"workload\":\"production-default-terrain\""
+              <<",\"workers\":"<<workers
+              <<",\"repetitions\":"<<production_repetitions
+              <<",\"owners\":"<<state.mesh.logical_red_owners().size()
+              <<",\"conforming_cells\":"
+              <<state.mesh.conforming_volume().size()
+              <<",\"commands\":"<<measured.commands.size()
+              <<",\"field_evaluations\":"<<measured.exact_field_evaluations
+              <<",\"median_plan_ms\":"<<std::fixed<<std::setprecision(3)
+              <<plan_timings[plan_timings.size()/2U]
+              <<",\"minimum_plan_ms\":"<<plan_timings.front()
+              <<",\"commit_ms\":"<<commit_ms
+              <<",\"closure_ms\":"<<bcc.conformity_closure_ms
+              <<",\"cut_transform_ms\":"<<bcc.cut_transform_ms
+              <<",\"derived_green_ms\":"<<bcc.green_generation_ms
+              <<",\"incidence_ms\":"<<bcc.incidence_update_ms
+              <<",\"scene_ms\":"<<scene_ms
+              <<",\"scene_triangles\":"<<scene_hash.triangle_count
+              <<",\"patch_scene_ms\":"<<patch_scene_ms
+              <<",\"patch_generation_ms\":"
+              <<patch_cache.surface_patch_metrics().parallel_generation_milliseconds
+              <<",\"patch_generation_tasks\":"
+              <<patch_cache.surface_patch_metrics().parallel_generation_tasks
+              <<",\"draw_pack_ms\":"<<pack_ms
+              <<",\"draw_pack_parallel_ms\":"
+              <<chunks.metrics().parallel_copy_milliseconds
+              <<",\"host_stage_ms\":"<<stage_ms
+              <<",\"host_stage_parallel_ms\":"
+              <<staging.metrics().parallel_copy_milliseconds
+              <<",\"packed_bytes\":"<<chunks.metrics().copied_bytes
+              <<",\"staged_bytes\":"
+              <<staging.metrics().staged_triangle_bytes
+              <<",\"parallel_scene_tasks\":"
+              <<scene.parallel_classification_tasks+
+                    scene.parallel_render_attribute_tasks
+              <<",\"mesh_snapshot_bytes\":"<<state.mesh.resident_storage_bytes()
+              <<",\"scene_vertex_bytes\":"
+              <<scene.triangle_vertices.size()*sizeof(SceneVertex)
+              <<",\"queue_peak\":"<<executor_metrics.maximum_queued_tasks
+              <<",\"maximum_task_ms\":"
+              <<executor_metrics.maximum_task_milliseconds
+              <<",\"idle_worker_ms\":"
+              <<executor_metrics.total_idle_milliseconds
+              <<",\"maximum_active_workers\":"
+              <<executor_metrics.maximum_active_workers
+              <<",\"command_hash\":"<<command_hash(measured)
+              <<",\"surface_hash\":"<<scene_hash.triangle_hash
+              <<",\"commit_status\":"
+              <<static_cast<unsigned int>(commit.status)
+              <<",\"hashes_match\":"<<(hashes_match?"true":"false")
+              <<"}\n";
+        if(!hashes_match){
+          write_error(errors,
+              "production multithreaded geometry differs from serial oracle",
+              command);
+          return 1;
+        }
+      }
+      continue;
+    }
     if(command=="benchmark-cpu-worker-supersession"){
       const tetra::Sphere surface{};
       tetra::Camera initial_camera;
@@ -3472,6 +4029,86 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
         command, "set-pixel-threshold=", 0.001, 1000000.0, state.pixel_threshold, errors);
     if (threshold_result != SetResult::not_recognized) {
       if (threshold_result == SetResult::error) return 2;
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    const auto set_camera_lod_double=[&](std::string_view prefix,double minimum,
+                                         double maximum,double& value){
+      const double previous=value;
+      const auto result=set_double_command(
+          command,prefix,minimum,maximum,value,errors);
+      if(result==SetResult::not_recognized)return result;
+      if(result==SetResult::error)return result;
+      if(!tetra::implemented(state.adaptation)){
+        value=previous;
+        write_error(errors,"camera LOD control is incompatible with the selected LOD strategy",command);
+        return SetResult::error;
+      }
+      state.planning_cache.clear();
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      return result;
+    };
+    if(const auto result=set_camera_lod_double(
+           "set-guard-scale=",1.0,3.0,
+           state.adaptation.guard_frustum_scale);
+       result!=SetResult::not_recognized){
+      if(result==SetResult::error)return 2;
+      continue;
+    }
+    if(const auto result=set_camera_lod_double(
+           "set-near-lod-radius=",0.0,4.0,state.adaptation.near_radius);
+       result!=SetResult::not_recognized){
+      if(result==SetResult::error)return 2;
+      continue;
+    }
+    if(const auto result=set_camera_lod_double(
+           "set-prediction-factor=",0.0,2.0,
+           state.adaptation.prediction_factor);
+       result!=SetResult::not_recognized){
+      if(result==SetResult::error)return 2;
+      continue;
+    }
+    constexpr std::string_view recent_epochs_prefix="set-recent-lod-epochs=";
+    if(command.starts_with(recent_epochs_prefix)){
+      unsigned int value{};
+      if(!parse_unsigned(command.substr(recent_epochs_prefix.size()),value)||
+         value<1U||value>64U){
+        write_error(errors,"recent LOD epochs outside the supported range",command);
+        return 2;
+      }
+      const auto previous=state.adaptation.recent_retention_epochs;
+      state.adaptation.recent_retention_epochs=value;
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.recent_retention_epochs=previous;
+        write_error(errors,"recent LOD is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
+      const auto start=Clock::now();
+      static_cast<void>(reconcile_to_current_surface(state));
+      write_command_event(output,command,milliseconds_since(start),state);
+      continue;
+    }
+    constexpr std::string_view complexity_target_prefix="set-complexity-target=";
+    if(command.starts_with(complexity_target_prefix)){
+      unsigned int value{};
+      if(!parse_unsigned(command.substr(complexity_target_prefix.size()),value)||
+         value>10000000U){
+        write_error(errors,"complexity target outside the supported range",command);
+        return 2;
+      }
+      const auto previous=state.adaptation.complexity_target_owners;
+      state.adaptation.complexity_target_owners=value;
+      if(!tetra::implemented(state.adaptation)){
+        state.adaptation.complexity_target_owners=previous;
+        write_error(errors,"complexity target is incompatible with the selected LOD strategy",command);
+        return 2;
+      }
+      state.planning_cache.clear();
       const auto start=Clock::now();
       static_cast<void>(reconcile_to_current_surface(state));
       write_command_event(output,command,milliseconds_since(start),state);

@@ -8,6 +8,8 @@
 
 namespace tetra {
 
+class GeometryExecutor;
+
 enum class ImplicitShapeKind : std::uint8_t {
   sphere,
   merging_spheres,
@@ -83,13 +85,37 @@ struct PreparedCameraProjection {
   double viewport_height_pixels{};
 };
 
+struct ProjectedTetrahedron {
+  double diameter_pixels{};
+  bool intersects_frustum{};
+};
+
+struct CameraLodDemand {
+  CameraLodZone zone{CameraLodZone::cold};
+  double projected_diameter_pixels{};
+  double quality_multiplier{1.0};
+};
+
 [[nodiscard]] PreparedCameraProjection prepare_camera_projection(const Camera& camera);
+[[nodiscard]] ProjectedTetrahedron projected_tetrahedron(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera);
+[[nodiscard]] ProjectedTetrahedron projected_tetrahedron(
+    const TetMesh& mesh,TetId tet,const Camera& camera);
 [[nodiscard]] double projected_tetrahedron_diameter(const TetMesh& mesh, TetId tet, const Camera& camera);
 [[nodiscard]] double projected_tetrahedron_diameter(
     const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera);
 void projected_tetrahedron_diameters(
     const TetMesh& mesh,std::span<const TetId> tetrahedra,
     const PreparedCameraProjection& camera,std::span<double> output);
+[[nodiscard]] double standby_projected_tetrahedron_diameter(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera);
+[[nodiscard]] CameraLodDemand camera_lod_demand(
+    const TetMesh& mesh,TetId tet,const Camera& camera,
+    const AdaptationConfiguration& configuration);
+[[nodiscard]] CameraLodDemand camera_lod_demand(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera,
+    const PreparedCameraProjection& guarded_camera,
+    const AdaptationConfiguration& configuration);
 
 // Evaluates independent points in batches.  Scalar semantics remain the
 // reference; supported builds use isolated SIMD kernels internally.
@@ -118,6 +144,7 @@ struct AdaptationSummaryLayer {
   std::vector<Vec3> spatial_maximum;
   std::vector<double> field_minimum;
   std::vector<double> field_maximum;
+  std::vector<double> geometric_error_bound;
   std::vector<unsigned int> deepest_resident_depth;
   std::vector<unsigned int> deepest_active_depth;
   std::vector<std::uint64_t> pinned_descendant_words;
@@ -141,6 +168,11 @@ struct SpatialOwnerRun {
   double field_maximum{};
 };
 
+struct CameraTemporalLayer {
+  std::vector<TetId> addresses;
+  std::vector<std::uint64_t> last_demand_epochs;
+};
+
 struct PersistentSchedulerEntry {
   TetId address{invalid_tet};
   std::uint64_t state_revision{};
@@ -150,6 +182,7 @@ struct PersistentSchedulerEntry {
   bool has_priority{};
   bool may_intersect_surface{true};
   bool surface_relation_known{};
+  CameraLodZone camera_zone{CameraLodZone::cold};
 };
 
 // Flat open-addressed membership for one retained scheduler front. Zero is an
@@ -173,6 +206,13 @@ struct AdaptationPlanningCache {
   std::size_t resident_red_records{};
   std::size_t resident_vertices{};
   std::vector<SpatialOwnerRun> spatial_runs;
+  std::vector<CameraTemporalLayer> camera_temporal_layers;
+  bool has_committed_camera{};
+  Camera committed_camera{};
+  std::uint64_t camera_demand_epoch{};
+  double camera_soft_quality_multiplier{1.0};
+  std::array<std::size_t,6> last_camera_demand_evaluations{};
+  std::size_t last_camera_active_owner_count{};
   std::uint64_t spatial_index_active_revision{std::numeric_limits<std::uint64_t>::max()};
   std::uint64_t spatial_index_field_revision{std::numeric_limits<std::uint64_t>::max()};
   std::vector<PersistentSchedulerEntry> split_queue;
@@ -182,6 +222,7 @@ struct AdaptationPlanningCache {
   std::vector<PersistentSchedulerEntry> scheduler_entry_scratch;
   std::vector<TetId> scheduler_projection_address_scratch;
   std::vector<double> scheduler_projection_value_scratch;
+  std::vector<CameraLodZone> scheduler_projection_zone_scratch;
   std::vector<std::uint32_t> scheduler_projection_index_scratch;
   std::vector<TetId> scheduler_family_scratch;
   std::vector<TetId> scheduler_conformity_scratch;
@@ -241,6 +282,12 @@ struct AdaptationPlanningCache {
     resident_red_records=0;
     resident_vertices=0;
     spatial_runs.clear();
+    camera_temporal_layers.clear();
+    has_committed_camera=false;
+    camera_demand_epoch=0U;
+    camera_soft_quality_multiplier=1.0;
+    last_camera_demand_evaluations.fill(0U);
+    last_camera_active_owner_count=0U;
     spatial_index_active_revision=std::numeric_limits<std::uint64_t>::max();
     spatial_index_field_revision=std::numeric_limits<std::uint64_t>::max();
     split_queue.clear();
@@ -250,6 +297,7 @@ struct AdaptationPlanningCache {
     scheduler_entry_scratch.clear();
     scheduler_projection_address_scratch.clear();
     scheduler_projection_value_scratch.clear();
+    scheduler_projection_zone_scratch.clear();
     scheduler_projection_index_scratch.clear();
     scheduler_family_scratch.clear();
     scheduler_conformity_scratch.clear();
@@ -365,7 +413,8 @@ struct PreorderRenderMetrics {
     const AdaptationConfiguration& configuration={},
     std::uint64_t field_revision=0,
     AdaptationPlanningCache* planning_cache=nullptr,
-    std::stop_token cancellation={});
+    std::stop_token cancellation={},
+    GeometryExecutor* executor=nullptr);
 
 // Commit only a plan made against the current hierarchy revision. Complete
 // BCC sibling families are merged before the disjoint split frontier is
@@ -374,7 +423,8 @@ struct PreorderRenderMetrics {
     TetMesh& mesh,const AdaptationPlan& plan,
     const AdaptationConfiguration& current_configuration,
     std::uint64_t current_field_revision=0,
-    AdaptationPlanningCache* planning_cache=nullptr);
+    AdaptationPlanningCache* planning_cache=nullptr,
+    GeometryExecutor* executor=nullptr);
 
 [[nodiscard]] AdaptationCommitResult adapt_to_surface(
     TetMesh& mesh,const Sphere& sphere,const Camera& camera,
@@ -382,7 +432,8 @@ struct PreorderRenderMetrics {
     const AdaptationConfiguration& configuration={},
     std::uint64_t field_revision=0,
     AdaptationPlanningCache* planning_cache=nullptr,
-    std::stop_token cancellation={});
+    std::stop_token cancellation={},
+    GeometryExecutor* executor=nullptr);
 
 [[nodiscard]] AdaptationCommitResult replay_adaptation(
     TetMesh& mesh,const AdaptationReplayRecord& record,bool reverse,

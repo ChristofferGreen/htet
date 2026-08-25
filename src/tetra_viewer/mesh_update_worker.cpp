@@ -25,29 +25,82 @@ bool same_camera(const tetra::Camera& first,const tetra::Camera& second) noexcep
       first.aspect_ratio==second.aspect_ratio;
 }
 
-}  // namespace
+bool same_camera_projection(const tetra::Camera& first,
+                            const tetra::Camera& second) noexcept {
+  return first.vertical_fov_radians==second.vertical_fov_radians&&
+      first.viewport_height_pixels==second.viewport_height_pixels&&
+      first.aspect_ratio==second.aspect_ratio;
+}
 
-bool same_mesh_update_parameters(const MeshUpdateParameters& first,
-                                 const MeshUpdateParameters& second) noexcept {
+bool same_non_camera_parameters(const MeshUpdateParameters& first,
+                                const MeshUpdateParameters& second) noexcept {
   return same_surface(first.surface,second.surface)&&
-      same_camera(first.camera,second.camera)&&
       first.pixel_threshold==second.pixel_threshold&&
       first.maximum_depth==second.maximum_depth&&
       first.configuration==second.configuration&&
       first.field_revision==second.field_revision&&
-      first.budget==second.budget;
+      first.budget==second.budget&&first.intent==second.intent;
 }
 
-MeshUpdateWorker::MeshUpdateWorker()
-    :thread_([this](std::stop_token stop){run(stop);}) {}
+}  // namespace
+
+bool same_mesh_update_parameters(const MeshUpdateParameters& first,
+                                 const MeshUpdateParameters& second) noexcept {
+  return same_non_camera_parameters(first,second)&&
+      same_camera(first.camera,second.camera);
+}
+
+bool compatible_mesh_update_publication(
+    const MeshUpdateParameters& submitted,
+    const MeshUpdateParameters& current) noexcept {
+  if(same_mesh_update_parameters(submitted,current))return true;
+  return submitted.intent==MeshUpdateIntent::interactive_camera&&
+      current.intent==MeshUpdateIntent::interactive_camera&&
+      same_non_camera_parameters(submitted,current)&&
+      same_camera_projection(submitted.camera,current.camera);
+}
+
+MeshUpdateParameters make_interactive_mesh_update_parameters(
+    MeshUpdateParameters settled) noexcept {
+  settled.pixel_threshold*=interactive_mesh_update_pixel_threshold_scale;
+  settled.budget.maximum_operations_per_transaction=
+      interactive_mesh_update_operation_budget;
+  settled.budget.target_milliseconds=
+      interactive_mesh_update_time_budget_milliseconds;
+  settled.intent=MeshUpdateIntent::interactive_camera;
+  return settled;
+}
+
+bool should_submit_mesh_update(
+    bool update_in_flight,bool request_changed,bool interactive,
+    bool slice_published_this_frame,bool intent_changed) noexcept {
+  if(!update_in_flight)return true;
+  if(!request_changed)return false;
+  return !interactive||slice_published_this_frame||intent_changed;
+}
+
+MeshUpdateWorker::MeshUpdateWorker(
+    std::shared_ptr<tetra::GeometryExecutor> executor)
+    :executor_(executor?std::move(executor):
+        std::make_shared<tetra::GeometryExecutor>()) {}
 
 MeshUpdateWorker::~MeshUpdateWorker() {
   {
     std::lock_guard lock(mutex_);
     active_cancellation_.request_stop();
+    pending_.reset();
   }
-  thread_.request_stop();
+  runner_group_.request_stop();
   condition_.notify_all();
+  try{executor_->wait(runner_group_);}catch(...){ }
+}
+
+void MeshUpdateWorker::schedule_locked() {
+  if(runner_scheduled_)return;
+  runner_scheduled_=true;
+  runner_group_=executor_->make_group(
+      latest_request_id_,tetra::GeometryTaskPriority::publication_critical);
+  executor_->submit(runner_group_,[this](std::stop_token stop){run(stop);});
 }
 
 std::uint64_t MeshUpdateWorker::submit(
@@ -78,6 +131,7 @@ std::uint64_t MeshUpdateWorker::submit(
   pending_->cumulative_worker_handoff_milliseconds=
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-handoff_start).count();
+  schedule_locked();
   condition_.notify_all();
   return request_id;
 }
@@ -131,6 +185,7 @@ MeshContinuationSubmission MeshUpdateWorker::submit_continuation(
   pending_->cumulative_worker_handoff_milliseconds=
       result.cumulative_worker_handoff_milliseconds+
       worker_handoff_milliseconds;
+  schedule_locked();
   condition_.notify_all();
   return {
       .status=MeshContinuationStatus::accepted,.request_id=request_id,
@@ -203,9 +258,11 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     std::optional<MeshUpdateRequest> request;
     std::stop_token request_cancellation;
     {
-      std::unique_lock lock(mutex_);
-      condition_.wait(lock,stop,[&]{return pending_.has_value();});
-      if(stop.stop_requested())return;
+      std::lock_guard lock(mutex_);
+      if(!pending_){
+        runner_scheduled_=false;
+        return;
+      }
       request=std::move(pending_);
       pending_.reset();
       running_=true;
@@ -263,7 +320,7 @@ void MeshUpdateWorker::run(std::stop_token stop) {
           request->mesh,request->parameters.surface,request->parameters.camera,
           request->parameters.pixel_threshold,request->parameters.maximum_depth,
           transaction_configuration,request->parameters.field_revision,
-          &planning_cache,request_cancellation);
+          &planning_cache,request_cancellation,executor_.get());
       if(commit.canceled){
         canceled_plan=true;
         break;
@@ -398,6 +455,8 @@ void MeshUpdateWorker::run(std::stop_token stop) {
     }
     condition_.notify_all();
   }
+  std::lock_guard lock(mutex_);
+  runner_scheduled_=false;
 }
 
 MeshPublicationResult publish_mesh_update_result(
@@ -410,7 +469,8 @@ MeshPublicationResult publish_mesh_update_result(
   if(result.request_id!=expected_request_id||
      result.operation!=expected_operation||
      result.slice_source_mesh_revision!=published_mesh.revision()||
-     !same_mesh_update_parameters(result.parameters,current_parameters))
+     !compatible_mesh_update_publication(
+         result.parameters,current_parameters))
     return {};
 
   MeshPublicationResult publication{

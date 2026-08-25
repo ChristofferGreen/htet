@@ -1,4 +1,5 @@
 #include "tetra_core/tet_mesh.hpp"
+#include "tetra_core/geometry_executor.hpp"
 #include "tetra_core/green_templates.hpp"
 
 #include <algorithm>
@@ -1271,7 +1272,8 @@ void TetMesh::refine_selected_octasection(const std::vector<TetId>& requests) {
 void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
                                              unsigned int closure_depth_limit,
                                              BccClosureMode closure_mode,
-                                             double hybrid_frontier_ratio) {
+                                             double hybrid_frontier_ratio,
+                                             GeometryExecutor* executor) {
   if(requests.empty())return;
   const auto cut_scan_start=UpdateClock::now();
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
@@ -1622,7 +1624,8 @@ void TetMesh::refine_selected_bcc_red_green(const std::vector<TetId>& requests,
   last_bcc_update_metrics_.logical_owners_changed+=selected.size();
   last_bcc_update_metrics_.cut_transform_ms+=update_milliseconds(transform_start);
 
-  rebuild_bcc_conforming_cut(std::move(next_red_cut),closure_depth_limit);
+  rebuild_bcc_conforming_cut(
+      std::move(next_red_cut),closure_depth_limit,executor);
 }
 
 void TetMesh::clear_split_subtree(TetId parent) {
@@ -1660,7 +1663,7 @@ void TetMesh::rebuild_active_midpoints(const std::vector<Tetrahedron>& red_cut) 
 
 bool TetMesh::commit_planned_red_refinement(
     const std::vector<TetId>& requests,BccClosureMode closure_mode,
-    double hybrid_frontier_ratio) {
+    double hybrid_frontier_ratio,GeometryExecutor* executor) {
   if(requests.empty())return true;
   if(storage_->subdivision_method_!=SubdivisionMethod::bcc_red_green)return false;
   last_bcc_update_metrics_={};
@@ -1675,7 +1678,8 @@ bool TetMesh::commit_planned_red_refinement(
   detach_storage();
   try{
     refine_selected_bcc_red_green(
-        requests,closure_depth_limit,closure_mode,hybrid_frontier_ratio);
+        requests,closure_depth_limit,closure_mode,hybrid_frontier_ratio,
+        executor);
     storage_->revision_=base_revision+1U;
     return true;
   }catch(const BccClosureDepthExceeded&){
@@ -1807,7 +1811,8 @@ bool TetMesh::can_coarsen_selected_red(
   return true;
 }
 
-bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
+bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents,
+                                   GeometryExecutor* executor) {
   if(!can_coarsen_selected_red(parents))return false;
   TetMesh previous=*this;
   detach_storage();
@@ -1885,7 +1890,8 @@ bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
   last_bcc_update_metrics_.logical_owners_changed+=requested.size();
   last_bcc_update_metrics_.cut_transform_ms+=update_milliseconds(transform_start);
   try{
-    rebuild_bcc_conforming_cut(std::move(red_cut),closure_depth_limit);
+    rebuild_bcc_conforming_cut(
+        std::move(red_cut),closure_depth_limit,executor);
   }catch(const BccClosureDepthExceeded&){
     *this=std::move(previous);
     return false;
@@ -1899,7 +1905,8 @@ bool TetMesh::coarsen_selected_red(const std::vector<TetId>& parents) {
 }
 
 void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
-                                          unsigned int closure_depth_limit) {
+                                          unsigned int closure_depth_limit,
+                                          GeometryExecutor* executor) {
   storage_->logical_red_scratch_.clear();
   storage_->logical_red_scratch_.reserve(next_red_cut.size());
   for(const auto& owner:next_red_cut){
@@ -1978,14 +1985,25 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     std::array<VertexId,4> vertices{};
     TetId address{invalid_tet};
   };
-  std::vector<std::array<VertexId,4>> green;
-  std::vector<PendingGreen> pending;
-  green.reserve(24);
-  pending.reserve(32);
-  for(std::size_t owner_index=0;owner_index<next_red_cut.size();++owner_index){
-    const auto& red=next_red_cut[owner_index];
+  struct OwnerGreenResult {
+    std::uint8_t mask{};
+    std::uint64_t hash{};
+  };
+  struct GreenBlockResult {
+    std::size_t owner_begin{};
+    std::size_t owner_end{};
+    std::vector<OwnerGreenResult> owners;
+    std::vector<std::size_t> offsets;
+    std::vector<PendingGreen> cells;
+  };
+  const auto derive_owner=[&](
+      const Tetrahedron& red,std::vector<std::array<VertexId,4>>& green,
+      std::vector<std::array<VertexId,4>>& divided,
+      std::vector<PendingGreen>& pending){
     unsigned int mask=midpoint_mask(red);
     green.clear();
+    divided.clear();
+    pending.clear();
     if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal){
       auto numbered=red.vertices;
       std::sort(numbered.begin(),numbered.end());
@@ -2011,19 +2029,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
         }
       }
     }
-    storage_->logical_midpoint_masks_[owner_index]=static_cast<std::uint8_t>(mask);
-    storage_->logical_stencil_choices_[owner_index]=static_cast<std::uint8_t>(mask);
-    storage_->logical_derived_offsets_[owner_index]=storage_->logical_derived_addresses_.size();
-    if(mask==0U){
-      const auto old=old_owner_indices[owner_index];
-      const bool old_had_green=old!=no_old_owner&&
-          old+1U<storage_->logical_derived_offset_scratch_.size()&&
-          storage_->logical_derived_offset_scratch_[old]!=storage_->logical_derived_offset_scratch_[old+1U];
-      if(old_had_green)dirty_green_owners.push_back(red.address);
-      storage_->logical_derived_offsets_[owner_index+1U]=storage_->logical_derived_addresses_.size();
-      active.push_back(red.address);
-      continue;
-    }
+    if(mask==0U)return OwnerGreenResult{};
     if(storage_->transition_strategy_==BccTransitionStrategy::crystalline_restricted&&mask==63U)
       throw std::logic_error("BCC red closure left a fully marked coarse tetrahedron");
     if(storage_->transition_strategy_==BccTransitionStrategy::complete_minimal){
@@ -2035,7 +2041,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     }else if(std::popcount(mask)==2){
       green.push_back(red.vertices);
       for(std::size_t edge=0;edge<edges.size();++edge)if((mask&(1U<<edge))!=0U){
-        std::vector<std::array<VertexId,4>> divided;
+        divided.clear();
         const VertexId first=red.vertices[edges[edge][0]];
         const VertexId second=red.vertices[edges[edge][1]];
         for(const auto& cell:green){
@@ -2047,7 +2053,7 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
               cell,first,second,*existing_midpoint(edge_of(red,edge)));
           divided.insert(divided.end(),split.begin(),split.end());
         }
-        green=std::move(divided);
+        green.swap(divided);
       }
     }else if(std::popcount(mask)==3){
       std::size_t face=0;
@@ -2064,7 +2070,6 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     }else throw std::logic_error("unsupported BCC green mask");
 
     if(tet_depth(red.address)+10U>=tet_root_shift)throw std::overflow_error("BCC green address depth overflow");
-    pending.clear();
     for(std::size_t child=0;child<green.size();++child){
       const TetId path=(tet_path(red.address)<<10U)|(static_cast<TetId>(mask)<<4U)|static_cast<TetId>(child);
       pending.push_back({green[child],make_tet_id(tet_root(red.address),path)});
@@ -2107,7 +2112,93 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
       }
     }
     if(derived_hash==0U)derived_hash=1U;
-    storage_->logical_derived_hashes_[owner_index]=derived_hash;
+    return OwnerGreenResult{
+        static_cast<std::uint8_t>(mask),derived_hash};
+  };
+
+  const bool parallel_green=executor&&executor->worker_count()>1U&&
+      next_red_cut.size()>=1024U;
+  const std::size_t block_limit=parallel_green
+      ?executor->worker_count()*executor->configuration().blocks_per_worker:1U;
+  const std::size_t grain=std::max<std::size_t>(
+      1U,(next_red_cut.size()+block_limit-1U)/block_limit);
+  const std::size_t block_count=next_red_cut.empty()?0U:
+      (next_red_cut.size()+grain-1U)/grain;
+  std::vector<GreenBlockResult> green_blocks(block_count);
+  const auto build_blocks=[&](std::size_t begin,std::size_t end,
+                              std::stop_token stop){
+    const std::size_t block_index=begin/grain;
+    auto& block=green_blocks[block_index];
+    block.owner_begin=begin;
+    block.owner_end=end;
+    block.owners.clear();
+    block.offsets.clear();
+    block.cells.clear();
+    block.owners.reserve(end-begin);
+    block.offsets.reserve(end-begin+1U);
+    block.offsets.push_back(0U);
+    std::vector<std::array<VertexId,4>> green,divided;
+    std::vector<PendingGreen> pending;
+    green.reserve(24U);
+    divided.reserve(24U);
+    pending.reserve(32U);
+    for(std::size_t owner_index=begin;owner_index<end;++owner_index){
+      if(stop.stop_requested())return;
+      const auto result=derive_owner(
+          next_red_cut[owner_index],green,divided,pending);
+      block.owners.push_back(result);
+      block.cells.insert(block.cells.end(),pending.begin(),pending.end());
+      block.offsets.push_back(block.cells.size());
+    }
+  };
+  if(parallel_green){
+    const auto parallel_start=UpdateClock::now();
+    auto group=executor->make_group(
+        storage_->revision_,GeometryTaskPriority::publication_critical);
+    executor->parallel_for(
+        group,0U,next_red_cut.size(),grain,build_blocks);
+    executor->wait_and_help(group);
+    last_bcc_update_metrics_.parallel_green_generation_ms=
+        update_milliseconds(parallel_start);
+    last_bcc_update_metrics_.parallel_green_tasks=block_count;
+    last_bcc_update_metrics_.parallel_green_workers=executor->worker_count();
+  }else if(!next_red_cut.empty())
+    build_blocks(0U,next_red_cut.size(),{});
+
+  std::size_t derived_count{};
+  for(const auto& block:green_blocks)
+    for(std::size_t local=0;local<block.owners.size();++local){
+      const auto owner_index=block.owner_begin+local;
+      storage_->logical_derived_offsets_[owner_index]=derived_count;
+      const auto count=block.offsets[local+1U]-block.offsets[local];
+      if(count>std::numeric_limits<std::size_t>::max()-derived_count)
+        throw std::overflow_error("BCC derived address count overflow");
+      derived_count+=count;
+      storage_->logical_derived_offsets_[owner_index+1U]=derived_count;
+    }
+  storage_->logical_derived_addresses_.resize(derived_count);
+  active.reserve(next_red_cut.size()+derived_count);
+  for(const auto& block:green_blocks){
+    for(std::size_t local=0;local<block.owners.size();++local){
+      const auto owner_index=block.owner_begin+local;
+      const auto& red=next_red_cut[owner_index];
+      const auto result=block.owners[local];
+      const auto pending=std::span<const PendingGreen>(block.cells).subspan(
+          block.offsets[local],block.offsets[local+1U]-block.offsets[local]);
+      storage_->logical_midpoint_masks_[owner_index]=result.mask;
+      storage_->logical_stencil_choices_[owner_index]=result.mask;
+      storage_->logical_derived_hashes_[owner_index]=result.hash;
+      if(result.mask==0U){
+        const auto old=old_owner_indices[owner_index];
+        const bool old_had_green=old!=no_old_owner&&
+            old+1U<storage_->logical_derived_offset_scratch_.size()&&
+            storage_->logical_derived_offset_scratch_[old]!=
+                storage_->logical_derived_offset_scratch_[old+1U];
+        if(old_had_green)dirty_green_owners.push_back(red.address);
+        active.push_back(red.address);
+        continue;
+      }
+      const auto derived_hash=result.hash;
     const auto old=old_owner_indices[owner_index];
     bool reuse=old!=no_old_owner&&old<storage_->logical_derived_hash_scratch_.size()&&
         old+1U<storage_->logical_derived_offset_scratch_.size()&&
@@ -2122,26 +2213,35 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
         reuse=storage_->logical_derived_address_scratch_[old_begin+index]==pending[index].address;
     }
     if(reuse){
-      storage_->logical_derived_addresses_.insert(storage_->logical_derived_addresses_.end(),
-          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
-          storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
+      std::copy(
+          storage_->logical_derived_address_scratch_.begin()+
+              static_cast<std::ptrdiff_t>(old_begin),
+          storage_->logical_derived_address_scratch_.begin()+
+              static_cast<std::ptrdiff_t>(old_end),
+          storage_->logical_derived_addresses_.begin()+
+              static_cast<std::ptrdiff_t>(
+                  storage_->logical_derived_offsets_[owner_index]));
       active.insert(active.end(),
           storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_begin),
           storage_->logical_derived_address_scratch_.begin()+static_cast<std::ptrdiff_t>(old_end));
     }else{
       dirty_green_owners.push_back(red.address);
-      for(const auto& cell:pending){
+      for(std::size_t pending_index=0;pending_index<pending.size();
+          ++pending_index){
+        const auto& cell=pending[pending_index];
         const TetId address=cell.address;
         const unsigned int depth=tet_depth(address);
         if(depth>=green_additions.size())green_additions.resize(depth+1);
         Tetrahedron record{cell.vertices,address,red.address};
         green_additions[depth].push_back(record);
-        storage_->logical_derived_addresses_.push_back(address);
+        storage_->logical_derived_addresses_[
+            storage_->logical_derived_offsets_[owner_index]+
+            pending_index]=address;
         active.push_back(address);
         ++last_bcc_update_metrics_.green_records_generated;
       }
     }
-    storage_->logical_derived_offsets_[owner_index+1U]=storage_->logical_derived_addresses_.size();
+    }
   }
   for(std::size_t old=0;old<storage_->logical_red_scratch_.size();++old)
     if(old_owner_mapped[old]==0U)dirty_green_owners.push_back(storage_->logical_red_scratch_[old]);
@@ -2286,7 +2386,9 @@ void TetMesh::rebuild_bcc_conforming_cut(std::vector<Tetrahedron> next_red_cut,
     face_repairs.erase(std::unique(face_repairs.begin(),face_repairs.end()),face_repairs.end());
     if(shallowest_repair+3U>closure_depth_limit)throw BccClosureDepthExceeded{};
     ++storage_->revision_;
-    refine_selected_bcc_red_green(face_repairs,closure_depth_limit);
+    refine_selected_bcc_red_green(
+        face_repairs,closure_depth_limit,BccClosureMode::sparse_frontier,
+        0.10,executor);
     return;
   }
   last_bcc_update_metrics_.face_repair_ms+=update_milliseconds(repair_start);

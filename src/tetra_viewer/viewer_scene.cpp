@@ -1,4 +1,5 @@
 #include "tetra_viewer/viewer_scene.hpp"
+#include "tetra_core/geometry_executor.hpp"
 
 #include <algorithm>
 #include <array>
@@ -240,7 +241,8 @@ tetra::Vec3 face_normal(tetra::Vec3 a, tetra::Vec3 b, tetra::Vec3 c) {
           (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)};
 }
 
-void prepare_surface_render_attributes(PreparedScene& scene) {
+void prepare_surface_render_attributes(
+    PreparedScene& scene,tetra::GeometryExecutor* executor=nullptr) {
   const std::size_t triangle_count=scene.triangle_vertices.size()/3;
   if (triangle_count==0) return;
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
@@ -248,33 +250,55 @@ void prepare_surface_render_attributes(PreparedScene& scene) {
     const double length=std::sqrt(dot(value,value));
     return length>1e-15?value/length:tetra::Vec3{};
   };
-  for(std::size_t triangle=0;triangle<triangle_count;++triangle){
-    const auto& first=scene.triangle_vertices[triangle*3];
-    const auto& second=scene.triangle_vertices[triangle*3+1];
-    const auto& third=scene.triangle_vertices[triangle*3+2];
-    const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
-    const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
-    const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
-    auto geometric=face_normal(a,b,c);
-    const tetra::Vec3 supplied{first.normal[0],first.normal[1],first.normal[2]};
-    // Preserve the deliberately selected outward side, but derive the final
-    // lighting vector from the submitted geometry. In particular, never
-    // publish the raw area vector: its length shrinks quadratically under
-    // refinement and was eventually mistaken for the zero-normal sentinel
-    // by the fragment shader.
-    if(dot(geometric,supplied)<0.0)geometric=geometric*-1.0;
-    const auto normal=normalize(geometric);
-    for(std::size_t vertex=0;vertex<3;++vertex){
-      auto& output=scene.triangle_vertices[triangle*3+vertex];
-      // Flat lighting and barycentric wireframes are render inputs, not
-      // diagnostics, and must always be prepared.
-      output.normal[0]=static_cast<float>(normal.x);
-      output.normal[1]=static_cast<float>(normal.y);
-      output.normal[2]=static_cast<float>(normal.z);
-      output.barycentric[0]=vertex==0?1.0F:0.0F;
-      output.barycentric[1]=vertex==1?1.0F:0.0F;
-      output.barycentric[2]=vertex==2?1.0F:0.0F;
+  const auto process=[&](std::size_t begin,std::size_t end,std::stop_token stop){
+    for(std::size_t triangle=begin;triangle<end;++triangle){
+      if(stop.stop_requested())return;
+      const auto& first=scene.triangle_vertices[triangle*3];
+      const auto& second=scene.triangle_vertices[triangle*3+1];
+      const auto& third=scene.triangle_vertices[triangle*3+2];
+      const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
+      const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
+      const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
+      auto geometric=face_normal(a,b,c);
+      const tetra::Vec3 supplied{first.normal[0],first.normal[1],first.normal[2]};
+      // Preserve the deliberately selected outward side, but derive the final
+      // lighting vector from the submitted geometry. In particular, never
+      // publish the raw area vector: its length shrinks quadratically under
+      // refinement and was eventually mistaken for the zero-normal sentinel
+      // by the fragment shader.
+      if(dot(geometric,supplied)<0.0)geometric=geometric*-1.0;
+      const auto normal=normalize(geometric);
+      for(std::size_t vertex=0;vertex<3;++vertex){
+        auto& output=scene.triangle_vertices[triangle*3+vertex];
+        // Flat lighting and barycentric wireframes are render inputs, not
+        // diagnostics, and must always be prepared.
+        output.normal[0]=static_cast<float>(normal.x);
+        output.normal[1]=static_cast<float>(normal.y);
+        output.normal[2]=static_cast<float>(normal.z);
+        output.barycentric[0]=vertex==0?1.0F:0.0F;
+        output.barycentric[1]=vertex==1?1.0F:0.0F;
+        output.barycentric[2]=vertex==2?1.0F:0.0F;
+      }
     }
+  };
+  constexpr std::size_t parallel_attribute_threshold=1024U;
+  if(executor&&executor->worker_count()>1U&&
+     triangle_count>=parallel_attribute_threshold){
+    const auto start=std::chrono::steady_clock::now();
+    auto group=executor->make_group(
+        0U,tetra::GeometryTaskPriority::interactive);
+    const std::size_t block_count=std::max<std::size_t>(
+        1U,executor->worker_count()*executor->configuration().blocks_per_worker);
+    const std::size_t grain=std::max<std::size_t>(
+        1U,(triangle_count+block_count-1U)/block_count);
+    executor->parallel_for(group,0U,triangle_count,grain,process);
+    executor->wait_and_help(group);
+    scene.parallel_render_attribute_milliseconds+=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-start).count();
+    scene.parallel_render_attribute_tasks+=(triangle_count+grain-1U)/grain;
+  }else{
+    process(0U,triangle_count,{});
   }
 }
 
@@ -2623,14 +2647,14 @@ void SurfaceDrawChunkStorage::finish_metrics(
       segments_.capacity()*sizeof(SurfaceDrawPatchSegment)+
       free_ranges_.capacity()*sizeof(SurfaceDrawChunkFreeRange)+
       arena_.capacity()*sizeof(tetra::Triangle)+
-      retained_patches_.capacity()*sizeof(RetainedPatch);
+      retained_patches_.capacity()*sizeof(RetainedPatch)+
+      copy_scratch_.capacity()*sizeof(CopyJob);
   metrics_.pack_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-start).count();
 }
 
 void SurfaceDrawChunkStorage::compact(
-    std::span<const SurfacePatchRecord> patches,
-    std::span<const tetra::Triangle> patch_arena) {
+    std::span<const SurfacePatchRecord> patches) {
   release_active_slots();
   ++metrics_.global_compactions;
   std::size_t triangle_count{};
@@ -2666,10 +2690,8 @@ void SurfaceDrawChunkStorage::compact(
           patch.triangle_count-source_offset,
           chunk_capacity_-chunk.triangle_count);
       const auto destination=chunk.arena_slot*chunk_capacity_+chunk.triangle_count;
-      std::copy_n(
-          patch_arena.begin()+static_cast<std::ptrdiff_t>(
-              patch.triangle_begin+source_offset),
-          count,arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      copy_scratch_.push_back({
+          patch.triangle_begin+source_offset,destination,count});
       segments_.push_back({
           patch.logical_owner,source_offset,chunks_.size()-1U,destination,count});
       ++chunk.segment_count;
@@ -2683,9 +2705,40 @@ void SurfaceDrawChunkStorage::compact(
   metrics_.copied_bytes=triangle_count*sizeof(tetra::Triangle);
 }
 
+void SurfaceDrawChunkStorage::run_copy_jobs(
+    std::span<const tetra::Triangle> patch_arena,
+    tetra::GeometryExecutor* executor) {
+  const auto copy=[&](std::size_t begin,std::size_t end,std::stop_token stop){
+    for(std::size_t index=begin;index<end;++index){
+      if(stop.stop_requested())return;
+      const auto& job=copy_scratch_[index];
+      std::copy_n(
+          patch_arena.begin()+static_cast<std::ptrdiff_t>(
+              job.source_triangle_begin),job.triangle_count,
+          arena_.begin()+static_cast<std::ptrdiff_t>(
+              job.destination_triangle_begin));
+    }
+  };
+  if(executor&&executor->worker_count()>1U&&copy_scratch_.size()>1U){
+    const auto start=std::chrono::steady_clock::now();
+    auto group=executor->make_group(
+        next_content_revision_,tetra::GeometryTaskPriority::publication_critical);
+    const std::size_t grain=std::max<std::size_t>(
+        1U,(copy_scratch_.size()+executor->worker_count()-1U)/
+            executor->worker_count());
+    executor->parallel_for(group,0U,copy_scratch_.size(),grain,copy);
+    executor->wait_and_help(group);
+    metrics_.parallel_copy_tasks=(copy_scratch_.size()+grain-1U)/grain;
+    metrics_.parallel_copy_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-start).count();
+  }else copy(0U,copy_scratch_.size(),{});
+}
+
 void SurfaceDrawChunkStorage::pack(
     std::span<const SurfacePatchRecord> patches,
-    std::span<const tetra::Triangle> patch_arena) {
+    std::span<const tetra::Triangle> patch_arena,
+    tetra::GeometryExecutor* executor) {
   const auto start=std::chrono::steady_clock::now();
   std::size_t triangle_count{};
   tetra::TetId previous_owner=tetra::invalid_tet;
@@ -2713,6 +2766,7 @@ void SurfaceDrawChunkStorage::pack(
   metrics_.chunk_capacity=chunk_capacity_;
   metrics_.large_patch_threshold=large_patch_threshold_;
   metrics_.source_patches=patches.size();
+  copy_scratch_.clear();
   metrics_.nonempty_patches=static_cast<std::size_t>(std::ranges::count_if(
       patches,[](const auto& patch){return patch.triangle_count!=0U;}));
   for(const auto& patch:patches){
@@ -2729,7 +2783,8 @@ void SurfaceDrawChunkStorage::pack(
   };
 
   if(retained_patches_.empty()&&chunks_.empty()){
-    compact(patches,patch_arena);
+    compact(patches);
+    run_copy_jobs(patch_arena,executor);
     retained_patches_=std::move(next_patches);
     finish_metrics(triangle_count,start);
     return;
@@ -2763,15 +2818,14 @@ void SurfaceDrawChunkStorage::pack(
       const auto& patch=patches[patch_index];
       for(const auto& segment:segments_){
         if(segment.logical_owner!=patch.logical_owner)continue;
-        std::copy_n(
-            patch_arena.begin()+static_cast<std::ptrdiff_t>(
-                patch.triangle_begin+segment.source_triangle_offset),
-            segment.triangle_count,
-            arena_.begin()+static_cast<std::ptrdiff_t>(segment.triangle_begin));
+        copy_scratch_.push_back({
+            patch.triangle_begin+segment.source_triangle_offset,
+            segment.triangle_begin,segment.triangle_count});
         dirty_chunks[segment.chunk_index]=true;
         metrics_.copied_bytes+=segment.triangle_count*sizeof(tetra::Triangle);
       }
     }
+    run_copy_jobs(patch_arena,executor);
     metrics_.dirty_chunks=static_cast<std::size_t>(
         std::ranges::count(dirty_chunks,true));
     for(std::size_t index=0;index<dirty_chunks.size();++index){
@@ -2819,7 +2873,8 @@ void SurfaceDrawChunkStorage::pack(
 
   constexpr std::size_t local_chunk_budget=64U;
   if(chunks_.empty()||low==std::numeric_limits<tetra::TetId>::max()){
-    compact(patches,patch_arena);
+    compact(patches);
+    run_copy_jobs(patch_arena,executor);
     retained_patches_=std::move(next_patches);
     finish_metrics(triangle_count,start);
     return;
@@ -2870,7 +2925,8 @@ void SurfaceDrawChunkStorage::pack(
   if(replaced_chunks>local_chunk_budget||
      replacement_chunk_count>local_chunk_budget||
      metrics_.dirty_patches*2U>std::max(retained_patches_.size(),next_patches.size())){
-    compact(patches,patch_arena);
+    compact(patches);
+    run_copy_jobs(patch_arena,executor);
     retained_patches_=std::move(next_patches);
     finish_metrics(triangle_count,start);
     return;
@@ -2922,10 +2978,8 @@ void SurfaceDrawChunkStorage::pack(
           patch.triangle_count-source_offset,
           chunk_capacity_-chunk.triangle_count);
       const auto destination=chunk.arena_slot*chunk_capacity_+chunk.triangle_count;
-      std::copy_n(
-          patch_arena.begin()+static_cast<std::ptrdiff_t>(
-              patch.triangle_begin+source_offset),count,
-          arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      copy_scratch_.push_back({
+          patch.triangle_begin+source_offset,destination,count});
       replacement_segments.push_back({patch.logical_owner,source_offset,
           replacement_chunks.size()-1U,destination,count});
       ++chunk.segment_count;
@@ -2934,6 +2988,8 @@ void SurfaceDrawChunkStorage::pack(
     }
     previous_large_patch=large_patch;
   }
+
+  run_copy_jobs(patch_arena,executor);
 
   std::vector<SurfaceDrawChunkRecord> next_chunks;
   std::vector<SurfaceDrawPatchSegment> next_segments;
@@ -3076,7 +3132,8 @@ std::size_t SurfaceHostStagingStorage::allocate_slot(
 
 void SurfaceHostStagingStorage::stage(
     const SurfaceDrawChunkStorage& source,
-    std::span<const SceneVertex> logical_vertices) {
+    std::span<const SceneVertex> logical_vertices,
+    tetra::GeometryExecutor* executor) {
   const auto start=std::chrono::steady_clock::now();
   if(source.chunk_capacity()!=triangle_chunk_capacity_)
     throw std::invalid_argument(
@@ -3115,6 +3172,8 @@ void SurfaceHostStagingStorage::stage(
   std::vector<bool> retained_ranges(ranges_.size(),false);
   range_scratch_.clear();
   range_scratch_.reserve(std::max(range_scratch_.capacity(),source.chunks().size()));
+  copy_scratch_.clear();
+  copy_scratch_.reserve(std::max(copy_scratch_.capacity(),source.chunks().size()));
   logical_vertex_offset=0U;
   for(const auto& chunk:source.chunks()){
     const auto vertex_count=chunk.triangle_count*3U;
@@ -3147,10 +3206,10 @@ void SurfaceHostStagingStorage::stage(
       host_content_revision=next_content_revision_++;
       if(next_content_revision_==0U)next_content_revision_=1U;
       const auto destination=host_slot*vertex_slot_capacity();
-      std::copy_n(
-          source_vertices.begin(),
-          vertex_count,
-          arena_.begin()+static_cast<std::ptrdiff_t>(destination));
+      copy_scratch_.push_back({
+          .source_vertex_begin=logical_vertex_offset,
+          .destination_vertex_begin=destination,
+          .vertex_count=vertex_count});
       ++candidate_metrics.dirty_ranges;
       candidate_metrics.staged_triangle_bytes+=
           vertex_count*sizeof(SceneVertex);
@@ -3170,6 +3229,35 @@ void SurfaceHostStagingStorage::stage(
     logical_vertex_offset+=vertex_count;
   }
 
+  const auto copy_job=[&](std::size_t begin,std::size_t end,std::stop_token stop){
+    for(std::size_t index=begin;index<end;++index){
+      if(stop.stop_requested())return;
+      const auto& copy=copy_scratch_[index];
+      std::copy_n(
+          logical_vertices.begin()+static_cast<std::ptrdiff_t>(
+              copy.source_vertex_begin),
+          copy.vertex_count,
+          arena_.begin()+static_cast<std::ptrdiff_t>(
+              copy.destination_vertex_begin));
+    }
+  };
+  if(executor&&executor->worker_count()>1U&&copy_scratch_.size()>1U){
+    const auto copy_start=std::chrono::steady_clock::now();
+    auto group=executor->make_group(
+        candidate_metrics.publication_generation,
+        tetra::GeometryTaskPriority::publication_critical);
+    const std::size_t grain=std::max<std::size_t>(
+        1U,(copy_scratch_.size()+executor->worker_count()-1U)/
+            executor->worker_count());
+    executor->parallel_for(group,0U,copy_scratch_.size(),grain,copy_job);
+    executor->wait_and_help(group);
+    candidate_metrics.parallel_copy_tasks=
+        (copy_scratch_.size()+grain-1U)/grain;
+    candidate_metrics.parallel_copy_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-copy_start).count();
+  }else copy_job(0U,copy_scratch_.size(),{});
+
   for(std::size_t index=0;index<ranges_.size();++index){
     if(retained_ranges[index])continue;
     candidate_free_ranges.push_back({ranges_[index].host_slot,1U});
@@ -3186,6 +3274,7 @@ void SurfaceHostStagingStorage::stage(
       ranges_.capacity()*sizeof(SurfaceHostDrawRange)+
       range_scratch_.capacity()*sizeof(SurfaceHostDrawRange)+
       free_ranges_.capacity()*sizeof(SurfaceHostFreeRange)+
+      copy_scratch_.capacity()*sizeof(CopyJob)+
       arena_.capacity()*sizeof(SceneVertex);
   candidate_metrics.stage_milliseconds=
       std::chrono::duration<double,std::milli>(
@@ -3405,8 +3494,11 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                             StencilSelectionObjective stencil_selection_objective,
                             ScenePreparationOptions preparation,
                             std::span<const tetra::Triangle> surface_override,
-                            bool surface_override_is_owner_patches) {
+                            bool surface_override_is_owner_patches,
+                            tetra::GeometryExecutor* executor,
+                            std::stop_token cancellation) {
   PreparedScene scene;
+  if(cancellation.stop_requested())return scene;
   const auto leaves = mesh.conforming_volume().addresses();
   scene.relations.reserve(leaves.size());
   scene.triangle_vertices.reserve((show_faces || show_surface_edges) ? leaves.size() * 12 : 0);
@@ -3435,7 +3527,40 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   };
 
   const auto statistics_start = std::chrono::steady_clock::now();
-  for (const tetra::TetId id : leaves) {
+  scene.relations.resize(leaves.size());
+  constexpr std::size_t parallel_classification_threshold=1024U;
+  if(executor&&executor->worker_count()>1U&&
+     leaves.size()>=parallel_classification_threshold){
+    const auto parallel_start=std::chrono::steady_clock::now();
+    auto group=executor->make_group(
+        mesh.revision(),tetra::GeometryTaskPriority::interactive);
+    const std::size_t block_count=std::max<std::size_t>(
+        1U,executor->worker_count()*executor->configuration().blocks_per_worker);
+    const std::size_t grain=std::max<std::size_t>(
+        1U,(leaves.size()+block_count-1U)/block_count);
+    executor->parallel_for(group,0U,leaves.size(),grain,
+        [&](std::size_t begin,std::size_t end,std::stop_token stop){
+          for(std::size_t index=begin;index<end;++index){
+            if(stop.stop_requested()||cancellation.stop_requested())return;
+            scene.relations[index]=tetra::classify_tetrahedron(
+                mesh,leaves[index],sphere);
+          }
+        });
+    executor->wait_and_help(group);
+    if(cancellation.stop_requested())return {};
+    scene.parallel_classification_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-parallel_start).count();
+    scene.parallel_classification_tasks=(leaves.size()+grain-1U)/grain;
+    scene.parallel_classification_workers=executor->worker_count();
+  }else for(std::size_t index=0;index<leaves.size();++index){
+      if((index&255U)==0U&&cancellation.stop_requested())return {};
+      scene.relations[index]=tetra::classify_tetrahedron(
+          mesh,leaves[index],sphere);
+  }
+  for (std::size_t leaf_index=0;leaf_index<leaves.size();++leaf_index) {
+    if((leaf_index&255U)==0U&&cancellation.stop_requested())return {};
+    const tetra::TetId id=leaves[leaf_index];
     if(preparation.summary_statistics){
       const auto depth = static_cast<std::size_t>(mesh.refinement_depth(id));
       if (scene.depth_counts.size() <= depth) scene.depth_counts.resize(depth + 1);
@@ -3443,8 +3568,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
       scene.total_volume += mesh.signed_volume(id);
     }
 
-    const auto relation = tetra::classify_tetrahedron(mesh, id, sphere);
-    scene.relations.push_back(relation);
+    const auto relation=scene.relations[leaf_index];
     if(preparation.summary_statistics){
       if (relation == tetra::SurfaceRelation::inside) ++scene.inside_count;
       else if (relation == tetra::SurfaceRelation::outside) ++scene.outside_count;
@@ -3467,6 +3591,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
 
   const auto geometry_start = std::chrono::steady_clock::now();
   for (std::size_t leaf_index = 0; leaf_index < leaves.size(); ++leaf_index) {
+    if((leaf_index&255U)==0U&&cancellation.stop_requested())return {};
     const tetra::TetId id = leaves[leaf_index];
     const auto& tet = mesh.tetrahedron(id).vertices;
     const bool material = need_material_selection&&
@@ -3624,7 +3749,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
     append_mixed_depth_dual(scene,mesh,sphere,show_faces,show_surface_edges);
   else if (surface_method == SurfaceMethod::surface_optimization)
     append_surface_optimization(scene, mesh, sphere, show_faces, show_surface_edges);
-  prepare_surface_render_attributes(scene);
+  prepare_surface_render_attributes(scene,executor);
   if(preparation.surface_diagnostics)annotate_surface_diagnostics(scene,sphere);
   // Cut caps are diagnostic volume geometry, not part of the generated
   // isosurface metrics. Append them after surface annotation.
@@ -3659,7 +3784,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   // Volume and connected-shell triangles are appended after surface
   // diagnostics. Finalize the complete draw list so every publication path,
   // including incremental cutaway updates, carries unit geometric normals.
-  prepare_surface_render_attributes(scene);
+  prepare_surface_render_attributes(scene,executor);
   append_screen_space_edges(scene,show_surface_edges,show_volume_edges,
                             show_faces,show_volume_faces);
   scene.upload_preparation_milliseconds = std::chrono::duration<double, std::milli>(
@@ -3717,7 +3842,8 @@ void SceneCache::set_surface_patch_fallback(
 
 void SceneCache::update_surface_patches(
     const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
-    std::uint64_t field_revision,SurfaceMethod surface_method){
+    std::uint64_t field_revision,SurfaceMethod surface_method,
+    tetra::GeometryExecutor* executor){
   const auto start=std::chrono::steady_clock::now();
   surface_patch_metrics_={};
   surface_patch_metrics_.active=true;
@@ -3966,6 +4092,105 @@ void SceneCache::update_surface_patches(
     for(auto found=begin;found!=surface_patch_owner_cells_.end()&&
         found->owner==owner;++found)surface_patch_cell_scratch_.push_back(found->cell);
   };
+
+  struct ParallelPatchBlock {
+    std::size_t dirty_begin{};
+    std::size_t dirty_end{};
+    std::vector<std::size_t> offsets;
+    std::vector<tetra::Triangle> triangles;
+  };
+  std::vector<std::size_t> parallel_dirty_indices;
+  std::vector<ParallelPatchBlock> parallel_patch_blocks;
+  std::size_t parallel_patch_grain{};
+  const bool owner_local_parallel=
+      (surface_method==SurfaceMethod::marching_tetrahedra||
+       surface_method==SurfaceMethod::lattice_cleaving)&&executor&&
+      executor->worker_count()>1U;
+  if(owner_local_parallel){
+    parallel_dirty_indices.reserve(surface_patch_dirty_scratch_.size());
+    for(std::size_t owner_index=0;
+        owner_index<surface_patch_owner_scratch_.size();++owner_index){
+      const auto owner=surface_patch_owner_scratch_[owner_index];
+      const auto found=std::lower_bound(
+          surface_patch_records_.begin(),surface_patch_records_.end(),owner,
+          [](const auto& record,tetra::TetId value){
+            return record.logical_owner<value;
+          });
+      const bool retained=found!=surface_patch_records_.end()&&
+          found->logical_owner==owner;
+      if(rebuild_all||!retained||std::binary_search(
+             surface_patch_dirty_scratch_.begin(),
+             surface_patch_dirty_scratch_.end(),owner))
+        parallel_dirty_indices.push_back(owner_index);
+    }
+  }
+  constexpr std::size_t parallel_patch_threshold=512U;
+  if(owner_local_parallel&&
+     parallel_dirty_indices.size()>=parallel_patch_threshold){
+    const std::size_t block_limit=executor->worker_count()*
+        executor->configuration().blocks_per_worker;
+    parallel_patch_grain=std::max<std::size_t>(
+        1U,(parallel_dirty_indices.size()+block_limit-1U)/block_limit);
+    const std::size_t block_count=(parallel_dirty_indices.size()+
+        parallel_patch_grain-1U)/parallel_patch_grain;
+    parallel_patch_blocks.resize(block_count);
+    const auto start_parallel=std::chrono::steady_clock::now();
+    auto group=executor->make_group(
+        mesh.revision(),tetra::GeometryTaskPriority::interactive);
+    executor->parallel_for(
+        group,0U,parallel_dirty_indices.size(),parallel_patch_grain,
+        [&](std::size_t begin,std::size_t end,std::stop_token stop){
+          auto& block=parallel_patch_blocks[begin/parallel_patch_grain];
+          block.dirty_begin=begin;
+          block.dirty_end=end;
+          block.offsets.clear();
+          block.triangles.clear();
+          block.offsets.reserve(end-begin+1U);
+          block.offsets.push_back(0U);
+          std::vector<tetra::TetId> cells;
+          std::vector<tetra::Triangle> triangles;
+          for(std::size_t dirty_index=begin;dirty_index<end;++dirty_index){
+            if(stop.stop_requested())return;
+            const auto owner_index=parallel_dirty_indices[dirty_index];
+            const auto owner=surface_patch_owner_scratch_[owner_index];
+            cells.clear();
+            triangles.clear();
+            if(bcc){
+              const auto offsets=mesh.logical_derived_offsets();
+              const auto addresses=mesh.logical_derived_addresses();
+              if(offsets.size()==surface_patch_owner_scratch_.size()+1U&&
+                 offsets[owner_index]!=offsets[owner_index+1U])
+                cells.assign(
+                    addresses.begin()+static_cast<std::ptrdiff_t>(
+                        offsets[owner_index]),
+                    addresses.begin()+static_cast<std::ptrdiff_t>(
+                        offsets[owner_index+1U]));
+              else cells.push_back(owner);
+            }else{
+              const auto found=std::lower_bound(
+                  surface_patch_owner_cells_.begin(),
+                  surface_patch_owner_cells_.end(),owner,
+                  [](const auto& entry,tetra::TetId value){
+                    return entry.owner<value;
+                  });
+              for(auto cell=found;
+                  cell!=surface_patch_owner_cells_.end()&&cell->owner==owner;
+                  ++cell)cells.push_back(cell->cell);
+            }
+            std::sort(cells.begin(),cells.end());
+            tetra::extract_isosurface(mesh,sphere,cells,triangles);
+            block.triangles.insert(
+                block.triangles.end(),triangles.begin(),triangles.end());
+            block.offsets.push_back(block.triangles.size());
+          }
+        });
+    executor->wait_and_help(group);
+    surface_patch_metrics_.parallel_generation_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-start_parallel).count();
+    surface_patch_metrics_.parallel_generation_tasks=block_count;
+    surface_patch_metrics_.parallel_generation_workers=executor->worker_count();
+  }
   const auto patch_bounds=[&](SurfacePatchRecord& record){
     const double infinity=std::numeric_limits<double>::infinity();
     record.bounds_minimum={infinity,infinity,infinity};
@@ -3989,6 +4214,7 @@ void SceneCache::update_surface_patches(
 
   surface_patch_record_scratch_.clear();
   surface_patch_record_scratch_.reserve(surface_patch_owner_scratch_.size());
+  std::size_t parallel_dirty_cursor{};
   for(std::size_t owner_index=0;owner_index<surface_patch_owner_scratch_.size();++owner_index){
     const auto owner=surface_patch_owner_scratch_[owner_index];
     const auto found=std::lower_bound(
@@ -4005,7 +4231,21 @@ void SceneCache::update_surface_patches(
       continue;
     }
     surface_patch_triangle_scratch_.clear();
-    if(dual_topology){
+    if(!parallel_patch_blocks.empty()){
+      if(parallel_dirty_cursor>=parallel_dirty_indices.size()||
+         parallel_dirty_indices[parallel_dirty_cursor]!=owner_index)
+        throw std::logic_error(
+            "parallel surface patch stream lost owner ordering");
+      const auto& block=parallel_patch_blocks[
+          parallel_dirty_cursor/parallel_patch_grain];
+      const auto local=parallel_dirty_cursor-block.dirty_begin;
+      const auto begin=block.offsets[local];
+      const auto end=block.offsets[local+1U];
+      surface_patch_triangle_scratch_.assign(
+          block.triangles.begin()+static_cast<std::ptrdiff_t>(begin),
+          block.triangles.begin()+static_cast<std::ptrdiff_t>(end));
+      ++parallel_dirty_cursor;
+    }else if(dual_topology){
       const auto begin=std::lower_bound(
           dual_patch_triangle_scratch_.begin(),
           dual_patch_triangle_scratch_.end(),owner,
@@ -4056,6 +4296,9 @@ void SceneCache::update_surface_patches(
     ++surface_patch_metrics_.rebuilt_patches;
     surface_patch_metrics_.generated_triangles+=surface_patch_triangle_scratch_.size();
   }
+  if(!parallel_patch_blocks.empty()&&
+     parallel_dirty_cursor!=parallel_dirty_indices.size())
+    throw std::logic_error("parallel surface patches were not fully consumed");
   surface_patch_records_.swap(surface_patch_record_scratch_);
   if(four_hexahedra){
     four_hexahedra_patch_builder_.finish_update();
@@ -4131,7 +4374,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
                               StencilSelectionObjective stencil_selection_objective,
                               ScenePreparationOptions preparation,
                               std::span<const tetra::Triangle> surface_override,
-                              std::uint64_t surface_override_revision) {
+                              std::uint64_t surface_override_revision,
+                              tetra::GeometryExecutor* executor) {
   const bool base_unchanged = has_subdivision_method_ && subdivision_method_ == mesh.subdivision_method() &&
       mesh_revision_ == mesh.revision() && sphere_revision_ == sphere_revision &&
       surface_override_revision_==surface_override_revision&&
@@ -4157,7 +4401,8 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
          surface_method==SurfaceMethod::four_hexahedra||
          surface_method==SurfaceMethod::mixed_depth_dual);
     if(owner_patch_override)
-      update_surface_patches(mesh,sphere,sphere_revision,surface_method);
+      update_surface_patches(
+          mesh,sphere,sphere_revision,surface_method,executor);
     else set_surface_patch_fallback(
         surface_override.empty(),surface_override.empty()&&
         !surface_patch_dependency(surface_method).patchable());

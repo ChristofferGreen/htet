@@ -1,4 +1,5 @@
 #include "tetra_core/implicit_surface.hpp"
+#include "tetra_core/geometry_executor.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -304,6 +305,8 @@ double scheduler_split_key(const PersistentSchedulerEntry& entry){
 
 bool scheduler_split_lower_priority(const PersistentSchedulerEntry& left,
                                     const PersistentSchedulerEntry& right){
+  if(left.has_priority&&right.has_priority&&left.camera_zone!=right.camera_zone)
+    return left.camera_zone<right.camera_zone;
   const double left_key=scheduler_split_key(left);
   const double right_key=scheduler_split_key(right);
   if(left_key!=right_key)return left_key<right_key;
@@ -319,6 +322,8 @@ double scheduler_merge_key(const PersistentSchedulerEntry& entry){
 
 bool scheduler_merge_lower_priority(const PersistentSchedulerEntry& left,
                                     const PersistentSchedulerEntry& right){
+  if(left.has_priority&&right.has_priority&&left.camera_zone!=right.camera_zone)
+    return left.camera_zone>right.camera_zone;
   const double left_key=scheduler_merge_key(left);
   const double right_key=scheduler_merge_key(right);
   if(left_key!=right_key)return left_key>right_key;
@@ -928,7 +933,7 @@ SurfaceRelation classify_tetrahedron(const TetMesh& mesh,TetId tet,const Sphere&
 namespace {
 struct CameraPoint { double x{},y{},depth{}; };
 
-double projected_camera_diameter(
+ProjectedTetrahedron projected_camera_tetrahedron(
     const std::array<CameraPoint,4>& points,
     const PreparedCameraProjection& camera) {
   // A tetrahedron is convex, so it is outside a frustum half-space exactly
@@ -939,7 +944,8 @@ double projected_camera_diameter(
       return signed_inside(point)<0.0;
     });
   };
-  if(all_outside([](const CameraPoint& point){return point.depth;})||
+  const bool outside=
+     all_outside([](const CameraPoint& point){return point.depth;})||
      all_outside([&](const CameraPoint& point){
        return point.x+point.depth*camera.horizontal_tangent;
      })||all_outside([&](const CameraPoint& point){
@@ -948,10 +954,10 @@ double projected_camera_diameter(
        return point.y+point.depth*camera.tangent;
      })||all_outside([&](const CameraPoint& point){
        return -point.y+point.depth*camera.tangent;
-     }))return 0.0;
+     });
   if(std::ranges::any_of(points,[](const CameraPoint& point){
        return point.depth<=1.0e-12;
-     }))return camera.viewport_height_pixels;
+     }))return {camera.viewport_height_pixels,!outside};
 
   std::array<std::array<double,2>,4> projected{};
   for(std::size_t index=0;index<points.size();++index)
@@ -964,7 +970,7 @@ double projected_camera_diameter(
       const double dy=projected[first][1]-projected[second][1];
       diameter_squared=std::max(diameter_squared,dx*dx+dy*dy);
     }
-  return std::sqrt(diameter_squared);
+  return {std::sqrt(diameter_squared),!outside};
 }
 } // namespace
 
@@ -993,7 +999,7 @@ PreparedCameraProjection prepare_camera_projection(const Camera& camera) {
   return result;
 }
 
-double projected_tetrahedron_diameter(
+ProjectedTetrahedron projected_tetrahedron(
     const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera) {
   const auto& vertices=mesh.tetrahedron(tet).vertices;
   const auto dot=[](Vec3 first,Vec3 second){
@@ -1004,7 +1010,18 @@ double projected_tetrahedron_diameter(
     const Vec3 view=mesh.vertices().at(vertices[index])-camera.position;
     points[index]={dot(view,camera.right),dot(view,camera.up),dot(view,camera.forward)};
   }
-  return projected_camera_diameter(points,camera);
+  return projected_camera_tetrahedron(points,camera);
+}
+
+ProjectedTetrahedron projected_tetrahedron(
+    const TetMesh& mesh,TetId tet,const Camera& camera) {
+  return projected_tetrahedron(mesh,tet,prepare_camera_projection(camera));
+}
+
+double projected_tetrahedron_diameter(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera) {
+  const auto projected=projected_tetrahedron(mesh,tet,camera);
+  return projected.intersects_frustum?projected.diameter_pixels:0.0;
 }
 
 double projected_tetrahedron_diameter(
@@ -1019,6 +1036,72 @@ void projected_tetrahedron_diameters(
     throw std::invalid_argument("projection batch output size mismatch");
   for(std::size_t index=0;index<tetrahedra.size();++index)
     output[index]=projected_tetrahedron_diameter(mesh,tetrahedra[index],camera);
+}
+
+double standby_projected_tetrahedron_diameter(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera) {
+  const auto& vertices=mesh.tetrahedron(tet).vertices;
+  Vec3 centre{};
+  for(const VertexId vertex:vertices)centre=centre+mesh.vertices().at(vertex);
+  centre=centre/static_cast<double>(vertices.size());
+  double radius{};
+  for(const VertexId vertex:vertices){
+    const Vec3 delta=mesh.vertices().at(vertex)-centre;
+    radius=std::max(radius,std::sqrt(
+        delta.x*delta.x+delta.y*delta.y+delta.z*delta.z));
+  }
+  const Vec3 offset=centre-camera.position;
+  const double distance=std::sqrt(
+      offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+  return 2.0*camera.focal_length*radius/
+      std::max(distance-radius,1.0e-12);
+}
+
+CameraLodDemand camera_lod_demand(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& prepared,
+    const PreparedCameraProjection& guarded_prepared,
+    const AdaptationConfiguration& configuration) {
+  const auto visible=projected_tetrahedron(mesh,tet,prepared);
+  if(visible.intersects_frustum)
+    return {CameraLodZone::visible,visible.diameter_pixels,1.0};
+  if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum)
+    return {CameraLodZone::cold,0.0,1.0};
+
+  const auto guard=projected_tetrahedron(mesh,tet,guarded_prepared);
+  if(guard.intersects_frustum)
+    return {CameraLodZone::guard,guard.diameter_pixels,
+            configuration.guard_quality_multiplier};
+
+  const auto& vertices=mesh.tetrahedron(tet).vertices;
+  Vec3 centre{};
+  for(const VertexId vertex:vertices)centre=centre+mesh.vertices().at(vertex);
+  centre=centre/static_cast<double>(vertices.size());
+  double radius{};
+  for(const VertexId vertex:vertices){
+    const Vec3 delta=mesh.vertices().at(vertex)-centre;
+    radius=std::max(radius,std::sqrt(
+        delta.x*delta.x+delta.y*delta.y+delta.z*delta.z));
+  }
+  const Vec3 offset=centre-prepared.position;
+  const double distance=std::sqrt(
+      offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+  const double standby=standby_projected_tetrahedron_diameter(mesh,tet,prepared);
+  if(distance-radius<=configuration.near_radius)
+    return {CameraLodZone::near,standby,
+            configuration.near_quality_multiplier};
+  return {CameraLodZone::cold,standby,
+          configuration.cold_quality_multiplier};
+}
+
+CameraLodDemand camera_lod_demand(
+    const TetMesh& mesh,TetId tet,const Camera& camera,
+    const AdaptationConfiguration& configuration) {
+  Camera guarded=camera;
+  guarded.vertical_fov_radians=2.0*std::atan(
+      std::tan(camera.vertical_fov_radians*0.5)*
+      configuration.guard_frustum_scale);
+  return camera_lod_demand(mesh,tet,prepare_camera_projection(camera),
+                           prepare_camera_projection(guarded),configuration);
 }
 
 std::vector<TetId> mark_oversized_intersections(const TetMesh& mesh, const Sphere& sphere, const Camera& camera, double pixel_threshold) {
@@ -1092,7 +1175,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
                                const AdaptationConfiguration& configuration,
                                std::uint64_t field_revision,
                                AdaptationPlanningCache* planning_cache,
-                               std::stop_token cancellation) {
+                               std::stop_token cancellation,
+                               GeometryExecutor* executor) {
   AdaptationPlan plan;
   const auto cancel=[&]{
     if(!cancellation.stop_requested())return false;
@@ -1121,6 +1205,11 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     return plan;
   }
   const auto prepared_camera=prepare_camera_projection(camera);
+  Camera guarded_camera=camera;
+  guarded_camera.vertical_fov_radians=2.0*std::atan(
+      std::tan(camera.vertical_fov_radians*0.5)*
+      configuration.guard_frustum_scale);
+  const auto prepared_guarded_camera=prepare_camera_projection(guarded_camera);
   if(cancel())return plan;
 
   AdaptationPlanningCache local_planning_cache;
@@ -1148,6 +1237,182 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         first.forward.z==second.forward.z&&first.up.x==second.up.x&&
         first.up.y==second.up.y&&first.up.z==second.up.z&&
         first.aspect_ratio==second.aspect_ratio;
+  };
+  plan.has_camera_demand_metadata=planning_cache!=nullptr;
+  plan.camera_demand_pose_changed=planning_cache&&
+      (!summaries.has_committed_camera||
+       !same_camera(summaries.committed_camera,camera));
+  plan.camera_demand_epoch=summaries.camera_demand_epoch+
+      (plan.camera_demand_pose_changed?1U:0U);
+  plan.camera_demand_position=camera.position;
+  plan.camera_demand_forward=camera.forward;
+  plan.camera_demand_up=camera.up;
+  plan.camera_demand_vertical_fov=camera.vertical_fov_radians;
+  plan.camera_demand_viewport_height=camera.viewport_height_pixels;
+  plan.camera_demand_aspect_ratio=camera.aspect_ratio;
+
+  std::array<PreparedCameraProjection,2> predicted_cameras{};
+  std::array<PreparedCameraProjection,2> predicted_guarded_cameras{};
+  std::size_t predicted_camera_count{};
+  if(planning_cache&&summaries.has_committed_camera&&
+     configuration.camera_lod_policy==CameraLodPolicy::guarded_predicted&&
+     configuration.prediction_mode!=CameraPredictionMode::none&&
+     !scheduler_camera_teleported(summaries.committed_camera,camera,sphere.centre)){
+    const auto extrapolate=[&](Vec3 current,Vec3 previous){
+      const Vec3 value=current+(current-previous);
+      const double length=std::sqrt(
+          value.x*value.x+value.y*value.y+value.z*value.z);
+      return length>1.0e-15?value/length:current;
+    };
+    constexpr std::array sample_fractions{0.25,1.0};
+    for(const double fraction:sample_fractions){
+      Camera predicted=camera;
+      const double amount=fraction*configuration.prediction_factor;
+      predicted.position=camera.position+
+          (camera.position-summaries.committed_camera.position)*amount;
+      if(configuration.prediction_mode==
+         CameraPredictionMode::translation_rotation){
+        const auto full_forward=extrapolate(
+            camera.forward,summaries.committed_camera.forward);
+        const auto full_up=extrapolate(camera.up,summaries.committed_camera.up);
+        const auto interpolate=[&](Vec3 current,Vec3 future){
+          const Vec3 value=current+(future-current)*amount;
+          const double length=std::sqrt(
+              value.x*value.x+value.y*value.y+value.z*value.z);
+          return length>1.0e-15?value/length:current;
+        };
+        predicted.forward=interpolate(camera.forward,full_forward);
+        predicted.up=interpolate(camera.up,full_up);
+      }
+      Camera predicted_guard=predicted;
+      predicted_guard.vertical_fov_radians=2.0*std::atan(
+          std::tan(predicted.vertical_fov_radians*0.5)*
+          configuration.guard_frustum_scale);
+      predicted_cameras[predicted_camera_count]=
+          prepare_camera_projection(predicted);
+      predicted_guarded_cameras[predicted_camera_count]=
+          prepare_camera_projection(predicted_guard);
+      ++predicted_camera_count;
+    }
+  }
+  const auto recent_epoch=[&](TetId owner)->std::optional<std::uint64_t>{
+    if(!planning_cache)return std::nullopt;
+    std::optional<std::uint64_t> newest;
+    while(true){
+      const auto depth=tet_depth(owner);
+      if(depth<summaries.camera_temporal_layers.size()){
+        const auto& layer=summaries.camera_temporal_layers[depth];
+        const auto found=std::lower_bound(
+            layer.addresses.begin(),layer.addresses.end(),owner);
+        if(found!=layer.addresses.end()&&*found==owner){
+          const auto epoch=layer.last_demand_epochs[
+              static_cast<std::size_t>(found-layer.addresses.begin())];
+          newest=std::max(newest.value_or(epoch),epoch);
+        }
+      }
+      if(depth<3U)break;
+      owner=make_tet_id(tet_root(owner),tet_path(owner)>>3U);
+    }
+    return newest;
+  };
+  struct CameraDemandEvaluation {
+    CameraLodDemand demand;
+    bool recent_update{};
+  };
+  const auto evaluate_camera_demand=[&](TetId owner){
+    auto demand=camera_lod_demand(
+        mesh,owner,prepared_camera,prepared_guarded_camera,configuration);
+    const bool recent_update=(demand.zone==CameraLodZone::visible||
+                              demand.zone==CameraLodZone::guard)&&
+        planning_cache!=nullptr;
+    if(demand.zone==CameraLodZone::cold&&predicted_camera_count>0U){
+      double predicted_diameter{};
+      for(std::size_t index=0;index<predicted_camera_count;++index){
+        const auto predicted=camera_lod_demand(
+            mesh,owner,predicted_cameras[index],predicted_guarded_cameras[index],
+            configuration);
+        if(predicted.zone==CameraLodZone::visible||
+           predicted.zone==CameraLodZone::guard)
+          predicted_diameter=std::max(
+              predicted_diameter,predicted.projected_diameter_pixels);
+      }
+      if(predicted_diameter>0.0){
+        demand.zone=CameraLodZone::predicted;
+        demand.projected_diameter_pixels=predicted_diameter;
+        demand.quality_multiplier=configuration.prediction_quality_multiplier;
+      }
+    }
+    const bool recent_enabled=
+        configuration.camera_lod_policy==CameraLodPolicy::guarded_recent||
+        configuration.camera_lod_policy==CameraLodPolicy::guarded_predicted;
+    if(demand.zone==CameraLodZone::cold&&recent_enabled){
+      if(const auto epoch=recent_epoch(owner);epoch&&
+         plan.camera_demand_epoch>=*epoch){
+        const auto age=plan.camera_demand_epoch-*epoch;
+        if(age<=configuration.recent_retention_epochs){
+          const double blend=static_cast<double>(age)/
+              static_cast<double>(configuration.recent_retention_epochs);
+          demand.zone=CameraLodZone::recent;
+          demand.quality_multiplier=
+              configuration.recent_initial_quality_multiplier+
+              blend*(configuration.recent_final_quality_multiplier-
+                     configuration.recent_initial_quality_multiplier);
+        }
+      }
+    }
+    if(demand.zone==CameraLodZone::cold||
+       demand.zone==CameraLodZone::predicted||
+       demand.zone==CameraLodZone::recent||
+       demand.zone==CameraLodZone::guard)
+      demand.quality_multiplier*=plan.camera_soft_quality_multiplier;
+    return CameraDemandEvaluation{demand,recent_update};
+  };
+  const auto camera_demand=[&](TetId owner){
+    const auto evaluated=evaluate_camera_demand(owner);
+    if(evaluated.recent_update)plan.camera_recent_updates.push_back(owner);
+    ++plan.camera_demand_evaluations[
+        static_cast<std::size_t>(evaluated.demand.zone)];
+    return evaluated.demand;
+  };
+  const auto geometric_screen_error=[&](TetId owner){
+    const auto& vertices=mesh.tetrahedron(owner).vertices;
+    Vec3 centre{};
+    for(const VertexId vertex:vertices)centre=centre+mesh.vertices()[vertex];
+    centre=centre/static_cast<double>(vertices.size());
+    double radius{};
+    for(const VertexId vertex:vertices){
+      const Vec3 delta=mesh.vertices()[vertex]-centre;
+      radius=std::max(radius,std::sqrt(
+          delta.x*delta.x+delta.y*delta.y+delta.z*delta.z));
+    }
+    double world_error=2.0*radius;
+    const auto depth=tet_depth(owner);
+    if(depth<summaries.layers.size()){
+      const auto& layer=summaries.layers[depth];
+      const auto found=std::lower_bound(
+          layer.addresses.begin(),layer.addresses.end(),owner);
+      if(found!=layer.addresses.end()&&*found==owner){
+        const auto index=static_cast<std::size_t>(found-layer.addresses.begin());
+        if(index<layer.geometric_error_bound.size())
+          world_error=layer.geometric_error_bound[index];
+      }
+    }
+    const Vec3 offset=centre-prepared_camera.position;
+    const double distance=std::sqrt(
+        offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+    return prepared_camera.focal_length*world_error/
+        std::max(distance-radius,1.0e-12);
+  };
+  const auto effective_camera_diameter=[&](
+      TetId owner,CameraLodZone* winning_zone=nullptr){
+    const auto demand=camera_demand(owner);
+    if(winning_zone)*winning_zone=demand.zone;
+    if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum&&
+       demand.projected_diameter_pixels==0.0)return 0.0;
+    const double value=configuration.camera_lod_metric==
+            CameraLodMetric::geometric_error
+        ?geometric_screen_error(owner):demand.projected_diameter_pixels;
+    return value/demand.quality_multiplier;
   };
   bool scheduler_teleport=
       configuration.update_scheduler!=UpdateScheduler::classify_and_stream&&
@@ -1228,6 +1493,26 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     summaries.stationary_maximum_depth=maximum_depth;
   };
   const auto& logical=mesh.logical_red_owners();
+  plan.camera_recent_updates.reserve(logical.size());
+  plan.camera_active_owner_count=logical.size();
+  plan.camera_soft_quality_multiplier=summaries.camera_soft_quality_multiplier;
+  if(planning_cache&&plan.camera_demand_pose_changed&&
+     configuration.camera_lod_policy!=CameraLodPolicy::exact_frustum&&
+     configuration.complexity_target_owners>0U){
+    const double count=static_cast<double>(logical.size());
+    const double target=static_cast<double>(configuration.complexity_target_owners);
+    const double upper=target*(1.0+configuration.complexity_band);
+    const double lower=target*(1.0-configuration.complexity_band);
+    if(count>upper)
+      plan.camera_soft_quality_multiplier=std::min(
+          configuration.maximum_soft_quality_multiplier,
+          summaries.camera_soft_quality_multiplier*
+              (1.0+configuration.complexity_adjustment));
+    else if(count<lower)
+      plan.camera_soft_quality_multiplier=std::max(
+          1.0,summaries.camera_soft_quality_multiplier/
+              (1.0+configuration.complexity_adjustment));
+  }
   const bool queue_discovery=
       configuration.update_scheduler!=UpdateScheduler::classify_and_stream;
   plan.logical_candidates=queue_discovery?0U:logical.size();
@@ -1322,7 +1607,12 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     plan.scheduler_block_streams=blocks.size();
   };
 
-  struct Candidate { TetId address{invalid_tet}; double priority{}; };
+  struct Candidate {
+    TetId address{invalid_tet};
+    double priority{};
+    CameraLodZone camera_zone{CameraLodZone::cold};
+    bool forced{};
+  };
   std::vector<Candidate> splits;
   bool has_overdepth{};
   if(queue_discovery){
@@ -1425,6 +1715,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       summary.spatial_maximum.reserve(records.size());
       summary.field_minimum.reserve(records.size());
       summary.field_maximum.reserve(records.size());
+      summary.geometric_error_bound.reserve(records.size());
       summary.deepest_resident_depth.reserve(records.size());
       summary.deepest_active_depth.reserve(records.size());
       for(std::size_t index=0;index<records.size();++index){
@@ -1462,6 +1753,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         summary.spatial_maximum.push_back(maximum);
         summary.field_minimum.push_back(value-uncertainty);
         summary.field_maximum.push_back(value+uncertainty);
+        summary.geometric_error_bound.push_back(2.0*std::sqrt(radius_squared));
         summary.deepest_resident_depth.push_back(static_cast<unsigned int>(depth));
         summary.deepest_active_depth.push_back(0U);
       }
@@ -1544,28 +1836,49 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     if(index>=summary.field_minimum.size())return std::nullopt;
     return std::array<double,2>{{summary.field_minimum[index],summary.field_maximum[index]}};
   };
+  struct FieldClassificationEvaluation {
+    SurfaceRelation relation{SurfaceRelation::outside};
+    std::size_t exact_evaluations{};
+    bool summary_rejected{};
+  };
+  const auto evaluate_field_classification=[&](TetId owner){
+    if(const auto interval=summary_interval(owner);
+       interval&&((*interval)[0]>0.0||(*interval)[1]<0.0))
+      return FieldClassificationEvaluation{
+          .relation=(*interval)[0]>0.0
+              ?SurfaceRelation::outside:SurfaceRelation::inside,
+          .summary_rejected=true};
+    std::size_t exact_evaluations{};
+    const auto relation=classify_tetrahedron_cached(
+        mesh,owner,sphere,{},&exact_evaluations);
+    return FieldClassificationEvaluation{
+        .relation=relation,.exact_evaluations=exact_evaluations};
+  };
   const auto classify_owner=[&](TetId owner){
     ++plan.field_classifications;
-    if(const auto interval=summary_interval(owner);
-       interval&&((*interval)[0]>0.0||(*interval)[1]<0.0)){
+    const auto evaluated=evaluate_field_classification(owner);
+    if(evaluated.summary_rejected){
       ++plan.field_subtrees_rejected;
       ++plan.exact_field_evaluations_avoided;
-      return (*interval)[0]>0.0?SurfaceRelation::outside:SurfaceRelation::inside;
     }
-    return classify_tetrahedron_cached(
-        mesh,owner,sphere,{},&plan.exact_field_evaluations);
+    plan.exact_field_evaluations+=evaluated.exact_evaluations;
+    return evaluated.relation;
   };
   const auto consider_split=[&](TetId owner,std::optional<double> known_diameter=std::nullopt){
     if(tet_depth(owner)+increment>maximum_depth){++plan.depth_rejections;return;}
     double diameter{};
-    if(known_diameter)diameter=*known_diameter;
+    CameraLodZone zone{CameraLodZone::cold};
+    if(known_diameter){
+      diameter=*known_diameter;
+      static_cast<void>(effective_camera_diameter(owner,&zone));
+    }
     else{
       ++plan.projection_evaluations;
-      diameter=projected_tetrahedron_diameter(mesh,owner,prepared_camera);
+      diameter=effective_camera_diameter(owner,&zone);
     }
     if(diameter<=split_threshold)return;
     if(classify_owner(owner)==SurfaceRelation::intersecting)
-      splits.push_back({owner,diameter/split_threshold});
+      splits.push_back({owner,diameter/split_threshold,zone,false});
   };
   const auto discover_scheduler_splits=[&]{
     auto& queue=summaries.split_queue;
@@ -1580,6 +1893,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     auto& processed=summaries.scheduler_entry_scratch;
     auto& projection_addresses=summaries.scheduler_projection_address_scratch;
     auto& projection_values=summaries.scheduler_projection_value_scratch;
+    auto& projection_zones=summaries.scheduler_projection_zone_scratch;
     auto& projection_indices=summaries.scheduler_projection_index_scratch;
     processed.clear();
     projection_addresses.clear();
@@ -1634,21 +1948,31 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
           static_cast<std::uint32_t>(processed.size()-1U));
     }
     projection_values.resize(projection_addresses.size());
+    projection_zones.resize(projection_addresses.size());
     constexpr std::size_t projection_batch_size=256U;
     for(std::size_t begin=0;begin<projection_addresses.size();
         begin+=projection_batch_size){
       if(cancel()){restore();return;}
       const auto count=std::min(
           projection_batch_size,projection_addresses.size()-begin);
-      projected_tetrahedron_diameters(
-          mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
-          std::span(projection_values).subspan(begin,count));
+      if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum&&
+         configuration.camera_lod_metric==CameraLodMetric::projected_diameter){
+        projected_tetrahedron_diameters(
+            mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
+            std::span(projection_values).subspan(begin,count));
+        for(std::size_t index=begin;index<begin+count;++index)
+          projection_zones[index]=projection_values[index]>0.0
+              ?CameraLodZone::visible:CameraLodZone::cold;
+      }else for(std::size_t index=begin;index<begin+count;++index)
+        projection_values[index]=effective_camera_diameter(
+            projection_addresses[index],&projection_zones[index]);
     }
     plan.projection_evaluations+=projection_addresses.size();
     plan.scheduler_priority_recomputations+=projection_addresses.size();
     for(std::size_t index=0;index<projection_addresses.size();++index){
       auto& entry=processed[projection_indices[index]];
       const double diameter=projection_values[index];
+      entry.camera_zone=projection_zones[index];
       entry.last_priority=diameter;
       entry.priority_motion_budget=motion_budget;
       entry.priority_epoch=summaries.scheduler_priority_epoch;
@@ -1661,7 +1985,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         entry.surface_relation_known=true;
       }
       if(entry.may_intersect_surface)
-        splits.push_back({entry.address,diameter/split_threshold});
+        splits.push_back({entry.address,diameter/split_threshold,
+                          entry.camera_zone,false});
     }
     restore();
     plan.scheduler_candidates_avoided=
@@ -1671,10 +1996,84 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     discover_scheduler_splits();
     reseed_if_stale();
   }else if(configuration.candidate_traversal==CandidateTraversal::active_cut_scan){
-    for(const TetId owner:logical){
-      if(cancel())return plan;
-      consider_split(owner);
-    }
+    constexpr std::size_t parallel_threshold=1024U;
+    if(executor&&executor->worker_count()>1U&&logical.size()>=parallel_threshold){
+      struct SplitEvaluation {
+        double diameter{};
+        CameraLodZone zone{CameraLodZone::cold};
+        SurfaceRelation relation{SurfaceRelation::outside};
+        std::size_t exact_evaluations{};
+        bool recent_update{};
+        bool depth_rejected{};
+        bool classified{};
+        bool summary_rejected{};
+      };
+      std::vector<SplitEvaluation> evaluations(logical.size());
+      const auto parallel_start=std::chrono::steady_clock::now();
+      auto group=executor->make_group(
+          mesh.revision(),GeometryTaskPriority::publication_critical);
+      const std::size_t block_count=std::max<std::size_t>(
+          1U,executor->worker_count()*executor->configuration().blocks_per_worker);
+      const std::size_t grain=std::max<std::size_t>(
+          1U,(logical.size()+block_count-1U)/block_count);
+      executor->parallel_for(group,0U,logical.size(),grain,
+          [&](std::size_t begin,std::size_t end,std::stop_token stop){
+            for(std::size_t index=begin;index<end;++index){
+              if(stop.stop_requested()||cancellation.stop_requested())return;
+              const TetId owner=logical[index];
+              auto& result=evaluations[index];
+              if(tet_depth(owner)+increment>maximum_depth){
+                result.depth_rejected=true;
+                continue;
+              }
+              const auto demand=evaluate_camera_demand(owner);
+              result.zone=demand.demand.zone;
+              result.recent_update=demand.recent_update;
+              if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum&&
+                 demand.demand.projected_diameter_pixels==0.0)
+                result.diameter=0.0;
+              else{
+                const double value=configuration.camera_lod_metric==
+                        CameraLodMetric::geometric_error
+                    ?geometric_screen_error(owner)
+                    :demand.demand.projected_diameter_pixels;
+                result.diameter=value/demand.demand.quality_multiplier;
+              }
+              if(result.diameter<=split_threshold)continue;
+              const auto field=evaluate_field_classification(owner);
+              result.relation=field.relation;
+              result.exact_evaluations=field.exact_evaluations;
+              result.summary_rejected=field.summary_rejected;
+              result.classified=true;
+            }
+          });
+      executor->wait_and_help(group);
+      if(group.stop_requested()||cancel())return plan;
+      plan.parallel_workers=executor->worker_count();
+      plan.parallel_tasks=(logical.size()+grain-1U)/grain;
+      plan.parallel_candidates=logical.size();
+      plan.parallel_classification_ms=elapsed_ms(parallel_start);
+      for(std::size_t index=0;index<logical.size();++index){
+        const auto& result=evaluations[index];
+        if(result.depth_rejected){++plan.depth_rejections;continue;}
+        ++plan.projection_evaluations;
+        ++plan.camera_demand_evaluations[static_cast<std::size_t>(result.zone)];
+        if(result.recent_update)plan.camera_recent_updates.push_back(logical[index]);
+        if(!result.classified)continue;
+        ++plan.field_classifications;
+        plan.exact_field_evaluations+=result.exact_evaluations;
+        if(result.summary_rejected){
+          ++plan.field_subtrees_rejected;
+          ++plan.exact_field_evaluations_avoided;
+        }
+        if(result.relation==SurfaceRelation::intersecting)
+          splits.push_back({logical[index],result.diameter/split_threshold,
+                            result.zone,false});
+      }
+    }else for(const TetId owner:logical){
+        if(cancel())return plan;
+        consider_split(owner);
+      }
   }else if(configuration.candidate_traversal==CandidateTraversal::spatial_runs){
     for(const auto& run:summaries.spatial_runs){
       if(cancel())return plan;
@@ -1702,8 +2101,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       if(cancel())return;
       ++plan.hierarchy_nodes_visited;
       ++plan.projection_evaluations;
-      const double diameter=projected_tetrahedron_diameter(
-          mesh,owner,prepared_camera);
+      CameraLodZone zone{};
+      const double diameter=effective_camera_diameter(owner,&zone);
       if(diameter==0.0){
         ++plan.frustum_subtrees_rejected;
         ++plan.exact_field_evaluations_avoided;
@@ -1721,7 +2120,12 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
         return;
       }
       if(std::binary_search(logical.begin(),logical.end(),owner)){
-        consider_split(owner,diameter);
+        if(tet_depth(owner)+increment>maximum_depth){
+          ++plan.depth_rejections;
+          return;
+        }
+        if(classify_owner(owner)==SurfaceRelation::intersecting)
+          splits.push_back({owner,diameter/split_threshold,zone,false});
         return;
       }
       for(std::uint32_t child=0;child<8U;++child){
@@ -1737,6 +2141,8 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
   }
   if(cancel())return plan;
   std::sort(splits.begin(),splits.end(),[](const Candidate& left,const Candidate& right){
+    if(left.camera_zone!=right.camera_zone)
+      return left.camera_zone>right.camera_zone;
     if(left.priority!=right.priority)return left.priority>right.priority;
     return left.address<right.address;
   });
@@ -1907,6 +2313,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     auto& processed=summaries.scheduler_entry_scratch;
     auto& projection_addresses=summaries.scheduler_projection_address_scratch;
     auto& projection_values=summaries.scheduler_projection_value_scratch;
+    auto& projection_zones=summaries.scheduler_projection_zone_scratch;
     auto& projection_indices=summaries.scheduler_projection_index_scratch;
     processed.clear();
     projection_addresses.clear();
@@ -1951,15 +2358,24 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
           static_cast<std::uint32_t>(processed.size()-1U));
     }
     projection_values.resize(projection_addresses.size());
+    projection_zones.resize(projection_addresses.size());
     constexpr std::size_t projection_batch_size=256U;
     for(std::size_t begin=0;begin<projection_addresses.size();
         begin+=projection_batch_size){
       if(cancel()){restore();return plan;}
       const auto count=std::min(
           projection_batch_size,projection_addresses.size()-begin);
-      projected_tetrahedron_diameters(
-          mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
-          std::span(projection_values).subspan(begin,count));
+      if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum&&
+         configuration.camera_lod_metric==CameraLodMetric::projected_diameter){
+        projected_tetrahedron_diameters(
+            mesh,std::span(projection_addresses).subspan(begin,count),prepared_camera,
+            std::span(projection_values).subspan(begin,count));
+        for(std::size_t index=begin;index<begin+count;++index)
+          projection_zones[index]=projection_values[index]>0.0
+              ?CameraLodZone::visible:CameraLodZone::cold;
+      }else for(std::size_t index=begin;index<begin+count;++index)
+        projection_values[index]=effective_camera_diameter(
+            projection_addresses[index],&projection_zones[index]);
     }
     plan.projection_evaluations+=projection_addresses.size();
     plan.scheduler_priority_recomputations+=projection_addresses.size();
@@ -1971,33 +2387,102 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
       entry.priority_epoch=summaries.scheduler_priority_epoch;
       entry.state_revision=mesh.revision();
       entry.has_priority=true;
+      entry.camera_zone=projection_zones[index];
       const bool forced=forced_depth(entry.address);
       if(!mesh.has_pinned_descendant(entry.address)&&
          (forced||diameter<merge_threshold)){
         const double priority=forced
             ?2.0e6+static_cast<double>(tet_depth(entry.address))
             :merge_threshold/std::max(diameter,1.0e-12);
-        merges.push_back({entry.address,priority});
+        merges.push_back({entry.address,priority,entry.camera_zone,forced});
       }
     }
     restore();
     reseed_if_stale();
-  }else for(const TetId parent:possible_parents){
-      if(cancel())return plan;
-      if(mesh.has_pinned_descendant(parent))continue;
-      if(!complete_merge_parent(parent))continue;
-      ++plan.projection_evaluations;
-      const double diameter=projected_tetrahedron_diameter(
-          mesh,parent,prepared_camera);
-      const bool forced=tet_depth(parent)+increment>maximum_depth;
-      if(forced||diameter<merge_threshold){
-        const double priority=forced
-            ?2.0e6+static_cast<double>(tet_depth(parent))
-            :merge_threshold/std::max(diameter,1.0e-12);
-        merges.push_back({parent,priority});
+  }else{
+    constexpr std::size_t parallel_merge_threshold=512U;
+    if(executor&&executor->worker_count()>1U&&
+       possible_parents.size()>=parallel_merge_threshold){
+      struct MergeEvaluation {
+        double diameter{};
+        CameraLodZone zone{CameraLodZone::cold};
+        bool recent_update{};
+        bool eligible{};
+        bool forced{};
+      };
+      std::vector<MergeEvaluation> evaluations(possible_parents.size());
+      const auto parallel_start=std::chrono::steady_clock::now();
+      auto group=executor->make_group(
+          mesh.revision(),GeometryTaskPriority::publication_critical);
+      const std::size_t block_count=std::max<std::size_t>(
+          1U,executor->worker_count()*executor->configuration().blocks_per_worker);
+      const std::size_t grain=std::max<std::size_t>(
+          1U,(possible_parents.size()+block_count-1U)/block_count);
+      executor->parallel_for(group,0U,possible_parents.size(),grain,
+          [&](std::size_t begin,std::size_t end,std::stop_token stop){
+            for(std::size_t index=begin;index<end;++index){
+              if(stop.stop_requested()||cancellation.stop_requested())return;
+              const TetId parent=possible_parents[index];
+              if(mesh.has_pinned_descendant(parent)||
+                 !complete_merge_parent(parent))continue;
+              auto& result=evaluations[index];
+              result.eligible=true;
+              result.forced=tet_depth(parent)+increment>maximum_depth;
+              const auto demand=evaluate_camera_demand(parent);
+              result.zone=demand.demand.zone;
+              result.recent_update=demand.recent_update;
+              if(configuration.camera_lod_policy==CameraLodPolicy::exact_frustum&&
+                 demand.demand.projected_diameter_pixels==0.0)
+                result.diameter=0.0;
+              else{
+                const double value=configuration.camera_lod_metric==
+                        CameraLodMetric::geometric_error
+                    ?geometric_screen_error(parent)
+                    :demand.demand.projected_diameter_pixels;
+                result.diameter=value/demand.demand.quality_multiplier;
+              }
+            }
+          });
+      executor->wait_and_help(group);
+      if(group.stop_requested()||cancel())return plan;
+      plan.parallel_workers=executor->worker_count();
+      plan.parallel_tasks+=(possible_parents.size()+grain-1U)/grain;
+      plan.parallel_candidates+=possible_parents.size();
+      plan.parallel_classification_ms+=elapsed_ms(parallel_start);
+      for(std::size_t index=0;index<possible_parents.size();++index){
+        const auto& result=evaluations[index];
+        if(!result.eligible)continue;
+        const TetId parent=possible_parents[index];
+        ++plan.projection_evaluations;
+        ++plan.camera_demand_evaluations[static_cast<std::size_t>(result.zone)];
+        if(result.recent_update)plan.camera_recent_updates.push_back(parent);
+        if(result.forced||result.diameter<merge_threshold){
+          const double priority=result.forced
+              ?2.0e6+static_cast<double>(tet_depth(parent))
+              :merge_threshold/std::max(result.diameter,1.0e-12);
+          merges.push_back({parent,priority,result.zone,result.forced});
+        }
       }
+    }else for(const TetId parent:possible_parents){
+        if(cancel())return plan;
+        if(mesh.has_pinned_descendant(parent))continue;
+        if(!complete_merge_parent(parent))continue;
+        ++plan.projection_evaluations;
+        CameraLodZone zone{};
+        const double diameter=effective_camera_diameter(parent,&zone);
+        const bool forced=tet_depth(parent)+increment>maximum_depth;
+        if(forced||diameter<merge_threshold){
+          const double priority=forced
+              ?2.0e6+static_cast<double>(tet_depth(parent))
+              :merge_threshold/std::max(diameter,1.0e-12);
+          merges.push_back({parent,priority,zone,forced});
+        }
     }
+  }
   std::sort(merges.begin(),merges.end(),[](const Candidate& left,const Candidate& right){
+    if(left.forced!=right.forced)return left.forced;
+    if(left.camera_zone!=right.camera_zone)
+      return left.camera_zone<right.camera_zone;
     if(left.priority!=right.priority)return left.priority>right.priority;
     return left.address<right.address;
   });
@@ -2071,7 +2556,8 @@ AdaptationCommitResult commit_adaptation(
     TetMesh& mesh,const AdaptationPlan& plan,
     const AdaptationConfiguration& current_configuration,
     std::uint64_t current_field_revision,
-    AdaptationPlanningCache* planning_cache) {
+    AdaptationPlanningCache* planning_cache,
+    GeometryExecutor* executor) {
   AdaptationCommitResult result;
   result.resulting_revision=mesh.revision();
   result.operations.requested_splits=plan.requested_splits;
@@ -2102,6 +2588,60 @@ AdaptationCommitResult commit_adaptation(
     reject_admissible();
     return result;
   }
+  const auto commit_camera_metadata=[&]{
+    if(!planning_cache||!plan.has_camera_demand_metadata)return;
+    Camera committed;
+    committed.position=plan.camera_demand_position;
+    committed.forward=plan.camera_demand_forward;
+    committed.up=plan.camera_demand_up;
+    committed.vertical_fov_radians=plan.camera_demand_vertical_fov;
+    committed.viewport_height_pixels=plan.camera_demand_viewport_height;
+    committed.aspect_ratio=plan.camera_demand_aspect_ratio;
+    planning_cache->committed_camera=committed;
+    planning_cache->has_committed_camera=true;
+    planning_cache->camera_demand_epoch=plan.camera_demand_epoch;
+    planning_cache->camera_soft_quality_multiplier=
+        plan.camera_soft_quality_multiplier;
+    planning_cache->last_camera_demand_evaluations=
+        plan.camera_demand_evaluations;
+    planning_cache->last_camera_active_owner_count=
+        plan.camera_active_owner_count;
+
+    auto updates=plan.camera_recent_updates;
+    std::sort(updates.begin(),updates.end());
+    updates.erase(std::unique(updates.begin(),updates.end()),updates.end());
+    for(const TetId owner:updates){
+      const auto depth=tet_depth(owner);
+      if(planning_cache->camera_temporal_layers.size()<=depth)
+        planning_cache->camera_temporal_layers.resize(depth+1U);
+      auto& layer=planning_cache->camera_temporal_layers[depth];
+      const auto found=std::lower_bound(
+          layer.addresses.begin(),layer.addresses.end(),owner);
+      const auto index=static_cast<std::size_t>(found-layer.addresses.begin());
+      if(found!=layer.addresses.end()&&*found==owner){
+        layer.last_demand_epochs[index]=plan.camera_demand_epoch;
+      }else{
+        layer.addresses.insert(found,owner);
+        layer.last_demand_epochs.insert(
+            layer.last_demand_epochs.begin()+static_cast<std::ptrdiff_t>(index),
+            plan.camera_demand_epoch);
+      }
+    }
+    const auto retention=current_configuration.recent_retention_epochs;
+    for(auto& layer:planning_cache->camera_temporal_layers){
+      std::size_t output{};
+      for(std::size_t index=0;index<layer.addresses.size();++index){
+        const auto epoch=layer.last_demand_epochs[index];
+        if(plan.camera_demand_epoch>=epoch&&
+           plan.camera_demand_epoch-epoch>retention)continue;
+        layer.addresses[output]=layer.addresses[index];
+        layer.last_demand_epochs[output]=epoch;
+        ++output;
+      }
+      layer.addresses.resize(output);
+      layer.last_demand_epochs.resize(output);
+    }
+  };
   // Planning writes marks fine-to-coarse. Once closure is stable, commit reads
   // the immutable command frontier coarse-to-fine so parents always precede
   // descendants in the mutation phase.
@@ -2128,7 +2668,10 @@ AdaptationCommitResult commit_adaptation(
   result.replay.field_revision=current_field_revision;
   result.replay.source_owner_hash=logical_owner_hash(logical.owners);
   result.replay.target_owner_hash=result.replay.source_owner_hash;
-  if(splits.empty()&&merges.empty())return result;
+  if(splits.empty()&&merges.empty()){
+    commit_camera_metadata();
+    return result;
+  }
 
   if(!splits.empty()){
     for(const TetId owner:splits)
@@ -2143,7 +2686,8 @@ AdaptationCommitResult commit_adaptation(
     else if(current_configuration.closure_execution==ClosureExecution::hybrid)
       closure_mode=BccClosureMode::hybrid;
     if(!mesh.commit_planned_red_refinement(
-           splits,closure_mode,current_configuration.hybrid_frontier_ratio)){
+           splits,closure_mode,current_configuration.hybrid_frontier_ratio,
+           executor)){
       result.status=AdaptationCommitStatus::rejected;
       reject_admissible();
       return result;
@@ -2154,7 +2698,7 @@ AdaptationCommitResult commit_adaptation(
       reject_admissible();
       return result;
     }
-    if(!mesh.coarsen_selected_red(merges)){
+    if(!mesh.coarsen_selected_red(merges,executor)){
       reject_admissible();
       return result;
     }
@@ -2228,6 +2772,7 @@ AdaptationCommitResult commit_adaptation(
   if(planning_cache&&
      current_configuration.update_scheduler!=UpdateScheduler::classify_and_stream)
     update_persistent_scheduler_after_commit(*planning_cache,mesh,result);
+  commit_camera_metadata();
   return result;
 }
 
@@ -2280,10 +2825,12 @@ AdaptationCommitResult adapt_to_surface(TetMesh& mesh,const Sphere& sphere,
                                         const AdaptationConfiguration& configuration,
                                         std::uint64_t field_revision,
                                         AdaptationPlanningCache* planning_cache,
-                                        std::stop_token cancellation) {
+                                        std::stop_token cancellation,
+                                        GeometryExecutor* executor) {
   const auto plan=plan_adaptation(mesh,sphere,camera,pixel_threshold,
                                   maximum_depth,configuration,
-                                  field_revision,planning_cache,cancellation);
+                                  field_revision,planning_cache,cancellation,
+                                  executor);
   if(plan.canceled||cancellation.stop_requested()){
     AdaptationCommitResult canceled;
     canceled.resulting_revision=mesh.revision();
@@ -2291,7 +2838,7 @@ AdaptationCommitResult adapt_to_surface(TetMesh& mesh,const Sphere& sphere,
     return canceled;
   }
   auto result=commit_adaptation(
-      mesh,plan,configuration,field_revision,planning_cache);
+      mesh,plan,configuration,field_revision,planning_cache,executor);
   if(planning_cache&&result.status==AdaptationCommitStatus::no_change&&
      !plan.commands.empty())planning_cache->pose_merge_pending=false;
   return result;

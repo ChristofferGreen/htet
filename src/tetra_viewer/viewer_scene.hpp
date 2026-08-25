@@ -643,6 +643,11 @@ struct PreparedScene {
   double maximum_connected_tet_dihedral_degrees_after{};
   double total_volume{};
   double statistics_milliseconds{};
+  double parallel_classification_milliseconds{};
+  std::size_t parallel_classification_tasks{};
+  std::size_t parallel_classification_workers{};
+  double parallel_render_attribute_milliseconds{};
+  std::size_t parallel_render_attribute_tasks{};
   double upload_preparation_milliseconds{};
   double mean_dihedral_degrees{};
   double percentile95_dihedral_degrees{};
@@ -760,6 +765,9 @@ struct SurfacePatchMetrics {
   std::size_t free_slots{};
   std::size_t retained_bytes{};
   double update_milliseconds{};
+  double parallel_generation_milliseconds{};
+  std::size_t parallel_generation_tasks{};
+  std::size_t parallel_generation_workers{};
 };
 
 struct SurfaceDrawChunkRecord {
@@ -834,6 +842,8 @@ struct SurfaceDrawChunkMetrics {
   std::size_t draw_calls{};
   double occupancy{};
   double pack_milliseconds{};
+  double parallel_copy_milliseconds{};
+  std::size_t parallel_copy_tasks{};
 };
 
 // Fixed-capacity storage is independent of the hierarchy and owner-patch
@@ -847,7 +857,8 @@ class SurfaceDrawChunkStorage {
       std::size_t large_patch_threshold=64U);
 
   void pack(std::span<const SurfacePatchRecord> patches,
-            std::span<const tetra::Triangle> patch_arena);
+            std::span<const tetra::Triangle> patch_arena,
+            tetra::GeometryExecutor* executor=nullptr);
 
   [[nodiscard]] std::size_t chunk_capacity() const noexcept {
     return chunk_capacity_;
@@ -882,11 +893,18 @@ class SurfaceDrawChunkStorage {
     std::size_t triangle_count{};
   };
 
+  struct CopyJob {
+    std::size_t source_triangle_begin{};
+    std::size_t destination_triangle_begin{};
+    std::size_t triangle_count{};
+  };
+
   [[nodiscard]] std::size_t allocate_slot();
   void release_active_slots();
   void normalize_free_ranges();
-  void compact(std::span<const SurfacePatchRecord> patches,
-               std::span<const tetra::Triangle> patch_arena);
+  void compact(std::span<const SurfacePatchRecord> patches);
+  void run_copy_jobs(std::span<const tetra::Triangle> patch_arena,
+                     tetra::GeometryExecutor* executor);
   [[nodiscard]] std::size_t required_chunks(
       std::span<const SurfacePatchRecord> patches) const;
   [[nodiscard]] bool is_large_patch(std::size_t triangle_count) const noexcept;
@@ -901,6 +919,7 @@ class SurfaceDrawChunkStorage {
   std::vector<SurfaceDrawChunkFreeRange> free_ranges_;
   std::vector<tetra::Triangle> arena_;
   std::vector<RetainedPatch> retained_patches_;
+  std::vector<CopyJob> copy_scratch_;
   SurfaceDrawChunkMetrics metrics_;
   std::uint64_t next_content_revision_{1U};
 };
@@ -947,6 +966,8 @@ struct SurfaceHostStagingMetrics {
   std::size_t aliased_wire_bytes{};
   std::size_t retained_bytes{};
   double stage_milliseconds{};
+  double parallel_copy_milliseconds{};
+  std::size_t parallel_copy_tasks{};
 };
 
 // Transactional retained CPU staging for the surface draw front. New or
@@ -958,7 +979,8 @@ class SurfaceHostStagingStorage {
   explicit SurfaceHostStagingStorage(std::size_t triangle_chunk_capacity=256U);
 
   void stage(const SurfaceDrawChunkStorage& source,
-             std::span<const SceneVertex> logical_vertices);
+             std::span<const SceneVertex> logical_vertices,
+             tetra::GeometryExecutor* executor=nullptr);
 
   [[nodiscard]] std::size_t triangle_chunk_capacity() const noexcept {
     return triangle_chunk_capacity_;
@@ -980,6 +1002,11 @@ class SurfaceHostStagingStorage {
   }
 
  private:
+  struct CopyJob {
+    std::size_t source_vertex_begin{};
+    std::size_t destination_vertex_begin{};
+    std::size_t vertex_count{};
+  };
   [[nodiscard]] std::size_t allocate_slot(
       std::vector<SurfaceHostFreeRange>& candidate_free_ranges,
       SurfaceHostStagingMetrics& candidate_metrics);
@@ -991,6 +1018,7 @@ class SurfaceHostStagingStorage {
   std::vector<SurfaceHostDrawRange> range_scratch_;
   std::vector<SurfaceHostFreeRange> free_ranges_;
   std::vector<SceneVertex> arena_;
+  std::vector<CopyJob> copy_scratch_;
   SurfaceHostStagingMetrics metrics_;
   std::uint64_t next_content_revision_{1U};
 };
@@ -1104,7 +1132,9 @@ void expand_line_segments_for_upload(
                                               StencilSelectionObjective::balanced,
                                           ScenePreparationOptions preparation = {},
                                           std::span<const tetra::Triangle> surface_override = {},
-                                          bool surface_override_is_owner_patches = false);
+                                          bool surface_override_is_owner_patches = false,
+                                          tetra::GeometryExecutor* executor = nullptr,
+                                          std::stop_token cancellation = {});
 [[nodiscard]] inline PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere,
                                                  SurfaceMethod surface_method, MaterialRule material_rule,
                                                  bool show_faces, bool show_edges, bool depth_colours) {
@@ -1140,7 +1170,8 @@ class SceneCache {
                         StencilSelectionObjective::balanced,
                     ScenePreparationOptions preparation = {},
                     std::span<const tetra::Triangle> surface_override = {},
-                    std::uint64_t surface_override_revision = 0);
+                    std::uint64_t surface_override_revision = 0,
+                    tetra::GeometryExecutor* executor = nullptr);
   bool update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sphere, std::uint64_t sphere_revision,
                     SurfaceMethod surface_method, MaterialRule material_rule,
                     bool show_faces, bool show_edges, bool depth_colours) {
@@ -1183,7 +1214,8 @@ class SceneCache {
 
   void update_surface_patches(
       const tetra::TetMesh& mesh,const tetra::Sphere& sphere,
-      std::uint64_t field_revision,SurfaceMethod surface_method);
+      std::uint64_t field_revision,SurfaceMethod surface_method,
+      tetra::GeometryExecutor* executor);
   void set_surface_patch_fallback(bool monolithic_fallback,bool global_fallback);
 
   PreparedScene scene_;

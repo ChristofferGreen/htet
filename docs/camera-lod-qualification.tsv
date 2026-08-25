@@ -1,0 +1,7 @@
+date	platform	policy	metric	complexity_target_owners	mean_turn_readiness	mean_owner_cv	mean_triangle_cv	total_adaptation_ms	maximum_visible_projected_diameter_px	default
+2026-08-25	arm64-macOS-26.2	exact-frustum	projected-diameter	0	0.822950	0.257534	0.237576	4321.970	1372.271276	no
+2026-08-25	arm64-macOS-26.2	guarded-recent	projected-diameter	0	0.822371	0.162369	0.142076	3063.175	1372.271276	no
+2026-08-25	arm64-macOS-26.2	guarded-predicted	projected-diameter	0	0.822371	0.162369	0.142076	3082.762	1372.271276	no
+2026-08-25	arm64-macOS-26.2	guarded-recent	geometric-error	0	0.834946	0.150788	0.133980	1927.943	1372.271276	yes
+2026-08-25	arm64-macOS-26.2	guarded-recent	geometric-error	6000	0.834797	0.167660	0.148542	2455.391	1372.271276	no
+2026-08-25	arm64-macOS-26.2	guarded-recent	geometric-error	16000	0.834797	0.154578	0.136281	2455.981	1372.271276	no

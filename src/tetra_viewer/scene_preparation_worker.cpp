@@ -36,12 +36,43 @@ bool same_scene_preparation_parameters(
       first.surface_override_revision==second.surface_override_revision;
 }
 
-ScenePreparationWorker::ScenePreparationWorker()
-    :thread_([this](std::stop_token stop){run(stop);}) {}
+bool compatible_scene_preparation_publication(
+    const ScenePreparationResult& result,std::uint64_t expected_request_id,
+    std::uint64_t current_mesh_revision,
+    const ScenePreparationParameters& current_parameters,
+    bool allow_lagged_mesh) noexcept {
+  return result.request_id==expected_request_id&&
+      same_scene_preparation_parameters(result.parameters,current_parameters)&&
+      (result.mesh_revision==current_mesh_revision||allow_lagged_mesh);
+}
+
+bool should_submit_scene_preparation(
+    bool request_changed,bool worker_busy,bool interactive) noexcept {
+  return request_changed&&(!interactive||!worker_busy);
+}
+
+ScenePreparationWorker::ScenePreparationWorker(
+    std::shared_ptr<tetra::GeometryExecutor> executor)
+    :executor_(executor?std::move(executor):
+        std::make_shared<tetra::GeometryExecutor>()) {}
 
 ScenePreparationWorker::~ScenePreparationWorker() {
-  thread_.request_stop();
+  {
+    std::lock_guard lock(mutex_);
+    pending_.reset();
+    active_cancellation_.request_stop();
+  }
+  runner_group_.request_stop();
   condition_.notify_all();
+  try{executor_->wait(runner_group_);}catch(...){ }
+}
+
+void ScenePreparationWorker::schedule_locked() {
+  if(runner_scheduled_)return;
+  runner_scheduled_=true;
+  runner_group_=executor_->make_group(
+      latest_request_id_,tetra::GeometryTaskPriority::interactive);
+  executor_->submit(runner_group_,[this](std::stop_token stop){run(stop);});
 }
 
 std::uint64_t ScenePreparationWorker::submit(
@@ -49,11 +80,13 @@ std::uint64_t ScenePreparationWorker::submit(
     std::span<const tetra::Triangle> surface_override) {
   std::lock_guard lock(mutex_);
   const auto request_id=++latest_request_id_;
+  active_cancellation_.request_stop();
   pending_.emplace(Request{
       .mesh=mesh,.parameters=std::move(parameters),
       .surface_override={surface_override.begin(),surface_override.end()},
       .request_id=request_id});
   completed_.reset();
+  schedule_locked();
   condition_.notify_all();
   return request_id;
 }
@@ -85,13 +118,17 @@ void ScenePreparationWorker::run(std::stop_token stop) {
   while(!stop.stop_requested()){
     std::optional<Request> request;
     {
-      std::unique_lock lock(mutex_);
-      condition_.wait(lock,stop,[&]{return pending_.has_value();});
-      if(stop.stop_requested())return;
+      std::lock_guard lock(mutex_);
+      if(!pending_){
+        runner_scheduled_=false;
+        return;
+      }
       request=std::move(pending_);
       pending_.reset();
       running_=true;
+      active_cancellation_=std::stop_source{};
     }
+    const auto request_cancellation=active_cancellation_.get_token();
     const auto start=std::chrono::steady_clock::now();
     auto scene=prepare_scene(
         request->mesh,request->parameters.surface,
@@ -106,7 +143,8 @@ void ScenePreparationWorker::run(std::stop_token stop) {
         request->parameters.volume_connection_method,
         request->parameters.stencil_construction,
         request->parameters.stencil_selection_objective,
-        request->parameters.preparation,request->surface_override,false);
+        request->parameters.preparation,request->surface_override,false,
+        executor_.get(),request_cancellation);
     const double duration=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-start).count();
     {
@@ -121,6 +159,8 @@ void ScenePreparationWorker::run(std::stop_token stop) {
     }
     condition_.notify_all();
   }
+  std::lock_guard lock(mutex_);
+  runner_scheduled_=false;
 }
 
 }  // namespace tetra_viewer

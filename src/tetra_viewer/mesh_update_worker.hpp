@@ -1,5 +1,6 @@
 #pragma once
 
+#include "tetra_core/geometry_executor.hpp"
 #include "tetra_core/implicit_surface.hpp"
 
 #include <chrono>
@@ -7,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <thread>
@@ -18,6 +20,11 @@ enum class MeshUpdateOperation { reconcile_lod, refine_all_once };
 // Selected by the release CPU qualification: keep render-thread handoff
 // responsive while committing only complete conforming transactions.
 inline constexpr double default_mesh_update_time_budget_milliseconds=4.0;
+inline constexpr double interactive_mesh_update_time_budget_milliseconds=2.0;
+inline constexpr std::uint32_t interactive_mesh_update_operation_budget=256U;
+inline constexpr double interactive_mesh_update_pixel_threshold_scale=1.35;
+
+enum class MeshUpdateIntent { settled,interactive_camera };
 
 struct MeshUpdateBudget {
   // Zero inherits AdaptationConfiguration::operation_budget. A positive value
@@ -42,11 +49,29 @@ struct MeshUpdateParameters {
   tetra::AdaptationConfiguration configuration{};
   std::uint64_t field_revision{};
   MeshUpdateBudget budget{};
+  MeshUpdateIntent intent{MeshUpdateIntent::settled};
 };
 
 [[nodiscard]] bool same_mesh_update_parameters(
     const MeshUpdateParameters& first,
     const MeshUpdateParameters& second) noexcept;
+
+// Interactive camera requests may finish after the pointer has moved again.
+// Such a complete conforming slice is still useful when every non-camera
+// input is unchanged; the scheduler publishes it and immediately retargets
+// the next slice to the latest pose.
+[[nodiscard]] bool compatible_mesh_update_publication(
+    const MeshUpdateParameters& submitted,
+    const MeshUpdateParameters& current) noexcept;
+
+[[nodiscard]] MeshUpdateParameters make_interactive_mesh_update_parameters(
+    MeshUpdateParameters settled) noexcept;
+
+// While dragging, camera poses are coalesced at completed-slice boundaries.
+// Mode changes and the final settled request supersede immediately.
+[[nodiscard]] bool should_submit_mesh_update(
+    bool update_in_flight,bool request_changed,bool interactive,
+    bool slice_published_this_frame,bool intent_changed) noexcept;
 
 struct MeshUpdateRequest {
   tetra::TetMesh mesh;
@@ -176,7 +201,8 @@ struct MeshUpdateWorkerMetrics {
 // using the last published mesh and atomically adopts only a completed result.
 class MeshUpdateWorker {
  public:
-  MeshUpdateWorker();
+  explicit MeshUpdateWorker(
+      std::shared_ptr<tetra::GeometryExecutor> executor={});
   ~MeshUpdateWorker();
   MeshUpdateWorker(const MeshUpdateWorker&)=delete;
   MeshUpdateWorker& operator=(const MeshUpdateWorker&)=delete;
@@ -199,6 +225,7 @@ class MeshUpdateWorker {
 
  private:
   void run(std::stop_token stop);
+  void schedule_locked();
   [[nodiscard]] bool current(std::uint64_t request_id) const;
   void supersede_locked();
 
@@ -213,7 +240,9 @@ class MeshUpdateWorker {
   std::chrono::steady_clock::time_point active_superseded_at_{};
   MeshUpdateWorkerMetrics metrics_;
   bool running_{};
-  std::jthread thread_;
+  bool runner_scheduled_{};
+  std::shared_ptr<tetra::GeometryExecutor> executor_;
+  tetra::GeometryTaskGroup runner_group_;
 };
 
 // Publishes only a complete result from the expected request. An intermediate

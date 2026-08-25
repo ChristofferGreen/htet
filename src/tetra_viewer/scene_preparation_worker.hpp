@@ -1,11 +1,13 @@
 #pragma once
 
+#include "tetra_core/geometry_executor.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
@@ -46,13 +48,31 @@ struct ScenePreparationResult {
   double duration_milliseconds{};
 };
 
+// PreparedScene owns a complete immutable render snapshot. During camera
+// motion it is safe, and necessary for visible progress, to present the latest
+// completed snapshot even when topology has advanced again in the meantime.
+// Non-mesh scene settings and the worker request must still match exactly.
+[[nodiscard]] bool compatible_scene_preparation_publication(
+    const ScenePreparationResult& result,std::uint64_t expected_request_id,
+    std::uint64_t current_mesh_revision,
+    const ScenePreparationParameters& current_parameters,
+    bool allow_lagged_mesh) noexcept;
+
+// Coalesce mesh revisions while an interactive scene build is running. A
+// settled request may supersede immediately; interactive work retargets only
+// after the current complete render snapshot is available.
+[[nodiscard]] bool should_submit_scene_preparation(
+    bool request_changed,bool worker_busy,bool interactive) noexcept;
+
 // Builds all CPU render geometry on a private thread. New requests supersede
-// pending/finished work; a running build may finish, but stale output is never
-// published. TetMesh snapshots share immutable storage and are cheap to hand
-// off because scene preparation never mutates them.
+// pending/finished work; a running build polls cancellation between bounded
+// geometry blocks, and stale output is never published. TetMesh snapshots
+// share immutable storage and are cheap to hand off because scene preparation
+// never mutates them.
 class ScenePreparationWorker {
  public:
-  ScenePreparationWorker();
+  explicit ScenePreparationWorker(
+      std::shared_ptr<tetra::GeometryExecutor> executor={});
   ~ScenePreparationWorker();
   ScenePreparationWorker(const ScenePreparationWorker&)=delete;
   ScenePreparationWorker& operator=(const ScenePreparationWorker&)=delete;
@@ -74,6 +94,7 @@ class ScenePreparationWorker {
   };
 
   void run(std::stop_token stop);
+  void schedule_locked();
 
   mutable std::mutex mutex_;
   std::condition_variable_any condition_;
@@ -81,7 +102,10 @@ class ScenePreparationWorker {
   std::optional<ScenePreparationResult> completed_;
   std::uint64_t latest_request_id_{};
   bool running_{};
-  std::jthread thread_;
+  bool runner_scheduled_{};
+  std::shared_ptr<tetra::GeometryExecutor> executor_;
+  tetra::GeometryTaskGroup runner_group_;
+  std::stop_source active_cancellation_;
 };
 
 }  // namespace tetra_viewer

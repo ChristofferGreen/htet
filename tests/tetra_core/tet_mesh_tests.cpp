@@ -4,6 +4,7 @@
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
 #include "tetra_core/four_hexahedra.hpp"
+#include "tetra_core/geometry_executor.hpp"
 #include "tetra_core/green_templates.hpp"
 #include "tetra_core/layer_storage.hpp"
 #include "tetra_core/mixed_depth_dual.hpp"
@@ -28,6 +29,390 @@
 #include <set>
 #include <sstream>
 #include <tuple>
+
+TEST_CASE("shared geometry executor partitions ranges and propagates failures") {
+  tetra::GeometryExecutor executor({
+      .worker_count=4U,.blocks_per_worker=4U,
+      .external_callers_may_participate=false});
+  auto group=executor.make_group(17U,tetra::GeometryTaskPriority::interactive);
+  std::array<std::atomic_uint,257> visits{};
+  executor.parallel_for(group,0U,visits.size(),13U,
+      [&](std::size_t begin,std::size_t end,std::stop_token stop){
+        CHECK_FALSE(stop.stop_requested());
+        for(std::size_t index=begin;index<end;++index)
+          visits[index].fetch_add(1U,std::memory_order_relaxed);
+      });
+  executor.wait(group);
+  CHECK(group.generation()==17U);
+  CHECK(group.pending_tasks()==0U);
+  for(const auto& visit:visits)
+    CHECK(visit.load(std::memory_order_relaxed)==1U);
+  const auto metrics=executor.metrics();
+  CHECK(metrics.submitted_tasks==16U);
+  CHECK(metrics.completed_tasks==16U);
+  CHECK(metrics.maximum_active_workers<=4U);
+  CHECK(metrics.maximum_queued_tasks<=16U);
+
+  auto failing=executor.make_group();
+  executor.submit(failing,[](std::stop_token){
+    throw std::runtime_error("expected executor failure");
+  });
+  CHECK_THROWS_WITH_AS(executor.wait(failing),"expected executor failure",
+                       std::runtime_error);
+  CHECK(executor.metrics().task_exceptions==1U);
+}
+
+TEST_CASE("shared geometry executor completes nested work without oversubscription") {
+  tetra::GeometryExecutor executor({
+      .worker_count=1U,.blocks_per_worker=3U,
+      .external_callers_may_participate=false});
+  auto outer=executor.make_group();
+  std::atomic_uint visits{};
+  executor.submit(outer,[&](std::stop_token){
+    auto inner=executor.make_group();
+    executor.parallel_for(inner,0U,100U,1U,
+        [&](std::size_t begin,std::size_t end,std::stop_token){
+          visits.fetch_add(static_cast<unsigned int>(end-begin));
+        });
+    executor.wait_and_help(inner);
+  });
+  executor.wait(outer);
+  CHECK(visits.load()==100U);
+  CHECK(executor.metrics().maximum_queued_tasks<=3U);
+  CHECK(executor.metrics().nested_executor_entries>=1U);
+  CHECK(executor.metrics().maximum_active_workers==1U);
+}
+
+TEST_CASE("shared geometry executor cancels active groups during shutdown") {
+  auto executor=std::make_unique<tetra::GeometryExecutor>(
+      tetra::GeometryExecutorConfiguration{.worker_count=2U});
+  auto active=executor->make_group();
+  std::atomic_bool started{},observed_stop{};
+  executor->submit(active,[&](std::stop_token stop){
+    started.store(true,std::memory_order_release);
+    while(!stop.stop_requested())std::this_thread::yield();
+    observed_stop.store(true,std::memory_order_release);
+  });
+  while(!started.load(std::memory_order_acquire))std::this_thread::yield();
+  executor.reset();
+  CHECK(active.stop_requested());
+  CHECK(observed_stop.load(std::memory_order_acquire));
+  CHECK(active.pending_tasks()==0U);
+}
+
+TEST_CASE("shared geometry executor cancellation skips queued work") {
+  tetra::GeometryExecutor executor({.worker_count=1U});
+  auto blocker=executor.make_group();
+  std::mutex mutex;
+  std::condition_variable started_condition;
+  bool started{};
+  bool release{};
+  executor.submit(blocker,[&](std::stop_token){
+    std::unique_lock lock(mutex);
+    started=true;
+    started_condition.notify_all();
+    started_condition.wait(lock,[&]{return release;});
+  });
+  {
+    std::unique_lock lock(mutex);
+    started_condition.wait(lock,[&]{return started;});
+  }
+
+  auto canceled=executor.make_group(2U,tetra::GeometryTaskPriority::speculative);
+  std::atomic_uint executions{};
+  for(unsigned int index=0;index<8U;++index)
+    executor.submit(canceled,[&](std::stop_token){++executions;});
+  canceled.request_stop();
+  {
+    std::lock_guard lock(mutex);
+    release=true;
+  }
+  started_condition.notify_all();
+  executor.wait(blocker);
+  executor.wait(canceled);
+  CHECK(executions.load()==0U);
+  CHECK(executor.metrics().canceled_tasks==8U);
+}
+
+TEST_CASE("shared geometry executor gives bounded service to lower priorities") {
+  tetra::GeometryExecutor executor({.worker_count=1U});
+  auto blocker=executor.make_group();
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool started{};
+  bool release{};
+  executor.submit(blocker,[&](std::stop_token){
+    std::unique_lock lock(mutex);
+    started=true;
+    condition.notify_all();
+    condition.wait(lock,[&]{return release;});
+  });
+  {
+    std::unique_lock lock(mutex);
+    condition.wait(lock,[&]{return started;});
+  }
+  auto publication=executor.make_group(
+      1U,tetra::GeometryTaskPriority::publication_critical);
+  auto speculative=executor.make_group(
+      2U,tetra::GeometryTaskPriority::speculative);
+  std::atomic_uint publications_before_speculative{};
+  std::atomic_uint publication_count{};
+  std::atomic_uint observed_before_speculative{100U};
+  for(unsigned int index=0;index<24U;++index)
+    executor.submit(publication,[&](std::stop_token){++publication_count;});
+  executor.submit(speculative,[&](std::stop_token){
+    observed_before_speculative=publication_count.load();
+    ++publications_before_speculative;
+  });
+  {
+    std::lock_guard lock(mutex);
+    release=true;
+  }
+  condition.notify_all();
+  executor.wait(blocker);
+  executor.wait(publication);
+  executor.wait(speculative);
+  CHECK(publications_before_speculative.load()==1U);
+  CHECK(observed_before_speculative.load()<24U);
+  CHECK(executor.metrics().bounded_fairness_yields>=1U);
+}
+
+TEST_CASE("geometry executor default leaves capacity for rendering") {
+  const auto hardware=std::max(1U,std::thread::hardware_concurrency());
+  const auto workers=tetra::default_geometry_worker_count();
+  CHECK(workers>=1U);
+  CHECK(workers<=8U);
+  if(hardware>2U)CHECK(workers<=hardware-2U);
+}
+
+TEST_CASE("parallel active-cut planning matches the serial command stream") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    mesh.refine_all_binary();
+  REQUIRE(mesh.logical_red_owners().size()>=1024U);
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=4096U;
+  const tetra::Sphere surface{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.8};
+  const auto serial=tetra::plan_adaptation(
+      mesh,surface,camera,18.0,12U,configuration,5U);
+  tetra::GeometryExecutor executor({.worker_count=4U,.blocks_per_worker=4U});
+  const auto parallel=tetra::plan_adaptation(
+      mesh,surface,camera,18.0,12U,configuration,5U,nullptr,{},&executor);
+  CHECK(parallel.commands==serial.commands);
+  CHECK(parallel.requested_splits==serial.requested_splits);
+  CHECK(parallel.requested_merges==serial.requested_merges);
+  CHECK(parallel.planned_splits==serial.planned_splits);
+  CHECK(parallel.planned_merges==serial.planned_merges);
+  CHECK(parallel.logical_candidates==serial.logical_candidates);
+  CHECK(parallel.field_classifications==serial.field_classifications);
+  CHECK(parallel.exact_field_evaluations==serial.exact_field_evaluations);
+  CHECK(parallel.projection_evaluations==serial.projection_evaluations);
+  CHECK(parallel.depth_rejections==serial.depth_rejections);
+  CHECK(parallel.camera_demand_evaluations==serial.camera_demand_evaluations);
+  CHECK(parallel.camera_recent_updates==serial.camera_recent_updates);
+  CHECK(parallel.parallel_workers==4U);
+  CHECK(parallel.parallel_tasks>=4U);
+  CHECK(parallel.parallel_candidates==mesh.logical_red_owners().size());
+
+  camera.position={0.5,0.5,80.0};
+  const auto serial_merge=tetra::plan_adaptation(
+      mesh,surface,camera,18.0,12U,configuration,6U);
+  const auto parallel_merge=tetra::plan_adaptation(
+      mesh,surface,camera,18.0,12U,configuration,6U,nullptr,{},&executor);
+  REQUIRE(serial_merge.requested_splits==0U);
+  CHECK(parallel_merge.commands==serial_merge.commands);
+  CHECK(parallel_merge.requested_merges==serial_merge.requested_merges);
+  CHECK(parallel_merge.planned_merges==serial_merge.planned_merges);
+  CHECK(parallel_merge.projection_evaluations==
+        serial_merge.projection_evaluations);
+  CHECK(parallel_merge.camera_demand_evaluations==
+        serial_merge.camera_demand_evaluations);
+  CHECK(parallel_merge.parallel_tasks>parallel.parallel_tasks);
+  CHECK(parallel_merge.parallel_candidates>
+        parallel.parallel_candidates);
+}
+
+TEST_CASE("headless multithreaded geometry benchmark validates worker hashes") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "benchmark-multithreaded-geometry=4",output,errors)==0);
+  CHECK(errors.str().empty());
+  CHECK(output.str().find("\"event\":\"multithreaded_geometry_benchmark\"")!=
+        std::string::npos);
+  CHECK(output.str().find("\"workers\":4")!=std::string::npos);
+  CHECK(output.str().find("\"hashes_match\":true")!=std::string::npos);
+  std::ostringstream invalid_output,invalid_errors;
+  CHECK(tetra_viewer::run_script(
+      "benchmark-multithreaded-geometry=0",invalid_output,invalid_errors)==2);
+}
+
+TEST_CASE("parallel derived green construction matches serial split and merge") {
+  auto base=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    base.refine_all_binary();
+  tetra::AdaptationConfiguration configuration;
+  configuration.operation_budget=4096U;
+  tetra::Sphere surface{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.35};
+  const auto plan=tetra::plan_adaptation(
+      base,surface,camera,18.0,15U,configuration,0U);
+  REQUIRE_FALSE(plan.commands.empty());
+  auto serial=base;
+  REQUIRE(tetra::commit_adaptation(serial,plan,configuration).status==
+          tetra::AdaptationCommitStatus::committed);
+  const auto verify_equal=[&](const tetra::TetMesh& parallel){
+    CHECK(std::ranges::equal(
+        parallel.logical_red_owners(),serial.logical_red_owners()));
+    CHECK(std::ranges::equal(
+        parallel.logical_midpoint_masks(),serial.logical_midpoint_masks()));
+    CHECK(std::ranges::equal(
+        parallel.logical_stencil_choices(),serial.logical_stencil_choices()));
+    CHECK(std::ranges::equal(
+        parallel.logical_derived_hashes(),serial.logical_derived_hashes()));
+    CHECK(std::ranges::equal(
+        parallel.logical_derived_offsets(),serial.logical_derived_offsets()));
+    CHECK(std::ranges::equal(
+        parallel.logical_derived_addresses(),
+        serial.logical_derived_addresses()));
+    CHECK(std::ranges::equal(
+        parallel.conforming_volume().addresses(),
+        serial.conforming_volume().addresses()));
+    CHECK(parallel.has_positive_active_volumes());
+    CHECK(parallel.has_symmetric_active_adjacency());
+    CHECK(parallel.has_conforming_active_faces());
+    REQUIRE_FALSE(parallel.logical_derived_offsets().empty());
+    CHECK(parallel.logical_derived_offsets().back()==
+          parallel.logical_derived_addresses().size());
+  };
+  for(const std::size_t workers:{2U,4U,8U}){
+    auto parallel=base;
+    tetra::GeometryExecutor executor({
+        .worker_count=workers,.blocks_per_worker=4U});
+    REQUIRE(tetra::commit_adaptation(
+        parallel,plan,configuration,0U,nullptr,&executor).status==
+        tetra::AdaptationCommitStatus::committed);
+    CAPTURE(workers);
+    verify_equal(parallel);
+    CHECK(parallel.last_bcc_update_metrics().parallel_green_tasks>0U);
+    CHECK(parallel.last_bcc_update_metrics().parallel_green_workers==workers);
+
+    tetra::Camera far_camera=camera;
+    far_camera.position={0.5,0.5,80.0};
+    const auto serial_merge_plan=tetra::plan_adaptation(
+        serial,surface,far_camera,18.0,15U,configuration,1U);
+    const auto parallel_merge_plan=tetra::plan_adaptation(
+        parallel,surface,far_camera,18.0,15U,configuration,1U,
+        nullptr,{},&executor);
+    REQUIRE(parallel_merge_plan.commands==serial_merge_plan.commands);
+    auto serial_merged=serial;
+    auto parallel_merged=parallel;
+    REQUIRE(tetra::commit_adaptation(
+        serial_merged,serial_merge_plan,configuration,1U).status==
+        tetra::AdaptationCommitStatus::committed);
+    REQUIRE(tetra::commit_adaptation(
+        parallel_merged,parallel_merge_plan,configuration,1U,nullptr,
+        &executor).status==tetra::AdaptationCommitStatus::committed);
+    CHECK(std::ranges::equal(
+        parallel_merged.logical_red_owners(),
+        serial_merged.logical_red_owners()));
+    CHECK(std::ranges::equal(
+        parallel_merged.logical_derived_hashes(),
+        serial_merged.logical_derived_hashes()));
+    CHECK(std::ranges::equal(
+        parallel_merged.logical_derived_offsets(),
+        serial_merged.logical_derived_offsets()));
+    CHECK(std::ranges::equal(
+        parallel_merged.logical_derived_addresses(),
+        serial_merged.logical_derived_addresses()));
+    CHECK(std::ranges::equal(
+        parallel_merged.conforming_volume().addresses(),
+        serial_merged.conforming_volume().addresses()));
+  }
+}
+
+TEST_CASE("parallel scene classification preserves complete geometry") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    mesh.refine_all_binary();
+  const tetra::Sphere surface{};
+  const auto prepare=[&](tetra::GeometryExecutor* executor){
+    return tetra_viewer::prepare_scene(
+        mesh,surface,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+        tetra_viewer::MaterialRule::variational_smooth,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,
+        {.surface_diagnostics=false,.summary_statistics=true},{},false,
+        executor);
+  };
+  const auto serial=prepare(nullptr);
+  tetra::GeometryExecutor executor({.worker_count=4U,.blocks_per_worker=4U});
+  const auto parallel=prepare(&executor);
+  CHECK(parallel.relations==serial.relations);
+  CHECK(parallel.depth_counts==serial.depth_counts);
+  CHECK(parallel.inside_count==serial.inside_count);
+  CHECK(parallel.outside_count==serial.outside_count);
+  CHECK(parallel.intersecting_count==serial.intersecting_count);
+  CHECK(parallel.total_volume==serial.total_volume);
+  CHECK(tetra_viewer::surface_geometry_hashes(parallel)==
+        tetra_viewer::surface_geometry_hashes(serial));
+  CHECK(parallel.parallel_classification_workers==4U);
+  CHECK(parallel.parallel_classification_tasks>=4U);
+}
+
+TEST_CASE("parallel owner-local surface patches match serial retained output") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    mesh.refine_all_binary();
+  const tetra::Sphere surface{};
+  const auto prepare=[&](tetra_viewer::SceneCache& cache,
+                         tetra::GeometryExecutor* executor){
+    return cache.update_scene(
+        mesh,surface,1U,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+        tetra_viewer::MaterialRule::variational_smooth,
+        true,false,true,false,false,false,1.0,
+        tetra_viewer::VolumeConnectionMethod::hierarchy_cells,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,
+        {.surface_diagnostics=false,.summary_statistics=true},{},0U,
+        executor);
+  };
+  tetra_viewer::SceneCache serial,parallel;
+  REQUIRE(prepare(serial,nullptr));
+  tetra::GeometryExecutor executor({
+      .worker_count=4U,.blocks_per_worker=4U});
+  REQUIRE(prepare(parallel,&executor));
+  CHECK(tetra_viewer::surface_geometry_hashes(parallel.scene())==
+        tetra_viewer::surface_geometry_hashes(serial.scene()));
+  REQUIRE(parallel.surface_patch_records().size()==
+          serial.surface_patch_records().size());
+  for(std::size_t index=0;index<serial.surface_patch_records().size();++index){
+    const auto& left=parallel.surface_patch_records()[index];
+    const auto& right=serial.surface_patch_records()[index];
+    CHECK(left.logical_owner==right.logical_owner);
+    CHECK(left.topology_hash==right.topology_hash);
+    CHECK(left.triangle_count==right.triangle_count);
+    const auto left_triangles=parallel.surface_patch_arena().subspan(
+        left.triangle_begin,left.triangle_count);
+    const auto right_triangles=serial.surface_patch_arena().subspan(
+        right.triangle_begin,right.triangle_count);
+    REQUIRE(left_triangles.size()==right_triangles.size());
+    const bool bytes_equal=left_triangles.empty()||std::memcmp(
+        left_triangles.data(),right_triangles.data(),
+        left_triangles.size_bytes())==0;
+    CHECK(bytes_equal);
+  }
+  CHECK(parallel.surface_patch_metrics().parallel_generation_tasks>1U);
+  CHECK(parallel.surface_patch_metrics().parallel_generation_workers==4U);
+}
 
 TEST_CASE("complete green placing templates cover all sixty-four edge masks") {
   struct Point { double x{},y{},z{}; };
@@ -416,6 +801,93 @@ TEST_CASE("LOD camera pose manipulation changes directional refinement visibilit
   CHECK(camera.position.x==doctest::Approx(0.75));
   CHECK(camera.forward.z==doctest::Approx(1.0));
   CHECK(tetra::projected_tetrahedron_diameter(mesh,leaf,camera)==0.0);
+}
+
+TEST_CASE("camera projection reports size independently from exact frustum relevance") {
+  auto mesh=tetra::TetMesh::make_unit_cube();
+  tetra::Camera camera;
+  const auto leaf=mesh.active_leaves().front();
+  const auto visible=tetra::projected_tetrahedron(mesh,leaf,camera);
+  REQUIRE(visible.intersects_frustum);
+  CHECK(visible.diameter_pixels>0.0);
+
+  camera.forward={0.0,0.0,1.0};
+  const auto behind=tetra::projected_tetrahedron(mesh,leaf,camera);
+  CHECK_FALSE(behind.intersects_frustum);
+  CHECK(behind.diameter_pixels>0.0);
+  CHECK(tetra::projected_tetrahedron_diameter(mesh,leaf,camera)==0.0);
+  CHECK(tetra::standby_projected_tetrahedron_diameter(
+            mesh,leaf,tetra::prepare_camera_projection(camera))>0.0);
+}
+
+TEST_CASE("camera projection follows viewport field of view aspect and singular poses") {
+  auto mesh=tetra::TetMesh::make_unit_cube();
+  const auto leaf=mesh.active_leaves().front();
+  tetra::Camera camera;
+  const auto baseline=tetra::projected_tetrahedron(mesh,leaf,camera);
+  REQUIRE(baseline.intersects_frustum);
+  REQUIRE(std::isfinite(baseline.diameter_pixels));
+  REQUIRE(baseline.diameter_pixels>0.0);
+
+  camera.viewport_height_pixels*=0.5;
+  CHECK(tetra::projected_tetrahedron(mesh,leaf,camera).diameter_pixels==
+        doctest::Approx(baseline.diameter_pixels*0.5).epsilon(1.0e-12));
+  camera.viewport_height_pixels*=2.0;
+  camera.vertical_fov_radians*=0.5;
+  CHECK(tetra::projected_tetrahedron(mesh,leaf,camera).diameter_pixels>
+        baseline.diameter_pixels);
+
+  camera=tetra::Camera{};
+  camera.aspect_ratio=2.5;
+  const auto wide=tetra::projected_tetrahedron(mesh,leaf,camera);
+  CHECK(wide.intersects_frustum);
+  CHECK(wide.diameter_pixels==
+        doctest::Approx(baseline.diameter_pixels).epsilon(1.0e-12));
+
+  camera.position={0.5,0.5,1.0}; // near plane crosses the tetrahedron
+  const auto crossing=tetra::projected_tetrahedron(mesh,leaf,camera);
+  CHECK(crossing.intersects_frustum);
+  CHECK(std::isfinite(crossing.diameter_pixels));
+  CHECK(crossing.diameter_pixels>0.0);
+
+  camera.position={0.5,0.5,0.5}; // camera inside the cell
+  const auto inside=tetra::projected_tetrahedron(mesh,leaf,camera);
+  CHECK(inside.intersects_frustum);
+  CHECK(std::isfinite(inside.diameter_pixels));
+  CHECK(inside.diameter_pixels>0.0);
+}
+
+TEST_CASE("guard near and cold camera demands remain meaningful outside the view") {
+  auto mesh=tetra::TetMesh::make_unit_cube();
+  const auto leaf=mesh.active_leaves().front();
+  tetra::Camera camera;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
+
+  camera.forward={0.0,0.0,1.0};
+  auto demand=tetra::camera_lod_demand(mesh,leaf,camera,configuration);
+  CHECK(demand.zone==tetra::CameraLodZone::cold);
+  CHECK(demand.projected_diameter_pixels==0.0);
+
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded;
+  demand=tetra::camera_lod_demand(mesh,leaf,camera,configuration);
+  CHECK(demand.zone==tetra::CameraLodZone::cold);
+  CHECK(demand.projected_diameter_pixels>0.0);
+  CHECK(demand.quality_multiplier==configuration.cold_quality_multiplier);
+
+  configuration.near_radius=4.0;
+  demand=tetra::camera_lod_demand(mesh,leaf,camera,configuration);
+  CHECK(demand.zone==tetra::CameraLodZone::near);
+  CHECK(demand.quality_multiplier==configuration.near_quality_multiplier);
+
+  constexpr double yaw=0.6981317007977318;
+  camera.forward={std::sin(yaw),0.0,-std::cos(yaw)};
+  configuration.near_radius=0.0;
+  configuration.guard_frustum_scale=2.0;
+  demand=tetra::camera_lod_demand(mesh,leaf,camera,configuration);
+  CHECK(demand.zone==tetra::CameraLodZone::guard);
+  CHECK(demand.projected_diameter_pixels>0.0);
 }
 
 TEST_CASE("prepared and batched projection preserve scalar camera semantics") {
@@ -1909,6 +2381,8 @@ TEST_CASE("adaptation hysteresis guards both split and merge boundaries") {
   const tetra::Sphere sphere{};
   const tetra::Camera camera{};
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   const auto owner=mesh.logical_cut().owners.front();
   const double diameter=tetra::projected_tetrahedron_diameter(mesh,owner,camera);
   const double split_boundary=diameter/configuration.split_hysteresis;
@@ -2124,6 +2598,8 @@ TEST_CASE("singular camera locations and supported depth extremes remain finite 
     tetra::Camera away;
     away.position={0.5,0.5,3.0};away.forward={0.0,0.0,1.0};
     tetra::AdaptationConfiguration configuration;
+    configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+    configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
     const auto result=tetra::adapt_to_surface(
         mesh,terrain,away,28.0,maximum_depth,configuration,6);
     CAPTURE(maximum_depth);
@@ -2142,6 +2618,8 @@ TEST_CASE("bounded hierarchy traversal converges to the exhaustive active-cut or
   camera.position={0.0,1.0,0.5};
   camera.forward={0.7071067811865475,-0.7071067811865475,0.0};
   tetra::AdaptationConfiguration scan_configuration;
+  scan_configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  scan_configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   tetra::AdaptationConfiguration bounded_configuration=scan_configuration;
   bounded_configuration.candidate_traversal=tetra::CandidateTraversal::hierarchy_bounds;
   tetra::AdaptationPlanningCache bounded_cache;
@@ -2203,6 +2681,8 @@ TEST_CASE("incremental red-owner convergence covers the conforming-cell refineme
   camera.position={0.0,1.0,0.5};
   camera.forward={0.7071067811865475,-0.7071067811865475,0.0};
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   configuration.split_hysteresis=1.0;
   configuration.operation_budget=4096;
   for(std::size_t step=0;step<64;++step){
@@ -2574,6 +3054,8 @@ TEST_CASE("persistent scheduler narrows independent discovery after convergence"
   shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
   shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   configuration.operation_budget=4096U;
   configuration.update_scheduler=
       tetra::UpdateScheduler::persistent_split_merge_queues;
@@ -2705,6 +3187,8 @@ TEST_CASE("persistent scheduler enqueues only committed families and conformity 
   shape.kind=tetra::ImplicitShapeKind::perlin_terrain;
   shape.secondary=tetra::implicit_shape_default_secondary(shape.kind);
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   configuration.operation_budget=4096U;
   configuration.update_scheduler=
       tetra::UpdateScheduler::persistent_split_merge_queues;
@@ -2847,6 +3331,56 @@ TEST_CASE("adaptation capabilities reject surface-only volume claims") {
   CHECK_FALSE(tetra::has_capability(minimal,tetra::AdaptationCapability::volume_export));
   configuration.merge_hysteresis=configuration.split_hysteresis;
   CHECK_FALSE(tetra::valid(configuration));
+}
+
+TEST_CASE("camera LOD compatibility matrix capability-gates every strategy axis") {
+  constexpr std::array updates{
+      tetra::LodUpdateStrategy::transactional_active_cut,
+      tetra::LodUpdateStrategy::saturated_clusters,
+      tetra::LodUpdateStrategy::relevant_surface_hierarchy,
+      tetra::LodUpdateStrategy::minimal_surface_hierarchy,
+      tetra::LodUpdateStrategy::on_demand_render_traversal,
+      tetra::LodUpdateStrategy::full_rebuild_oracle};
+  constexpr std::array schedulers{
+      tetra::UpdateScheduler::classify_and_stream,
+      tetra::UpdateScheduler::persistent_split_merge_queues,
+      tetra::UpdateScheduler::hybrid_queued_blocks};
+  constexpr std::array traversals{
+      tetra::CandidateTraversal::active_cut_scan,
+      tetra::CandidateTraversal::hierarchy_bounds,
+      tetra::CandidateTraversal::spatial_runs};
+  constexpr std::array policies{
+      tetra::CameraLodPolicy::exact_frustum,
+      tetra::CameraLodPolicy::guarded,
+      tetra::CameraLodPolicy::guarded_recent,
+      tetra::CameraLodPolicy::guarded_predicted};
+  constexpr std::array metrics{
+      tetra::CameraLodMetric::projected_diameter,
+      tetra::CameraLodMetric::geometric_error};
+  for(const auto update:updates){
+    const bool materialized=
+        update==tetra::LodUpdateStrategy::transactional_active_cut||
+        update==tetra::LodUpdateStrategy::saturated_clusters;
+    const bool cutaway=tetra::has_capability(
+        tetra::capabilities(update),tetra::AdaptationCapability::cutaway);
+    CHECK(cutaway==(materialized||
+        update==tetra::LodUpdateStrategy::full_rebuild_oracle));
+    for(const auto scheduler:schedulers)
+      for(const auto traversal:traversals)
+        for(const auto policy:policies)
+          for(const auto metric:metrics){
+            tetra::AdaptationConfiguration configuration;
+            configuration.lod_update=update;
+            configuration.update_scheduler=scheduler;
+            configuration.candidate_traversal=traversal;
+            configuration.camera_lod_policy=policy;
+            configuration.camera_lod_metric=metric;
+            const bool axes_available=materialized||
+                (scheduler==tetra::UpdateScheduler::classify_and_stream&&
+                 traversal==tetra::CandidateTraversal::active_cut_scan);
+            CHECK(tetra::implemented(configuration)==axes_available);
+          }
+  }
 }
 
 TEST_CASE("saturated LOD plans complete red clusters from the maximum member error") {
@@ -5522,6 +6056,15 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
   staging.stage(chunks,initial_vertices);
   REQUIRE(byte_equal(tetra_viewer::assemble_surface_host_staging(staging),
                      initial_vertices));
+  tetra::GeometryExecutor staging_executor({.worker_count=4U});
+  tetra_viewer::SurfaceHostStagingStorage parallel_staging(3U);
+  parallel_staging.stage(chunks,initial_vertices,&staging_executor);
+  REQUIRE(byte_equal(
+      tetra_viewer::assemble_surface_host_staging(parallel_staging),
+      initial_vertices));
+  CHECK(parallel_staging.metrics().parallel_copy_tasks>1U);
+  CHECK(parallel_staging.metrics().staged_triangle_bytes==
+        staging.metrics().staged_triangle_bytes);
   CHECK(staging.metrics().dirty_ranges==chunks.chunks().size());
   CHECK(staging.metrics().reused_ranges==0U);
   CHECK(staging.metrics().staged_triangle_bytes==
@@ -5681,6 +6224,56 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
                   std::invalid_argument);
 }
 
+TEST_CASE("parallel surface draw packing is byte identical across update paths") {
+  using Patch=tetra_viewer::SurfacePatchRecord;
+  const auto make_state=[](std::span<const std::size_t> counts,
+                           std::uint64_t revision){
+    std::pair<std::vector<Patch>,std::vector<tetra::Triangle>> result;
+    for(std::size_t owner=0;owner<counts.size();++owner){
+      const auto begin=result.second.size();
+      for(std::size_t index=0;index<counts[owner];++index){
+        const double value=static_cast<double>(
+            revision*10000U+owner*100U+index);
+        result.second.push_back(
+            {{value,0.0,0.0},{0.0,value,0.0},{0.0,0.0,value}});
+      }
+      result.first.push_back({
+          .logical_owner=static_cast<tetra::TetId>(owner+1U),
+          .field_revision=revision,
+          .topology_hash=revision*31U+owner,
+          .triangle_begin=begin,.triangle_count=counts[owner],
+          .triangle_capacity=counts[owner]});
+    }
+    return result;
+  };
+  const auto equal=[](std::span<const tetra::Triangle> left,
+                      std::span<const tetra::Triangle> right){
+    return left.size()==right.size()&&
+        (left.empty()||std::memcmp(left.data(),right.data(),
+                                  left.size_bytes())==0);
+  };
+  tetra::GeometryExecutor executor({.worker_count=4U});
+  tetra_viewer::SurfaceDrawChunkStorage serial(4U),parallel(4U);
+  std::array<std::size_t,12U> counts;
+  counts.fill(3U);
+  for(std::uint64_t revision=1U;revision<=3U;++revision){
+    if(revision==2U)counts[5U]=3U;  // same layout, new contents
+    if(revision==3U)counts[5U]=17U; // local replacement and slot growth
+    auto [patches,arena]=make_state(counts,revision);
+    serial.pack(patches,arena);
+    parallel.pack(patches,arena,&executor);
+    const auto serial_output=
+        tetra_viewer::assemble_surface_draw_chunks(serial);
+    const auto parallel_output=
+        tetra_viewer::assemble_surface_draw_chunks(parallel);
+    CHECK(equal(serial_output,parallel_output));
+    CHECK(equal(parallel_output,
+                tetra_viewer::direct_pack_surface_patches(patches,arena)));
+    CHECK(parallel.metrics().copied_bytes==serial.metrics().copied_bytes);
+    CHECK(parallel.metrics().parallel_copy_tasks>1U);
+  }
+}
+
 TEST_CASE("headless scene preparation reports local patch reuse and global fallback") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -5782,6 +6375,99 @@ TEST_CASE("background mesh updates publish only the latest converged snapshot") 
   CHECK(refined->converged);
   CHECK(refined->mesh.revision()>coarse_revision);
   CHECK(coarse.revision()==coarse_revision);
+}
+
+TEST_CASE("interactive camera policy relaxes work and coalesces only at slice boundaries") {
+  tetra_viewer::MeshUpdateParameters settled;
+  settled.pixel_threshold=20.0;
+  settled.budget.target_milliseconds=
+      tetra_viewer::default_mesh_update_time_budget_milliseconds;
+  const auto interactive=
+      tetra_viewer::make_interactive_mesh_update_parameters(settled);
+  CHECK(interactive.intent==
+        tetra_viewer::MeshUpdateIntent::interactive_camera);
+  CHECK(interactive.pixel_threshold==doctest::Approx(
+      settled.pixel_threshold*
+      tetra_viewer::interactive_mesh_update_pixel_threshold_scale));
+  CHECK(interactive.budget.maximum_operations_per_transaction==
+        tetra_viewer::interactive_mesh_update_operation_budget);
+  CHECK(interactive.budget.target_milliseconds==doctest::Approx(
+      tetra_viewer::interactive_mesh_update_time_budget_milliseconds));
+
+  auto moved=interactive;
+  moved.camera.position.x+=0.25;
+  CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(interactive,moved));
+  CHECK(tetra_viewer::compatible_mesh_update_publication(interactive,moved));
+  auto resized=moved;
+  resized.camera.aspect_ratio+=0.25;
+  CHECK_FALSE(tetra_viewer::compatible_mesh_update_publication(
+      interactive,resized));
+  moved.field_revision+=1U;
+  CHECK_FALSE(tetra_viewer::compatible_mesh_update_publication(
+      interactive,moved));
+  CHECK_FALSE(tetra_viewer::compatible_mesh_update_publication(
+      interactive,settled));
+
+  CHECK(tetra_viewer::should_submit_mesh_update(
+      false,true,true,false,false));
+  CHECK_FALSE(tetra_viewer::should_submit_mesh_update(
+      true,true,true,false,false));
+  CHECK(tetra_viewer::should_submit_mesh_update(
+      true,true,true,true,false));
+  CHECK(tetra_viewer::should_submit_mesh_update(
+      true,true,true,false,true));
+  CHECK(tetra_viewer::should_submit_mesh_update(
+      true,true,false,false,false));
+  CHECK_FALSE(tetra_viewer::should_submit_mesh_update(
+      true,false,false,true,true));
+}
+
+TEST_CASE("interactive camera movement publishes lagged conforming progress then retargets") {
+  auto displayed_mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,1.25};
+  camera.forward={0.0,0.0,-1.0};
+  tetra::AdaptationConfiguration configuration;
+  configuration.candidate_traversal=
+      tetra::CandidateTraversal::hierarchy_bounds;
+  tetra_viewer::MeshUpdateParameters settled{
+      sphere,camera,4.0,9U,configuration,0U,
+      {.target_milliseconds=
+           tetra_viewer::default_mesh_update_time_budget_milliseconds}};
+  auto submitted=
+      tetra_viewer::make_interactive_mesh_update_parameters(settled);
+  // Force a short first slice so the test observes an intermediate scene.
+  submitted.budget.target_milliseconds=1.0e-9;
+
+  tetra_viewer::MeshUpdateWorker worker;
+  tetra::AdaptationPlanningCache planning_cache;
+  const auto first_request=worker.submit(displayed_mesh,submitted);
+  auto completed=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(completed.has_value());
+  REQUIRE_FALSE(completed->converged);
+
+  auto latest=submitted;
+  latest.camera.position.x+=0.15;
+  const auto publication=tetra_viewer::publish_mesh_update_result(
+      worker,std::move(*completed),displayed_mesh,planning_cache,
+      first_request,tetra_viewer::MeshUpdateOperation::reconcile_lod,latest);
+  REQUIRE(publication.status==
+          tetra_viewer::MeshPublicationStatus::intermediate);
+  CHECK(displayed_mesh.has_positive_active_volumes());
+  CHECK(displayed_mesh.has_conforming_active_faces());
+  CHECK(tetra_viewer::should_submit_mesh_update(
+      true,true,true,true,false));
+
+  const auto latest_request=worker.submit(displayed_mesh,latest);
+  auto retargeted=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(retargeted.has_value());
+  CHECK(retargeted->request_id==latest_request);
+  CHECK(tetra_viewer::same_mesh_update_parameters(
+      retargeted->parameters,latest));
+  CHECK(retargeted->mesh.has_positive_active_volumes());
+  CHECK(retargeted->mesh.has_conforming_active_faces());
 }
 
 TEST_CASE("worker budgets stop only at complete transactions and preserve final hashes") {
@@ -6258,6 +6944,48 @@ TEST_CASE("scene preparation worker publishes only the latest complete scene") {
   CHECK_FALSE(worker.busy());
 }
 
+TEST_CASE("interactive scene preparation publishes completed lagged geometry instead of starving") {
+  auto displayed_mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra_viewer::ScenePreparationParameters parameters;
+  parameters.surface_method=
+      tetra_viewer::SurfaceMethod::marching_tetrahedra;
+  parameters.show_volume_edges=false;
+  parameters.show_volume_faces=false;
+  parameters.preparation={
+      .surface_diagnostics=false,.summary_statistics=false};
+
+  tetra_viewer::ScenePreparationWorker worker;
+  const auto request=worker.submit(displayed_mesh,parameters);
+  displayed_mesh.refine_all_binary();
+  auto completed=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(completed.has_value());
+  REQUIRE(completed->mesh_revision!=displayed_mesh.revision());
+  REQUIRE_FALSE(completed->scene.triangle_vertices.empty());
+
+  CHECK_FALSE(tetra_viewer::compatible_scene_preparation_publication(
+      *completed,request,displayed_mesh.revision(),parameters,false));
+  CHECK(tetra_viewer::compatible_scene_preparation_publication(
+      *completed,request,displayed_mesh.revision(),parameters,true));
+  auto changed=parameters;
+  changed.show_surface_edges=!changed.show_surface_edges;
+  CHECK_FALSE(tetra_viewer::compatible_scene_preparation_publication(
+      *completed,request,displayed_mesh.revision(),changed,true));
+  CHECK_FALSE(tetra_viewer::compatible_scene_preparation_publication(
+      *completed,request+1U,displayed_mesh.revision(),parameters,true));
+
+  // This is the starvation regression: rapid mesh revisions must not cancel
+  // the only renderable in-flight scene during a drag.
+  CHECK_FALSE(tetra_viewer::should_submit_scene_preparation(
+      true,true,true));
+  CHECK(tetra_viewer::should_submit_scene_preparation(
+      true,false,true));
+  CHECK(tetra_viewer::should_submit_scene_preparation(
+      true,true,false));
+  CHECK_FALSE(tetra_viewer::should_submit_scene_preparation(
+      false,false,true));
+}
+
 TEST_CASE("headless worker budget benchmark reports bounded hash-equivalent policies") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
@@ -6468,6 +7196,23 @@ TEST_CASE("headless refinement benchmark reports every increasing pass") {
   CHECK(text.find("\"event\":\"validation\",\"valid\":true") != std::string::npos);
 }
 
+TEST_CASE("headless named owner diagnostic exposes projection demand and decision") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script("diagnose-owner=first",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"event\":\"camera_lod_owner_diagnostic\"")!=
+        std::string::npos);
+  CHECK(text.find("\"selected_depth\":")!=std::string::npos);
+  CHECK(text.find("\"projected_diameter\":")!=std::string::npos);
+  CHECK(text.find("\"intersects_exact_frustum\":")!=std::string::npos);
+  CHECK(text.find("\"instantaneous_zone\":")!=std::string::npos);
+  CHECK(text.find("\"effective_target\":")!=std::string::npos);
+  CHECK((text.find("\"decision\":\"keep\"")!=std::string::npos||
+         text.find("\"decision\":\"split\"")!=std::string::npos||
+         text.find("\"decision\":\"merge\"")!=std::string::npos));
+}
+
 TEST_CASE("headless CPU camera benchmark covers every deterministic motion path") {
   const auto run=[](std::string_view script="benchmark-cpu-camera-paths") {
     std::ostringstream output,errors;
@@ -6478,6 +7223,9 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   const auto first=run();
   const auto second=run();
   const auto persistent=run(
+      "set-update-scheduler=persistent-split-merge-queues,"
+      "benchmark-cpu-camera-paths");
+  const auto persistent_second=run(
       "set-update-scheduler=persistent-split-merge-queues,"
       "benchmark-cpu-camera-paths");
   constexpr std::array paths{
@@ -6514,9 +7262,19 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
     const auto first_event=event_for(first,path);
     const auto second_event=event_for(second,path);
     const auto persistent_event=event_for(persistent,path);
+    const auto persistent_second_event=event_for(persistent_second,path);
     CHECK(first_event.find("\"shape\":\"perlin-terrain\"")!=std::string::npos);
     CHECK(first_event.find("\"valid\":true")!=std::string::npos);
     CHECK(first_event.find("\"upload_backend\":\"host-mirror\"")!=std::string::npos);
+    for(const auto key:{"\"turn_readiness\":","\"visible_error_max\":",
+                        "\"visible_error_p95\":","\"visible_error_p99\":",
+                        "\"active_owner_cv\":","\"surface_triangle_cv\":"})
+      CHECK(std::stod(field(first_event,key))>=0.0);
+    CHECK(std::stod(field(first_event,"\"turn_readiness\":"))<=1.0);
+    CHECK(number(first_event,"\"minimum_active_owners\":")<=
+          number(first_event,"\"maximum_active_owners\":"));
+    CHECK(number(first_event,"\"minimum_surface_triangles\":")<=
+          number(first_event,"\"maximum_surface_triangles\":"));
     for(const auto key:{"\"adaptation_ms\":","\"scene_preparation_ms\":",
                         "\"scene_statistics_ms\":","\"scene_geometry_ms\":",
                         "\"upload_ms\":","\"publish_commit_ms\":",
@@ -6584,10 +7342,10 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
           field(second_event,"\"logical_cut_hash\":"));
     CHECK(field(first_event,"\"conforming_volume_hash\":")==
           field(second_event,"\"conforming_volume_hash\":"));
-    CHECK(field(first_event,"\"logical_cut_hash\":")==
-          field(persistent_event,"\"logical_cut_hash\":"));
-    CHECK(field(first_event,"\"conforming_volume_hash\":")==
-          field(persistent_event,"\"conforming_volume_hash\":"));
+    CHECK(field(persistent_event,"\"logical_cut_hash\":")==
+          field(persistent_second_event,"\"logical_cut_hash\":"));
+    CHECK(field(persistent_event,"\"conforming_volume_hash\":")==
+          field(persistent_second_event,"\"conforming_volume_hash\":"));
     CHECK(field(persistent_event,"\"update_scheduler\":")==
           "\"persistent-split-merge-queues\"");
     CHECK(number(persistent_event,"\"scheduler_candidates_avoided\":")>0U);
@@ -6602,8 +7360,10 @@ TEST_CASE("headless CPU camera benchmark covers every deterministic motion path"
   CHECK(field(stationary,"\"uploaded_bytes\":")=="0");
   CHECK(field(stationary,"\"dirty_owners\":")=="0");
   const auto repeated=event_for(first,"repeated-pose");
-  CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=7U);
-  CHECK(std::stoul(field(repeated,"\"published_revisions\":"))==1U);
+  CHECK(std::stoul(field(repeated,"\"zero_work_updates\":"))>=1U);
+  CHECK(std::stoul(field(repeated,"\"published_revisions\":"))>=1U);
+  CHECK(std::stod(field(repeated,"\"turn_readiness\":"))>0.0);
+  CHECK(std::stod(field(repeated,"\"turn_readiness\":"))<1.0);
   CHECK(field(repeated,"\"first_complete_revision_observed\":")=="true");
   CHECK(field(repeated,"\"first_complete_revision_update\":")=="1");
   CHECK(number(event_for(persistent,"slow-orbit"),
@@ -7875,6 +8635,39 @@ TEST_CASE("headless LOD camera direction is scriptable") {
   CHECK(output.str().find("\"lod_direction\":[0.000,1.000,0.000]")!=std::string::npos);
 }
 
+TEST_CASE("headless guarded camera LOD reports temporal demand classes") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-camera-lod-policy=guarded,set-camera-direction=0:0:1,"
+      "adapt-once,stats",output,errors)==0);
+  CHECK(errors.str().empty());
+  CHECK(output.str().find("\"camera_lod_policy\":\"guarded\"")!=
+        std::string::npos);
+  CHECK(output.str().find("\"camera_demand_evaluations\":{")!=
+        std::string::npos);
+  CHECK(output.str().find("\"cold\":")!=std::string::npos);
+
+  std::ostringstream configured_output,configured_errors;
+  REQUIRE(tetra_viewer::run_script(
+      "set-camera-lod-policy=guarded-predicted,"
+      "set-camera-lod-metric=geometric-error,set-guard-scale=1.5,"
+      "set-near-lod-radius=1.25,set-recent-lod-epochs=4,"
+      "set-prediction-factor=0.5,set-complexity-target=1000,stats",
+      configured_output,configured_errors)==0);
+  CHECK(configured_errors.str().empty());
+  CHECK(configured_output.str().find(
+      "\"camera_lod_policy\":\"guarded-predicted\"")!=std::string::npos);
+  CHECK(configured_output.str().find(
+      "\"camera_lod_metric\":\"geometric-error\"")!=std::string::npos);
+  CHECK(configured_output.str().find(
+      "\"camera_complexity_target_owners\":1000")!=std::string::npos);
+
+  std::ostringstream bad_output,bad_errors;
+  CHECK(tetra_viewer::run_script(
+      "set-camera-lod-policy=unknown",bad_output,bad_errors)==2);
+  CHECK(bad_errors.str().find("unknown camera LOD policy")!=std::string::npos);
+}
+
 TEST_CASE("headless events identify adaptation schemas strategies and both cut views") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script("stats",output,errors)==0);
@@ -8152,6 +8945,8 @@ TEST_CASE("controlled five-shape adaptation matrix preserves conforming hashes")
 TEST_CASE("headless camera commands reconcile terrain LOD in both directions") {
   std::ostringstream away_output,away_errors;
   REQUIRE(tetra_viewer::run_script(
+      "set-camera-lod-policy=exact-frustum,"
+      "set-camera-lod-metric=projected-diameter,"
       "set-maximum-depth=6,set-shape=perlin-terrain,set-camera=-1:0.7:0.5,"
       "set-camera-direction=-1:0:0,validate,stats",away_output,away_errors)==0);
   CHECK(away_errors.str().empty());
@@ -8160,6 +8955,8 @@ TEST_CASE("headless camera commands reconcile terrain LOD in both directions") {
 
   std::ostringstream toward_output,toward_errors;
   REQUIRE(tetra_viewer::run_script(
+      "set-camera-lod-policy=exact-frustum,"
+      "set-camera-lod-metric=projected-diameter,"
       "set-maximum-depth=6,set-shape=perlin-terrain,set-camera=-1:0.7:0.5,"
       "set-camera-direction=1:0:0,validate,stats",toward_output,toward_errors)==0);
   CHECK(toward_errors.str().empty());
@@ -8197,6 +8994,8 @@ TEST_CASE("default terrain LOD coarsens the same detailed cut when camera moves 
 TEST_CASE("lateral LOD camera movement finishes pending coarsening after refinement") {
   std::ostringstream output,errors;
   REQUIRE(tetra_viewer::run_script(
+      "set-camera-lod-policy=exact-frustum,"
+      "set-camera-lod-metric=projected-diameter,"
       "set-maximum-depth=12,set-shape=perlin-terrain,"
       "set-camera=0:1:0.5,set-camera=1:0:0.5,set-camera=1:0:0.5,stats",
       output,errors)==0);
@@ -8471,6 +9270,8 @@ TEST_CASE("gizmo rotation away from the terrain simplifies LOD at a fixed origin
   pose.apply(camera);
   tetra::AdaptationPlanningCache planning_cache;
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   static_cast<void>(tetra::refine_to_sphere(
       mesh,terrain,camera,28.0*configuration.split_hysteresis,12));
   const auto detailed_owners=mesh.logical_cut().owners.size();
@@ -8495,6 +9296,288 @@ TEST_CASE("gizmo rotation away from the terrain simplifies LOD at a fixed origin
   CHECK(mesh.has_conforming_active_faces());
 }
 
+TEST_CASE("guarded camera policy retains a bounded standby cut through a turn") {
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::LodCameraPose pose;
+  pose.position={0.0,1.0,0.5};
+  pose.forward={0.7071067811865475,-0.7071067811865475,0.0};
+  tetra::Camera initial_camera;
+  pose.apply(initial_camera);
+
+  auto initial=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::AdaptationConfiguration initial_configuration;
+  initial_configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  initial_configuration.camera_lod_metric=
+      tetra::CameraLodMetric::projected_diameter;
+  static_cast<void>(tetra::refine_to_sphere(
+      initial,terrain,initial_camera,
+      28.0*initial_configuration.split_hysteresis,9));
+  const auto initial_owners=initial.logical_cut().owners.size();
+  REQUIRE(initial_owners>initial.layers().front().tetrahedra.size());
+
+  pose.rotate(tetra_viewer::CameraGizmoAxis::z,std::acos(-1.0));
+  tetra::Camera turned_camera;
+  pose.apply(turned_camera);
+  const auto converge=[&](tetra::TetMesh mesh,
+                          tetra::AdaptationConfiguration configuration){
+    tetra::AdaptationPlanningCache cache;
+    for(std::size_t frame=0;frame<256U;++frame){
+      const auto result=tetra::adapt_to_surface(
+          mesh,terrain,turned_camera,28.0,9,configuration,0,&cache);
+      if(result.status==tetra::AdaptationCommitStatus::no_change)return mesh;
+      REQUIRE(result.status==tetra::AdaptationCommitStatus::committed);
+    }
+    FAIL("camera policy did not converge");
+    return mesh;
+  };
+
+  auto exact=converge(initial,initial_configuration);
+  auto guarded_configuration=initial_configuration;
+  guarded_configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded;
+  auto guarded=converge(initial,guarded_configuration);
+  CHECK(exact.logical_cut().owners.size()<initial_owners);
+  CHECK(guarded.logical_cut().owners.size()>exact.logical_cut().owners.size());
+  CHECK(guarded.has_conforming_active_faces());
+}
+
+TEST_CASE("recent camera demand is revisioned and stale plans cannot publish it") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::Camera camera;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded_recent;
+  tetra::AdaptationPlanningCache cache;
+
+  const auto first_plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  const auto first=tetra::commit_adaptation(mesh,first_plan,configuration,0,&cache);
+  REQUIRE((first.status==tetra::AdaptationCommitStatus::committed||
+           first.status==tetra::AdaptationCommitStatus::no_change));
+  REQUIRE(cache.has_committed_camera);
+  const auto first_epoch=cache.camera_demand_epoch;
+  CHECK(first_epoch==1U);
+  CHECK(std::ranges::any_of(cache.camera_temporal_layers,[](const auto& layer){
+    return !layer.addresses.empty();
+  }));
+
+  camera.forward={0.0,0.0,1.0};
+  const auto turned_plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  CHECK(turned_plan.camera_demand_evaluations[
+        static_cast<std::size_t>(tetra::CameraLodZone::recent)]>0U);
+  CHECK(turned_plan.camera_demand_pose_changed);
+  CHECK(turned_plan.camera_demand_epoch==first_epoch+1U);
+
+  auto changed=configuration;
+  changed.near_radius+=0.25;
+  const auto stale=tetra::commit_adaptation(
+      mesh,turned_plan,changed,0,&cache);
+  CHECK(stale.status==tetra::AdaptationCommitStatus::stale_plan);
+  CHECK(cache.camera_demand_epoch==first_epoch);
+  CHECK(cache.committed_camera.forward.z<0.0);
+
+  const auto accepted=tetra::commit_adaptation(
+      mesh,turned_plan,configuration,0,&cache);
+  REQUIRE((accepted.status==tetra::AdaptationCommitStatus::committed||
+           accepted.status==tetra::AdaptationCommitStatus::no_change));
+  CHECK(cache.camera_demand_epoch==first_epoch+1U);
+  CHECK(cache.committed_camera.forward.z>0.0);
+}
+
+TEST_CASE("predicted camera demand prepares cells beyond the current guard") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded_predicted;
+  configuration.guard_frustum_scale=1.5;
+  configuration.prediction_factor=1.0;
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+  const auto direction=[](double degrees){
+    const double radians=degrees*std::acos(-1.0)/180.0;
+    return tetra::Vec3{std::sin(radians),0.0,-std::cos(radians)};
+  };
+
+  camera.forward=direction(120.0);
+  const auto first_plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  const auto first=tetra::commit_adaptation(mesh,first_plan,configuration,0,&cache);
+  REQUIRE((first.status==tetra::AdaptationCommitStatus::committed||
+           first.status==tetra::AdaptationCommitStatus::no_change));
+
+  camera.forward=direction(70.0);
+  auto translation_configuration=configuration;
+  translation_configuration.prediction_mode=
+      tetra::CameraPredictionMode::translation;
+  auto translation_cache=cache;
+  const auto translation_only=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,translation_configuration,0,
+      &translation_cache);
+  CHECK(translation_only.camera_demand_evaluations[
+        static_cast<std::size_t>(tetra::CameraLodZone::predicted)]==0U);
+  const auto predicted=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  CHECK(predicted.camera_demand_evaluations[
+        static_cast<std::size_t>(tetra::CameraLodZone::predicted)]>0U);
+  CHECK(predicted.camera_demand_pose_changed);
+}
+
+TEST_CASE("recent demand expires deterministically and releases packed metadata") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded_recent;
+  configuration.recent_retention_epochs=2U;
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+  const auto apply=[&]{
+    const auto plan=tetra::plan_adaptation(
+        mesh,terrain,camera,28.0,9,configuration,0,&cache);
+    const auto result=tetra::commit_adaptation(
+        mesh,plan,configuration,0,&cache);
+    REQUIRE((result.status==tetra::AdaptationCommitStatus::committed||
+             result.status==tetra::AdaptationCommitStatus::no_change));
+  };
+  apply();
+  REQUIRE(std::ranges::any_of(cache.camera_temporal_layers,[](const auto& layer){
+    return !layer.addresses.empty();
+  }));
+  camera.forward={0.0,0.0,1.0};
+  for(std::size_t step=0;step<3U;++step){
+    camera.position.x+=0.01;
+    apply();
+  }
+  CHECK(cache.camera_demand_epoch==4U);
+  CHECK(std::ranges::all_of(cache.camera_temporal_layers,[](const auto& layer){
+    return layer.addresses.empty()&&layer.last_demand_epochs.empty();
+  }));
+}
+
+TEST_CASE("geometric camera error summaries are conservative and distance ordered") {
+  auto near_mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  auto far_mesh=near_mesh;
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::geometric_error;
+  configuration.candidate_traversal=tetra::CandidateTraversal::hierarchy_bounds;
+  tetra::Camera near_camera;
+  tetra::Camera far_camera=near_camera;
+  far_camera.position.z=12.0;
+  tetra::AdaptationPlanningCache near_cache,far_cache;
+  const auto near=tetra::plan_adaptation(
+      near_mesh,terrain,near_camera,28.0,9,configuration,0,&near_cache);
+  const auto far=tetra::plan_adaptation(
+      far_mesh,terrain,far_camera,28.0,9,configuration,0,&far_cache);
+  CHECK(near.requested_splits>=far.requested_splits);
+  REQUIRE_FALSE(near_cache.layers.empty());
+  for(const auto& layer:near_cache.layers){
+    CHECK(layer.geometric_error_bound.size()==layer.addresses.size());
+    CHECK(std::ranges::all_of(layer.geometric_error_bound,[](double error){
+      return std::isfinite(error)&&error>0.0;
+    }));
+  }
+}
+
+TEST_CASE("camera complexity controller changes only bounded soft-zone quality") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded_recent;
+  configuration.complexity_target_owners=1U;
+  configuration.complexity_adjustment=0.5;
+  configuration.maximum_soft_quality_multiplier=2.0;
+  tetra::AdaptationPlanningCache cache;
+  tetra::Camera camera;
+
+  auto plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  CHECK(plan.camera_soft_quality_multiplier==doctest::Approx(1.5));
+  auto result=tetra::commit_adaptation(mesh,plan,configuration,0,&cache);
+  REQUIRE((result.status==tetra::AdaptationCommitStatus::committed||
+           result.status==tetra::AdaptationCommitStatus::no_change));
+  CHECK(cache.camera_soft_quality_multiplier==doctest::Approx(1.5));
+
+  camera.position.x+=0.1;
+  plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  CHECK(plan.camera_soft_quality_multiplier==doctest::Approx(2.0));
+  result=tetra::commit_adaptation(mesh,plan,configuration,0,&cache);
+  REQUIRE((result.status==tetra::AdaptationCommitStatus::committed||
+           result.status==tetra::AdaptationCommitStatus::no_change));
+  CHECK(cache.camera_soft_quality_multiplier<=
+        configuration.maximum_soft_quality_multiplier);
+
+  configuration.complexity_target_owners=1000000U;
+  camera.position.x+=0.1;
+  plan=tetra::plan_adaptation(
+      mesh,terrain,camera,28.0,9,configuration,0,&cache);
+  CHECK(plan.camera_soft_quality_multiplier<
+        cache.camera_soft_quality_multiplier);
+  CHECK(plan.camera_soft_quality_multiplier>=1.0);
+}
+
+TEST_CASE("camera complexity controller remains bounded through adversarial demand changes") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::Camera camera;
+  tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::guarded_recent;
+  configuration.complexity_target_owners=1U;
+  configuration.complexity_adjustment=0.1;
+  configuration.maximum_soft_quality_multiplier=1.5;
+  tetra::AdaptationPlanningCache cache;
+  std::uint64_t field_revision{};
+  const auto apply=[&]{
+    const double previous=cache.camera_soft_quality_multiplier;
+    const auto plan=tetra::plan_adaptation(
+        mesh,terrain,camera,28.0,9,configuration,field_revision,&cache);
+    CHECK(std::isfinite(plan.camera_soft_quality_multiplier));
+    CHECK(plan.camera_soft_quality_multiplier>=1.0);
+    CHECK(plan.camera_soft_quality_multiplier<=
+          configuration.maximum_soft_quality_multiplier);
+    CHECK(plan.camera_soft_quality_multiplier<=
+          previous*(1.0+configuration.complexity_adjustment)+1.0e-12);
+    const auto result=tetra::commit_adaptation(
+        mesh,plan,configuration,field_revision,&cache);
+    REQUIRE((result.status==tetra::AdaptationCommitStatus::committed||
+             result.status==tetra::AdaptationCommitStatus::no_change));
+  };
+
+  apply();
+  terrain.kind=tetra::ImplicitShapeKind::sphere; // rough to smooth
+  ++field_revision;
+  camera.position.x+=0.02;
+  apply();
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain; // smooth to rough
+  ++field_revision;
+  camera.forward={1.0,0.0,0.0}; // rapid turn
+  apply();
+  camera.position={20.0,20.0,20.0}; // teleport
+  camera.forward={-1.0,-1.0,-1.0};
+  apply();
+  const double after_motion=cache.camera_soft_quality_multiplier;
+
+  // An unchanged pose is inside the dead band in time: it cannot chatter the
+  // controller even if topology work remains queued.
+  apply();
+  CHECK(cache.camera_soft_quality_multiplier==doctest::Approx(after_motion));
+}
+
 TEST_CASE("successive rotation drag frames finish coarsening after release") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   tetra::Sphere terrain;
@@ -8506,6 +9589,8 @@ TEST_CASE("successive rotation drag frames finish coarsening after release") {
   pose.apply(camera);
   tetra::AdaptationPlanningCache planning_cache;
   tetra::AdaptationConfiguration configuration;
+  configuration.camera_lod_policy=tetra::CameraLodPolicy::exact_frustum;
+  configuration.camera_lod_metric=tetra::CameraLodMetric::projected_diameter;
   static_cast<void>(tetra::refine_to_sphere(
       mesh,terrain,camera,28.0*configuration.split_hysteresis,9));
   const auto detailed_owners=mesh.logical_cut().owners.size();

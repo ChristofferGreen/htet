@@ -11,6 +11,8 @@
 
 namespace tetra {
 
+class GeometryExecutor;
+
 enum class SubdivisionMethod : std::uint8_t {
   maubach_diamond,
   maubach_halfedge_24,
@@ -170,12 +172,15 @@ struct BccUpdateMetrics {
   double conformity_closure_ms{};
   double cut_transform_ms{};
   double green_generation_ms{};
+  double parallel_green_generation_ms{};
   double incidence_update_ms{};
   double face_repair_ms{};
   std::size_t full_cut_cells_scanned{};
   std::size_t closure_cells_examined{};
   std::size_t logical_owners_changed{};
   std::size_t green_records_generated{};
+  std::size_t parallel_green_tasks{};
+  std::size_t parallel_green_workers{};
   std::size_t edge_tables_rebuilt{};
   std::size_t face_tables_rebuilt{};
   std::size_t repair_iterations{};
@@ -290,14 +295,16 @@ class TetMesh {
   bool commit_planned_red_refinement(
       const std::vector<TetId>& requests,
       BccClosureMode closure_mode=BccClosureMode::sparse_frontier,
-      double hybrid_frontier_ratio=0.10);
+      double hybrid_frontier_ratio=0.10,
+      GeometryExecutor* executor=nullptr);
   // Merge complete active BCC red sibling families. Resident descendants and
   // midpoint vertices remain cached; only committed logical and derived state
   // changes. Returns false when any requested parent is not merge-eligible.
   [[nodiscard]] bool can_coarsen_selected_red(
       const std::vector<TetId>& parents,
       std::vector<TetId>* blocked_parents=nullptr) const;
-  bool coarsen_selected_red(const std::vector<TetId>& parents);
+  bool coarsen_selected_red(const std::vector<TetId>& parents,
+                            GeometryExecutor* executor=nullptr);
   void refine_all_binary();
   // Collapse the active cut to the root layer while retaining all resident
   // hierarchy records and midpoint vertices for allocation-free reuse.
@@ -343,9 +350,11 @@ class TetMesh {
   void refine_selected_bcc_red_green(const std::vector<TetId>& requests,
                                      unsigned int closure_depth_limit,
                                      BccClosureMode closure_mode=BccClosureMode::sparse_frontier,
-                                     double hybrid_frontier_ratio=0.10);
+                                     double hybrid_frontier_ratio=0.10,
+                                     GeometryExecutor* executor=nullptr);
   void rebuild_bcc_conforming_cut(std::vector<Tetrahedron> red_cut,
-                                  unsigned int closure_depth_limit);
+                                  unsigned int closure_depth_limit,
+                                  GeometryExecutor* executor=nullptr);
   void clear_split_subtree(TetId parent);
   void rebuild_active_midpoints(const std::vector<Tetrahedron>& red_cut);
   [[nodiscard]] std::optional<VertexId> existing_midpoint(Edge edge) const;

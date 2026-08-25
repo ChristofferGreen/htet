@@ -36,6 +36,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <vector>
@@ -451,6 +452,21 @@ int main(int argc, char** argv)
         }
         return tetra_viewer::run_script(argv[2], std::cout, std::cerr);
     }
+    std::size_t geometry_worker_count=tetra::default_geometry_worker_count();
+    constexpr std::string_view geometry_workers_prefix="--geometry-workers=";
+    for(int argument=1;argument<argc;++argument){
+        const std::string_view value=argv[argument];
+        if(!value.starts_with(geometry_workers_prefix))continue;
+        const auto count=value.substr(geometry_workers_prefix.size());
+        const std::string count_text(count);
+        char* parsed_end=nullptr;
+        const auto parsed=std::strtoul(count_text.c_str(),&parsed_end,10);
+        if(count.empty()||parsed_end==nullptr||*parsed_end!='\0'||parsed==0U||parsed>64U){
+            fprintf(stderr,"geometry worker count must be in [1,64]\n");
+            return 2;
+        }
+        geometry_worker_count=static_cast<std::size_t>(parsed);
+    }
 #if defined(__APPLE__)
     // A terminal launch does not inherit the development shell's Vulkan ICD
     // setting. Homebrew's stock manifest uses a relative driver path, which
@@ -621,6 +637,7 @@ int main(int argc, char** argv)
     if (refined)
         mesh.refine_all_binary();
     bool depth_colours = true;
+    bool show_camera_lod_zones = false;
     bool show_faces = true;
     bool show_hierarchy_edges = false;
     bool show_surface_edges = true;
@@ -656,7 +673,11 @@ int main(int argc, char** argv)
     double last_validation_milliseconds = -1.0;
     double last_scene_preparation_milliseconds = -1.0;
     tetra_viewer::SceneCache scene_cache;
-    tetra_viewer::ScenePreparationWorker scene_preparation_worker;
+    auto geometry_executor=std::make_shared<tetra::GeometryExecutor>(
+        tetra::GeometryExecutorConfiguration{
+            .worker_count=geometry_worker_count});
+    tetra_viewer::ScenePreparationWorker scene_preparation_worker{
+        geometry_executor};
     tetra_viewer::PreparedScene background_prepared_scene;
     tetra_viewer::ProjectionStatistics background_projection_statistics;
     std::optional<tetra_viewer::ScenePreparationParameters>
@@ -710,7 +731,7 @@ int main(int argc, char** argv)
         orbit_camera.pitch=0.30;
     }
     bool lod_reconcile_pending=false;
-    tetra_viewer::MeshUpdateWorker mesh_update_worker;
+    tetra_viewer::MeshUpdateWorker mesh_update_worker{geometry_executor};
     bool mesh_update_in_flight=false;
     std::optional<tetra_viewer::MeshUpdateParameters> submitted_mesh_update;
     tetra_viewer::MeshUpdateOperation submitted_mesh_operation=
@@ -851,12 +872,18 @@ int main(int argc, char** argv)
     bool mesh_valid = validate_mesh();
     bool mesh_validation_current = true;
     ImVec4 clear_color = ImVec4(0.06f, 0.08f, 0.11f, 1.00f);
-    const auto mesh_update_parameters=[&] {
-        return tetra_viewer::MeshUpdateParameters{
+    const auto mesh_update_parameters=[&](
+        tetra_viewer::MeshUpdateIntent intent=
+            tetra_viewer::MeshUpdateIntent::settled) {
+        tetra_viewer::MeshUpdateParameters parameters{
             sphere,camera,static_cast<double>(pixel_threshold),
             static_cast<unsigned int>(maximum_depth),adaptation_configuration,
             sphere_revision,{.target_milliseconds=
                 tetra_viewer::default_mesh_update_time_budget_milliseconds}};
+        if(intent==tetra_viewer::MeshUpdateIntent::interactive_camera)
+            return tetra_viewer::make_interactive_mesh_update_parameters(
+                std::move(parameters));
+        return parameters;
     };
 
     // Main loop
@@ -872,13 +899,25 @@ int main(int argc, char** argv)
         // Publication is the only point where the render-thread mesh changes.
         // The worker owns and mutates a private snapshot while this thread
         // continues presenting the previous complete scene.
+        bool mesh_slice_published_this_frame=false;
         if(auto completed=mesh_update_worker.take_completed()){
-            const auto current_parameters=mesh_update_parameters();
+            const auto current_intent=camera_manipulator.dragging()
+                ?tetra_viewer::MeshUpdateIntent::interactive_camera
+                :tetra_viewer::MeshUpdateIntent::settled;
+            const auto current_parameters=mesh_update_parameters(current_intent);
+            const bool camera_pose_advanced=submitted_mesh_update&&
+                submitted_mesh_update->intent==
+                    tetra_viewer::MeshUpdateIntent::interactive_camera&&
+                tetra_viewer::compatible_mesh_update_publication(
+                    *submitted_mesh_update,current_parameters)&&
+                !tetra_viewer::same_mesh_update_parameters(
+                    *submitted_mesh_update,current_parameters);
             const auto publication=tetra_viewer::publish_mesh_update_result(
                 mesh_update_worker,std::move(*completed),mesh,
                 adaptation_planning_cache,submitted_mesh_request_id,
                 submitted_mesh_operation,current_parameters);
             if(publication.published()){
+                mesh_slice_published_this_frame=true;
                 last_adaptive_result=publication.adaptation;
                 last_refine_milliseconds=publication.duration_milliseconds;
                 has_adaptive_result=true;
@@ -895,7 +934,7 @@ int main(int argc, char** argv)
                     mesh_update_in_flight=false;
                     submitted_mesh_update.reset();
                     submitted_mesh_request_id=0U;
-                    lod_reconcile_pending=false;
+                    lod_reconcile_pending=camera_pose_advanced;
                 }
             }else{
                 // A camera, field, setting, or direct mesh edit superseded the
@@ -1186,6 +1225,125 @@ int main(int argc, char** argv)
                 if(selected)ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Camera LOD policy");
+        const auto camera_lod_name=tetra::strategy_key(
+            adaptation_configuration.camera_lod_policy);
+        const bool camera_lod_applied=
+            adaptation_configuration.lod_update==
+                tetra::LodUpdateStrategy::transactional_active_cut||
+            adaptation_configuration.lod_update==
+                tetra::LodUpdateStrategy::saturated_clusters;
+        if(ImGui::BeginCombo("##Camera LOD policy",camera_lod_name.data())){
+            constexpr std::array policies{
+                tetra::CameraLodPolicy::exact_frustum,
+                tetra::CameraLodPolicy::guarded,
+                tetra::CameraLodPolicy::guarded_recent,
+                tetra::CameraLodPolicy::guarded_predicted};
+            for(const auto policy:policies){
+                auto candidate=adaptation_configuration;
+                candidate.camera_lod_policy=policy;
+                const bool available=camera_lod_applied&&tetra::implemented(candidate);
+                const bool selected=policy==adaptation_configuration.camera_lod_policy;
+                ImGui::BeginDisabled(!available);
+                if(ImGui::Selectable(tetra::strategy_key(policy).data(),selected)){
+                    adaptation_configuration.camera_lod_policy=policy;
+                    lod_reconcile_pending=true;
+                    has_adaptive_result=false;
+                }
+                if(selected)ImGui::SetItemDefaultFocus();
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Camera LOD metric");
+        const auto camera_lod_metric_name=tetra::strategy_key(
+            adaptation_configuration.camera_lod_metric);
+        if(ImGui::BeginCombo("##Camera LOD metric",camera_lod_metric_name.data())){
+            constexpr std::array metrics{
+                tetra::CameraLodMetric::projected_diameter,
+                tetra::CameraLodMetric::geometric_error};
+            for(const auto metric:metrics){
+                auto candidate=adaptation_configuration;
+                candidate.camera_lod_metric=metric;
+                const bool available=camera_lod_applied&&tetra::implemented(candidate);
+                const bool selected=metric==adaptation_configuration.camera_lod_metric;
+                ImGui::BeginDisabled(!available);
+                if(ImGui::Selectable(tetra::strategy_key(metric).data(),selected)){
+                    adaptation_configuration.camera_lod_metric=metric;
+                    lod_reconcile_pending=true;
+                    has_adaptive_result=false;
+                }
+                if(selected)ImGui::SetItemDefaultFocus();
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        if(ImGui::TreeNode("Camera LOD advanced")){
+            const bool camera_controls_available=
+                adaptation_configuration.lod_update==
+                    tetra::LodUpdateStrategy::transactional_active_cut||
+                adaptation_configuration.lod_update==
+                    tetra::LodUpdateStrategy::saturated_clusters;
+            ImGui::BeginDisabled(!camera_controls_available);
+            float guard=static_cast<float>(adaptation_configuration.guard_frustum_scale);
+            float near_radius=static_cast<float>(adaptation_configuration.near_radius);
+            int retention=static_cast<int>(adaptation_configuration.recent_retention_epochs);
+            float prediction=static_cast<float>(adaptation_configuration.prediction_factor);
+            int complexity_target=static_cast<int>(
+                adaptation_configuration.complexity_target_owners);
+            bool changed=false;
+            if(ImGui::Checkbox("Colour camera demand zones",
+                               &show_camera_lod_zones))
+                overlay_dirty=true;
+            if(show_camera_lod_zones)
+                ImGui::TextWrapped("Cell edges: visible white, near cyan, guard yellow, recent magenta, predicted orange, cold blue.");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            changed|=ImGui::SliderFloat("##Guard expansion",&guard,1.0F,3.0F,
+                                        "Guard %.2fx");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            changed|=ImGui::SliderFloat("##Near radius",&near_radius,0.0F,4.0F,
+                                        "Near %.2f");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            changed|=ImGui::SliderInt("##Retention epochs",&retention,1,64,
+                                      "Retain %d poses");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            changed|=ImGui::SliderFloat("##Prediction factor",&prediction,0.0F,2.0F,
+                                        "Predict %.2fx");
+            ImGui::TextDisabled("Prediction mode");
+            const auto prediction_name=tetra::strategy_key(
+                adaptation_configuration.prediction_mode);
+            if(ImGui::BeginCombo("##Prediction mode",prediction_name.data())){
+                constexpr std::array modes{
+                    tetra::CameraPredictionMode::none,
+                    tetra::CameraPredictionMode::translation,
+                    tetra::CameraPredictionMode::translation_rotation};
+                for(const auto mode:modes){
+                    const bool selected=mode==adaptation_configuration.prediction_mode;
+                    if(ImGui::Selectable(tetra::strategy_key(mode).data(),selected)){
+                        adaptation_configuration.prediction_mode=mode;
+                        changed=true;
+                    }
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            changed|=ImGui::SliderInt("##Complexity target",&complexity_target,
+                                      0,200000,"Target %d owners");
+            if(changed){
+                adaptation_configuration.guard_frustum_scale=guard;
+                adaptation_configuration.near_radius=near_radius;
+                adaptation_configuration.recent_retention_epochs=
+                    static_cast<std::uint32_t>(retention);
+                adaptation_configuration.prediction_factor=prediction;
+                adaptation_configuration.complexity_target_owners=
+                    static_cast<std::uint32_t>(complexity_target);
+                lod_reconcile_pending=true;
+                has_adaptive_result=false;
+            }
+            ImGui::EndDisabled();
+            ImGui::TreePop();
         }
         const bool materialized_lod=
             adaptation_configuration.lod_update==
@@ -1717,7 +1875,8 @@ int main(int argc, char** argv)
                    x_cutaway&&show_volume_edges,x_cutaway&&show_volume_faces,
                    x_cut_position,volume_connection_method,stencil_construction,
                    stencil_selection_objective,preparation,
-                   fixed_field_surface_triangles,fixed_field_surface_cut_revision)){
+                   fixed_field_surface_triangles,fixed_field_surface_cut_revision,
+                   geometry_executor.get())){
               last_scene_preparation_milliseconds=
                   std::chrono::duration<double,std::milli>(
                       std::chrono::steady_clock::now()-preparation_start).count();
@@ -1727,19 +1886,21 @@ int main(int argc, char** argv)
                       patch_metrics.output_triangles*3U;
               if(retained_surface_upload_ready){
                 surface_draw_chunks.pack(scene_cache.surface_patch_records(),
-                                         scene_cache.surface_patch_arena());
+                                         scene_cache.surface_patch_arena(),
+                                         geometry_executor.get());
                 surface_host_staging.stage(
-                    surface_draw_chunks,scene_cache.scene().triangle_vertices);
+                    surface_draw_chunks,scene_cache.scene().triangle_vertices,
+                    geometry_executor.get());
               }
               upload_dirty=true;
             }
         }else{
           retained_surface_upload_ready=false;
+          const bool interactive_scene_update=camera_manipulator.dragging();
           if(auto completed=scene_preparation_worker.take_completed()){
-            if(completed->request_id==submitted_scene_request_id&&
-               completed->mesh_revision==mesh.revision()&&
-               tetra_viewer::same_scene_preparation_parameters(
-                   completed->parameters,scene_parameters)){
+            if(tetra_viewer::compatible_scene_preparation_publication(
+                   *completed,submitted_scene_request_id,mesh.revision(),
+                   scene_parameters,interactive_scene_update)){
               background_prepared_scene=std::move(completed->scene);
               prepared_scene_mesh_revision=completed->mesh_revision;
               last_scene_preparation_milliseconds=completed->duration_milliseconds;
@@ -1750,7 +1911,9 @@ int main(int argc, char** argv)
               submitted_scene_mesh_revision!=mesh.revision()||
               !tetra_viewer::same_scene_preparation_parameters(
                   *submitted_scene_preparation,scene_parameters);
-          if(request_changed){
+          if(tetra_viewer::should_submit_scene_preparation(
+                 request_changed,scene_preparation_worker.busy(),
+                 interactive_scene_update)){
             submitted_scene_request_id=scene_preparation_worker.submit(
                 mesh,scene_parameters,fixed_field_surface_triangles);
             submitted_scene_preparation=scene_parameters;
@@ -1766,6 +1929,75 @@ int main(int argc, char** argv)
             ?scene_cache.projection():background_projection_statistics;
         if (statistics_open) {
         ImGui::Text("Conforming cells: %zu", mesh.conforming_volume().size());
+        const auto temporal_entries=std::accumulate(
+            adaptation_planning_cache.camera_temporal_layers.begin(),
+            adaptation_planning_cache.camera_temporal_layers.end(),std::size_t{},
+            [](std::size_t count,const tetra::CameraTemporalLayer& layer){
+                return count+layer.addresses.size();
+            });
+        ImGui::Text("Camera LOD: %s / %s",
+                    tetra::strategy_key(adaptation_configuration.camera_lod_policy).data(),
+                    tetra::strategy_key(adaptation_configuration.camera_lod_metric).data());
+        ImGui::Text("Camera working set: %zu owners  %zu retained records",
+                    adaptation_planning_cache.last_camera_active_owner_count,
+                    temporal_entries);
+        ImGui::Text("Soft quality: %.2fx  Epoch: %llu",
+                    adaptation_planning_cache.camera_soft_quality_multiplier,
+                    static_cast<unsigned long long>(
+                        adaptation_planning_cache.camera_demand_epoch));
+        ImGui::Text("Demand cold/recent/predicted: %zu / %zu / %zu",
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::cold)],
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::recent)],
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::predicted)]);
+        ImGui::Text("Demand guard/near/visible: %zu / %zu / %zu",
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::guard)],
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::near)],
+                    adaptation_planning_cache.last_camera_demand_evaluations[
+                        static_cast<std::size_t>(tetra::CameraLodZone::visible)]);
+        std::vector<double> visible_projection_errors;
+        std::size_t ready_visible{};
+        for(const auto owner:mesh.logical_red_owners()){
+            const auto demand=tetra::camera_lod_demand(
+                mesh,owner,camera,adaptation_configuration);
+            if(demand.zone!=tetra::CameraLodZone::visible)continue;
+            visible_projection_errors.push_back(demand.projected_diameter_pixels);
+            ready_visible+=demand.projected_diameter_pixels<=
+                pixel_threshold*adaptation_configuration.split_hysteresis;
+        }
+        std::sort(visible_projection_errors.begin(),visible_projection_errors.end());
+        const auto visible_percentile=[&](double fraction){
+            if(visible_projection_errors.empty())return 0.0;
+            const auto index=static_cast<std::size_t>(fraction*static_cast<double>(
+                visible_projection_errors.size()-1U));
+            return visible_projection_errors[index];
+        };
+        const double readiness=visible_projection_errors.empty()?1.0:
+            static_cast<double>(ready_visible)/visible_projection_errors.size();
+        ImGui::Text("Visible projected error: max %.1f px  p95 %.1f px",
+                    visible_projection_errors.empty()?0.0:visible_projection_errors.back(),
+                    visible_percentile(0.95));
+        ImGui::Text("Turn readiness proxy: %.1f%%  Convergence: %s",
+                    readiness*100.0,
+                    mesh_update_in_flight||lod_reconcile_pending?"updating":"stable");
+        std::size_t retained_bytes{};
+        for(const auto& layer:adaptation_planning_cache.camera_temporal_layers)
+            retained_bytes+=layer.addresses.capacity()*sizeof(tetra::TetId)+
+                layer.last_demand_epochs.capacity()*sizeof(std::uint64_t);
+        const auto active_owners=mesh.logical_red_owners().size();
+        const bool above_complexity_limit=
+            adaptation_configuration.complexity_target_owners>0U&&
+            active_owners>static_cast<std::size_t>(
+                adaptation_configuration.complexity_target_owners*
+                (1.0+adaptation_configuration.complexity_band));
+        ImGui::Text("Temporal demand storage: %.1f KiB",retained_bytes/1024.0);
+        if(above_complexity_limit)
+            ImGui::TextColored(ImVec4(1.0F,0.55F,0.22F,1.0F),
+                               "Soft complexity target exceeded");
         ImGui::Text("Total volume: %.6f", prepared_scene.total_volume);
         ImGui::Text("Validation: %s", mesh_validation_current ? (mesh_valid ? "PASS" : "FAIL") : "NOT RUN");
         ImGui::Text("Selected: %zu   Inside: %zu", prepared_scene.selected_count, prepared_scene.inside_count);
@@ -1835,6 +2067,22 @@ int main(int argc, char** argv)
         if (last_refine_milliseconds >= 0.0) ImGui::Text("Mesh edit: %.1f ms", last_refine_milliseconds);
         if (last_validation_milliseconds >= 0.0) ImGui::Text("Validation: %.1f ms", last_validation_milliseconds);
         if (last_scene_preparation_milliseconds >= 0.0) ImGui::Text("Scene preparation: %.1f ms", last_scene_preparation_milliseconds);
+        const auto executor_metrics=geometry_executor->metrics();
+        ImGui::Text("Geometry workers: %zu  active peak: %zu",
+                    geometry_executor->worker_count(),
+                    executor_metrics.maximum_active_workers);
+        ImGui::Text("Queue peak: %zu  helped: %zu  nested: %zu",
+                    executor_metrics.maximum_queued_tasks,
+                    executor_metrics.stolen_or_helped_tasks,
+                    executor_metrics.nested_executor_entries);
+        if(prepared_scene.parallel_classification_tasks!=0U)
+            ImGui::Text("Parallel classification: %zu tasks  %.2f ms",
+                        prepared_scene.parallel_classification_tasks,
+                        prepared_scene.parallel_classification_milliseconds);
+        if(prepared_scene.parallel_render_attribute_tasks!=0U)
+            ImGui::Text("Parallel render attributes: %zu tasks  %.2f ms",
+                        prepared_scene.parallel_render_attribute_tasks,
+                        prepared_scene.parallel_render_attribute_milliseconds);
         }
         const bool controls_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         ImGui::End();
@@ -2022,10 +2270,13 @@ int main(int argc, char** argv)
             lod_reconcile_pending=true;
             upload_dirty=true;
         }
-        // Start on release. Materialized BCC LOD reconciliation runs to
-        // convergence on a private worker snapshot; this thread continues to
-        // present and interact with the last complete mesh.
-        if(lod_reconcile_pending&&!camera_manipulator.dragging()&&!previous_left_pressed){
+        // During a gizmo drag, publish small complete conforming transactions
+        // and coalesce all newer pointer poses at the next slice boundary.
+        // Releasing the gizmo immediately replaces the relaxed request with a
+        // full-quality one that runs to convergence in the same worker.
+        const bool interactive_lod_update=camera_manipulator.dragging();
+        if(lod_reconcile_pending&&
+           (interactive_lod_update||!previous_left_pressed)){
             const bool background_supported=
                 mesh.subdivision_method()==tetra::SubdivisionMethod::bcc_red_green&&
                 (adaptation_configuration.lod_update==
@@ -2033,14 +2284,22 @@ int main(int argc, char** argv)
                  adaptation_configuration.lod_update==
                      tetra::LodUpdateStrategy::saturated_clusters);
             if(background_supported){
-                const auto parameters=mesh_update_parameters();
+                const auto intent=interactive_lod_update
+                    ?tetra_viewer::MeshUpdateIntent::interactive_camera
+                    :tetra_viewer::MeshUpdateIntent::settled;
+                const auto parameters=mesh_update_parameters(intent);
                 const bool request_changed=!submitted_mesh_update||
                     submitted_mesh_operation!=
                         tetra_viewer::MeshUpdateOperation::reconcile_lod||
                     submitted_mesh_revision!=mesh.revision()||
                     !tetra_viewer::same_mesh_update_parameters(
                         *submitted_mesh_update,parameters);
-                if(!mesh_update_in_flight||request_changed){
+                const bool intent_changed=submitted_mesh_update&&
+                    submitted_mesh_update->intent!=intent;
+                if(tetra_viewer::should_submit_mesh_update(
+                       mesh_update_in_flight,request_changed,
+                       interactive_lod_update,
+                       mesh_slice_published_this_frame,intent_changed)){
                     submitted_mesh_request_id=
                         mesh_update_worker.submit(mesh,parameters);
                     submitted_mesh_update=parameters;
@@ -2049,7 +2308,7 @@ int main(int argc, char** argv)
                     submitted_mesh_revision=mesh.revision();
                     mesh_update_in_flight=true;
                 }
-            }else{
+            }else if(!interactive_lod_update){
                 if(mesh_update_in_flight){
                     mesh_update_worker.cancel();
                     mesh_update_in_flight=false;
@@ -2115,6 +2374,67 @@ int main(int argc, char** argv)
                 overlay_lines.push_back(vertex(first));
                 overlay_lines.push_back(vertex(second));
             };
+            if(show_camera_lod_zones){
+                const auto retained_epoch=[&](tetra::TetId owner){
+                    while(true){
+                        const auto depth=tetra::tet_depth(owner);
+                        if(depth<adaptation_planning_cache.camera_temporal_layers.size()){
+                            const auto& layer=
+                                adaptation_planning_cache.camera_temporal_layers[depth];
+                            const auto found=std::lower_bound(
+                                layer.addresses.begin(),layer.addresses.end(),owner);
+                            if(found!=layer.addresses.end()&&*found==owner){
+                                const auto index=static_cast<std::size_t>(
+                                    found-layer.addresses.begin());
+                                return adaptation_planning_cache.camera_demand_epoch-
+                                    layer.last_demand_epochs[index]<=
+                                    adaptation_configuration.recent_retention_epochs;
+                            }
+                        }
+                        if(depth<3U)break;
+                        owner=tetra::make_tet_id(
+                            tetra::tet_root(owner),tetra::tet_path(owner)>>3U);
+                    }
+                    return false;
+                };
+                const auto zone_colour=[](tetra::CameraLodZone zone){
+                    switch(zone){
+                        case tetra::CameraLodZone::visible:
+                            return std::array<float,3>{0.96F,0.98F,1.0F};
+                        case tetra::CameraLodZone::near:
+                            return std::array<float,3>{0.12F,0.88F,0.92F};
+                        case tetra::CameraLodZone::guard:
+                            return std::array<float,3>{0.98F,0.82F,0.12F};
+                        case tetra::CameraLodZone::recent:
+                            return std::array<float,3>{0.88F,0.30F,0.92F};
+                        case tetra::CameraLodZone::predicted:
+                            return std::array<float,3>{1.0F,0.46F,0.10F};
+                        case tetra::CameraLodZone::cold:
+                            return std::array<float,3>{0.18F,0.32F,0.72F};
+                    }
+                    return std::array<float,3>{0.7F,0.7F,0.7F};
+                };
+                constexpr std::array<std::array<std::size_t,2>,6> edges{{
+                    {{0U,1U}},{{0U,2U}},{{0U,3U}},
+                    {{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+                for(const auto owner:mesh.logical_red_owners()){
+                    auto zone=tetra::camera_lod_demand(
+                        mesh,owner,camera,adaptation_configuration).zone;
+                    if(zone==tetra::CameraLodZone::cold&&
+                       (adaptation_configuration.camera_lod_policy==
+                            tetra::CameraLodPolicy::guarded_recent||
+                        adaptation_configuration.camera_lod_policy==
+                            tetra::CameraLodPolicy::guarded_predicted)&&
+                       retained_epoch(owner))
+                        zone=tetra::CameraLodZone::recent;
+                    const auto colour=zone_colour(zone);
+                    const auto& tet=mesh.tetrahedron(owner);
+                    for(const auto edge:edges)
+                        add_overlay_line(mesh.vertices()[tet.vertices[edge[0]]],
+                                         mesh.vertices()[tet.vertices[edge[1]]],
+                                         colour);
+                }
+            }
             if(!deterministic_visual_check||manipulator_visual_check){
                 const tetra_viewer::ManipulatorView manipulator_view{
                     view_camera_position,f,right,up,camera.vertical_fov_radians,

@@ -3,6 +3,7 @@
 #include "tetra_core/tet_mesh.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -66,6 +67,33 @@ enum class AdjacencyRepresentation : std::uint8_t {
 };
 enum class KernelOrder : std::uint8_t {
   address_order,orientation_buckets,fused_macro_blocks,
+};
+
+enum class CameraLodPolicy : std::uint8_t {
+  exact_frustum,
+  guarded,
+  guarded_recent,
+  guarded_predicted,
+};
+
+enum class CameraLodMetric : std::uint8_t {
+  projected_diameter,
+  geometric_error,
+};
+
+enum class CameraPredictionMode : std::uint8_t {
+  none,
+  translation,
+  translation_rotation,
+};
+
+enum class CameraLodZone : std::uint8_t {
+  cold,
+  predicted,
+  recent,
+  guard,
+  near,
+  visible,
 };
 
 [[nodiscard]] constexpr std::string_view strategy_key(LodUpdateStrategy value) {
@@ -136,6 +164,45 @@ enum class KernelOrder : std::uint8_t {
   return "unknown";
 }
 
+[[nodiscard]] constexpr std::string_view strategy_key(CameraLodPolicy value) {
+  switch(value){
+    case CameraLodPolicy::exact_frustum:return "exact-frustum";
+    case CameraLodPolicy::guarded:return "guarded";
+    case CameraLodPolicy::guarded_recent:return "guarded-recent";
+    case CameraLodPolicy::guarded_predicted:return "guarded-predicted";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view strategy_key(CameraLodMetric value) {
+  switch(value){
+    case CameraLodMetric::projected_diameter:return "projected-diameter";
+    case CameraLodMetric::geometric_error:return "geometric-error";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view strategy_key(CameraPredictionMode value) {
+  switch(value){
+    case CameraPredictionMode::none:return "none";
+    case CameraPredictionMode::translation:return "translation";
+    case CameraPredictionMode::translation_rotation:return "translation-rotation";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view strategy_key(CameraLodZone value) {
+  switch(value){
+    case CameraLodZone::cold:return "cold";
+    case CameraLodZone::predicted:return "predicted";
+    case CameraLodZone::recent:return "recent";
+    case CameraLodZone::guard:return "guard";
+    case CameraLodZone::near:return "near";
+    case CameraLodZone::visible:return "visible";
+  }
+  return "unknown";
+}
+
 [[nodiscard]] constexpr std::string_view strategy_key(BccTransitionStrategy value) {
   switch(value){
     case BccTransitionStrategy::crystalline_restricted:return "crystalline-restricted";
@@ -175,6 +242,23 @@ struct AdaptationConfiguration {
   double split_hysteresis{1.15};
   double merge_hysteresis{0.75};
   double hybrid_frontier_ratio{0.10};
+  CameraLodPolicy camera_lod_policy{CameraLodPolicy::guarded_recent};
+  CameraLodMetric camera_lod_metric{CameraLodMetric::geometric_error};
+  double guard_frustum_scale{1.35};
+  double guard_quality_multiplier{2.0};
+  double near_radius{0.75};
+  double near_quality_multiplier{2.0};
+  double cold_quality_multiplier{8.0};
+  std::uint32_t recent_retention_epochs{8};
+  double recent_initial_quality_multiplier{2.0};
+  double recent_final_quality_multiplier{8.0};
+  double prediction_factor{1.0};
+  double prediction_quality_multiplier{4.0};
+  CameraPredictionMode prediction_mode{CameraPredictionMode::translation_rotation};
+  std::uint32_t complexity_target_owners{};
+  double complexity_band{0.15};
+  double complexity_adjustment{0.10};
+  double maximum_soft_quality_multiplier{4.0};
   std::uint32_t operation_budget{4096};
   friend bool operator==(const AdaptationConfiguration&,
                          const AdaptationConfiguration&)=default;
@@ -186,6 +270,33 @@ struct AdaptationConfiguration {
        configuration.merge_hysteresis<configuration.split_hysteresis))return false;
   if(!(configuration.hybrid_frontier_ratio>=0.0&&
        configuration.hybrid_frontier_ratio<=1.0))return false;
+  if(!(configuration.guard_frustum_scale>=1.0&&
+       std::isfinite(configuration.guard_frustum_scale)))return false;
+  if(!(configuration.guard_quality_multiplier>=1.0&&
+       std::isfinite(configuration.guard_quality_multiplier)))return false;
+  if(!(configuration.near_radius>=0.0&&
+       std::isfinite(configuration.near_radius)))return false;
+  if(!(configuration.near_quality_multiplier>=1.0&&
+       std::isfinite(configuration.near_quality_multiplier)))return false;
+  if(!(configuration.cold_quality_multiplier>=
+       configuration.near_quality_multiplier&&
+       std::isfinite(configuration.cold_quality_multiplier)))return false;
+  if(configuration.recent_retention_epochs==0U)return false;
+  if(!(configuration.recent_initial_quality_multiplier>=1.0&&
+       configuration.recent_final_quality_multiplier>=
+           configuration.recent_initial_quality_multiplier&&
+       std::isfinite(configuration.recent_final_quality_multiplier)))return false;
+  if(!(configuration.prediction_factor>=0.0&&
+       std::isfinite(configuration.prediction_factor)))return false;
+  if(!(configuration.prediction_quality_multiplier>=1.0&&
+       std::isfinite(configuration.prediction_quality_multiplier)))return false;
+  if(!(configuration.complexity_band>0.0&&configuration.complexity_band<1.0&&
+       std::isfinite(configuration.complexity_band)))return false;
+  if(!(configuration.complexity_adjustment>0.0&&
+       configuration.complexity_adjustment<=1.0&&
+       std::isfinite(configuration.complexity_adjustment)))return false;
+  if(!(configuration.maximum_soft_quality_multiplier>=1.0&&
+       std::isfinite(configuration.maximum_soft_quality_multiplier)))return false;
   return configuration.operation_budget>0;
 }
 
@@ -264,6 +375,19 @@ struct AdaptationPlan {
   std::size_t frustum_subtrees_rejected{};
   std::size_t field_subtrees_rejected{};
   std::size_t projected_subtrees_rejected{};
+  std::array<std::size_t,6> camera_demand_evaluations{};
+  std::uint64_t camera_demand_epoch{};
+  bool has_camera_demand_metadata{};
+  Vec3 camera_demand_position{};
+  Vec3 camera_demand_forward{};
+  Vec3 camera_demand_up{};
+  double camera_demand_vertical_fov{};
+  double camera_demand_viewport_height{};
+  double camera_demand_aspect_ratio{1.0};
+  bool camera_demand_pose_changed{};
+  double camera_soft_quality_multiplier{1.0};
+  std::size_t camera_active_owner_count{};
+  std::vector<TetId> camera_recent_updates;
   std::size_t exact_field_evaluations_avoided{};
   std::size_t spatial_index_bytes{};
   std::size_t spatial_run_count{};
@@ -280,7 +404,11 @@ struct AdaptationPlan {
   std::size_t scheduler_candidates_avoided{};
   std::size_t scheduler_block_streams{};
   std::size_t scheduler_fallbacks{};
+  std::size_t parallel_tasks{};
+  std::size_t parallel_workers{};
+  std::size_t parallel_candidates{};
   double classification_ms{};
+  double parallel_classification_ms{};
   double family_resolution_ms{};
   double summary_build_ms{};
   double spatial_index_build_ms{};
