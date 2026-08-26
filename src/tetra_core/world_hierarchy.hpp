@@ -2,6 +2,7 @@
 
 #include "tetra_core/tet_mesh.hpp"
 
+#include <algorithm>
 #include <compare>
 #include <array>
 #include <cstddef>
@@ -157,7 +158,18 @@ struct WorldSurfaceVertex {
 struct WorldSurfaceTriangle {
   std::array<WorldDerivedVertexKey,3> vertices{};
   WorldTetAddress owner{};
-  auto operator<=>(const WorldSurfaceTriangle&) const = default;
+  [[nodiscard]] std::array<WorldDerivedVertexKey,3> canonical_vertices() const {
+    auto result=vertices;std::ranges::sort(result);return result;
+  }
+  [[nodiscard]] bool operator==(const WorldSurfaceTriangle& other) const {
+    return owner==other.owner&&canonical_vertices()==other.canonical_vertices();
+  }
+  [[nodiscard]] std::strong_ordering operator<=> (
+      const WorldSurfaceTriangle& other) const {
+    if(const auto order=canonical_vertices()<=>other.canonical_vertices();order!=0)
+      return order;
+    return owner<=>other.owner;
+  }
 };
 
 struct WorldDerivedSurfaceMetrics {

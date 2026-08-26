@@ -565,7 +565,6 @@ WorldRevisionManifest::WorldRevisionManifest(
     if(std::ranges::adjacent_find(surface.vertices,[](const auto& first,const auto& second){
          return first.key==second.key;})!=surface.vertices.end())
       throw std::invalid_argument("derived surface contains duplicate vertex identity");
-    for(auto& triangle:surface.triangles)std::ranges::sort(triangle.vertices);
     std::ranges::sort(surface.triangles);
     if(std::ranges::adjacent_find(surface.triangles)!=surface.triangles.end())
       throw std::invalid_argument("derived surface contains duplicate triangle identity");

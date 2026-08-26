@@ -1,4 +1,6 @@
 #include "tetra_viewer/viewer_scene.hpp"
+
+#include "tetra_core/world_cut_directory.hpp"
 #include "tetra_core/geometry_executor.hpp"
 
 #include <algorithm>
@@ -8,8 +10,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <numeric>
+#include <set>
 #include <span>
 #include <stdexcept>
 
@@ -917,7 +921,9 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
 // accepted move is immediately a conforming volume edit rather than a render
 // mesh overlay. All adjacency is stored in compact offset/index arrays.
 void optimize_connected_volume_boundary(PreparedScene& scene,
-                                         const tetra::Sphere& sphere) {
+                                         const tetra::Sphere& sphere,
+                                         std::span<const std::uint32_t> dependency_distance={},
+                                         std::span<const std::size_t> evaluation_order={}) {
   constexpr std::array<std::array<std::size_t,3>,4> faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
   using Edge=std::array<std::size_t,2>;
@@ -1115,7 +1121,8 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
   const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
   constexpr std::size_t line_search_steps=10;
   constexpr double relaxation=0.35;
-  run_bounded_jacobi(scene.connected_volume_vertices,surface_optimizer_passes,{},{},
+  run_bounded_jacobi(scene.connected_volume_vertices,surface_optimizer_passes,
+    dependency_distance,evaluation_order,
     [&](std::span<const tetra::Vec3> previous,std::size_t vertex,std::uint32_t)
         ->std::optional<tetra::Vec3>{
       const auto degree=neighbor_offsets[vertex+1]-neighbor_offsets[vertex];
@@ -1458,6 +1465,132 @@ struct OptimizedSurface {
   std::vector<tetra::WorldDerivedVertexKey> global_keys;
 };
 
+void optimize_surface_graph(
+    PreparedScene& scene,const tetra::Sphere& sphere,OptimizedSurface& surface,
+    std::span<const std::uint32_t> dependency_distance={},
+    std::span<const std::size_t> evaluation_order={}) {
+  auto& positions=surface.positions;
+  const auto& triangles=surface.triangles;
+  const auto& global_keys=surface.global_keys;
+  std::vector<std::array<std::size_t,2>> edges;
+  edges.reserve(triangles.size()*3U);
+  for(const auto& triangle:triangles)
+    for(auto edge:std::array<std::array<std::size_t,2>,3>{{
+        {{triangle[0],triangle[1]}},{{triangle[1],triangle[2]}},
+        {{triangle[2],triangle[0]}}}}){
+      if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+      edges.push_back(edge);
+    }
+  std::ranges::sort(edges);
+  edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+  std::vector<std::size_t> neighbor_offsets(positions.size()+1U);
+  std::vector<std::size_t> incident_offsets(positions.size()+1U);
+  for(const auto& edge:edges){
+    ++neighbor_offsets[edge[0]+1U];++neighbor_offsets[edge[1]+1U];
+  }
+  for(const auto& triangle:triangles)
+    for(const auto vertex:triangle)++incident_offsets[vertex+1U];
+  for(std::size_t index=1;index<neighbor_offsets.size();++index){
+    neighbor_offsets[index]+=neighbor_offsets[index-1U];
+    incident_offsets[index]+=incident_offsets[index-1U];
+  }
+  std::vector<std::size_t> neighbors(neighbor_offsets.back());
+  std::vector<std::size_t> incidents(incident_offsets.back());
+  auto neighbor_cursor=neighbor_offsets,incident_cursor=incident_offsets;
+  for(const auto& edge:edges){
+    neighbors[neighbor_cursor[edge[0]]++]=edge[1];
+    neighbors[neighbor_cursor[edge[1]]++]=edge[0];
+  }
+  for(std::size_t triangle=0;triangle<triangles.size();++triangle)
+    for(const auto vertex:triangles[triangle])
+      incidents[incident_cursor[vertex]++]=triangle;
+  const auto triangle_global_key=[&](std::size_t triangle){
+    std::array<tetra::WorldDerivedVertexKey,3> key{{
+        global_keys[triangles[triangle][0]],global_keys[triangles[triangle][1]],
+        global_keys[triangles[triangle][2]]}};
+    std::ranges::sort(key);return key;
+  };
+  for(std::size_t vertex=0;vertex<positions.size();++vertex){
+    std::sort(neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex]),
+              neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex+1U]),
+              [&](std::size_t first,std::size_t second){
+                return global_keys[first]<global_keys[second];
+              });
+    std::sort(incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex]),
+              incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex+1U]),
+              [&](std::size_t first,std::size_t second){
+                return triangle_global_key(first)<triangle_global_key(second);
+              });
+  }
+  const auto triangle_fairness=[](const std::array<tetra::Vec3,3>& points){
+    double energy{};
+    constexpr double target=1.0471975511965977462;
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto a=points[(corner+1U)%3U]-points[corner];
+      const auto b=points[(corner+2U)%3U]-points[corner];
+      const double aa=a.x*a.x+a.y*a.y+a.z*a.z;
+      const double bb=b.x*b.x+b.y*b.y+b.z*b.z;
+      if(aa<=1.0e-30||bb<=1.0e-30)
+        return std::numeric_limits<double>::infinity();
+      const double cosine=std::clamp(
+          (a.x*b.x+a.y*b.y+a.z*b.z)/std::sqrt(aa*bb),-1.0,1.0);
+      const double difference=std::acos(cosine)-target;
+      energy+=difference*difference;
+    }
+    return energy;
+  };
+  const auto valid_move=[&](std::span<const tetra::Vec3> read_positions,
+                            std::size_t vertex,tetra::Vec3 candidate){
+    double fairness_before{},fairness_after{};
+    for(std::size_t offset=incident_offsets[vertex];
+        offset<incident_offsets[vertex+1U];++offset){
+      const auto& ids=triangles[incidents[offset]];
+      std::array<tetra::Vec3,3> points{{read_positions[ids[0]],
+          read_positions[ids[1]],read_positions[ids[2]]}};
+      fairness_before+=triangle_fairness(points);
+      for(std::size_t corner=0;corner<3U;++corner)
+        if(ids[corner]==vertex)points[corner]=candidate;
+      fairness_after+=triangle_fairness(points);
+      const auto normal=face_normal(points[0],points[1],points[2]);
+      const double area2=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
+      const auto centre=(points[0]+points[1]+points[2])/3.0;
+      const auto outward=sphere.normal(centre);
+      if(area2<1.0e-20||
+         normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<=1.0e-14)
+        return false;
+    }
+    return fairness_after<=fairness_before+1.0e-12;
+  };
+  scene.optimizer_passes=surface_optimizer_passes;
+  scene.optimizer_dependency_halo_rings=surface_optimizer_dependency_halo_rings;
+  constexpr std::size_t line_search_steps=10U;
+  constexpr double relaxation=0.35;
+  run_bounded_jacobi(positions,surface_optimizer_passes,dependency_distance,
+      evaluation_order,[&](std::span<const tetra::Vec3> previous,
+                            std::size_t vertex,std::uint32_t)
+          ->std::optional<tetra::Vec3>{
+        tetra::Vec3 average{};
+        const auto degree=neighbor_offsets[vertex+1U]-neighbor_offsets[vertex];
+        if(degree<3U)return std::nullopt;
+        for(std::size_t offset=neighbor_offsets[vertex];
+            offset<neighbor_offsets[vertex+1U];++offset)
+          average=average+previous[neighbors[offset]];
+        average=average/static_cast<double>(degree);
+        const auto original=previous[vertex];
+        auto target=sphere.project_to_surface(
+            original*(1.0-relaxation)+average*relaxation);
+        double step=1.0;
+        for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
+          auto candidate=sphere.project_to_surface(
+              original*(1.0-step)+target*step);
+          if(valid_move(previous,vertex,candidate))return candidate;
+        }
+        ++scene.rejected_surface_moves;
+        return std::nullopt;
+      });
+  scene.optimized_surface_vertices=positions.size();
+}
+
 std::vector<ConnectedFace> connected_surface_boundary_faces(const PreparedScene& source){
   constexpr std::array<std::array<std::size_t,3>,4> faces{{
       {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
@@ -1488,7 +1621,8 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
                                          const tetra::TetMesh& mesh,
                                          const tetra::Sphere& sphere,
                                          const PreparedScene* topology_source=nullptr,
-                                         const std::vector<ConnectedFace>* supplied_boundary=nullptr) {
+                                         const std::vector<ConnectedFace>* supplied_boundary=nullptr,
+                                         bool optimize=true) {
   std::vector<tetra::Triangle> input;
   std::vector<std::array<std::array<tetra::VertexId,2>,3>> input_source_edges;
   std::vector<std::array<tetra::WorldDerivedVertexKey,3>> input_global_keys;
@@ -1609,103 +1743,10 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
     const auto outward=sphere.normal(centre);
     if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)std::swap(triangle[1],triangle[2]);
   }
-  std::vector<std::array<std::size_t,2>> edges;
-  edges.reserve(triangles.size()*3);
-  for(const auto& triangle:triangles)for(auto edge:std::array<std::array<std::size_t,2>,3>{{{{triangle[0],triangle[1]}},{{triangle[1],triangle[2]}},{{triangle[2],triangle[0]}}}}){
-    if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
-    edges.push_back(edge);
-  }
-  std::sort(edges.begin(),edges.end());
-  edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
-  std::vector<std::size_t> neighbor_offsets(positions.size()+1),incident_offsets(positions.size()+1);
-  for(const auto& edge:edges){++neighbor_offsets[edge[0]+1];++neighbor_offsets[edge[1]+1];}
-  for(const auto& triangle:triangles)for(const auto vertex:triangle)++incident_offsets[vertex+1];
-  for(std::size_t index=1;index<neighbor_offsets.size();++index){
-    neighbor_offsets[index]+=neighbor_offsets[index-1];
-    incident_offsets[index]+=incident_offsets[index-1];
-  }
-  std::vector<std::size_t> neighbors(neighbor_offsets.back()),incidents(incident_offsets.back());
-  auto neighbor_cursor=neighbor_offsets,incident_cursor=incident_offsets;
-  for(const auto& edge:edges){neighbors[neighbor_cursor[edge[0]]++]=edge[1];neighbors[neighbor_cursor[edge[1]]++]=edge[0];}
-  for(std::size_t triangle=0;triangle<triangles.size();++triangle)
-    for(const auto vertex:triangles[triangle])incidents[incident_cursor[vertex]++]=triangle;
-  const auto triangle_global_key=[&](std::size_t triangle){
-    std::array<tetra::WorldDerivedVertexKey,3> key{{global_keys[triangles[triangle][0]],
-        global_keys[triangles[triangle][1]],global_keys[triangles[triangle][2]]}};
-    std::ranges::sort(key);return key;
-  };
-  for(std::size_t vertex=0;vertex<positions.size();++vertex){
-    std::sort(neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex]),
-              neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex+1]),
-              [&](std::size_t first,std::size_t second){return global_keys[first]<global_keys[second];});
-    std::sort(incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex]),
-              incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex+1]),
-              [&](std::size_t first,std::size_t second){
-                return triangle_global_key(first)<triangle_global_key(second);});
-  }
-  const auto triangle_fairness=[](const std::array<tetra::Vec3,3>& points){
-    double energy{};
-    constexpr double target=1.0471975511965977462;
-    for(std::size_t corner=0;corner<3;++corner){
-      const auto a=points[(corner+1)%3]-points[corner];
-      const auto b=points[(corner+2)%3]-points[corner];
-      const double aa=a.x*a.x+a.y*a.y+a.z*a.z;
-      const double bb=b.x*b.x+b.y*b.y+b.z*b.z;
-      if(aa<=1.0e-30||bb<=1.0e-30)return std::numeric_limits<double>::infinity();
-      const double cosine=std::clamp((a.x*b.x+a.y*b.y+a.z*b.z)/std::sqrt(aa*bb),-1.0,1.0);
-      const double difference=std::acos(cosine)-target;
-      energy+=difference*difference;
-    }
-    return energy;
-  };
-  const auto valid_move=[&](std::span<const tetra::Vec3> read_positions,
-                            std::size_t vertex,tetra::Vec3 candidate){
-    double fairness_before{},fairness_after{};
-    for(std::size_t offset=incident_offsets[vertex];offset<incident_offsets[vertex+1];++offset){
-      const auto& ids=triangles[incidents[offset]];
-      std::array<tetra::Vec3,3> points{{read_positions[ids[0]],read_positions[ids[1]],
-                                        read_positions[ids[2]]}};
-      fairness_before+=triangle_fairness(points);
-      for(std::size_t corner=0;corner<3;++corner)if(ids[corner]==vertex)points[corner]=candidate;
-      fairness_after+=triangle_fairness(points);
-      const auto normal=face_normal(points[0],points[1],points[2]);
-      const double area2=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
-      const auto centre=(points[0]+points[1]+points[2])/3.0;
-      const auto outward=sphere.normal(centre);
-      if(area2<1e-20||normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<=1e-14)return false;
-    }
-    return fairness_after<=fairness_before+1.0e-12;
-  };
-  scene.optimizer_passes=surface_optimizer_passes;
-  scene.optimizer_dependency_halo_rings=surface_optimizer_dependency_halo_rings;
-  constexpr std::size_t line_search_steps=10;
-  constexpr double relaxation=0.35;
-  run_bounded_jacobi(positions,surface_optimizer_passes,{},{},
-    [&](std::span<const tetra::Vec3> previous,std::size_t vertex,std::uint32_t)
-        ->std::optional<tetra::Vec3>{
-      tetra::Vec3 average{};
-      const auto degree=neighbor_offsets[vertex+1]-neighbor_offsets[vertex];
-      if(degree<3)return std::nullopt;
-      for(std::size_t offset=neighbor_offsets[vertex];offset<neighbor_offsets[vertex+1];++offset)
-        average=average+previous[neighbors[offset]];
-      average=average/static_cast<double>(degree);
-      const auto original=previous[vertex];
-      auto target=original*(1.0-relaxation)+average*relaxation;
-      target=sphere.project_to_surface(target);
-      double step=1.0;
-      for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
-        auto candidate=original*(1.0-step)+target*step;
-        candidate=sphere.project_to_surface(candidate);
-        if(valid_move(previous,vertex,candidate)){
-          return candidate;
-        }
-      }
-      ++scene.rejected_surface_moves;
-      return std::nullopt;
-    });
-  scene.optimized_surface_vertices=positions.size();
-  return {std::move(positions),std::move(triangles),std::move(source_edges),
-          std::move(global_keys)};
+  OptimizedSurface surface{std::move(positions),std::move(triangles),
+                           std::move(source_edges),std::move(global_keys)};
+  if(optimize)optimize_surface_graph(scene,sphere,surface);
+  return surface;
 }
 
 std::uint64_t hash_indexed_surface(const OptimizedSurface& surface){
@@ -1744,6 +1785,65 @@ std::uint64_t hash_indexed_surface(const OptimizedSurface& surface){
   std::ranges::sort(triangles);
   for(const auto& triangle:triangles)for(const auto& vertex:triangle)append_key(vertex);
   return hash;
+}
+
+BlockedDerivedSurfaceBuild assemble_blocked_snapshots(
+    std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots) {
+  BlockedDerivedSurfaceBuild result;
+  result.snapshots=std::move(snapshots);
+  std::ranges::sort(result.snapshots,{},&tetra::WorldDerivedSurfaceSnapshot::id);
+  if(std::ranges::adjacent_find(result.snapshots,[](const auto& first,const auto& second){
+       return first.id==second.id;
+     })!=result.snapshots.end())
+    throw std::invalid_argument("blocked surface assembly has duplicate snapshots");
+  for(const auto& snapshot:result.snapshots){
+    result.vertices.insert(result.vertices.end(),snapshot.vertices.begin(),
+                           snapshot.vertices.end());
+    result.triangles.insert(result.triangles.end(),snapshot.triangles.begin(),
+                            snapshot.triangles.end());
+  }
+  std::ranges::sort(result.vertices,{},&tetra::WorldSurfaceVertex::key);
+  std::vector<tetra::WorldSurfaceVertex> unique_vertices;
+  unique_vertices.reserve(result.vertices.size());
+  for(const auto& vertex:result.vertices){
+    if(unique_vertices.empty()||unique_vertices.back().key!=vertex.key){
+      unique_vertices.push_back(vertex);continue;
+    }
+    const auto& existing=unique_vertices.back().position;
+    if(std::bit_cast<std::uint64_t>(existing.x)!=
+           std::bit_cast<std::uint64_t>(vertex.position.x)||
+       std::bit_cast<std::uint64_t>(existing.y)!=
+           std::bit_cast<std::uint64_t>(vertex.position.y)||
+       std::bit_cast<std::uint64_t>(existing.z)!=
+           std::bit_cast<std::uint64_t>(vertex.position.z))
+      throw std::logic_error("blocked surface patches disagree on a shared vertex");
+  }
+  result.vertices=std::move(unique_vertices);
+  std::ranges::sort(result.triangles);
+  if(std::ranges::adjacent_find(result.triangles)!=result.triangles.end())
+    throw std::logic_error("blocked surface publishes a duplicate triangle");
+
+  OptimizedSurface assembled;
+  assembled.positions.reserve(result.vertices.size());
+  assembled.global_keys.reserve(result.vertices.size());
+  for(const auto& vertex:result.vertices){
+    assembled.global_keys.push_back(vertex.key);
+    assembled.positions.push_back(vertex.position);
+  }
+  assembled.triangles.reserve(result.triangles.size());
+  for(const auto& triangle:result.triangles){
+    std::array<std::size_t,3> ids{};
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto found=std::ranges::lower_bound(
+          result.vertices,triangle.vertices[corner],{},&tetra::WorldSurfaceVertex::key);
+      if(found==result.vertices.end()||found->key!=triangle.vertices[corner])
+        throw std::logic_error("blocked surface triangle references a missing vertex");
+      ids[corner]=static_cast<std::size_t>(found-result.vertices.begin());
+    }
+    assembled.triangles.push_back(ids);
+  }
+  result.canonical_surface_hash=hash_indexed_surface(assembled);
+  return result;
 }
 
 void append_surface_optimization(PreparedScene& scene, const tetra::TetMesh& mesh,
@@ -2320,6 +2420,439 @@ void append_screen_space_edges(PreparedScene& scene, bool show_surface_edges,
 }
 
 }  // namespace
+
+BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
+    const tetra::WorldCutDirectory& directory) {
+  std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  snapshots.reserve(directory.derived_surfaces().size());
+  for(const auto& snapshot:directory.derived_surfaces())
+    snapshots.push_back(*snapshot);
+  auto result=assemble_blocked_snapshots(std::move(snapshots));
+  result.metrics.block_generations=directory.block_generations();
+  result.metrics.surface_blocks=result.snapshots.size();
+  result.metrics.source_vertices=result.vertices.size();
+  result.metrics.source_triangles=result.triangles.size();
+  for(const auto& snapshot:result.snapshots){
+    result.metrics.total_core_vertices+=snapshot.vertices.size();
+    result.metrics.dependency_block_references+=snapshot.dependency_blocks.size();
+    result.metrics.maximum_dependency_blocks=std::max(
+        result.metrics.maximum_dependency_blocks,snapshot.dependency_blocks.size());
+  }
+  return result;
+}
+
+PreparedScene prepare_blocked_derived_surface_scene(
+    const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
+    bool show_faces,bool show_edges) {
+  PreparedScene scene;
+  scene.connected_surface_hash=surface.canonical_surface_hash;
+  scene.optimized_surface_vertices=surface.vertices.size();
+  if(!show_faces&&!show_edges)return scene;
+  scene.triangle_vertices.reserve(surface.triangles.size()*3U);
+  constexpr std::array<std::array<float,3>,3> barycentric{{
+      {{1.0F,0.0F,0.0F}},{{0.0F,1.0F,0.0F}},{{0.0F,0.0F,1.0F}}}};
+  for(const auto& triangle:surface.triangles){
+    std::array<tetra::Vec3,3> points{};
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto vertex=std::ranges::lower_bound(
+          surface.vertices,triangle.vertices[corner],{},
+          &tetra::WorldSurfaceVertex::key);
+      if(vertex==surface.vertices.end()||vertex->key!=triangle.vertices[corner])
+        throw std::logic_error("blocked render triangle references a missing vertex");
+      points[corner]=vertex->position;
+    }
+    auto normal=face_normal(points[0],points[1],points[2]);
+    const auto centre=(points[0]+points[1]+points[2])/3.0;
+    const auto outward=field.normal(centre);
+    if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+      normal={-normal.x,-normal.y,-normal.z};
+    for(std::size_t corner=0;corner<3U;++corner){
+      SceneVertex vertex{};
+      vertex.position[0]=static_cast<float>(points[corner].x);
+      vertex.position[1]=static_cast<float>(points[corner].y);
+      vertex.position[2]=static_cast<float>(points[corner].z);
+      vertex.colour[0]=0.24F;vertex.colour[1]=0.76F;vertex.colour[2]=0.38F;
+      vertex.normal[0]=static_cast<float>(normal.x);
+      vertex.normal[1]=static_cast<float>(normal.y);
+      vertex.normal[2]=static_cast<float>(normal.z);
+      vertex.diagnostics[0]=-2.0F;
+      vertex.edge_flags=show_edges?7.0F:0.0F;
+      std::ranges::copy(barycentric[corner],vertex.barycentric);
+      scene.triangle_vertices.push_back(vertex);
+    }
+  }
+  append_screen_space_edges(scene,show_edges,false,show_faces,false);
+  scene.connected_surface_edges=scene.surface_line_vertices.size()/2U;
+  return scene;
+}
+
+BlockedDerivedSurfaceBuild build_blocked_derived_surface(
+    const tetra::TetMesh& mesh,const tetra::WorldCutDirectory& directory,
+    const tetra::Sphere& sphere,BlockedDerivedSurfaceOptions options,
+    tetra::GeometryExecutor* executor,std::stop_token cancellation) {
+  const auto started=std::chrono::steady_clock::now();
+  if(options.operation_budget==0U)
+    throw std::invalid_argument("blocked surface operation budget must be nonzero");
+  if(options.job_group_size==0U)
+    throw std::invalid_argument("blocked surface job group size must be nonzero");
+  if(mesh.subdivision_method()!=tetra::SubdivisionMethod::bcc_red_green)
+    throw std::invalid_argument("blocked surfaces require BCC red-green hierarchy");
+  const auto check_canceled=[&]{
+    if(cancellation.stop_requested())
+      throw std::runtime_error("blocked surface build canceled");
+  };
+  check_canceled();
+
+  std::vector<tetra::WorldTetAddress> mesh_owners;
+  mesh_owners.reserve(mesh.logical_red_owners().size());
+  for(const auto owner:mesh.logical_red_owners())
+    mesh_owners.push_back(tetra::world_tet_address(owner));
+  std::ranges::sort(mesh_owners);
+  std::vector<tetra::WorldTetAddress> directory_owners;
+  directory_owners.reserve(directory.logical_owner_count());
+  directory.for_each_logical_owner(
+      [&](tetra::WorldTetAddress owner){directory_owners.push_back(owner);});
+  std::ranges::sort(directory_owners);
+  if(mesh_owners!=directory_owners)
+    throw std::invalid_argument(
+        "blocked surface directory does not match the TetMesh logical cut");
+
+  PreparedScene topology;
+  build_adaptive_cleaved_volume(topology,mesh,sphere,
+      VolumeConnectionMethod::adaptive_cleaving,StencilConstruction::fixed,
+      StencilSelectionObjective::balanced);
+  auto boundary=connected_surface_boundary_faces(topology);
+  for(auto& face:boundary){
+    const auto a=topology.connected_volume_vertices[face.vertices[0]];
+    const auto b=topology.connected_volume_vertices[face.vertices[1]];
+    const auto c=topology.connected_volume_vertices[face.vertices[2]];
+    const auto normal=face_normal(a,b,c),centre=(a+b+c)/3.0;
+    const auto outward=sphere.normal(centre);
+    if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+      std::swap(face.vertices[1],face.vertices[2]);
+  }
+  check_canceled();
+
+  std::map<tetra::TetId,tetra::WorldTetAddress> logical_owner_by_cell;
+  const auto volume=mesh.conforming_volume();
+  for(std::size_t index=0;index<volume.size();++index){
+    const auto cell=volume.cell(index);
+    logical_owner_by_cell.emplace(
+        cell.address,tetra::world_tet_address(cell.logical_owner));
+  }
+  std::vector<tetra::WorldTetAddress> triangle_owners;
+  std::vector<tetra::HierarchyBlockId> triangle_blocks;
+  triangle_owners.reserve(boundary.size());triangle_blocks.reserve(boundary.size());
+  for(const auto& face:boundary){
+    const auto parent=topology.connected_volume_parents.at(face.tetrahedron);
+    const auto owner=logical_owner_by_cell.find(parent);
+    if(owner==logical_owner_by_cell.end())
+      throw std::logic_error("blocked surface boundary lacks a logical owner");
+    const auto lookup=directory.lookup(owner->second);
+    if(!lookup)throw std::logic_error("blocked surface owner is not resident");
+    triangle_owners.push_back(owner->second);
+    triangle_blocks.push_back(lookup.block->id);
+  }
+
+  std::vector<std::array<std::size_t,2>> edges;
+  edges.reserve(boundary.size()*3U);
+  for(const auto& face:boundary)
+    for(auto edge:std::array<std::array<std::size_t,2>,3>{{
+        {{face.vertices[0],face.vertices[1]}},
+        {{face.vertices[1],face.vertices[2]}},
+        {{face.vertices[2],face.vertices[0]}}}}){
+      if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+      edges.push_back(edge);
+    }
+  std::ranges::sort(edges);
+  edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+  const auto vertex_count=topology.connected_volume_vertices.size();
+  std::vector<std::size_t> neighbor_offsets(vertex_count+1U);
+  std::vector<std::size_t> incident_face_offsets(vertex_count+1U);
+  std::vector<std::size_t> incident_tet_offsets(vertex_count+1U);
+  for(const auto edge:edges){
+    ++neighbor_offsets[edge[0]+1U];++neighbor_offsets[edge[1]+1U];
+  }
+  for(const auto& face:boundary)
+    for(const auto vertex:face.vertices)++incident_face_offsets[vertex+1U];
+  for(const auto& tet:topology.connected_volume_tetrahedra)
+    for(const auto vertex:tet)++incident_tet_offsets[vertex+1U];
+  for(std::size_t vertex=1;vertex<neighbor_offsets.size();++vertex){
+    neighbor_offsets[vertex]+=neighbor_offsets[vertex-1U];
+    incident_face_offsets[vertex]+=incident_face_offsets[vertex-1U];
+    incident_tet_offsets[vertex]+=incident_tet_offsets[vertex-1U];
+  }
+  std::vector<std::size_t> neighbors(neighbor_offsets.back());
+  std::vector<std::size_t> incident_faces(incident_face_offsets.back());
+  std::vector<std::size_t> incident_tets(incident_tet_offsets.back());
+  auto neighbor_cursor=neighbor_offsets;
+  auto face_cursor=incident_face_offsets,tet_cursor=incident_tet_offsets;
+  for(const auto edge:edges){
+    neighbors[neighbor_cursor[edge[0]]++]=edge[1];
+    neighbors[neighbor_cursor[edge[1]]++]=edge[0];
+  }
+  for(std::size_t face=0;face<boundary.size();++face)
+    for(const auto vertex:boundary[face].vertices)
+      incident_faces[face_cursor[vertex]++]=face;
+  for(std::size_t tet=0;tet<topology.connected_volume_tetrahedra.size();++tet)
+    for(const auto vertex:topology.connected_volume_tetrahedra[tet])
+      incident_tets[tet_cursor[vertex]++]=tet;
+  for(std::size_t vertex=0;vertex<vertex_count;++vertex)
+    std::sort(neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex]),
+              neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex+1U]),
+              [&](std::size_t first,std::size_t second){
+                return topology.connected_volume_global_keys[first]<
+                       topology.connected_volume_global_keys[second];
+              });
+
+  struct BlockJob {
+    tetra::HierarchyBlockId id{};
+    std::vector<std::size_t> triangles;
+  };
+  std::map<tetra::HierarchyBlockId,std::vector<std::size_t>> owned;
+  for(std::size_t triangle=0;triangle<triangle_blocks.size();++triangle)
+    owned[triangle_blocks[triangle]].push_back(triangle);
+  std::vector<BlockJob> jobs;
+  jobs.reserve(owned.size());
+  for(auto& [id,triangles]:owned)jobs.push_back({id,std::move(triangles)});
+  if(options.reverse_job_order)std::ranges::reverse(jobs);
+
+  struct JobResult {
+    tetra::WorldDerivedSurfaceSnapshot snapshot;
+    std::size_t core_vertices{};
+    std::size_t patch_vertices{};
+    std::size_t patch_triangles{};
+    double minimum_connected_tet_quality_after{1.0};
+    bool connected_volume_valid{true};
+  };
+  std::vector<JobResult> completed(jobs.size());
+  const auto build_job=[&](std::size_t job_index){
+    check_canceled();
+    const auto& job=jobs[job_index];
+    constexpr auto unreachable=std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> distance(vertex_count,unreachable);
+    std::deque<std::size_t> frontier;
+    for(const auto triangle:job.triangles)
+      for(const auto vertex:boundary[triangle].vertices)
+        if(distance[vertex]!=0U){distance[vertex]=0U;frontier.push_back(vertex);}
+    while(!frontier.empty()){
+      const auto vertex=frontier.front();frontier.pop_front();
+      if(distance[vertex]>=surface_optimizer_dependency_halo_rings)continue;
+      for(std::size_t offset=neighbor_offsets[vertex];
+          offset<neighbor_offsets[vertex+1U];++offset){
+        const auto neighbor=neighbors[offset];
+        if(distance[neighbor]<=distance[vertex]+1U)continue;
+        distance[neighbor]=distance[vertex]+1U;frontier.push_back(neighbor);
+      }
+    }
+
+    std::vector<std::size_t> patch_faces;
+    for(std::size_t face=0;face<boundary.size();++face)
+      if(std::ranges::any_of(boundary[face].vertices,[&](std::size_t vertex){
+           return distance[vertex]<surface_optimizer_dependency_halo_rings;
+         }))
+        patch_faces.push_back(face);
+    std::vector<std::size_t> patch_tets;
+    std::vector<std::uint8_t> included_tet(
+        topology.connected_volume_tetrahedra.size(),0U);
+    for(std::size_t vertex=0;vertex<vertex_count;++vertex){
+      if(distance[vertex]>=surface_optimizer_dependency_halo_rings)continue;
+      for(std::size_t offset=incident_tet_offsets[vertex];
+          offset<incident_tet_offsets[vertex+1U];++offset){
+        const auto tet=incident_tets[offset];
+        if(included_tet[tet]==0U){included_tet[tet]=1U;patch_tets.push_back(tet);}
+      }
+    }
+    std::ranges::sort(patch_tets,[&](std::size_t first,std::size_t second){
+      const auto first_parent=topology.connected_volume_parents[first];
+      const auto second_parent=topology.connected_volume_parents[second];
+      if(first_parent!=second_parent)return first_parent<second_parent;
+      std::array<tetra::WorldDerivedVertexKey,4> first_key{},second_key{};
+      for(std::size_t corner=0;corner<4U;++corner){
+        first_key[corner]=topology.connected_volume_global_keys[
+            topology.connected_volume_tetrahedra[first][corner]];
+        second_key[corner]=topology.connected_volume_global_keys[
+            topology.connected_volume_tetrahedra[second][corner]];
+      }
+      std::ranges::sort(first_key);std::ranges::sort(second_key);
+      return first_key<second_key;
+    });
+    std::vector<std::size_t> patch_vertices;
+    patch_vertices.reserve(patch_tets.size()*2U);
+    for(const auto tet:patch_tets)
+      for(const auto vertex:topology.connected_volume_tetrahedra[tet])
+        patch_vertices.push_back(vertex);
+    std::ranges::sort(patch_vertices,[&](std::size_t first,std::size_t second){
+      return topology.connected_volume_global_keys[first]<
+             topology.connected_volume_global_keys[second];
+    });
+    patch_vertices.erase(std::unique(patch_vertices.begin(),patch_vertices.end()),
+                         patch_vertices.end());
+    std::vector<std::size_t> local_index(vertex_count,
+        std::numeric_limits<std::size_t>::max());
+    PreparedScene patch;
+    patch.connected_volume_vertices.reserve(patch_vertices.size());
+    patch.connected_volume_vertex_kinds.reserve(patch_vertices.size());
+    patch.connected_volume_global_keys.reserve(patch_vertices.size());
+    patch.connected_volume_source_edges.reserve(patch_vertices.size());
+    patch.connected_volume_surface_vertices.reserve(patch_vertices.size());
+    std::vector<std::uint32_t> patch_distances;
+    patch_distances.reserve(patch_vertices.size());
+    for(std::size_t local=0;local<patch_vertices.size();++local){
+      const auto global=patch_vertices[local];local_index[global]=local;
+      patch.connected_volume_vertices.push_back(
+          topology.connected_volume_vertices[global]);
+      patch.connected_volume_vertex_kinds.push_back(
+          topology.connected_volume_vertex_kinds[global]);
+      patch.connected_volume_global_keys.push_back(
+          topology.connected_volume_global_keys[global]);
+      patch.connected_volume_source_edges.push_back(
+          topology.connected_volume_source_edges[global]);
+      const auto surface=topology.connected_volume_surface_vertices[global];
+      patch.connected_volume_surface_vertices.push_back(surface);
+      patch_distances.push_back(surface!=0U?distance[global]:unreachable);
+    }
+    patch.connected_volume_tetrahedra.reserve(patch_tets.size());
+    patch.connected_volume_parents.reserve(patch_tets.size());
+    patch.connected_volume_boundary.reserve(patch_tets.size());
+    patch.connected_volume_regions.reserve(patch_tets.size());
+    for(const auto tet:patch_tets){
+      const auto& global=topology.connected_volume_tetrahedra[tet];
+      patch.connected_volume_tetrahedra.push_back({{
+          local_index[global[0]],local_index[global[1]],
+          local_index[global[2]],local_index[global[3]]}});
+      patch.connected_volume_parents.push_back(
+          topology.connected_volume_parents[tet]);
+      patch.connected_volume_boundary.push_back(
+          topology.connected_volume_boundary[tet]);
+      patch.connected_volume_regions.push_back(
+          topology.connected_volume_regions[tet]);
+    }
+    optimize_connected_volume_boundary(patch,sphere,patch_distances);
+
+    JobResult result;
+    result.snapshot.id=job.id;
+    result.snapshot.source_hierarchy_revision=directory.revision();
+    result.snapshot.metrics.optimizer_passes=surface_optimizer_passes;
+    result.snapshot.metrics.dependency_halo_rings=
+        surface_optimizer_dependency_halo_rings;
+    std::set<tetra::HierarchyBlockId> dependencies;
+    for(const auto face:patch_faces)dependencies.insert(triangle_blocks[face]);
+    for(const auto tet:patch_tets){
+      const auto owner=logical_owner_by_cell.find(
+          topology.connected_volume_parents[tet]);
+      if(owner==logical_owner_by_cell.end())
+        throw std::logic_error("blocked surface patch tetrahedron lacks an owner");
+      const auto lookup=directory.lookup(owner->second);
+      if(!lookup)throw std::logic_error("blocked surface dependency is not resident");
+      dependencies.insert(lookup.block->id);
+    }
+    dependencies.erase(job.id);
+    result.snapshot.dependency_blocks.assign(dependencies.begin(),dependencies.end());
+
+    std::vector<std::size_t> core_vertices;
+    for(const auto triangle:job.triangles)
+      for(const auto vertex:boundary[triangle].vertices)core_vertices.push_back(vertex);
+    std::ranges::sort(core_vertices,[&](std::size_t first,std::size_t second){
+      return topology.connected_volume_global_keys[first]<
+             topology.connected_volume_global_keys[second];
+    });
+    core_vertices.erase(std::unique(core_vertices.begin(),core_vertices.end()),
+                        core_vertices.end());
+    for(const auto global:core_vertices){
+      const auto local=local_index[global];
+      result.snapshot.vertices.push_back(
+          {topology.connected_volume_global_keys[global],
+           patch.connected_volume_vertices[local]});
+    }
+    for(const auto triangle:job.triangles){
+      const auto& ids=boundary[triangle].vertices;
+      result.snapshot.triangles.push_back({{{
+          topology.connected_volume_global_keys[ids[0]],
+          topology.connected_volume_global_keys[ids[1]],
+          topology.connected_volume_global_keys[ids[2]]}},
+          triangle_owners[triangle]});
+    }
+    result.snapshot.metrics.vertices=result.snapshot.vertices.size();
+    result.snapshot.metrics.triangles=result.snapshot.triangles.size();
+    result.snapshot.metrics.dependency_blocks=
+        result.snapshot.dependency_blocks.size();
+    result.core_vertices=core_vertices.size();
+    result.patch_vertices=patch.connected_volume_vertices.size();
+    result.patch_triangles=patch_faces.size();
+    result.minimum_connected_tet_quality_after=
+        patch.minimum_connected_tet_quality_after;
+    for(const auto& tet:patch.connected_volume_tetrahedra){
+      const auto volume=signed_six_volume(
+          patch.connected_volume_vertices[tet[0]],
+          patch.connected_volume_vertices[tet[1]],
+          patch.connected_volume_vertices[tet[2]],
+          patch.connected_volume_vertices[tet[3]]);
+      if(!(volume>0.0)){result.connected_volume_valid=false;break;}
+    }
+    completed[job_index]=std::move(result);
+  };
+
+  const auto budget=std::min(options.operation_budget,
+                             std::max<std::size_t>(1U,jobs.size()));
+  std::size_t batches{};
+  for(std::size_t begin=0;begin<jobs.size();begin+=budget){
+    check_canceled();++batches;
+    const auto end=std::min(jobs.size(),begin+budget);
+    if(executor&&executor->worker_count()>1U&&end-begin>1U){
+      auto group=executor->make_group(
+          directory.revision(),tetra::GeometryTaskPriority::interactive);
+      executor->parallel_for(group,begin,end,options.job_group_size,
+          [&](std::size_t first,std::size_t last,std::stop_token stop){
+            for(std::size_t job=first;job<last;++job){
+              if(stop.stop_requested())return;
+              build_job(job);
+            }
+          });
+      executor->wait_and_help(group);
+    }else for(std::size_t job=begin;job<end;++job)build_job(job);
+  }
+  check_canceled();
+
+  BlockedDerivedSurfaceBuild result;
+  result.metrics.block_generations=directory.block_generations();
+  result.metrics.source_vertices=static_cast<std::size_t>(std::ranges::count(
+      topology.connected_volume_surface_vertices,static_cast<std::uint8_t>(1U)));
+  result.metrics.source_triangles=boundary.size();
+  result.metrics.surface_blocks=completed.size();
+  result.metrics.scheduling_batches=batches;
+  result.metrics.worker_count=executor?executor->worker_count():1U;
+  for(auto& job:completed){
+    result.metrics.total_core_vertices+=job.core_vertices;
+    result.metrics.total_patch_vertices+=job.patch_vertices;
+    result.metrics.total_patch_triangles+=job.patch_triangles;
+    result.metrics.dependency_block_references+=
+        job.snapshot.dependency_blocks.size();
+    result.metrics.maximum_patch_vertices=std::max(
+        result.metrics.maximum_patch_vertices,job.patch_vertices);
+    result.metrics.maximum_dependency_blocks=std::max(
+        result.metrics.maximum_dependency_blocks,
+        job.snapshot.dependency_blocks.size());
+    result.metrics.minimum_connected_tet_quality_after=std::min(
+        result.metrics.minimum_connected_tet_quality_after,
+        job.minimum_connected_tet_quality_after);
+    result.metrics.connected_volume_valid=
+        result.metrics.connected_volume_valid&&job.connected_volume_valid;
+    result.snapshots.push_back(std::move(job.snapshot));
+  }
+  const auto metrics=result.metrics;
+  result=assemble_blocked_snapshots(std::move(result.snapshots));
+  result.metrics=metrics;
+  if(result.vertices.size()!=result.metrics.source_vertices||
+     result.triangles.size()!=boundary.size())
+    throw std::logic_error("blocked surface assembly is incomplete");
+  result.metrics.halo_amplification=result.metrics.source_vertices==0U?0.0:
+      static_cast<double>(result.metrics.total_patch_vertices)/
+      static_cast<double>(result.metrics.source_vertices);
+  result.metrics.build_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  return result;
+}
 
 SurfaceQualityEvaluation evaluate_surface_quality(
     const PreparedScene& scene,const tetra::Sphere& surface,

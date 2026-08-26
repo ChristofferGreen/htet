@@ -878,11 +878,12 @@ SetResult set_double_command(std::string_view command, std::string_view prefix, 
   return SetResult::success;
 }
 
-bool render_image(const ScriptState& state, std::string_view path, std::ostream& errors) {
+bool render_image(const ScriptState& state, std::string_view path,
+                  std::ostream& errors,const PreparedScene* scene_override=nullptr) {
   constexpr int width = 800;
   constexpr int height = 800;
   constexpr double near_plane = 0.01;
-  const auto scene = prepare_scene(
+  const auto scene = scene_override!=nullptr?*scene_override:prepare_scene(
       state.mesh, state.sphere, state.surface_method, state.material_rule,
       state.show_faces, false, state.show_surface_edges, false,
       state.x_cutaway && state.show_volume_edges,
@@ -1092,6 +1093,7 @@ void print_script_help(std::ostream& output) {
             "  validate-volume             Validate the selected connected volume\n"
             "  prepare-scene               Build cached CPU geometry and statistics\n"
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
+            "  render-blocked-image=<path.ppm>  Render published blocked surface snapshots\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-world-blocks Compare single-root 3/4/5-generation storage blocks\n"
@@ -1532,6 +1534,26 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
     }
     if(command.starts_with("gizmo-rotate=")){
       if(scripted_manipulator("gizmo-rotate=",true)&&errors.tellp()>0)return 2;
+      continue;
+    }
+    constexpr std::string_view blocked_render_prefix="render-blocked-image=";
+    if(command.starts_with(blocked_render_prefix)){
+      const auto path=trim(command.substr(blocked_render_prefix.size()));
+      if(path.empty()){write_error(errors,"image path is empty",command);return 2;}
+      tetra::WorldCutDirectory directory(
+          tetra::make_world_cut_checkpoint(state.mesh,3U,state.mesh.revision()));
+      const auto blocked=build_blocked_derived_surface(
+          state.mesh,directory,state.sphere);
+      directory.publish(directory.stage_derived_surfaces(
+          blocked.snapshots,directory.revision()+1U));
+      tetra::WorldCutDirectory reloaded(directory.checkpoint());
+      const auto assembled=assemble_blocked_derived_surface(reloaded);
+      const auto scene=prepare_blocked_derived_surface_scene(
+          assembled,state.sphere,state.show_faces,state.show_surface_edges);
+      if(!render_image(state,path,errors,&scene))return 2;
+      output<<"{\"event\":\"blocked_image\",\"path\":\""<<path
+            <<"\",\"surface_hash\":"<<assembled.canonical_surface_hash
+            <<",\"triangles\":"<<assembled.triangles.size()<<"}\n";
       continue;
     }
     constexpr std::string_view render_prefix = "render-image=";

@@ -19,6 +19,8 @@
 #include <string_view>
 #include <vector>
 
+namespace tetra { class WorldCutDirectory; }
+
 namespace tetra_viewer {
 
 inline constexpr std::uint32_t surface_optimizer_passes=5U;
@@ -709,6 +711,57 @@ struct PreparedScene {
   bool surface_diagnostics_available{};
   bool summary_statistics_available{};
 };
+
+struct BlockedDerivedSurfaceOptions {
+  // Bounds publication-sized scheduling batches without changing the final
+  // canonical result. A zero value is invalid.
+  std::size_t operation_budget{std::numeric_limits<std::size_t>::max()};
+  std::size_t job_group_size{1U};
+  bool reverse_job_order{};
+};
+
+struct BlockedDerivedSurfaceMetrics {
+  unsigned int block_generations{};
+  std::size_t source_vertices{};
+  std::size_t source_triangles{};
+  std::size_t surface_blocks{};
+  std::size_t scheduling_batches{};
+  std::size_t total_core_vertices{};
+  std::size_t total_patch_vertices{};
+  std::size_t total_patch_triangles{};
+  std::size_t dependency_block_references{};
+  std::size_t maximum_patch_vertices{};
+  std::size_t maximum_dependency_blocks{};
+  std::size_t worker_count{};
+  double minimum_connected_tet_quality_after{1.0};
+  bool connected_volume_valid{true};
+  double halo_amplification{};
+  double build_milliseconds{};
+};
+
+struct BlockedDerivedSurfaceBuild {
+  std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  std::vector<tetra::WorldSurfaceVertex> vertices;
+  std::vector<tetra::WorldSurfaceTriangle> triangles;
+  BlockedDerivedSurfaceMetrics metrics{};
+  std::uint64_t canonical_surface_hash{};
+};
+
+// Builds one globally owned surface snapshot per resident hierarchy block.
+// Extraction uses the current TetMesh oracle, while optimization is executed
+// independently for each owned core over its exact five-ring graph halo.
+[[nodiscard]] BlockedDerivedSurfaceBuild build_blocked_derived_surface(
+    const tetra::TetMesh& mesh,const tetra::WorldCutDirectory& directory,
+    const tetra::Sphere& sphere,BlockedDerivedSurfaceOptions options={},
+    tetra::GeometryExecutor* executor=nullptr,
+    std::stop_token cancellation={});
+[[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
+    const tetra::WorldCutDirectory& directory);
+// Converts a published or freshly assembled blocked snapshot into the same
+// flat-shaded, barycentric-edged draw representation consumed by Vulkan.
+[[nodiscard]] PreparedScene prepare_blocked_derived_surface_scene(
+    const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
+    bool show_faces=true,bool show_edges=true);
 
 struct SurfaceGeometryHashes {
   std::uint64_t triangle_hash{};

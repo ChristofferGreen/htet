@@ -122,6 +122,9 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] std::uint64_t revision() const noexcept override {
     return revision_;
   }
+  [[nodiscard]] unsigned int block_generations() const noexcept {
+    return block_generations_;
+  }
   [[nodiscard]] std::size_t logical_owner_count() const noexcept override;
   [[nodiscard]] WorldTetAddress logical_owner(std::size_t index) const override;
   [[nodiscard]] bool resident(WorldTetAddress address) const override;
@@ -138,6 +141,8 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] WorldCutCheckpoint checkpoint() const;
   [[nodiscard]] std::shared_ptr<const WorldDerivedSurfaceSnapshot> surface(
       HierarchyBlockId id) const;
+  [[nodiscard]] std::span<const std::shared_ptr<const WorldDerivedSurfaceSnapshot>>
+      derived_surfaces() const noexcept { return surfaces_; }
 
   [[nodiscard]] WorldRevisionManifest stage_derived_surfaces(
       std::span<const WorldDerivedSurfaceSnapshot> surfaces,

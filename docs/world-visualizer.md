@@ -707,6 +707,26 @@ change cannot leave a cached surface over changed hierarchy, and failed
 validation restores both arrays and the prior revision. Checkpoints retain the
 same immutable surface snapshots.
 
+The production blocked builder now starts from adaptive cleaving, not the
+detached render-only optimizer. Each block owns boundary triangles by the
+logical owner of their incident connected tetrahedron, walks exactly five
+rings over the welded global-key surface graph, and crops every connected
+tetrahedron incident to a vertex that can move in the bounded schedule.
+Interior crop vertices remain immutable. The normal production optimizer then
+applies its surface fairness, orientation, positive-volume, and tetrahedron
+quality tests to this cropped connected volume. Only core boundary positions
+and owned oriented triangles are published. Dependencies include every block
+that owns a halo face or an included incident tetrahedron.
+
+Assembly rejects missing vertices, duplicate triangles, and bit-disagreeing
+copies of shared vertices. Any residency change invalidates the complete
+derived-surface revision rather than exposing a partial fine shell; a new
+coarse or fine shell is published atomically afterward. Reload preserves face
+winding as well as canonical identity. The published snapshot can be converted
+directly to the same flat-shaded triangle and depth-tested edge representation
+used by Vulkan; visual qualification therefore inspects the blocked result,
+not a separately regenerated monolithic surface.
+
 ## 8. Bounded surface optimization
 
 The production optimizer now performs five synchronous Jacobi passes. Every
@@ -738,12 +758,28 @@ Quality, field projection, positive-volume, orientation, and existing visual
 surface regressions remain unchanged. One- and four-worker scene preparation
 produce the same global keys and canonical surface hashes.
 
-The release `tetra_derived_surface_benchmark` exercises 3,456 logical owners,
-752 optimized surface vertices, and 1,555 connected-volume vertices. On the
-initial Apple ARM64 run it produced the same hash
-`5498938240189036371` with one, two, and four workers in approximately 39.7,
-26.6, and 21.8 milliseconds respectively. These are regression measurements,
-not a cross-machine performance target.
+The release `tetra_derived_surface_benchmark` now exercises a deeper
+80,358-owner cut with 14,576 surface vertices and 29,148 triangles. It compares
+three-, four-, and five-generation widths with one, two, and four workers; all
+nine runs reproduce monolithic hash `6974406390991729544`. On the initial
+Apple ARM64 run, four-worker width-three execution took about 1.60 seconds,
+used 1,272 surface blocks, 17.36 MB of snapshot storage, 29.29x aggregate halo
+amplification, and a maximum 683-vertex patch. Width four took 4.19 seconds
+with a 440-vertex maximum patch but 5,732 jobs and 100.03x amplification.
+Width five took 4.19 seconds with 742 jobs, 14.84x amplification, and a much
+larger 3,963-vertex maximum patch. Width three is therefore the measured
+production default: it gives the best latency and a bounded maximum job,
+despite width five's smaller aggregate snapshot and halo totals. These are
+regression measurements, not a cross-machine performance target.
+
+Release tests cover exact connected-surface equality for widths three through
+five, every BCC root, multiple owner-depth phases, reverse job order, serial
+and four-worker execution, operation budgets, job grouping, refinement,
+coarsening, cancellation, stale publication, eviction, and checkpoint reload.
+Every cropped connected volume retains positive signed tetrahedron volume and
+positive minimum quality. Published-and-reloaded flat-shaded and edged
+close-ups showed a continuous opaque surface without storage-boundary cracks
+or missing triangle edges.
 
 ## 9. Terrain field
 
@@ -1155,14 +1191,14 @@ complete only when its focused tests and the full release suite pass.
       schedule.
 - [x] Derive and document the exact halo required by the fixed optimization
       schedule, then prove it against wider-halo and monolithic runs.
-- [ ] Script refine/coarsen transactions across every tested block-boundary
+- [x] Script refine/coarsen transactions across every tested block-boundary
       and root-face orientation, worker count, job grouping, and operation
       budget.
-- [ ] At synthetic planet depths, compare three-, four-, and five-generation
+- [x] At synthetic planet depths, compare three-, four-, and five-generation
       widths and every relevant boundary phase using sparse surface-like cuts;
       measure occupancy, affected blocks, job size, halo amplification, and
       transaction latency before freezing a production block policy.
-- [ ] Require exact oracle equivalence and visually inspect boundary close-ups
+- [x] Require exact oracle equivalence and visually inspect boundary close-ups
       with flat shading and triangle edges.
 
 ### Gate 3: Adopt the blocked runtime and large world domain

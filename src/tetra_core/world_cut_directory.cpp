@@ -931,12 +931,12 @@ WorldDirectoryUpdate WorldCutDirectory::reconcile(
   auto previous=blocks_;const auto previous_revision=revision_;
   auto previous_surfaces=surfaces_;
   std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> next_surfaces;
-  for(const auto& surface:surfaces_)
-    if(requested.contains(surface->id)&&
-       std::ranges::all_of(surface->dependency_blocks,[&](HierarchyBlockId id){
-         return requested.contains(id);
-       }))
-      next_surfaces.push_back(surface);
+  // A snapshot is derived from one complete logical cut. Retaining only the
+  // fragments whose dependency blocks happen to remain resident would expose
+  // a holey mixture of revisions. Any residency delta invalidates the entire
+  // derived surface; callers regenerate the new coarse or fine cut before
+  // publication. A true no-op reconcile may retain the current revision.
+  if(loaded==0U&&evicted==0U)next_surfaces=surfaces_;
   blocks_=std::move(next);revision_=new_revision;
   surfaces_=std::move(next_surfaces);
   try{validate_and_refresh();}

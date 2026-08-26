@@ -6230,6 +6230,213 @@ TEST_CASE("bounded surface optimization is globally keyed and worker invariant")
   CHECK(std::ranges::adjacent_find(keys)==keys.end());
 }
 
+TEST_CASE("blocked five-ring connected surface matches the production oracle") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.44};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,38.0,9));
+  const auto checkpoint=tetra::make_world_cut_checkpoint(mesh,3U,1U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  const auto blocked=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  const auto monolithic=tetra_viewer::prepare_scene(mesh,sphere,
+      tetra_viewer::SurfaceMethod::surface_optimization,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  CHECK(blocked.canonical_surface_hash==monolithic.connected_surface_hash);
+  CHECK(blocked.vertices.size()==blocked.metrics.source_vertices);
+  CHECK(blocked.triangles.size()==blocked.metrics.source_triangles);
+  CHECK(blocked.snapshots.size()==blocked.metrics.surface_blocks);
+  CHECK(blocked.metrics.halo_amplification>=1.0);
+  CHECK(blocked.metrics.connected_volume_valid);
+  CHECK(blocked.metrics.minimum_connected_tet_quality_after>0.0);
+  CHECK(blocked.metrics.block_generations==3U);
+  const auto render=tetra_viewer::prepare_blocked_derived_surface_scene(
+      blocked,sphere);
+  CHECK(render.connected_surface_hash==blocked.canonical_surface_hash);
+  REQUIRE(render.triangle_vertices.size()==blocked.triangles.size()*3U);
+  const auto render_hashes=tetra_viewer::surface_geometry_hashes(render);
+  CHECK(render_hashes.edge_count==render_hashes.wire_edge_count);
+  for(std::size_t triangle=0;triangle<render.triangle_vertices.size();triangle+=3U){
+    for(std::size_t corner=1;corner<3U;++corner)
+      for(std::size_t axis=0;axis<3U;++axis)
+        CHECK(render.triangle_vertices[triangle+corner].normal[axis]==
+              render.triangle_vertices[triangle].normal[axis]);
+    CHECK(render.triangle_vertices[triangle].edge_flags==7.0F);
+  }
+  CHECK(std::ranges::all_of(blocked.snapshots,[](const auto& snapshot){
+    return snapshot.metrics.optimizer_passes==
+               tetra_viewer::surface_optimizer_passes&&
+           snapshot.metrics.dependency_halo_rings==
+               tetra_viewer::surface_optimizer_dependency_halo_rings;
+  }));
+  auto staged=directory.stage_derived_surfaces(blocked.snapshots,2U);
+  CHECK(directory.derived_surfaces().empty());
+  directory.publish(staged);
+  const auto published=tetra_viewer::assemble_blocked_derived_surface(directory);
+  CHECK(published.canonical_surface_hash==blocked.canonical_surface_hash);
+  CHECK(published.vertices.size()==blocked.vertices.size());
+  CHECK(published.triangles.size()==blocked.triangles.size());
+  tetra::WorldCutDirectory restored(directory.checkpoint());
+  const auto reloaded=tetra_viewer::assemble_blocked_derived_surface(restored);
+  CHECK(reloaded.canonical_surface_hash==blocked.canonical_surface_hash);
+  for(const auto& triangle:reloaded.triangles){
+    std::array<tetra::Vec3,3> points{};
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto vertex=std::ranges::lower_bound(
+          reloaded.vertices,triangle.vertices[corner],{},
+          &tetra::WorldSurfaceVertex::key);
+      REQUIRE(vertex!=reloaded.vertices.end());points[corner]=vertex->position;
+    }
+    const auto ab=points[1]-points[0],ac=points[2]-points[0];
+    const tetra::Vec3 normal{ab.y*ac.z-ab.z*ac.y,
+                             ab.z*ac.x-ab.x*ac.z,
+                             ab.x*ac.y-ab.y*ac.x};
+    const auto centre=(points[0]+points[1]+points[2])/3.0;
+    const auto outward=sphere.normal(centre);
+    CHECK(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z>0.0);
+  }
+}
+
+TEST_CASE("blocked surface is invariant across widths phases budgets grouping and workers") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.44};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,42.0,12));
+  const auto monolithic=tetra_viewer::prepare_scene(mesh,sphere,
+      tetra_viewer::SurfaceMethod::surface_optimization,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  tetra::GeometryExecutor serial({.worker_count=1U,.blocks_per_worker=1U});
+  tetra::GeometryExecutor parallel({.worker_count=4U,.blocks_per_worker=7U});
+  std::uint64_t reference{};
+  for(const unsigned int width:{3U,4U,5U}){
+    CAPTURE(width);
+    tetra::WorldCutDirectory directory(
+        tetra::make_world_cut_checkpoint(mesh,width,1U));
+    const auto narrow=tetra_viewer::build_blocked_derived_surface(
+        mesh,directory,sphere,{.operation_budget=1U,.job_group_size=1U},
+        &serial);
+    const auto grouped=tetra_viewer::build_blocked_derived_surface(
+        mesh,directory,sphere,{.operation_budget=7U,.job_group_size=3U,
+                               .reverse_job_order=true},&parallel);
+    CHECK(narrow.canonical_surface_hash==monolithic.connected_surface_hash);
+    CHECK(grouped.canonical_surface_hash==narrow.canonical_surface_hash);
+    REQUIRE(grouped.vertices.size()==narrow.vertices.size());
+    for(std::size_t vertex=0;vertex<narrow.vertices.size();++vertex){
+      CHECK(grouped.vertices[vertex].key==narrow.vertices[vertex].key);
+      CHECK(grouped.vertices[vertex].position.x==narrow.vertices[vertex].position.x);
+      CHECK(grouped.vertices[vertex].position.y==narrow.vertices[vertex].position.y);
+      CHECK(grouped.vertices[vertex].position.z==narrow.vertices[vertex].position.z);
+    }
+    CHECK(grouped.triangles==narrow.triangles);
+    CHECK(grouped.metrics.source_vertices==narrow.metrics.source_vertices);
+    CHECK(grouped.metrics.source_triangles==narrow.metrics.source_triangles);
+    CHECK(grouped.metrics.scheduling_batches<=narrow.metrics.scheduling_batches);
+    CHECK(narrow.metrics.scheduling_batches==narrow.metrics.surface_blocks);
+    CHECK(grouped.metrics.worker_count==4U);
+    CHECK(narrow.metrics.connected_volume_valid);
+    CHECK(grouped.metrics.connected_volume_valid);
+    CHECK(narrow.metrics.minimum_connected_tet_quality_after>0.0);
+    CHECK(grouped.metrics.minimum_connected_tet_quality_after>0.0);
+    if(reference==0U)reference=narrow.canonical_surface_hash;
+    CHECK(narrow.canonical_surface_hash==reference);
+
+    std::set<unsigned int> phases;
+    std::set<std::uint8_t> roots;
+    for(const auto& triangle:narrow.triangles){
+      phases.insert(triangle.owner.red_depth()%width);
+      roots.insert(triangle.owner.root_id());
+    }
+    CHECK(phases.size()>1U);
+    CHECK(roots.size()==tetra::bcc_root_tetrahedron_count);
+  }
+}
+
+TEST_CASE("blocked surfaces refine coarsen cancel and reject stale publication atomically") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.44};
+  const auto root=tetra::WorldTetAddress::root(0U);
+  tetra::WorldCutDirectory directory(
+      tetra::make_world_cut_checkpoint(mesh,2U,1U));
+  const auto initial=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  directory.publish(directory.stage_derived_surfaces(initial.snapshots,2U));
+  REQUIRE_FALSE(directory.derived_surfaces().empty());
+
+  const auto pending=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  const auto stale=directory.stage_derived_surfaces(pending.snapshots,3U);
+  const auto split=directory.stage_transaction(
+      {{{root,tetra::WorldTopologyOperation::split}}},3U);
+  CHECK_FALSE(split.manifest.removed_surfaces().empty());
+  REQUIRE(mesh.refine_selected_binary({tetra::make_tet_id(0U,1U)}));
+  directory.publish(split.manifest);
+  CHECK(directory.derived_surfaces().empty());
+  CHECK_THROWS_AS(directory.publish(stale),std::invalid_argument);
+  const auto refined=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  const auto refined_oracle=tetra_viewer::prepare_scene(mesh,sphere,
+      tetra_viewer::SurfaceMethod::surface_optimization,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  CHECK(refined.canonical_surface_hash==refined_oracle.connected_surface_hash);
+  directory.publish(directory.stage_derived_surfaces(refined.snapshots,4U));
+
+  std::stop_source canceled;canceled.request_stop();
+  const auto published_hash=directory.checkpoint().canonical_hash();
+  CHECK_THROWS_AS(static_cast<void>(tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere,{},nullptr,canceled.get_token())),std::runtime_error);
+  CHECK(directory.checkpoint().canonical_hash()==published_hash);
+
+  const auto merge=directory.stage_transaction(
+      {{{root,tetra::WorldTopologyOperation::merge}}},5U);
+  CHECK_FALSE(merge.manifest.removed_surfaces().empty());
+  REQUIRE(mesh.coarsen_selected_red({tetra::make_tet_id(0U,1U)}));
+  directory.publish(merge.manifest);
+  const auto restored=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  CHECK(restored.canonical_surface_hash==initial.canonical_surface_hash);
+}
+
+TEST_CASE("blocked surface eviction never retains a partial fine shell") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.44};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,42.0,12));
+  const auto available=tetra::make_world_cut_checkpoint(mesh,1U,1U);
+  tetra::WorldCutDirectory directory(available);
+  const auto fine=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  REQUIRE(fine.snapshots.size()>tetra::bcc_root_tetrahedron_count);
+  const auto fine_owners=directory.logical_owner_count();
+  directory.publish(directory.stage_derived_surfaces(fine.snapshots,2U));
+  REQUIRE_FALSE(directory.derived_surfaces().empty());
+
+  const auto update=directory.reconcile(
+      available,{},tetra::bcc_root_tetrahedron_count,3U);
+  CHECK(update.metrics.evicted_blocks>0U);
+  CHECK(directory.logical_owner_count()<fine_owners);
+  CHECK(directory.derived_surfaces().empty());
+  CHECK(tetra_viewer::assemble_blocked_derived_surface(directory).triangles.empty());
+  tetra::WorldCutDirectory reloaded(directory.checkpoint());
+  CHECK(reloaded.derived_surfaces().empty());
+
+  mesh.reset_active_hierarchy();
+  mesh.refine_all_binary();
+  CHECK(mesh.logical_red_owners().size()==directory.logical_owner_count());
+  const auto coarse=tetra_viewer::build_blocked_derived_surface(
+      mesh,directory,sphere);
+  const auto oracle=tetra_viewer::prepare_scene(mesh,sphere,
+      tetra_viewer::SurfaceMethod::surface_optimization,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  CHECK(coarse.canonical_surface_hash==oracle.connected_surface_hash);
+  directory.publish(directory.stage_derived_surfaces(coarse.snapshots,4U));
+  CHECK(tetra_viewer::assemble_blocked_derived_surface(directory).
+        canonical_surface_hash==coarse.canonical_surface_hash);
+}
+
 TEST_CASE("diagnostic shading models and surface angle data are registered") {
   CHECK(tetra_viewer::shading_models.size() == 4);
   CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::studio_flat) == "studio-flat");

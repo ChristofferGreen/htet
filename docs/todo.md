@@ -21,9 +21,14 @@ also complete. Adaptive cleaving now uses exact global derived identities and
 canonical ownership; safe warp limits reduce the complete incident star by
 global key; the production five-pass optimizer is synchronous Jacobi with an
 exact five-ring halo; and derived surfaces stage and publish atomically with
-their hierarchy dependencies. The next closable Gate 2 work is the remaining
-width/phase, operation-budget, and visual seam validation before adopting the
-blocked runtime in `tetra_world`.
+their hierarchy dependencies. Production blocked jobs now crop the connected
+adaptive-cleaving volume, retain all incident-tetrahedron validity checks,
+match the monolithic surface exactly across widths and scheduling policies,
+survive mutation, eviction, and reload, and render directly from published
+snapshots. Deeper release measurements retain three generations as the
+bounded production width. Gate 2 is complete; the next closable work is Gate
+3's switch of `tetra_world` to this blocked revision/runtime path without a
+visual or controller regression.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
@@ -52,6 +57,9 @@ not the active queue.
       monolithic oracle comparisons, and a width/phase transaction benchmark.
 - [x] Replace adaptive-cleaving local identity tie-breaks with global keys and
       adopt a deterministic bounded-dependency surface optimizer.
+- [x] Build, publish, reload, assemble, render, benchmark, and visually qualify
+      exact five-ring blocked connected surfaces across block widths,
+      scheduling policies, hierarchy mutation, cancellation, and eviction.
 
 - [x] Define one named world-visualizer production profile containing the
       current release defaults.
