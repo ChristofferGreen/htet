@@ -88,6 +88,80 @@ double squared_distance_to_block(WorldTetAddress prefix,Vec3 point) {
   return x*x+y*y+z*z;
 }
 
+bool snapshot_payload_equal(
+    const HierarchyBlockSnapshot& first,const HierarchyBlockSnapshot& second) {
+  return first.id==second.id&&first.residency==second.residency&&
+      first.resident_records==second.resident_records&&
+      first.logical_owners==second.logical_owners;
+}
+
+bool overlaps(WorldTetAddress first,WorldTetAddress second) {
+  if(first.root_id()!=second.root_id())return false;
+  const auto depth=std::min(first.red_depth(),second.red_depth());
+  return first.ancestor(depth)==second.ancestor(depth);
+}
+
+bool incident(WorldTetAddress first,WorldTetAddress second) {
+  const auto a=world_tetrahedron_vertex_keys(first);
+  const auto b=world_tetrahedron_vertex_keys(second);
+  unsigned int common{};
+  for(const auto left:a)for(const auto right:b)common+=left==right;
+  return common>=2U;
+}
+
+Vec3 cross(Vec3 a,Vec3 b) {
+  return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
+}
+
+double dot(Vec3 a,Vec3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
+
+bool point_in_triangle(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
+  const auto v0=b-a,v1=c-a,v2=point-a;
+  const double d00=dot(v0,v0),d01=dot(v0,v1),d11=dot(v1,v1);
+  const double d20=dot(v2,v0),d21=dot(v2,v1);
+  const double denominator=d00*d11-d01*d01;
+  if(std::abs(denominator)<1.0e-30)return false;
+  const double u=(d11*d20-d01*d21)/denominator;
+  const double v=(d00*d21-d01*d20)/denominator;
+  return u>1.0e-10&&v>1.0e-10&&u+v<1.0-1.0e-10;
+}
+
+bool face_adjacent(WorldTetAddress first,WorldTetAddress second) {
+  constexpr std::array<std::array<std::size_t,3>,4> faces{{
+      {{1,2,3}},{{0,2,3}},{{0,1,3}},{{0,1,2}}}};
+  const auto a=world_tetrahedron_geometry(first);
+  const auto b=world_tetrahedron_geometry(second);
+  for(const auto left:faces){
+    const auto normal=cross(a[left[1]]-a[left[0]],a[left[2]]-a[left[0]]);
+    const double scale=std::sqrt(dot(normal,normal));
+    if(scale==0.0)continue;
+    for(const auto right:faces){
+      const double plane0=std::abs(dot(normal,b[right[0]]-a[left[0]]));
+      const double plane1=std::abs(dot(normal,b[right[1]]-a[left[0]]));
+      const double plane2=std::abs(dot(normal,b[right[2]]-a[left[0]]));
+      if(std::max({plane0,plane1,plane2})>scale*1.0e-12)continue;
+      const auto left_centre=(a[left[0]]+a[left[1]]+a[left[2]])/3.0;
+      const auto right_centre=(b[right[0]]+b[right[1]]+b[right[2]])/3.0;
+      if(point_in_triangle(left_centre,b[right[0]],b[right[1]],b[right[2]])||
+         point_in_triangle(right_centre,a[left[0]],a[left[1]],a[left[2]]))
+        return true;
+    }
+  }
+  return false;
+}
+
+unsigned int allowed_green_superset(unsigned int mask) {
+  constexpr std::array<unsigned int,15> allowed{{
+      0U,1U,2U,4U,8U,16U,32U,33U,18U,12U,11U,21U,38U,56U,63U}};
+  unsigned int best=63U;
+  for(const auto candidate:allowed)
+    if((candidate&mask)==mask&&
+       (std::popcount(candidate)<std::popcount(best)||
+        (std::popcount(candidate)==std::popcount(best)&&candidate<best)))
+      best=candidate;
+  return best;
+}
+
 }  // namespace
 
 std::uint64_t WorldCutCheckpoint::canonical_hash() const {
@@ -377,6 +451,245 @@ WorldCutCheckpoint WorldCutDirectory::checkpoint() const {
   return result;
 }
 
+WorldStagedTransaction WorldCutDirectory::stage_transaction(
+    std::span<const WorldTopologyEdit> edits,std::uint64_t new_revision,
+    const std::function<bool()>& canceled) const {
+  using Clock=std::chrono::steady_clock;
+  const auto planning_start=Clock::now();
+  if(new_revision<=revision_)
+    throw std::invalid_argument("world transaction revision must advance");
+  if(edits.empty())throw std::invalid_argument("world transaction has no edits");
+  const auto check_canceled=[&]{
+    if(canceled&&canceled())throw std::runtime_error("world transaction canceled");
+  };
+  check_canceled();
+
+  WorldTransaction transaction;
+  transaction.source_revision=revision_;transaction.result_revision=new_revision;
+  transaction.requested_edits.assign(edits.begin(),edits.end());
+  std::ranges::sort(transaction.requested_edits);
+  if(std::ranges::adjacent_find(transaction.requested_edits)!=
+     transaction.requested_edits.end())
+    throw std::invalid_argument("world transaction contains a duplicate edit");
+  for(std::size_t a=0;a<transaction.requested_edits.size();++a)
+    for(std::size_t b=a+1U;b<transaction.requested_edits.size();++b)
+      if(overlaps(transaction.requested_edits[a].address,
+                  transaction.requested_edits[b].address))
+        throw std::invalid_argument("world transaction contains overlapping edits");
+
+  std::vector<WorldTetAddress> source;
+  source.reserve(metrics_.effective_logical_owners);
+  for_each_logical_owner([&](WorldTetAddress owner){source.push_back(owner);});
+  std::ranges::sort(source);
+  const auto closure_start=Clock::now();
+  std::vector<WorldTopologyEdit> expanded=transaction.requested_edits;
+  std::set<WorldTetAddress> selected;
+  for(const auto& edit:transaction.requested_edits)
+    if(edit.operation==WorldTopologyOperation::split){
+      if(!std::ranges::binary_search(source,edit.address))
+        throw std::invalid_argument("world split target is not a logical leaf");
+      selected.insert(edit.address);
+    }
+
+  // Mirror the crystalline BCC midpoint closure with exact global edge keys.
+  // A selected red owner activates all six edge midpoints. Other owners add
+  // the smallest supported green stencil containing their active mask; a
+  // full six-edge mask promotes that owner to a red split.
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  std::set<WorldEdgeKey> midpoints;
+  const auto add_edges=[&](WorldTetAddress owner){
+    const auto keys=world_tetrahedron_vertex_keys(owner);
+    for(const auto edge:edges)
+      midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+  };
+  for(const auto leaf:source){
+    auto descendant=leaf;
+    while(descendant.red_depth()>0U){descendant=descendant.parent();add_edges(descendant);}
+  }
+  std::vector<std::array<std::size_t,2>> face_adjacency;
+  for(std::size_t first=0;first<source.size();++first)
+    for(std::size_t second=first+1U;second<source.size();++second)
+      if(face_adjacent(source[first],source[second]))
+        face_adjacency.push_back({first,second});
+  const auto propagate_midpoints=[&](bool promote){
+    bool changed=true;
+    while(changed){
+      check_canceled();changed=false;
+      for(const auto owner:source){
+        if(selected.contains(owner))continue;
+        const auto keys=world_tetrahedron_vertex_keys(owner);
+        unsigned int mask{};
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if(midpoints.contains(world_edge_key(
+              keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
+        const auto target=allowed_green_superset(mask);
+        if(target==63U){
+          if(promote){selected.insert(owner);add_edges(owner);changed=true;}
+          continue;
+        }
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
+            changed|=midpoints.insert(world_edge_key(
+                keys[edges[edge][0]],keys[edges[edge][1]])).second;
+      }
+    }
+  };
+  // Reconstruct transition midpoints implied by the already-published cut,
+  // then inject this transaction's red midpoints and propagate promotions.
+  propagate_midpoints(false);
+  std::size_t previous_selected=std::numeric_limits<std::size_t>::max();
+  while(previous_selected!=selected.size()){
+    previous_selected=selected.size();
+    bool balanced=false;
+    do{
+      balanced=true;
+      for(const auto pair:face_adjacency){
+        const auto first=source[pair[0]],second=source[pair[1]];
+        const unsigned int first_depth=first.red_depth()+selected.contains(first);
+        const unsigned int second_depth=second.red_depth()+selected.contains(second);
+        if(first_depth>second_depth+1U&&!selected.contains(second)){
+          selected.insert(second);balanced=false;
+        }
+        if(second_depth>first_depth+1U&&!selected.contains(first)){
+          selected.insert(first);balanced=false;
+        }
+      }
+    }while(!balanced);
+    for(const auto owner:selected)add_edges(owner);
+    propagate_midpoints(true);
+  }
+  for(const auto owner:selected)
+    if(!std::ranges::binary_search(transaction.requested_edits,
+          WorldTopologyEdit{owner,WorldTopologyOperation::split})){
+      transaction.closure_edits.push_back(owner);
+      expanded.push_back({owner,WorldTopologyOperation::split});
+  }
+  std::ranges::sort(expanded);
+  const auto closure_end=Clock::now();
+  const auto staging_start=closure_end;
+  std::set<WorldTetAddress> result_set(source.begin(),source.end());
+  for(const auto& edit:expanded){
+    check_canceled();
+    if(edit.address.root_id()>=bcc_root_tetrahedron_count)
+      throw std::out_of_range("world transaction edit uses an unknown root");
+    if(edit.operation==WorldTopologyOperation::split){
+      const auto found=result_set.find(edit.address);
+      if(found==result_set.end())
+        throw std::invalid_argument("world split target is not a logical leaf");
+      if(edit.address.red_depth()>=maximum_world_red_depth)
+        throw std::overflow_error("world split exceeds address depth");
+      result_set.erase(found);
+      for(std::uint8_t child=0;child<8U;++child)
+        result_set.insert(edit.address.child(child));
+    }else{
+      for(std::uint8_t child=0;child<8U;++child)
+        if(!result_set.contains(edit.address.child(child)))
+          throw std::invalid_argument("world merge target is not a complete logical red family");
+      for(std::uint8_t child=0;child<8U;++child)
+        result_set.erase(edit.address.child(child));
+      result_set.insert(edit.address);
+    }
+  }
+  std::vector<WorldTetAddress> result(result_set.begin(),result_set.end());
+  if(std::ranges::any_of(transaction.requested_edits,[](const auto& edit){
+       return edit.operation==WorldTopologyOperation::merge;})){
+    std::set<WorldEdgeKey> required;
+    for(const auto leaf:result){
+      auto descendant=leaf;
+      while(descendant.red_depth()>0U){
+        descendant=descendant.parent();
+        const auto keys=world_tetrahedron_vertex_keys(descendant);
+        for(const auto edge:edges)
+          required.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+      }
+    }
+    bool changed=true;
+    while(changed){
+      changed=false;
+      for(const auto owner:result){
+        const auto keys=world_tetrahedron_vertex_keys(owner);
+        unsigned int mask{};
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if(required.contains(world_edge_key(
+              keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
+        const auto target=allowed_green_superset(mask);
+        if(target==63U)
+          throw std::invalid_argument("world merge would require a red closure split");
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
+            changed|=required.insert(world_edge_key(
+                keys[edges[edge][0]],keys[edges[edge][1]])).second;
+      }
+    }
+    for(std::size_t first=0;first<result.size();++first)
+      for(std::size_t second=first+1U;second<result.size();++second)
+        if(face_adjacent(result[first],result[second])&&
+           std::max(result[first].red_depth(),result[second].red_depth())>
+               std::min(result[first].red_depth(),result[second].red_depth())+1U)
+          throw std::invalid_argument("world merge would violate red 2:1 balance");
+  }
+  transaction.metrics.planning_milliseconds=std::chrono::duration<double,std::milli>(
+      closure_start-planning_start).count();
+  transaction.metrics.source_logical_owners=source.size();
+  transaction.metrics.result_logical_owners=result.size();
+
+  std::set<HierarchyBlockId> dependencies;
+  for(const auto& edit:transaction.requested_edits){
+    if(const auto target=lookup(edit.address))dependencies.insert(target.block->id);
+    for(const auto owner:source){
+      check_canceled();
+      if(owner==edit.address||!incident(owner,edit.address))continue;
+      if(const auto neighbour=lookup(owner))dependencies.insert(neighbour.block->id);
+    }
+  }
+  std::ranges::sort(transaction.closure_edits);
+  transaction.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
+      closure_end-closure_start).count();
+
+  auto next=make_sparse_world_cut_checkpoint(result,block_generations_,new_revision,
+      HierarchyResidencyTier::conforming_volume);
+  std::map<HierarchyBlockId,const HierarchyBlockSnapshot*> old_blocks,new_blocks;
+  for(const auto& block:blocks_)old_blocks.emplace(block->id,block.get());
+  for(const auto& block:next.blocks)new_blocks.emplace(block.id,&block);
+  std::vector<HierarchyBlockSnapshot> changed;
+  std::vector<HierarchyBlockId> removed;
+  for(const auto& [id,block]:new_blocks){
+    const auto old=old_blocks.find(id);
+    if(old!=old_blocks.end()&&snapshot_payload_equal(*old->second,*block))continue;
+    auto copy=*block;copy.source_revision=new_revision;normalize_snapshot(copy);
+    transaction.affected_blocks.push_back(id);changed.push_back(std::move(copy));
+    if(old!=old_blocks.end())dependencies.insert(id);
+  }
+  for(const auto& [id,block]:old_blocks){
+    (void)block;
+    if(new_blocks.contains(id))continue;
+    removed.push_back(id);transaction.affected_blocks.push_back(id);dependencies.insert(id);
+  }
+  std::ranges::sort(transaction.affected_blocks);
+  std::vector<WorldBlockDependency> certificates;
+  certificates.reserve(dependencies.size());
+  for(const auto id:dependencies){
+    const auto block=find_block(id);
+    if(!block)throw std::logic_error("world transaction dependency disappeared");
+    certificates.push_back({id,block->source_revision,
+                            hierarchy_block_canonical_hash(*block)});
+  }
+  transaction.dependency_reads=certificates;
+  transaction.metrics.requested_edits=transaction.requested_edits.size();
+  transaction.metrics.closure_edits=transaction.closure_edits.size();
+  transaction.metrics.dependency_reads=certificates.size();
+  transaction.metrics.affected_blocks=transaction.affected_blocks.size();
+  for(const auto& block:changed)transaction.metrics.staged_bytes+=block.metrics.retained_bytes;
+  transaction.metrics.staging_milliseconds=std::chrono::duration<double,std::milli>(
+      Clock::now()-staging_start).count();
+  std::uint64_t hash=hash_offset;
+  for(const auto owner:result){hash_value(hash,owner.high);hash_value(hash,owner.low);}
+  transaction.canonical_hash=hash;
+  return {std::move(transaction),WorldRevisionManifest(new_revision,revision_,
+      std::move(changed),std::move(certificates),std::move(removed))};
+}
+
 void WorldCutDirectory::validate_and_refresh() {
   if(revision_==0U)throw std::invalid_argument("world directory revision must be nonzero");
   if(block_generations_==0U||block_generations_>maximum_world_red_depth)
@@ -443,9 +756,22 @@ void WorldCutDirectory::validate_and_refresh() {
 void WorldCutDirectory::publish(const WorldRevisionManifest& manifest) {
   if(manifest.parent_revision()!=revision_)
     throw std::invalid_argument("world manifest has a stale parent revision");
+  for(const auto& dependency:manifest.dependencies()){
+    const auto block=find_block(dependency.id);
+    if(!block||block->source_revision!=dependency.source_revision||
+       hierarchy_block_canonical_hash(*block)!=dependency.canonical_hash)
+      throw std::invalid_argument("world manifest has a stale block dependency");
+  }
   auto previous=blocks_;
   const auto previous_revision=revision_;
   try{
+    for(const auto id:manifest.removed_blocks()){
+      const auto found=std::ranges::lower_bound(
+          blocks_,id,{},[](const auto& block){return block->id;});
+      if(found==blocks_.end()||(*found)->id!=id)
+        throw std::invalid_argument("world manifest removes a missing block");
+      blocks_.erase(found);
+    }
     for(const auto& changed:manifest.blocks()){
       const auto found=std::ranges::lower_bound(
           blocks_,changed->id,{},[](const auto& block){return block->id;});

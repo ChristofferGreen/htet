@@ -213,6 +213,22 @@ std::vector<PendingAddress> conforming_records(
 
 }  // namespace
 
+std::uint64_t hierarchy_block_canonical_hash(
+    const HierarchyBlockSnapshot& block) {
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  auto hash=offset;
+  const auto add=[&](std::uint64_t value) { hash^=value;hash*=prime; };
+  add(block.id.prefix.high);add(block.id.prefix.low);
+  add(block.id.block_generations);add(block.source_revision);
+  add(static_cast<std::uint8_t>(block.residency));
+  for(const auto value:block.resident_records){add(value.high);add(value.low);}
+  add(block.resident_records.size());
+  for(const auto value:block.logical_owners){add(value.high);add(value.low);}
+  add(block.logical_owners.size());
+  return hash;
+}
+
 WorldTetAddress WorldTetAddress::root(std::uint8_t root_id) {
   return compose(root_id,0U,0U,0U);
 }
@@ -330,6 +346,13 @@ WorldFaceKey world_face_key(
   return result;
 }
 
+WorldTetAddress world_shared_entity_owner(
+    std::span<const WorldTetAddress> incident) {
+  if(incident.empty())
+    throw std::invalid_argument("shared world entity has no incident tetrahedron");
+  return *std::ranges::min_element(incident);
+}
+
 std::optional<TetId> local_tet_id(WorldTetAddress address) {
   const unsigned int binary_depth=address.red_depth()*3U;
   if(binary_depth>=tet_root_shift)return std::nullopt;
@@ -352,7 +375,9 @@ HierarchyBlockId hierarchy_block_id(
 
 WorldRevisionManifest::WorldRevisionManifest(
     std::uint64_t revision,std::uint64_t parent_revision,
-    std::vector<HierarchyBlockSnapshot> blocks)
+    std::vector<HierarchyBlockSnapshot> blocks,
+    std::vector<WorldBlockDependency> dependencies,
+    std::vector<HierarchyBlockId> removed_blocks)
     :revision_(revision),parent_revision_(parent_revision) {
   if(revision_<=parent_revision_)
     throw std::invalid_argument("world revision must advance its parent");
@@ -366,6 +391,20 @@ WorldRevisionManifest::WorldRevisionManifest(
     blocks_.push_back(std::make_shared<const HierarchyBlockSnapshot>(std::move(block)));
   }
   metrics_.changed_blocks=blocks_.size();
+  std::ranges::sort(dependencies);
+  if(std::ranges::adjacent_find(dependencies,[](const auto& first,const auto& second){
+       return first.id==second.id;})!=dependencies.end())
+    throw std::invalid_argument("world manifest contains duplicate dependency identity");
+  dependencies_=std::move(dependencies);
+  std::ranges::sort(removed_blocks);
+  if(std::ranges::adjacent_find(removed_blocks)!=removed_blocks.end())
+    throw std::invalid_argument("world manifest contains duplicate removed block identity");
+  for(const auto id:removed_blocks)
+    if(std::ranges::binary_search(blocks_,id,{},[](const auto& block){return block->id;}))
+      throw std::invalid_argument("world manifest both changes and removes a block");
+  removed_blocks_=std::move(removed_blocks);
+  metrics_.removed_blocks=removed_blocks_.size();
+  metrics_.affected_blocks=metrics_.changed_blocks+metrics_.removed_blocks;
 }
 
 TetMeshHierarchyAccess::TetMeshHierarchyAccess(const TetMesh& mesh):mesh_(&mesh) {

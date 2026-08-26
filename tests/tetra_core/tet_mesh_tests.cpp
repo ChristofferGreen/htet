@@ -1907,6 +1907,7 @@ TEST_CASE("Gate 2A contracts remain distinct immutable and storage independent")
   REQUIRE(manifest.blocks().size()==2U);
   CHECK(manifest.blocks()[0]->id<manifest.blocks()[1]->id);
   CHECK(manifest.metrics().changed_blocks==2U);
+  CHECK(manifest.metrics().affected_blocks==2U);
   CHECK(manifest.metrics().retained_bytes==42U);
   CHECK_THROWS_AS(tetra::WorldRevisionManifest(4U,4U,{}),std::invalid_argument);
   CHECK_THROWS_AS(tetra::WorldRevisionManifest(5U,4U,{*first,*first}),
@@ -2095,6 +2096,148 @@ TEST_CASE("world revision manifest rejects stale or invalid partial publication 
   CHECK_THROWS_AS(directory.publish(broken),std::invalid_argument);
   CHECK(directory.revision()==2U);
   CHECK(directory.checkpoint().canonical_hash()==published);
+}
+
+TEST_CASE("world transactions stage privately and publish split merge atomically") {
+  for(const unsigned int width:{1U,2U,3U,4U}){
+    tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+        {},width,1U,tetra::HierarchyResidencyTier::conforming_volume));
+    const auto parent=tetra::WorldTetAddress::root(0U);
+    const auto original=directory.canonical_cut_hash();
+    const auto staged=directory.stage_transaction(
+        {{{parent,tetra::WorldTopologyOperation::split}}},2U);
+    CAPTURE(width);
+    CHECK(directory.revision()==1U);
+    CHECK(directory.canonical_cut_hash()==original);
+    CHECK(staged.transaction.metrics.requested_edits==1U);
+    CHECK(staged.transaction.metrics.result_logical_owners==19U);
+    CHECK(staged.transaction.metrics.affected_blocks>0U);
+    CHECK(staged.transaction.metrics.dependency_reads>0U);
+    directory.publish(staged.manifest);
+    CHECK(directory.revision()==2U);
+    CHECK(directory.logical_owner_count()==19U);
+    for(std::uint8_t child=0;child<8U;++child)
+      CHECK(directory.lookup(parent.child(child)).logical_owner==parent.child(child));
+
+    const auto merged=directory.stage_transaction(
+        {{{parent,tetra::WorldTopologyOperation::merge}}},3U);
+    CHECK(directory.logical_owner_count()==19U);
+    directory.publish(merged.manifest);
+    CHECK(directory.logical_owner_count()==12U);
+    CHECK(directory.canonical_cut_hash()==original);
+  }
+}
+
+TEST_CASE("world transaction ordering cancellation and stale staging are deterministic") {
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint({},2U,1U);
+  tetra::WorldCutDirectory first(checkpoint),second(checkpoint);
+  const std::array edits{
+      tetra::WorldTopologyEdit{tetra::WorldTetAddress::root(11U),
+                               tetra::WorldTopologyOperation::split},
+      tetra::WorldTopologyEdit{tetra::WorldTetAddress::root(0U),
+                               tetra::WorldTopologyOperation::split}};
+  auto reversed=edits;std::ranges::reverse(reversed);
+  const auto staged_first=first.stage_transaction(edits,2U);
+  const auto stale=first.stage_transaction(
+      {{{tetra::WorldTetAddress::root(5U),tetra::WorldTopologyOperation::split}}},2U);
+  const auto staged_second=second.stage_transaction(reversed,2U);
+  CHECK(staged_first.transaction.canonical_hash==staged_second.transaction.canonical_hash);
+  CHECK(staged_first.transaction.affected_blocks==staged_second.transaction.affected_blocks);
+  first.publish(staged_first.manifest);second.publish(staged_second.manifest);
+  CHECK(first.canonical_cut_hash()==second.canonical_cut_hash());
+  const auto published=first.canonical_cut_hash();
+  CHECK_THROWS_AS(first.publish(stale.manifest),std::invalid_argument);
+  CHECK(first.canonical_cut_hash()==published);
+
+  std::size_t polls{};
+  const auto cancel_target=first.logical_owner(0U);
+  CHECK_THROWS_AS(static_cast<void>(first.stage_transaction(
+      {{{cancel_target,tetra::WorldTopologyOperation::split}}},
+      3U,[&]{return ++polls>1U;})),std::runtime_error);
+  CHECK(first.revision()==2U);
+  CHECK(first.canonical_cut_hash()==published);
+}
+
+TEST_CASE("world transactions reproduce monolithic BCC logical cuts across block widths") {
+  for(const unsigned int width:{1U,2U,3U,4U,5U}){
+    auto oracle=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+    tetra::WorldCutDirectory directory(
+        tetra::make_world_cut_checkpoint(oracle,width,1U));
+    std::uint64_t revision=1U;
+    for(unsigned int step=0;step<3U;++step){
+      const auto local=oracle.logical_red_owners().front();
+      const auto world=tetra::world_tet_address(local);
+      REQUIRE(oracle.refine_selected_binary({local}));
+      auto staged=directory.stage_transaction(
+          {{{world,tetra::WorldTopologyOperation::split}}},++revision);
+      directory.publish(staged.manifest);
+      std::vector<tetra::WorldTetAddress> expected,actual;
+      for(const auto owner:oracle.logical_red_owners())
+        expected.push_back(tetra::world_tet_address(owner));
+      directory.for_each_logical_owner(
+          [&](tetra::WorldTetAddress owner){actual.push_back(owner);});
+      std::ranges::sort(expected);std::ranges::sort(actual);
+      CAPTURE(width);CAPTURE(step);
+      CAPTURE(expected.size());CAPTURE(actual.size());
+      CHECK(actual==expected);
+    }
+  }
+}
+
+TEST_CASE("world closure crosses root seams and shared ownership is canonical") {
+  auto oracle=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::WorldCutDirectory directory(tetra::make_world_cut_checkpoint(oracle,1U,1U));
+  const auto root=tetra::WorldTetAddress::root(0U);
+  auto first=directory.stage_transaction(
+      {{{root,tetra::WorldTopologyOperation::split}}},2U);
+  directory.publish(first.manifest);
+  REQUIRE(oracle.refine_selected_binary({tetra::make_tet_id(0U,1U)}));
+  const auto child=tetra::world_tet_address(oracle.logical_red_owners().front());
+  auto second=directory.stage_transaction(
+      {{{child,tetra::WorldTopologyOperation::split}}},3U);
+  CHECK(std::ranges::any_of(second.transaction.closure_edits,
+      [](tetra::WorldTetAddress owner){return owner.root_id()!=0U;}));
+  CHECK(second.transaction.affected_blocks.size()>1U);
+  std::vector<tetra::WorldTetAddress> incidents{root, tetra::WorldTetAddress::root(1U)};
+  CHECK(tetra::world_shared_entity_owner(incidents)==root);
+  std::ranges::reverse(incidents);
+  CHECK(tetra::world_shared_entity_owner(incidents)==root);
+  CHECK_THROWS_AS(static_cast<void>(tetra::world_shared_entity_owner({})),
+                  std::invalid_argument);
+}
+
+TEST_CASE("dependency certificates reject stale block payloads before publication") {
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint({},3U,1U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  const auto& block=checkpoint.blocks.front();
+  tetra::WorldBlockDependency stale{
+      block.id,block.source_revision,tetra::hierarchy_block_canonical_hash(block)^1U};
+  tetra::WorldRevisionManifest manifest(2U,1U,{},{{stale}});
+  const auto before=directory.checkpoint().canonical_hash();
+  CHECK_THROWS_AS(directory.publish(manifest),std::invalid_argument);
+  CHECK(directory.revision()==1U);
+  CHECK(directory.checkpoint().canonical_hash()==before);
+}
+
+TEST_CASE("closure-expanded world transactions can be reversed as one safe merge group") {
+  tetra::WorldCutDirectory directory(
+      tetra::make_sparse_world_cut_checkpoint({},1U,1U));
+  const auto root=tetra::WorldTetAddress::root(0U);
+  auto first=directory.stage_transaction(
+      {{{root,tetra::WorldTopologyOperation::split}}},2U);
+  directory.publish(first.manifest);
+  const auto baseline=directory.canonical_cut_hash();
+  const auto child=root.child(0U);
+  auto refined=directory.stage_transaction(
+      {{{child,tetra::WorldTopologyOperation::split}}},3U);
+  std::vector<tetra::WorldTopologyEdit> inverse{{
+      child,tetra::WorldTopologyOperation::merge}};
+  for(const auto owner:refined.transaction.closure_edits)
+    inverse.push_back({owner,tetra::WorldTopologyOperation::merge});
+  directory.publish(refined.manifest);
+  auto merged=directory.stage_transaction(inverse,4U);
+  directory.publish(merged.manifest);
+  CHECK(directory.canonical_cut_hash()==baseline);
 }
 
 TEST_CASE("maximum-depth sparse world remains bounded and root-seam keys stay exact") {

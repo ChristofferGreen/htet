@@ -91,6 +91,9 @@ inline constexpr std::size_t bcc_root_tetrahedron_count=12U;
 [[nodiscard]] WorldEdgeKey world_edge_key(WorldVertexKey first,WorldVertexKey second);
 [[nodiscard]] WorldFaceKey world_face_key(
     WorldVertexKey first,WorldVertexKey second,WorldVertexKey third);
+// Deterministic owner for a shared vertex, edge, face, or derived cell.
+[[nodiscard]] WorldTetAddress world_shared_entity_owner(
+    std::span<const WorldTetAddress> incident);
 
 struct HierarchyBlockId {
   WorldTetAddress prefix{};
@@ -165,6 +168,9 @@ struct HierarchyBlockSnapshot {
   HierarchyBlockMetrics metrics{};
 };
 
+[[nodiscard]] std::uint64_t hierarchy_block_canonical_hash(
+    const HierarchyBlockSnapshot& block);
+
 struct HierarchyAddressRangeJobMetrics {
   std::size_t candidate_addresses{};
   std::size_t dependency_addresses{};
@@ -178,24 +184,49 @@ struct HierarchyAddressRangeJob {
   HierarchyAddressRangeJobMetrics metrics{};
 };
 
+enum class WorldTopologyOperation : std::uint8_t { split, merge };
+
+struct WorldTopologyEdit {
+  WorldTetAddress address{};
+  WorldTopologyOperation operation{WorldTopologyOperation::split};
+  auto operator<=>(const WorldTopologyEdit&) const = default;
+};
+
+struct WorldBlockDependency {
+  HierarchyBlockId id{};
+  std::uint64_t source_revision{};
+  std::uint64_t canonical_hash{};
+  auto operator<=>(const WorldBlockDependency&) const = default;
+};
+
 struct WorldTransactionMetrics {
   std::size_t requested_edits{};
   std::size_t closure_edits{};
   std::size_t dependency_reads{};
   std::size_t affected_blocks{};
+  std::size_t source_logical_owners{};
+  std::size_t result_logical_owners{};
+  std::size_t staged_bytes{};
+  double planning_milliseconds{};
+  double closure_milliseconds{};
+  double staging_milliseconds{};
 };
 
 struct WorldTransaction {
   std::uint64_t source_revision{};
-  std::vector<WorldTetAddress> requested_edits;
+  std::uint64_t result_revision{};
+  std::vector<WorldTopologyEdit> requested_edits;
   std::vector<WorldTetAddress> closure_edits;
-  std::vector<HierarchyBlockId> dependency_reads;
+  std::vector<WorldBlockDependency> dependency_reads;
   std::vector<HierarchyBlockId> affected_blocks;
   WorldTransactionMetrics metrics{};
+  std::uint64_t canonical_hash{};
 };
 
 struct WorldRevisionManifestMetrics {
   std::size_t changed_blocks{};
+  std::size_t removed_blocks{};
+  std::size_t affected_blocks{};
   std::size_t retained_bytes{};
 };
 
@@ -204,11 +235,19 @@ struct WorldRevisionManifestMetrics {
 class WorldRevisionManifest {
  public:
   WorldRevisionManifest(std::uint64_t revision,std::uint64_t parent_revision,
-      std::vector<HierarchyBlockSnapshot> blocks);
+      std::vector<HierarchyBlockSnapshot> blocks,
+      std::vector<WorldBlockDependency> dependencies={},
+      std::vector<HierarchyBlockId> removed_blocks={});
   [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
   [[nodiscard]] std::uint64_t parent_revision() const noexcept { return parent_revision_; }
   [[nodiscard]] std::span<const std::shared_ptr<const HierarchyBlockSnapshot>>
       blocks() const noexcept { return blocks_; }
+  [[nodiscard]] std::span<const WorldBlockDependency> dependencies() const noexcept {
+    return dependencies_;
+  }
+  [[nodiscard]] std::span<const HierarchyBlockId> removed_blocks() const noexcept {
+    return removed_blocks_;
+  }
   [[nodiscard]] const WorldRevisionManifestMetrics& metrics() const noexcept {
     return metrics_;
   }
@@ -216,6 +255,8 @@ class WorldRevisionManifest {
   std::uint64_t revision_{};
   std::uint64_t parent_revision_{};
   std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> blocks_;
+  std::vector<WorldBlockDependency> dependencies_;
+  std::vector<HierarchyBlockId> removed_blocks_;
   WorldRevisionManifestMetrics metrics_{};
 };
 

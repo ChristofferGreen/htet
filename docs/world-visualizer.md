@@ -644,6 +644,41 @@ cleaving, and optimization but is not republished as locally owned geometry.
 Certificates diagnose violations and support safe publication; they do not
 stitch independently generated meshes.
 
+### 7.1 Implemented hierarchy transaction core
+
+`WorldCutDirectory::stage_transaction` now supplies the first production
+transaction boundary. It reads one effective global logical cut, canonicalizes
+requested split and merge commands, reconstructs the already-required BCC
+midpoints from ancestry, and expands crystalline red/green closure with exact
+`WorldEdgeKey` identity. A geometric face-incidence pass applies red 2:1
+balance across ordinary block boundaries and oriented root-complex seams.
+Complete red families are required for merges, and a proposed merge is rejected
+if its reconstructed midpoint masks require another red split or violate 2:1
+balance.
+
+The completed cut is grouped by `HierarchyBlockId` into immutable private
+snapshots. Changed and removed blocks, including ancestor fallback changes, are
+carried by one `WorldRevisionManifest`. Every block read from the dependency
+halo contributes its identity, source revision, and canonical payload hash.
+Publication checks the parent revision and every dependency before changing
+the directory, then validates the whole replacement and rolls back on failure.
+No staged state is observable before that single publication point.
+
+Shared entity ownership is the minimum canonical incident
+`WorldTetAddress`. Request ordering and block width therefore cannot change the
+logical result. Release tests compare repeated split sequences directly with
+the monolithic `TetMesh` oracle for block widths one through five, reverse edit
+order, closure-expanded inverse merges, cancellation, stale certificates,
+block creation/removal, and closure crossing a root seam.
+
+The headless `tetra_world_transaction_benchmark` covers widths three through
+five and every boundary phase at synthetic red depths 30--34. On the initial
+Apple ARM64 release run, 222--250 effective owners produced 56 closure edits.
+Width three affected 29 blocks, width four 21, and width five 20; immutable
+staging remained below 23 KiB. This sparse-path microbenchmark is a regression
+baseline, not enough evidence to change the provisional three-generation
+production policy.
+
 ## 8. Bounded surface optimization
 
 The current default optimizer performs five in-place smoothing passes. Its
@@ -1065,16 +1100,16 @@ complete only when its focused tests and the full release suite pass.
 - [x] Implement a sparse ordered `WorldCutDirectory` whose block-local cut
       ranges fall back to published coarse ancestors; do not allocate one
       planet-wide leaf vector.
-- [ ] Implement private transaction staging over mutable block copies. Plan
+- [x] Implement private transaction staging over mutable block copies. Plan
       refinement and coarsening against one logical cut, expand global closure,
       then group the resulting writes by block.
-- [ ] Define global-key ownership for shared vertices, surface faces, and
+- [x] Define global-key ownership for shared vertices, surface faces, and
       derived tetrahedra using the lowest canonical incident address.
 - [ ] Replace every adaptive-cleaving local-ID tie-break with global-key order.
 - [ ] Include all required cross-block incident tetrahedra in closure and safe
       warp limits.
-- [ ] Define dependency certificates and reject stale multi-block publication.
-- [ ] Publish all blocks changed by one conformity transaction by atomically
+- [x] Define dependency certificates and reject stale multi-block publication.
+- [x] Publish all blocks changed by one conformity transaction by atomically
       adopting one immutable `WorldRevisionManifest`; never install blocks
       sequentially.
 - [ ] Convert the production optimizer to a deterministic bounded-dependency

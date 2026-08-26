@@ -68,6 +68,12 @@ target_link_libraries(tetra_simd_benchmark PRIVATE tetra::core)
 target_compile_options(tetra_simd_benchmark PRIVATE
   $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
 
+add_executable(tetra_world_transaction_benchmark
+  benchmarks/world_transaction_benchmark.cpp)
+target_link_libraries(tetra_world_transaction_benchmark PRIVATE tetra::core)
+target_compile_options(tetra_world_transaction_benchmark PRIVATE
+  $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
+
 enable_testing()
 add_executable(tetra_tests tests/tetra_core/tet_mesh_tests.cpp)
 target_link_libraries(tetra_tests PRIVATE tetra_viewer_script doctest::doctest)

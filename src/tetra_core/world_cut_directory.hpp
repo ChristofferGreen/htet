@@ -66,6 +66,11 @@ struct WorldDirectoryUpdate {
   WorldDirectoryUpdateMetrics metrics{};
 };
 
+struct WorldStagedTransaction {
+  WorldTransaction transaction;
+  WorldRevisionManifest manifest;
+};
+
 struct WorldStreamingDemand {
   struct Domain {
     Vec3 world_origin{};
@@ -128,6 +133,12 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
     return metrics_;
   }
   [[nodiscard]] WorldCutCheckpoint checkpoint() const;
+
+  // Plans against the effective global cut and builds every replacement
+  // snapshot privately. The directory is unchanged until publish().
+  [[nodiscard]] WorldStagedTransaction stage_transaction(
+      std::span<const WorldTopologyEdit> edits,std::uint64_t new_revision,
+      const std::function<bool()>& canceled={}) const;
 
   // Atomically replaces all named snapshots after validating the complete
   // manifest against the current revision.
