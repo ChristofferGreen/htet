@@ -129,11 +129,12 @@ The retained 2026-08-26 release benchmark measures about 2.50 seconds for a
 walking-speed replacement while the render thread remains non-blocking. The
 stationary cut contains 471,210 logical owners and 568,328 conforming cells;
 the walking cut retains 20,906 hierarchy blocks, 6,084 optimized surface
-blocks, and 250,010 field intersections. Total measured CPU residency remains
-below 285 MiB throughout the stationary, walking, near/far, reversal, and
+blocks, 6,084 retained render blocks, and 250,010 field intersections. Total
+measured CPU residency remains below 304 MiB throughout the stationary,
+walking, near/far, reversal, and
 teleport route. The exact stationary/reversal hashes are hierarchy
 `446215330011020690`, conforming volume `6202457804534614598`, optimized
-surface `8816839246282792875`, and render data `8495286386518142954`.
+surface `8816839246282792875`, and render data `4455753325612183706`.
 
 The closure now memoizes exact path-derived vertex keys in one bounded flat
 array, evaluates its fixed-point masks in deterministic parallel batches, and

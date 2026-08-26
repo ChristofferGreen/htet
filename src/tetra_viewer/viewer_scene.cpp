@@ -2521,6 +2521,82 @@ PreparedScene prepare_blocked_derived_surface_scene(
   return scene;
 }
 
+RetainedPreparedSceneBuild prepare_retained_blocked_scene(
+    const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
+    bool show_faces,bool show_edges,tetra::Vec3 render_origin,
+    SparseWorldSurfaceCache& cache) {
+  const auto payload_hash=[](const tetra::WorldDerivedSurfaceSnapshot& snapshot){
+    constexpr std::uint64_t offset=1469598103934665603ULL;
+    constexpr std::uint64_t prime=1099511628211ULL;
+    std::uint64_t hash=offset;
+    const auto add=[&](std::uint64_t value){hash^=value;hash*=prime;};
+    const auto add_key=[&](const tetra::WorldDerivedVertexKey& key){
+      add(static_cast<std::uint8_t>(key.kind));add(key.basis_count);
+      for(std::size_t basis=0;basis<key.basis_count;++basis){
+        add(static_cast<std::uint64_t>(key.basis[basis].x));
+        add(static_cast<std::uint64_t>(key.basis[basis].y));
+        add(static_cast<std::uint64_t>(key.basis[basis].z));
+        add(key.basis[basis].denominator_exponent);
+      }
+    };
+    add(snapshot.id.prefix.high);add(snapshot.id.prefix.low);
+    add(snapshot.id.block_generations);add(snapshot.metrics.optimizer_passes);
+    add(snapshot.metrics.dependency_halo_rings);
+    for(const auto& vertex:snapshot.vertices){
+      add_key(vertex.key);add(std::bit_cast<std::uint64_t>(vertex.position.x));
+      add(std::bit_cast<std::uint64_t>(vertex.position.y));
+      add(std::bit_cast<std::uint64_t>(vertex.position.z));
+    }
+    for(const auto& triangle:snapshot.triangles){
+      for(const auto& key:triangle.vertices)add_key(key);
+      add(triangle.owner.high);add(triangle.owner.low);
+    }
+    return hash;
+  };
+
+  RetainedPreparedSceneBuild result;
+  result.scene.render_origin=render_origin;
+  result.scene.connected_surface_hash=surface.canonical_surface_hash;
+  result.scene.optimized_surface_vertices=surface.vertices.size();
+  std::vector<SparseWorldSurfaceCache::RenderBlock> next;
+  next.reserve(surface.snapshots.size());
+  result.scene.triangle_vertices.reserve(surface.triangles.size()*3U);
+  for(const auto& snapshot:surface.snapshots){
+    const auto signature=payload_hash(snapshot);
+    const auto found=std::ranges::lower_bound(cache.render_blocks,snapshot.id,{},
+        &SparseWorldSurfaceCache::RenderBlock::id);
+    const bool same_origin=found!=cache.render_blocks.end()&&
+        found->render_origin.x==render_origin.x&&
+        found->render_origin.y==render_origin.y&&
+        found->render_origin.z==render_origin.z;
+    if(found!=cache.render_blocks.end()&&found->id==snapshot.id&&
+       found->surface_payload_hash==signature&&same_origin&&
+       found->show_faces==show_faces&&found->show_edges==show_edges){
+      next.push_back(*found);++result.reused_blocks;
+    }else{
+      BlockedDerivedSurfaceBuild block;
+      block.snapshots.push_back(snapshot);block.vertices=snapshot.vertices;
+      block.triangles=snapshot.triangles;
+      auto prepared=prepare_blocked_derived_surface_scene(
+          block,field,show_faces,show_edges,render_origin);
+      SparseWorldSurfaceCache::RenderBlock rendered;
+      rendered.id=snapshot.id;rendered.surface_payload_hash=signature;
+      rendered.render_origin=render_origin;rendered.show_faces=show_faces;
+      rendered.show_edges=show_edges;
+      rendered.triangle_vertices=std::move(prepared.triangle_vertices);
+      next.push_back(std::move(rendered));++result.rebuilt_blocks;
+    }
+    const auto& rendered=next.back().triangle_vertices;
+    result.scene.triangle_vertices.insert(result.scene.triangle_vertices.end(),
+        rendered.begin(),rendered.end());
+  }
+  cache.render_blocks=std::move(next);
+  append_screen_space_edges(result.scene,show_edges,false,show_faces,false);
+  result.scene.connected_surface_edges=
+      result.scene.surface_line_vertices.size()/2U;
+  return result;
+}
+
 BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     const tetra::WorldCutDirectory& directory,
     const tetra::WorldStreamingDemand::Domain& domain,

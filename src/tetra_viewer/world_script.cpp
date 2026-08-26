@@ -178,6 +178,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.reused_surface_blocks
           <<",\"rebuilt_surface_blocks\":"
           <<diagnostics.rebuilt_surface_blocks
+          <<",\"reused_render_blocks\":"
+          <<diagnostics.reused_render_blocks
+          <<",\"rebuilt_render_blocks\":"
+          <<diagnostics.rebuilt_render_blocks
           <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash
           <<",\"conforming_volume_hash\":"<<diagnostics.conforming_volume_hash
           <<",\"connected_surface_hash\":"<<diagnostics.connected_surface_hash

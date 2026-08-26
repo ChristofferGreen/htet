@@ -33,6 +33,8 @@ struct TerrainRuntimeDiagnostics {
   std::size_t computed_surface_intersections{};
   std::size_t reused_surface_blocks{};
   std::size_t rebuilt_surface_blocks{};
+  std::size_t reused_render_blocks{};
+  std::size_t rebuilt_render_blocks{};
   double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};

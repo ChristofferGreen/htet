@@ -362,9 +362,11 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   directory.publish(directory.stage_derived_surfaces(
       surface.snapshots,hierarchy_revision+1U));
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
-  auto scene=prepare_blocked_derived_surface_scene(
+  auto prepared=prepare_retained_blocked_scene(
       surface,field,profile.show_faces,profile.show_surface_edges,
-      {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)});
+      {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)},
+      surface_cache);
+  auto scene=std::move(prepared.scene);
 
   TerrainRuntimeDiagnostics diagnostics;
   diagnostics.mesh_revision=directory.revision();
@@ -381,6 +383,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(SparseWorldSurfaceCache::HierarchySignature)+
       surface_cache.snapshots.capacity()*
           sizeof(tetra::WorldDerivedSurfaceSnapshot)+
+      surface_cache.render_blocks.capacity()*
+          sizeof(SparseWorldSurfaceCache::RenderBlock)+
       surface_cache.closure.geometry.capacity()*
           sizeof(tetra::WorldConformingClosureCacheEntry)+
       surface_cache.closure.closed_owners.capacity()*
@@ -391,6 +395,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         snapshot.vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
         snapshot.triangles.capacity()*sizeof(tetra::WorldSurfaceTriangle)+
         snapshot.dependency_blocks.capacity()*sizeof(tetra::HierarchyBlockId);
+  for(const auto& block:surface_cache.render_blocks)
+    diagnostics.retained_cache_bytes+=
+        block.triangle_vertices.capacity()*sizeof(SceneVertex);
   diagnostics.resident_bytes=directory.metrics().retained_bytes+
       diagnostics.retained_cache_bytes;
   diagnostics.hierarchy_blocks=directory.metrics().blocks;
@@ -399,6 +406,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.reused_intersections;
   diagnostics.computed_surface_intersections=
       surface.metrics.computed_intersections;
+  diagnostics.reused_render_blocks=prepared.reused_blocks;
+  diagnostics.rebuilt_render_blocks=prepared.rebuilt_blocks;
   diagnostics.world_extent=profile.domain.world_extent;
   diagnostics.cut_selection_milliseconds=selection.metrics.selection_milliseconds;
   diagnostics.cut_closure_milliseconds=selection.metrics.closure_milliseconds;

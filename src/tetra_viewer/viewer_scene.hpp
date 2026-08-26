@@ -765,10 +765,25 @@ struct SparseWorldSurfaceCache {
     std::uint64_t hash{};
     auto operator<=>(const HierarchySignature&) const = default;
   };
+  struct RenderBlock {
+    tetra::HierarchyBlockId id{};
+    std::uint64_t surface_payload_hash{};
+    tetra::Vec3 render_origin{};
+    bool show_faces{};
+    bool show_edges{};
+    std::vector<SceneVertex> triangle_vertices;
+  };
   std::vector<tetra::WorldSurfaceVertex> intersections;
   std::vector<HierarchySignature> hierarchy;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  std::vector<RenderBlock> render_blocks;
   tetra::WorldConformingClosureCache closure;
+};
+
+struct RetainedPreparedSceneBuild {
+  PreparedScene scene;
+  std::size_t reused_blocks{};
+  std::size_t rebuilt_blocks{};
 };
 
 struct BlockedDerivedSurfaceBuild {
@@ -801,6 +816,10 @@ struct BlockedDerivedSurfaceBuild {
 [[nodiscard]] PreparedScene prepare_blocked_derived_surface_scene(
     const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
     bool show_faces=true,bool show_edges=true,tetra::Vec3 render_origin={});
+[[nodiscard]] RetainedPreparedSceneBuild prepare_retained_blocked_scene(
+    const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
+    bool show_faces,bool show_edges,tetra::Vec3 render_origin,
+    SparseWorldSurfaceCache& cache);
 
 struct SurfaceGeometryHashes {
   std::uint64_t triangle_hash{};

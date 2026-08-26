@@ -2331,6 +2331,23 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(retained.metrics.reused_surface_blocks==surface.snapshots.size());
   CHECK(cache.intersections.size()==surface.vertices.size());
   CHECK(cache.snapshots.size()==surface.snapshots.size());
+
+  const auto flat_scene=tetra_viewer::prepare_blocked_derived_surface_scene(
+      surface,sphere,true,true,{});
+  const auto retained_scene=tetra_viewer::prepare_retained_blocked_scene(
+      surface,sphere,true,true,{},cache);
+  REQUIRE(retained_scene.scene.triangle_vertices.size()==
+          flat_scene.triangle_vertices.size());
+  CHECK(tetra_viewer::surface_geometry_hashes(retained_scene.scene)==
+        tetra_viewer::surface_geometry_hashes(flat_scene));
+  CHECK(retained_scene.rebuilt_blocks==surface.snapshots.size());
+  const auto reused_scene=tetra_viewer::prepare_retained_blocked_scene(
+      surface,sphere,true,true,{},cache);
+  CHECK(reused_scene.reused_blocks==surface.snapshots.size());
+  CHECK(reused_scene.rebuilt_blocks==0U);
+  const auto rebased_scene=tetra_viewer::prepare_retained_blocked_scene(
+      surface,sphere,true,true,{8.0,0.0,0.0},cache);
+  CHECK(rebased_scene.rebuilt_blocks==surface.snapshots.size());
 }
 
 TEST_CASE("sparse world surface cache localizes topology edits and matches cold extraction") {
