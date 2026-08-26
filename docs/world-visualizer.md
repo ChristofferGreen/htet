@@ -1238,6 +1238,33 @@ replacement, and then proves a distant camera simplifies the logical cut.
 Large-coordinate preparation is checked where world-space floats cannot
 represent a unit cell.
 
+#### Deterministic mountain landforms
+
+The production terrain field now separates three spatial scales: broad
+32-unit landforms, sparse 64-unit range masks carrying smooth 18-unit ridges,
+and the existing subordinate four-octave detail. The mask leaves extensive
+plains between grouped ranges. A two-unit disc around spawn is exactly flat,
+with a smooth transition ending at radius twelve. The deterministic phase puts
+a major six-unit-high range inside the 48-unit gameplay horizon, around
+`(-28, -32)`, so the initial world has a readable distant silhouette.
+
+One centralized height-and-gradient sampler owns rendering, collision,
+normals, projection, field pruning, and worker cache identity. Terrain
+projection is exact in one vertical step; treating `y - height(x,z)` as a
+normalized distance caused optimized vertices to drift off steep slopes.
+World-cut pruning uses height-field intervals and certified cell-local slope
+bounds. Cells wholly inside the spawn disc or a range-mask plain therefore do
+not inherit the global mountain worst case.
+
+Release tests cover the flat spawn, plains, relief and an in-horizon mountain,
+analytic versus finite-difference gradients, local and global slope bounds,
+field-parameter cache invalidation, projected LOD depth, simplification,
+watertight normals, and exact render/collision agreement. Headless capture now
+accepts an explicit camera and target with `--capture-view`; its face and line
+depths use perspective-correct reciprocal interpolation. Spawn, horizon, and
+close-slope captures were visually inspected without cracks, missing faces, or
+normal inversions.
+
 ### Gate 4: Sparse block cache and background streaming
 
 - [x] Replace the single all-resident storage object with per-block packed

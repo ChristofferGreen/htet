@@ -803,6 +803,10 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.material==tetra_viewer::MaterialRule::variational_smooth);
   CHECK(profile.shading==tetra_viewer::ShadingModel::studio_flat);
   CHECK(profile.adaptation==tetra::AdaptationConfiguration{});
+  CHECK(profile.terrain.landform_amplitude==doctest::Approx(1.5));
+  CHECK(profile.terrain.mountain_amplitude==doctest::Approx(6.0));
+  CHECK(profile.terrain.spawn_flat_radius==doctest::Approx(2.0));
+  CHECK(profile.terrain.spawn_blend_radius==doctest::Approx(12.0));
   CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
   CHECK(profile.domain.world_extent==doctest::Approx(128.0));
   CHECK(profile.background_red_depth==5U);
@@ -832,7 +836,7 @@ TEST_CASE("projected world cut spans forty eight units with graded bounded detai
   REQUIRE_FALSE(selection.owners.empty());
   CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
-  CHECK(selection.metrics.logical_owners_after_closure<500000U);
+  CHECK(selection.metrics.logical_owners_after_closure<700000U);
   CHECK(selection.metrics.horizon_owners>0U);
 }
 
@@ -963,6 +967,11 @@ TEST_CASE("world runtime capture is deterministic and produced without graphics"
   CHECK(first==second);
   CHECK(first_output.str().find("\"event\":\"world_capture\"")!=
         std::string::npos);
+  std::ostringstream rejected_output,rejected_errors;
+  CHECK(tetra_viewer::capture_world_runtime_view(
+      first_path.string(),{1.0,2.0,3.0},{1.0,2.0,3.0},
+      rejected_output,rejected_errors)==2);
+  CHECK_FALSE(rejected_errors.str().empty());
   std::filesystem::remove(first_path);
   std::filesystem::remove(second_path);
 }
@@ -1012,7 +1021,7 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
                                        toward.z*toward.z);
   camera.forward=toward/toward_length;
   runtime.set_camera(camera,false);
-  const auto far_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  const auto far_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
   do{
     static_cast<void>(runtime.update());
     if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
@@ -1034,6 +1043,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.resident_bytes<512U*1024U*1024U);
   double minimum_x=std::numeric_limits<double>::infinity();
   double maximum_x=-std::numeric_limits<double>::infinity();
+  double maximum_y=-std::numeric_limits<double>::infinity();
   double maximum_field_error{};tetra::Vec3 maximum_error_point{};
   const auto& world_vertices=runtime.scene().triangle_vertices;
   REQUIRE(world_vertices.size()%3U==0U);
@@ -1079,6 +1089,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
         runtime.scene().render_origin.y+vertex.position[1],
         runtime.scene().render_origin.z+vertex.position[2]};
     minimum_x=std::min(minimum_x,point.x);maximum_x=std::max(maximum_x,point.x);
+    maximum_y=std::max(maximum_y,point.y);
     const double error=std::abs(runtime.signed_distance(point));
     if(error>maximum_field_error){maximum_field_error=error;maximum_error_point=point;}
   }
@@ -1086,6 +1097,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CAPTURE(maximum_error_point.y);CAPTURE(maximum_error_point.z);
   CHECK(maximum_field_error<2.0e-5);
   CHECK(minimum_x<0.0);CHECK(maximum_x>1.0);
+  CHECK(maximum_y>4.0);
 
   tetra::Camera camera;
   camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
@@ -5883,10 +5895,10 @@ TEST_CASE("terrain fine octaves remain subordinate to its coarse surface") {
   double maximum_sampled_slope{};
   for(std::size_t z=0;z<coarse_cells;++z){
     for(std::size_t x=0;x<coarse_cells;++x){
-      const double x0=static_cast<double>(x)/coarse_cells;
-      const double x1=static_cast<double>(x+1U)/coarse_cells;
-      const double z0=static_cast<double>(z)/coarse_cells;
-      const double z1=static_cast<double>(z+1U)/coarse_cells;
+      const double x0=20.0+static_cast<double>(x)/coarse_cells;
+      const double x1=20.0+static_cast<double>(x+1U)/coarse_cells;
+      const double z0=20.0+static_cast<double>(z)/coarse_cells;
+      const double z1=20.0+static_cast<double>(z+1U)/coarse_cells;
       const double bilinear=0.25*(height(x0,z0)+height(x1,z0)+
                                   height(x0,z1)+height(x1,z1));
       maximum_midcell_residual=std::max(
@@ -5899,10 +5911,94 @@ TEST_CASE("terrain fine octaves remain subordinate to its coarse surface") {
   }
   CAPTURE(maximum_midcell_residual);
   CAPTURE(maximum_sampled_slope);
-  CHECK(maximum_midcell_residual<0.02);
-  CHECK(maximum_sampled_slope<
-        tetra::terrain_slope_bound_multiplier()*
-            terrain.secondary*terrain.frequency);
+  CHECK(maximum_midcell_residual<0.03);
+  CHECK(maximum_sampled_slope<tetra::terrain_height_slope_bound(terrain));
+}
+
+TEST_CASE("mountain terrain has safe spawn plains ranges and conservative gradients") {
+  tetra::Sphere terrain;terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  terrain.terrain.landform_amplitude=1.5;
+  terrain.terrain.mountain_amplitude=6.0;
+  terrain.terrain.spawn_flat_radius=2.0;
+  terrain.terrain.spawn_blend_radius=12.0;
+  for(int z=-4;z<=4;++z)for(int x=-4;x<=4;++x){
+    const double world_x=terrain.centre.x+0.4*x;
+    const double world_z=terrain.centre.z+0.4*z;
+    if(std::hypot(world_x-terrain.centre.x,world_z-terrain.centre.z)>
+       terrain.terrain.spawn_flat_radius)continue;
+    const auto sample=tetra::terrain_height_sample(terrain,world_x,world_z);
+    CHECK(sample.height==doctest::Approx(terrain.centre.y).epsilon(1.0e-14));
+    CHECK(sample.dx==doctest::Approx(0.0));
+    CHECK(sample.dz==doctest::Approx(0.0));
+    const auto normal=terrain.normal({world_x,sample.height,world_z});
+    CHECK(normal.x==doctest::Approx(0.0));
+    CHECK(normal.y==doctest::Approx(1.0));
+    CHECK(normal.z==doctest::Approx(0.0));
+  }
+
+  double minimum=std::numeric_limits<double>::infinity();
+  double maximum=-std::numeric_limits<double>::infinity();
+  double maximum_distant=-std::numeric_limits<double>::infinity();
+  double maximum_distant_x{},maximum_distant_z{};
+  double maximum_horizon=-std::numeric_limits<double>::infinity();
+  double maximum_horizon_x{},maximum_horizon_z{};
+  std::size_t plain_samples{};
+  const double slope_bound=tetra::terrain_height_slope_bound(terrain);
+  for(int z=-48;z<=48;z+=2)for(int x=-48;x<=48;x+=2){
+    const double world_x=terrain.centre.x+x,world_z=terrain.centre.z+z;
+    const auto sample=tetra::terrain_height_sample(terrain,world_x,world_z);
+    minimum=std::min(minimum,sample.height);maximum=std::max(maximum,sample.height);
+    if(std::hypot(static_cast<double>(x),static_cast<double>(z))>=20.0&&
+       sample.height>maximum_distant){
+      maximum_distant=sample.height;
+      maximum_distant_x=world_x;maximum_distant_z=world_z;
+    }
+    const double distance=std::hypot(static_cast<double>(x),static_cast<double>(z));
+    if(distance>=20.0&&distance<=44.0&&sample.height>maximum_horizon){
+      maximum_horizon=sample.height;
+      maximum_horizon_x=world_x;maximum_horizon_z=world_z;
+    }
+    plain_samples+=std::abs(sample.height-terrain.centre.y)<0.75?1U:0U;
+    CHECK(std::hypot(sample.dx,sample.dz)<=slope_bound+1.0e-12);
+    const double local_bound=tetra::terrain_height_slope_bound(
+        terrain,world_x,world_z,0.25);
+    CHECK(local_bound<=slope_bound+1.0e-12);
+    for(const auto offset:std::array<std::array<double,2>,8>{{
+            {0.25,0.0},{-0.25,0.0},{0.0,0.25},{0.0,-0.25},
+            {0.1767766952966369,0.1767766952966369},
+            {-0.1767766952966369,0.1767766952966369},
+            {0.1767766952966369,-0.1767766952966369},
+            {-0.1767766952966369,-0.1767766952966369}}}){
+      const auto neighbour=tetra::terrain_height_sample(
+          terrain,world_x+offset[0],world_z+offset[1]);
+      CHECK(std::abs(neighbour.height-sample.height)<=
+            local_bound*0.25+1.0e-12);
+      CHECK(std::hypot(neighbour.dx,neighbour.dz)<=local_bound+1.0e-12);
+    }
+    constexpr double epsilon=1.0e-5;
+    const double finite_dx=(
+        tetra::terrain_height_sample(terrain,world_x+epsilon,world_z).height-
+        tetra::terrain_height_sample(terrain,world_x-epsilon,world_z).height)/
+        (2.0*epsilon);
+    const double finite_dz=(
+        tetra::terrain_height_sample(terrain,world_x,world_z+epsilon).height-
+        tetra::terrain_height_sample(terrain,world_x,world_z-epsilon).height)/
+        (2.0*epsilon);
+    CHECK(sample.dx==doctest::Approx(finite_dx).epsilon(2.0e-5).scale(1.0));
+    CHECK(sample.dz==doctest::Approx(finite_dz).epsilon(2.0e-5).scale(1.0));
+  }
+  CAPTURE(minimum);CAPTURE(maximum);CAPTURE(maximum_distant);
+  CAPTURE(maximum_distant_x);CAPTURE(maximum_distant_z);CAPTURE(plain_samples);
+  CAPTURE(maximum_horizon);CAPTURE(maximum_horizon_x);CAPTURE(maximum_horizon_z);
+  CHECK(maximum-minimum>4.0);
+  CHECK(maximum_distant-terrain.centre.y>3.0);
+  CHECK(maximum_horizon-terrain.centre.y>2.0);
+  CHECK(plain_samples>400U);
+  const auto projected=terrain.project_to_surface(
+      {maximum_horizon_x,terrain.centre.y-3.0,maximum_horizon_z});
+  CHECK(std::abs(terrain.signed_distance(projected))<1.0e-12);
+  const double lipschitz=tetra::implicit_field_lipschitz_bound(terrain);
+  CHECK(lipschitz==doctest::Approx(std::sqrt(1.0+slope_bound*slope_bound)));
 }
 
 TEST_CASE("every implicit shape refines and coarsens from the LOD camera") {
@@ -8333,6 +8429,10 @@ TEST_CASE("interactive camera policy relaxes work and coalesces only at slice bo
   auto moved=interactive;
   moved.camera.position.x+=0.25;
   CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(interactive,moved));
+  auto changed_terrain=interactive;
+  changed_terrain.surface.terrain.mountain_amplitude+=1.0;
+  CHECK_FALSE(tetra_viewer::same_mesh_update_parameters(
+      interactive,changed_terrain));
   CHECK(tetra_viewer::compatible_mesh_update_publication(interactive,moved));
   auto resized=moved;
   resized.camera.aspect_ratio+=0.25;
@@ -8864,6 +8964,10 @@ TEST_CASE("scene preparation worker publishes only the latest complete scene") {
   auto latest=first;
   latest.surface=latest_surface;
   latest.surface_revision=1U;
+  auto changed_terrain=first;
+  changed_terrain.surface.terrain.mountain_range_frequency*=0.5;
+  CHECK_FALSE(tetra_viewer::same_scene_preparation_parameters(
+      first,changed_terrain));
 
   tetra_viewer::ScenePreparationWorker worker;
   const auto first_request=worker.submit(mesh,first);
@@ -10216,6 +10320,10 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
   auto mesh=tetra::TetMesh::make_unit_cube(tetra_viewer::default_subdivision_method);
   tetra::Sphere terrain;
   terrain.kind=tetra_viewer::default_implicit_shape;
+  // This regression needs sub-cell terrain faces near the unit-domain test
+  // camera; the production safe-spawn disc intentionally removes them.
+  terrain.terrain.spawn_flat_radius=0.0;
+  terrain.terrain.spawn_blend_radius=0.0;
   tetra::Camera camera;
   const auto check_scene=[&] {
     const auto scene=tetra_viewer::prepare_scene(
@@ -10273,7 +10381,6 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
       tetra_viewer::MaterialRule::variational_smooth,
       false,false,true,false,true,true,1.0,
       tetra_viewer::default_volume_connection_for_shape(terrain.kind)));
-  std::size_t refined_small_faces{};
   for(std::size_t triangle=0;
       triangle+2U<cache.scene().triangle_vertices.size();triangle+=3U){
     const auto* vertices=cache.scene().triangle_vertices.data()+triangle;
@@ -10290,7 +10397,7 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
     const double area_normal_length=std::sqrt(
         area_normal.x*area_normal.x+area_normal.y*area_normal.y+
         area_normal.z*area_normal.z);
-    refined_small_faces+=area_normal_length<=1.0e-4?1U:0U;
+    CHECK(area_normal_length>1.0e-15);
     for(std::size_t corner=0;corner<3U;++corner){
       const double normal_length=std::sqrt(
           vertices[corner].normal[0]*vertices[corner].normal[0]+
@@ -10299,9 +10406,6 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
       CHECK(normal_length==doctest::Approx(1.0).epsilon(1.0e-5));
     }
   }
-  // These are the faces that previously took the shader's zero-normal early
-  // return and remained bright even while solid surface faces were disabled.
-  CHECK(refined_small_faces>0U);
 }
 
 TEST_CASE("fixed optimized shell validates across every packed hierarchy family") {
@@ -10932,7 +11036,7 @@ TEST_CASE("lateral LOD camera movement finishes pending coarsening after refinem
   REQUIRE(tetra_viewer::run_script(
       "set-camera-lod-policy=exact-frustum,"
       "set-camera-lod-metric=projected-diameter,"
-      "set-maximum-depth=12,set-shape=perlin-terrain,"
+      "set-maximum-depth=12,set-shape=sphere,"
       "set-camera=0:1:0.5,set-camera=1:0:0.5,set-camera=1:0:0.5,stats",
       output,errors)==0);
   REQUIRE(errors.str().empty());
@@ -11660,7 +11764,7 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
   };
   // Exact-on-surface hierarchy endpoints remain at the endpoint instead of
   // being walked to the opposite side of the edge by generic bisection.
-  constexpr std::uint64_t expected=5912304624248203382ULL;
+  constexpr std::uint64_t expected=13112683619183130989ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(

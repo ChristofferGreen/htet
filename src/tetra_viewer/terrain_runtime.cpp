@@ -15,6 +15,7 @@ MonolithicTerrainRuntime::MonolithicTerrainRuntime(
          std::make_shared<tetra::GeometryExecutor>()),
      worker_(executor_),scene_worker_(executor_) {
   field_.kind=profile_.shape;
+  field_.terrain=profile_.terrain;
   camera_.position={0.5,0.72,0.78};
   camera_.forward={0.0,-0.2,-1.0};
   adaptation_=profile_.adaptation;
@@ -220,9 +221,7 @@ WorldLodCutSelection select_world_lod_cut(
   const auto started=std::chrono::steady_clock::now();
   const auto dot=[](tetra::Vec3 value){return
       value.x*value.x+value.y*value.y+value.z*value.z;};
-  const double lipschitz=field.kind==tetra::ImplicitShapeKind::perlin_terrain?
-      std::sqrt(1.0+std::pow(tetra::terrain_slope_bound_multiplier()*
-          field.secondary*field.frequency,2.0)):4.0;
+  const double lipschitz=tetra::implicit_field_lipschitz_bound(field);
   const auto projection=tetra::prepare_camera_projection(camera);
   struct Evaluation {
     bool may_cross{};
@@ -236,19 +235,41 @@ WorldLodCutSelection select_world_lod_cut(
     const auto normalized=tetra::world_tetrahedron_geometry(owner);
     std::array<tetra::Vec3,4> points{};
     bool negative{},positive{};
+    double minimum_y=std::numeric_limits<double>::infinity();
+    double maximum_y=-std::numeric_limits<double>::infinity();
     for(std::size_t corner=0;corner<4U;++corner){
       points[corner]=profile.domain.to_world(normalized[corner]);
       const double distance=field.signed_distance(points[corner]);
       negative|=distance<0.0;positive|=distance>=0.0;
       result.centre=result.centre+points[corner];
+      minimum_y=std::min(minimum_y,points[corner].y);
+      maximum_y=std::max(maximum_y,points[corner].y);
     }
     result.centre=result.centre/4.0;
+    double horizontal_radius{};
     for(const auto point:points)
-      result.radius=std::max(result.radius,
-          std::sqrt(dot(point-result.centre)));
-    result.may_cross=(negative&&positive)||
-        std::abs(field.signed_distance(result.centre))<=
-            lipschitz*result.radius;
+    {
+      const auto offset=point-result.centre;
+      result.radius=std::max(result.radius,std::sqrt(dot(offset)));
+      horizontal_radius=std::max(horizontal_radius,
+          std::hypot(offset.x,offset.z));
+    }
+    if(field.kind==tetra::ImplicitShapeKind::perlin_terrain){
+      // A terrain is a height field, so bound its vertical range directly.
+      // The generic 3-D field ball mixes vertical cell extent into the
+      // horizontal height uncertainty and retains a much thicker shell.
+      const double height=tetra::terrain_height_sample(
+          field,result.centre.x,result.centre.z).height;
+      const double uncertainty=tetra::terrain_height_slope_bound(
+          field,result.centre.x,result.centre.z,horizontal_radius)*
+          horizontal_radius;
+      result.may_cross=(negative&&positive)||
+          (minimum_y<=height+uncertainty&&maximum_y>=height-uncertainty);
+    }else{
+      result.may_cross=(negative&&positive)||
+          std::abs(field.signed_distance(result.centre))<=
+              lipschitz*result.radius;
+    }
     const auto horizontal=result.centre-camera.position;
     result.horizontal_distance=std::sqrt(
         horizontal.x*horizontal.x+horizontal.z*horizontal.z);
@@ -336,6 +357,7 @@ WorldLodCutSelection select_world_lod_cut(
 BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     :profile_(profile) {
   field_.kind=profile_.shape;
+  field_.terrain=profile_.terrain;
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_position_=camera_.position;
   auto initial=build_publication(profile_,field_,camera_,1U);

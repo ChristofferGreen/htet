@@ -9,7 +9,7 @@ bool same_surface(const tetra::Sphere& first,const tetra::Sphere& second) noexce
   return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
       first.centre.z==second.centre.z&&first.radius==second.radius&&
       first.kind==second.kind&&first.secondary==second.secondary&&
-      first.frequency==second.frequency;
+      first.frequency==second.frequency&&first.terrain==second.terrain;
 }
 
 }  // namespace

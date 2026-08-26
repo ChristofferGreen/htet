@@ -110,6 +110,19 @@ not the active queue.
 - [x] Parallelize deterministic conformity scans and bounded Jacobi surface
       passes, account for retained cache memory, and qualify walking, far,
       reversal, and teleport behavior in the release benchmark.
+- [x] Add deterministic broad landforms, sparse grouped mountain ridges,
+      extensive plains, and an exactly flat blended spawn region through one
+      authoritative terrain height-and-gradient sampler.
+- [x] Use conservative height-field and cell-local slope intervals for sparse
+      LOD pruning, include every terrain parameter in worker cache identity,
+      and verify the in-horizon mountain remains selected while far movement
+      still simplifies the cut.
+- [x] Fix steep-terrain surface projection to remain exactly on the collision
+      field, add explicit-pose headless captures with perspective-correct
+      depth, and visually inspect spawn, horizon, and slope views.
+- [x] Record the release mountain route: about 3.73 seconds for a walking
+      replacement, 653,896 logical cells, and about 351 MB peak measured CPU
+      residency.
 - [ ] Replace full warm conforming-cell and flat render-scene assembly with
       retained per-block conforming and render chunks so a small camera move
       copies and uploads only dirty ranges.

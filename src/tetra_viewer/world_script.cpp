@@ -50,7 +50,8 @@ int run_world_script(std::string_view script,std::ostream& output,
                      std::ostream& errors) {
   FirstPersonController controller;
   tetra::Sphere field;
-  field.kind=production_world_profile().shape;
+  const auto profile=production_world_profile();
+  field.kind=profile.shape;field.terrain=profile.terrain;
   std::size_t command_count{},step_count{};
   while(!script.empty()){
     const auto separator=script.find(',');
@@ -193,14 +194,26 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
 
 int capture_world_runtime(std::string_view path,std::ostream& output,
                           std::ostream& errors) {
+  return capture_world_runtime_view(
+      path,{0.5,0.72,0.78},{0.5,0.5,0.5},output,errors);
+}
+
+int capture_world_runtime_view(std::string_view path,
+                               tetra::Vec3 camera_position,
+                               tetra::Vec3 target,std::ostream& output,
+                               std::ostream& errors) {
   auto runtime=make_production_terrain_runtime(production_world_profile());
   tetra::Camera camera;
-  camera.position={0.5,0.72,0.78};
-  const tetra::Vec3 target{0.5,0.5,0.5};
+  camera.position=camera_position;
   auto forward=target-camera.position;
   const auto magnitude=[](tetra::Vec3 value){return std::sqrt(
       value.x*value.x+value.y*value.y+value.z*value.z);};
-  forward=forward/magnitude(forward);
+  const double forward_magnitude=magnitude(forward);
+  if(!(forward_magnitude>1.0e-12)||!std::isfinite(forward_magnitude)){
+    errors<<"world capture camera and target must be distinct and finite\n";
+    return 2;
+  }
+  forward=forward/forward_magnitude;
   camera.forward=forward;camera.viewport_height_pixels=480.0;
   camera.aspect_ratio=1.6;
   runtime->set_camera(camera,false);
@@ -268,7 +281,7 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
       const double wb=edge(c,a,sample_x,sample_y)/area;
       const double wc=edge(a,b,sample_x,sample_y)/area;
       if(wa<0.0||wb<0.0||wc<0.0)continue;
-      const double depth=wa*a.depth+wb*b.depth+wc*c.depth;
+      const double depth=1.0/(wa/a.depth+wb/b.depth+wc/c.depth);
       const auto index=static_cast<std::size_t>(y*width+x);
       if(depth>=depths[index])continue;
       depths[index]=depth;
@@ -297,7 +310,7 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
         const int x=static_cast<int>(std::lround(a.x+(b.x-a.x)*amount));
         const int y=static_cast<int>(std::lround(a.y+(b.y-a.y)*amount));
         if(x<0||x>=width||y<0||y>=height)continue;
-        const double depth=a.depth+(b.depth-a.depth)*amount;
+        const double depth=1.0/((1.0-amount)/a.depth+amount/b.depth);
         const auto index=static_cast<std::size_t>(y*width+x);
         if(depth>depths[index]+1.0e-3)continue;
         pixels[index]={18,36,28};

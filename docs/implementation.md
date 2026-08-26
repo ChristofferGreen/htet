@@ -149,6 +149,18 @@ The complete-cut checkpoint constructor bypasses split replay, while
 rolls back invalid publications atomically. Cold extraction remains the oracle
 for every retained result.
 
+The mountain-landform qualification keeps this blocked architecture and adds
+broad noise, a sparse range mask, smooth ridges, and an exact safe-spawn blend
+through one authoritative height/gradient sampler. The final release route
+measures about 3.73 seconds for a walking replacement: 653,896 logical cells,
+757,243 conforming tetrahedra, 6,169 reused render blocks, and 1,543 rebuilt
+render blocks. Peak measured CPU residency is about 351 MB. This is a measured
+cost increase over the 2.50-second, 304 MB rolling-terrain baseline, caused by
+the additional in-horizon mountain surface and its conforming closure; updates
+remain asynchronous and bounded below the 512 MB regression ceiling. Exact
+height-field projection fixed the steep-slope optimizer drift found during
+qualification.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

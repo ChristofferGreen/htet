@@ -475,6 +475,25 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         }
         return tetra_viewer::capture_world_runtime(argv[2],std::cout,std::cerr);
     }
+    if(world_mode&&argc>=2&&strcmp(argv[1],"--capture-view")==0){
+        if(argc!=9){
+            fprintf(stderr,"usage: tetra_world --capture-view <path.ppm> "
+                    "<camera-x> <camera-y> <camera-z> <target-x> <target-y> <target-z>\n");
+            return 2;
+        }
+        std::array<double,6> values{};
+        for(std::size_t index=0;index<values.size();++index){
+            char* end=nullptr;
+            values[index]=std::strtod(argv[index+3U],&end);
+            if(end==argv[index+3U]||*end!='\0'||!std::isfinite(values[index])){
+                fprintf(stderr,"capture view coordinates must be finite numbers\n");
+                return 2;
+            }
+        }
+        return tetra_viewer::capture_world_runtime_view(
+            argv[2],{values[0],values[1],values[2]},
+            {values[3],values[4],values[5]},std::cout,std::cerr);
+    }
     std::size_t geometry_worker_count=tetra::default_geometry_worker_count();
     constexpr std::string_view geometry_workers_prefix="--geometry-workers=";
     for(int argument=1;argument<argc;++argument){

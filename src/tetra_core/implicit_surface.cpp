@@ -120,67 +120,6 @@ NoiseSample gradient_noise_sample(double x,double y){
           ay*(1.0-v)+by*v+(b-a)*dv};
 }
 
-double gradient_noise(double x,double y){
-  const int ix=static_cast<int>(std::floor(x)),iy=static_cast<int>(std::floor(y));
-  const double fx=x-ix,fy=y-iy;
-  const auto fade=[](double value){return value*value*value*(value*(value*6.0-15.0)+10.0);};
-  const auto contribution=[](std::array<double,2> gradient,double px,double py){
-    return gradient[0]*px+gradient[1]*py;
-  };
-  const double u=fade(fx),v=fade(fy);
-  const double a=contribution(noise_gradient(ix,iy),fx,fy)*(1.0-u)+
-      contribution(noise_gradient(ix+1,iy),fx-1.0,fy)*u;
-  const double b=contribution(noise_gradient(ix,iy+1),fx,fy-1.0)*(1.0-u)+
-      contribution(noise_gradient(ix+1,iy+1),fx-1.0,fy-1.0)*u;
-  return a*(1.0-v)+b*v;
-}
-
-#if defined(__aarch64__) && defined(TETRA_ENABLE_SIMD)
-float64x2_t gradient_noise_pair(float64x2_t x,float64x2_t y){
-  double xs[2],ys[2];vst1q_f64(xs,x);vst1q_f64(ys,y);
-  int ix[2],iy[2];
-  double fx_values[2],fy_values[2];
-  double g00x[2],g00y[2],g10x[2],g10y[2];
-  double g01x[2],g01y[2],g11x[2],g11y[2];
-  for(std::size_t lane=0;lane<2U;++lane){
-    ix[lane]=static_cast<int>(std::floor(xs[lane]));
-    iy[lane]=static_cast<int>(std::floor(ys[lane]));
-    fx_values[lane]=xs[lane]-static_cast<double>(ix[lane]);
-    fy_values[lane]=ys[lane]-static_cast<double>(iy[lane]);
-    const auto g00=noise_gradient(ix[lane],iy[lane]);
-    const auto g10=noise_gradient(ix[lane]+1,iy[lane]);
-    const auto g01=noise_gradient(ix[lane],iy[lane]+1);
-    const auto g11=noise_gradient(ix[lane]+1,iy[lane]+1);
-    g00x[lane]=g00[0];g00y[lane]=g00[1];g10x[lane]=g10[0];g10y[lane]=g10[1];
-    g01x[lane]=g01[0];g01y[lane]=g01[1];g11x[lane]=g11[0];g11y[lane]=g11[1];
-  }
-  const auto fx=vld1q_f64(fx_values),fy=vld1q_f64(fy_values);
-  const auto one=vdupq_n_f64(1.0),six=vdupq_n_f64(6.0);
-  const auto fifteen=vdupq_n_f64(15.0),ten=vdupq_n_f64(10.0);
-  const auto fade=[](float64x2_t value,float64x2_t six_value,
-                     float64x2_t fifteen_value,float64x2_t ten_value){
-    const auto square=vmulq_f64(value,value);
-    const auto cube=vmulq_f64(square,value);
-    return vmulq_f64(cube,vaddq_f64(vmulq_f64(value,
-        vsubq_f64(vmulq_f64(value,six_value),fifteen_value)),ten_value));
-  };
-  const auto u=fade(fx,six,fifteen,ten),v=fade(fy,six,fifteen,ten);
-  const auto fx_minus_one=vsubq_f64(fx,one),fy_minus_one=vsubq_f64(fy,one);
-  const auto dot_gradient=[&](const double* gx,const double* gy,
-                              float64x2_t dx,float64x2_t dy){
-    return vaddq_f64(vmulq_f64(vld1q_f64(gx),dx),
-                     vmulq_f64(vld1q_f64(gy),dy));
-  };
-  const auto n00=dot_gradient(g00x,g00y,fx,fy);
-  const auto n10=dot_gradient(g10x,g10y,fx_minus_one,fy);
-  const auto n01=dot_gradient(g01x,g01y,fx,fy_minus_one);
-  const auto n11=dot_gradient(g11x,g11y,fx_minus_one,fy_minus_one);
-  const auto a=vaddq_f64(vmulq_f64(n00,vsubq_f64(one,u)),vmulq_f64(n10,u));
-  const auto b=vaddq_f64(vmulq_f64(n01,vsubq_f64(one,u)),vmulq_f64(n11,u));
-  return vaddq_f64(vmulq_f64(a,vsubq_f64(one,v)),vmulq_f64(b,v));
-}
-#endif
-
 bool has_convex_negative_region(ImplicitShapeKind kind) {
   switch (kind) {
     case ImplicitShapeKind::sphere:
@@ -196,31 +135,6 @@ bool has_convex_negative_region(ImplicitShapeKind kind) {
       return false;
   }
   return false;
-}
-
-double field_lipschitz_bound(const Sphere& shape) {
-  switch (shape.kind) {
-    case ImplicitShapeKind::perlin_terrain:
-      // Gradient-noise derivatives are conservatively bounded by two. With a
-      // frequency ratio of two and a gain of one quarter, octave slope energy
-      // forms 1 + 1/2 + 1/4 + 1/8 < 2.
-      return std::sqrt(1.0 + std::pow(
-          terrain_slope_bound_multiplier()*shape.secondary*shape.frequency,2.0));
-    case ImplicitShapeKind::gyroid:
-      // Each normalized partial derivative is the sum of two unit-bounded
-      // trigonometric terms.
-      return 2.0 * std::sqrt(3.0);
-    case ImplicitShapeKind::cone:
-      return 1.1;
-    case ImplicitShapeKind::sphere:
-    case ImplicitShapeKind::merging_spheres:
-    case ImplicitShapeKind::cube:
-    case ImplicitShapeKind::capped_cylinder:
-    case ImplicitShapeKind::torus:
-    case ImplicitShapeKind::rounded_cube:
-      return 1.0;
-  }
-  return 1.0;
 }
 
 bool scheduler_camera_teleported(const Camera& previous,const Camera& current,
@@ -608,6 +522,220 @@ double implicit_shape_default_secondary(ImplicitShapeKind kind){
   return kind==ImplicitShapeKind::merging_spheres?0.17:0.12;
 }
 
+TerrainHeightSample terrain_height_sample(
+    const Sphere& terrain,double world_x,double world_z) {
+  const auto& parameters=terrain.terrain;
+  const double x=world_x-terrain.centre.x,z=world_z-terrain.centre.z;
+  struct Layer { double value{},dx{},dz{}; };
+  const auto noise_layer=[&](double frequency,double offset_x,double offset_z){
+    const auto sample=gradient_noise_sample(
+        x*frequency+offset_x,z*frequency+offset_z);
+    return Layer{sample.value,sample.dx*frequency,sample.dy*frequency};
+  };
+  const auto smooth_step=[](double value,double low,double high){
+    if(value<=low)return std::pair{0.0,0.0};
+    if(value>=high)return std::pair{1.0,0.0};
+    const double t=(value-low)/(high-low);
+    return std::pair{t*t*(3.0-2.0*t),6.0*t*(1.0-t)/(high-low)};
+  };
+
+  Layer raw;
+  const auto land=noise_layer(
+      parameters.landform_frequency,11.371,-7.219);
+  raw.value+=parameters.landform_amplitude*land.value;
+  raw.dx+=parameters.landform_amplitude*land.dx;
+  raw.dz+=parameters.landform_amplitude*land.dz;
+
+  const auto range_noise=noise_layer(
+      parameters.mountain_range_frequency,-20.07675,30.861375);
+  const auto [range,range_derivative]=smooth_step(
+      range_noise.value,0.18,0.38);
+  const auto ridge_noise=noise_layer(
+      parameters.mountain_ridge_frequency,6.690777777777778,
+      13.732555555555556);
+  constexpr double ridge_softness=0.035;
+  const double smooth_absolute=std::sqrt(
+      ridge_noise.value*ridge_noise.value+ridge_softness*ridge_softness);
+  const double ridge=1.0-smooth_absolute;
+  const double normalized_ridge=std::clamp((ridge-0.35)/0.62,0.0,1.0);
+  const double ridge_strength=normalized_ridge*normalized_ridge*normalized_ridge;
+  const double ridge_derivative=normalized_ridge>0.0&&normalized_ridge<1.0?
+      3.0*normalized_ridge*normalized_ridge/0.62:0.0;
+  const double absolute_derivative=smooth_absolute>0.0?
+      ridge_noise.value/smooth_absolute:0.0;
+  const double ridge_dx=-ridge_derivative*absolute_derivative*ridge_noise.dx;
+  const double ridge_dz=-ridge_derivative*absolute_derivative*ridge_noise.dz;
+  raw.value+=parameters.mountain_amplitude*range*ridge_strength;
+  raw.dx+=parameters.mountain_amplitude*(
+      range_derivative*range_noise.dx*ridge_strength+range*ridge_dx);
+  raw.dz+=parameters.mountain_amplitude*(
+      range_derivative*range_noise.dz*ridge_strength+range*ridge_dz);
+
+  double amplitude=terrain.secondary,scale=terrain.frequency;
+  for(int octave=0;octave<terrain_octave_count;++octave){
+    const auto detail=noise_layer(scale,0.0,0.0);
+    raw.value+=amplitude*detail.value;
+    raw.dx+=amplitude*detail.dx;raw.dz+=amplitude*detail.dz;
+    scale*=2.0;amplitude*=terrain_octave_gain;
+  }
+
+  if(!(parameters.spawn_blend_radius>parameters.spawn_flat_radius))
+    return {terrain.centre.y+raw.value,raw.dx,raw.dz};
+
+  const double radius=std::sqrt(x*x+z*z);
+  const auto [spawn_blend,spawn_derivative]=smooth_step(
+      radius,parameters.spawn_flat_radius,parameters.spawn_blend_radius);
+  double blend_dx{},blend_dz{};
+  if(radius>1.0e-15){
+    blend_dx=spawn_derivative*x/radius;
+    blend_dz=spawn_derivative*z/radius;
+  }
+  return {terrain.centre.y+spawn_blend*raw.value,
+          spawn_blend*raw.dx+raw.value*blend_dx,
+          spawn_blend*raw.dz+raw.value*blend_dz};
+}
+
+double terrain_height_slope_bound(const Sphere& terrain) {
+  const auto& parameters=terrain.terrain;
+  constexpr double noise_value_bound=1.4142135623730950488;
+  double detail_height_factor{},relative_amplitude=1.0;
+  for(int octave=0;octave<terrain_octave_count;++octave){
+    detail_height_factor+=relative_amplitude;
+    relative_amplitude*=terrain_octave_gain;
+  }
+  const double raw_height_bound=
+      noise_value_bound*std::abs(parameters.landform_amplitude)+
+      std::abs(parameters.mountain_amplitude)+
+      noise_value_bound*std::abs(terrain.secondary)*detail_height_factor;
+  const double landform_slope=2.0*std::abs(
+      parameters.landform_amplitude*parameters.landform_frequency);
+  const double range_slope=15.0*std::abs(
+      parameters.mountain_range_frequency);
+  const double ridge_slope=(6.0/0.62)*std::abs(
+      parameters.mountain_ridge_frequency);
+  const double mountain_slope=std::abs(parameters.mountain_amplitude)*
+      (range_slope+ridge_slope);
+  const double detail_slope=terrain_slope_bound_multiplier()*
+      std::abs(terrain.secondary*terrain.frequency);
+  const double blend_width=parameters.spawn_blend_radius-
+      parameters.spawn_flat_radius;
+  const double blend_slope=blend_width>0.0?
+      1.5*raw_height_bound/blend_width:0.0;
+  return landform_slope+mountain_slope+detail_slope+blend_slope;
+}
+
+double terrain_height_slope_bound(
+    const Sphere& terrain,double world_x,double world_z,
+    double horizontal_radius) {
+  const auto& parameters=terrain.terrain;
+  const double x=world_x-terrain.centre.x,z=world_z-terrain.centre.z;
+  const bool spawn_blend_enabled=
+      parameters.spawn_blend_radius>parameters.spawn_flat_radius;
+  const double centre_radius=std::hypot(x,z);
+  const double minimum_radius=std::max(0.0,centre_radius-horizontal_radius);
+  const double maximum_radius=centre_radius+horizontal_radius;
+  if(spawn_blend_enabled&&maximum_radius<=parameters.spawn_flat_radius)return 0.0;
+
+  const double landform_slope=2.0*std::abs(
+      parameters.landform_amplitude*parameters.landform_frequency);
+  const double detail_slope=terrain_slope_bound_multiplier()*
+      std::abs(terrain.secondary*terrain.frequency);
+  double mountain_slope{},maximum_mountain_height{};
+  const auto range=gradient_noise_sample(
+      x*parameters.mountain_range_frequency-20.07675,
+      z*parameters.mountain_range_frequency+30.861375);
+  // The gradient-noise magnitude bound used by the global derivative proof
+  // also bounds how far the mask carrier can move anywhere in this disk.
+  const double range_variation=2.0*std::abs(
+      parameters.mountain_range_frequency)*horizontal_radius;
+  const auto smooth_value=[](double value,double low,double high){
+    const double t=std::clamp((value-low)/(high-low),0.0,1.0);
+    return t*t*(3.0-2.0*t);
+  };
+  constexpr double range_low=0.18,range_high=0.38;
+  const double range_minimum=range.value-range_variation;
+  const double range_maximum=range.value+range_variation;
+  if(range_maximum>range_low){
+    const double mask_maximum=smooth_value(
+        range_maximum,range_low,range_high);
+    const double t_minimum=std::clamp(
+        (range_minimum-range_low)/(range_high-range_low),0.0,1.0);
+    const double t_maximum=std::clamp(
+        (range_maximum-range_low)/(range_high-range_low),0.0,1.0);
+    const double mask_derivative=6.0*(t_minimum<=0.5&&t_maximum>=0.5?
+        0.25:std::max(t_minimum*(1.0-t_minimum),
+                      t_maximum*(1.0-t_maximum)))/(range_high-range_low);
+
+    const auto ridge=gradient_noise_sample(
+        x*parameters.mountain_ridge_frequency+6.690777777777778,
+        z*parameters.mountain_ridge_frequency+13.732555555555556);
+    const double ridge_variation=2.0*std::abs(
+        parameters.mountain_ridge_frequency)*horizontal_radius;
+    const double minimum_absolute=ridge.value-ridge_variation<=0.0&&
+        ridge.value+ridge_variation>=0.0?0.0:
+        std::min(std::abs(ridge.value-ridge_variation),
+                 std::abs(ridge.value+ridge_variation));
+    const double maximum_absolute=std::max(
+        std::abs(ridge.value-ridge_variation),
+        std::abs(ridge.value+ridge_variation));
+    constexpr double ridge_softness=0.035;
+    const auto normalized=[=](double absolute){
+      return std::clamp((1.0-std::sqrt(
+          absolute*absolute+ridge_softness*ridge_softness)-0.35)/0.62,
+          0.0,1.0);
+    };
+    const double normalized_maximum=normalized(minimum_absolute);
+    const double ridge_strength_maximum=normalized_maximum*
+        normalized_maximum*normalized_maximum;
+    const double absolute_factor=maximum_absolute/std::sqrt(
+        maximum_absolute*maximum_absolute+ridge_softness*ridge_softness);
+    const double ridge_value_derivative=3.0/0.62*
+        normalized_maximum*normalized_maximum*absolute_factor;
+    mountain_slope=std::abs(parameters.mountain_amplitude)*(
+        mask_derivative*2.0*std::abs(parameters.mountain_range_frequency)*
+            ridge_strength_maximum+
+        mask_maximum*ridge_value_derivative*2.0*
+            std::abs(parameters.mountain_ridge_frequency));
+    maximum_mountain_height=std::abs(parameters.mountain_amplitude)*
+        mask_maximum*ridge_strength_maximum;
+  }
+
+  double result=landform_slope+mountain_slope+detail_slope;
+  if(spawn_blend_enabled&&minimum_radius<parameters.spawn_blend_radius){
+    constexpr double noise_value_bound=1.4142135623730950488;
+    double detail_height_factor{},relative_amplitude=1.0;
+    for(int octave=0;octave<terrain_octave_count;++octave){
+      detail_height_factor+=relative_amplitude;
+      relative_amplitude*=terrain_octave_gain;
+    }
+    const double raw_height_bound=
+        noise_value_bound*std::abs(parameters.landform_amplitude)+
+        maximum_mountain_height+
+        noise_value_bound*std::abs(terrain.secondary)*detail_height_factor;
+    const double blend_width=parameters.spawn_blend_radius-
+        parameters.spawn_flat_radius;
+    result+=blend_width>0.0?1.5*raw_height_bound/blend_width:
+        std::numeric_limits<double>::infinity();
+  }
+  return result;
+}
+
+double implicit_field_lipschitz_bound(const Sphere& shape) {
+  switch(shape.kind){
+    case ImplicitShapeKind::perlin_terrain:
+      return std::sqrt(1.0+std::pow(terrain_height_slope_bound(shape),2.0));
+    case ImplicitShapeKind::gyroid:return 2.0*std::sqrt(3.0);
+    case ImplicitShapeKind::cone:return 1.1;
+    case ImplicitShapeKind::sphere:
+    case ImplicitShapeKind::merging_spheres:
+    case ImplicitShapeKind::cube:
+    case ImplicitShapeKind::capped_cylinder:
+    case ImplicitShapeKind::torus:
+    case ImplicitShapeKind::rounded_cube:return 1.0;
+  }
+  return 1.0;
+}
+
 double Sphere::signed_distance(Vec3 point) const {
   const double x = point.x - centre.x;
   const double y = point.y - centre.y;
@@ -637,14 +765,7 @@ double Sphere::signed_distance(Vec3 point) const {
           std::sqrt(std::max(dx,0.0)*std::max(dx,0.0)+std::max(dy,0.0)*std::max(dy,0.0));
     }
     case ImplicitShapeKind::perlin_terrain:{
-      double height=centre.y;
-      double amplitude=secondary,scale=frequency,total=0.0;
-      for(int octave=0;octave<terrain_octave_count;++octave){
-        total+=gradient_noise((point.x-centre.x)*scale,
-                              (point.z-centre.z)*scale)*amplitude;
-        scale*=2.0;amplitude*=terrain_octave_gain;
-      }
-      return point.y-(height+total);
+      return point.y-terrain_height_sample(*this,point.x,point.z).height;
     }
     case ImplicitShapeKind::torus:{
       const double q=radial-radius*0.68;
@@ -777,31 +898,11 @@ void evaluate_signed_distances(
             ?surface.signed_distance(points[index+lane]):values[lane];
     }
   }else if(surface.kind==ImplicitShapeKind::perlin_terrain){
-    for(;index+1U<points.size();index+=2U){
-      const double xs[2]{points[index].x-surface.centre.x,
-                         points[index+1U].x-surface.centre.x};
-      const double zs[2]{points[index].z-surface.centre.z,
-                         points[index+1U].z-surface.centre.z};
-      auto x=vld1q_f64(xs),z=vld1q_f64(zs);
-      auto total=vdupq_n_f64(0.0);
-      double amplitude=surface.secondary,scale=surface.frequency;
-      for(int octave=0;octave<terrain_octave_count;++octave){
-        const auto scale_vector=vdupq_n_f64(scale);
-        const auto noise=gradient_noise_pair(
-            vmulq_f64(x,scale_vector),vmulq_f64(z,scale_vector));
-        total=vaddq_f64(total,vmulq_f64(noise,vdupq_n_f64(amplitude)));
-        scale*=2.0;amplitude*=terrain_octave_gain;
-      }
-      const double ys[2]{points[index].y-surface.centre.y,
-                         points[index+1U].y-surface.centre.y};
-      double values[2];vst1q_f64(values,vsubq_f64(vld1q_f64(ys),total));
-      for(std::size_t lane=0;lane<2U;++lane){
-        // Classification owns topology. Recheck numerically ambiguous lanes
-        // with the scalar oracle so vector rounding cannot change a sign.
-        output[index+lane]=std::abs(values[lane])<1.0e-10
-            ?surface.signed_distance(points[index+lane]):values[lane];
-      }
-    }
+    // Mountain terrain contains masked ridges and the spawn-safety blend.
+    // Keep this branch on the centralized scalar oracle until a complete
+    // vector sampler implements every layer and derivative identically.
+    for(;index<points.size();++index)
+      output[index]=surface.signed_distance(points[index]);
   }
 #endif
   for(;index<points.size();++index)output[index]=surface.signed_distance(points[index]);
@@ -815,16 +916,8 @@ Vec3 Sphere::normal(Vec3 point) const {
   }
   constexpr double epsilon=1.0e-5;
   if(kind==ImplicitShapeKind::perlin_terrain){
-    double height_dx=0.0,height_dz=0.0;
-    double amplitude=secondary,scale=frequency;
-    for(int octave=0;octave<terrain_octave_count;++octave){
-      const auto sample=gradient_noise_sample((point.x-centre.x)*scale,
-                                               (point.z-centre.z)*scale);
-      height_dx+=sample.dx*amplitude*scale;
-      height_dz+=sample.dy*amplitude*scale;
-      scale*=2.0;amplitude*=terrain_octave_gain;
-    }
-    Vec3 gradient{-height_dx,1.0,-height_dz};
+    const auto sample=terrain_height_sample(*this,point.x,point.z);
+    Vec3 gradient{-sample.dx,1.0,-sample.dz};
     const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+
                                   gradient.z*gradient.z);
     return length>1.0e-15?gradient/length:Vec3{0.0,1.0,0.0};
@@ -871,6 +964,14 @@ Vec3 Sphere::project_to_surface(Vec3 point) const {
     const Vec3 offset=point-centre;
     const double length=std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
     return length>1.0e-15?centre+offset*(radius/length):point;
+  }
+  if(kind==ImplicitShapeKind::perlin_terrain){
+    // The terrain field is y-height(x,z), not a normalized Euclidean signed
+    // distance. A normal-times-field Newton step can stall far from the
+    // surface on steep mountains. Vertical projection is exact in one step
+    // and preserves the optimizer's horizontal parameterization.
+    point.y=terrain_height_sample(*this,point.x,point.z).height;
+    return point;
   }
   for(int iteration=0;iteration<12;++iteration){
     const double distance=signed_distance(point);
@@ -924,7 +1025,8 @@ SurfaceRelation classify_tetrahedron_cached(const TetMesh& mesh,TetId tet,const 
   }
   const double centre_distance=sphere.signed_distance(centre);
   if(exact_evaluations)++*exact_evaluations;
-  const double uncertainty=field_lipschitz_bound(sphere)*std::sqrt(radius_squared);
+  const double uncertainty=implicit_field_lipschitz_bound(sphere)*
+      std::sqrt(radius_squared);
   if(centre_distance>uncertainty)return SurfaceRelation::outside;
   if(centre_distance<-uncertainty)return SurfaceRelation::inside;
   return SurfaceRelation::intersecting;
@@ -1132,7 +1234,7 @@ AdaptiveResult refine_to_sphere(TetMesh& mesh, const Sphere& sphere, const Camer
     return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
         first.centre.z==second.centre.z&&first.radius==second.radius&&
         first.kind==second.kind&&first.secondary==second.secondary&&
-        first.frequency==second.frequency;
+        first.frequency==second.frequency&&first.terrain==second.terrain;
   };
   if(!cache.has_sampled_surface||!same_surface(cache.sampled_surface,sphere)){
     cache.vertex_distances.clear();
@@ -1230,7 +1332,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     return first.centre.x==second.centre.x&&first.centre.y==second.centre.y&&
         first.centre.z==second.centre.z&&first.radius==second.radius&&
         first.kind==second.kind&&first.secondary==second.secondary&&
-        first.frequency==second.frequency;
+        first.frequency==second.frequency&&first.terrain==second.terrain;
   };
   const auto same_camera=[](const Camera& first,const Camera& second){
     return first.position.x==second.position.x&&first.position.y==second.position.y&&
@@ -1660,7 +1762,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     constexpr std::size_t run_size=64U;
     summaries.spatial_runs.clear();
     summaries.spatial_runs.reserve((logical.size()+run_size-1U)/run_size);
-    const double lipschitz=field_lipschitz_bound(sphere);
+    const double lipschitz=implicit_field_lipschitz_bound(sphere);
     for(std::size_t begin=0;begin<logical.size();begin+=run_size){
       if(cancel())return plan;
       SpatialOwnerRun run;
@@ -1709,7 +1811,7 @@ AdaptationPlan plan_adaptation(const TetMesh& mesh,const Sphere& sphere,
     const auto summary_start=std::chrono::steady_clock::now();
     summaries.layers.clear();
     summaries.layers.resize(mesh.layers().size());
-    const double lipschitz=field_lipschitz_bound(sphere);
+    const double lipschitz=implicit_field_lipschitz_bound(sphere);
     for(std::size_t depth=0;depth<mesh.layers().size();++depth){
       if(cancel())return plan;
       const auto& records=mesh.layers()[depth].tetrahedra;

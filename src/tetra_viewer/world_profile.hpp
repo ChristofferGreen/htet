@@ -15,6 +15,11 @@ struct WorldProfile {
   MaterialRule material{MaterialRule::variational_smooth};
   ShadingModel shading{ShadingModel::studio_flat};
   tetra::AdaptationConfiguration adaptation{};
+  tetra::TerrainParameters terrain{
+      .landform_amplitude=1.5,.landform_frequency=1.0/32.0,
+      .mountain_amplitude=6.0,.mountain_ridge_frequency=1.0/18.0,
+      .mountain_range_frequency=1.0/64.0,
+      .spawn_flat_radius=2.0,.spawn_blend_radius=12.0};
   SurfaceDrawChunkStrategy draw_chunks{default_surface_draw_chunk_strategy};
   // One coherent root-local hierarchy mapped onto a gameplay-sized world
   // cube. The spawn remains at the old 0.5-centred coordinate while the same

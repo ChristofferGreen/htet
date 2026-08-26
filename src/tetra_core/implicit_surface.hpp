@@ -49,18 +49,46 @@ inline constexpr std::array<ImplicitShapeKind,9> implicit_shape_kinds{
 [[nodiscard]] std::string_view implicit_shape_key(ImplicitShapeKind kind);
 [[nodiscard]] double implicit_shape_default_secondary(ImplicitShapeKind kind);
 
+// World-scale terrain is deliberately independent from the local four-octave
+// detail controls. Frequencies are cycles per world unit; amplitudes are world
+// units. The range mask groups ridges so broad plains remain available.
+struct TerrainParameters {
+  double landform_amplitude{};
+  double landform_frequency{1.0/32.0};
+  double mountain_amplitude{};
+  double mountain_ridge_frequency{1.0/18.0};
+  double mountain_range_frequency{1.0/64.0};
+  double spawn_flat_radius{};
+  double spawn_blend_radius{};
+  auto operator<=>(const TerrainParameters&) const = default;
+};
+
+struct TerrainHeightSample {
+  double height{};
+  double dx{};
+  double dz{};
+};
+
 struct Sphere {
   Vec3 centre{0.5, 0.5, 0.5};
   double radius{0.35};
   ImplicitShapeKind kind{ImplicitShapeKind::sphere};
   double secondary{0.12};
   double frequency{3.0};
+  TerrainParameters terrain{};
 
   [[nodiscard]] double signed_distance(Vec3 point) const;
   [[nodiscard]] Vec3 normal(Vec3 point) const;
   [[nodiscard]] Vec3 edge_intersection(Vec3 first,Vec3 second) const;
   [[nodiscard]] Vec3 project_to_surface(Vec3 point) const;
 };
+
+[[nodiscard]] TerrainHeightSample terrain_height_sample(
+    const Sphere& terrain,double x,double z);
+[[nodiscard]] double terrain_height_slope_bound(const Sphere& terrain);
+[[nodiscard]] double terrain_height_slope_bound(
+    const Sphere& terrain,double x,double z,double horizontal_radius);
+[[nodiscard]] double implicit_field_lipschitz_bound(const Sphere& shape);
 
 struct Camera {
   Vec3 position{0.5, 0.5, 3.0};
