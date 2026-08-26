@@ -205,6 +205,11 @@ struct BccScratchCapacities {
 class TetMesh {
  public:
   [[nodiscard]] static TetMesh make_unit_cube(SubdivisionMethod method = SubdivisionMethod::maubach_diamond);
+  // Builds the same normalized root complex in a uniformly scaled and
+  // translated world cube. Hierarchy addresses remain root-local.
+  [[nodiscard]] static TetMesh make_cube(
+      Vec3 minimum,double extent,
+      SubdivisionMethod method=SubdivisionMethod::maubach_diamond);
 
   [[nodiscard]] SubdivisionMethod subdivision_method() const noexcept {
     return storage_->subdivision_method_;

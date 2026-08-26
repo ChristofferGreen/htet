@@ -1203,18 +1203,39 @@ complete only when its focused tests and the full release suite pass.
 
 ### Gate 3: Adopt the blocked runtime and large world domain
 
-- [ ] Switch `tetra_world` to the completed world-revision/runtime path without
+- [x] Switch `tetra_world` to the completed world-revision/runtime path without
       changing its production-profile output or presentation behavior.
-- [ ] Scale and translate the one virtual root domain while retaining
+- [x] Scale and translate the one virtual root domain while retaining
       normalized root-local reconstruction and stable world-space field input.
-- [ ] Generate camera-relative positions and introduce origin rebasing without
+- [x] Generate camera-relative positions and introduce origin rebasing without
       changing terrain identity, collision, or the current rendered shape.
-- [ ] Preserve the Gate 0 controller behavior and input feel while camera and
+- [x] Preserve the Gate 0 controller behavior and input feel while camera and
       physics demand begin selecting hierarchy blocks.
-- [ ] Add root/block and world-revision diagnostics to the existing gameplay
+- [x] Add root/block and world-revision diagnostics to the existing gameplay
       overlays.
-- [ ] Test walking, jumping, steep slopes, block crossings, origin rebasing,
+- [x] Test walking, jumping, steep slopes, block crossings, origin rebasing,
       and backend equivalence before eviction and long-range streaming.
+
+Gate 3 uses a 16-unit translated root domain while hierarchy addresses and
+dyadic keys remain normalized. A direct sparse cut retains a complete coarse
+terrain tier and an eighth-red-generation player neighborhood. Exact
+shared-vertex grading and restricted-green closure conservatively complete the
+cut without the transaction oracle's quadratic all-pairs face scan. The
+directory reconstructs packed conforming cells directly from logical owners,
+extracts and optimizes globally keyed terrain triangles, publishes one
+immutable derived-surface revision, and prepares floats only after subtracting
+a snapped double-precision camera origin. Camera changes build asynchronously;
+presentation keeps the previous complete revision until atomic publication.
+Rebuilding from root authority removes detail behind the player instead of
+only accumulating refinement.
+
+The native extractor is tested cell-for-cell against `TetMesh`, matches its
+marching-tetrahedra topology, is watertight for closed inputs, survives
+checkpoint publication/reassembly, and keeps terrain vertices on the collision
+field. A regression crosses the old unit boundary, verifies non-blocking
+replacement, and then proves a distant camera simplifies the logical cut.
+Large-coordinate preparation is checked where world-space floats cannot
+represent a unit cell.
 
 ### Gate 4: Sparse block cache and background streaming
 

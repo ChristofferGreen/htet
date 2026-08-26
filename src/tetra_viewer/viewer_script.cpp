@@ -921,11 +921,12 @@ bool render_image(const ScriptState& state, std::string_view path,
   const tetra::Vec3 right=normalize(cross(forward,state.camera.up));
   const tetra::Vec3 up = cross(right, forward);
   const double tangent = std::tan(state.camera.vertical_fov_radians * 0.5);
+  const auto render_camera=state.camera.position-scene.render_origin;
 
   struct Projected { double x{}; double y{}; double depth{}; };
   const auto project = [&](const SceneVertex& vertex) {
     const tetra::Vec3 point{vertex.position[0], vertex.position[1], vertex.position[2]};
-    const tetra::Vec3 offset = point - state.camera.position;
+    const tetra::Vec3 offset = point-render_camera;
     const double depth = dot(offset, forward);
     return Projected{
         (dot(offset, right) / (depth * tangent) * 0.5 + 0.5) * (width - 1),
@@ -955,7 +956,7 @@ bool render_image(const ScriptState& state, std::string_view path,
         (va.position[0] + vb.position[0] + vc.position[0]) / 3.0,
         (va.position[1] + vb.position[1] + vc.position[1]) / 3.0,
         (va.position[2] + vb.position[2] + vc.position[2]) / 3.0};
-    const tetra::Vec3 light = normalize(state.camera.position - centre);
+    const tetra::Vec3 light = normalize(render_camera-centre);
     const bool volume_cut=va.diagnostics[0]<-0.5F;
     const double facing=dot(normal,light);
     const double illumination=volume_cut
@@ -998,7 +999,8 @@ bool render_image(const ScriptState& state, std::string_view path,
       const int edge_flags=static_cast<int>(va.edge_flags+0.5F);
       const bool wire_only_volume=volume_cut&&!connected_surface&&(edge_flags&8)!=0;
       const double depth = wa * a.depth + wb * b.depth + wc * c.depth;
-      const double world_x=wa*va.position[0]+wb*vb.position[0]+wc*vc.position[0];
+      const double world_x=scene.render_origin.x+
+          wa*va.position[0]+wb*vb.position[0]+wc*vc.position[0];
       if(state.x_cutaway&&!volume_cut&&world_x>state.x_cut_position)continue;
       const std::size_t index = static_cast<std::size_t>(y * width + x);
       if (depth >= depths[index]) continue;

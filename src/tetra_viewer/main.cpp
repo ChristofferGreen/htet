@@ -921,8 +921,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
-        world_runtime=std::make_unique<tetra_viewer::MonolithicTerrainRuntime>(
-            tetra_viewer::production_world_profile(),geometry_executor);
+        world_runtime=tetra_viewer::make_production_terrain_runtime(
+            tetra_viewer::production_world_profile());
         sphere=world_runtime->field();
         const auto framebuffer_aspect=static_cast<double>(std::max(w,1))/
             static_cast<double>(std::max(h,1));
@@ -2169,6 +2169,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::Text("Mesh revision %llu   %.2f ms",
                         static_cast<unsigned long long>(status.mesh_revision),
                         status.last_update_milliseconds);
+            ImGui::Text("World %.0f units   revision %llu",
+                        status.world_extent,
+                        static_cast<unsigned long long>(status.world_revision));
+            ImGui::Text("Blocks %zu   surface blocks %zu",
+                        status.hierarchy_blocks,status.surface_blocks);
             ImGui::Text("Position %.3f  %.3f  %.3f",
                         world_controller.state().feet.x,
                         world_controller.state().feet.y,
@@ -2508,7 +2513,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const float depth_scale = far_plane / (far_plane - near_plane);
         const float depth_bias = -far_plane * near_plane / (far_plane - near_plane);
         const auto dot = [](const tetra::Vec3& first, const tetra::Vec3& second) { return first.x*second.x + first.y*second.y + first.z*second.z; };
-        const tetra::Vec3 camera_position{view_camera_position};
+        const tetra::Vec3 camera_position{
+            view_camera_position-prepared_scene.render_origin};
         const float tx = static_cast<float>(-dot(right, camera_position) * scale_x);
         const float ty = static_cast<float>(-dot(up, camera_position) * scale_y);
         const float tz = static_cast<float>(-dot(f, camera_position) * depth_scale + depth_bias);
@@ -2520,7 +2526,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             tx, ty, tz, tw,
             static_cast<float>(-f.x), static_cast<float>(-f.y), static_cast<float>(-f.z), show_volume_edges ? 1.0F : 0.0F,
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
-            show_faces ? 1.0F : 0.0F, x_cutaway ? x_cut_position : 2.0F};
+            show_faces ? 1.0F : 0.0F,
+            x_cutaway ? x_cut_position-static_cast<float>(prepared_scene.render_origin.x)
+                      :2.0F};
         if (upload_dirty||overlay_dirty) {
             // Editor overlays deliberately do not include mesh surface-edge
             // segments. The mesh wireframe has its own depth-tested native
@@ -2530,6 +2538,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                             std::array<float,3> colour){
                 const auto vertex=[&](tetra::Vec3 point){
                     tetra_viewer::SceneVertex result;
+                    point=point-prepared_scene.render_origin;
                     result.position[0]=static_cast<float>(point.x);
                     result.position[1]=static_cast<float>(point.y);
                     result.position[2]=static_cast<float>(point.z);

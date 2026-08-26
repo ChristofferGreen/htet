@@ -16,6 +16,14 @@ struct WorldProfile {
   ShadingModel shading{ShadingModel::studio_flat};
   tetra::AdaptationConfiguration adaptation{};
   SurfaceDrawChunkStrategy draw_chunks{default_surface_draw_chunk_strategy};
+  // One coherent root-local hierarchy mapped onto a gameplay-sized world
+  // cube. Gate 3 deliberately keeps this finite and measurable; later sparse
+  // streaming gates can increase the extent without changing cell identity.
+  tetra::WorldStreamingDemand::Domain domain{
+      .world_origin={-7.5,-7.5,-7.5},.world_extent=16.0};
+  unsigned int background_red_depth{3U};
+  unsigned int near_red_depth{8U};
+  double near_volume_radius{0.6};
   double pixel_threshold{28.0};
   unsigned int maximum_depth{16U};
   bool show_faces{true};

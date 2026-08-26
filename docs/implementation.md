@@ -8,10 +8,10 @@ This tracker describes the existing algorithm laboratory. The canonical plan
 for the planet-scale player application, single logical terrain root, sparse
 hierarchy blocks, atomic world revisions, and independent retained render
 front is [`world-visualizer.md`](world-visualizer.md). The active execution
-queue is [`todo.md`](todo.md). Bootstrap `tetra_world` now by sharing the
-existing renderer and adapting the current monolithic production path behind a
-narrow `TerrainRuntime`; later sparse hierarchy work replaces that backend
-without rewriting the application shell.
+queue is [`todo.md`](todo.md). `tetra_world` shares the existing renderer and
+first-person shell but now uses the blocked sparse-world implementation behind
+`TerrainRuntime`; the original monolithic implementation remains an oracle and
+research baseline.
 
 ## Technology choices
 
@@ -90,6 +90,50 @@ Initial CMake targets:
 - `tetra_io`: mesh and experiment input/output library.
 - `tetra_viewer`: interactive executable using the core, GLFW, Vulkan, and ImGui.
 - `tetra_tests`: doctest2 executable for the core.
+
+## Gate 3 blocked large-domain runtime
+
+The production executable now instantiates `BlockedTerrainRuntime`. Its single
+logical BCC root is reconstructed in normalized coordinates and mapped through
+`WorldStreamingDemand::Domain` to `[-7.5, 8.5]` on every axis. The Perlin field,
+collision, camera demand, and derived surface are evaluated in world
+coordinates; hierarchy identity never depends on that transform.
+
+The production cut combines a complete red-depth-three surface tier with a
+graded red-depth-eight neighborhood around the player. `close_world_conforming_cut`
+uses exact ancestor midpoint identities, restricted green templates, and a
+conservative shared-vertex depth rule. `reconstruct_world_conforming_volume`
+then emits one packed array of exact conforming cells from the directory's
+logical owners. The native sparse surface path intersects those cells with the
+field, assigns exact global edge keys, applies the TetWeave-inspired bounded
+optimizer, groups triangles by hierarchy block, and atomically publishes one
+derived-surface revision.
+
+Camera movement starts an asynchronous replacement build and never mutates the
+published scene. Repeated movement coalesces behind the in-flight build; the
+main thread continues drawing the previous complete revision. Every new cut is
+derived from root authority, so moving away genuinely simplifies the former
+near region. Upload positions are produced by subtracting a snapped
+double-precision camera origin before float conversion. The status panel shows
+world extent, world revision, hierarchy blocks, and derived-surface blocks.
+
+Release tests cover exact green reconstruction against `TetMesh`, conservative
+direct-cut closure, watertight native sparse extraction, derived snapshot
+reload, the field endpoint-intersection regression, terrain on both sides of
+the old unit boundary, non-blocking publication, refinement and simplification,
+and large-coordinate camera-relative equivalence. The deterministic capture is
+also inspected for cracks, off-field spikes, and foreground surface scale.
+
+The 2026-08-26 release benchmark measured 1.83-2.20 seconds for complete
+camera-local replacement revisions while the render thread remained
+non-blocking; the coarse far revision completed in 67 ms. The stationary cut
+contains 67,464 logical owners, 80,282 conforming cells, and 7.60 MiB of
+directory/surface snapshots. Moving far reduces it to 4,632 owners and 5,214
+cells. Returning restores the exact stationary hierarchy, conforming-volume,
+surface, and render hashes (`847463375263264708`, `3499064660272623459`,
+`11328142402611431466`, and `5944734746027700620`). Gate 4 should retain and
+incrementally replace these blocks rather than rebuilding the complete sparse
+cut, which is the next major latency reduction.
 
 ## Headless experiment scripting
 

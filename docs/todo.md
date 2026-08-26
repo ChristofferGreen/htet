@@ -2,10 +2,10 @@
 
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
-experiment and Gate 0 playable-world bootstrap are complete. Execute Gate 2
-next: replace the monolithic ownership model with reusable cross-block
-transactions. Gate 3 then adopts the resulting blocked runtime in the
-already-playable application.
+experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
+3 large-domain runtime adoption are complete. Execute Gate 4 next: turn the
+currently all-resident sparse revision into a budgeted cache with independent
+summary, surface, and conforming-volume residency.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
@@ -27,8 +27,7 @@ match the monolithic surface exactly across widths and scheduling policies,
 survive mutation, eviction, and reload, and render directly from published
 snapshots. Deeper release measurements retain three generations as the
 bounded production width. Gate 2 is complete; the next closable work is Gate
-3's switch of `tetra_world` to this blocked revision/runtime path without a
-visual or controller regression.
+4's bounded residency and background-streaming cache.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
@@ -82,3 +81,22 @@ not the active queue.
 - [x] Capture and inspect deterministic output, launch the release executable,
       and run the canonical full release suite before mutable hierarchy-block
       work begins.
+
+- [x] Reconstruct exact restricted-green conforming cells directly from a
+      `WorldCutDirectory`, with no monolithic mesh or flattened global cut.
+- [x] Close direct camera-local sparse cuts using exact midpoint identities and
+      conservative shared-vertex grading, and compare against the transactional
+      oracle.
+- [x] Extract, optimize, block, atomically publish, checkpoint, and render a
+      globally keyed surface directly from the sparse conforming volume.
+- [x] Map the normalized single root to a 16-unit world domain and retain a
+      complete coarse terrain tier plus a fine camera-local tier.
+- [x] Generate upload floats relative to a snapped double-precision origin and
+      make Vulkan, overlays, cutaway tests, and headless capture use the same
+      coordinate frame.
+- [x] Replace `tetra_world`'s monolithic backend with asynchronous
+      `BlockedTerrainRuntime` publication while preserving controller and UI
+      behavior.
+- [x] Reproduce the old-unit-boundary visibility bug, verify terrain on both
+      sides, verify non-blocking replacement, and prove a far camera simplifies
+      the logical cut.

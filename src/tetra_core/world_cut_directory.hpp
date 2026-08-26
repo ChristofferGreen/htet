@@ -6,6 +6,8 @@
 
 namespace tetra {
 
+class WorldCutDirectory;
+
 struct WorldCutCheckpointMetrics {
   std::size_t blocks{};
   std::size_t surface_blocks{};
@@ -103,6 +105,21 @@ struct WorldBlockSelection {
   WorldBlockSelectionMetrics metrics{};
 };
 
+// Allocation-free-per-cell value form of the exact conforming volume implied
+// by a sparse logical world cut. Positions remain normalized root-local; the
+// runtime applies WorldStreamingDemand::Domain only at field/render boundaries.
+struct WorldConformingCell {
+  WorldTetAddress logical_owner{};
+  std::array<WorldVertexKey,4> vertices{};
+  std::array<Vec3,4> positions{};
+};
+
+struct WorldConformingVolume {
+  std::vector<WorldConformingCell> cells;
+  std::size_t transition_cells{};
+  std::size_t logical_owners{};
+};
+
 [[nodiscard]] WorldCutCheckpoint make_sparse_world_cut_checkpoint(
     std::span<const WorldTetAddress> logical_leaves,
     unsigned int block_generations,std::uint64_t revision,
@@ -112,6 +129,12 @@ struct WorldBlockSelection {
     std::uint64_t revision=1U);
 [[nodiscard]] WorldBlockSelection select_world_blocks(
     const WorldCutCheckpoint& available,const WorldStreamingDemand& demand);
+[[nodiscard]] WorldConformingVolume reconstruct_world_conforming_volume(
+    const WorldCutDirectory& directory);
+// Promotes only owners that cannot be represented by a restricted green
+// stencil, yielding the smallest conforming red-green superset of a sparse cut.
+[[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(
+    std::span<const WorldTetAddress> logical_owners);
 
 // Sparse ordered published cut. It stores no flattened global leaf vector;
 // traversal resolves child overrides directly from block prefixes.

@@ -6,12 +6,14 @@
 
 #include <memory>
 #include <array>
+#include <future>
 #include <vector>
 
 namespace tetra_viewer {
 
 struct TerrainRuntimeDiagnostics {
   std::uint64_t mesh_revision{};
+  std::uint64_t world_revision{};
   std::uint64_t scene_mesh_revision{};
   std::uint64_t scene_generation{};
   std::uint64_t hierarchy_hash{};
@@ -22,6 +24,9 @@ struct TerrainRuntimeDiagnostics {
   std::size_t logical_cells{};
   std::size_t active_tetrahedra{};
   std::size_t resident_bytes{};
+  std::size_t hierarchy_blocks{};
+  std::size_t surface_blocks{};
+  double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};
   double last_update_milliseconds{};
@@ -97,5 +102,49 @@ class MonolithicTerrainRuntime final : public TerrainRuntime {
   std::uint64_t submitted_scene_request_id_{};
   std::uint64_t submitted_scene_mesh_revision_{};
 };
+
+class BlockedTerrainRuntime final : public TerrainRuntime {
+ public:
+  explicit BlockedTerrainRuntime(WorldProfile profile=production_world_profile());
+  ~BlockedTerrainRuntime() override=default;
+
+  void set_camera(const tetra::Camera& camera,bool interactive) override;
+  bool update() override;
+  [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
+  [[nodiscard]] const PreparedScene& scene() const noexcept override { return scene_; }
+  [[nodiscard]] const WorldProfile& profile() const noexcept override { return profile_; }
+  [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override {
+    auto result=diagnostics_;result.busy=future_.valid();return result;
+  }
+  [[nodiscard]] double signed_distance(tetra::Vec3 point) const override {
+    return field_.signed_distance(point);
+  }
+  [[nodiscard]] std::vector<TerrainDebugLine> lod_zone_lines() const override;
+
+ private:
+  struct Publication {
+    tetra::WorldCutCheckpoint checkpoint;
+    PreparedScene scene;
+    TerrainRuntimeDiagnostics diagnostics;
+  };
+  [[nodiscard]] static Publication build_publication(
+      const WorldProfile& profile,const tetra::Sphere& field,
+      const tetra::Camera& camera,std::uint64_t generation);
+  void submit();
+
+  WorldProfile profile_;
+  tetra::Sphere field_;
+  tetra::Camera camera_;
+  tetra::Vec3 last_requested_position_{};
+  std::unique_ptr<tetra::WorldCutDirectory> directory_;
+  PreparedScene scene_;
+  TerrainRuntimeDiagnostics diagnostics_;
+  std::future<Publication> future_;
+  bool demand_pending_{true};
+  std::uint64_t requested_generation_{};
+};
+
+[[nodiscard]] std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
+    WorldProfile profile=production_world_profile());
 
 }  // namespace tetra_viewer

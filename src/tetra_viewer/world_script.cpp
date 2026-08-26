@@ -112,7 +112,7 @@ int run_world_script(std::string_view script,std::ostream& output,
 }
 
 int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
-  MonolithicTerrainRuntime runtime(production_world_profile());
+  auto runtime=make_production_terrain_runtime(production_world_profile());
   struct Pose { const char* name;tetra::Vec3 position;tetra::Vec3 target; };
   constexpr std::array poses{
       Pose{"stationary",{0.5,0.72,0.78},{0.5,0.5,0.5}},
@@ -133,12 +133,12 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     camera.viewport_height_pixels=800.0;
     camera.aspect_ratio=1.6;
     const auto start=std::chrono::steady_clock::now();
-    runtime.set_camera(camera,false);
+    runtime->set_camera(camera,false);
     const auto deadline=start+std::chrono::seconds(30);
     TerrainRuntimeDiagnostics diagnostics;
     do{
-      static_cast<void>(runtime.update());
-      diagnostics=runtime.diagnostics();
+      static_cast<void>(runtime->update());
+      diagnostics=runtime->diagnostics();
       if(diagnostics.converged&&!diagnostics.busy&&
          diagnostics.scene_generation>0U&&
          diagnostics.scene_mesh_revision==diagnostics.mesh_revision)break;
@@ -167,7 +167,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
 
 int capture_world_runtime(std::string_view path,std::ostream& output,
                           std::ostream& errors) {
-  MonolithicTerrainRuntime runtime(production_world_profile());
+  auto runtime=make_production_terrain_runtime(production_world_profile());
   tetra::Camera camera;
   camera.position={0.5,0.72,0.78};
   const tetra::Vec3 target{0.5,0.5,0.5};
@@ -177,12 +177,12 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
   forward=forward/magnitude(forward);
   camera.forward=forward;camera.viewport_height_pixels=480.0;
   camera.aspect_ratio=1.6;
-  runtime.set_camera(camera,false);
+  runtime->set_camera(camera,false);
   const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
   TerrainRuntimeDiagnostics diagnostics;
   do{
-    static_cast<void>(runtime.update());
-    diagnostics=runtime.diagnostics();
+    static_cast<void>(runtime->update());
+    diagnostics=runtime->diagnostics();
     if(diagnostics.converged&&!diagnostics.busy&&diagnostics.scene_generation>0U&&
        diagnostics.scene_mesh_revision==diagnostics.mesh_revision)break;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -208,10 +208,11 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
   const auto right=normalize(cross(forward,camera.up));
   const auto up=cross(right,forward);
   const double tangent=std::tan(camera.vertical_fov_radians*0.5);
+  const auto render_camera=camera.position-runtime->scene().render_origin;
   struct Projected { double x{},y{},depth{}; };
   const auto project=[&](const SceneVertex& vertex){
     const tetra::Vec3 point{vertex.position[0],vertex.position[1],vertex.position[2]};
-    const auto offset=point-camera.position;
+    const auto offset=point-render_camera;
     const double depth=dot(offset,forward);
     return Projected{
         (dot(offset,right)/(depth*tangent*camera.aspect_ratio)*0.5+0.5)*(width-1),
@@ -219,7 +220,7 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
   };
   const auto edge=[](Projected first,Projected second,double x,double y){
     return (x-first.x)*(second.y-first.y)-(y-first.y)*(second.x-first.x);};
-  const auto& vertices=runtime.scene().triangle_vertices;
+  const auto& vertices=runtime->scene().triangle_vertices;
   for(std::size_t triangle=0;triangle+2U<vertices.size();triangle+=3U){
     const auto& first=vertices[triangle];
     const auto& second=vertices[triangle+1U];
@@ -234,7 +235,7 @@ int capture_world_runtime(std::string_view path,std::ostream& output,
     const int maximum_y=std::min(height-1,static_cast<int>(std::ceil(std::max({a.y,b.y,c.y}))));
     const auto normal=normalize({first.normal[0],first.normal[1],first.normal[2]});
     const double illumination=0.28+0.72*std::max(0.0,dot(normal,normalize(
-        camera.position-tetra::Vec3{first.position[0],first.position[1],first.position[2]})));
+        render_camera-tetra::Vec3{first.position[0],first.position[1],first.position[2]})));
     for(int y=minimum_y;y<=maximum_y;++y)for(int x=minimum_x;x<=maximum_x;++x){
       const double sample_x=x+0.5,sample_y=y+0.5;
       const double wa=edge(b,c,sample_x,sample_y)/area;

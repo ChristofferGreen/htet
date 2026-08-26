@@ -195,6 +195,16 @@ TetMesh TetMesh::make_unit_cube(SubdivisionMethod method) {
   return mesh;
 }
 
+TetMesh TetMesh::make_cube(Vec3 minimum,double extent,SubdivisionMethod method) {
+  if(!(extent>0.0)||!std::isfinite(extent)||!std::isfinite(minimum.x)||
+     !std::isfinite(minimum.y)||!std::isfinite(minimum.z))
+    throw std::invalid_argument("world root cube requires finite positive extent");
+  auto mesh=make_unit_cube(method);
+  for(auto& point:mesh.storage_->vertices_)
+    point=minimum+point*extent;
+  return mesh;
+}
+
 const Tetrahedron& TetMesh::tetrahedron(TetId address) const {
   const unsigned int depth = tet_depth(address);
   const auto index = record_index(address);

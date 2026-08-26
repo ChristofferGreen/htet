@@ -33,6 +33,9 @@ bool same_scene_preparation_parameters(
       first.stencil_selection_objective==second.stencil_selection_objective&&
       first.preparation.surface_diagnostics==second.preparation.surface_diagnostics&&
       first.preparation.summary_statistics==second.preparation.summary_statistics&&
+      first.preparation.render_origin.x==second.preparation.render_origin.x&&
+      first.preparation.render_origin.y==second.preparation.render_origin.y&&
+      first.preparation.render_origin.z==second.preparation.render_origin.z&&
       first.surface_override_revision==second.surface_override_revision;
 }
 

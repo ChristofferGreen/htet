@@ -893,6 +893,19 @@ TEST_CASE("first person mouse look uses the world application's expected axes") 
   CHECK(vertical.forward().y<initial.y);
 }
 
+TEST_CASE("implicit edge intersection preserves an endpoint already on the surface") {
+  tetra::Sphere terrain;terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  const tetra::Vec3 surface{terrain.centre.x,terrain.centre.y,
+                            terrain.centre.z};
+  const tetra::Vec3 below=surface+tetra::Vec3{0.0,-2.0,0.0};
+  const auto forward=terrain.edge_intersection(surface,below);
+  const auto reverse=terrain.edge_intersection(below,surface);
+  CHECK(forward.x==surface.x);CHECK(forward.y==surface.y);
+  CHECK(forward.z==surface.z);
+  CHECK(reverse.x==surface.x);CHECK(reverse.y==surface.y);
+  CHECK(reverse.z==surface.z);
+}
+
 TEST_CASE("world headless traces are deterministic and reject bad commands") {
   std::ostringstream first,second,errors;
   const auto script="idle:180,look:25:-10,forward:120,jump:1,idle:120";
@@ -983,6 +996,69 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
   }while(std::chrono::steady_clock::now()<far_deadline);
   REQUIRE(runtime.diagnostics().converged);
   CHECK(runtime.diagnostics().logical_cells<near_cells);
+}
+
+TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies in background") {
+  tetra_viewer::BlockedTerrainRuntime runtime(
+      tetra_viewer::production_world_profile());
+  const auto initial=runtime.diagnostics();
+  REQUIRE(initial.converged);
+  REQUIRE(initial.scene_generation>0U);
+  CHECK(initial.logical_cells>0U);
+  CHECK(initial.active_tetrahedra>=initial.logical_cells);
+  double minimum_x=std::numeric_limits<double>::infinity();
+  double maximum_x=-std::numeric_limits<double>::infinity();
+  double maximum_field_error{};tetra::Vec3 maximum_error_point{};
+  for(const auto& vertex:runtime.scene().triangle_vertices){
+    const tetra::Vec3 point{
+        runtime.scene().render_origin.x+vertex.position[0],
+        runtime.scene().render_origin.y+vertex.position[1],
+        runtime.scene().render_origin.z+vertex.position[2]};
+    minimum_x=std::min(minimum_x,point.x);maximum_x=std::max(maximum_x,point.x);
+    const double error=std::abs(runtime.signed_distance(point));
+    if(error>maximum_field_error){maximum_field_error=error;maximum_error_point=point;}
+  }
+  CAPTURE(maximum_field_error);CAPTURE(maximum_error_point.x);
+  CAPTURE(maximum_error_point.y);CAPTURE(maximum_error_point.z);
+  CHECK(maximum_field_error<2.0e-5);
+  CHECK(minimum_x<0.0);CHECK(maximum_x>1.0);
+
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  // Each sample is below the rebuild threshold; cumulative motion must still
+  // be compared with the last submitted demand, not the previous frame.
+  for(std::size_t step=1U;step<=150U;++step){
+    camera.position.x=0.5+0.01*static_cast<double>(step);
+    runtime.set_camera(camera,true);
+  }
+  const auto submit_start=std::chrono::steady_clock::now();
+  CHECK_FALSE(runtime.update());
+  CHECK(std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-submit_start).count()<50.0);
+  CHECK(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().scene_generation==initial.scene_generation);
+  const auto wait_for=[&](std::chrono::seconds timeout){
+    const auto deadline=std::chrono::steady_clock::now()+timeout;
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  REQUIRE(wait_for(std::chrono::seconds(10)));
+  CHECK(runtime.diagnostics().scene_generation>initial.scene_generation);
+  CHECK(runtime.diagnostics().positive_volumes);
+  CHECK(runtime.diagnostics().conforming_faces);
+  const auto boundary_cells=runtime.diagnostics().logical_cells;
+
+  camera.position={2.0,3.0,8.0};
+  const auto target=tetra::Vec3{2.0,0.5,0.5}-camera.position;
+  const double length=std::sqrt(target.x*target.x+target.y*target.y+
+                                target.z*target.z);
+  camera.forward=target/length;runtime.set_camera(camera,false);
+  REQUIRE(wait_for(std::chrono::seconds(10)));
+  CHECK(runtime.diagnostics().logical_cells<boundary_cells);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
@@ -2016,6 +2092,139 @@ TEST_CASE("sparse world cut exactly reproduces the monolithic oracle without a g
   const auto shared_across_blocks=std::ranges::count_if(
       incidents,[](const auto& entry){return entry.second.size()>1U;});
   CHECK(shared_across_blocks>0U);
+}
+
+TEST_CASE("sparse world cut reconstructs the exact conforming green volume") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<2U;++generation)
+    mesh.refine_all_binary();
+  // Make the cut genuinely mixed-depth so reconstruction must emit green
+  // transition cells rather than merely copying uniform red owners.
+  REQUIRE(mesh.refine_selected_binary({mesh.logical_red_owners().front()}));
+  tetra::WorldCutDirectory directory(
+      tetra::make_world_cut_checkpoint(mesh,3U,9U));
+  const auto reconstructed=tetra::reconstruct_world_conforming_volume(directory);
+  CHECK(reconstructed.logical_owners==mesh.logical_red_owners().size());
+  CHECK(reconstructed.transition_cells>0U);
+
+  using CellKey=std::pair<tetra::WorldTetAddress,
+      std::array<tetra::WorldVertexKey,4>>;
+  std::vector<CellKey> expected,actual;
+  const auto identities=tetra::make_world_vertex_identity_map(mesh);
+  const auto volume=mesh.conforming_volume();
+  expected.reserve(volume.size());
+  for(std::size_t index=0;index<volume.size();++index){
+    const auto cell=volume.cell(index);
+    std::array<tetra::WorldVertexKey,4> keys{};
+    const auto& vertices=mesh.tetrahedron(cell.address).vertices;
+    for(std::size_t corner=0;corner<4U;++corner)
+      keys[corner]=identities.at(vertices[corner]);
+    std::ranges::sort(keys);
+    expected.emplace_back(tetra::world_tet_address(cell.logical_owner),keys);
+  }
+  actual.reserve(reconstructed.cells.size());
+  for(const auto& cell:reconstructed.cells){
+    auto keys=cell.vertices;std::ranges::sort(keys);
+    actual.emplace_back(cell.logical_owner,keys);
+  }
+  std::ranges::sort(expected);std::ranges::sort(actual);
+  CHECK(actual==expected);
+
+  std::map<std::array<tetra::WorldVertexKey,3>,std::size_t> face_incidence;
+  constexpr std::array<std::array<std::size_t,3>,4> faces{{
+      {{0,1,2}},{{0,1,3}},{{0,2,3}},{{1,2,3}}}};
+  for(const auto& cell:reconstructed.cells)for(const auto face:faces){
+    std::array<tetra::WorldVertexKey,3> key{{cell.vertices[face[0]],
+        cell.vertices[face[1]],cell.vertices[face[2]]}};
+    std::ranges::sort(key);++face_incidence[key];
+  }
+  CHECK(std::ranges::all_of(face_incidence,
+      [](const auto& entry){return entry.second==1U||entry.second==2U;}));
+}
+
+TEST_CASE("direct sparse cut closure conservatively satisfies transactional grading") {
+  std::vector<tetra::WorldTetAddress> raw;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    raw.push_back(tetra::WorldTetAddress::root(root));
+  auto split_raw=[&](tetra::WorldTetAddress owner){
+    const auto found=std::ranges::find(raw,owner);REQUIRE(found!=raw.end());
+    raw.erase(found);
+    for(std::uint8_t child=0;child<8U;++child)raw.push_back(owner.child(child));
+    std::ranges::sort(raw);
+  };
+
+  tetra::WorldCutDirectory staged(tetra::make_sparse_world_cut_checkpoint(
+      raw,3U,1U,tetra::HierarchyResidencyTier::conforming_volume));
+  auto target=tetra::WorldTetAddress::root(0U);
+  for(std::uint64_t revision=2U;revision<=4U;++revision){
+    split_raw(target);
+    const std::array edit{tetra::WorldTopologyEdit{
+        target,tetra::WorldTopologyOperation::split}};
+    const auto transaction=staged.stage_transaction(edit,revision);
+    staged.publish(transaction.manifest);
+    target=target.child(0U);
+  }
+  const auto closed=tetra::close_world_conforming_cut(raw);
+  std::vector<tetra::WorldTetAddress> expected;
+  staged.for_each_logical_owner(
+      [&](tetra::WorldTetAddress owner){expected.push_back(owner);});
+  std::ranges::sort(expected);
+  CHECK(closed.size()>=expected.size());
+  std::map<tetra::WorldVertexKey,std::pair<unsigned int,unsigned int>> depths;
+  for(const auto owner:closed)for(const auto key:tetra::world_tetrahedron_vertex_keys(owner)){
+    auto [found,inserted]=depths.emplace(key,std::pair{owner.red_depth(),owner.red_depth()});
+    if(!inserted){found->second.first=std::min(found->second.first,owner.red_depth());
+      found->second.second=std::max(found->second.second,owner.red_depth());}
+  }
+  CHECK(std::ranges::all_of(depths,[](const auto& entry){
+    return entry.second.second<=entry.second.first+1U;
+  }));
+  tetra::WorldCutDirectory direct(tetra::make_sparse_world_cut_checkpoint(
+      closed,3U,1U,tetra::HierarchyResidencyTier::conforming_volume));
+  CHECK_FALSE(tetra::reconstruct_world_conforming_volume(direct).cells.empty());
+}
+
+TEST_CASE("native sparse world surface is watertight and publishable without a mesh") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    mesh.refine_all_binary();
+  tetra::WorldCutDirectory directory(
+      tetra::make_world_cut_checkpoint(mesh,3U,21U));
+  const tetra::Sphere sphere;
+  const tetra::WorldStreamingDemand::Domain domain{};
+  const auto surface=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false);
+  REQUIRE_FALSE(surface.vertices.empty());
+  CHECK(surface.triangles.size()==tetra::extract_isosurface(mesh,sphere).size());
+  CHECK(surface.metrics.surface_blocks==surface.snapshots.size());
+  for(const auto& vertex:surface.vertices)
+    CHECK(std::abs(sphere.signed_distance(vertex.position))<1.0e-10);
+
+  std::map<std::array<tetra::WorldDerivedVertexKey,2>,std::size_t> edges;
+  for(const auto& triangle:surface.triangles){
+    for(std::size_t corner=0;corner<3U;++corner){
+      std::array key{triangle.vertices[corner],
+                     triangle.vertices[(corner+1U)%3U]};
+      std::ranges::sort(key);++edges[key];
+    }
+  }
+  CHECK(std::ranges::all_of(edges,
+      [](const auto& entry){return entry.second==2U;}));
+
+  directory.publish(directory.stage_derived_surfaces(
+      surface.snapshots,directory.revision()+1U));
+  const auto assembled=tetra_viewer::assemble_blocked_derived_surface(directory);
+  CHECK(assembled.canonical_surface_hash==surface.canonical_surface_hash);
+  REQUIRE(assembled.vertices.size()==surface.vertices.size());
+  for(std::size_t index=0;index<surface.vertices.size();++index){
+    CHECK(assembled.vertices[index].key==surface.vertices[index].key);
+    CHECK(assembled.vertices[index].position.x==surface.vertices[index].position.x);
+    CHECK(assembled.vertices[index].position.y==surface.vertices[index].position.y);
+    CHECK(assembled.vertices[index].position.z==surface.vertices[index].position.z);
+  }
+  CHECK(assembled.triangles==surface.triangles);
 }
 
 TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {
@@ -6474,6 +6683,58 @@ TEST_CASE("diagnostic shading models and surface angle data are registered") {
     CHECK(scene.triangle_vertices[triangle+1].edge_flags == first.edge_flags);
     CHECK(scene.triangle_vertices[triangle+2].edge_flags == first.edge_flags);
   }
+}
+
+TEST_CASE("camera-relative scene preparation preserves geometry at planet coordinates") {
+  // Far beyond the point where a world-space float can preserve a unit cell.
+  constexpr double world_offset=1.0e6;
+  auto local_mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::maubach_diamond);
+  auto world_mesh=tetra::TetMesh::make_cube(
+      {world_offset,-world_offset,world_offset},1.0,
+      tetra::SubdivisionMethod::maubach_diamond);
+  local_mesh.refine_all_binary();
+  world_mesh.refine_all_binary();
+
+  tetra::Sphere local_field;
+  tetra::Sphere world_field=local_field;
+  world_field.centre=world_field.centre+
+      tetra::Vec3{world_offset,-world_offset,world_offset};
+  const auto local=tetra_viewer::prepare_scene(
+      local_mesh,local_field,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,true,true,false,
+      false,false,0.5,tetra_viewer::VolumeConnectionMethod::quality_stencils,
+      tetra_viewer::StencilConstruction::fixed,
+      tetra_viewer::StencilSelectionObjective::balanced,
+      {.surface_diagnostics=false,.summary_statistics=false});
+  const tetra::Vec3 origin{world_offset,-world_offset,world_offset};
+  const auto world=tetra_viewer::prepare_scene(
+      world_mesh,world_field,tetra_viewer::SurfaceMethod::marching_tetrahedra,
+      tetra_viewer::MaterialRule::all_vertices_inside,true,true,true,false,
+      false,false,world_offset+0.5,
+      tetra_viewer::VolumeConnectionMethod::quality_stencils,
+      tetra_viewer::StencilConstruction::fixed,
+      tetra_viewer::StencilSelectionObjective::balanced,
+      {.surface_diagnostics=false,.summary_statistics=false,
+       .render_origin=origin});
+
+  CHECK(world.render_origin.x==origin.x);
+  CHECK(world.render_origin.y==origin.y);
+  CHECK(world.render_origin.z==origin.z);
+  REQUIRE(world.triangle_vertices.size()==local.triangle_vertices.size());
+  REQUIRE(world.hierarchy_line_vertices.size()==
+          local.hierarchy_line_vertices.size());
+  const auto compare=[](const tetra_viewer::SceneVertex& first,
+                        const tetra_viewer::SceneVertex& second){
+    for(std::size_t axis=0;axis<3U;++axis){
+      CHECK(first.position[axis]==doctest::Approx(second.position[axis]).epsilon(1.0e-5));
+      CHECK(first.normal[axis]==doctest::Approx(second.normal[axis]).epsilon(1.0e-5));
+    }
+  };
+  for(std::size_t index=0;index<local.triangle_vertices.size();++index)
+    compare(world.triangle_vertices[index],local.triangle_vertices[index]);
+  for(std::size_t index=0;index<local.hierarchy_line_vertices.size();++index)
+    compare(world.hierarchy_line_vertices[index],local.hierarchy_line_vertices[index]);
 }
 
 TEST_CASE("hierarchy and surface edges are independently selectable") {
@@ -11151,7 +11412,9 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
     image.close();std::filesystem::remove(path);
     return hash;
   };
-  constexpr std::uint64_t expected=11322519242171074790ULL;
+  // Exact-on-surface hierarchy endpoints remain at the endpoint instead of
+  // being walked to the opposite side of the edge by generic bisection.
+  constexpr std::uint64_t expected=5912304624248203382ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(

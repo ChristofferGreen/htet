@@ -5,6 +5,7 @@
 #include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
 #include "tetra_core/world_hierarchy.hpp"
+#include "tetra_core/world_cut_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -614,6 +615,9 @@ struct SceneVertex {
 };
 
 struct PreparedScene {
+  // World-space origin subtracted from every uploaded float position. It is
+  // presentation state only and never participates in terrain identity.
+  tetra::Vec3 render_origin{};
   std::vector<SceneVertex> triangle_vertices;
   std::vector<SceneVertex> hierarchy_line_vertices;
   // Reserved for non-triangle overlays. Connected exterior-surface edges are
@@ -755,13 +759,20 @@ struct BlockedDerivedSurfaceBuild {
     const tetra::Sphere& sphere,BlockedDerivedSurfaceOptions options={},
     tetra::GeometryExecutor* executor=nullptr,
     std::stop_token cancellation={});
+// Native sparse-world extraction path. It consumes exact conforming cells
+// reconstructed from WorldCutDirectory and never requires a monolithic mesh.
+[[nodiscard]] BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
+    const tetra::WorldCutDirectory& directory,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Sphere& field,bool optimize=true,
+    std::stop_token cancellation={});
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same
 // flat-shaded, barycentric-edged draw representation consumed by Vulkan.
 [[nodiscard]] PreparedScene prepare_blocked_derived_surface_scene(
     const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
-    bool show_faces=true,bool show_edges=true);
+    bool show_faces=true,bool show_edges=true,tetra::Vec3 render_origin={});
 
 struct SurfaceGeometryHashes {
   std::uint64_t triangle_hash{};
@@ -1206,6 +1217,7 @@ void apply_surface_device_upload_plan(
 struct ScenePreparationOptions {
   bool surface_diagnostics{true};
   bool summary_statistics{true};
+  tetra::Vec3 render_origin{};
 };
 
 // Expands each two-vertex line segment into the six vertices consumed by the

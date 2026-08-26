@@ -840,6 +840,10 @@ Vec3 Sphere::normal(Vec3 point) const {
 }
 
 Vec3 Sphere::edge_intersection(Vec3 first,Vec3 second) const {
+  const double first_value=signed_distance(first);
+  const double second_value=signed_distance(second);
+  if(std::abs(first_value)<=1.0e-12)return first;
+  if(std::abs(second_value)<=1.0e-12)return second;
   if(kind==ImplicitShapeKind::sphere){
     const Vec3 offset=first-centre,direction=second-first;
     const double a=direction.x*direction.x+direction.y*direction.y+direction.z*direction.z;
@@ -851,7 +855,7 @@ Vec3 Sphere::edge_intersection(Vec3 first,Vec3 second) const {
     const double t=first_root>=0.0&&first_root<=1.0?first_root:second_root;
     return first+direction*t;
   }
-  double first_distance=signed_distance(first);
+  double first_distance=first_value;
   for(int iteration=0;iteration<40;++iteration){
     const Vec3 middle=(first+second)/2.0;
     const double middle_distance=signed_distance(middle);

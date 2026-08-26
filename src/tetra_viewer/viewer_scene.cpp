@@ -245,6 +245,25 @@ tetra::Vec3 face_normal(tetra::Vec3 a, tetra::Vec3 b, tetra::Vec3 c) {
           (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)};
 }
 
+std::array<float,3> render_position(
+    const PreparedScene& scene,tetra::Vec3 world_position) {
+  const auto relative=world_position-scene.render_origin;
+  return {static_cast<float>(relative.x),static_cast<float>(relative.y),
+          static_cast<float>(relative.z)};
+}
+
+SceneVertex make_scene_vertex(
+    const PreparedScene& scene,tetra::Vec3 world_position,
+    std::array<float,3> colour,tetra::Vec3 normal={}) {
+  SceneVertex vertex{};
+  std::ranges::copy(render_position(scene,world_position),vertex.position);
+  std::ranges::copy(colour,vertex.colour);
+  vertex.normal[0]=static_cast<float>(normal.x);
+  vertex.normal[1]=static_cast<float>(normal.y);
+  vertex.normal[2]=static_cast<float>(normal.z);
+  return vertex;
+}
+
 void prepare_surface_render_attributes(
     PreparedScene& scene,tetra::GeometryExecutor* executor=nullptr) {
   const std::size_t triangle_count=scene.triangle_vertices.size()/3;
@@ -1292,10 +1311,8 @@ void append_tetrahedral_layer(PreparedScene& scene, const tetra::TetMesh& mesh, 
         const tetra::Vec3 centre{(a.x+b.x+c.x)/3.0,(a.y+b.y+c.y)/3.0,(a.z+b.z+c.z)/3.0};
         const auto outward=centre-tet_centre;
         if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0) normal={-normal.x,-normal.y,-normal.z};
-        for (const auto point : {a,b,c}) scene.triangle_vertices.push_back({
-            {static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-            {0.24F,0.78F,0.48F},
-            {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}});
+        for (const auto point : {a,b,c}) scene.triangle_vertices.push_back(
+            make_scene_vertex(scene,point,{0.24F,0.78F,0.48F},normal));
       }
       begin=end;
     }
@@ -1315,10 +1332,8 @@ void append_dual_contour(PreparedScene& scene, const tetra::TetMesh& mesh, const
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
-      scene.triangle_vertices.push_back({
-          {static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-          {0.22F,0.72F,0.52F},
-          {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}});
+      scene.triangle_vertices.push_back(
+          make_scene_vertex(scene,point,{0.22F,0.72F,0.52F},normal));
   }
 }
 
@@ -1337,10 +1352,8 @@ void append_marching_tetrahedra(PreparedScene& scene, const tetra::TetMesh& mesh
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
-      scene.triangle_vertices.push_back({
-          {static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-          {0.32F,0.76F,0.42F},
-          {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}});
+      scene.triangle_vertices.push_back(
+          make_scene_vertex(scene,point,{0.32F,0.76F,0.42F},normal));
   }
 }
 
@@ -1357,12 +1370,8 @@ void append_four_hexahedra(PreparedScene& scene,const tetra::TetMesh& mesh,
     if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
       normal={-normal.x,-normal.y,-normal.z};
     for(const auto point:{triangle.a,triangle.b,triangle.c})
-      scene.triangle_vertices.push_back({
-          {static_cast<float>(point.x),static_cast<float>(point.y),
-           static_cast<float>(point.z)},
-          {0.26F,0.72F,0.56F},
-          {static_cast<float>(normal.x),static_cast<float>(normal.y),
-           static_cast<float>(normal.z)}});
+      scene.triangle_vertices.push_back(
+          make_scene_vertex(scene,point,{0.26F,0.72F,0.56F},normal));
   }
 }
 
@@ -1379,12 +1388,8 @@ void append_mixed_depth_dual(PreparedScene& scene,const tetra::TetMesh& mesh,
     if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
       normal={-normal.x,-normal.y,-normal.z};
     for(const auto point:{triangle.a,triangle.b,triangle.c})
-      scene.triangle_vertices.push_back({
-          {static_cast<float>(point.x),static_cast<float>(point.y),
-           static_cast<float>(point.z)},
-          {0.20F,0.74F,0.60F},
-          {static_cast<float>(normal.x),static_cast<float>(normal.y),
-           static_cast<float>(normal.z)}});
+      scene.triangle_vertices.push_back(
+          make_scene_vertex(scene,point,{0.20F,0.74F,0.60F},normal));
   }
 }
 
@@ -1451,10 +1456,8 @@ void append_lattice_cleaving(PreparedScene& scene, const tetra::TetMesh& mesh,
     if (normal.x*outward.x+normal.y*outward.y+normal.z*outward.z < 0.0)
       normal = {-normal.x,-normal.y,-normal.z};
     for (const auto point : {triangle.a, triangle.b, triangle.c})
-      scene.triangle_vertices.push_back({
-          {static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-          {0.80F,0.58F,0.24F},
-          {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}});
+      scene.triangle_vertices.push_back(
+          make_scene_vertex(scene,point,{0.80F,0.58F,0.24F},normal));
   }
 }
 
@@ -1861,10 +1864,8 @@ void append_surface_optimization(PreparedScene& scene, const tetra::TetMesh& mes
     const auto a=surface.positions[ids[0]],b=surface.positions[ids[1]],
                c=surface.positions[ids[2]];
     const auto normal=face_normal(a,b,c);
-    for(const auto point:{a,b,c})scene.triangle_vertices.push_back({
-        {static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-        {0.70F,0.36F,0.82F},
-        {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}});
+    for(const auto point:{a,b,c})scene.triangle_vertices.push_back(
+        make_scene_vertex(scene,point,{0.70F,0.36F,0.82F},normal));
   }
 }
 
@@ -2204,9 +2205,7 @@ void append_selected_volume(PreparedScene& scene, const tetra::TetMesh& mesh,
         const std::array<tetra::Vec3,3> points{{a,b,c}};
         for (std::size_t corner=0;corner<3;++corner) {
           const auto point=points[corner];
-          SceneVertex vertex{{static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-                             {colour[0],colour[1],colour[2]},
-                             {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}};
+          SceneVertex vertex=make_scene_vertex(scene,point,colour,normal);
           vertex.diagnostics[0]=-1.0F;
           // Bit 3 asks the fragment shader for a depth-masked wire-only face.
           vertex.edge_flags=show_faces ? 7.0F : 15.0F;
@@ -2311,9 +2310,7 @@ void append_connected_volume(PreparedScene& scene, const tetra::TetMesh& mesh,
           (scene.connected_volume_boundary[face.tetrahedron]?boundary_colour:internal_colour);
       for(std::size_t corner=0;corner<3;++corner){
         const auto point=points[corner];
-        SceneVertex vertex{{static_cast<float>(point.x),static_cast<float>(point.y),static_cast<float>(point.z)},
-                           {colour[0],colour[1],colour[2]},
-                           {static_cast<float>(normal.x),static_cast<float>(normal.y),static_cast<float>(normal.z)}};
+        SceneVertex vertex=make_scene_vertex(scene,point,colour,normal);
         // -2 identifies the authoritative external surface of the connected
         // volume; -1 identifies ordinary volume/cutaway faces.
         vertex.diagnostics[0]=interface_face?-2.0F:-1.0F;
@@ -2443,8 +2440,9 @@ BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
 
 PreparedScene prepare_blocked_derived_surface_scene(
     const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
-    bool show_faces,bool show_edges) {
+    bool show_faces,bool show_edges,tetra::Vec3 render_origin) {
   PreparedScene scene;
+  scene.render_origin=render_origin;
   scene.connected_surface_hash=surface.canonical_surface_hash;
   scene.optimized_surface_vertices=surface.vertices.size();
   if(!show_faces&&!show_edges)return scene;
@@ -2468,9 +2466,8 @@ PreparedScene prepare_blocked_derived_surface_scene(
       normal={-normal.x,-normal.y,-normal.z};
     for(std::size_t corner=0;corner<3U;++corner){
       SceneVertex vertex{};
-      vertex.position[0]=static_cast<float>(points[corner].x);
-      vertex.position[1]=static_cast<float>(points[corner].y);
-      vertex.position[2]=static_cast<float>(points[corner].z);
+      const auto position=render_position(scene,points[corner]);
+      std::ranges::copy(position,vertex.position);
       vertex.colour[0]=0.24F;vertex.colour[1]=0.76F;vertex.colour[2]=0.38F;
       vertex.normal[0]=static_cast<float>(normal.x);
       vertex.normal[1]=static_cast<float>(normal.y);
@@ -2484,6 +2481,152 @@ PreparedScene prepare_blocked_derived_surface_scene(
   append_screen_space_edges(scene,show_edges,false,show_faces,false);
   scene.connected_surface_edges=scene.surface_line_vertices.size()/2U;
   return scene;
+}
+
+BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
+    const tetra::WorldCutDirectory& directory,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Sphere& field,bool optimize,
+    std::stop_token cancellation) {
+  const auto started=std::chrono::steady_clock::now();
+  if(!(domain.world_extent>0.0)||!std::isfinite(domain.world_extent))
+    throw std::invalid_argument("sparse world surface requires a finite domain");
+  const auto volume=tetra::reconstruct_world_conforming_volume(directory);
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  struct KeyTriangle {
+    std::array<tetra::WorldDerivedVertexKey,3> vertices{};
+    tetra::WorldTetAddress owner{};
+  };
+  std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> vertices;
+  std::vector<KeyTriangle> triangles;
+  triangles.reserve(volume.cells.size()*2U);
+  const auto cross=[](tetra::Vec3 a,tetra::Vec3 b){return tetra::Vec3{
+      a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+  const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return
+      a.x*b.x+a.y*b.y+a.z*b.z;};
+  for(std::size_t cell_index=0;cell_index<volume.cells.size();++cell_index){
+    if((cell_index&255U)==0U&&cancellation.stop_requested())
+      throw std::runtime_error("sparse world surface build canceled");
+    const auto& cell=volume.cells[cell_index];
+    std::array<tetra::Vec3,4> points{};
+    std::array<double,4> distances{};
+    for(std::size_t corner=0;corner<4U;++corner){
+      points[corner]=domain.to_world(cell.positions[corner]);
+      distances[corner]=field.signed_distance(points[corner]);
+    }
+    struct Crossing { tetra::WorldDerivedVertexKey key{};tetra::Vec3 point{}; };
+    std::array<Crossing,4> crossings{};
+    std::size_t crossing_count{};
+    for(const auto edge:edges){
+      if((distances[edge[0]]<0.0)==(distances[edge[1]]<0.0))continue;
+      const auto key=tetra::world_edge_intersection_key(
+          cell.vertices[edge[0]],cell.vertices[edge[1]]);
+      const bool ordered=cell.vertices[edge[0]]<cell.vertices[edge[1]];
+      const auto point=field.edge_intersection(
+          points[ordered?edge[0]:edge[1]],points[ordered?edge[1]:edge[0]]);
+      crossings[crossing_count++]={key,point};
+      const auto [found,inserted]=vertices.emplace(key,point);
+      if(!inserted){
+        const auto delta=found->second-point;
+        if(dot(delta,delta)>1.0e-20)
+          throw std::logic_error(
+              "sparse world cells disagree on a shared field crossing");
+      }
+    }
+    if(crossing_count<3U)continue;
+    tetra::Vec3 centre{};
+    for(std::size_t index=0;index<crossing_count;++index)
+      centre=centre+crossings[index].point;
+    centre=centre/static_cast<double>(crossing_count);
+    const auto normal=field.normal(centre);
+    const auto reference=std::abs(normal.z)<0.9?tetra::Vec3{0.0,0.0,1.0}:
+        tetra::Vec3{0.0,1.0,0.0};
+    const auto axis_u=cross(reference,normal),axis_v=cross(normal,axis_u);
+    std::sort(crossings.begin(),
+        crossings.begin()+static_cast<std::ptrdiff_t>(crossing_count),
+        [&](const Crossing& first,const Crossing& second){
+          const auto a=first.point-centre,b=second.point-centre;
+          return std::atan2(dot(a,axis_v),dot(a,axis_u))<
+                 std::atan2(dot(b,axis_v),dot(b,axis_u));
+        });
+    for(std::size_t index=1U;index+1U<crossing_count;++index)
+      triangles.push_back({{{crossings[0].key,crossings[index].key,
+                             crossings[index+1U].key}},cell.logical_owner});
+  }
+
+  OptimizedSurface surface;
+  surface.positions.reserve(vertices.size());surface.global_keys.reserve(vertices.size());
+  for(const auto& [key,position]:vertices){
+    surface.global_keys.push_back(key);surface.positions.push_back(position);
+  }
+  surface.triangles.reserve(triangles.size());
+  for(const auto& triangle:triangles){
+    std::array<std::size_t,3> indices{};
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto found=std::ranges::lower_bound(
+          surface.global_keys,triangle.vertices[corner]);
+      if(found==surface.global_keys.end()||*found!=triangle.vertices[corner])
+        throw std::logic_error("sparse world triangle has no vertex");
+      indices[corner]=static_cast<std::size_t>(found-surface.global_keys.begin());
+    }
+    surface.triangles.push_back(indices);
+  }
+  PreparedScene optimization_metrics;
+  if(optimize&&!surface.triangles.empty())
+    optimize_surface_graph(optimization_metrics,field,surface);
+
+  struct BlockOutput {
+    tetra::WorldDerivedSurfaceSnapshot snapshot;
+    std::set<tetra::WorldDerivedVertexKey> vertices;
+  };
+  std::map<tetra::HierarchyBlockId,BlockOutput> blocks;
+  for(std::size_t index=0;index<triangles.size();++index){
+    const auto lookup=directory.lookup(triangles[index].owner);
+    if(!lookup)throw std::logic_error("sparse world surface owner is not resident");
+    auto& output=blocks[lookup.block->id];
+    output.snapshot.id=lookup.block->id;
+    output.snapshot.source_hierarchy_revision=directory.revision();
+    output.snapshot.metrics.optimizer_passes=optimize?surface_optimizer_passes:0U;
+    output.snapshot.metrics.dependency_halo_rings=
+        optimize?surface_optimizer_dependency_halo_rings:0U;
+    output.snapshot.triangles.push_back(
+        {triangles[index].vertices,triangles[index].owner});
+    output.vertices.insert(triangles[index].vertices.begin(),
+                           triangles[index].vertices.end());
+  }
+  std::vector<tetra::HierarchyBlockId> block_ids;
+  for(const auto& [id,_]:blocks)block_ids.push_back(id);
+  std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  snapshots.reserve(blocks.size());
+  for(auto& [id,output]:blocks){
+    for(const auto& key:output.vertices){
+      const auto found=std::ranges::lower_bound(surface.global_keys,key);
+      const auto index=static_cast<std::size_t>(found-surface.global_keys.begin());
+      output.snapshot.vertices.push_back({key,surface.positions[index]});
+    }
+    // Global optimization currently couples the complete visible graph. The
+    // conservative certificate is broad but exact; block-local five-ring
+    // jobs can narrow it once the runtime starts evicting far surface blocks.
+    if(optimize)for(const auto dependency:block_ids)
+      if(dependency!=id)output.snapshot.dependency_blocks.push_back(dependency);
+    output.snapshot.metrics.vertices=output.snapshot.vertices.size();
+    output.snapshot.metrics.triangles=output.snapshot.triangles.size();
+    output.snapshot.metrics.dependency_blocks=
+        output.snapshot.dependency_blocks.size();
+    snapshots.push_back(std::move(output.snapshot));
+  }
+  auto result=assemble_blocked_snapshots(std::move(snapshots));
+  result.metrics.block_generations=directory.block_generations();
+  result.metrics.source_vertices=result.vertices.size();
+  result.metrics.source_triangles=result.triangles.size();
+  result.metrics.surface_blocks=result.snapshots.size();
+  result.metrics.total_core_vertices=result.vertices.size();
+  result.metrics.total_patch_vertices=result.vertices.size();
+  result.metrics.total_patch_triangles=result.triangles.size();
+  result.metrics.build_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  return result;
 }
 
 BlockedDerivedSurfaceBuild build_blocked_derived_surface(
@@ -4177,9 +4320,10 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
                             ScenePreparationOptions preparation,
                             std::span<const tetra::Triangle> surface_override,
                             bool surface_override_is_owner_patches,
-                            tetra::GeometryExecutor* executor,
-                            std::stop_token cancellation) {
+                                          tetra::GeometryExecutor* executor,
+                                          std::stop_token cancellation) {
   PreparedScene scene;
+  scene.render_origin=preparation.render_origin;
   if(cancellation.stop_requested())return scene;
   const auto leaves = mesh.conforming_volume().addresses();
   scene.relations.reserve(leaves.size());
@@ -4203,9 +4347,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
 
   constexpr std::array<std::array<std::size_t, 3>, 4> faces{{{{0, 1, 2}}, {{0, 1, 3}}, {{0, 2, 3}}, {{1, 2, 3}}}};
   const auto add_triangle = [&scene](tetra::Vec3 point, std::array<float, 3> colour, tetra::Vec3 normal) {
-    scene.triangle_vertices.push_back({{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)},
-                                       {colour[0], colour[1], colour[2]},
-                                       {static_cast<float>(normal.x), static_cast<float>(normal.y), static_cast<float>(normal.z)}});
+    scene.triangle_vertices.push_back(make_scene_vertex(scene,point,colour,normal));
   };
 
   const auto statistics_start = std::chrono::steady_clock::now();
@@ -4362,8 +4504,8 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
       const auto edge = unpack_edge(packed);
       for (const auto vertex : edge) {
         const auto point = mesh.vertices()[vertex];
-        scene.hierarchy_line_vertices.push_back({{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)},
-                                                 {colour[0], colour[1], colour[2]}});
+        scene.hierarchy_line_vertices.push_back(
+            make_scene_vertex(scene,point,colour));
       }
     }
   }
