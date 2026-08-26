@@ -11,6 +11,7 @@
 #include "tetra_core/parallel_commit.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
 #include "tetra_core/world_hierarchy.hpp"
+#include "tetra_core/world_cut_directory.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
@@ -1912,6 +1913,226 @@ TEST_CASE("Gate 2A contracts remain distinct immutable and storage independent")
                   std::invalid_argument);
 }
 
+TEST_CASE("sparse world cut exactly reproduces the monolithic oracle without a global leaf array") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)
+    mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> expected;
+  expected.reserve(mesh.logical_red_owners().size());
+  for(const auto owner:mesh.logical_red_owners())
+    expected.push_back(tetra::world_tet_address(owner));
+  std::ranges::sort(expected);
+  for(const unsigned int generations:{2U,3U,4U,5U}){
+    const auto checkpoint=tetra::make_world_cut_checkpoint(
+        mesh,generations,17U);
+    tetra::WorldCutDirectory directory(checkpoint);
+    std::vector<tetra::WorldTetAddress> actual;
+    directory.for_each_logical_owner(
+        [&](tetra::WorldTetAddress owner){actual.push_back(owner);});
+    std::ranges::sort(actual);
+    CAPTURE(generations);
+    CHECK(actual==expected);
+    CHECK(directory.logical_owner_count()==expected.size());
+    CHECK(directory.metrics().effective_logical_owners==expected.size());
+    CHECK(directory.metrics().stored_logical_owners>=expected.size());
+    for(std::size_t index=0;index<expected.size();index+=97U){
+      const auto found=directory.lookup(expected[index]);
+      REQUIRE(found);
+      CHECK(found.logical_owner==expected[index]);
+      CHECK(directory.resident(expected[index]));
+      CHECK(found.comparisons<=directory.metrics().maximum_lookup_comparisons);
+    }
+    auto reordered=checkpoint;
+    std::ranges::reverse(reordered.blocks);
+    CHECK(reordered.canonical_hash()==checkpoint.canonical_hash());
+    tetra::WorldCutDirectory reloaded(std::move(reordered));
+    CHECK(reloaded.canonical_cut_hash()==directory.canonical_cut_hash());
+    CHECK(reloaded.checkpoint().canonical_hash()==checkpoint.canonical_hash());
+  }
+
+  std::map<tetra::WorldVertexKey,std::set<tetra::HierarchyBlockId>> incidents;
+  for(const auto owner:expected)
+    for(const auto key:tetra::world_tetrahedron_vertex_keys(owner))
+      incidents[key].insert(tetra::hierarchy_block_id(owner,2U));
+  const auto shared_across_blocks=std::ranges::count_if(
+      incidents,[](const auto& entry){return entry.second.size()>1U;});
+  CHECK(shared_across_blocks>0U);
+}
+
+TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {
+  auto target=tetra::WorldTetAddress::root(0U);
+  for(unsigned int depth=0;depth<10U;++depth)
+    target=target.child(static_cast<std::uint8_t>((depth*5U+1U)%8U));
+  const std::array targets{target};
+  const auto available=tetra::make_sparse_world_cut_checkpoint(targets,3U,1U);
+  auto roots=available;
+  roots.blocks.erase(std::remove_if(roots.blocks.begin(),roots.blocks.end(),
+      [](const auto& block){return block.id.prefix.red_depth()!=0U;}),roots.blocks.end());
+  roots.metrics={};
+  tetra::WorldCutDirectory directory(std::move(roots));
+  const auto coarse=directory.lookup(target);
+  REQUIRE(coarse);
+  CHECK(coarse.logical_owner.red_depth()==3U);
+  CHECK(coarse.fallback_levels>0U);
+  const auto coarse_count=directory.logical_owner_count();
+
+  std::vector<tetra::HierarchyBlockId> all;
+  for(const auto& block:available.blocks)all.push_back(block.id);
+  const auto refined=directory.reconcile(available,all,all.size(),2U);
+  CHECK(refined.metrics.loaded_blocks==available.blocks.size()-12U);
+  CHECK(refined.metrics.evicted_blocks==0U);
+  REQUIRE(directory.lookup(target));
+  CHECK(directory.lookup(target).logical_owner==target);
+  CHECK(directory.logical_owner_count()>coarse_count);
+  const auto refined_hash=directory.canonical_cut_hash();
+
+  std::vector<tetra::HierarchyBlockId> root_ids;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    root_ids.push_back({tetra::WorldTetAddress::root(root),3U});
+  const auto coarsened=directory.reconcile(available,root_ids,12U,3U);
+  CHECK(coarsened.metrics.evicted_blocks==available.blocks.size()-12U);
+  CHECK(coarsened.metrics.fallback_owners_exposed==coarsened.metrics.evicted_blocks);
+  CHECK(directory.logical_owner_count()==coarse_count);
+  CHECK(directory.lookup(target).logical_owner==coarse.logical_owner);
+  CHECK(directory.canonical_cut_hash()!=refined_hash);
+
+  static_cast<void>(directory.reconcile(available,all,all.size(),4U));
+  CHECK(directory.canonical_cut_hash()==refined_hash);
+  const auto saved=directory.checkpoint();
+  tetra::WorldCutDirectory restored(saved);
+  CHECK(restored.canonical_cut_hash()==refined_hash);
+  CHECK(restored.lookup(target).logical_owner==target);
+}
+
+TEST_CASE("world block demand is deterministic bounded and preserves ancestor closure") {
+  std::vector<tetra::WorldTetAddress> targets;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    for(unsigned int branch=0;branch<6U;++branch){
+      auto address=tetra::WorldTetAddress::root(root);
+      for(unsigned int depth=0;depth<30U;++depth)
+        address=address.child(static_cast<std::uint8_t>(
+            (root*3U+branch*5U+depth*7U)%8U));
+      targets.push_back(address);
+    }
+  const auto available=tetra::make_sparse_world_cut_checkpoint(targets,3U,1U);
+  tetra::WorldStreamingDemand demand;
+  demand.camera_world_position={0.15,0.2,0.25};
+  demand.player_world_position={0.2,0.2,0.2};
+  demand.camera_radius=0.45;demand.player_radius=0.08;
+  demand.camera_red_depth=18U;demand.player_red_depth=30U;
+  demand.maximum_blocks=160U;
+  const auto first=tetra::select_world_blocks(available,demand);
+  const auto repeated=tetra::select_world_blocks(available,demand);
+  CHECK(first.blocks==repeated.blocks);
+  auto planet_demand=demand;
+  planet_demand.domain.world_origin={-6371000.0,-6371000.0,-6371000.0};
+  planet_demand.domain.world_extent=12742000.0;
+  planet_demand.camera_world_position=planet_demand.domain.to_world(
+      demand.camera_world_position);
+  planet_demand.player_world_position=planet_demand.domain.to_world(
+      demand.player_world_position);
+  planet_demand.camera_radius*=planet_demand.domain.world_extent;
+  planet_demand.player_radius*=planet_demand.domain.world_extent;
+  CHECK(tetra::select_world_blocks(available,planet_demand).blocks==first.blocks);
+  CHECK(first.metrics.selected_blocks==first.blocks.size());
+  CHECK(first.blocks.size()<=demand.maximum_blocks);
+  CHECK(first.blocks.size()>=tetra::bcc_root_tetrahedron_count);
+  const std::set<tetra::HierarchyBlockId> selected(
+      first.blocks.begin(),first.blocks.end());
+  for(auto id:first.blocks)while(id.prefix.red_depth()>0U){
+    id={id.prefix.ancestor(id.prefix.red_depth()-id.block_generations),
+        id.block_generations};
+    CHECK(selected.contains(id));
+  }
+
+  auto root_checkpoint=available;
+  root_checkpoint.blocks.erase(std::remove_if(
+      root_checkpoint.blocks.begin(),root_checkpoint.blocks.end(),
+      [](const auto& block){return block.id.prefix.red_depth()!=0U;}),
+      root_checkpoint.blocks.end());
+  tetra::WorldCutDirectory directory(std::move(root_checkpoint));
+  const auto near_update=directory.reconcile(
+      available,first.blocks,demand.maximum_blocks,2U);
+  CHECK(near_update.metrics.loaded_blocks>0U);
+  CHECK(directory.metrics().blocks==first.blocks.size());
+  demand.camera_world_position={0.85,0.8,0.75};
+  demand.player_world_position={0.8,0.8,0.8};
+  const auto moved=tetra::select_world_blocks(available,demand);
+  CHECK(moved.blocks!=first.blocks);
+  const auto moved_update=directory.reconcile(
+      available,moved.blocks,demand.maximum_blocks,3U);
+  CHECK(moved_update.metrics.loaded_blocks>0U);
+  CHECK(moved_update.metrics.evicted_blocks>0U);
+  CHECK(moved_update.metrics.update_milliseconds>=0.0);
+  CHECK(directory.metrics().blocks<=demand.maximum_blocks);
+}
+
+TEST_CASE("world revision manifest rejects stale or invalid partial publication atomically") {
+  auto target=tetra::WorldTetAddress::root(3U);
+  for(unsigned int depth=0;depth<7U;++depth)target=target.child(2U);
+  const std::array targets{target};
+  const auto available=tetra::make_sparse_world_cut_checkpoint(targets,3U,1U);
+  auto roots=available;
+  roots.blocks.erase(std::remove_if(roots.blocks.begin(),roots.blocks.end(),
+      [](const auto& block){return block.id.prefix.red_depth()!=0U;}),roots.blocks.end());
+  tetra::WorldCutDirectory directory(std::move(roots));
+  const auto before=directory.checkpoint().canonical_hash();
+  const auto child=std::ranges::find_if(available.blocks,
+      [](const auto& block){return block.id.prefix.red_depth()==3U;});
+  REQUIRE(child!=available.blocks.end());
+  tetra::WorldRevisionManifest accepted(2U,1U,{*child});
+  directory.publish(accepted);
+  CHECK(directory.revision()==2U);
+  CHECK(directory.metrics().blocks==13U);
+  const auto published=directory.checkpoint().canonical_hash();
+  CHECK(published!=before);
+  CHECK_THROWS_AS(directory.publish(accepted),std::invalid_argument);
+  CHECK(directory.checkpoint().canonical_hash()==published);
+
+  auto invalid=*child;
+  invalid.id.prefix=invalid.id.prefix.child(0U);
+  tetra::WorldRevisionManifest broken(3U,2U,{std::move(invalid)});
+  CHECK_THROWS_AS(directory.publish(broken),std::invalid_argument);
+  CHECK(directory.revision()==2U);
+  CHECK(directory.checkpoint().canonical_hash()==published);
+}
+
+TEST_CASE("maximum-depth sparse world remains bounded and root-seam keys stay exact") {
+  std::vector<tetra::WorldTetAddress> targets;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    auto address=tetra::WorldTetAddress::root(root);
+    for(unsigned int depth=0;depth<tetra::maximum_world_red_depth;++depth)
+      address=address.child(static_cast<std::uint8_t>((root+depth*5U)%8U));
+    targets.push_back(address);
+  }
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint(targets,3U,9U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  CHECK(checkpoint.metrics.maximum_depth==36U);
+  CHECK(checkpoint.metrics.blocks<=12U*(1U+tetra::maximum_world_red_depth/3U));
+  CHECK(directory.metrics().blocks==checkpoint.metrics.blocks);
+  CHECK(directory.metrics().retained_bytes==checkpoint.metrics.retained_bytes);
+  for(const auto target:targets){
+    const auto lookup=directory.lookup(target);
+    REQUIRE(lookup);
+    CHECK(lookup.logical_owner==target);
+    CHECK(directory.vertex_keys(target)==tetra::world_tetrahedron_vertex_keys(target));
+  }
+  for(const auto& face:tetra::bcc_root_face_adjacency()){
+    if(face.boundary())continue;
+    const auto first=tetra::world_tetrahedron_vertex_keys(
+        tetra::WorldTetAddress::root(face.root));
+    const auto second=tetra::world_tetrahedron_vertex_keys(
+        tetra::WorldTetAddress::root(face.neighbour_root));
+    std::array<std::uint8_t,3> corners{};std::size_t output{};
+    for(std::uint8_t corner=0;corner<4U;++corner)
+      if(corner!=face.local_face)corners[output++]=corner;
+    CHECK(tetra::world_face_key(first[corners[0]],first[corners[1]],first[corners[2]])==
+          tetra::world_face_key(second[face.neighbour_corner_permutation[0]],
+                                second[face.neighbour_corner_permutation[1]],
+                                second[face.neighbour_corner_permutation[2]]));
+  }
+}
+
 TEST_CASE("single-root blocked views exactly reproduce monolithic BCC address sets") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<4U;++generation)
@@ -2077,6 +2298,20 @@ TEST_CASE("headless world block benchmark selects the measured bounded layout") 
   CHECK(text.find("\"event\":\"world_block_selection\",\"selected_generations\":3")!=
         std::string::npos);
   CHECK(text.find("\"all_exact\":true")!=std::string::npos);
+}
+
+TEST_CASE("headless world directory benchmark streams maximum-depth sparse terrain") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script("benchmark-world-directory",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"event\":\"world_directory_benchmark\"")!=std::string::npos);
+  CHECK(text.find("\"maximum_red_depth\":38")!=std::string::npos);
+  CHECK(text.find("\"world_extent_metres\":12742000")!=std::string::npos);
+  CHECK(text.find("\"second_loaded_blocks\":0")==std::string::npos);
+  CHECK(text.find("\"second_evicted_blocks\":0")==std::string::npos);
+  CHECK(text.find("\"geometry_hash\":0")==std::string::npos);
+  CHECK(text.find("\"reload_exact\":true")!=std::string::npos);
 }
 
 TEST_CASE("24-tet half-edge cube matches the paper construction") {

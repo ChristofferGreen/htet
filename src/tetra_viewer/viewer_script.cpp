@@ -7,6 +7,7 @@
 #include "tetra_core/adjacency.hpp"
 #include "tetra_core/layer_storage.hpp"
 #include "tetra_core/world_hierarchy.hpp"
+#include "tetra_core/world_cut_directory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1094,6 +1095,7 @@ void print_script_help(std::ostream& output) {
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
             "  benchmark-world-blocks Compare single-root 3/4/5-generation storage blocks\n"
+            "  benchmark-world-directory Validate sparse depth-38 streaming and fallback\n"
             "  benchmark-multithreaded-geometry[=<1..64>] Compare deterministic planning worker counts\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
             "  benchmark-cpu-four-hexahedra-quality[=<0..32>[:<2..64>]] Compare five shapes and retained surfaces\n"
@@ -2174,6 +2176,103 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
             <<(all_exact?"true":"false")<<"}\n";
       if(selected_generations==0U){
         write_error(errors,"world block benchmark could not qualify a bounded layout",command);
+        return 1;
+      }
+      continue;
+    }
+    if(command=="benchmark-world-directory"){
+      std::vector<tetra::WorldTetAddress> targets;
+      for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+        for(unsigned int branch=0;branch<4U;++branch){
+          auto address=tetra::WorldTetAddress::root(root);
+          for(unsigned int depth=0;depth<tetra::maximum_world_red_depth;++depth)
+            address=address.child(static_cast<std::uint8_t>(
+                (root*3U+branch*5U+depth*7U)%8U));
+          targets.push_back(address);
+        }
+      const auto build_start=Clock::now();
+      const auto available=tetra::make_sparse_world_cut_checkpoint(
+          targets,3U,1U);
+      const double build_ms=milliseconds_since(build_start);
+      auto roots=available;
+      roots.blocks.erase(std::remove_if(roots.blocks.begin(),roots.blocks.end(),
+          [](const auto& block){return block.id.prefix.red_depth()!=0U;}),
+          roots.blocks.end());
+      tetra::WorldCutDirectory directory(std::move(roots));
+      tetra::WorldStreamingDemand demand;
+      demand.domain.world_origin={-6371000.0,-6371000.0,-6371000.0};
+      demand.domain.world_extent=12742000.0;
+      demand.camera_world_position=demand.domain.to_world({0.2,0.25,0.3});
+      demand.player_world_position=demand.domain.to_world({0.22,0.24,0.28});
+      demand.camera_radius=0.5*demand.domain.world_extent;
+      demand.player_radius=0.1*demand.domain.world_extent;
+      demand.camera_red_depth=18U;
+      demand.player_red_depth=tetra::maximum_world_red_depth;
+      demand.maximum_blocks=256U;
+      const auto first=tetra::select_world_blocks(available,demand);
+      const auto first_update=directory.reconcile(
+          available,first.blocks,demand.maximum_blocks,2U);
+      const auto first_hash=directory.canonical_cut_hash();
+      demand.camera_world_position=demand.domain.to_world({0.8,0.75,0.7});
+      demand.player_world_position=demand.domain.to_world({0.78,0.76,0.72});
+      const auto second=tetra::select_world_blocks(available,demand);
+      const auto second_update=directory.reconcile(
+          available,second.blocks,demand.maximum_blocks,3U);
+      const auto second_hash=directory.canonical_cut_hash();
+      std::uint64_t geometry_hash=1469598103934665603ULL;
+      std::size_t geometry_samples{};
+      directory.for_each_logical_owner([&](tetra::WorldTetAddress owner){
+        if(geometry_samples>=4096U)return;
+        for(const auto key:tetra::world_tetrahedron_vertex_keys(owner)){
+          geometry_hash^=static_cast<std::uint64_t>(key.x);geometry_hash*=1099511628211ULL;
+          geometry_hash^=static_cast<std::uint64_t>(key.y);geometry_hash*=1099511628211ULL;
+          geometry_hash^=static_cast<std::uint64_t>(key.z);geometry_hash*=1099511628211ULL;
+          geometry_hash^=key.denominator_exponent;geometry_hash*=1099511628211ULL;
+        }
+        ++geometry_samples;
+      });
+      const auto restored=tetra::WorldCutDirectory(directory.checkpoint());
+      const bool valid=first.blocks.size()<=demand.maximum_blocks&&
+          second.blocks.size()<=demand.maximum_blocks&&
+          first_hash!=second_hash&&second_update.metrics.loaded_blocks>0U&&
+          second_update.metrics.evicted_blocks>0U&&
+          restored.canonical_cut_hash()==second_hash;
+      output<<"{\"event\":\"world_directory_benchmark\""
+            <<",\"maximum_red_depth\":"<<tetra::maximum_world_red_depth
+            <<",\"world_extent_metres\":"<<demand.domain.world_extent
+            <<",\"available_blocks\":"<<available.metrics.blocks
+            <<",\"available_stored_owners\":"
+            <<available.metrics.stored_logical_owners
+            <<",\"available_bytes\":"<<available.metrics.retained_bytes
+            <<",\"first_selected_blocks\":"<<first.blocks.size()
+            <<",\"second_selected_blocks\":"<<second.blocks.size()
+            <<",\"first_loaded_blocks\":"<<first_update.metrics.loaded_blocks
+            <<",\"second_loaded_blocks\":"<<second_update.metrics.loaded_blocks
+            <<",\"second_evicted_blocks\":"<<second_update.metrics.evicted_blocks
+            <<",\"resident_blocks\":"<<directory.metrics().blocks
+            <<",\"minimum_block_owners\":"
+            <<directory.metrics().minimum_block_owners
+            <<",\"maximum_block_owners\":"
+            <<directory.metrics().maximum_block_owners
+            <<",\"mean_block_owners\":"
+            <<directory.metrics().mean_block_owners
+            <<",\"effective_owners\":"
+            <<directory.metrics().effective_logical_owners
+            <<",\"resident_bytes\":"<<directory.metrics().retained_bytes
+            <<",\"maximum_lookup_comparisons\":"
+            <<directory.metrics().maximum_lookup_comparisons
+            <<",\"build_ms\":"<<std::fixed<<std::setprecision(3)<<build_ms
+            <<",\"first_update_ms\":"<<first_update.metrics.update_milliseconds
+            <<",\"first_affected_blocks\":"<<first_update.metrics.affected_blocks
+            <<",\"second_update_ms\":"<<second_update.metrics.update_milliseconds
+            <<",\"second_affected_blocks\":"<<second_update.metrics.affected_blocks
+            <<",\"first_cut_hash\":"<<first_hash
+            <<",\"second_cut_hash\":"<<second_hash
+            <<",\"geometry_hash\":"<<geometry_hash
+            <<",\"geometry_samples\":"<<geometry_samples
+            <<",\"reload_exact\":"<<(valid?"true":"false")<<"}\n";
+      if(!valid){
+        write_error(errors,"sparse world directory benchmark failed",command);
         return 1;
       }
       continue;

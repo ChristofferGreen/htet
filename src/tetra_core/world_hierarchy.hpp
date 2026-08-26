@@ -82,8 +82,12 @@ inline constexpr std::size_t bcc_root_tetrahedron_count=12U;
 
 [[nodiscard]] WorldTetrahedronGeometry world_tetrahedron_geometry(
     const TetMesh& root_complex,WorldTetAddress address);
+[[nodiscard]] WorldTetrahedronGeometry world_tetrahedron_geometry(
+    WorldTetAddress address);
 [[nodiscard]] std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     const TetMesh& root_complex,WorldTetAddress address);
+[[nodiscard]] std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
+    WorldTetAddress address);
 [[nodiscard]] WorldEdgeKey world_edge_key(WorldVertexKey first,WorldVertexKey second);
 [[nodiscard]] WorldFaceKey world_face_key(
     WorldVertexKey first,WorldVertexKey second,WorldVertexKey third);
@@ -146,9 +150,16 @@ struct HierarchyBlockMetrics {
   std::size_t retained_bytes{};
 };
 
+enum class HierarchyResidencyTier : std::uint8_t {
+  summary,
+  surface,
+  conforming_volume,
+};
+
 struct HierarchyBlockSnapshot {
   HierarchyBlockId id{};
   std::uint64_t source_revision{};
+  HierarchyResidencyTier residency{HierarchyResidencyTier::surface};
   std::vector<WorldTetAddress> resident_records;
   std::vector<WorldTetAddress> logical_owners;
   HierarchyBlockMetrics metrics{};

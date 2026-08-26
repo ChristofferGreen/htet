@@ -29,6 +29,7 @@ add_library(tetra_core
   src/tetra_core/tet_mesh.cpp
   src/tetra_core/implicit_surface.cpp
   src/tetra_core/world_hierarchy.cpp
+  src/tetra_core/world_cut_directory.cpp
   src/tetra_core/whole_cell_surface.cpp)
 add_library(tetra::core ALIAS tetra_core)
 target_include_directories(tetra_core PUBLIC src)

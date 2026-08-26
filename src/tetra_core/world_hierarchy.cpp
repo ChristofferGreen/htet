@@ -279,6 +279,10 @@ WorldTetrahedronGeometry world_tetrahedron_geometry(
     const TetMesh& root_complex,WorldTetAddress address) {
   if(root_complex.subdivision_method()!=SubdivisionMethod::bcc_red_green)
     throw std::invalid_argument("world geometry reconstruction requires the BCC root complex");
+  return world_tetrahedron_geometry(address);
+}
+
+WorldTetrahedronGeometry world_tetrahedron_geometry(WorldTetAddress address) {
   const auto exact=exact_tetrahedron(address);
   const auto denominator=static_cast<double>(std::uint64_t{1}<<
       (address.red_depth()+1U));
@@ -294,6 +298,11 @@ std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     const TetMesh& root_complex,WorldTetAddress address) {
   if(root_complex.subdivision_method()!=SubdivisionMethod::bcc_red_green)
     throw std::invalid_argument("world keys require the BCC root complex");
+  return world_tetrahedron_vertex_keys(address);
+}
+
+std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
+    WorldTetAddress address) {
   const auto geometry=exact_tetrahedron(address);
   const unsigned int exponent=address.red_depth()+1U;
   std::array<WorldVertexKey,4> result{};
@@ -385,7 +394,7 @@ bool TetMeshHierarchyAccess::resident(WorldTetAddress address) const {
 
 std::array<WorldVertexKey,4> TetMeshHierarchyAccess::vertex_keys(
     WorldTetAddress address) const {
-  return world_tetrahedron_vertex_keys(*mesh_,address);
+  return world_tetrahedron_vertex_keys(address);
 }
 
 std::vector<TetId> BlockedAddressSet::reconstructed_sources(

@@ -543,6 +543,37 @@ unloaded
   -> evicted
 ```
 
+Gate 2B implements the sparse published-cut portion as `WorldCutDirectory`.
+Its only persistent index is an ordered vector of immutable block snapshots.
+Each non-root block requires its direct parent snapshot to contain the block
+prefix as a terminal fallback leaf. While the child is resident that one leaf
+is shadowed by the child's complete local cut; atomic eviction exposes the
+same parent leaf again. Thus block loading is refinement and eviction is
+coarsening, with no planet-wide leaf vector and no visibility gap between
+revisions.
+
+Directory checkpoints are value snapshots with canonical order-independent
+hashes. Construction validates the twelve root fallbacks, complete ancestor
+chains, block-boundary phase, address ranges, and one block width. Publication
+rejects stale manifests and rolls back the complete directory if any changed
+snapshot violates those invariants. Camera and player demands rank available
+blocks deterministically, add every required ancestor, and respect a fixed
+resident-block budget. The player may request a deeper radius independently
+of the longer-range camera radius. Demand enters through an explicit world
+origin and root extent and is normalized only for selection. An Earth-diameter
+domain therefore selects the same persistent addresses as the unit oracle;
+world scale and floating origin never enter hierarchy identity.
+
+`benchmark-world-directory` exercises 48 sparse branches through the maximum
+38-red-generation address depth. The initial qualification retains 588
+available blocks rather than expanding the implicit tree, then moves demand
+between two regions while retaining roughly 120 blocks. It reports block
+occupancy, stored and effective owners, retained bytes, affected blocks,
+lookup bounds, update latency, canonical cut hashes, an exact dyadic geometry
+hash, and checkpoint/reload equivalence. Exact oracle tests cover block widths
+two through five, reversed checkpoint order, every BCC root seam, refinement,
+coarsening, eviction, and reload.
+
 Jobs may be cancelled or superseded before publication. Published state is
 immutable. An old block or parent representation remains visible until its
 replacement is complete.
@@ -1031,7 +1062,7 @@ complete only when its focused tests and the full release suite pass.
 - [x] Separate BCC hierarchy queries, planning, and conformity logic from the
       current monolithic storage implementation behind a read-only hierarchy
       access interface, retaining `TetMesh` as the oracle implementation.
-- [ ] Implement a sparse ordered `WorldCutDirectory` whose block-local cut
+- [x] Implement a sparse ordered `WorldCutDirectory` whose block-local cut
       ranges fall back to published coarse ancestors; do not allocate one
       planet-wide leaf vector.
 - [ ] Implement private transaction staging over mutable block copies. Plan

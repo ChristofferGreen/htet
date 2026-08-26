@@ -13,6 +13,11 @@ keys use exact reduced dyadic arithmetic; the twelve-root BCC complex has
 oriented face adjacency; and hierarchy planning can query a read-only
 storage-independent interface with `TetMesh` as its oracle. The next closable
 leaf is the sparse ordered `WorldCutDirectory` and coarse-ancestor fallback.
+That leaf is now complete: the directory publishes immutable sorted snapshots,
+resolves missing children through already-published parent leaves, and performs
+bounded camera/player-driven loading and eviction without a persistent global
+leaf vector. The next closable Gate 2 leaf is private multi-block transaction
+staging and global closure.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
@@ -29,8 +34,13 @@ not the active queue.
       faces of the twelve-tetrahedron BCC root complex.
 - [x] Introduce storage-independent read-only hierarchy access with `TetMesh`
       as the current oracle implementation.
-- [ ] Implement the sparse ordered `WorldCutDirectory` with published coarse
+- [x] Implement the sparse ordered `WorldCutDirectory` with published coarse
       ancestor fallback.
+- [x] Add deterministic camera/player block selection, atomic residency
+      reconciliation, eviction/coarsening, checkpoint reload, occupancy and
+      latency metrics, and a maximum-depth headless benchmark.
+- [ ] Implement private multi-block transaction staging against the directory,
+      expand global closure, and group completed writes by block.
 
 - [x] Define one named world-visualizer production profile containing the
       current release defaults.
