@@ -2478,6 +2478,12 @@ PreparedScene prepare_blocked_derived_surface_scene(
       scene.triangle_vertices.push_back(vertex);
     }
   }
+  // Keep lighting independent of triangle scale. The blocked path used to
+  // submit raw area vectors here; sufficiently refined faces then fell below
+  // the fragment shader's zero-normal sentinel and appeared as isolated,
+  // fully bright triangles. This is the same flat-face attribute preparation
+  // used by the monolithic scene path.
+  prepare_surface_render_attributes(scene);
   append_screen_space_edges(scene,show_edges,false,show_faces,false);
   scene.connected_surface_edges=scene.surface_line_vertices.size()/2U;
   return scene;

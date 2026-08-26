@@ -1009,7 +1009,45 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   double minimum_x=std::numeric_limits<double>::infinity();
   double maximum_x=-std::numeric_limits<double>::infinity();
   double maximum_field_error{};tetra::Vec3 maximum_error_point{};
-  for(const auto& vertex:runtime.scene().triangle_vertices){
+  const auto& world_vertices=runtime.scene().triangle_vertices;
+  REQUIRE(world_vertices.size()%3U==0U);
+  std::size_t nonfinite_normals{},nonunit_normals{},shader_sentinel_faces{},
+      inconsistent_face_normals{},misoriented_normals{},degenerate_faces{};
+  for(std::size_t triangle=0;triangle<world_vertices.size();triangle+=3U){
+    const auto& first=world_vertices[triangle];
+    const auto& second=world_vertices[triangle+1U];
+    const auto& third=world_vertices[triangle+2U];
+    const double normal_length=std::sqrt(
+        first.normal[0]*first.normal[0]+first.normal[1]*first.normal[1]+
+        first.normal[2]*first.normal[2]);
+    nonfinite_normals+=!std::isfinite(normal_length)?1U:0U;
+    for(std::size_t corner=1U;corner<3U;++corner)
+      for(std::size_t axis=0U;axis<3U;++axis)
+        inconsistent_face_normals+=
+            world_vertices[triangle+corner].normal[axis]!=first.normal[axis]?1U:0U;
+    const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
+    const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
+    const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
+    const auto ab=b-a,ac=c-a;
+    const tetra::Vec3 geometric{
+        ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,
+        ab.x*ac.y-ab.y*ac.x};
+    const double geometric_length=std::sqrt(
+        geometric.x*geometric.x+geometric.y*geometric.y+
+        geometric.z*geometric.z);
+    if(geometric_length<=1.0e-12){++degenerate_faces;continue;}
+    nonunit_normals+=std::abs(normal_length-1.0)>1.0e-5?1U:0U;
+    shader_sentinel_faces+=normal_length<=0.0001?1U:0U;
+    misoriented_normals+=geometric.x*first.normal[0]+
+        geometric.y*first.normal[1]+geometric.z*first.normal[2]<=0.0?1U:0U;
+  }
+  CAPTURE(degenerate_faces);
+  CHECK(nonfinite_normals==0U);
+  CHECK(nonunit_normals==0U);
+  CHECK(shader_sentinel_faces==0U);
+  CHECK(inconsistent_face_normals==0U);
+  CHECK(misoriented_normals==0U);
+  for(const auto& vertex:world_vertices){
     const tetra::Vec3 point{
         runtime.scene().render_origin.x+vertex.position[0],
         runtime.scene().render_origin.y+vertex.position[1],
@@ -6467,6 +6505,26 @@ TEST_CASE("blocked five-ring connected surface matches the production oracle") {
   const auto render_hashes=tetra_viewer::surface_geometry_hashes(render);
   CHECK(render_hashes.edge_count==render_hashes.wire_edge_count);
   for(std::size_t triangle=0;triangle<render.triangle_vertices.size();triangle+=3U){
+    const auto& first=render.triangle_vertices[triangle];
+    const auto& second=render.triangle_vertices[triangle+1U];
+    const auto& third=render.triangle_vertices[triangle+2U];
+    const tetra::Vec3 a{first.position[0],first.position[1],first.position[2]};
+    const tetra::Vec3 b{second.position[0],second.position[1],second.position[2]};
+    const tetra::Vec3 c{third.position[0],third.position[1],third.position[2]};
+    const auto ab=b-a,ac=c-a;
+    const tetra::Vec3 geometric{
+        ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,
+        ab.x*ac.y-ab.y*ac.x};
+    const double geometric_length=std::sqrt(
+        geometric.x*geometric.x+geometric.y*geometric.y+
+        geometric.z*geometric.z);
+    const double normal_length=std::sqrt(
+        first.normal[0]*first.normal[0]+first.normal[1]*first.normal[1]+
+        first.normal[2]*first.normal[2]);
+    if(geometric_length>1.0e-12){
+      CHECK(normal_length==doctest::Approx(1.0).epsilon(1.0e-6));
+      CHECK(normal_length>0.0001);
+    }
     for(std::size_t corner=1;corner<3U;++corner)
       for(std::size_t axis=0;axis<3U;++axis)
         CHECK(render.triangle_vertices[triangle+corner].normal[axis]==
