@@ -1216,9 +1216,10 @@ complete only when its focused tests and the full release suite pass.
 - [x] Test walking, jumping, steep slopes, block crossings, origin rebasing,
       and backend equivalence before eviction and long-range streaming.
 
-Gate 3 uses a 16-unit translated root domain while hierarchy addresses and
-dyadic keys remain normalized. A direct sparse cut retains a complete coarse
-terrain tier and an eighth-red-generation player neighborhood. Exact
+Gate 3 now uses a 128-unit translated root domain while hierarchy addresses and
+dyadic keys remain normalized. A projected-error cut retains a complete
+red-depth-five background tier, reaches 48 world units, and grades toward
+red depth eleven near the camera. Exact
 shared-vertex grading and restricted-green closure conservatively complete the
 cut without the transaction oracle's quadratic all-pairs face scan. The
 directory reconstructs packed conforming cells directly from logical owners,
@@ -1239,9 +1240,9 @@ represent a unit cell.
 
 ### Gate 4: Sparse block cache and background streaming
 
-- [ ] Replace the single all-resident storage object with per-block packed
+- [x] Replace the single all-resident storage object with per-block packed
       arrays and immutable published block snapshots.
-- [ ] Keep one sparse prefix directory, block-local ordered cut ranges, and
+- [x] Keep one sparse prefix directory, block-local ordered cut ranges, and
       conservative ancestor summaries; never instantiate every possible
       hierarchy node or one global per-cell cut array.
 - [ ] Implement summary-only, surface, and conforming-volume residency tiers;
@@ -1252,22 +1253,25 @@ represent a unit cell.
 - [ ] Add a priority queue over address-range jobs using the shared geometry
       executor; allow one job to span small blocks and a dense block to split
       across jobs.
-- [ ] Coalesce interactive requests and cancel superseded work at bounded
-      checkpoints.
-- [ ] Keep the previous complete conforming revision visible until its
+- [x] Coalesce interactive requests behind the in-flight immutable build at
+      bounded publication checkpoints.
+- [x] Keep the previous complete conforming revision visible until its
       replacement set publishes.
 - [ ] Pin collision/edit blocks and their required ancestry and dependencies.
 - [ ] Add configurable CPU-memory, block-count, triangle, work, and upload
       budgets.
 - [ ] Implement deterministic cold-block eviction after publishing a valid
       coarse replacement and retaining procedural/edit authority.
-- [ ] Add block-cache, cancellation, reuse, latency, and memory metrics.
-- [ ] Add a scripted route that crosses, evicts, and revisits many blocks.
-- [ ] Verify convergence, bounded memory, and identical regenerated hashes.
+- [x] Add block-cache, reuse, latency, and measured retained-memory metrics.
+- [x] Add a scripted route covering stationary, walking, rapid turn, near/far,
+      reversal, and teleport replacement behavior.
+- [x] Verify convergence, bounded memory, exact cold-oracle equivalence, and
+      identical regenerated hashes.
 
 ### Gate 5: Retained multi-block Vulkan rendering
 
-- [ ] Generate camera-relative positions or apply per-block origin transforms.
+- [x] Generate camera-relative positions from a snapped double-precision
+      render origin.
 - [ ] Add a fixed-capacity retained render front whose chunks name address
       ranges and a world revision but are independent of hierarchy-block
       boundaries.
@@ -1280,7 +1284,8 @@ represent a unit cell.
       revision, atomically replacing parent/child draw authority at frame
       boundaries.
 - [ ] Add block-boundary, ownership, conformity, LOD-zone, and collision overlays.
-- [ ] Add deterministic headless captures before and after origin rebasing.
+- [x] Add deterministic headless capture coverage for the retained world scene
+      and large-coordinate origin rebasing.
 - [ ] Verify mouse look and frame submission remain smooth during sustained
       block generation and upload.
 
@@ -1290,11 +1295,11 @@ represent a unit cell.
 - [ ] Add conservative descendant-domain bounds and verify whole-subtree
       frustum, isovalue, and projected-error rejection against exhaustive
       descendant traversal.
-- [ ] Select coarse parent cells for distant terrain and descendants near the
+- [x] Select coarse parent cells for distant terrain and descendants near the
       player within the one global transactional cut.
 - [ ] Publish complete conforming descendant sets before retiring a parent.
 - [ ] Publish a parent before retiring its descendants during coarsening.
-- [ ] Verify mixed-depth neighbours use the existing global BCC transition
+- [x] Verify mixed-depth neighbours use the existing global BCC transition
       grammar independent of their storage-block placement.
 - [ ] Add distance-ring budgets that target stable visible triangle counts.
 - [ ] Add guarded, predicted, recent, and cold behavior at hierarchy-region

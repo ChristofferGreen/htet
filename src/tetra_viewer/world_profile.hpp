@@ -17,14 +17,15 @@ struct WorldProfile {
   tetra::AdaptationConfiguration adaptation{};
   SurfaceDrawChunkStrategy draw_chunks{default_surface_draw_chunk_strategy};
   // One coherent root-local hierarchy mapped onto a gameplay-sized world
-  // cube. Gate 3 deliberately keeps this finite and measurable; later sparse
-  // streaming gates can increase the extent without changing cell identity.
+  // cube. The spawn remains at the old 0.5-centred coordinate while the same
+  // normalized root identity now covers a long-range streaming domain.
   tetra::WorldStreamingDemand::Domain domain{
-      .world_origin={-7.5,-7.5,-7.5},.world_extent=16.0};
-  unsigned int background_red_depth{3U};
-  unsigned int near_red_depth{8U};
+      .world_origin={-63.5,-63.5,-63.5},.world_extent=128.0};
+  unsigned int background_red_depth{5U};
+  unsigned int near_red_depth{11U};
   double near_volume_radius{0.6};
-  double pixel_threshold{28.0};
+  double view_distance{48.0};
+  double pixel_threshold{128.0};
   unsigned int maximum_depth{16U};
   bool show_faces{true};
   bool show_surface_edges{true};

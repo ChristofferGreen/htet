@@ -728,6 +728,14 @@ struct BlockedDerivedSurfaceMetrics {
   unsigned int block_generations{};
   std::size_t source_vertices{};
   std::size_t source_triangles{};
+  std::size_t conforming_cells{};
+  std::size_t transition_cells{};
+  std::size_t reused_intersections{};
+  std::size_t computed_intersections{};
+  std::size_t reused_conforming_cells{};
+  std::size_t rebuilt_conforming_cells{};
+  std::size_t reused_surface_blocks{};
+  std::size_t rebuilt_surface_blocks{};
   std::size_t surface_blocks{};
   std::size_t scheduling_batches{};
   std::size_t total_core_vertices{};
@@ -741,6 +749,26 @@ struct BlockedDerivedSurfaceMetrics {
   bool connected_volume_valid{true};
   double halo_amplification{};
   double build_milliseconds{};
+  double volume_reconstruction_milliseconds{};
+  double extraction_milliseconds{};
+  double optimization_milliseconds{};
+  double assembly_milliseconds{};
+  std::uint64_t conforming_volume_hash{};
+};
+
+// Flat retained cache for field intersections. Keys are global hierarchy-edge
+// identities, so an unchanged edge is reused across block, LOD, and render
+// revisions without any per-cell allocation.
+struct SparseWorldSurfaceCache {
+  struct HierarchySignature {
+    tetra::HierarchyBlockId id{};
+    std::uint64_t hash{};
+    auto operator<=>(const HierarchySignature&) const = default;
+  };
+  std::vector<tetra::WorldSurfaceVertex> intersections;
+  std::vector<HierarchySignature> hierarchy;
+  std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  tetra::WorldConformingClosureCache closure;
 };
 
 struct BlockedDerivedSurfaceBuild {
@@ -765,7 +793,7 @@ struct BlockedDerivedSurfaceBuild {
     const tetra::WorldCutDirectory& directory,
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Sphere& field,bool optimize=true,
-    std::stop_token cancellation={});
+    std::stop_token cancellation={},SparseWorldSurfaceCache* cache=nullptr);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same

@@ -100,3 +100,20 @@ not the active queue.
 - [x] Reproduce the old-unit-boundary visibility bug, verify terrain on both
       sides, verify non-blocking replacement, and prove a far camera simplifies
       the logical cut.
+- [x] Expand the coherent root domain to 128 units, retain terrain through a
+      48-unit horizon, and select a gradual red-depth-five through eleven cut
+      from projected screen error with exact shared-vertex grading.
+- [x] Retain unchanged hierarchy and optimized-surface snapshot allocations,
+      raw global field intersections, exact path geometry, and final green
+      masks across camera updates; verify every warm result against cold
+      extraction and rollback invalid publications atomically.
+- [x] Parallelize deterministic conformity scans and bounded Jacobi surface
+      passes, account for retained cache memory, and qualify walking, far,
+      reversal, and teleport behavior in the release benchmark.
+- [ ] Replace full warm conforming-cell and flat render-scene assembly with
+      retained per-block conforming and render chunks so a small camera move
+      copies and uploads only dirty ranges.
+- [ ] Add explicit CPU-memory, triangle, work, and upload budgets plus
+      cancellation of superseded in-flight builds.
+- [ ] Promote ordinary visible blocks to surface-only residency while pinning
+      conforming volume only around collision, edits, and physics demand.

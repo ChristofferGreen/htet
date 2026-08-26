@@ -24,12 +24,25 @@ struct TerrainRuntimeDiagnostics {
   std::size_t logical_cells{};
   std::size_t active_tetrahedra{};
   std::size_t resident_bytes{};
+  std::size_t retained_cache_bytes{};
   std::size_t hierarchy_blocks{};
   std::size_t surface_blocks{};
+  std::size_t reused_hierarchy_blocks{};
+  std::size_t rebuilt_hierarchy_blocks{};
+  std::size_t reused_surface_intersections{};
+  std::size_t computed_surface_intersections{};
+  std::size_t reused_surface_blocks{};
+  std::size_t rebuilt_surface_blocks{};
   double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};
   double last_update_milliseconds{};
+  double cut_selection_milliseconds{};
+  double cut_closure_milliseconds{};
+  double surface_build_milliseconds{};
+  double volume_reconstruction_milliseconds{};
+  double surface_extraction_milliseconds{};
+  double surface_assembly_milliseconds{};
   bool busy{};
   bool converged{};
   bool positive_volumes{};
@@ -41,6 +54,35 @@ struct TerrainDebugLine {
   tetra::Vec3 second{};
   std::array<float,3> colour{};
 };
+
+struct WorldLodCutMetrics {
+  std::size_t visited_owners{};
+  std::size_t field_rejected_owners{};
+  std::size_t projected_splits{};
+  std::size_t background_splits{};
+  std::size_t horizon_owners{};
+  std::size_t logical_owners_before_closure{};
+  std::size_t logical_owners_after_closure{};
+  unsigned int minimum_surface_depth{};
+  unsigned int maximum_surface_depth{};
+  unsigned int maximum_shared_vertex_depth_delta{};
+  double maximum_retained_projected_diameter{};
+  double selection_milliseconds{};
+  double closure_milliseconds{};
+};
+
+struct WorldLodCutSelection {
+  std::vector<tetra::WorldTetAddress> owners;
+  WorldLodCutMetrics metrics{};
+};
+
+// Selects one deterministic surface-relevant cut in world coordinates. The
+// field test prunes empty volume, projected diameter controls visible detail,
+// and exact restricted-green closure grades the resulting global cut.
+[[nodiscard]] WorldLodCutSelection select_world_lod_cut(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera,
+    tetra::WorldConformingClosureCache* closure_cache=nullptr);
 
 class TerrainRuntime {
  public:
@@ -126,10 +168,12 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     tetra::WorldCutCheckpoint checkpoint;
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
+    SparseWorldSurfaceCache surface_cache;
   };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
-      const tetra::Camera& camera,std::uint64_t generation);
+      const tetra::Camera& camera,std::uint64_t generation,
+      SparseWorldSurfaceCache surface_cache={});
   void submit();
 
   WorldProfile profile_;
@@ -140,6 +184,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;
   std::future<Publication> future_;
+  SparseWorldSurfaceCache surface_cache_;
   bool demand_pending_{true};
   std::uint64_t requested_generation_{};
 };

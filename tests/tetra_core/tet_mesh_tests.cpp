@@ -804,12 +804,36 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.shading==tetra_viewer::ShadingModel::studio_flat);
   CHECK(profile.adaptation==tetra::AdaptationConfiguration{});
   CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
-  CHECK(profile.pixel_threshold==doctest::Approx(28.0));
+  CHECK(profile.domain.world_extent==doctest::Approx(128.0));
+  CHECK(profile.background_red_depth==5U);
+  CHECK(profile.near_red_depth==11U);
+  CHECK(profile.view_distance==doctest::Approx(48.0));
+  CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.maximum_depth==16U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);
   CHECK_FALSE(profile.show_hierarchy_edges);
   CHECK_FALSE(profile.x_cutaway);
+}
+
+TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  const auto selection=tetra_viewer::select_world_lod_cut(profile,field,camera);
+  CAPTURE(selection.metrics.visited_owners);
+  CAPTURE(selection.metrics.logical_owners_before_closure);
+  CAPTURE(selection.metrics.logical_owners_after_closure);
+  CAPTURE(selection.metrics.minimum_surface_depth);
+  CAPTURE(selection.metrics.maximum_surface_depth);
+  CAPTURE(selection.metrics.maximum_shared_vertex_depth_delta);
+  REQUIRE_FALSE(selection.owners.empty());
+  CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
+  CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
+  CHECK(selection.metrics.logical_owners_after_closure<500000U);
+  CHECK(selection.metrics.horizon_owners>0U);
 }
 
 TEST_CASE("first person fixed steps are deterministic across frame grouping") {
@@ -1006,6 +1030,8 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   REQUIRE(initial.scene_generation>0U);
   CHECK(initial.logical_cells>0U);
   CHECK(initial.active_tetrahedra>=initial.logical_cells);
+  CHECK(initial.retained_cache_bytes>0U);
+  CHECK(initial.resident_bytes<512U*1024U*1024U);
   double minimum_x=std::numeric_limits<double>::infinity();
   double maximum_x=-std::numeric_limits<double>::infinity();
   double maximum_field_error{};tetra::Vec3 maximum_error_point{};
@@ -1097,6 +1123,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   camera.forward=target/length;runtime.set_camera(camera,false);
   REQUIRE(wait_for(std::chrono::seconds(10)));
   CHECK(runtime.diagnostics().logical_cells<boundary_cells);
+  CHECK(runtime.diagnostics().resident_bytes<512U*1024U*1024U);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
@@ -2223,6 +2250,37 @@ TEST_CASE("direct sparse cut closure conservatively satisfies transactional grad
   CHECK_FALSE(tetra::reconstruct_world_conforming_volume(direct).cells.empty());
 }
 
+TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
+  std::vector<tetra::WorldTetAddress> raw;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    raw.push_back(tetra::WorldTetAddress::root(root));
+  const auto split=[&](tetra::WorldTetAddress owner){
+    const auto found=std::ranges::find(raw,owner);REQUIRE(found!=raw.end());
+    raw.erase(found);
+    for(std::uint8_t child=0;child<8U;++child)raw.push_back(owner.child(child));
+    std::ranges::sort(raw);
+  };
+  split(tetra::WorldTetAddress::root(0U));
+  split(tetra::WorldTetAddress::root(0U).child(0U));
+  split(tetra::WorldTetAddress::root(0U).child(0U).child(0U));
+  const auto cold=tetra::close_world_conforming_cut(raw);
+  tetra::WorldConformingClosureCache cache;
+  cache.maximum_entries=128U;
+  const auto first=tetra::close_world_conforming_cut(raw,&cache);
+  const auto populated=cache.geometry.size();
+  CHECK(first==cold);
+  CHECK(populated>0U);
+  CHECK(populated<=cache.maximum_entries);
+  const auto repeated=tetra::close_world_conforming_cut(raw,&cache);
+  CHECK(repeated==cold);
+  CHECK(cache.geometry.size()==populated);
+
+  split(tetra::WorldTetAddress::root(1U));
+  const auto moved=tetra::close_world_conforming_cut(raw,&cache);
+  CHECK(moved==tetra::close_world_conforming_cut(raw));
+  CHECK(cache.geometry.size()<=cache.maximum_entries);
+}
+
 TEST_CASE("native sparse world surface is watertight and publishable without a mesh") {
   auto mesh=tetra::TetMesh::make_unit_cube(
       tetra::SubdivisionMethod::bcc_red_green);
@@ -2232,8 +2290,9 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
       tetra::make_world_cut_checkpoint(mesh,3U,21U));
   const tetra::Sphere sphere;
   const tetra::WorldStreamingDemand::Domain domain{};
+  tetra_viewer::SparseWorldSurfaceCache cache;
   const auto surface=tetra_viewer::build_sparse_world_derived_surface(
-      directory,domain,sphere,false);
+      directory,domain,sphere,false,{},&cache);
   REQUIRE_FALSE(surface.vertices.empty());
   CHECK(surface.triangles.size()==tetra::extract_isosurface(mesh,sphere).size());
   CHECK(surface.metrics.surface_blocks==surface.snapshots.size());
@@ -2263,6 +2322,56 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
     CHECK(assembled.vertices[index].position.z==surface.vertices[index].position.z);
   }
   CHECK(assembled.triangles==surface.triangles);
+
+  const auto retained=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&cache);
+  CHECK(retained.canonical_surface_hash==surface.canonical_surface_hash);
+  CHECK(retained.metrics.computed_intersections==0U);
+  CHECK(retained.metrics.rebuilt_surface_blocks==0U);
+  CHECK(retained.metrics.reused_surface_blocks==surface.snapshots.size());
+  CHECK(cache.intersections.size()==surface.vertices.size());
+  CHECK(cache.snapshots.size()==surface.snapshots.size());
+}
+
+TEST_CASE("sparse world surface cache localizes topology edits and matches cold extraction") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  mesh.refine_all_binary();mesh.refine_all_binary();
+  tetra::WorldCutDirectory initial(
+      tetra::make_world_cut_checkpoint(mesh,2U,1U));
+  tetra_viewer::SparseWorldSurfaceCache cache;
+  const tetra::Sphere sphere;
+  const tetra::WorldStreamingDemand::Domain domain{};
+  const auto baseline=tetra_viewer::build_sparse_world_derived_surface(
+      initial,domain,sphere,false,{},&cache);
+  REQUIRE_FALSE(baseline.snapshots.empty());
+
+  const auto selected=mesh.logical_red_owners().front();
+  REQUIRE(mesh.refine_selected_binary({selected}));
+  tetra::WorldCutDirectory changed(
+      tetra::make_world_cut_checkpoint(mesh,2U,2U));
+  const auto warm=tetra_viewer::build_sparse_world_derived_surface(
+      changed,domain,sphere,false,{},&cache);
+  const auto cold=tetra_viewer::build_sparse_world_derived_surface(
+      changed,domain,sphere,false);
+  CHECK(warm.canonical_surface_hash==cold.canonical_surface_hash);
+  CHECK(warm.metrics.conforming_volume_hash==cold.metrics.conforming_volume_hash);
+  CHECK(warm.metrics.reused_surface_blocks>0U);
+  CHECK(warm.metrics.rebuilt_surface_blocks>0U);
+  CHECK(warm.metrics.computed_intersections<cold.metrics.computed_intersections);
+  CHECK(cache.intersections.size()==warm.vertices.size());
+  CHECK(cache.snapshots.size()==warm.snapshots.size());
+
+  tetra_viewer::SparseWorldSurfaceCache optimized_cache;
+  static_cast<void>(tetra_viewer::build_sparse_world_derived_surface(
+      initial,domain,sphere,true,{},&optimized_cache));
+  const auto optimized_warm=tetra_viewer::build_sparse_world_derived_surface(
+      changed,domain,sphere,true,{},&optimized_cache);
+  const auto optimized_cold=tetra_viewer::build_sparse_world_derived_surface(
+      changed,domain,sphere,true);
+  CHECK(optimized_warm.canonical_surface_hash==
+        optimized_cold.canonical_surface_hash);
+  CHECK(optimized_warm.metrics.rebuilt_surface_blocks>0U);
 }
 
 TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {
@@ -2487,6 +2596,68 @@ TEST_CASE("world transactions reproduce monolithic BCC logical cuts across block
       CHECK(actual==expected);
     }
   }
+}
+
+TEST_CASE("complete world cut checkpoint exactly matches sparse construction") {
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    leaves.push_back(tetra::WorldTetAddress::root(root));
+  const auto split=[&](tetra::WorldTetAddress owner){
+    const auto found=std::ranges::find(leaves,owner);REQUIRE(found!=leaves.end());
+    leaves.erase(found);
+    for(std::uint8_t child=0;child<8U;++child)leaves.push_back(owner.child(child));
+  };
+  split(tetra::WorldTetAddress::root(0U));
+  split(tetra::WorldTetAddress::root(0U).child(3U));
+  split(tetra::WorldTetAddress::root(7U));
+  std::ranges::sort(leaves);
+  for(const unsigned int width:{1U,2U,3U,4U}){
+    const auto sparse=tetra::make_sparse_world_cut_checkpoint(
+        leaves,width,17U,tetra::HierarchyResidencyTier::conforming_volume);
+    const auto complete=tetra::make_complete_world_cut_checkpoint(
+        leaves,width,17U,tetra::HierarchyResidencyTier::conforming_volume);
+    CAPTURE(width);
+    CHECK(complete.canonical_hash()==sparse.canonical_hash());
+    tetra::WorldCutDirectory sparse_directory(sparse),complete_directory(complete);
+    CHECK(complete_directory.canonical_cut_hash()==
+          sparse_directory.canonical_cut_hash());
+    CHECK(complete_directory.logical_owner_count()==leaves.size());
+  }
+}
+
+TEST_CASE("retained world checkpoint reuses payloads and rolls back invalid adoption") {
+  auto first=tetra::make_sparse_world_cut_checkpoint(
+      {},3U,1U,tetra::HierarchyResidencyTier::conforming_volume);
+  tetra::WorldDerivedSurfaceSnapshot surface;
+  surface.id=first.blocks.front().id;surface.source_hierarchy_revision=1U;
+  first.surfaces.push_back(surface);
+  tetra::WorldCutDirectory directory(first);
+  const auto original_block=directory.hierarchy_blocks().front();
+  const auto original_surface=directory.derived_surfaces().front();
+
+  auto unchanged=directory.checkpoint();unchanged.revision=2U;
+  const auto reused=directory.adopt_retained(std::move(unchanged));
+  CHECK(reused.metrics.reused_blocks==first.blocks.size());
+  CHECK(reused.metrics.loaded_blocks==0U);
+  CHECK(reused.metrics.reused_surfaces==1U);
+  CHECK(directory.hierarchy_blocks().front()==original_block);
+  CHECK(directory.derived_surfaces().front()==original_surface);
+
+  auto changed=directory.checkpoint();changed.revision=3U;
+  changed.blocks.front().residency=tetra::HierarchyResidencyTier::surface;
+  changed.surfaces.clear();
+  const auto replaced=directory.adopt_retained(std::move(changed));
+  CHECK(replaced.metrics.loaded_blocks==1U);
+  CHECK(replaced.metrics.reused_blocks==first.blocks.size()-1U);
+  CHECK(directory.hierarchy_blocks().front()!=original_block);
+  CHECK(directory.derived_surfaces().empty());
+
+  const auto valid_hash=directory.checkpoint().canonical_hash();
+  auto invalid=directory.checkpoint();invalid.revision=4U;
+  invalid.blocks.erase(invalid.blocks.begin());
+  CHECK_THROWS(static_cast<void>(directory.adopt_retained(std::move(invalid))));
+  CHECK(directory.revision()==3U);
+  CHECK(directory.checkpoint().canonical_hash()==valid_hash);
 }
 
 TEST_CASE("world closure crosses root seams and shared ownership is canonical") {

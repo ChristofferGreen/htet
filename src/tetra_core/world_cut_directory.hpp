@@ -62,6 +62,9 @@ struct WorldDirectoryUpdateMetrics {
   std::size_t retained_blocks{};
   std::size_t fallback_owners_exposed{};
   std::size_t affected_blocks{};
+  std::size_t reused_blocks{};
+  std::size_t changed_surfaces{};
+  std::size_t reused_surfaces{};
   double update_milliseconds{};
 };
 
@@ -120,7 +123,29 @@ struct WorldConformingVolume {
   std::size_t logical_owners{};
 };
 
+// Flat, allocation-free-per-entry memoization for exact hierarchy geometry
+// used by repeated conformity closure. Camera movement revisits almost all of
+// the same owners, so retaining these keys avoids replaying every root path.
+struct WorldConformingClosureCacheEntry {
+  WorldTetAddress address{};
+  std::array<WorldVertexKey,4> vertices{};
+  auto operator<=>(const WorldConformingClosureCacheEntry&) const = default;
+};
+
+struct WorldConformingClosureCache {
+  std::vector<WorldConformingClosureCacheEntry> geometry;
+  std::vector<WorldTetAddress> closed_owners;
+  std::vector<std::uint8_t> green_masks;
+  std::size_t maximum_entries{750000U};
+};
+
 [[nodiscard]] WorldCutCheckpoint make_sparse_world_cut_checkpoint(
+    std::span<const WorldTetAddress> logical_leaves,
+    unsigned int block_generations,std::uint64_t revision,
+    HierarchyResidencyTier leaf_tier=HierarchyResidencyTier::surface);
+// Fast path for an already complete, non-overlapping global cut. Unlike the
+// sparse-target constructor it does not replay every root-to-leaf split.
+[[nodiscard]] WorldCutCheckpoint make_complete_world_cut_checkpoint(
     std::span<const WorldTetAddress> logical_leaves,
     unsigned int block_generations,std::uint64_t revision,
     HierarchyResidencyTier leaf_tier=HierarchyResidencyTier::surface);
@@ -130,11 +155,13 @@ struct WorldConformingVolume {
 [[nodiscard]] WorldBlockSelection select_world_blocks(
     const WorldCutCheckpoint& available,const WorldStreamingDemand& demand);
 [[nodiscard]] WorldConformingVolume reconstruct_world_conforming_volume(
-    const WorldCutDirectory& directory);
+    const WorldCutDirectory& directory,
+    const WorldConformingClosureCache* closure_cache=nullptr);
 // Promotes only owners that cannot be represented by a restricted green
 // stencil, yielding the smallest conforming red-green superset of a sparse cut.
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(
-    std::span<const WorldTetAddress> logical_owners);
+    std::span<const WorldTetAddress> logical_owners,
+    WorldConformingClosureCache* cache=nullptr);
 
 // Sparse ordered published cut. It stores no flattened global leaf vector;
 // traversal resolves child overrides directly from block prefixes.
@@ -161,6 +188,8 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] const WorldCutDirectoryMetrics& metrics() const noexcept {
     return metrics_;
   }
+  [[nodiscard]] std::span<const std::shared_ptr<const HierarchyBlockSnapshot>>
+      hierarchy_blocks() const noexcept { return blocks_; }
   [[nodiscard]] WorldCutCheckpoint checkpoint() const;
   [[nodiscard]] std::shared_ptr<const WorldDerivedSurfaceSnapshot> surface(
       HierarchyBlockId id) const;
@@ -188,6 +217,11 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
       const WorldCutCheckpoint& available,
       std::span<const HierarchyBlockId> desired,
       std::size_t maximum_resident_blocks,std::uint64_t new_revision);
+
+  // Atomically adopts a complete checkpoint while retaining immutable block
+  // and derived-surface allocations whose payload is byte-for-byte unchanged.
+  [[nodiscard]] WorldDirectoryUpdate adopt_retained(
+      WorldCutCheckpoint checkpoint);
 
  private:
   [[nodiscard]] std::shared_ptr<const HierarchyBlockSnapshot> find_block(

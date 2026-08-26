@@ -156,6 +156,28 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<milliseconds<<",\"logical_cells\":"<<diagnostics.logical_cells
           <<",\"active_tetrahedra\":"<<diagnostics.active_tetrahedra
           <<",\"resident_bytes\":"<<diagnostics.resident_bytes
+          <<",\"retained_cache_bytes\":"<<diagnostics.retained_cache_bytes
+          <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
+          <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
+          <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds
+          <<",\"volume_reconstruction_ms\":"
+          <<diagnostics.volume_reconstruction_milliseconds
+          <<",\"surface_extraction_ms\":"
+          <<diagnostics.surface_extraction_milliseconds
+          <<",\"surface_assembly_ms\":"
+          <<diagnostics.surface_assembly_milliseconds
+          <<",\"reused_intersections\":"
+          <<diagnostics.reused_surface_intersections
+          <<",\"computed_intersections\":"
+          <<diagnostics.computed_surface_intersections
+          <<",\"reused_hierarchy_blocks\":"
+          <<diagnostics.reused_hierarchy_blocks
+          <<",\"rebuilt_hierarchy_blocks\":"
+          <<diagnostics.rebuilt_hierarchy_blocks
+          <<",\"reused_surface_blocks\":"
+          <<diagnostics.reused_surface_blocks
+          <<",\"rebuilt_surface_blocks\":"
+          <<diagnostics.rebuilt_surface_blocks
           <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash
           <<",\"conforming_volume_hash\":"<<diagnostics.conforming_volume_hash
           <<",\"connected_surface_hash\":"<<diagnostics.connected_surface_hash

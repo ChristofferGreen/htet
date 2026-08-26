@@ -384,9 +384,8 @@ std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
 }
 
 WorldEdgeKey world_edge_key(WorldVertexKey first,WorldVertexKey second) {
-  WorldEdgeKey result{{first,second}};
-  std::ranges::sort(result.vertices);
-  return result;
+  if(second<first)std::swap(first,second);
+  return {{first,second}};
 }
 
 WorldVertexKey world_vertex_key(Vec3 position) {
@@ -408,9 +407,10 @@ WorldVertexKey world_vertex_key(Vec3 position) {
 
 WorldFaceKey world_face_key(
     WorldVertexKey first,WorldVertexKey second,WorldVertexKey third) {
-  WorldFaceKey result{{first,second,third}};
-  std::ranges::sort(result.vertices);
-  return result;
+  if(second<first)std::swap(first,second);
+  if(third<second)std::swap(second,third);
+  if(second<first)std::swap(first,second);
+  return {{first,second,third}};
 }
 
 WorldVertexKey WorldVertexIdentityMap::at(VertexId vertex) const {

@@ -95,12 +95,13 @@ Initial CMake targets:
 
 The production executable now instantiates `BlockedTerrainRuntime`. Its single
 logical BCC root is reconstructed in normalized coordinates and mapped through
-`WorldStreamingDemand::Domain` to `[-7.5, 8.5]` on every axis. The Perlin field,
+`WorldStreamingDemand::Domain` to `[-63.5, 64.5]` on every axis. The Perlin field,
 collision, camera demand, and derived surface are evaluated in world
 coordinates; hierarchy identity never depends on that transform.
 
-The production cut combines a complete red-depth-three surface tier with a
-graded red-depth-eight neighborhood around the player. `close_world_conforming_cut`
+The production cut combines a complete red-depth-five background tier with a
+projected-error-graded red-depth-eleven neighborhood within a 48-unit terrain
+horizon. `close_world_conforming_cut`
 uses exact ancestor midpoint identities, restricted green templates, and a
 conservative shared-vertex depth rule. `reconstruct_world_conforming_volume`
 then emits one packed array of exact conforming cells from the directory's
@@ -124,16 +125,28 @@ the old unit boundary, non-blocking publication, refinement and simplification,
 and large-coordinate camera-relative equivalence. The deterministic capture is
 also inspected for cracks, off-field spikes, and foreground surface scale.
 
-The 2026-08-26 release benchmark measured 1.83-2.20 seconds for complete
-camera-local replacement revisions while the render thread remained
-non-blocking; the coarse far revision completed in 67 ms. The stationary cut
-contains 67,464 logical owners, 80,282 conforming cells, and 7.60 MiB of
-directory/surface snapshots. Moving far reduces it to 4,632 owners and 5,214
-cells. Returning restores the exact stationary hierarchy, conforming-volume,
-surface, and render hashes (`847463375263264708`, `3499064660272623459`,
-`11328142402611431466`, and `5944734746027700620`). Gate 4 should retain and
-incrementally replace these blocks rather than rebuilding the complete sparse
-cut, which is the next major latency reduction.
+The retained 2026-08-26 release benchmark measures about 2.50 seconds for a
+walking-speed replacement while the render thread remains non-blocking. The
+stationary cut contains 471,210 logical owners and 568,328 conforming cells;
+the walking cut retains 20,906 hierarchy blocks, 6,084 optimized surface
+blocks, and 250,010 field intersections. Total measured CPU residency remains
+below 285 MiB throughout the stationary, walking, near/far, reversal, and
+teleport route. The exact stationary/reversal hashes are hierarchy
+`446215330011020690`, conforming volume `6202457804534614598`, optimized
+surface `8816839246282792875`, and render data `8495286386518142954`.
+
+The closure now memoizes exact path-derived vertex keys in one bounded flat
+array, evaluates its fixed-point masks in deterministic parallel batches, and
+publishes the final restricted-green mask beside the closed owner cut.
+Conforming reconstruction consumes those retained masks and derives positions
+directly from exact dyadic keys instead of repeating global closure. Surface
+updates retain raw global edge intersections separately from optimized
+positions, expand dirty blocks through the bounded five-ring optimizer halo,
+reuse unchanged immutable snapshots, and run the Jacobi passes in parallel.
+The complete-cut checkpoint constructor bypasses split replay, while
+`adopt_retained` preserves unchanged hierarchy and surface allocations and
+rolls back invalid publications atomically. Cold extraction remains the oracle
+for every retained result.
 
 ## Headless experiment scripting
 

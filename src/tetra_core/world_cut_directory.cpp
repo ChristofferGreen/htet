@@ -9,7 +9,10 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace tetra {
 namespace {
@@ -20,6 +23,33 @@ constexpr std::uint64_t hash_prime=1099511628211ULL;
 void hash_value(std::uint64_t& hash,std::uint64_t value) {
   hash^=value;hash*=hash_prime;
 }
+
+struct WorldAddressHash {
+  std::size_t operator()(WorldTetAddress value) const noexcept {
+    std::uint64_t hash=hash_offset;hash_value(hash,value.high);
+    hash_value(hash,value.low);return static_cast<std::size_t>(hash);
+  }
+};
+
+struct WorldVertexHash {
+  std::size_t operator()(WorldVertexKey value) const noexcept {
+    std::uint64_t hash=hash_offset;
+    hash_value(hash,static_cast<std::uint64_t>(value.x));
+    hash_value(hash,static_cast<std::uint64_t>(value.y));
+    hash_value(hash,static_cast<std::uint64_t>(value.z));
+    hash_value(hash,value.denominator_exponent);
+    return static_cast<std::size_t>(hash);
+  }
+};
+
+struct WorldEdgeHash {
+  std::size_t operator()(const WorldEdgeKey& value) const noexcept {
+    std::uint64_t hash=hash_offset;const WorldVertexHash vertex_hash;
+    hash_value(hash,vertex_hash(value.vertices[0]));
+    hash_value(hash,vertex_hash(value.vertices[1]));
+    return static_cast<std::size_t>(hash);
+  }
+};
 
 bool address_ancestor(WorldTetAddress ancestor,WorldTetAddress descendant) {
   return ancestor.root_id()==descendant.root_id()&&
@@ -97,6 +127,23 @@ bool snapshot_payload_equal(
   return first.id==second.id&&first.residency==second.residency&&
       first.resident_records==second.resident_records&&
       first.logical_owners==second.logical_owners;
+}
+
+bool surface_payload_equal(
+    const WorldDerivedSurfaceSnapshot& first,
+    const WorldDerivedSurfaceSnapshot& second) {
+  if(first.id!=second.id||first.vertices.size()!=second.vertices.size()||
+     first.triangles!=second.triangles||
+     first.dependency_blocks!=second.dependency_blocks||
+     first.metrics.optimizer_passes!=second.metrics.optimizer_passes||
+     first.metrics.dependency_halo_rings!=second.metrics.dependency_halo_rings)
+    return false;
+  for(std::size_t index=0;index<first.vertices.size();++index){
+    const auto& a=first.vertices[index];const auto& b=second.vertices[index];
+    if(a.key!=b.key||a.position.x!=b.position.x||a.position.y!=b.position.y||
+       a.position.z!=b.position.z)return false;
+  }
+  return true;
 }
 
 bool surface_depends_on(
@@ -242,6 +289,70 @@ WorldCutCheckpoint make_sparse_world_cut_checkpoint(
     auto current=leaf_block;
     chain.push_back(current);
     while(current.prefix.red_depth()>0U){current=parent_block(current);chain.push_back(current);}
+    std::ranges::reverse(chain);
+    for(std::size_t index=0;index<chain.size();++index){
+      auto& block=blocks[chain[index]];
+      block.id=chain[index];block.source_revision=revision;
+      if(index+1U==chain.size()){
+        block.residency=std::max(block.residency,leaf_tier);
+        block.logical_owners.push_back(leaf);
+        block.resident_records.push_back(leaf);
+      }else{
+        block.residency=std::max(
+            block.residency,HierarchyResidencyTier::surface);
+        block.logical_owners.push_back(chain[index+1U].prefix);
+        block.resident_records.push_back(chain[index+1U].prefix);
+      }
+    }
+  }
+  WorldCutCheckpoint result;
+  result.revision=revision;
+  result.block_generations=static_cast<std::uint8_t>(block_generations);
+  result.blocks.reserve(blocks.size());
+  for(auto& [id,block]:blocks){
+    (void)id;normalize_snapshot(block);result.blocks.push_back(std::move(block));
+  }
+  result.metrics=checkpoint_metrics(result.blocks,result.surfaces);
+  return result;
+}
+
+WorldCutCheckpoint make_complete_world_cut_checkpoint(
+    std::span<const WorldTetAddress> logical_leaves,
+    unsigned int block_generations,std::uint64_t revision,
+    HierarchyResidencyTier leaf_tier) {
+  if(block_generations==0U||block_generations>maximum_world_red_depth)
+    throw std::out_of_range("world cut block generation count out of range");
+  if(revision==0U)throw std::out_of_range("world cut revision must be nonzero");
+  std::vector<WorldTetAddress> leaves(logical_leaves.begin(),logical_leaves.end());
+  std::ranges::sort(leaves);
+  if(std::ranges::adjacent_find(leaves)!=leaves.end())
+    throw std::invalid_argument("complete world cut contains duplicate leaves");
+  for(std::size_t index=1U;index<leaves.size();++index)
+    if(overlaps(leaves[index-1U],leaves[index]))
+      throw std::invalid_argument("complete world cut contains overlapping leaves");
+  std::array<bool,bcc_root_tetrahedron_count> roots{};
+  for(const auto leaf:leaves){
+    if(leaf.root_id()>=bcc_root_tetrahedron_count)
+      throw std::out_of_range("complete world cut uses an unknown BCC root");
+    roots[leaf.root_id()]=true;
+  }
+  if(std::ranges::any_of(roots,[](bool present){return !present;}))
+    throw std::invalid_argument("complete world cut omits a BCC root");
+
+  std::map<HierarchyBlockId,HierarchyBlockSnapshot> blocks;
+  for(std::uint8_t root=0;root<bcc_root_tetrahedron_count;++root){
+    const HierarchyBlockId id{WorldTetAddress::root(root),
+                              static_cast<std::uint8_t>(block_generations)};
+    auto& block=blocks[id];block.id=id;block.source_revision=revision;
+    block.residency=HierarchyResidencyTier::summary;
+  }
+  for(const auto leaf:leaves){
+    const auto leaf_block=hierarchy_block_id(leaf,block_generations);
+    std::vector<HierarchyBlockId> chain{leaf_block};
+    auto current=leaf_block;
+    while(current.prefix.red_depth()>0U){
+      current=parent_block(current);chain.push_back(current);
+    }
     std::ranges::reverse(chain);
     for(std::size_t index=0;index<chain.size();++index){
       auto& block=blocks[chain[index]];
@@ -895,6 +1006,66 @@ void WorldCutDirectory::publish(const WorldRevisionManifest& manifest) {
     revision_=previous_revision;validate_and_refresh();throw;}
 }
 
+WorldDirectoryUpdate WorldCutDirectory::adopt_retained(
+    WorldCutCheckpoint checkpoint) {
+  const auto started=std::chrono::steady_clock::now();
+  if(checkpoint.revision<=revision_)
+    throw std::invalid_argument("retained checkpoint revision must advance");
+  if(checkpoint.block_generations!=block_generations_)
+    throw std::invalid_argument("retained checkpoint changes block width");
+  std::ranges::sort(checkpoint.blocks,{},&HierarchyBlockSnapshot::id);
+  std::ranges::sort(checkpoint.surfaces,{},&WorldDerivedSurfaceSnapshot::id);
+  std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> next_blocks;
+  std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> next_surfaces;
+  next_blocks.reserve(checkpoint.blocks.size());
+  next_surfaces.reserve(checkpoint.surfaces.size());
+  WorldDirectoryUpdate result;
+  result.source_revision=revision_;result.published_revision=checkpoint.revision;
+  for(auto& desired:checkpoint.blocks){
+    const auto found=std::ranges::lower_bound(
+        blocks_,desired.id,{},[](const auto& block){return block->id;});
+    if(found!=blocks_.end()&&(*found)->id==desired.id&&
+       snapshot_payload_equal(**found,desired)){
+      next_blocks.push_back(*found);++result.metrics.reused_blocks;
+    }else{
+      desired.source_revision=checkpoint.revision;normalize_snapshot(desired);
+      next_blocks.push_back(
+          std::make_shared<const HierarchyBlockSnapshot>(std::move(desired)));
+      ++result.metrics.loaded_blocks;
+    }
+  }
+  for(auto& desired:checkpoint.surfaces){
+    const auto found=std::ranges::lower_bound(
+        surfaces_,desired.id,{},[](const auto& surface){return surface->id;});
+    if(found!=surfaces_.end()&&(*found)->id==desired.id&&
+       surface_payload_equal(**found,desired)){
+      next_surfaces.push_back(*found);++result.metrics.reused_surfaces;
+    }else{
+      next_surfaces.push_back(
+          std::make_shared<const WorldDerivedSurfaceSnapshot>(std::move(desired)));
+      ++result.metrics.changed_surfaces;
+    }
+  }
+  for(const auto& block:blocks_)
+    if(!std::ranges::binary_search(
+          checkpoint.blocks,block->id,{},&HierarchyBlockSnapshot::id))
+      ++result.metrics.evicted_blocks;
+  const auto previous_blocks=blocks_;const auto previous_surfaces=surfaces_;
+  const auto previous_revision=revision_;
+  blocks_=std::move(next_blocks);surfaces_=std::move(next_surfaces);
+  revision_=checkpoint.revision;
+  try{validate_and_refresh();}
+  catch(...){blocks_=previous_blocks;surfaces_=previous_surfaces;
+    revision_=previous_revision;validate_and_refresh();throw;}
+  result.metrics.requested_blocks=checkpoint.blocks.size();
+  result.metrics.retained_blocks=blocks_.size();
+  result.metrics.affected_blocks=result.metrics.loaded_blocks+
+      result.metrics.evicted_blocks;
+  result.metrics.update_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  return result;
+}
+
 WorldDirectoryUpdate WorldCutDirectory::reconcile(
     const WorldCutCheckpoint& available,
     std::span<const HierarchyBlockId> desired,
@@ -956,7 +1127,8 @@ WorldDirectoryUpdate WorldCutDirectory::reconcile(
 }
 
 WorldConformingVolume reconstruct_world_conforming_volume(
-    const WorldCutDirectory& directory) {
+    const WorldCutDirectory& directory,
+    const WorldConformingClosureCache* closure_cache) {
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<WorldTetAddress> owners;
@@ -964,51 +1136,89 @@ WorldConformingVolume reconstruct_world_conforming_volume(
   directory.for_each_logical_owner(
       [&](WorldTetAddress owner){owners.push_back(owner);});
   std::ranges::sort(owners);
+  std::vector<std::array<WorldVertexKey,4>> owner_keys(owners.size());
+  std::vector<WorldTetrahedronGeometry> owner_positions(owners.size());
+  const bool cached_masks=closure_cache!=nullptr&&
+      closure_cache->closed_owners==owners&&
+      closure_cache->green_masks.size()==owners.size();
+  std::size_t cached_geometry{};
+  for(std::size_t index=0;index<owners.size();++index){
+    while(closure_cache!=nullptr&&cached_geometry<closure_cache->geometry.size()&&
+          closure_cache->geometry[cached_geometry].address<owners[index])
+      ++cached_geometry;
+    if(closure_cache!=nullptr&&cached_geometry<closure_cache->geometry.size()&&
+       closure_cache->geometry[cached_geometry].address==owners[index]){
+      owner_keys[index]=closure_cache->geometry[cached_geometry].vertices;
+      for(std::size_t corner=0;corner<4U;++corner){
+        const auto& key=owner_keys[index][corner];
+        owner_positions[index][corner]={
+            std::ldexp(static_cast<double>(key.x),-key.denominator_exponent),
+            std::ldexp(static_cast<double>(key.y),-key.denominator_exponent),
+            std::ldexp(static_cast<double>(key.z),-key.denominator_exponent)};
+      }
+    }else{
+      owner_keys[index]=world_tetrahedron_vertex_keys(owners[index]);
+      owner_positions[index]=world_tetrahedron_geometry(owners[index]);
+    }
+  }
 
-  std::set<WorldEdgeKey> required_midpoints;
-  const auto require_edges=[&](WorldTetAddress owner){
-    const auto keys=world_tetrahedron_vertex_keys(owner);
-    for(const auto edge:edges)
-      required_midpoints.insert(
-          world_edge_key(keys[edge[0]],keys[edge[1]]));
-  };
-  // Every descendant proves that each ancestor was red-split. Those ancestor
-  // edge midpoints, plus the deterministic restricted-green closure below,
-  // completely define the conforming cells of the current logical cut.
-  for(auto owner:owners)
-    while(owner.red_depth()>0U){owner=owner.parent();require_edges(owner);}
-  bool changed=true;
-  while(changed){
-    changed=false;
-    for(const auto owner:owners){
+  std::vector<std::uint8_t> masks(owners.size());
+  if(cached_masks)masks=closure_cache->green_masks;
+  else{
+    std::unordered_set<WorldEdgeKey,WorldEdgeHash> required_midpoints;
+    required_midpoints.reserve(owners.size()*2U);
+    const auto require_edges=[&](WorldTetAddress owner){
       const auto keys=world_tetrahedron_vertex_keys(owner);
-      unsigned int mask{};
+      for(const auto edge:edges)
+        required_midpoints.insert(
+            world_edge_key(keys[edge[0]],keys[edge[1]]));
+    };
+    // Every descendant proves that each ancestor was red-split. Those ancestor
+    // edge midpoints, plus the deterministic restricted-green closure below,
+    // completely define the conforming cells of the current logical cut.
+    std::unordered_set<WorldTetAddress,WorldAddressHash> split_ancestors;
+    split_ancestors.reserve(owners.size()/4U);
+    for(auto owner:owners)while(owner.red_depth()>0U){
+      owner=owner.parent();split_ancestors.insert(owner);
+    }
+    for(const auto owner:split_ancestors)require_edges(owner);
+    bool changed=true;
+    while(changed){
+      changed=false;
+      for(std::size_t owner_index=0;owner_index<owners.size();++owner_index){
+        const auto& keys=owner_keys[owner_index];
+        unsigned int mask{};
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if(required_midpoints.contains(world_edge_key(
+                keys[edges[edge][0]],keys[edges[edge][1]])))
+            mask|=1U<<edge;
+        const auto target=allowed_green_superset(mask);
+        if(target==63U)
+          throw std::logic_error(
+              "published world cut requires an uncommitted red closure split");
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
+            changed|=required_midpoints.insert(world_edge_key(
+                keys[edges[edge][0]],keys[edges[edge][1]])).second;
+      }
+    }
+    for(std::size_t owner_index=0;owner_index<owners.size();++owner_index){
+      const auto& keys=owner_keys[owner_index];
       for(std::size_t edge=0;edge<edges.size();++edge)
         if(required_midpoints.contains(world_edge_key(
               keys[edges[edge][0]],keys[edges[edge][1]])))
-          mask|=1U<<edge;
-      const auto target=allowed_green_superset(mask);
-      if(target==63U)
-        throw std::logic_error(
-            "published world cut requires an uncommitted red closure split");
-      for(std::size_t edge=0;edge<edges.size();++edge)
-        if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
-          changed|=required_midpoints.insert(world_edge_key(
-              keys[edges[edge][0]],keys[edges[edge][1]])).second;
+          masks[owner_index]|=static_cast<std::uint8_t>(1U<<edge);
     }
   }
 
   WorldConformingVolume result;
   result.logical_owners=owners.size();
   result.cells.reserve(owners.size()*4U);
-  for(const auto owner:owners){
-    const auto keys=world_tetrahedron_vertex_keys(owner);
-    const auto positions=world_tetrahedron_geometry(owner);
-    unsigned int mask{};
-    for(std::size_t edge=0;edge<edges.size();++edge)
-      if(required_midpoints.contains(world_edge_key(
-            keys[edges[edge][0]],keys[edges[edge][1]])))
-        mask|=1U<<edge;
+  for(std::size_t owner_index=0;owner_index<owners.size();++owner_index){
+    const auto owner=owners[owner_index];
+    const auto& keys=owner_keys[owner_index];
+    const auto& positions=owner_positions[owner_index];
+    const unsigned int mask=masks[owner_index];
     if(mask==63U)
       throw std::logic_error("logical world owner is red-split");
     const auto& green=complete_green_template(static_cast<std::uint8_t>(mask));
@@ -1040,7 +1250,8 @@ WorldConformingVolume reconstruct_world_conforming_volume(
 }
 
 std::vector<WorldTetAddress> close_world_conforming_cut(
-    std::span<const WorldTetAddress> logical_owners) {
+    std::span<const WorldTetAddress> logical_owners,
+    WorldConformingClosureCache* cache) {
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<WorldTetAddress> owners(logical_owners.begin(),logical_owners.end());
@@ -1051,58 +1262,165 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     if(overlaps(owners[index-1U],owners[index]))
       throw std::invalid_argument("world conforming closure contains overlapping owners");
 
+  const auto load_vertex_keys=[&](std::span<const WorldTetAddress> requested){
+    std::vector<std::array<WorldVertexKey,4>> result(requested.size());
+    if(cache==nullptr){
+      for(std::size_t index=0;index<requested.size();++index)
+        result[index]=world_tetrahedron_vertex_keys(requested[index]);
+      return result;
+    }
+    if(!std::ranges::is_sorted(cache->geometry,{},
+          &WorldConformingClosureCacheEntry::address))
+      throw std::invalid_argument("world closure geometry cache is not sorted");
+    std::vector<WorldConformingClosureCacheEntry> missing;
+    std::size_t cached_index{};
+    for(std::size_t index=0;index<requested.size();++index){
+      while(cached_index<cache->geometry.size()&&
+            cache->geometry[cached_index].address<requested[index])
+        ++cached_index;
+      if(cached_index<cache->geometry.size()&&
+         cache->geometry[cached_index].address==requested[index]){
+        result[index]=cache->geometry[cached_index].vertices;
+      }else{
+        result[index]=world_tetrahedron_vertex_keys(requested[index]);
+        missing.push_back({requested[index],result[index]});
+      }
+    }
+    if(!missing.empty()){
+      std::vector<WorldConformingClosureCacheEntry> merged;
+      merged.reserve(cache->geometry.size()+missing.size());
+      std::ranges::merge(cache->geometry,missing,std::back_inserter(merged),{},
+          &WorldConformingClosureCacheEntry::address,
+          &WorldConformingClosureCacheEntry::address);
+      cache->geometry=std::move(merged);
+    }
+    if(cache->maximum_entries==0U)
+      throw std::invalid_argument("world closure geometry cache has zero capacity");
+    if(cache->geometry.size()>cache->maximum_entries){
+      std::vector<WorldConformingClosureCacheEntry> retained;
+      retained.reserve(std::min(requested.size(),cache->maximum_entries));
+      std::size_t request_index{};
+      for(const auto& entry:cache->geometry){
+        while(request_index<requested.size()&&
+              requested[request_index]<entry.address)++request_index;
+        if(request_index<requested.size()&&
+           requested[request_index]==entry.address&&
+           retained.size()<cache->maximum_entries)
+          retained.push_back(entry);
+      }
+      cache->geometry=std::move(retained);
+    }
+    return result;
+  };
+
   for(;;){
-    std::set<WorldEdgeKey> midpoints;
-    const auto add_edges=[&](WorldTetAddress owner){
-      const auto keys=world_tetrahedron_vertex_keys(owner);
-      for(const auto edge:edges)
-        midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+    auto owner_keys=load_vertex_keys(owners);
+    const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
+        10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
+                                  (owners.size()+8191U)/8192U)));
+    const auto run_workers=[&](const auto& work){
+      if(worker_count==1U){work(0U,0U,owners.size());return;}
+      std::vector<std::thread> workers;
+      workers.reserve(worker_count);
+      for(std::size_t worker=0;worker<worker_count;++worker){
+        const auto begin=owners.size()*worker/worker_count;
+        const auto end=owners.size()*(worker+1U)/worker_count;
+        workers.emplace_back([&,worker,begin,end]{work(worker,begin,end);});
+      }
+      for(auto& worker:workers)worker.join();
     };
-    for(auto owner:owners)
-      while(owner.red_depth()>0U){owner=owner.parent();add_edges(owner);}
+    std::unordered_set<WorldEdgeKey,WorldEdgeHash> midpoints;
+    midpoints.reserve(owners.size()*2U);
+    std::unordered_set<WorldTetAddress,WorldAddressHash> split_ancestors;
+    split_ancestors.reserve(owners.size()/4U);
+    for(auto owner:owners)while(owner.red_depth()>0U){
+      owner=owner.parent();split_ancestors.insert(owner);
+    }
+    std::vector<WorldTetAddress> ordered_ancestors(
+        split_ancestors.begin(),split_ancestors.end());
+    std::ranges::sort(ordered_ancestors);
+    const auto ancestor_keys=load_vertex_keys(ordered_ancestors);
+    for(const auto& keys:ancestor_keys)for(const auto edge:edges)
+      midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
     bool changed=true;
     while(changed){
       changed=false;
-      for(const auto owner:owners){
-        const auto keys=world_tetrahedron_vertex_keys(owner);
-        unsigned int mask{};
-        for(std::size_t edge=0;edge<edges.size();++edge)
-          if(midpoints.contains(world_edge_key(
-                keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
-        const auto target=allowed_green_superset(mask);
-        if(target==63U)continue;
-        for(std::size_t edge=0;edge<edges.size();++edge)
-          if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
-            changed|=midpoints.insert(world_edge_key(
-                keys[edges[edge][0]],keys[edges[edge][1]])).second;
-      }
+      std::vector<std::vector<WorldEdgeKey>> additions(worker_count);
+      run_workers([&](std::size_t worker,std::size_t begin,std::size_t end){
+        auto& local=additions[worker];local.reserve((end-begin)/8U);
+        for(std::size_t owner_index=begin;owner_index<end;++owner_index){
+          const auto& keys=owner_keys[owner_index];
+          unsigned int mask{};
+          for(std::size_t edge=0;edge<edges.size();++edge)
+            if(midpoints.contains(world_edge_key(
+                  keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
+          const auto target=allowed_green_superset(mask);
+          if(target==63U)continue;
+          for(std::size_t edge=0;edge<edges.size();++edge)
+            if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
+              local.push_back(world_edge_key(
+                  keys[edges[edge][0]],keys[edges[edge][1]]));
+        }
+      });
+      for(const auto& local:additions)for(const auto& edge:local)
+        changed|=midpoints.insert(edge).second;
     }
-    std::set<WorldTetAddress> promote_set;
+    std::vector<std::uint8_t> promote(owners.size());
+    std::size_t promote_count{};
+    const auto mark_promote=[&](std::size_t index){
+      if(promote[index]==0U){promote[index]=1U;++promote_count;}
+    };
     // A fine face can be tiled entirely inside a coarse face and therefore
     // share no complete face key with it. Conservatively grading every exact
     // shared hierarchy vertex catches those configurations without an
     // all-pairs geometric face test; the extra corner-ring cells are bounded.
-    std::map<WorldVertexKey,unsigned int> deepest_incident;
-    for(const auto owner:owners)for(const auto key:world_tetrahedron_vertex_keys(owner))
-      deepest_incident[key]=std::max(deepest_incident[key],owner.red_depth());
-    for(const auto owner:owners)for(const auto key:world_tetrahedron_vertex_keys(owner))
-      if(deepest_incident[key]>owner.red_depth()+1U){
-        promote_set.insert(owner);break;
+    std::unordered_map<WorldVertexKey,unsigned int,WorldVertexHash> deepest_incident;
+    deepest_incident.reserve(owners.size());
+    for(std::size_t index=0;index<owners.size();++index)
+      for(const auto key:owner_keys[index])
+        deepest_incident[key]=std::max(
+            deepest_incident[key],owners[index].red_depth());
+    for(std::size_t index=0;index<owners.size();++index)
+      for(const auto key:owner_keys[index])
+      if(deepest_incident[key]>owners[index].red_depth()+1U){
+        mark_promote(index);break;
       }
-    for(const auto owner:owners){
-      const auto keys=world_tetrahedron_vertex_keys(owner);
-      unsigned int mask{};
-      for(std::size_t edge=0;edge<edges.size();++edge)
-        if(midpoints.contains(world_edge_key(
-              keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
-      if(allowed_green_superset(mask)==63U)promote_set.insert(owner);
+    std::vector<std::size_t> mask_promotions(worker_count);
+    run_workers([&](std::size_t worker,std::size_t begin,std::size_t end){
+      std::size_t count{};
+      for(std::size_t owner_index=begin;owner_index<end;++owner_index){
+        const auto& keys=owner_keys[owner_index];
+        unsigned int mask{};
+        for(std::size_t edge=0;edge<edges.size();++edge)
+          if(midpoints.contains(world_edge_key(
+                keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
+        if(allowed_green_superset(mask)==63U&&promote[owner_index]==0U){
+          promote[owner_index]=1U;++count;
+        }
+      }
+      mask_promotions[worker]=count;
+    });
+    for(const auto count:mask_promotions)promote_count+=count;
+    if(promote_count==0U){
+      if(cache!=nullptr){
+        cache->closed_owners=owners;
+        cache->green_masks.assign(owners.size(),0U);
+        for(std::size_t owner_index=0;owner_index<owners.size();++owner_index){
+          const auto& keys=owner_keys[owner_index];
+          for(std::size_t edge=0;edge<edges.size();++edge)
+            if(midpoints.contains(world_edge_key(
+                  keys[edges[edge][0]],keys[edges[edge][1]])))
+              cache->green_masks[owner_index]|=
+                  static_cast<std::uint8_t>(1U<<edge);
+        }
+      }
+      return owners;
     }
-    std::vector<WorldTetAddress> promote(promote_set.begin(),promote_set.end());
-    if(promote.empty())return owners;
     std::vector<WorldTetAddress> next;
-    next.reserve(owners.size()+promote.size()*7U);
-    for(const auto owner:owners){
-      if(!std::ranges::binary_search(promote,owner)){next.push_back(owner);continue;}
+    next.reserve(owners.size()+promote_count*7U);
+    for(std::size_t index=0;index<owners.size();++index){
+      const auto owner=owners[index];
+      if(promote[index]==0U){next.push_back(owner);continue;}
       if(owner.red_depth()>=maximum_world_red_depth)
         throw std::overflow_error("world conforming closure exceeds maximum depth");
       for(std::uint8_t child=0;child<8U;++child)next.push_back(owner.child(child));
