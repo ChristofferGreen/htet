@@ -91,6 +91,7 @@ class MonolithicTerrainRuntime final : public TerrainRuntime {
   MeshUpdateIntent intent_{MeshUpdateIntent::settled};
   TerrainRuntimeDiagnostics diagnostics_;
   bool demand_pending_{true};
+  bool advance_demand_epoch_{};
   std::uint32_t decay_epochs_remaining_{};
   std::optional<ScenePreparationParameters> submitted_scene_parameters_;
   std::uint64_t submitted_scene_request_id_{};

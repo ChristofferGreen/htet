@@ -105,7 +105,8 @@ void MeshUpdateWorker::schedule_locked() {
 
 std::uint64_t MeshUpdateWorker::submit(
     const tetra::TetMesh& mesh,MeshUpdateParameters parameters,
-    MeshUpdateOperation operation) {
+    MeshUpdateOperation operation,
+    tetra::AdaptationPlanningCache planning_cache) {
   const std::size_t snapshot_copy_bytes=mesh.snapshot_copy_bytes();
   const auto snapshot_start=std::chrono::steady_clock::now();
   auto worker_mesh=mesh;
@@ -118,7 +119,8 @@ std::uint64_t MeshUpdateWorker::submit(
   const std::uint64_t request_id=++latest_request_id_;
   const std::uint64_t source_revision=mesh.revision();
   pending_.emplace(MeshUpdateRequest{
-      .mesh=std::move(worker_mesh),.parameters=std::move(parameters),
+      .mesh=std::move(worker_mesh),.planning_cache=std::move(planning_cache),
+      .parameters=std::move(parameters),
       .operation=operation,.request_id=request_id,.chain_id=request_id,
       .source_mesh_revision=source_revision,
       .slice_source_mesh_revision=source_revision,
@@ -274,6 +276,9 @@ void MeshUpdateWorker::run(std::stop_token stop) {
 
     const auto start=std::chrono::steady_clock::now();
     auto planning_cache=std::move(request->planning_cache);
+    if(request->parameters.advance_camera_demand_epoch&&
+       planning_cache.has_committed_camera)
+      ++planning_cache.camera_demand_epoch;
     // A worker request starts from a published mesh produced for an earlier
     // UI state. Open a complete merge phase even though this fresh private
     // cache did not observe that earlier pose itself. Without this seed, a

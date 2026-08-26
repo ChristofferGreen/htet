@@ -7,10 +7,30 @@ next: replace the monolithic ownership model with reusable cross-block
 transactions. Gate 3 then adopts the resulting blocked runtime in the
 already-playable application.
 
+Gate 2A's bounded foundation is complete: production block, job, transaction,
+immutable manifest, and retained-render contracts are distinct; shared entity
+keys use exact reduced dyadic arithmetic; the twelve-root BCC complex has
+oriented face adjacency; and hierarchy planning can query a read-only
+storage-independent interface with `TetMesh` as its oracle. The next closable
+leaf is the sparse ordered `WorldCutDirectory` and coarse-ancestor fallback.
+
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
 
 ## Next closable leaves
+
+- [x] Define distinct hierarchy-block snapshot, address-range job,
+      transaction, immutable revision-manifest, and retained-render-chunk
+      contracts and metrics.
+- [x] Replace floating reconstruction and rounding with exact reduced dyadic
+      shared vertex, edge, and face keys derived from BCC root connectivity
+      and base-8 child digits.
+- [x] Define and exhaustively verify reciprocal oriented adjacency over all 48
+      faces of the twelve-tetrahedron BCC root complex.
+- [x] Introduce storage-independent read-only hierarchy access with `TetMesh`
+      as the current oracle implementation.
+- [ ] Implement the sparse ordered `WorldCutDirectory` with published coarse
+      ancestor fallback.
 
 - [x] Define one named world-visualizer production profile containing the
       current release defaults.

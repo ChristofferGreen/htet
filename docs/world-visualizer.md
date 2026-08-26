@@ -207,9 +207,10 @@ BlockId         = a WorldTetAddress prefix at a block boundary
 LocalTetAddress = the bounded suffix stored inside that block
 ```
 
-The Gate 1 prototype names this prefix `WorldPageId`; production code should
-rename it to `HierarchyBlockId` when the mutable block store is introduced so
-that storage identity is not confused with jobs or render chunks.
+Gate 2A names this production prefix `HierarchyBlockId` so storage identity is
+not confused with address-range jobs or retained render chunks. `WorldPageId`
+remains only as a Gate 1 source-compatibility alias while the blocked-view
+experiment is migrated.
 
 Use a 128-bit value or an equivalently ordered pair for `WorldTetAddress` in
 the first implementation. It comfortably covers the expected planet and local
@@ -502,6 +503,14 @@ The fixed twelve-tetrahedron root complex also needs an explicit oriented
 root-face adjacency table. Prefix lookup alone cannot discover that two paths
 under different root ids meet on the same root face. Root-seam neighbours enter
 the same closure, ownership, and certificate rules as ordinary block seams.
+
+Gate 2A implements these keys with integer numerators over a common power-of-two
+denominator at each red generation. Root corners begin as even numerators and
+the centre as `(1,1,1)/2`; midpoint construction, shortest-diagonal selection,
+and child ordering are all integer operations. Keys are reduced only at the
+public boundary. The explicit 48-entry root-face table records neighbour root,
+neighbour face, and the three-corner permutation; its 12 exterior faces and 18
+reciprocal internal pairs are exhaustively tested against canonical face keys.
 
 ## 6. Hierarchy-block contents and lifecycle
 
@@ -1011,15 +1020,15 @@ complete only when its focused tests and the full release suite pass.
 
 ### Gate 2: Cross-block transactions and bounded derived work
 
-- [ ] Define distinct types and metrics for `HierarchyBlockSnapshot`,
+- [x] Define distinct types and metrics for `HierarchyBlockSnapshot`,
       address-range job, `WorldTransaction`, `WorldRevisionManifest`, and
       retained render chunk; prohibit implicit one-to-one coupling between
       them.
-- [ ] Generate reduced integer dyadic vertex, edge, and face keys directly
+- [x] Generate reduced integer dyadic vertex, edge, and face keys directly
       from root connectivity and child digits without floating-point rounding.
-- [ ] Add an oriented adjacency table for the twelve-tetrahedron root complex
+- [x] Add an oriented adjacency table for the twelve-tetrahedron root complex
       and prove shared keys and neighbour traversal across every root face.
-- [ ] Separate BCC hierarchy queries, planning, and conformity logic from the
+- [x] Separate BCC hierarchy queries, planning, and conformity logic from the
       current monolithic storage implementation behind a read-only hierarchy
       access interface, retaining `TetMesh` as the oracle implementation.
 - [ ] Implement a sparse ordered `WorldCutDirectory` whose block-local cut

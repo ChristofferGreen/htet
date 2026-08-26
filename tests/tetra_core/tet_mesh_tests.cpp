@@ -33,6 +33,7 @@
 #include <set>
 #include <sstream>
 #include <tuple>
+#include <type_traits>
 
 TEST_CASE("shared geometry executor partitions ranges and propagates failures") {
   tetra::GeometryExecutor executor({
@@ -960,7 +961,13 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
   CHECK(diagnostics.connected_surface_hash!=0U);
   CHECK(diagnostics.render_hash!=0U);
   CHECK(diagnostics.field_sample_hash!=0U);
-  const auto near_cells=diagnostics.logical_cells;
+  while(std::chrono::steady_clock::now()<deadline&&
+        (!runtime.diagnostics().converged||runtime.diagnostics().busy)){
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    static_cast<void>(runtime.update());
+  }
+  REQUIRE(runtime.diagnostics().converged);
+  const auto near_cells=runtime.diagnostics().logical_cells;
   camera.position={0.5,3.0,12.0};
   const auto toward=tetra::Vec3{0.5,0.5,0.5}-camera.position;
   const double toward_length=std::sqrt(toward.x*toward.x+toward.y*toward.y+
@@ -1771,6 +1778,138 @@ TEST_CASE("planet hierarchy addresses preserve deep BCC red paths and page prefi
   auto beyond_local=world;
   while(beyond_local.red_depth()<20U)beyond_local=beyond_local.child(1U);
   CHECK_FALSE(tetra::local_tet_id(beyond_local).has_value());
+}
+
+TEST_CASE("BCC root adjacency is reciprocal oriented and shares exact face keys") {
+  const auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const auto& connectivity=tetra::bcc_root_connectivity();
+  const auto& adjacency=tetra::bcc_root_face_adjacency();
+  REQUIRE(connectivity.size()==12U);
+  REQUIRE(adjacency.size()==48U);
+  std::size_t boundary_faces{};
+  std::size_t internal_faces{};
+  std::set<tetra::WorldFaceKey> boundary_keys;
+  std::set<std::pair<std::uint8_t,std::uint8_t>> traversed_pairs;
+  for(std::uint8_t root=0;root<connectivity.size();++root){
+    const auto keys=tetra::world_tetrahedron_vertex_keys(
+        mesh,tetra::WorldTetAddress::root(root));
+    for(std::uint8_t face=0;face<4U;++face){
+      const auto& link=tetra::bcc_root_face(root,face);
+      CHECK(link.root==root);
+      CHECK(link.local_face==face);
+      std::array<std::uint8_t,3> corners{};
+      std::size_t out{};
+      for(std::uint8_t corner=0;corner<4U;++corner)
+        if(corner!=face)corners[out++]=corner;
+      const auto key=tetra::world_face_key(
+          keys[corners[0]],keys[corners[1]],keys[corners[2]]);
+      if(link.boundary()){
+        ++boundary_faces;
+        CHECK(link.neighbour_face==0xffU);
+        CHECK(boundary_keys.insert(key).second);
+        continue;
+      }
+      ++internal_faces;
+      const auto& reverse=tetra::bcc_root_face(
+          link.neighbour_root,link.neighbour_face);
+      CHECK(reverse.neighbour_root==root);
+      CHECK(reverse.neighbour_face==face);
+      const auto neighbour_keys=tetra::world_tetrahedron_vertex_keys(
+          mesh,tetra::WorldTetAddress::root(link.neighbour_root));
+      CHECK(key==tetra::world_face_key(
+          neighbour_keys[link.neighbour_corner_permutation[0]],
+          neighbour_keys[link.neighbour_corner_permutation[1]],
+          neighbour_keys[link.neighbour_corner_permutation[2]]));
+      for(std::size_t index=0;index<3U;++index){
+        CHECK(connectivity[root][corners[index]]==
+              connectivity[link.neighbour_root][link.neighbour_corner_permutation[index]]);
+        const auto reverse_index=static_cast<std::size_t>(
+            link.neighbour_corner_permutation[index]>
+            link.neighbour_face?link.neighbour_corner_permutation[index]-1U:
+                                link.neighbour_corner_permutation[index]);
+        REQUIRE(reverse_index<3U);
+        CHECK(reverse.neighbour_corner_permutation[reverse_index]==corners[index]);
+      }
+      traversed_pairs.emplace(std::min(root,link.neighbour_root),
+                              std::max(root,link.neighbour_root));
+    }
+  }
+  CHECK(boundary_faces==12U);
+  CHECK(internal_faces==36U);
+  CHECK(traversed_pairs.size()==18U);
+  CHECK(boundary_keys.size()==12U);
+  CHECK_THROWS_AS(static_cast<void>(tetra::bcc_root_face(12U,0U)),std::out_of_range);
+  CHECK_THROWS_AS(static_cast<void>(tetra::bcc_root_face(0U,4U)),std::out_of_range);
+}
+
+TEST_CASE("world dyadic keys are reduced exact and stable at maximum depth") {
+  const auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(std::uint8_t root=0;root<12U;++root){
+    auto address=tetra::WorldTetAddress::root(root);
+    for(unsigned int depth=0;depth<tetra::maximum_world_red_depth;++depth)
+      address=address.child(static_cast<std::uint8_t>((root+depth*3U)%8U));
+    const auto keys=tetra::world_tetrahedron_vertex_keys(mesh,address);
+    CHECK(keys==tetra::world_tetrahedron_vertex_keys(mesh,address));
+    for(const auto& key:keys){
+      CHECK(key.denominator_exponent<=tetra::maximum_world_red_depth+1U);
+      if(key.denominator_exponent>0U){
+        const bool reduced=(key.x&1)!=0||(key.y&1)!=0||(key.z&1)!=0;
+        CHECK(reduced);
+      }
+    }
+  }
+  for(std::uint8_t root=0;root<12U;++root)
+    for(std::uint8_t child=0;child<8U;++child){
+      const auto address=tetra::WorldTetAddress::root(root).child(child);
+      const auto keys=tetra::world_tetrahedron_vertex_keys(mesh,address);
+      const auto geometry=tetra::world_tetrahedron_geometry(mesh,address);
+      for(std::size_t corner=0;corner<4U;++corner){
+        const auto scale=std::ldexp(1.0,-keys[corner].denominator_exponent);
+        CHECK(geometry[corner].x==doctest::Approx(keys[corner].x*scale));
+        CHECK(geometry[corner].y==doctest::Approx(keys[corner].y*scale));
+        CHECK(geometry[corner].z==doctest::Approx(keys[corner].z*scale));
+      }
+    }
+}
+
+TEST_CASE("Gate 2A contracts remain distinct immutable and storage independent") {
+  static_assert(!std::is_same_v<tetra::HierarchyBlockSnapshot,
+                               tetra::HierarchyAddressRangeJob>);
+  static_assert(!std::is_same_v<tetra::HierarchyAddressRangeJob,
+                               tetra::WorldTransaction>);
+  static_assert(!std::is_same_v<tetra::WorldTransaction,
+                               tetra::RetainedRenderChunk>);
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  mesh.refine_all_binary();
+  tetra::TetMeshHierarchyAccess access(mesh);
+  const tetra::ReadOnlyHierarchyAccess& hierarchy=access;
+  CHECK(hierarchy.revision()==mesh.revision());
+  REQUIRE(hierarchy.logical_owner_count()==mesh.logical_red_owners().size());
+  for(std::size_t index=0;index<hierarchy.logical_owner_count();++index){
+    const auto address=hierarchy.logical_owner(index);
+    CHECK(hierarchy.resident(address));
+    CHECK(hierarchy.vertex_keys(address)==
+          tetra::world_tetrahedron_vertex_keys(mesh,address));
+  }
+  CHECK_FALSE(hierarchy.resident(
+      tetra::WorldTetAddress::root(0U).child(7U).child(7U)));
+
+  const auto first_id=tetra::hierarchy_block_id(hierarchy.logical_owner(0U),3U);
+  auto first=std::make_shared<tetra::HierarchyBlockSnapshot>();
+  first->id=first_id;first->source_revision=4U;first->metrics.retained_bytes=19U;
+  auto second=std::make_shared<tetra::HierarchyBlockSnapshot>();
+  second->id=tetra::HierarchyBlockId{tetra::WorldTetAddress::root(11U),3U};
+  second->source_revision=4U;second->metrics.retained_bytes=23U;
+  tetra::WorldRevisionManifest manifest(5U,4U,{*second,*first});
+  CHECK(manifest.revision()==5U);
+  CHECK(manifest.parent_revision()==4U);
+  REQUIRE(manifest.blocks().size()==2U);
+  CHECK(manifest.blocks()[0]->id<manifest.blocks()[1]->id);
+  CHECK(manifest.metrics().changed_blocks==2U);
+  CHECK(manifest.metrics().retained_bytes==42U);
+  CHECK_THROWS_AS(tetra::WorldRevisionManifest(4U,4U,{}),std::invalid_argument);
+  CHECK_THROWS_AS(tetra::WorldRevisionManifest(5U,4U,{*first,*first}),
+                  std::invalid_argument);
 }
 
 TEST_CASE("single-root blocked views exactly reproduce monolithic BCC address sets") {

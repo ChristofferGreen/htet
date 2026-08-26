@@ -50,6 +50,9 @@ struct MeshUpdateParameters {
   std::uint64_t field_revision{};
   MeshUpdateBudget budget{};
   MeshUpdateIntent intent{MeshUpdateIntent::settled};
+  // A settled runtime may advance temporal demand retention while the camera
+  // is stationary. Applied only to the worker-private planning snapshot.
+  bool advance_camera_demand_epoch{};
 };
 
 [[nodiscard]] bool same_mesh_update_parameters(
@@ -209,7 +212,8 @@ class MeshUpdateWorker {
 
   [[nodiscard]] std::uint64_t submit(
       const tetra::TetMesh& mesh,MeshUpdateParameters parameters,
-      MeshUpdateOperation operation=MeshUpdateOperation::reconcile_lod);
+      MeshUpdateOperation operation=MeshUpdateOperation::reconcile_lod,
+      tetra::AdaptationPlanningCache planning_cache={});
   // Consumes a complete unconverged result and resumes its private mesh and
   // packed planning state. Only the latest slice in the active chain can be
   // resumed; reused and superseded results are rejected without mutation.

@@ -37,7 +37,8 @@ MeshUpdateParameters MonolithicTerrainRuntime::parameters() const noexcept {
   MeshUpdateParameters result{
       field_,camera_,profile_.pixel_threshold,profile_.maximum_depth,
       adaptation_,0U,{.target_milliseconds=
-          default_mesh_update_time_budget_milliseconds},intent_};
+          default_mesh_update_time_budget_milliseconds},intent_,
+      advance_demand_epoch_};
   if(intent_==MeshUpdateIntent::interactive_camera)
     result=make_interactive_mesh_update_parameters(std::move(result));
   return result;
@@ -52,15 +53,19 @@ void MonolithicTerrainRuntime::set_camera(const tetra::Camera& camera,
   demand_pending_=demand_pending_||changed;
   if(changed&&!interactive)
     decay_epochs_remaining_=adaptation_.recent_retention_epochs+1U;
+  advance_demand_epoch_=false;
   diagnostics_.converged=false;
 }
 
 void MonolithicTerrainRuntime::submit_current() {
-  const auto current=parameters();
-  submitted_request_id_=worker_.submit(mesh_,current);
+  auto current=parameters();
+  submitted_request_id_=worker_.submit(
+      mesh_,current,MeshUpdateOperation::reconcile_lod,planning_cache_);
+  current.advance_camera_demand_epoch=false;
   submitted_=current;
   submitted_mesh_revision_=mesh_.revision();
   demand_pending_=false;
+  advance_demand_epoch_=false;
   diagnostics_.busy=true;
 }
 
@@ -87,6 +92,7 @@ bool MonolithicTerrainRuntime::update() {
         if(decay_epochs_remaining_>0U){
           --decay_epochs_remaining_;
           demand_pending_=decay_epochs_remaining_>0U;
+          advance_demand_epoch_=demand_pending_;
         }
         diagnostics_.converged=!demand_pending_;
       }

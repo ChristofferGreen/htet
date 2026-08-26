@@ -16,6 +16,119 @@ constexpr std::uint64_t root_mask=0x3fULL;
 constexpr std::uint64_t depth_mask=0x3fULL;
 constexpr std::uint64_t high_path_mask=(std::uint64_t{1}<<depth_shift)-1U;
 
+constexpr std::array<std::array<std::uint8_t,4>,bcc_root_tetrahedron_count>
+    root_connectivity{{
+  {{0,2,3,8}},{{0,3,1,8}},{{4,5,7,8}},{{4,7,6,8}},
+  {{0,1,5,8}},{{0,5,4,8}},{{2,6,7,8}},{{2,7,3,8}},
+  {{0,4,6,8}},{{0,6,2,8}},{{1,3,7,8}},{{1,7,5,8}},
+}};
+
+constexpr std::array<std::uint8_t,3> face_corners(std::uint8_t face) {
+  std::array<std::uint8_t,3> result{};
+  std::size_t out{};
+  for(std::uint8_t corner=0;corner<4U;++corner)
+    if(corner!=face)result[out++]=corner;
+  return result;
+}
+
+constexpr auto make_root_adjacency() {
+  std::array<RootFaceAdjacency,bcc_root_tetrahedron_count*4U> result{};
+  for(std::uint8_t root=0;root<bcc_root_tetrahedron_count;++root)
+    for(std::uint8_t face=0;face<4U;++face){
+      auto& entry=result[static_cast<std::size_t>(root)*4U+face];
+      entry.root=root;entry.local_face=face;
+      const auto corners=face_corners(face);
+      for(std::uint8_t other=0;other<bcc_root_tetrahedron_count;++other){
+        if(other==root)continue;
+        for(std::uint8_t other_face=0;other_face<4U;++other_face){
+          const auto other_corners=face_corners(other_face);
+          bool same=true;
+          for(const auto corner:corners){
+            bool found=false;
+            for(const auto candidate:other_corners)
+              found|=root_connectivity[root][corner]==root_connectivity[other][candidate];
+            same&=found;
+          }
+          if(!same)continue;
+          entry.neighbour_root=other;entry.neighbour_face=other_face;
+          for(std::size_t index=0;index<3U;++index)
+            for(const auto candidate:other_corners)
+              if(root_connectivity[root][corners[index]]==root_connectivity[other][candidate])
+                entry.neighbour_corner_permutation[index]=candidate;
+        }
+      }
+    }
+  return result;
+}
+
+constexpr auto root_adjacency=make_root_adjacency();
+
+struct DyadicVertex { std::int64_t x{},y{},z{}; };
+
+std::array<std::uint8_t,maximum_world_red_depth> address_digits(
+    WorldTetAddress address) {
+  std::array<std::uint8_t,maximum_world_red_depth> digits{};
+  for(unsigned int depth=address.red_depth();depth>0U;--depth){
+    digits[depth-1U]=static_cast<std::uint8_t>(address.low&7U);
+    address=address.parent();
+  }
+  return digits;
+}
+
+std::array<DyadicVertex,4> exact_tetrahedron(WorldTetAddress address) {
+  if(address.root_id()>=root_connectivity.size())
+    throw std::out_of_range("BCC root id out of range");
+  constexpr std::array<DyadicVertex,9> vertices{{
+    {0,0,0},{2,0,0},{0,2,0},{2,2,0},
+    {0,0,2},{2,0,2},{0,2,2},{2,2,2},{1,1,1},
+  }};
+  std::array<DyadicVertex,4> geometry{};
+  for(std::size_t corner=0;corner<4U;++corner)
+    geometry[corner]=vertices[root_connectivity[address.root_id()][corner]];
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  constexpr std::array<std::array<std::size_t,2>,3> opposite_pairs{{
+      {{0,5}},{{1,4}},{{2,3}}}};
+  constexpr std::array<std::array<std::size_t,4>,3> equators{{
+      {{1,2,4,3}},{{0,2,5,3}},{{0,1,5,4}}}};
+  const auto digits=address_digits(address);
+  for(unsigned int depth=0;depth<address.red_depth();++depth){
+    std::array<DyadicVertex,6> midpoints{};
+    for(std::size_t edge=0;edge<edges.size();++edge){
+      const auto [a,b]=edges[edge];
+      midpoints[edge]={geometry[a].x+geometry[b].x,
+                       geometry[a].y+geometry[b].y,
+                       geometry[a].z+geometry[b].z};
+    }
+    // Old vertices move to the new common denominator as well.
+    for(auto& vertex:geometry){vertex.x*=2;vertex.y*=2;vertex.z*=2;}
+    std::size_t diagonal{};
+    std::uint64_t best=std::numeric_limits<std::uint64_t>::max();
+    for(std::size_t candidate=0;candidate<opposite_pairs.size();++candidate){
+      const auto [a,b]=opposite_pairs[candidate];
+      const auto dx=midpoints[b].x-midpoints[a].x;
+      const auto dy=midpoints[b].y-midpoints[a].y;
+      const auto dz=midpoints[b].z-midpoints[a].z;
+      const auto length=static_cast<std::uint64_t>(dx*dx+dy*dy+dz*dz);
+      if(length<best){best=length;diagonal=candidate;}
+    }
+    const auto poles=opposite_pairs[diagonal];
+    const auto ring=equators[diagonal];
+    const std::array<std::array<DyadicVertex,4>,8> children{{
+      {{geometry[0],midpoints[0],midpoints[1],midpoints[2]}},
+      {{geometry[1],midpoints[0],midpoints[3],midpoints[4]}},
+      {{geometry[2],midpoints[1],midpoints[3],midpoints[5]}},
+      {{geometry[3],midpoints[2],midpoints[4],midpoints[5]}},
+      {{midpoints[poles[0]],midpoints[ring[0]],midpoints[ring[1]],midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[1]],midpoints[ring[2]],midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[2]],midpoints[ring[3]],midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[3]],midpoints[ring[0]],midpoints[poles[1]]}},
+    }};
+    geometry=children[digits[depth]];
+  }
+  return geometry;
+}
+
 std::uint64_t path_high(WorldTetAddress address) {
   return address.high&high_path_mask;
 }
@@ -104,6 +217,19 @@ WorldTetAddress WorldTetAddress::root(std::uint8_t root_id) {
   return compose(root_id,0U,0U,0U);
 }
 
+const std::array<std::array<std::uint8_t,4>,bcc_root_tetrahedron_count>&
+bcc_root_connectivity() noexcept { return root_connectivity; }
+
+const std::array<RootFaceAdjacency,bcc_root_tetrahedron_count*4U>&
+bcc_root_face_adjacency() noexcept { return root_adjacency; }
+
+const RootFaceAdjacency& bcc_root_face(
+    std::uint8_t root,std::uint8_t local_face) {
+  if(root>=bcc_root_tetrahedron_count||local_face>=4U)
+    throw std::out_of_range("BCC root face out of range");
+  return root_adjacency[static_cast<std::size_t>(root)*4U+local_face];
+}
+
 std::uint8_t WorldTetAddress::root_id() const noexcept {
   return static_cast<std::uint8_t>((high>>root_shift)&root_mask);
 }
@@ -153,65 +279,27 @@ WorldTetrahedronGeometry world_tetrahedron_geometry(
     const TetMesh& root_complex,WorldTetAddress address) {
   if(root_complex.subdivision_method()!=SubdivisionMethod::bcc_red_green)
     throw std::invalid_argument("world geometry reconstruction requires the BCC root complex");
-  const TetId root_id=make_tet_id(address.root_id(),1U);
-  const auto& root=root_complex.tetrahedron(root_id);
+  const auto exact=exact_tetrahedron(address);
+  const auto denominator=static_cast<double>(std::uint64_t{1}<<
+      (address.red_depth()+1U));
   WorldTetrahedronGeometry geometry{};
   for(std::size_t corner=0;corner<geometry.size();++corner)
-    geometry[corner]=root_complex.vertices().at(root.vertices[corner]);
-
-  constexpr std::array<std::array<std::size_t,2>,6> edges{{
-      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
-  constexpr std::array<std::array<std::size_t,2>,3> opposite_pairs{{
-      {{0,5}},{{1,4}},{{2,3}}}};
-  constexpr std::array<std::array<std::size_t,4>,3> equators{{
-      {{1,2,4,3}},{{0,2,5,3}},{{0,1,5,4}}}};
-  auto remaining=address;
-  std::array<std::uint8_t,maximum_world_red_depth> digits{};
-  for(unsigned int depth=address.red_depth();depth>0U;--depth){
-    digits[depth-1U]=static_cast<std::uint8_t>(remaining.low&7U);
-    remaining=remaining.parent();
-  }
-  for(unsigned int depth=0;depth<address.red_depth();++depth){
-    std::array<Vec3,6> midpoints{};
-    for(std::size_t edge=0;edge<edges.size();++edge)
-      midpoints[edge]=(geometry[edges[edge][0]]+geometry[edges[edge][1]])/2.0;
-    std::size_t diagonal{};
-    double best=std::numeric_limits<double>::infinity();
-    for(std::size_t candidate=0;candidate<opposite_pairs.size();++candidate){
-      const auto pair=opposite_pairs[candidate];
-      const auto delta=midpoints[pair[1]]-midpoints[pair[0]];
-      const double length=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
-      if(length<best){best=length;diagonal=candidate;}
-    }
-    const auto poles=opposite_pairs[diagonal];
-    const auto ring=equators[diagonal];
-    const std::array<WorldTetrahedronGeometry,8> children{{
-        {{geometry[0],midpoints[0],midpoints[1],midpoints[2]}},
-        {{geometry[1],midpoints[0],midpoints[3],midpoints[4]}},
-        {{geometry[2],midpoints[1],midpoints[3],midpoints[5]}},
-        {{geometry[3],midpoints[2],midpoints[4],midpoints[5]}},
-        {{midpoints[poles[0]],midpoints[ring[0]],midpoints[ring[1]],midpoints[poles[1]]}},
-        {{midpoints[poles[0]],midpoints[ring[1]],midpoints[ring[2]],midpoints[poles[1]]}},
-        {{midpoints[poles[0]],midpoints[ring[2]],midpoints[ring[3]],midpoints[poles[1]]}},
-        {{midpoints[poles[0]],midpoints[ring[3]],midpoints[ring[0]],midpoints[poles[1]]}}}};
-    geometry=children[digits[depth]];
-  }
+    geometry[corner]={static_cast<double>(exact[corner].x)/denominator,
+                      static_cast<double>(exact[corner].y)/denominator,
+                      static_cast<double>(exact[corner].z)/denominator};
   return geometry;
 }
 
 std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     const TetMesh& root_complex,WorldTetAddress address) {
-  const auto geometry=world_tetrahedron_geometry(root_complex,address);
+  if(root_complex.subdivision_method()!=SubdivisionMethod::bcc_red_green)
+    throw std::invalid_argument("world keys require the BCC root complex");
+  const auto geometry=exact_tetrahedron(address);
   const unsigned int exponent=address.red_depth()+1U;
-  if(exponent>=63U)throw std::overflow_error("world vertex dyadic key overflow");
-  const std::int64_t denominator=std::int64_t{1}<<exponent;
-  const double denominator_value=static_cast<double>(denominator);
   std::array<WorldVertexKey,4> result{};
   for(std::size_t corner=0;corner<result.size();++corner){
     auto& key=result[corner];
-    key.x=static_cast<std::int64_t>(std::llround(geometry[corner].x*denominator_value));
-    key.y=static_cast<std::int64_t>(std::llround(geometry[corner].y*denominator_value));
-    key.z=static_cast<std::int64_t>(std::llround(geometry[corner].z*denominator_value));
+    key.x=geometry[corner].x;key.y=geometry[corner].y;key.z=geometry[corner].z;
     key.denominator_exponent=static_cast<std::uint8_t>(exponent);
     while(key.denominator_exponent>0U&&(key.x&1)==0&&(key.y&1)==0&&(key.z&1)==0){
       key.x/=2;key.y/=2;key.z/=2;--key.denominator_exponent;
@@ -241,7 +329,7 @@ std::optional<TetId> local_tet_id(WorldTetAddress address) {
   return make_tet_id(address.root_id(),sentinel|address.low);
 }
 
-WorldPageId world_page_id(
+HierarchyBlockId hierarchy_block_id(
     WorldTetAddress address,unsigned int block_generations) {
   if(block_generations==0U||block_generations>maximum_world_red_depth)
     throw std::out_of_range("world hierarchy block generation count out of range");
@@ -251,6 +339,53 @@ WorldPageId world_page_id(
   const unsigned int prefix_depth=address.red_depth()==0U?0U:
       ((address.red_depth()-1U)/block_generations)*block_generations;
   return {address.ancestor(prefix_depth),static_cast<std::uint8_t>(block_generations)};
+}
+
+WorldRevisionManifest::WorldRevisionManifest(
+    std::uint64_t revision,std::uint64_t parent_revision,
+    std::vector<HierarchyBlockSnapshot> blocks)
+    :revision_(revision),parent_revision_(parent_revision) {
+  if(revision_<=parent_revision_)
+    throw std::invalid_argument("world revision must advance its parent");
+  std::ranges::sort(blocks,{},&HierarchyBlockSnapshot::id);
+  if(std::ranges::adjacent_find(blocks,[](const auto& first,const auto& second){
+       return first.id==second.id;})!=blocks.end())
+    throw std::invalid_argument("world manifest contains duplicate block identity");
+  blocks_.reserve(blocks.size());
+  for(auto& block:blocks){
+    metrics_.retained_bytes+=block.metrics.retained_bytes;
+    blocks_.push_back(std::make_shared<const HierarchyBlockSnapshot>(std::move(block)));
+  }
+  metrics_.changed_blocks=blocks_.size();
+}
+
+TetMeshHierarchyAccess::TetMeshHierarchyAccess(const TetMesh& mesh):mesh_(&mesh) {
+  if(mesh.subdivision_method()!=SubdivisionMethod::bcc_red_green)
+    throw std::invalid_argument("hierarchy access requires BCC red-green subdivision");
+}
+
+std::uint64_t TetMeshHierarchyAccess::revision() const noexcept {
+  return mesh_->revision();
+}
+
+std::size_t TetMeshHierarchyAccess::logical_owner_count() const noexcept {
+  return mesh_->logical_red_owners().size();
+}
+
+WorldTetAddress TetMeshHierarchyAccess::logical_owner(std::size_t index) const {
+  return world_tet_address(mesh_->logical_red_owners().at(index));
+}
+
+bool TetMeshHierarchyAccess::resident(WorldTetAddress address) const {
+  const auto local=local_tet_id(address);
+  if(!local)return false;
+  try { (void)mesh_->tetrahedron(*local);return true; }
+  catch(const std::out_of_range&) { return false; }
+}
+
+std::array<WorldVertexKey,4> TetMeshHierarchyAccess::vertex_keys(
+    WorldTetAddress address) const {
+  return world_tetrahedron_vertex_keys(*mesh_,address);
 }
 
 std::vector<TetId> BlockedAddressSet::reconstructed_sources(
