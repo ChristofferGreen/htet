@@ -273,9 +273,9 @@ The review changes the plan in five ways:
 - Keep hierarchy blocks small and fixed-capacity, but separate them from
   variable address-range jobs, atomic publication sets, persistence records,
   and fixed-capacity render chunks.
-- Finish the production-profile oracle before mutating blocked storage. Gate 1
-  was safe to run early because it was read-only; later gates need the complete
-  oracle matrix.
+- Bootstrap the new executable and production-profile oracle before mutating
+  blocked storage. Gate 1 was safe to run early because it was read-only;
+  later backend work needs the complete oracle matrix.
 - Prove exact root-complex seams and cross-block split/merge transactions in
   reusable libraries before creating independently owned world state.
 - Generate persistent vertex, edge, and face keys combinatorially from integer
@@ -286,8 +286,11 @@ The review changes the plan in five ways:
   monolithic vector with a different planet-wide per-cell container.
 
 This keeps the single-root verdict while narrowing what Gate 1 actually
-validated. The highest-priority architectural task is now the transaction and
-ownership boundary, not the new executable shell.
+validated. The immediate product milestone is now a deliberately small
+`tetra_world` executable using the current monolithic implementation behind a
+temporary runtime boundary. The highest unresolved architectural risk remains
+the cross-block transaction and ownership boundary that will replace that
+backend; it is not a reason to postpone the executable or first visible world.
 
 ### 3.5 Gate 2 decision criteria
 
@@ -400,6 +403,40 @@ The main thread adopts one completed `WorldRevisionManifest`. It must not
 publish changed blocks one at a time. Rendering may lag the newest hierarchy
 revision, as the current GPU-buffer-front paper permits, but every displayed
 render front names one complete compatible world revision.
+
+### 4.5 Bootstrap the executable before the sparse backend
+
+Create `tetra_world` now. Its first terrain runtime is an adapter over the
+current `TetMesh`, `MeshUpdateWorker`, `ScenePreparationWorker`, and retained
+scene cache. That backend is intentionally temporary but remains the exact
+oracle while the sparse implementation is developed.
+
+```text
+tetra_world input / controller / presentation
+                    |
+                    v
+             TerrainRuntime
+       submit demand, query field,
+       adopt latest immutable scene,
+       expose diagnostics and hashes
+             /               \
+            v                 v
+MonolithicTerrainRuntime   SparseTerrainRuntime
+      initial                  later
+```
+
+Keep `TerrainRuntime` narrow and driven by actual application needs. It is not
+a speculative universal mesh abstraction. The application must not reach
+through it to local `TetId`, `TetMesh::Storage`, experiment dropdown state, or
+viewer globals. Both implementations must produce the same production-profile
+hashes and visual baselines for overlapping workloads.
+
+The Vulkan platform and scene renderer are shared implementation libraries,
+not copied source files. `tetra_viewer` remains the research laboratory;
+`tetra_world` starts directly in the production profile with a minimal status
+and diagnostics panel. Creating this shell does not grant the monolithic
+backend planet-scale residency—it simply gives us the correct user-facing
+composition root while Gate 2 and Gate 4 replace its internals.
 
 ## 5. Coordinates and identity
 
@@ -910,21 +947,44 @@ LOD runaway, or unbounded memory growth.
 ## 16. TODO chain
 
 Complete the remaining gates in order. Gate 1 was deliberately read-only and
-was completed before Gate 0; the next work is Gate 0, then Gate 2. A gate is
+was completed before Gate 0; both are now complete and the next work is Gate 2. A gate is
 complete only when its focused tests and the full release suite pass.
 
-### Gate 0: Freeze the production profile and oracle
+### Gate 0: Bootstrap `tetra_world` and freeze its oracle
 
-- [ ] Introduce one named world-visualizer production profile containing the
+- [x] Introduce one named world-visualizer production profile containing the
       current default subdivision, transition, LOD, terrain, cleaving,
       optimization, material, shading, and draw-chunk settings.
-- [ ] Add a headless command that builds the production profile without UI
-      overrides.
-- [ ] Record stable hierarchy, conforming-volume, connected-surface, render,
+- [x] Define the narrow `TerrainRuntime` contract required by the application:
+      submit camera demand, query the procedural collision field, adopt the
+      latest immutable renderable scene, and expose revisions, hashes, and
+      diagnostics.
+- [x] Implement `MonolithicTerrainRuntime` by adapting the current `TetMesh`,
+      mesh worker, scene-preparation worker, and scene cache without changing
+      their production results.
+- [x] Extract the existing GLFW/Vulkan platform and scene renderer into shared
+      targets used by both executables; do not copy renderer or shader code.
+- [x] Add the `tetra_world` executable with its own small composition root,
+      production terrain at startup, and only a compact status/debug panel.
+- [x] Add captured first-person mouse look, `WASD`, sprint, jump, and
+      mouse-release input with deterministic scripted equivalents.
+- [x] Add a fixed-step kinematic capsule controller against the procedural
+      terrain field with grounding, slope limits, gravity, air control,
+      friction, bounded stepping, and penetration recovery.
+- [x] Keep mouse look, movement, and frame submission responsive while the
+      existing background mesh and scene workers reconcile camera LOD.
+- [x] Add free-fly, pause, single-step, capsule, contact-normal, and LOD-zone
+      diagnostics without importing the research-method controls.
+- [x] Add a headless command that builds the production profile without UI
+      overrides through the same monolithic runtime used by `tetra_world`.
+- [x] Record stable hierarchy, conforming-volume, connected-surface, render,
       and field-sample hashes for representative terrain views.
-- [ ] Record release performance and allocation baselines for stationary,
+- [x] Record release performance and allocation baselines for stationary,
       walking-speed, rapid-turn, near/far, reversal, and teleport camera paths.
-- [ ] Verify the current release binary and complete test suite before mutable
+- [x] Test deterministic walking, jumping, slopes, large frame deltas, rapid
+      turns, and visual-LOD-independent collision inside the current root.
+- [x] Verify deterministic headless capture, launch and visually inspect the
+      release `tetra_world`, then run the complete release suite before mutable
       block work begins.
 
 ### Gate 1: Prove blocked storage inside the current app
@@ -991,30 +1051,20 @@ complete only when its focused tests and the full release suite pass.
 - [ ] Require exact oracle equivalence and visually inspect boundary close-ups
       with flat shading and triangle edges.
 
-### Gate 3: New application shell and first-person movement
+### Gate 3: Adopt the blocked runtime and large world domain
 
-- [ ] Add a `tetra_world` executable with a small composition root that links
-      the existing core, graphics-free surface preparation, and Vulkan renderer
-      rather than copying algorithms from `tetra_viewer`.
-- [ ] Start from the named world production profile and one immutable current-
-      root `WorldRevisionManifest`; omit the research-method dropdowns.
-- [ ] Render through a revision-to-render-front adapter so the executable does
-      not depend directly on monolithic `TetMesh` ownership.
+- [ ] Switch `tetra_world` to the completed world-revision/runtime path without
+      changing its production-profile output or presentation behavior.
 - [ ] Scale and translate the one virtual root domain while retaining
       normalized root-local reconstruction and stable world-space field input.
-- [ ] Add a first-person camera with captured mouse look and configurable
-      sensitivity.
-- [ ] Add `WASD`, jump, sprint, and mouse-release input state.
-- [ ] Implement a fixed-step kinematic capsule controller against the terrain
-      field, independent of render-block residency.
-- [ ] Implement grounding, slope limits, gravity, jumping, air control,
-      friction, and bounded penetration recovery.
-- [ ] Keep view rotation smooth while background geometry updates are running.
-- [ ] Add free-fly, pause, single-step, capsule, root/block, and contact-normal
-      diagnostics.
-- [ ] Add deterministic scripted movement and mouse-input commands.
-- [ ] Test walking, jumping, steep slopes, large frame deltas, origin rebasing,
-      and visual-LOD independence.
+- [ ] Generate camera-relative positions and introduce origin rebasing without
+      changing terrain identity, collision, or the current rendered shape.
+- [ ] Preserve the Gate 0 controller behavior and input feel while camera and
+      physics demand begin selecting hierarchy blocks.
+- [ ] Add root/block and world-revision diagnostics to the existing gameplay
+      overlays.
+- [ ] Test walking, jumping, steep slopes, block crossings, origin rebasing,
+      and backend equivalence before eviction and long-range streaming.
 
 ### Gate 4: Sparse block cache and background streaming
 
@@ -1099,8 +1149,8 @@ complete only when its focused tests and the full release suite pass.
 - [ ] Run the focused hierarchy, block, physics, streaming, rendering, and stress tests
       under AddressSanitizer and UndefinedBehaviorSanitizer.
 - [ ] Run the complete release build and test suite.
-- [ ] Produce the world-visualizer release executable and verify it launches
-      with the production profile.
+- [ ] Package the qualified `tetra_world` release and verify a fresh launch,
+      traversal, shutdown, and restart with the production profile.
 
 ## 17. Follow-on direction
 

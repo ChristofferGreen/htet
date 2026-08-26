@@ -13,9 +13,12 @@
 #include "tetra_core/world_hierarchy.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
+#include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
+#include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/viewer_script.hpp"
+#include "tetra_viewer/world_script.hpp"
 
 #include <cmath>
 #include <bit>
@@ -786,6 +789,192 @@ TEST_CASE("editor orbit camera rotates pans and dollies independently") {
   camera.dolly(1.0,0.15);
   CHECK(camera.distance<distance_before_dolly);
   CHECK(camera.distance==doctest::Approx(distance_before_dolly-distance_before_dolly*0.22*0.15));
+}
+
+TEST_CASE("production world profile pins the playable rendering contract") {
+  const auto profile=tetra_viewer::production_world_profile();
+  CHECK(profile.subdivision==tetra::SubdivisionMethod::bcc_red_green);
+  CHECK(profile.shape==tetra::ImplicitShapeKind::perlin_terrain);
+  CHECK(profile.surface==tetra_viewer::SurfaceMethod::surface_optimization);
+  CHECK(profile.volume_connection==
+        tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  CHECK(profile.material==tetra_viewer::MaterialRule::variational_smooth);
+  CHECK(profile.shading==tetra_viewer::ShadingModel::studio_flat);
+  CHECK(profile.adaptation==tetra::AdaptationConfiguration{});
+  CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
+  CHECK(profile.pixel_threshold==doctest::Approx(28.0));
+  CHECK(profile.maximum_depth==16U);
+  CHECK(profile.show_faces);
+  CHECK(profile.show_surface_edges);
+  CHECK_FALSE(profile.show_hierarchy_edges);
+  CHECK_FALSE(profile.x_cutaway);
+}
+
+TEST_CASE("first person fixed steps are deterministic across frame grouping") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::FirstPersonController grouped,individual;
+  tetra_viewer::FirstPersonInput input;
+  input.forward=1.0;input.right=0.25;
+  for(int frame=0;frame<120;++frame)
+    grouped.advance(1.0/60.0,input,field);
+  for(int step=0;step<240;++step)
+    individual.advance(1.0/120.0,input,field);
+  const auto& first=grouped.state();
+  const auto& second=individual.state();
+  CHECK(first.feet.x==doctest::Approx(second.feet.x).epsilon(1.0e-12));
+  CHECK(first.feet.y==doctest::Approx(second.feet.y).epsilon(1.0e-12));
+  CHECK(first.feet.z==doctest::Approx(second.feet.z).epsilon(1.0e-12));
+  CHECK(first.velocity.x==doctest::Approx(second.velocity.x).epsilon(1.0e-12));
+  CHECK(first.velocity.y==doctest::Approx(second.velocity.y).epsilon(1.0e-12));
+  CHECK(first.velocity.z==doctest::Approx(second.velocity.z).epsilon(1.0e-12));
+  CHECK(first.grounded==second.grounded);
+}
+
+TEST_CASE("first person collision and jump use the procedural field") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::FirstPersonController controller;
+  for(int step=0;step<360;++step)
+    controller.advance(1.0/120.0,{},field);
+  REQUIRE(controller.state().grounded);
+  const auto grounded_y=controller.state().feet.y;
+  const auto grounded_x=controller.state().feet.x;
+  const auto grounded_z=controller.state().feet.z;
+  for(int step=0;step<600;++step)
+    controller.advance(1.0/120.0,{},field);
+  CHECK(controller.state().feet.x==doctest::Approx(grounded_x).epsilon(1.0e-12));
+  CHECK(controller.state().feet.z==doctest::Approx(grounded_z).epsilon(1.0e-12));
+  tetra_viewer::FirstPersonInput jump;
+  jump.jump=true;
+  controller.advance(1.0/120.0,jump,field);
+  CHECK_FALSE(controller.state().grounded);
+  CHECK(controller.state().velocity.y>0.0);
+  for(int step=0;step<20;++step)
+    controller.advance(1.0/120.0,{},field);
+  CHECK(controller.state().feet.y>grounded_y);
+  const auto bottom_centre=controller.state().feet+tetra::Vec3{0.0,0.025,0.0};
+  CHECK(field.signed_distance(bottom_centre)>=-1.0e-10);
+}
+
+TEST_CASE("first person controller bounds frame debt and rejects steep contacts") {
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::FirstPersonController clamped,reference;
+  tetra_viewer::FirstPersonInput input;
+  input.forward=1.0;
+  clamped.advance(10.0,input,terrain);
+  reference.advance(0.1,input,terrain);
+  CHECK(clamped.state().feet.x==doctest::Approx(reference.state().feet.x));
+  CHECK(clamped.state().feet.y==doctest::Approx(reference.state().feet.y));
+  CHECK(clamped.state().feet.z==doctest::Approx(reference.state().feet.z));
+  clamped.look(100000.0,-100000.0);
+  const auto direction=clamped.forward();
+  CHECK(std::sqrt(direction.x*direction.x+direction.y*direction.y+
+                  direction.z*direction.z)==doctest::Approx(1.0));
+  CHECK(std::abs(direction.y)<1.0);
+
+  tetra::Sphere sphere;
+  tetra_viewer::FirstPersonController steep;
+  steep.state().feet={0.84,0.475,0.5};
+  steep.advance(1.0/120.0,{},sphere);
+  CHECK_FALSE(steep.state().grounded);
+  CHECK(steep.state().contact_normal.x>0.9);
+}
+
+TEST_CASE("first person mouse look uses the world application's expected axes") {
+  tetra_viewer::FirstPersonController horizontal,vertical;
+  const auto initial=horizontal.forward();
+  horizontal.look(20.0,0.0);
+  vertical.look(0.0,20.0);
+  CHECK(horizontal.forward().x<initial.x);
+  CHECK(vertical.forward().y<initial.y);
+}
+
+TEST_CASE("world headless traces are deterministic and reject bad commands") {
+  std::ostringstream first,second,errors;
+  const auto script="idle:180,look:25:-10,forward:120,jump:1,idle:120";
+  CHECK(tetra_viewer::run_world_script(script,first,errors)==0);
+  CHECK(errors.str().empty());
+  CHECK(tetra_viewer::run_world_script(script,second,errors)==0);
+  CHECK(first.str()==second.str());
+  CHECK(first.str().find("\"event\":\"world_trace\"")!=std::string::npos);
+  std::ostringstream rejected_errors,rejected_output;
+  CHECK(tetra_viewer::run_world_script(
+            "teleport:2",rejected_output,rejected_errors)==2);
+  CHECK_FALSE(rejected_errors.str().empty());
+}
+
+TEST_CASE("world runtime capture is deterministic and produced without graphics") {
+  const auto directory=std::filesystem::temp_directory_path();
+  const auto first_path=directory/"tetra-world-capture-first.ppm";
+  const auto second_path=directory/"tetra-world-capture-second.ppm";
+  std::ostringstream first_output,second_output,errors;
+  REQUIRE(tetra_viewer::capture_world_runtime(
+              first_path.string(),first_output,errors)==0);
+  REQUIRE(tetra_viewer::capture_world_runtime(
+              second_path.string(),second_output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto read=[](const std::filesystem::path& path){
+    std::ifstream input(path,std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input),{});
+  };
+  const auto first=read(first_path),second=read(second_path);
+  REQUIRE(first.starts_with("P6\n768 480\n255\n"));
+  CHECK(first==second);
+  CHECK(first_output.str().find("\"event\":\"world_capture\"")!=
+        std::string::npos);
+  std::filesystem::remove(first_path);
+  std::filesystem::remove(second_path);
+}
+
+TEST_CASE("monolithic terrain runtime publishes only complete background slices") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.maximum_depth=16U;
+  profile.pixel_threshold=28.0;
+  tetra_viewer::MonolithicTerrainRuntime runtime(profile);
+  tetra::Camera camera;
+  camera.position={0.5,0.75,0.8};
+  camera.forward={0.0,-0.25,-1.0};
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  CHECK(runtime.diagnostics().busy);
+  bool published=false;
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  while(std::chrono::steady_clock::now()<deadline&&!published){
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    published=runtime.update();
+  }
+  REQUIRE(published);
+  CHECK(runtime.diagnostics().positive_volumes);
+  CHECK(runtime.diagnostics().conforming_faces);
+  while(std::chrono::steady_clock::now()<deadline&&
+        runtime.diagnostics().scene_generation==0U){
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    static_cast<void>(runtime.update());
+  }
+  const auto diagnostics=runtime.diagnostics();
+  REQUIRE(diagnostics.scene_generation>0U);
+  CHECK(diagnostics.hierarchy_hash!=0U);
+  CHECK(diagnostics.conforming_volume_hash!=0U);
+  CHECK(diagnostics.connected_surface_hash!=0U);
+  CHECK(diagnostics.render_hash!=0U);
+  CHECK(diagnostics.field_sample_hash!=0U);
+  const auto near_cells=diagnostics.logical_cells;
+  camera.position={0.5,3.0,12.0};
+  const auto toward=tetra::Vec3{0.5,0.5,0.5}-camera.position;
+  const double toward_length=std::sqrt(toward.x*toward.x+toward.y*toward.y+
+                                       toward.z*toward.z);
+  camera.forward=toward/toward_length;
+  runtime.set_camera(camera,false);
+  const auto far_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  do{
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }while(std::chrono::steady_clock::now()<far_deadline);
+  REQUIRE(runtime.diagnostics().converged);
+  CHECK(runtime.diagnostics().logical_cells<near_cells);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {

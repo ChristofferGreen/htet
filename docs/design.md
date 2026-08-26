@@ -688,6 +688,15 @@ The concrete stationary-terrain architecture and implementation gates live in
 [`world-visualizer.md`](world-visualizer.md). This section states the broader
 world-design constraints that the implementation must preserve.
 
+The player-facing `tetra_world` executable should be created before sparse
+storage is complete. It initially consumes the current monolithic terrain path
+through a narrow runtime adapter, giving input, presentation, scripting, and
+experience tests a stable home. Its first vertical slice already includes
+first-person movement and procedural-field collision inside the current root;
+it is not merely an empty application shell. Sparse hierarchy blocks and world
+transactions later replace that backend; they do not require a second
+application rewrite or duplicated renderer.
+
 A world-scale hierarchy needs a physical storage-residency unit larger than one
 tetrahedron. It does not follow that I/O records, scheduled work, edit locks,
 atomic publications, derived-data invalidation, and GPU uploads must all use

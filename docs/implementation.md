@@ -8,8 +8,10 @@ This tracker describes the existing algorithm laboratory. The canonical plan
 for the planet-scale player application, single logical terrain root, sparse
 hierarchy blocks, atomic world revisions, and independent retained render
 front is [`world-visualizer.md`](world-visualizer.md). The active execution
-queue is [`todo.md`](todo.md); do not copy the production meshing path into a
-new executable before its cross-block transaction boundary is reusable.
+queue is [`todo.md`](todo.md). Bootstrap `tetra_world` now by sharing the
+existing renderer and adapting the current monolithic production path behind a
+narrow `TerrainRuntime`; later sparse hierarchy work replaces that backend
+without rewriting the application shell.
 
 ## Technology choices
 
@@ -28,12 +30,59 @@ src/
   tetra_core/       Geometry, connectivity, hierarchy, refinement, validation
   tetra_io/         Mesh and experiment serialization
   tetra_viewer/     GLFW, Vulkan, ImGui, rendering, and interaction
+  tetra_world/      Production-profile first-person application entry point
 tests/
   tetra_core/       doctest2 tests
 assets/
   shaders/
   experiments/
 ```
+
+## Gate 0 world runtime baseline
+
+`tetra_world` and `tetra_viewer` link the same Vulkan application and scene
+renderer target; their composition roots select either the production world or
+the research presentation. The world owns the existing monolithic mesh and
+scene workers through `TerrainRuntime`, so later sparse-world work can replace
+that backend without changing first-person input or rendering.
+
+The release headless command
+`tetra_world --runtime-benchmark` runs the production profile without GLFW,
+Vulkan, ImGui, or research overrides. On the 2026-08-26 qualification run, all
+seven paths converged and produced these representative measurements:
+
+| Path | Time (ms) | Logical cells | Active tetrahedra | Resident bytes |
+|---|---:|---:|---:|---:|
+| stationary | 580 | 72,049 | 82,522 | 68,959,348 |
+| walking-speed | 51 | 72,049 | 82,522 | 68,959,348 |
+| rapid-turn | 565 | 71,104 | 81,635 | 69,396,650 |
+| near | 295 | 72,049 | 82,522 | 76,381,130 |
+| far | 500 | 4,436 | 4,856 | 74,639,206 |
+| reversal | 560 | 72,049 | 82,522 | 92,026,768 |
+| teleport | 621 | 70,712 | 81,229 | 92,470,254 |
+
+The far path therefore proves that the runtime can simplify as well as refine.
+Resident storage retains reusable descendants, so the reversal restores the
+exact stationary hierarchy and render hashes rather than reallocating from an
+empty tree. The stationary/reversal oracle is:
+
+- hierarchy `15139080602235339876`;
+- conforming volume `5315754097732633228`;
+- connected surface `4912314980186933580`;
+- render data `15465300735418457338`;
+- procedural field samples `9910229194261358740`.
+
+Timing values are baselines rather than pass/fail constants. Hashes and
+conforming validation are the correctness oracle.
+
+`tetra_world --capture <path.ppm>` waits for the same runtime and production
+scene to converge, then writes a deterministic, depth-tested CPU capture with
+explicit triangle edges. The qualified first-person terrain view has hierarchy
+hash `16856250240447688171`, conforming-volume hash
+`8682296349830688272`, connected-surface hash `12154792268907285970`,
+and render hash `17359015080993185700`. Two independent captures are required
+to be byte-identical by the release test suite; the inspected result is opaque,
+field-aligned, fully edged, and free of cracks.
 
 Initial CMake targets:
 

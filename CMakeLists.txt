@@ -44,10 +44,13 @@ target_compile_options(tetra_core PRIVATE
 # even when the viewer itself cannot be built or launched.
 add_library(tetra_viewer_script
   src/tetra_viewer/camera_manipulator.cpp
+  src/tetra_viewer/first_person_controller.cpp
   src/tetra_viewer/mesh_update_worker.cpp
   src/tetra_viewer/scene_preparation_worker.cpp
+  src/tetra_viewer/terrain_runtime.cpp
   src/tetra_viewer/viewer_script.cpp
-  src/tetra_viewer/viewer_scene.cpp)
+  src/tetra_viewer/viewer_scene.cpp
+  src/tetra_viewer/world_script.cpp)
 target_include_directories(tetra_viewer_script PUBLIC src)
 target_link_libraries(tetra_viewer_script PUBLIC tetra::core)
 target_compile_options(tetra_viewer_script PRIVATE

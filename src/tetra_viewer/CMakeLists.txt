@@ -20,8 +20,14 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 
-add_executable(tetra_viewer main.cpp scene_renderer.cpp)
-target_link_libraries(tetra_viewer PRIVATE tetra_viewer_script glfw imgui Vulkan::Vulkan)
+add_library(tetra_viewer_application STATIC main.cpp scene_renderer.cpp)
+target_link_libraries(tetra_viewer_application PUBLIC tetra_viewer_script glfw imgui Vulkan::Vulkan)
+
+add_executable(tetra_viewer viewer_main.cpp)
+target_link_libraries(tetra_viewer PRIVATE tetra_viewer_application)
+
+add_executable(tetra_world ../tetra_world/main.cpp)
+target_link_libraries(tetra_world PRIVATE tetra_viewer_application)
 
 find_program(GLSLC glslc REQUIRED)
 set(TETRA_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
@@ -40,7 +46,8 @@ add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv)
 add_dependencies(tetra_viewer tetra_viewer_shaders)
-target_compile_definitions(tetra_viewer PRIVATE TETRA_VIEWER_SHADER_DIR="${TETRA_SHADER_DIR}")
+add_dependencies(tetra_world tetra_viewer_shaders)
+target_compile_definitions(tetra_viewer_application PRIVATE TETRA_VIEWER_SHADER_DIR="${TETRA_SHADER_DIR}")
 
 if(APPLE)
   # GLFW loads the Vulkan loader by a short dylib name.  Keep the public
@@ -55,4 +62,13 @@ if(APPLE)
       WORLD_READ WORLD_EXECUTE)
   add_custom_command(TARGET tetra_viewer POST_BUILD
     COMMAND chmod +x ${CMAKE_CURRENT_BINARY_DIR}/tetra_viewer)
+  set_target_properties(tetra_world PROPERTIES OUTPUT_NAME tetra_world_bin)
+  configure_file(tetra_world_macos.sh.in ${CMAKE_CURRENT_BINARY_DIR}/tetra_world @ONLY)
+  file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/tetra_world
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE)
+  add_custom_command(TARGET tetra_world POST_BUILD
+    COMMAND chmod +x ${CMAKE_CURRENT_BINARY_DIR}/tetra_world)
 endif()
