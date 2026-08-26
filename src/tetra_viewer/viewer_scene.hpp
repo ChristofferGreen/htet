@@ -4,6 +4,7 @@
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
+#include "tetra_core/world_hierarchy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,11 +13,54 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
 namespace tetra_viewer {
+
+inline constexpr std::uint32_t surface_optimizer_passes=5U;
+inline constexpr std::uint32_t surface_optimizer_dependency_halo_rings=5U;
+
+struct BoundedJacobiMetrics {
+  std::size_t passes{};
+  std::size_t proposals{};
+  std::size_t accepted{};
+};
+
+// Synchronous bounded-dependency scheduler. A patch supplies graph distance
+// from its owned core; pass p updates only the radius needed to reproduce the
+// owned result after all passes. An empty distance span updates the full mesh.
+template <typename Proposer>
+BoundedJacobiMetrics run_bounded_jacobi(
+    std::vector<tetra::Vec3>& positions,std::uint32_t passes,
+    std::span<const std::uint32_t> dependency_distance,
+    std::span<const std::size_t> evaluation_order,Proposer&& propose) {
+  if(!dependency_distance.empty()&&dependency_distance.size()!=positions.size())
+    throw std::invalid_argument("Jacobi dependency distances do not match positions");
+  if(!evaluation_order.empty()&&evaluation_order.size()!=positions.size())
+    throw std::invalid_argument("Jacobi evaluation order does not match positions");
+  BoundedJacobiMetrics metrics;metrics.passes=passes;
+  for(std::uint32_t pass=0;pass<passes;++pass){
+    const auto previous=positions;auto next=previous;
+    const auto visit=[&](std::size_t vertex){
+      if(vertex>=positions.size())throw std::out_of_range("Jacobi vertex order is invalid");
+      if(!dependency_distance.empty()&&
+         dependency_distance[vertex]>=passes-pass)return;
+      ++metrics.proposals;
+      if(const auto candidate=propose(previous,vertex,pass)){
+        next[vertex]=*candidate;++metrics.accepted;
+      }
+    };
+    if(evaluation_order.empty())
+      for(std::size_t vertex=0;vertex<positions.size();++vertex)visit(vertex);
+    else for(const auto vertex:evaluation_order)visit(vertex);
+    positions=std::move(next);
+  }
+  return metrics;
+}
 
 // Standard orbit camera used by both rendering and screen-space LOD. Keeping
 // the target independent of the evaluated surface permits real camera
@@ -353,7 +397,7 @@ struct SurfacePatchDependency {
     case SurfaceMethod::surface_optimization:
       return {SurfacePatchNeighbourhood::global,
               std::numeric_limits<std::uint8_t>::max(),
-              "welded iterative smoothing and connected shells are globally coupled"};
+              "optimizer is five-ring bounded but the owner patch cache does not yet materialize its welded graph halo"};
   }
   return {};
 }
@@ -581,6 +625,7 @@ struct PreparedScene {
   // output tetrahedron retains its authoritative hierarchy parent.
   std::vector<tetra::Vec3> connected_volume_vertices;
   std::vector<ConnectedVertexKind> connected_volume_vertex_kinds;
+  std::vector<tetra::WorldDerivedVertexKey> connected_volume_global_keys;
   // Source hierarchy edge for intersection vertices; invalid/invalid for
   // hierarchy and stencil-interior vertices.
   std::vector<std::array<tetra::VertexId,2>> connected_volume_source_edges;
@@ -619,6 +664,8 @@ struct PreparedScene {
   std::size_t rejected_surface_moves{};
   std::size_t optimized_volume_boundary_vertices{};
   std::size_t rejected_volume_boundary_moves{};
+  std::uint32_t optimizer_passes{};
+  std::uint32_t optimizer_dependency_halo_rings{};
   std::size_t selected_stencil_cells{};
   std::size_t alternate_stencil_cells{};
   std::uint64_t connected_surface_hash{};

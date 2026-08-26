@@ -54,15 +54,18 @@ void normalize_snapshot(HierarchyBlockSnapshot& block) {
 }
 
 WorldCutCheckpointMetrics checkpoint_metrics(
-    const std::vector<HierarchyBlockSnapshot>& blocks) {
+    const std::vector<HierarchyBlockSnapshot>& blocks,
+    std::span<const WorldDerivedSurfaceSnapshot> surfaces={}) {
   WorldCutCheckpointMetrics result;
   result.blocks=blocks.size();
+  result.surface_blocks=surfaces.size();
   for(const auto& block:blocks){
     result.stored_logical_owners+=block.logical_owners.size();
     result.retained_bytes+=block.metrics.retained_bytes;
     result.maximum_depth=std::max(
         result.maximum_depth,block.id.prefix.red_depth());
   }
+  for(const auto& surface:surfaces)result.retained_bytes+=surface.metrics.retained_bytes;
   return result;
 }
 
@@ -93,6 +96,12 @@ bool snapshot_payload_equal(
   return first.id==second.id&&first.residency==second.residency&&
       first.resident_records==second.resident_records&&
       first.logical_owners==second.logical_owners;
+}
+
+bool surface_depends_on(
+    const WorldDerivedSurfaceSnapshot& surface,HierarchyBlockId block) {
+  return surface.id==block||std::ranges::binary_search(
+      surface.dependency_blocks,block);
 }
 
 bool overlaps(WorldTetAddress first,WorldTetAddress second) {
@@ -187,6 +196,11 @@ std::uint64_t WorldCutCheckpoint::canonical_hash() const {
       hash_value(hash,resident.high);hash_value(hash,resident.low);
     }
   }
+  std::vector<const WorldDerivedSurfaceSnapshot*> ordered_surfaces;
+  ordered_surfaces.reserve(surfaces.size());
+  for(const auto& surface:surfaces)ordered_surfaces.push_back(&surface);
+  std::ranges::sort(ordered_surfaces,{},[](const auto* surface){return surface->id;});
+  for(const auto* surface:ordered_surfaces)hash_value(hash,surface->canonical_hash());
   return hash;
 }
 
@@ -250,7 +264,7 @@ WorldCutCheckpoint make_sparse_world_cut_checkpoint(
   for(auto& [id,block]:blocks){
     (void)id;normalize_snapshot(block);result.blocks.push_back(std::move(block));
   }
-  result.metrics=checkpoint_metrics(result.blocks);
+  result.metrics=checkpoint_metrics(result.blocks,result.surfaces);
   return result;
 }
 
@@ -275,7 +289,7 @@ WorldCutCheckpoint make_world_cut_checkpoint(
     if(found!=indices.end())result.blocks[found->second].resident_records.push_back(address);
   }
   for(auto& block:result.blocks)normalize_snapshot(block);
-  result.metrics=checkpoint_metrics(result.blocks);
+  result.metrics=checkpoint_metrics(result.blocks,result.surfaces);
   return result;
 }
 
@@ -358,6 +372,9 @@ WorldCutDirectory::WorldCutDirectory(WorldCutCheckpoint checkpoint)
   blocks_.reserve(checkpoint.blocks.size());
   for(auto& block:checkpoint.blocks)
     blocks_.push_back(std::make_shared<const HierarchyBlockSnapshot>(std::move(block)));
+  surfaces_.reserve(checkpoint.surfaces.size());
+  for(auto& surface:checkpoint.surfaces)
+    surfaces_.push_back(std::make_shared<const WorldDerivedSurfaceSnapshot>(std::move(surface)));
   validate_and_refresh();
 }
 
@@ -447,8 +464,45 @@ WorldCutCheckpoint WorldCutDirectory::checkpoint() const {
   result.revision=revision_;result.block_generations=block_generations_;
   result.blocks.reserve(blocks_.size());
   for(const auto& block:blocks_)result.blocks.push_back(*block);
-  result.metrics=checkpoint_metrics(result.blocks);
+  result.surfaces.reserve(surfaces_.size());
+  for(const auto& surface:surfaces_)result.surfaces.push_back(*surface);
+  result.metrics=checkpoint_metrics(result.blocks,result.surfaces);
   return result;
+}
+
+std::shared_ptr<const WorldDerivedSurfaceSnapshot> WorldCutDirectory::surface(
+    HierarchyBlockId id) const {
+  const auto found=std::ranges::lower_bound(
+      surfaces_,id,{},[](const auto& surface){return surface->id;});
+  return found!=surfaces_.end()&&(*found)->id==id?*found:nullptr;
+}
+
+WorldRevisionManifest WorldCutDirectory::stage_derived_surfaces(
+    std::span<const WorldDerivedSurfaceSnapshot> surfaces,
+    std::uint64_t new_revision,const std::function<bool()>& canceled) const {
+  if(new_revision<=revision_)
+    throw std::invalid_argument("derived surface revision must advance");
+  if(surfaces.empty())throw std::invalid_argument("derived surface transaction is empty");
+  std::vector<WorldDerivedSurfaceSnapshot> staged(surfaces.begin(),surfaces.end());
+  std::vector<WorldBlockDependency> dependencies;
+  std::vector<HierarchyBlockId> dependency_ids;
+  for(const auto& surface:staged){
+    if(canceled&&canceled())throw std::runtime_error("derived surface transaction canceled");
+    dependency_ids.push_back(surface.id);
+    dependency_ids.insert(dependency_ids.end(),surface.dependency_blocks.begin(),
+                          surface.dependency_blocks.end());
+  }
+  std::ranges::sort(dependency_ids);
+  dependency_ids.erase(std::unique(dependency_ids.begin(),dependency_ids.end()),
+                       dependency_ids.end());
+  for(const auto id:dependency_ids){
+    const auto block=find_block(id);
+    if(!block)throw std::invalid_argument("derived surface dependency is not resident");
+    dependencies.push_back({id,block->source_revision,
+                            hierarchy_block_canonical_hash(*block)});
+  }
+  return WorldRevisionManifest(new_revision,revision_,{},std::move(dependencies),{},
+                               std::move(staged));
 }
 
 WorldStagedTransaction WorldCutDirectory::stage_transaction(
@@ -686,8 +740,15 @@ WorldStagedTransaction WorldCutDirectory::stage_transaction(
   std::uint64_t hash=hash_offset;
   for(const auto owner:result){hash_value(hash,owner.high);hash_value(hash,owner.low);}
   transaction.canonical_hash=hash;
+  std::vector<HierarchyBlockId> removed_surfaces;
+  for(const auto& cached:surfaces_)
+    if(std::ranges::any_of(transaction.affected_blocks,[&](HierarchyBlockId id){
+         return surface_depends_on(*cached,id);
+       }))
+      removed_surfaces.push_back(cached->id);
   return {std::move(transaction),WorldRevisionManifest(new_revision,revision_,
-      std::move(changed),std::move(certificates),std::move(removed))};
+      std::move(changed),std::move(certificates),std::move(removed),{},
+      std::move(removed_surfaces))};
 }
 
 void WorldCutDirectory::validate_and_refresh() {
@@ -726,7 +787,22 @@ void WorldCutDirectory::validate_and_refresh() {
   for(std::uint8_t root=0;root<bcc_root_tetrahedron_count;++root)
     if(!find_block({WorldTetAddress::root(root),block_generations_}))
       throw std::invalid_argument("world directory lacks a BCC root fallback");
+  std::ranges::sort(surfaces_,{},[](const auto& surface){return surface->id;});
+  for(std::size_t index=0;index<surfaces_.size();++index){
+    const auto& surface=*surfaces_[index];
+    if(index>0U&&surfaces_[index-1U]->id==surface.id)
+      throw std::invalid_argument("world directory contains duplicate derived surfaces");
+    if(!find_block(surface.id))
+      throw std::invalid_argument("derived surface has no resident hierarchy block");
+    if(surface.source_hierarchy_revision>revision_)
+      throw std::invalid_argument("derived surface comes from a future hierarchy revision");
+    if(!std::ranges::is_sorted(surface.vertices,{},&WorldSurfaceVertex::key)||
+       !std::ranges::is_sorted(surface.triangles)||
+       !std::ranges::is_sorted(surface.dependency_blocks))
+      throw std::invalid_argument("derived surface arrays are not canonical");
+  }
   metrics_={};metrics_.blocks=blocks_.size();
+  metrics_.derived_surface_blocks=surfaces_.size();
   std::size_t owner_sum{};
   metrics_.minimum_block_owners=blocks_.empty()?0U:
       std::numeric_limits<std::size_t>::max();
@@ -762,9 +838,37 @@ void WorldCutDirectory::publish(const WorldRevisionManifest& manifest) {
        hierarchy_block_canonical_hash(*block)!=dependency.canonical_hash)
       throw std::invalid_argument("world manifest has a stale block dependency");
   }
+  std::vector<HierarchyBlockId> changed_hierarchy(manifest.removed_blocks().begin(),
+                                                   manifest.removed_blocks().end());
+  for(const auto& changed:manifest.blocks())changed_hierarchy.push_back(changed->id);
+  std::ranges::sort(changed_hierarchy);
+  changed_hierarchy.erase(std::unique(changed_hierarchy.begin(),changed_hierarchy.end()),
+                          changed_hierarchy.end());
+  for(const auto& cached:surfaces_){
+    const bool invalidated=std::ranges::any_of(changed_hierarchy,[&](HierarchyBlockId id){
+      return surface_depends_on(*cached,id);
+    });
+    if(invalidated&&
+       !std::ranges::binary_search(manifest.removed_surfaces(),cached->id))
+      throw std::invalid_argument("world manifest leaves a stale derived-surface dependency");
+  }
+  for(const auto& surface:manifest.surfaces())
+    if(std::ranges::any_of(changed_hierarchy,[&](HierarchyBlockId id){
+         return surface_depends_on(*surface,id);
+       }))
+      throw std::invalid_argument(
+          "world manifest derives a surface from hierarchy changed in the same revision");
   auto previous=blocks_;
+  auto previous_surfaces=surfaces_;
   const auto previous_revision=revision_;
   try{
+    for(const auto id:manifest.removed_surfaces()){
+      const auto found=std::ranges::lower_bound(
+          surfaces_,id,{},[](const auto& candidate){return candidate->id;});
+      if(found==surfaces_.end()||(*found)->id!=id)
+        throw std::invalid_argument("world manifest removes a missing derived surface");
+      surfaces_.erase(found);
+    }
     for(const auto id:manifest.removed_blocks()){
       const auto found=std::ranges::lower_bound(
           blocks_,id,{},[](const auto& block){return block->id;});
@@ -778,9 +882,16 @@ void WorldCutDirectory::publish(const WorldRevisionManifest& manifest) {
       if(found!=blocks_.end()&&(*found)->id==changed->id)*found=changed;
       else blocks_.insert(found,changed);
     }
+    for(const auto& changed:manifest.surfaces()){
+      const auto found=std::ranges::lower_bound(
+          surfaces_,changed->id,{},[](const auto& candidate){return candidate->id;});
+      if(found!=surfaces_.end()&&(*found)->id==changed->id)*found=changed;
+      else surfaces_.insert(found,changed);
+    }
     revision_=manifest.revision();
     validate_and_refresh();
-  }catch(...){blocks_=std::move(previous);revision_=previous_revision;validate_and_refresh();throw;}
+  }catch(...){blocks_=std::move(previous);surfaces_=std::move(previous_surfaces);
+    revision_=previous_revision;validate_and_refresh();throw;}
 }
 
 WorldDirectoryUpdate WorldCutDirectory::reconcile(
@@ -818,9 +929,19 @@ WorldDirectoryUpdate WorldCutDirectory::reconcile(
   for(const auto& block:blocks_)
     if(!requested.contains(block->id))++evicted;
   auto previous=blocks_;const auto previous_revision=revision_;
+  auto previous_surfaces=surfaces_;
+  std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> next_surfaces;
+  for(const auto& surface:surfaces_)
+    if(requested.contains(surface->id)&&
+       std::ranges::all_of(surface->dependency_blocks,[&](HierarchyBlockId id){
+         return requested.contains(id);
+       }))
+      next_surfaces.push_back(surface);
   blocks_=std::move(next);revision_=new_revision;
+  surfaces_=std::move(next_surfaces);
   try{validate_and_refresh();}
-  catch(...){blocks_=std::move(previous);revision_=previous_revision;validate_and_refresh();throw;}
+  catch(...){blocks_=std::move(previous);surfaces_=std::move(previous_surfaces);
+    revision_=previous_revision;validate_and_refresh();throw;}
   WorldDirectoryUpdate result;
   result.source_revision=previous_revision;result.published_revision=revision_;
   result.metrics.requested_blocks=desired.size();

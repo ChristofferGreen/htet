@@ -150,6 +150,21 @@ struct PendingAddress {
   TetId source{invalid_tet};
 };
 
+void hash_world_vertex(std::uint64_t& hash,const WorldVertexKey& key) {
+  constexpr std::uint64_t prime=1099511628211ULL;
+  const auto add=[&](std::uint64_t value){hash^=value;hash*=prime;};
+  add(static_cast<std::uint64_t>(key.x));add(static_cast<std::uint64_t>(key.y));
+  add(static_cast<std::uint64_t>(key.z));add(key.denominator_exponent);
+}
+
+void hash_derived_vertex(std::uint64_t& hash,const WorldDerivedVertexKey& key) {
+  constexpr std::uint64_t prime=1099511628211ULL;
+  hash^=static_cast<std::uint8_t>(key.kind);hash*=prime;
+  hash^=key.basis_count;hash*=prime;
+  for(std::size_t index=0;index<key.basis_count;++index)
+    hash_world_vertex(hash,key.basis[index]);
+}
+
 BlockedAddressSet make_set(
     std::vector<PendingAddress> pending,unsigned int block_generations) {
   std::ranges::sort(pending,[](const PendingAddress& first,const PendingAddress& second){
@@ -212,6 +227,41 @@ std::vector<PendingAddress> conforming_records(
 }
 
 }  // namespace
+
+std::uint64_t WorldDerivedSurfaceSnapshot::canonical_hash() const {
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t hash=offset;
+  const auto add=[&](std::uint64_t value){hash^=value;hash*=prime;};
+  add(id.prefix.high);add(id.prefix.low);add(id.block_generations);
+  add(source_hierarchy_revision);add(metrics.optimizer_passes);
+  add(metrics.dependency_halo_rings);
+  std::vector<const WorldSurfaceVertex*> ordered_vertices;
+  ordered_vertices.reserve(vertices.size());
+  for(const auto& vertex:vertices)ordered_vertices.push_back(&vertex);
+  std::ranges::sort(ordered_vertices,{},[](const auto* vertex){return vertex->key;});
+  for(const auto* vertex:ordered_vertices){
+    hash_derived_vertex(hash,vertex->key);
+    add(std::bit_cast<std::uint64_t>(vertex->position.x));
+    add(std::bit_cast<std::uint64_t>(vertex->position.y));
+    add(std::bit_cast<std::uint64_t>(vertex->position.z));
+  }
+  auto ordered_triangles=triangles;
+  for(auto& triangle:ordered_triangles)std::ranges::sort(triangle.vertices);
+  std::ranges::sort(ordered_triangles);
+  for(const auto& triangle:ordered_triangles){
+    for(const auto& vertex:triangle.vertices)hash_derived_vertex(hash,vertex);
+    add(triangle.owner.high);add(triangle.owner.low);
+  }
+  auto ordered_dependencies=dependency_blocks;
+  std::ranges::sort(ordered_dependencies);
+  ordered_dependencies.erase(std::unique(ordered_dependencies.begin(),
+      ordered_dependencies.end()),ordered_dependencies.end());
+  for(const auto dependency:ordered_dependencies){
+    add(dependency.prefix.high);add(dependency.prefix.low);add(dependency.block_generations);
+  }
+  return hash;
+}
 
 std::uint64_t hierarchy_block_canonical_hash(
     const HierarchyBlockSnapshot& block) {
@@ -339,10 +389,106 @@ WorldEdgeKey world_edge_key(WorldVertexKey first,WorldVertexKey second) {
   return result;
 }
 
+WorldVertexKey world_vertex_key(Vec3 position) {
+  if(!std::isfinite(position.x)||!std::isfinite(position.y)||!std::isfinite(position.z))
+    throw std::invalid_argument("world vertex position must be finite");
+  constexpr unsigned int exponent=52U;
+  constexpr double limit=2047.0;
+  if(std::max({std::abs(position.x),std::abs(position.y),std::abs(position.z)})>limit)
+    throw std::out_of_range("world vertex position exceeds exact key range");
+  WorldVertexKey key{static_cast<std::int64_t>(std::llround(std::ldexp(position.x,exponent))),
+                     static_cast<std::int64_t>(std::llround(std::ldexp(position.y,exponent))),
+                     static_cast<std::int64_t>(std::llround(std::ldexp(position.z,exponent))),
+                     static_cast<std::uint8_t>(exponent)};
+  while(key.denominator_exponent>0U&&(key.x&1)==0&&(key.y&1)==0&&(key.z&1)==0){
+    key.x/=2;key.y/=2;key.z/=2;--key.denominator_exponent;
+  }
+  return key;
+}
+
 WorldFaceKey world_face_key(
     WorldVertexKey first,WorldVertexKey second,WorldVertexKey third) {
   WorldFaceKey result{{first,second,third}};
   std::ranges::sort(result.vertices);
+  return result;
+}
+
+WorldVertexKey WorldVertexIdentityMap::at(VertexId vertex) const {
+  if(vertex>=keys.size()||assigned[vertex]==0U)
+    throw std::out_of_range("mesh vertex has no global hierarchy identity");
+  return keys[vertex];
+}
+
+WorldVertexIdentityMap make_world_vertex_identity_map(const TetMesh& mesh) {
+  WorldVertexIdentityMap result;
+  result.keys.resize(mesh.vertices().size());result.assigned.resize(mesh.vertices().size());
+  if(mesh.subdivision_method()==SubdivisionMethod::bcc_red_green)
+    for(const auto& layer:mesh.layers())for(const auto& record:layer.tetrahedra){
+      if(record.transition_parent!=invalid_tet||tet_depth(record.address)%3U!=0U)continue;
+      const auto keys=world_tetrahedron_vertex_keys(world_tet_address(record.address));
+      for(std::size_t corner=0;corner<4U;++corner){
+        const auto vertex=record.vertices[corner];
+        if(result.assigned[vertex]!=0U&&result.keys[vertex]!=keys[corner])
+          throw std::logic_error("hierarchy vertex has conflicting global identities");
+        result.keys[vertex]=keys[corner];result.assigned[vertex]=1U;
+      }
+    }
+  for(std::size_t vertex=0;vertex<mesh.vertices().size();++vertex)
+    if(result.assigned[vertex]==0U){
+      result.keys[vertex]=world_vertex_key(mesh.vertices()[vertex]);
+      result.assigned[vertex]=1U;
+    }
+  return result;
+}
+
+WorldDerivedVertexKey world_hierarchy_vertex_key(WorldVertexKey key) {
+  WorldDerivedVertexKey result;result.basis[0]=key;return result;
+}
+
+WorldDerivedVertexKey world_edge_intersection_key(
+    WorldVertexKey first,WorldVertexKey second) {
+  WorldDerivedVertexKey result;
+  result.kind=WorldDerivedVertexKind::edge_intersection;result.basis_count=2U;
+  result.basis[0]=first;result.basis[1]=second;
+  if(result.basis[1]<result.basis[0])std::swap(result.basis[0],result.basis[1]);
+  return result;
+}
+
+WorldDerivedVertexKey world_cell_interior_key(
+    std::array<WorldVertexKey,4> corners) {
+  std::ranges::sort(corners);
+  return {WorldDerivedVertexKind::cell_interior,4U,corners};
+}
+
+std::vector<WorldSafeWarpLimit> world_safe_warp_limits(
+    std::span<const WorldIncidentTetrahedron> tetrahedra,double fraction) {
+  if(!(fraction>=0.0&&std::isfinite(fraction)))
+    throw std::invalid_argument("safe warp fraction must be finite and nonnegative");
+  std::vector<WorldSafeWarpLimit> limits;
+  limits.reserve(tetrahedra.size()*4U);
+  const auto cross=[](Vec3 a,Vec3 b){return Vec3{
+      a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+  const auto dot=[](Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
+  for(const auto& tet:tetrahedra){
+    const double determinant=std::abs(dot(tet.positions[1]-tet.positions[0],
+        cross(tet.positions[2]-tet.positions[0],tet.positions[3]-tet.positions[0])));
+    for(std::size_t corner=0;corner<4U;++corner){
+      std::array<std::size_t,3> opposite{};std::size_t cursor{};
+      for(std::size_t other=0;other<4U;++other)if(other!=corner)opposite[cursor++]=other;
+      const auto normal=cross(
+          tet.positions[opposite[1]]-tet.positions[opposite[0]],
+          tet.positions[opposite[2]]-tet.positions[opposite[0]]);
+      const double area=std::sqrt(dot(normal,normal));
+      if(area>1.0e-30)limits.push_back({tet.vertices[corner],fraction*determinant/area});
+    }
+  }
+  std::ranges::sort(limits,{},&WorldSafeWarpLimit::vertex);
+  std::vector<WorldSafeWarpLimit> result;
+  result.reserve(limits.size());
+  for(const auto& limit:limits){
+    if(result.empty()||result.back().vertex!=limit.vertex)result.push_back(limit);
+    else result.back().radius=std::min(result.back().radius,limit.radius);
+  }
   return result;
 }
 
@@ -377,7 +523,9 @@ WorldRevisionManifest::WorldRevisionManifest(
     std::uint64_t revision,std::uint64_t parent_revision,
     std::vector<HierarchyBlockSnapshot> blocks,
     std::vector<WorldBlockDependency> dependencies,
-    std::vector<HierarchyBlockId> removed_blocks)
+    std::vector<HierarchyBlockId> removed_blocks,
+    std::vector<WorldDerivedSurfaceSnapshot> surfaces,
+    std::vector<HierarchyBlockId> removed_surfaces)
     :revision_(revision),parent_revision_(parent_revision) {
   if(revision_<=parent_revision_)
     throw std::invalid_argument("world revision must advance its parent");
@@ -405,6 +553,46 @@ WorldRevisionManifest::WorldRevisionManifest(
   removed_blocks_=std::move(removed_blocks);
   metrics_.removed_blocks=removed_blocks_.size();
   metrics_.affected_blocks=metrics_.changed_blocks+metrics_.removed_blocks;
+  std::ranges::sort(surfaces,{},&WorldDerivedSurfaceSnapshot::id);
+  if(std::ranges::adjacent_find(surfaces,[](const auto& first,const auto& second){
+       return first.id==second.id;})!=surfaces.end())
+    throw std::invalid_argument("world manifest contains duplicate surface block identity");
+  surfaces_.reserve(surfaces.size());
+  for(auto& surface:surfaces){
+    if(surface.source_hierarchy_revision!=parent_revision_)
+      throw std::invalid_argument("derived surface uses a stale hierarchy revision");
+    std::ranges::sort(surface.vertices,{},&WorldSurfaceVertex::key);
+    if(std::ranges::adjacent_find(surface.vertices,[](const auto& first,const auto& second){
+         return first.key==second.key;})!=surface.vertices.end())
+      throw std::invalid_argument("derived surface contains duplicate vertex identity");
+    for(auto& triangle:surface.triangles)std::ranges::sort(triangle.vertices);
+    std::ranges::sort(surface.triangles);
+    if(std::ranges::adjacent_find(surface.triangles)!=surface.triangles.end())
+      throw std::invalid_argument("derived surface contains duplicate triangle identity");
+    std::ranges::sort(surface.dependency_blocks);
+    surface.dependency_blocks.erase(std::unique(surface.dependency_blocks.begin(),
+        surface.dependency_blocks.end()),surface.dependency_blocks.end());
+    if(surface.metrics.optimizer_passes!=surface.metrics.dependency_halo_rings)
+      throw std::invalid_argument("Jacobi surface halo must equal its pass count");
+    surface.metrics.vertices=surface.vertices.size();
+    surface.metrics.triangles=surface.triangles.size();
+    surface.metrics.dependency_blocks=surface.dependency_blocks.size();
+    surface.metrics.retained_bytes=sizeof(WorldDerivedSurfaceSnapshot)+
+        surface.vertices.capacity()*sizeof(WorldSurfaceVertex)+
+        surface.triangles.capacity()*sizeof(WorldSurfaceTriangle)+
+        surface.dependency_blocks.capacity()*sizeof(HierarchyBlockId);
+    metrics_.retained_bytes+=surface.metrics.retained_bytes;
+    surfaces_.push_back(std::make_shared<const WorldDerivedSurfaceSnapshot>(std::move(surface)));
+  }
+  std::ranges::sort(removed_surfaces);
+  if(std::ranges::adjacent_find(removed_surfaces)!=removed_surfaces.end())
+    throw std::invalid_argument("world manifest contains duplicate removed surface identity");
+  for(const auto id:removed_surfaces)
+    if(std::ranges::binary_search(surfaces_,id,{},[](const auto& surface){return surface->id;}))
+      throw std::invalid_argument("world manifest both changes and removes a surface block");
+  removed_surfaces_=std::move(removed_surfaces);
+  metrics_.changed_surfaces=surfaces_.size();
+  metrics_.removed_surfaces=removed_surfaces_.size();
 }
 
 TetMeshHierarchyAccess::TetMeshHierarchyAccess(const TetMesh& mesh):mesh_(&mesh) {

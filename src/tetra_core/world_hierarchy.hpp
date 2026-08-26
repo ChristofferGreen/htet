@@ -57,6 +57,52 @@ struct WorldFaceKey {
   auto operator<=>(const WorldFaceKey&) const = default;
 };
 
+struct WorldVertexIdentityMap {
+  std::vector<WorldVertexKey> keys;
+  std::vector<std::uint8_t> assigned;
+  [[nodiscard]] WorldVertexKey at(VertexId vertex) const;
+};
+
+[[nodiscard]] WorldVertexIdentityMap make_world_vertex_identity_map(
+    const TetMesh& mesh);
+
+enum class WorldDerivedVertexKind : std::uint8_t {
+  hierarchy,
+  edge_intersection,
+  cell_interior,
+};
+
+// Exact topology key for derived vertices. The sorted basis contains one
+// hierarchy key, two edge endpoints, or four source-cell corners.
+struct WorldDerivedVertexKey {
+  WorldDerivedVertexKind kind{WorldDerivedVertexKind::hierarchy};
+  std::uint8_t basis_count{1U};
+  std::array<WorldVertexKey,4> basis{};
+  auto operator<=>(const WorldDerivedVertexKey&) const = default;
+};
+
+[[nodiscard]] WorldDerivedVertexKey world_hierarchy_vertex_key(WorldVertexKey key);
+[[nodiscard]] WorldDerivedVertexKey world_edge_intersection_key(
+    WorldVertexKey first,WorldVertexKey second);
+[[nodiscard]] WorldDerivedVertexKey world_cell_interior_key(
+    std::array<WorldVertexKey,4> corners);
+
+struct WorldIncidentTetrahedron {
+  std::array<WorldVertexKey,4> vertices{};
+  std::array<Vec3,4> positions{};
+};
+
+struct WorldSafeWarpLimit {
+  WorldVertexKey vertex{};
+  double radius{};
+  auto operator<=>(const WorldSafeWarpLimit&) const = default;
+};
+
+// Returns one sorted minimum-altitude bound per incident vertex. Independent
+// block results combine by taking the minimum radius for equal global keys.
+[[nodiscard]] std::vector<WorldSafeWarpLimit> world_safe_warp_limits(
+    std::span<const WorldIncidentTetrahedron> tetrahedra,double fraction=0.10);
+
 // Local face i is opposite local vertex i. For an internal face the
 // permutation maps this face's three ascending local corner indices to the
 // corresponding ascending local corner indices of the neighbour. Boundary
@@ -89,6 +135,7 @@ inline constexpr std::size_t bcc_root_tetrahedron_count=12U;
 [[nodiscard]] std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     WorldTetAddress address);
 [[nodiscard]] WorldEdgeKey world_edge_key(WorldVertexKey first,WorldVertexKey second);
+[[nodiscard]] WorldVertexKey world_vertex_key(Vec3 position);
 [[nodiscard]] WorldFaceKey world_face_key(
     WorldVertexKey first,WorldVertexKey second,WorldVertexKey third);
 // Deterministic owner for a shared vertex, edge, face, or derived cell.
@@ -100,6 +147,36 @@ struct HierarchyBlockId {
   std::uint8_t block_generations{};
 
   auto operator<=>(const HierarchyBlockId&) const = default;
+};
+
+struct WorldSurfaceVertex {
+  WorldDerivedVertexKey key{};
+  Vec3 position{};
+};
+
+struct WorldSurfaceTriangle {
+  std::array<WorldDerivedVertexKey,3> vertices{};
+  WorldTetAddress owner{};
+  auto operator<=>(const WorldSurfaceTriangle&) const = default;
+};
+
+struct WorldDerivedSurfaceMetrics {
+  std::size_t vertices{};
+  std::size_t triangles{};
+  std::size_t dependency_blocks{};
+  std::size_t retained_bytes{};
+  std::uint32_t optimizer_passes{};
+  std::uint32_t dependency_halo_rings{};
+};
+
+struct WorldDerivedSurfaceSnapshot {
+  HierarchyBlockId id{};
+  std::uint64_t source_hierarchy_revision{};
+  std::vector<WorldSurfaceVertex> vertices;
+  std::vector<WorldSurfaceTriangle> triangles;
+  std::vector<HierarchyBlockId> dependency_blocks;
+  WorldDerivedSurfaceMetrics metrics{};
+  [[nodiscard]] std::uint64_t canonical_hash() const;
 };
 
 [[nodiscard]] HierarchyBlockId hierarchy_block_id(
@@ -227,6 +304,8 @@ struct WorldRevisionManifestMetrics {
   std::size_t changed_blocks{};
   std::size_t removed_blocks{};
   std::size_t affected_blocks{};
+  std::size_t changed_surfaces{};
+  std::size_t removed_surfaces{};
   std::size_t retained_bytes{};
 };
 
@@ -237,7 +316,9 @@ class WorldRevisionManifest {
   WorldRevisionManifest(std::uint64_t revision,std::uint64_t parent_revision,
       std::vector<HierarchyBlockSnapshot> blocks,
       std::vector<WorldBlockDependency> dependencies={},
-      std::vector<HierarchyBlockId> removed_blocks={});
+      std::vector<HierarchyBlockId> removed_blocks={},
+      std::vector<WorldDerivedSurfaceSnapshot> surfaces={},
+      std::vector<HierarchyBlockId> removed_surfaces={});
   [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
   [[nodiscard]] std::uint64_t parent_revision() const noexcept { return parent_revision_; }
   [[nodiscard]] std::span<const std::shared_ptr<const HierarchyBlockSnapshot>>
@@ -248,6 +329,11 @@ class WorldRevisionManifest {
   [[nodiscard]] std::span<const HierarchyBlockId> removed_blocks() const noexcept {
     return removed_blocks_;
   }
+  [[nodiscard]] std::span<const std::shared_ptr<const WorldDerivedSurfaceSnapshot>>
+      surfaces() const noexcept { return surfaces_; }
+  [[nodiscard]] std::span<const HierarchyBlockId> removed_surfaces() const noexcept {
+    return removed_surfaces_;
+  }
   [[nodiscard]] const WorldRevisionManifestMetrics& metrics() const noexcept {
     return metrics_;
   }
@@ -257,6 +343,8 @@ class WorldRevisionManifest {
   std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> blocks_;
   std::vector<WorldBlockDependency> dependencies_;
   std::vector<HierarchyBlockId> removed_blocks_;
+  std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> surfaces_;
+  std::vector<HierarchyBlockId> removed_surfaces_;
   WorldRevisionManifestMetrics metrics_{};
 };
 

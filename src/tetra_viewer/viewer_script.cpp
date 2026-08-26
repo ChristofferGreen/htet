@@ -1987,6 +1987,8 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
              << ",\"rejected_surface_moves\":" << scene.rejected_surface_moves
              << ",\"optimized_volume_boundary_vertices\":" << scene.optimized_volume_boundary_vertices
              << ",\"rejected_volume_boundary_moves\":" << scene.rejected_volume_boundary_moves
+             << ",\"optimizer_passes\":" << scene.optimizer_passes
+             << ",\"optimizer_halo_rings\":" << scene.optimizer_dependency_halo_rings
              << ",\"selected_stencil_cells\":" << scene.selected_stencil_cells
              << ",\"alternate_stencil_cells\":" << scene.alternate_stencil_cells
              << ",\"connected_surface_hash\":" << scene.connected_surface_hash

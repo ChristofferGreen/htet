@@ -405,15 +405,16 @@ double signed_six_volume(tetra::Vec3 a, tetra::Vec3 b, tetra::Vec3 c, tetra::Vec
   return ab.x*(ac.y*ad.z-ac.z*ad.y)-ab.y*(ac.x*ad.z-ac.z*ad.x)+ab.z*(ac.x*ad.y-ac.y*ad.x);
 }
 
-template <typename AppendTriangle>
-void triangulate_polygon(std::span<const std::size_t> polygon, AppendTriangle&& append_triangle) {
+template <typename KeyOf,typename AppendTriangle>
+void triangulate_polygon(std::span<const std::size_t> polygon,KeyOf&& key_of,
+                         AppendTriangle&& append_triangle) {
   if (polygon.size() == 3) {
     append_triangle(std::array<std::size_t, 3>{{polygon[0], polygon[1], polygon[2]}});
     return;
   }
   if (polygon.size() != 4) return;
-  auto first_diagonal = std::array<std::size_t, 2>{{polygon[0], polygon[2]}};
-  auto second_diagonal = std::array<std::size_t, 2>{{polygon[1], polygon[3]}};
+  auto first_diagonal=std::array{key_of(polygon[0]),key_of(polygon[2])};
+  auto second_diagonal=std::array{key_of(polygon[1]),key_of(polygon[3])};
   std::sort(first_diagonal.begin(), first_diagonal.end());
   std::sort(second_diagonal.begin(), second_diagonal.end());
   if (first_diagonal < second_diagonal) {
@@ -534,6 +535,7 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   constexpr std::array<std::array<std::size_t, 2>, 6> edges{{
       {{0, 1}}, {{0, 2}}, {{0, 3}}, {{1, 2}}, {{1, 3}}, {{2, 3}}}};
   const auto& source_vertices = mesh.vertices();
+  const auto global_vertices=tetra::make_world_vertex_identity_map(mesh);
   std::vector<double> source_distances(source_vertices.size());
   const bool accelerated_field=sphere.kind==tetra::ImplicitShapeKind::sphere||
       sphere.kind==tetra::ImplicitShapeKind::merging_spheres||
@@ -548,6 +550,11 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       source_distances[vertex]=sphere.signed_distance(source_vertices[vertex]);
   scene.connected_volume_vertices = source_vertices;
   scene.connected_volume_vertex_kinds.assign(source_vertices.size(),ConnectedVertexKind::hierarchy);
+  scene.connected_volume_global_keys.reserve(source_vertices.size());
+  for(std::size_t vertex=0;vertex<source_vertices.size();++vertex)
+    scene.connected_volume_global_keys.push_back(
+        tetra::world_hierarchy_vertex_key(
+            global_vertices.at(static_cast<tetra::VertexId>(vertex))));
   scene.connected_volume_source_edges.assign(
       source_vertices.size(),{{std::numeric_limits<tetra::VertexId>::max(),
                               std::numeric_limits<tetra::VertexId>::max()}});
@@ -559,27 +566,28 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
   // immutable.
   std::vector<double> safe_warp_radius(source_vertices.size(),0.0);
   if(method==VolumeConnectionMethod::adaptive_cleaving){
-    std::fill(safe_warp_radius.begin(),safe_warp_radius.end(),
-              std::numeric_limits<double>::infinity());
+    std::vector<tetra::WorldIncidentTetrahedron> incidents;
+    incidents.reserve(mesh.conforming_volume().size());
     for(const auto id:mesh.conforming_volume().addresses()){
       const auto& tet=mesh.tetrahedron(id).vertices;
-      const std::array<tetra::Vec3,4> points{{source_vertices[tet[0]],source_vertices[tet[1]],
-                                              source_vertices[tet[2]],source_vertices[tet[3]]}};
-      const double determinant=std::abs(signed_six_volume(points[0],points[1],points[2],points[3]));
-      for(std::size_t corner=0;corner<4;++corner){
-        std::array<std::size_t,3> opposite{};
-        std::size_t cursor{};
-        for(std::size_t other=0;other<4;++other)if(other!=corner)opposite[cursor++]=other;
-        const auto normal=face_normal(points[opposite[0]],points[opposite[1]],points[opposite[2]]);
-        const double double_area=std::sqrt(normal.x*normal.x+normal.y*normal.y+normal.z*normal.z);
-        if(double_area>1.0e-30)
-          safe_warp_radius[tet[corner]]=std::min(
-              safe_warp_radius[tet[corner]],0.10*determinant/double_area);
+      tetra::WorldIncidentTetrahedron incident;
+      for(std::size_t corner=0;corner<4U;++corner){
+        incident.vertices[corner]=global_vertices.at(tet[corner]);
+        incident.positions[corner]=source_vertices[tet[corner]];
       }
+      incidents.push_back(incident);
+    }
+    const auto limits=tetra::world_safe_warp_limits(incidents);
+    for(std::size_t vertex=0;vertex<source_vertices.size();++vertex){
+      const auto key=global_vertices.at(static_cast<tetra::VertexId>(vertex));
+      const auto found=std::ranges::lower_bound(
+          limits,key,{},&tetra::WorldSafeWarpLimit::vertex);
+      safe_warp_radius[vertex]=found!=limits.end()&&found->vertex==key?found->radius:0.0;
     }
   }
 
-  std::vector<PackedEdge> crossed_keys;
+  struct GlobalCrossedEdge { tetra::WorldEdgeKey global{};PackedEdge local{}; };
+  std::vector<GlobalCrossedEdge> crossed_keys;
   crossed_keys.reserve(mesh.conforming_volume().size()*2);
   for (const auto id : mesh.conforming_volume().addresses()) {
     const auto& tet = mesh.tetrahedron(id).vertices;
@@ -587,10 +595,13 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     for (std::size_t corner = 0; corner < 4; ++corner)
       inside[corner] = source_distances[tet[corner]] <= 0.0;
     for (const auto edge : edges) if (inside[edge[0]] != inside[edge[1]])
-      crossed_keys.push_back(pack_edge(tet[edge[0]], tet[edge[1]]));
+      crossed_keys.push_back({tetra::world_edge_key(global_vertices.at(tet[edge[0]]),
+          global_vertices.at(tet[edge[1]])),pack_edge(tet[edge[0]],tet[edge[1]])});
   }
-  std::sort(crossed_keys.begin(), crossed_keys.end());
-  crossed_keys.erase(std::unique(crossed_keys.begin(), crossed_keys.end()), crossed_keys.end());
+  std::ranges::sort(crossed_keys,{},&GlobalCrossedEdge::global);
+  crossed_keys.erase(std::unique(crossed_keys.begin(),crossed_keys.end(),
+      [](const auto& first,const auto& second){return first.global==second.global;}),
+      crossed_keys.end());
 
   std::vector<CrossedEdge> crossings;
   crossings.reserve(crossed_keys.size());
@@ -598,8 +609,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       source_vertices.size()+crossed_keys.size()+mesh.conforming_volume().size());
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
   const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
-  for (const auto key : crossed_keys) {
-    const auto endpoints = unpack_edge(key);
+  for (const auto& key : crossed_keys) {
+    const auto endpoints = unpack_edge(key.local);
     const auto first = source_vertices[endpoints[0]], second = source_vertices[endpoints[1]];
     const auto intersection=sphere.edge_intersection(first,second);
     const auto direction=second-first;
@@ -617,7 +628,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       if(warp_first&&warp_second){
         const double first_distance=std::abs(source_distances[endpoints[0]]);
         const double second_distance=std::abs(source_distances[endpoints[1]]);
-        vertex=first_distance<second_distance||(first_distance==second_distance&&endpoints[0]<endpoints[1])
+        vertex=first_distance<second_distance||(first_distance==second_distance&&
+            global_vertices.at(endpoints[0])<global_vertices.at(endpoints[1]))
             ?endpoints[0]:endpoints[1];
       }else vertex=warp_first?endpoints[0]:endpoints[1];
       scene.connected_volume_vertices[vertex]=project_to_surface(source_vertices[vertex]);
@@ -627,6 +639,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       vertex=scene.connected_volume_vertices.size();
       scene.connected_volume_vertices.push_back(intersection);
       scene.connected_volume_vertex_kinds.push_back(ConnectedVertexKind::surface_intersection);
+      scene.connected_volume_global_keys.push_back(tetra::world_edge_intersection_key(
+          global_vertices.at(endpoints[0]),global_vertices.at(endpoints[1])));
       scene.connected_volume_source_edges.push_back({{endpoints[0],endpoints[1]}});
       scene.connected_volume_surface_vertices.push_back(1U);
     }
@@ -637,8 +651,9 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       if(source_edge[0]==std::numeric_limits<tetra::VertexId>::max())
         source_edge={{endpoints[0],endpoints[1]}};
     }
-    crossings.push_back({key,vertex});
+    crossings.push_back({key.local,vertex});
   }
+  std::ranges::sort(crossings,{},&CrossedEdge::key);
   const auto crossing_vertex=[&crossings](tetra::VertexId first,tetra::VertexId second) {
     const auto key=pack_edge(first,second);
     const auto found=std::lower_bound(crossings.begin(),crossings.end(),key,
@@ -772,7 +787,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
       std::size_t inside_cursor{},outside_cursor{};
       for(std::size_t corner=0;corner<4;++corner)
         (inside[corner]?inside_corners[inside_cursor++]:outside_corners[outside_cursor++])=corner;
-      const auto by_vertex=[&](std::size_t first,std::size_t second){return tet[first]<tet[second];};
+      const auto by_vertex=[&](std::size_t first,std::size_t second){
+        return global_vertices.at(tet[first])<global_vertices.at(tet[second]);};
       std::sort(inside_corners.begin(),inside_corners.begin()+static_cast<std::ptrdiff_t>(inside_cursor),by_vertex);
       std::sort(outside_corners.begin(),outside_corners.begin()+static_cast<std::ptrdiff_t>(outside_cursor),by_vertex);
       const auto cut=[&](std::size_t inside_corner,std::size_t outside_corner){
@@ -813,7 +829,9 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     for(std::size_t corner=0;corner<4;++corner)if(inside[corner])clipped_vertices.push_back(tet[corner]);
     for(const auto edge:edges)if(inside[edge[0]]!=inside[edge[1]])
       clipped_vertices.push_back(crossing_vertex(tet[edge[0]],tet[edge[1]]));
-    std::sort(clipped_vertices.begin(),clipped_vertices.end());
+    std::ranges::sort(clipped_vertices,[&](std::size_t first,std::size_t second){
+      return scene.connected_volume_global_keys[first]<scene.connected_volume_global_keys[second];
+    });
     clipped_vertices.erase(std::unique(clipped_vertices.begin(),clipped_vertices.end()),clipped_vertices.end());
     tetra::Vec3 centre{};
     for(const auto vertex:clipped_vertices)centre=centre+scene.connected_volume_vertices[vertex];
@@ -821,6 +839,11 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
     const std::size_t centre_id=scene.connected_volume_vertices.size();
     scene.connected_volume_vertices.push_back(centre);
     scene.connected_volume_vertex_kinds.push_back(ConnectedVertexKind::stencil_interior);
+    std::array<tetra::WorldVertexKey,4> cell_keys{};
+    for(std::size_t corner=0;corner<4U;++corner)
+      cell_keys[corner]=global_vertices.at(tet[corner]);
+    scene.connected_volume_global_keys.push_back(
+        tetra::world_cell_interior_key(cell_keys));
     scene.connected_volume_source_edges.push_back(
         {{std::numeric_limits<tetra::VertexId>::max(),
           std::numeric_limits<tetra::VertexId>::max()}});
@@ -842,17 +865,28 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
         }
       }
       if(polygon.size()>1&&polygon.front()==polygon.back())polygon.pop_back();
-      triangulate_polygon(polygon,[&](const auto& triangle){append_cell({centre_id,triangle[0],triangle[1],triangle[2]},id,true);});
-      std::sort(face_crossings.begin(),face_crossings.end());
+      triangulate_polygon(polygon,[&](std::size_t vertex){
+        return scene.connected_volume_global_keys[vertex];
+      },[&](const auto& triangle){append_cell({centre_id,triangle[0],triangle[1],triangle[2]},id,true);});
+      std::ranges::sort(face_crossings,[&](std::size_t first,std::size_t second){
+        return scene.connected_volume_global_keys[first]<scene.connected_volume_global_keys[second];
+      });
       face_crossings.erase(std::unique(face_crossings.begin(),face_crossings.end()),face_crossings.end());
       if(face_crossings.size()==2)interface_edges.push_back({face_crossings[0],face_crossings[1]});
     }
 
     std::vector<std::size_t> interface_polygon;
     if(!interface_edges.empty()){
+      const auto less_vertex=[&](std::size_t first,std::size_t second){
+        return scene.connected_volume_global_keys[first]<
+               scene.connected_volume_global_keys[second];};
       const auto start=std::min_element(interface_edges.begin(),interface_edges.end(),
-          [](const auto& first,const auto& second){return std::min(first[0],first[1])<std::min(second[0],second[1]);});
-      const std::size_t first=std::min((*start)[0],(*start)[1]);
+          [&](const auto& first,const auto& second){
+            const auto first_min=less_vertex(first[1],first[0])?first[1]:first[0];
+            const auto second_min=less_vertex(second[1],second[0])?second[1]:second[0];
+            return less_vertex(first_min,second_min);
+          });
+      const std::size_t first=less_vertex((*start)[1],(*start)[0])?(*start)[1]:(*start)[0];
       std::size_t previous=std::numeric_limits<std::size_t>::max(),current=first;
       for(std::size_t step=0;step<interface_edges.size();++step){
         interface_polygon.push_back(current);
@@ -863,7 +897,8 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
           else if(edge[1]==current)neighbours[neighbour_count++]=edge[0];
         }
         if(neighbour_count==0)break;
-        std::sort(neighbours.begin(),neighbours.begin()+static_cast<std::ptrdiff_t>(neighbour_count));
+        std::sort(neighbours.begin(),neighbours.begin()+static_cast<std::ptrdiff_t>(neighbour_count),
+                  less_vertex);
         std::size_t next=neighbours[0];
         if(next==previous&&neighbour_count>1)next=neighbours[1];
         previous=current;
@@ -871,7 +906,9 @@ void build_adaptive_cleaved_volume(PreparedScene& scene, const tetra::TetMesh& m
         if(current==first)break;
       }
     }
-    triangulate_polygon(interface_polygon,[&](const auto& triangle){append_cell({centre_id,triangle[0],triangle[1],triangle[2]},id,true);});
+    triangulate_polygon(interface_polygon,[&](std::size_t vertex){
+      return scene.connected_volume_global_keys[vertex];
+    },[&](const auto& triangle){append_cell({centre_id,triangle[0],triangle[1],triangle[2]},id,true);});
   }
 }
 
@@ -887,6 +924,8 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
   const std::size_t vertex_count=scene.connected_volume_vertices.size();
   const std::size_t tet_count=scene.connected_volume_tetrahedra.size();
   if(vertex_count==0||tet_count==0)return;
+  scene.optimizer_passes=surface_optimizer_passes;
+  scene.optimizer_dependency_halo_rings=surface_optimizer_dependency_halo_rings;
 
   std::vector<ConnectedFace> all_faces;
   all_faces.reserve(tet_count*4);
@@ -972,13 +1011,42 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
   for(std::size_t face_index=0;face_index<boundary_faces.size();++face_index)
     for(const auto vertex:boundary_faces[face_index])
       incident_faces[face_cursor[vertex]++]=face_index;
+  const auto tet_global_key=[&](std::size_t tet_index){
+    std::array<tetra::WorldDerivedVertexKey,4> key{};
+    for(std::size_t corner=0;corner<4U;++corner)
+      key[corner]=scene.connected_volume_global_keys[
+          scene.connected_volume_tetrahedra[tet_index][corner]];
+    std::ranges::sort(key);return key;
+  };
+  const auto face_global_key=[&](std::size_t face_index){
+    std::array<tetra::WorldDerivedVertexKey,3> key{};
+    for(std::size_t corner=0;corner<3U;++corner)
+      key[corner]=scene.connected_volume_global_keys[boundary_faces[face_index][corner]];
+    std::ranges::sort(key);return key;
+  };
+  for(std::size_t vertex=0;vertex<vertex_count;++vertex){
+    std::sort(neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex]),
+              neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex+1]),
+              [&](std::size_t first,std::size_t second){
+                return scene.connected_volume_global_keys[first]<
+                       scene.connected_volume_global_keys[second];});
+    std::sort(incident_tets.begin()+static_cast<std::ptrdiff_t>(incident_tet_offsets[vertex]),
+              incident_tets.begin()+static_cast<std::ptrdiff_t>(incident_tet_offsets[vertex+1]),
+              [&](std::size_t first,std::size_t second){
+                return tet_global_key(first)<tet_global_key(second);});
+    std::sort(incident_faces.begin()+static_cast<std::ptrdiff_t>(incident_face_offsets[vertex]),
+              incident_faces.begin()+static_cast<std::ptrdiff_t>(incident_face_offsets[vertex+1]),
+              [&](std::size_t first,std::size_t second){
+                return face_global_key(first)<face_global_key(second);});
+  }
 
-  const auto tet_quality=[&](std::size_t tet_index,std::size_t moved_vertex,
+  const auto tet_quality=[&](std::span<const tetra::Vec3> read_positions,
+                             std::size_t tet_index,std::size_t moved_vertex,
                              tetra::Vec3 candidate){
     const auto& ids=scene.connected_volume_tetrahedra[tet_index];
     std::array<tetra::Vec3,4> points{};
     for(std::size_t corner=0;corner<4;++corner)
-      points[corner]=ids[corner]==moved_vertex?candidate:scene.connected_volume_vertices[ids[corner]];
+      points[corner]=ids[corner]==moved_vertex?candidate:read_positions[ids[corner]];
     return evaluate_tetrahedron_quality(points);
   };
   std::vector<double> initial_determinants(tet_count),initial_qualities(tet_count);
@@ -986,7 +1054,8 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
   scene.minimum_connected_tet_volume_surface_quality_before=1.0;
   scene.minimum_connected_tet_dihedral_sine_before=1.0;
   for(std::size_t tet_index=0;tet_index<tet_count;++tet_index){
-    const auto quality=tet_quality(tet_index,std::numeric_limits<std::size_t>::max(),{});
+    const auto quality=tet_quality(scene.connected_volume_vertices,tet_index,
+                                   std::numeric_limits<std::size_t>::max(),{});
     initial_determinants[tet_index]=quality.signed_six_volume;
     initial_qualities[tet_index]=quality.mean_ratio;
     scene.minimum_connected_tet_quality_before=
@@ -997,11 +1066,12 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
     scene.minimum_connected_tet_dihedral_sine_before=std::min(
         scene.minimum_connected_tet_dihedral_sine_before,quality.minimum_dihedral_sine);
   }
-  const auto triangle_fairness=[&](const std::array<std::size_t,3>& ids,
+  const auto triangle_fairness=[&](std::span<const tetra::Vec3> read_positions,
+                                   const std::array<std::size_t,3>& ids,
                                    std::size_t moved_vertex,tetra::Vec3 candidate){
     std::array<tetra::Vec3,3> points{};
     for(std::size_t corner=0;corner<3;++corner)
-      points[corner]=ids[corner]==moved_vertex?candidate:scene.connected_volume_vertices[ids[corner]];
+      points[corner]=ids[corner]==moved_vertex?candidate:read_positions[ids[corner]];
     double energy{};
     constexpr double target=1.0471975511965977462;
     for(std::size_t corner=0;corner<3;++corner){
@@ -1016,10 +1086,11 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
     }
     return energy;
   };
-  const auto valid_move=[&](std::size_t vertex,tetra::Vec3 candidate){
+  const auto valid_move=[&](std::span<const tetra::Vec3> read_positions,
+                            std::size_t vertex,tetra::Vec3 candidate){
     for(std::size_t offset=incident_tet_offsets[vertex];offset<incident_tet_offsets[vertex+1];++offset){
       const auto tet_index=incident_tets[offset];
-      const auto quality=tet_quality(tet_index,vertex,candidate);
+      const auto quality=tet_quality(read_positions,tet_index,vertex,candidate);
       if(quality.signed_six_volume<=initial_determinants[tet_index]*1.0e-6||
          quality.mean_ratio<std::max(1.0e-5,initial_qualities[tet_index]*0.5))return false;
     }
@@ -1028,7 +1099,7 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
       const auto& ids=boundary_faces[incident_faces[offset]];
       std::array<tetra::Vec3,3> points{};
       for(std::size_t corner=0;corner<3;++corner)
-        points[corner]=ids[corner]==vertex?candidate:scene.connected_volume_vertices[ids[corner]];
+        points[corner]=ids[corner]==vertex?candidate:read_positions[ids[corner]];
       const auto normal=face_normal(points[0],points[1],points[2]);
       const double area_squared=normal.x*normal.x+normal.y*normal.y+normal.z*normal.z;
       const auto centre=(points[0]+points[1]+points[2])/3.0;
@@ -1036,45 +1107,44 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
       if(area_squared<1.0e-24||normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<=0.0)
         return false;
       fairness_before+=triangle_fairness(
-          ids,std::numeric_limits<std::size_t>::max(),{});
-      fairness_after+=triangle_fairness(ids,vertex,candidate);
+          read_positions,ids,std::numeric_limits<std::size_t>::max(),{});
+      fairness_after+=triangle_fairness(read_positions,ids,vertex,candidate);
     }
     return fairness_after<=fairness_before+1.0e-12;
   };
   const auto project_to_surface=[&](tetra::Vec3 point){return sphere.project_to_surface(point);};
-  constexpr std::size_t iterations=5,line_search_steps=10;
+  constexpr std::size_t line_search_steps=10;
   constexpr double relaxation=0.35;
-  for(std::size_t iteration=0;iteration<iterations;++iteration){
-    for(std::size_t vertex=0;vertex<vertex_count;++vertex){
+  run_bounded_jacobi(scene.connected_volume_vertices,surface_optimizer_passes,{},{},
+    [&](std::span<const tetra::Vec3> previous,std::size_t vertex,std::uint32_t)
+        ->std::optional<tetra::Vec3>{
       const auto degree=neighbor_offsets[vertex+1]-neighbor_offsets[vertex];
-      if(degree<3)continue;
+      if(degree<3)return std::nullopt;
       tetra::Vec3 average{};
       for(std::size_t offset=neighbor_offsets[vertex];offset<neighbor_offsets[vertex+1];++offset)
-        average=average+scene.connected_volume_vertices[neighbors[offset]];
+        average=average+previous[neighbors[offset]];
       average=average/static_cast<double>(degree);
-      const auto original=scene.connected_volume_vertices[vertex];
+      const auto original=previous[vertex];
       const auto target=project_to_surface(original*(1.0-relaxation)+average*relaxation);
-      bool accepted=false;
       double step=1.0;
       for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
         const auto candidate=project_to_surface(original*(1.0-step)+target*step);
-        if(valid_move(vertex,candidate)){
-          scene.connected_volume_vertices[vertex]=candidate;
+        if(valid_move(previous,vertex,candidate)){
           ++scene.optimized_volume_boundary_vertices;
-          accepted=true;
-          break;
+          return candidate;
         }
       }
-      if(!accepted)++scene.rejected_volume_boundary_moves;
-    }
-  }
+      ++scene.rejected_volume_boundary_moves;
+      return std::nullopt;
+    });
   scene.minimum_connected_tet_quality_after=1.0;
   scene.minimum_connected_tet_volume_surface_quality_after=1.0;
   scene.minimum_connected_tet_dihedral_sine_after=1.0;
   scene.minimum_connected_tet_dihedral_degrees_after=180.0;
   scene.maximum_connected_tet_dihedral_degrees_after=0.0;
   for(std::size_t tet_index=0;tet_index<tet_count;++tet_index){
-    const auto quality=tet_quality(tet_index,std::numeric_limits<std::size_t>::max(),{});
+    const auto quality=tet_quality(scene.connected_volume_vertices,tet_index,
+                                   std::numeric_limits<std::size_t>::max(),{});
     scene.minimum_connected_tet_quality_after=std::min(
         scene.minimum_connected_tet_quality_after,quality.mean_ratio);
     scene.minimum_connected_tet_volume_surface_quality_after=std::min(
@@ -1097,19 +1167,40 @@ void optimize_connected_volume_boundary(PreparedScene& scene,
     hash^=value;
     hash*=fnv_prime;
   };
-  for(std::size_t vertex=0;vertex<vertex_count;++vertex){
-    if(scene.connected_volume_surface_vertices[vertex]==0U)continue;
-    append_hash(vertex);
+  const auto append_vertex_key=[&](const tetra::WorldDerivedVertexKey& key){
+    append_hash(static_cast<std::uint8_t>(key.kind));append_hash(key.basis_count);
+    for(std::size_t index=0;index<key.basis_count;++index){
+      append_hash(static_cast<std::uint64_t>(key.basis[index].x));
+      append_hash(static_cast<std::uint64_t>(key.basis[index].y));
+      append_hash(static_cast<std::uint64_t>(key.basis[index].z));
+      append_hash(key.basis[index].denominator_exponent);
+    }
+  };
+  std::vector<std::size_t> surface_order;
+  for(std::size_t vertex=0;vertex<vertex_count;++vertex)
+    if(scene.connected_volume_surface_vertices[vertex]!=0U)surface_order.push_back(vertex);
+  std::ranges::sort(surface_order,[&](std::size_t first,std::size_t second){
+    return scene.connected_volume_global_keys[first]<scene.connected_volume_global_keys[second];
+  });
+  for(const auto vertex:surface_order){
+    append_vertex_key(scene.connected_volume_global_keys[vertex]);
     const auto point=scene.connected_volume_vertices[vertex];
     append_hash(std::bit_cast<std::uint64_t>(point.x));
     append_hash(std::bit_cast<std::uint64_t>(point.y));
     append_hash(std::bit_cast<std::uint64_t>(point.z));
   }
-  std::vector<std::array<std::size_t,3>> boundary_keys=boundary_faces;
-  for(auto& face:boundary_keys)std::sort(face.begin(),face.end());
+  std::vector<std::array<tetra::WorldDerivedVertexKey,3>> boundary_keys;
+  boundary_keys.reserve(boundary_faces.size());
+  for(const auto& face:boundary_faces){
+    std::array<tetra::WorldDerivedVertexKey,3> key{{
+        scene.connected_volume_global_keys[face[0]],
+        scene.connected_volume_global_keys[face[1]],
+        scene.connected_volume_global_keys[face[2]]}};
+    std::ranges::sort(key);boundary_keys.push_back(key);
+  }
   std::sort(boundary_keys.begin(),boundary_keys.end());
   for(const auto& face:boundary_keys)
-    for(const auto vertex:face)append_hash(vertex);
+    for(const auto& vertex:face)append_vertex_key(vertex);
   scene.connected_surface_hash=hash;
 }
 
@@ -1364,6 +1455,7 @@ struct OptimizedSurface {
   std::vector<tetra::Vec3> positions;
   std::vector<std::array<std::size_t,3>> triangles;
   std::vector<std::array<tetra::VertexId,2>> source_edges;
+  std::vector<tetra::WorldDerivedVertexKey> global_keys;
 };
 
 std::vector<ConnectedFace> connected_surface_boundary_faces(const PreparedScene& source){
@@ -1399,6 +1491,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
                                          const std::vector<ConnectedFace>* supplied_boundary=nullptr) {
   std::vector<tetra::Triangle> input;
   std::vector<std::array<std::array<tetra::VertexId,2>,3>> input_source_edges;
+  std::vector<std::array<tetra::WorldDerivedVertexKey,3>> input_global_keys;
   if(topology_source!=nullptr){
     const auto owned_boundary=supplied_boundary==nullptr?
         connected_surface_boundary_faces(*topology_source):std::vector<ConnectedFace>{};
@@ -1412,19 +1505,26 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
             topology_source->connected_volume_source_edges[ids[0]],
             topology_source->connected_volume_source_edges[ids[1]],
             topology_source->connected_volume_source_edges[ids[2]]}};
+        std::array<tetra::WorldDerivedVertexKey,3> global_keys{{
+            topology_source->connected_volume_global_keys[ids[0]],
+            topology_source->connected_volume_global_keys[ids[1]],
+            topology_source->connected_volume_global_keys[ids[2]]}};
         const auto normal=face_normal(a,b,c),centre=(a+b+c)/3.0;
         const auto outward=sphere.normal(centre);
         if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0){
           std::swap(b,c);std::swap(source_edges[1],source_edges[2]);
+          std::swap(global_keys[1],global_keys[2]);
         }
         input.push_back({a,b,c});
         input_source_edges.push_back(source_edges);
+        input_global_keys.push_back(global_keys);
     }
   }else input=tetra::extract_isosurface(mesh,sphere);
   using PointKey=std::array<long long,3>;
   struct Corner {
     PointKey key{};
     std::array<tetra::VertexId,2> source_edge{};
+    tetra::WorldDerivedVertexKey global_key{};
     tetra::Vec3 point{};
     std::size_t triangle{},corner{};
   };
@@ -1434,6 +1534,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
     constexpr double scale=1.0e10;
     return PointKey{{std::llround(point.x*scale),std::llround(point.y*scale),std::llround(point.z*scale)}};
   };
+  const auto global_vertices=tetra::make_world_vertex_identity_map(mesh);
   struct CrossingProvenance {
     PointKey key{};
     std::array<tetra::VertexId,2> edge{};
@@ -1466,6 +1567,7 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
     for(std::size_t corner=0;corner<3;++corner){
       const auto key=point_key(points[corner]);
       std::array<tetra::VertexId,2> edge{};
+      tetra::WorldDerivedVertexKey global_key{};
       if(input_source_edges.size()==input.size())edge=input_source_edges[triangle][corner];
       else{
         const auto source=std::lower_bound(provenance.begin(),provenance.end(),key,
@@ -1474,22 +1576,29 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
             std::array<tetra::VertexId,2>{{std::numeric_limits<tetra::VertexId>::max(),
                                           std::numeric_limits<tetra::VertexId>::max()}};
       }
-      corners.push_back({key,edge,points[corner],triangle,corner});
+      if(input_global_keys.size()==input.size())global_key=input_global_keys[triangle][corner];
+      else if(edge[0]!=std::numeric_limits<tetra::VertexId>::max())
+        global_key=tetra::world_edge_intersection_key(
+            global_vertices.at(edge[0]),global_vertices.at(edge[1]));
+      else throw std::logic_error("optimized surface vertex lacks global provenance");
+      corners.push_back({key,edge,global_key,points[corner],triangle,corner});
     }
   }
   std::sort(corners.begin(),corners.end(),[](const Corner& a,const Corner& b){
-    return a.source_edge<b.source_edge||(a.source_edge==b.source_edge&&a.key<b.key);
+    return a.global_key<b.global_key||(a.global_key==b.global_key&&a.key<b.key);
   });
   std::vector<tetra::Vec3> positions;
   std::vector<std::array<tetra::VertexId,2>> source_edges;
+  std::vector<tetra::WorldDerivedVertexKey> global_keys;
   std::vector<std::array<std::size_t,3>> triangles(input.size());
   for(std::size_t begin=0;begin<corners.size();){
     std::size_t end=begin+1;
-    while(end<corners.size()&&corners[end].source_edge==corners[begin].source_edge&&
+    while(end<corners.size()&&corners[end].global_key==corners[begin].global_key&&
           corners[end].key==corners[begin].key)++end;
     const std::size_t vertex=positions.size();
     positions.push_back(corners[begin].point);
     source_edges.push_back(corners[begin].source_edge);
+    global_keys.push_back(corners[begin].global_key);
     for(std::size_t index=begin;index<end;++index)
       triangles[corners[index].triangle][corners[index].corner]=vertex;
     begin=end;
@@ -1520,6 +1629,20 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
   for(const auto& edge:edges){neighbors[neighbor_cursor[edge[0]]++]=edge[1];neighbors[neighbor_cursor[edge[1]]++]=edge[0];}
   for(std::size_t triangle=0;triangle<triangles.size();++triangle)
     for(const auto vertex:triangles[triangle])incidents[incident_cursor[vertex]++]=triangle;
+  const auto triangle_global_key=[&](std::size_t triangle){
+    std::array<tetra::WorldDerivedVertexKey,3> key{{global_keys[triangles[triangle][0]],
+        global_keys[triangles[triangle][1]],global_keys[triangles[triangle][2]]}};
+    std::ranges::sort(key);return key;
+  };
+  for(std::size_t vertex=0;vertex<positions.size();++vertex){
+    std::sort(neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex]),
+              neighbors.begin()+static_cast<std::ptrdiff_t>(neighbor_offsets[vertex+1]),
+              [&](std::size_t first,std::size_t second){return global_keys[first]<global_keys[second];});
+    std::sort(incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex]),
+              incidents.begin()+static_cast<std::ptrdiff_t>(incident_offsets[vertex+1]),
+              [&](std::size_t first,std::size_t second){
+                return triangle_global_key(first)<triangle_global_key(second);});
+  }
   const auto triangle_fairness=[](const std::array<tetra::Vec3,3>& points){
     double energy{};
     constexpr double target=1.0471975511965977462;
@@ -1535,11 +1658,13 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
     }
     return energy;
   };
-  const auto valid_move=[&](std::size_t vertex,tetra::Vec3 candidate){
+  const auto valid_move=[&](std::span<const tetra::Vec3> read_positions,
+                            std::size_t vertex,tetra::Vec3 candidate){
     double fairness_before{},fairness_after{};
     for(std::size_t offset=incident_offsets[vertex];offset<incident_offsets[vertex+1];++offset){
       const auto& ids=triangles[incidents[offset]];
-      std::array<tetra::Vec3,3> points{{positions[ids[0]],positions[ids[1]],positions[ids[2]]}};
+      std::array<tetra::Vec3,3> points{{read_positions[ids[0]],read_positions[ids[1]],
+                                        read_positions[ids[2]]}};
       fairness_before+=triangle_fairness(points);
       for(std::size_t corner=0;corner<3;++corner)if(ids[corner]==vertex)points[corner]=candidate;
       fairness_after+=triangle_fairness(points);
@@ -1551,35 +1676,36 @@ OptimizedSurface build_optimized_surface(PreparedScene& scene,
     }
     return fairness_after<=fairness_before+1.0e-12;
   };
-  constexpr std::size_t iterations=5,line_search_steps=10;
+  scene.optimizer_passes=surface_optimizer_passes;
+  scene.optimizer_dependency_halo_rings=surface_optimizer_dependency_halo_rings;
+  constexpr std::size_t line_search_steps=10;
   constexpr double relaxation=0.35;
-  for(std::size_t iteration=0;iteration<iterations;++iteration){
-    for(std::size_t vertex=0;vertex<positions.size();++vertex){
+  run_bounded_jacobi(positions,surface_optimizer_passes,{},{},
+    [&](std::span<const tetra::Vec3> previous,std::size_t vertex,std::uint32_t)
+        ->std::optional<tetra::Vec3>{
       tetra::Vec3 average{};
       const auto degree=neighbor_offsets[vertex+1]-neighbor_offsets[vertex];
-      if(degree<3)continue;
+      if(degree<3)return std::nullopt;
       for(std::size_t offset=neighbor_offsets[vertex];offset<neighbor_offsets[vertex+1];++offset)
-        average=average+positions[neighbors[offset]];
+        average=average+previous[neighbors[offset]];
       average=average/static_cast<double>(degree);
-      const auto original=positions[vertex];
+      const auto original=previous[vertex];
       auto target=original*(1.0-relaxation)+average*relaxation;
       target=sphere.project_to_surface(target);
-      bool accepted=false;
       double step=1.0;
       for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
         auto candidate=original*(1.0-step)+target*step;
         candidate=sphere.project_to_surface(candidate);
-        if(valid_move(vertex,candidate)){
-          positions[vertex]=candidate;
-          accepted=true;
-          break;
+        if(valid_move(previous,vertex,candidate)){
+          return candidate;
         }
       }
-      if(!accepted)++scene.rejected_surface_moves;
-    }
-  }
+      ++scene.rejected_surface_moves;
+      return std::nullopt;
+    });
   scene.optimized_surface_vertices=positions.size();
-  return {std::move(positions),std::move(triangles),std::move(source_edges)};
+  return {std::move(positions),std::move(triangles),std::move(source_edges),
+          std::move(global_keys)};
 }
 
 std::uint64_t hash_indexed_surface(const OptimizedSurface& surface){
@@ -1587,13 +1713,36 @@ std::uint64_t hash_indexed_surface(const OptimizedSurface& surface){
   constexpr std::uint64_t prime=1099511628211ULL;
   std::uint64_t hash=offset;
   const auto append=[&](std::uint64_t value){hash^=value;hash*=prime;};
-  for(const auto point:surface.positions){
+  const auto append_key=[&](const tetra::WorldDerivedVertexKey& key){
+    append(static_cast<std::uint8_t>(key.kind));append(key.basis_count);
+    for(std::size_t index=0;index<key.basis_count;++index){
+      append(static_cast<std::uint64_t>(key.basis[index].x));
+      append(static_cast<std::uint64_t>(key.basis[index].y));
+      append(static_cast<std::uint64_t>(key.basis[index].z));
+      append(key.basis[index].denominator_exponent);
+    }
+  };
+  std::vector<std::size_t> order(surface.positions.size());
+  std::iota(order.begin(),order.end(),0U);
+  std::ranges::sort(order,[&](std::size_t first,std::size_t second){
+    return surface.global_keys[first]<surface.global_keys[second];
+  });
+  for(const auto vertex:order){
+    append_key(surface.global_keys[vertex]);
+    const auto point=surface.positions[vertex];
     append(std::bit_cast<std::uint64_t>(point.x));
     append(std::bit_cast<std::uint64_t>(point.y));
     append(std::bit_cast<std::uint64_t>(point.z));
   }
-  for(const auto triangle:surface.triangles)
-    for(const auto vertex:triangle)append(vertex);
+  std::vector<std::array<tetra::WorldDerivedVertexKey,3>> triangles;
+  triangles.reserve(surface.triangles.size());
+  for(const auto triangle:surface.triangles){
+    std::array<tetra::WorldDerivedVertexKey,3> key{{surface.global_keys[triangle[0]],
+        surface.global_keys[triangle[1]],surface.global_keys[triangle[2]]}};
+    std::ranges::sort(key);triangles.push_back(key);
+  }
+  std::ranges::sort(triangles);
+  for(const auto& triangle:triangles)for(const auto& vertex:triangle)append_key(vertex);
   return hash;
 }
 

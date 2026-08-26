@@ -11,15 +11,19 @@ Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
 keys use exact reduced dyadic arithmetic; the twelve-root BCC complex has
 oriented face adjacency; and hierarchy planning can query a read-only
-storage-independent interface with `TetMesh` as its oracle. The next closable
-leaf is the sparse ordered `WorldCutDirectory` and coarse-ancestor fallback.
-That leaf is now complete: the directory publishes immutable sorted snapshots,
-resolves missing children through already-published parent leaves, and performs
+storage-independent interface with `TetMesh` as its oracle. The sparse ordered
+`WorldCutDirectory` and coarse-ancestor fallback are now complete: the directory
+publishes immutable sorted snapshots, resolves missing children through
+already-published parent leaves, and performs
 bounded camera/player-driven loading and eviction without a persistent global
 leaf vector. Private multi-block transaction staging and global BCC closure are
-also complete. The next closable Gate 2 work is converting adaptive-cleaving
-tie-breaks and the bounded surface optimizer from local identities to the
-global-key transaction schedule.
+also complete. Adaptive cleaving now uses exact global derived identities and
+canonical ownership; safe warp limits reduce the complete incident star by
+global key; the production five-pass optimizer is synchronous Jacobi with an
+exact five-ring halo; and derived surfaces stage and publish atomically with
+their hierarchy dependencies. The next closable Gate 2 work is the remaining
+width/phase, operation-budget, and visual seam validation before adopting the
+blocked runtime in `tetra_world`.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
@@ -46,7 +50,7 @@ not the active queue.
 - [x] Add exact global shared-entity ownership, dependency certificates,
       changed/removal manifests, atomic rollback, cross-root closure tests,
       monolithic oracle comparisons, and a width/phase transaction benchmark.
-- [ ] Replace adaptive-cleaving local identity tie-breaks with global keys and
+- [x] Replace adaptive-cleaving local identity tie-breaks with global keys and
       adopt a deterministic bounded-dependency surface optimizer.
 
 - [x] Define one named world-visualizer production profile containing the

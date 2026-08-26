@@ -8,6 +8,7 @@ namespace tetra {
 
 struct WorldCutCheckpointMetrics {
   std::size_t blocks{};
+  std::size_t surface_blocks{};
   std::size_t stored_logical_owners{};
   std::size_t retained_bytes{};
   unsigned int maximum_depth{};
@@ -20,6 +21,7 @@ struct WorldCutCheckpoint {
   std::uint64_t revision{};
   std::uint8_t block_generations{3U};
   std::vector<HierarchyBlockSnapshot> blocks;
+  std::vector<WorldDerivedSurfaceSnapshot> surfaces;
   WorldCutCheckpointMetrics metrics{};
 
   [[nodiscard]] std::uint64_t canonical_hash() const;
@@ -40,6 +42,7 @@ struct WorldCutDirectoryMetrics {
   std::size_t summary_blocks{};
   std::size_t surface_blocks{};
   std::size_t volume_blocks{};
+  std::size_t derived_surface_blocks{};
   std::size_t stored_logical_owners{};
   std::size_t effective_logical_owners{};
   std::size_t minimum_block_owners{};
@@ -133,6 +136,12 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
     return metrics_;
   }
   [[nodiscard]] WorldCutCheckpoint checkpoint() const;
+  [[nodiscard]] std::shared_ptr<const WorldDerivedSurfaceSnapshot> surface(
+      HierarchyBlockId id) const;
+
+  [[nodiscard]] WorldRevisionManifest stage_derived_surfaces(
+      std::span<const WorldDerivedSurfaceSnapshot> surfaces,
+      std::uint64_t new_revision,const std::function<bool()>& canceled={}) const;
 
   // Plans against the effective global cut and builds every replacement
   // snapshot privately. The directory is unchanged until publish().
@@ -162,6 +171,7 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   std::uint64_t revision_{};
   std::uint8_t block_generations_{3U};
   std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> blocks_;
+  std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> surfaces_;
   WorldCutDirectoryMetrics metrics_{};
 };
 

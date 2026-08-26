@@ -679,18 +679,50 @@ staging remained below 23 KiB. This sparse-path microbenchmark is a regression
 baseline, not enough evidence to change the provisional three-generation
 production policy.
 
+### 7.2 Implemented derived-surface identity and publication
+
+Adaptive cleaving now makes every topology-affecting choice in exact global
+key order. Hierarchy vertices use their reduced dyadic `WorldVertexKey`;
+edge intersections use the sorted pair of source vertex keys; and stencil
+interior vertices use the sorted four source-cell corner keys. Equal warp
+choices, stencil corner order, coned-polygon diagonals, interface traversal,
+incident lists, floating-point accumulation order, and surface hashes no longer
+depend on a local `VertexId` or allocation order. A surface triangle is owned
+by the lowest canonical incident `WorldTetAddress`, including across oriented
+root seams.
+
+Safe warp bounds are computed as a minimum reduction over the complete
+incident tetrahedron star keyed by `WorldVertexKey`. Partial block results can
+therefore be merged exactly by taking the minimum for each key; a block-local
+maximum or first-seen incident is never authoritative.
+
+`WorldDerivedSurfaceSnapshot` stores globally keyed vertices and triangles,
+the owning hierarchy block, source hierarchy revision, dependency blocks,
+optimizer contract, and canonical payload hash. `WorldCutDirectory` stages
+these snapshots privately and validates all dependency certificates. A
+surface-only revision atomically adopts replacements; a hierarchy revision
+atomically removes every surface whose owner or halo changed, after which a
+surface revision can regenerate against the published hierarchy. A topology
+change cannot leave a cached surface over changed hierarchy, and failed
+validation restores both arrays and the prior revision. Checkpoints retain the
+same immutable surface snapshots.
+
 ## 8. Bounded surface optimization
 
-The current default optimizer performs five in-place smoothing passes. Its
-Gauss-Seidel ordering makes its dependency effectively global because an update
-can influence later vertices during the same pass.
+The production optimizer now performs five synchronous Jacobi passes. Every
+pass reads one immutable position vector and writes a separate next vector;
+vertices and their incident lists are visited in global-key order. One pass can
+move information across exactly one surface-graph edge, so the exact input halo
+for a five-pass owned core is five rings. At pass `p`, patch execution updates
+only vertices whose distance from the owned core is less than `5 - p`; the
+outer fifth ring is read on the first pass but need not itself be updated.
 
-For paging, the production optimizer should use deterministic read-old/write-new
-passes, or another explicitly bounded schedule. The working hypothesis is that
-a fixed number of Jacobi-style passes has a finite graph halo of the same
-radius. This follows from the proposed dependency schedule, not from the cited
-papers, and must be proved by comparing successively wider halos against an
-unbounded monolithic run.
+Tests prove bit-exact owned-core equality between monolithic execution and a
+five-ring patch, unchanged results with a wider halo, and exact equality under
+reversed evaluation order. A crafted dependency chain changes the owned result
+when its fifth-ring input is omitted, showing that four rings are insufficient.
+The production connected-volume and standalone-surface optimizers both use the
+same bounded scheduler.
 
 The block procedure is:
 
@@ -702,9 +734,16 @@ The block procedure is:
    vertices.
 5. Discard ghost output.
 
-The old and bounded optimizers must be compared visually and numerically. The
-goal is to retain the current smooth uneven surface character while making block
-results independent of job order, thread count, and neighbour residency.
+Quality, field projection, positive-volume, orientation, and existing visual
+surface regressions remain unchanged. One- and four-worker scene preparation
+produce the same global keys and canonical surface hashes.
+
+The release `tetra_derived_surface_benchmark` exercises 3,456 logical owners,
+752 optimized surface vertices, and 1,555 connected-volume vertices. On the
+initial Apple ARM64 run it produced the same hash
+`5498938240189036371` with one, two, and four workers in approximately 39.7,
+26.6, and 21.8 milliseconds respectively. These are regression measurements,
+not a cross-machine performance target.
 
 ## 9. Terrain field
 
@@ -1105,16 +1144,16 @@ complete only when its focused tests and the full release suite pass.
       then group the resulting writes by block.
 - [x] Define global-key ownership for shared vertices, surface faces, and
       derived tetrahedra using the lowest canonical incident address.
-- [ ] Replace every adaptive-cleaving local-ID tie-break with global-key order.
-- [ ] Include all required cross-block incident tetrahedra in closure and safe
+- [x] Replace every adaptive-cleaving local-ID tie-break with global-key order.
+- [x] Include all required cross-block incident tetrahedra in closure and safe
       warp limits.
 - [x] Define dependency certificates and reject stale multi-block publication.
 - [x] Publish all blocks changed by one conformity transaction by atomically
       adopting one immutable `WorldRevisionManifest`; never install blocks
       sequentially.
-- [ ] Convert the production optimizer to a deterministic bounded-dependency
+- [x] Convert the production optimizer to a deterministic bounded-dependency
       schedule.
-- [ ] Derive and document the exact halo required by the fixed optimization
+- [x] Derive and document the exact halo required by the fixed optimization
       schedule, then prove it against wider-halo and monolithic runs.
 - [ ] Script refine/coarsen transactions across every tested block-boundary
       and root-face orientation, worker count, job grouping, and operation

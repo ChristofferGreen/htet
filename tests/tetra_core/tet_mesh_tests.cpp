@@ -1873,6 +1873,64 @@ TEST_CASE("world dyadic keys are reduced exact and stable at maximum depth") {
     }
 }
 
+TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();
+  const auto identities=tetra::make_world_vertex_identity_map(mesh);
+  REQUIRE(identities.keys.size()==mesh.vertices().size());
+  CHECK(std::ranges::all_of(identities.assigned,[](std::uint8_t value){return value!=0U;}));
+  for(const auto& layer:mesh.layers())for(const auto& record:layer.tetrahedra){
+    if(record.transition_parent!=tetra::invalid_tet||tetra::tet_depth(record.address)%3U!=0U)
+      continue;
+    const auto expected=tetra::world_tetrahedron_vertex_keys(
+        tetra::world_tet_address(record.address));
+    for(std::size_t corner=0;corner<4U;++corner)
+      CHECK(identities.at(record.vertices[corner])==expected[corner]);
+  }
+  const auto first=identities.at(0U),second=identities.at(1U);
+  CHECK(tetra::world_edge_intersection_key(first,second)==
+        tetra::world_edge_intersection_key(second,first));
+  std::array<tetra::WorldVertexKey,4> corners{{identities.at(0U),identities.at(1U),
+      identities.at(2U),identities.at(3U)}};
+  auto reversed=corners;std::ranges::reverse(reversed);
+  CHECK(tetra::world_cell_interior_key(corners)==tetra::world_cell_interior_key(reversed));
+  for(std::size_t vertex=0;vertex<mesh.vertices().size();++vertex)
+    CHECK(tetra::world_vertex_key(mesh.vertices()[vertex])==identities.at(
+        static_cast<tetra::VertexId>(vertex)));
+}
+
+TEST_CASE("safe warp limits merge exactly across arbitrary incident partitions") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  mesh.refine_selected_binary({mesh.logical_red_owners().front()});
+  const auto identities=tetra::make_world_vertex_identity_map(mesh);
+  std::vector<tetra::WorldIncidentTetrahedron> all,even,odd;
+  std::size_t index{};
+  for(const auto id:mesh.conforming_volume().addresses()){
+    const auto& vertices=mesh.tetrahedron(id).vertices;
+    tetra::WorldIncidentTetrahedron incident;
+    for(std::size_t corner=0;corner<4U;++corner){
+      incident.vertices[corner]=identities.at(vertices[corner]);
+      incident.positions[corner]=mesh.vertices()[vertices[corner]];
+    }
+    all.push_back(incident);(index++%2U==0U?even:odd).push_back(incident);
+  }
+  const auto expected=tetra::world_safe_warp_limits(all);
+  auto merged=tetra::world_safe_warp_limits(even);
+  const auto second=tetra::world_safe_warp_limits(odd);
+  merged.insert(merged.end(),second.begin(),second.end());
+  std::ranges::sort(merged,{},&tetra::WorldSafeWarpLimit::vertex);
+  std::vector<tetra::WorldSafeWarpLimit> reduced;
+  for(const auto limit:merged){
+    if(reduced.empty()||reduced.back().vertex!=limit.vertex)reduced.push_back(limit);
+    else reduced.back().radius=std::min(reduced.back().radius,limit.radius);
+  }
+  REQUIRE(reduced.size()==expected.size());
+  for(std::size_t limit=0;limit<expected.size();++limit){
+    CHECK(reduced[limit].vertex==expected[limit].vertex);
+    CHECK(reduced[limit].radius==doctest::Approx(expected[limit].radius).epsilon(1.0e-15));
+  }
+}
+
 TEST_CASE("Gate 2A contracts remain distinct immutable and storage independent") {
   static_assert(!std::is_same_v<tetra::HierarchyBlockSnapshot,
                                tetra::HierarchyAddressRangeJob>);
@@ -2238,6 +2296,177 @@ TEST_CASE("closure-expanded world transactions can be reversed as one safe merge
   auto merged=directory.stage_transaction(inverse,4U);
   directory.publish(merged.manifest);
   CHECK(directory.canonical_cut_hash()==baseline);
+}
+
+TEST_CASE("derived surface snapshots stage privately publish atomically and invalidate with topology") {
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint({},3U,1U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  const auto root=tetra::WorldTetAddress::root(0U);
+  const tetra::HierarchyBlockId block{root,3U};
+  const auto keys=tetra::world_tetrahedron_vertex_keys(root);
+  const auto points=tetra::world_tetrahedron_geometry(root);
+  tetra::WorldDerivedSurfaceSnapshot surface;
+  surface.id=block;surface.source_hierarchy_revision=1U;
+  surface.metrics.optimizer_passes=5U;surface.metrics.dependency_halo_rings=5U;
+  for(std::size_t vertex=0;vertex<3U;++vertex)
+    surface.vertices.push_back({tetra::world_hierarchy_vertex_key(keys[vertex]),points[vertex]});
+  surface.triangles.push_back({{{surface.vertices[2].key,surface.vertices[0].key,
+                                 surface.vertices[1].key}},root});
+  surface.dependency_blocks.push_back({tetra::WorldTetAddress::root(1U),3U});
+  const auto staged=directory.stage_derived_surfaces({{surface}},2U);
+  CHECK(directory.revision()==1U);
+  CHECK_FALSE(directory.surface(block));
+  CHECK(staged.metrics().changed_surfaces==1U);
+  CHECK(staged.dependencies().size()==2U);
+  directory.publish(staged);
+  REQUIRE(directory.surface(block));
+  CHECK(directory.surface(block)->metrics.vertices==3U);
+  CHECK(directory.surface(block)->metrics.triangles==1U);
+  CHECK(directory.surface(block)->metrics.dependency_halo_rings==5U);
+  CHECK(directory.metrics().derived_surface_blocks==1U);
+  tetra::WorldCutDirectory restored(directory.checkpoint());
+  REQUIRE(restored.surface(block));
+  CHECK(restored.surface(block)->canonical_hash()==directory.surface(block)->canonical_hash());
+
+  const auto topology=directory.stage_transaction(
+      {{{root,tetra::WorldTopologyOperation::split}}},3U);
+  CHECK(topology.manifest.removed_surfaces().size()==1U);
+  directory.publish(topology.manifest);
+  CHECK_FALSE(directory.surface(block));
+  CHECK(directory.revision()==3U);
+}
+
+TEST_CASE("derived surface staging rejects cancellation stale halos and partial invalidation") {
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint({},3U,1U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  const tetra::HierarchyBlockId block{tetra::WorldTetAddress::root(0U),3U};
+  tetra::WorldDerivedSurfaceSnapshot surface;
+  surface.id=block;surface.source_hierarchy_revision=1U;
+  surface.metrics.optimizer_passes=5U;surface.metrics.dependency_halo_rings=5U;
+  surface.dependency_blocks.push_back(
+      {tetra::WorldTetAddress::root(1U).child(0U),3U});
+  CHECK_THROWS_AS(static_cast<void>(directory.stage_derived_surfaces({{surface}},2U)),
+                  std::invalid_argument);
+  surface.dependency_blocks.clear();
+  CHECK_THROWS_AS(static_cast<void>(directory.stage_derived_surfaces(
+      {{surface}},2U,[]{return true;})),std::runtime_error);
+
+  auto accepted=directory.stage_derived_surfaces({{surface}},2U);
+  directory.publish(accepted);
+  auto changed=checkpoint.blocks.front();
+  changed.source_revision=3U;
+  tetra::WorldRevisionManifest partial(3U,2U,{changed});
+  CHECK_THROWS_AS(directory.publish(partial),std::invalid_argument);
+  CHECK(directory.revision()==2U);
+  CHECK(directory.surface(block));
+}
+
+TEST_CASE("derived surfaces invalidate when a separate halo block changes") {
+  const auto checkpoint=tetra::make_sparse_world_cut_checkpoint({},3U,1U);
+  tetra::WorldCutDirectory directory(checkpoint);
+  const tetra::HierarchyBlockId owner{tetra::WorldTetAddress::root(0U),3U};
+  const tetra::HierarchyBlockId halo{tetra::WorldTetAddress::root(1U),3U};
+  tetra::WorldDerivedSurfaceSnapshot surface;
+  surface.id=owner;surface.source_hierarchy_revision=1U;
+  surface.dependency_blocks.push_back(halo);
+  surface.metrics.optimizer_passes=5U;surface.metrics.dependency_halo_rings=5U;
+  auto staged=directory.stage_derived_surfaces({{surface}},2U);
+  directory.publish(staged);
+  REQUIRE(directory.surface(owner));
+
+  const auto halo_block=std::ranges::find(
+      checkpoint.blocks,halo,&tetra::HierarchyBlockSnapshot::id);
+  REQUIRE(halo_block!=checkpoint.blocks.end());
+  auto changed=*halo_block;changed.source_revision=3U;
+  tetra::WorldRevisionManifest stale(3U,2U,{changed});
+  CHECK_THROWS_AS(directory.publish(stale),std::invalid_argument);
+  CHECK(directory.revision()==2U);
+  CHECK(directory.surface(owner));
+  auto unsafe_replacement=surface;
+  unsafe_replacement.source_hierarchy_revision=2U;
+  tetra::WorldRevisionManifest mixed(3U,2U,{changed},{},{},
+                                      {unsafe_replacement});
+  CHECK_THROWS_AS(directory.publish(mixed),std::invalid_argument);
+  CHECK(directory.revision()==2U);
+
+  auto topology=directory.stage_transaction(
+      {{{halo.prefix,tetra::WorldTopologyOperation::split}}},3U);
+  CHECK(std::ranges::binary_search(topology.manifest.removed_surfaces(),owner));
+  directory.publish(topology.manifest);
+  CHECK_FALSE(directory.surface(owner));
+}
+
+TEST_CASE("derived surface hashes and manifests ignore payload request ordering") {
+  const auto owner=tetra::WorldTetAddress::root(0U);
+  const auto hierarchy_keys=tetra::world_tetrahedron_vertex_keys(owner);
+  const auto points=tetra::world_tetrahedron_geometry(owner);
+  tetra::WorldDerivedSurfaceSnapshot first;
+  first.id={owner,3U};first.source_hierarchy_revision=1U;
+  first.metrics.optimizer_passes=5U;first.metrics.dependency_halo_rings=5U;
+  for(std::size_t vertex=0;vertex<4U;++vertex)
+    first.vertices.push_back(
+        {tetra::world_hierarchy_vertex_key(hierarchy_keys[vertex]),points[vertex]});
+  first.triangles={
+      {{{first.vertices[0].key,first.vertices[2].key,first.vertices[1].key}},owner},
+      {{{first.vertices[3].key,first.vertices[1].key,first.vertices[2].key}},owner}};
+  first.dependency_blocks={
+      {tetra::WorldTetAddress::root(2U),3U},
+      {tetra::WorldTetAddress::root(1U),3U}};
+  auto reordered=first;
+  std::ranges::reverse(reordered.vertices);
+  std::ranges::reverse(reordered.triangles);
+  std::ranges::reverse(reordered.triangles.front().vertices);
+  std::ranges::reverse(reordered.dependency_blocks);
+  CHECK(reordered.canonical_hash()==first.canonical_hash());
+
+  tetra::WorldDerivedSurfaceSnapshot later=first;
+  later.id={tetra::WorldTetAddress::root(4U),3U};
+  tetra::WorldRevisionManifest manifest(2U,1U,{}, {}, {},
+      {later,first},{{tetra::WorldTetAddress::root(5U),3U},
+                     {tetra::WorldTetAddress::root(3U),3U}});
+  REQUIRE(manifest.surfaces().size()==2U);
+  CHECK(manifest.surfaces()[0]->id==first.id);
+  CHECK(manifest.surfaces()[1]->id==later.id);
+  REQUIRE(manifest.removed_surfaces().size()==2U);
+  CHECK(manifest.removed_surfaces()[0]<manifest.removed_surfaces()[1]);
+  CHECK(manifest.metrics().changed_surfaces==2U);
+  CHECK(manifest.metrics().removed_surfaces==2U);
+}
+
+TEST_CASE("root seam surface ownership is the lowest canonical incident address") {
+  using Face=std::array<tetra::WorldVertexKey,3>;
+  std::map<Face,std::vector<tetra::WorldTetAddress>> incidents;
+  constexpr std::array<std::array<std::size_t,3>,4> face_corners{{
+      {{1U,2U,3U}},{{0U,2U,3U}},{{0U,1U,3U}},{{0U,1U,2U}}}};
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    const auto address=tetra::WorldTetAddress::root(root);
+    const auto keys=tetra::world_tetrahedron_vertex_keys(address);
+    for(const auto corners:face_corners){
+      Face face{{keys[corners[0]],keys[corners[1]],keys[corners[2]]}};
+      std::ranges::sort(face);incidents[face].push_back(address);
+    }
+  }
+  std::size_t seam_faces{};
+  std::optional<tetra::WorldTetAddress> first_owner;
+  for(const auto& [face,face_incidents]:incidents){
+    (void)face;
+    if(face_incidents.size()<2U)continue;
+    ++seam_faces;
+    auto request_order=face_incidents;
+    const auto expected=*std::ranges::min_element(request_order);
+    if(!first_owner)first_owner=expected;
+    CHECK(tetra::world_shared_entity_owner(request_order)==expected);
+    std::ranges::reverse(request_order);
+    CHECK(tetra::world_shared_entity_owner(request_order)==expected);
+  }
+  CHECK(seam_faces>1U);
+  REQUIRE(first_owner);
+  auto descendant=*first_owner;
+  for(unsigned int depth=0;depth<4U;++depth)descendant=descendant.child(0U);
+  CHECK(tetra::hierarchy_block_id(descendant,3U).prefix==descendant.ancestor(3U));
+  CHECK(tetra::hierarchy_block_id(descendant.ancestor(3U),3U).prefix==
+        tetra::WorldTetAddress::root(first_owner->root_id()));
+  CHECK(tetra::hierarchy_block_id(descendant,2U).prefix==descendant.ancestor(2U));
 }
 
 TEST_CASE("maximum-depth sparse world remains bounded and root-seam keys stay exact") {
@@ -5916,6 +6145,89 @@ TEST_CASE("surface optimization remains on the field and preserves orientation")
     CHECK(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z>0.0);
   }
   CHECK(changed);
+}
+
+TEST_CASE("bounded Jacobi is order independent and reproduces a five-ring core") {
+  const auto make_positions=[](std::size_t count){
+    std::vector<tetra::Vec3> positions(count);
+    for(std::size_t vertex=0;vertex<count;++vertex)
+      positions[vertex]={static_cast<double>(vertex*vertex+3U),0.0,0.0};
+    return positions;
+  };
+  const auto pull_from_next=[](std::span<const tetra::Vec3> previous,
+                               std::size_t vertex,std::uint32_t)
+      ->std::optional<tetra::Vec3>{
+    return previous[std::min(vertex+1U,previous.size()-1U)];
+  };
+  const auto same_point=[](tetra::Vec3 first,tetra::Vec3 second){
+    return first.x==second.x&&first.y==second.y&&first.z==second.z;
+  };
+
+  auto monolithic=make_positions(8U),reverse=monolithic;
+  std::vector<std::size_t> reverse_order(monolithic.size());
+  std::iota(reverse_order.rbegin(),reverse_order.rend(),0U);
+  const auto forward_metrics=tetra_viewer::run_bounded_jacobi(
+      monolithic,tetra_viewer::surface_optimizer_passes,{},{},pull_from_next);
+  const auto reverse_metrics=tetra_viewer::run_bounded_jacobi(
+      reverse,tetra_viewer::surface_optimizer_passes,{},reverse_order,pull_from_next);
+  REQUIRE(reverse.size()==monolithic.size());
+  for(std::size_t vertex=0;vertex<reverse.size();++vertex)
+    CHECK(same_point(reverse[vertex],monolithic[vertex]));
+  CHECK(reverse_metrics.passes==forward_metrics.passes);
+  CHECK(reverse_metrics.proposals==forward_metrics.proposals);
+  CHECK(reverse_metrics.accepted==forward_metrics.accepted);
+
+  auto five_ring=make_positions(8U);
+  const std::vector<std::uint32_t> distances{0U,1U,2U,3U,4U,5U,6U,7U};
+  const auto patch_metrics=tetra_viewer::run_bounded_jacobi(
+      five_ring,tetra_viewer::surface_optimizer_passes,distances,{},pull_from_next);
+  CHECK(same_point(five_ring.front(),monolithic.front()));
+  CHECK(patch_metrics.passes==tetra_viewer::surface_optimizer_passes);
+  CHECK(patch_metrics.proposals==15U);
+
+  // A wider halo cannot affect the owned core in five passes, while omitting
+  // the fifth-ring input changes it. The fifth ring is read on the first pass
+  // but does not itself need to be updated.
+  auto wider=make_positions(12U);
+  std::vector<std::uint32_t> wider_distances(wider.size());
+  std::iota(wider_distances.begin(),wider_distances.end(),0U);
+  tetra_viewer::run_bounded_jacobi(
+      wider,tetra_viewer::surface_optimizer_passes,wider_distances,{},pull_from_next);
+  CHECK(same_point(wider.front(),monolithic.front()));
+
+  auto four_ring_input=make_positions(8U);
+  four_ring_input[5U].x=-1000.0;
+  tetra_viewer::run_bounded_jacobi(four_ring_input,
+      tetra_viewer::surface_optimizer_passes,distances,{},pull_from_next);
+  CHECK_FALSE(same_point(four_ring_input.front(),monolithic.front()));
+}
+
+TEST_CASE("bounded surface optimization is globally keyed and worker invariant") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  const tetra::Sphere sphere{{0.5,0.5,0.5},0.44};
+  const tetra::Camera camera{};
+  static_cast<void>(tetra::refine_to_sphere(mesh,sphere,camera,42.0,9));
+  tetra::GeometryExecutor one({.worker_count=1U,.blocks_per_worker=1U});
+  tetra::GeometryExecutor four({.worker_count=4U,.blocks_per_worker=7U});
+  const auto prepare=[&](tetra::GeometryExecutor& executor){
+    return tetra_viewer::prepare_scene(mesh,sphere,
+        tetra_viewer::SurfaceMethod::surface_optimization,
+        tetra_viewer::MaterialRule::all_vertices_inside,true,false,true,false,
+        false,false,0.5,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving,
+        tetra_viewer::StencilConstruction::fixed,
+        tetra_viewer::StencilSelectionObjective::balanced,{}, {},false,&executor);
+  };
+  const auto serial=prepare(one),parallel=prepare(four);
+  CHECK(serial.connected_surface_hash==parallel.connected_surface_hash);
+  CHECK(serial.standalone_surface_hash==parallel.standalone_surface_hash);
+  CHECK(serial.optimizer_passes==tetra_viewer::surface_optimizer_passes);
+  CHECK(serial.optimizer_dependency_halo_rings==
+        tetra_viewer::surface_optimizer_dependency_halo_rings);
+  CHECK(serial.optimizer_dependency_halo_rings==serial.optimizer_passes);
+  CHECK(serial.connected_volume_global_keys==parallel.connected_volume_global_keys);
+  auto keys=serial.connected_volume_global_keys;
+  std::ranges::sort(keys);
+  CHECK(std::ranges::adjacent_find(keys)==keys.end());
 }
 
 TEST_CASE("diagnostic shading models and surface angle data are registered") {
@@ -10632,7 +10944,7 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
     image.close();std::filesystem::remove(path);
     return hash;
   };
-  constexpr std::uint64_t expected=18212849074860900224ULL;
+  constexpr std::uint64_t expected=11322519242171074790ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(
