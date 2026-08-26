@@ -4,6 +4,13 @@ This document tracks the experimental tetrahedral-mesh implementation. The
 initial aim is a trustworthy environment for comparing refinement rules,
 hierarchies, and their visible geometric consequences.
 
+This tracker describes the existing algorithm laboratory. The canonical plan
+for the planet-scale player application, single logical terrain root, sparse
+hierarchy blocks, atomic world revisions, and independent retained render
+front is [`world-visualizer.md`](world-visualizer.md). The active execution
+queue is [`todo.md`](todo.md); do not copy the production meshing path into a
+new executable before its cross-block transaction boundary is reusable.
+
 ## Technology choices
 
 - C++23 where supported.

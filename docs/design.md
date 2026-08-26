@@ -294,6 +294,19 @@ That model was attractive for good reasons:
 
 It was not a foolish detour. Many of the project's strongest current ideas were first discovered inside that model.
 
+The rejected part was making this hierarchy the universal owner of terrain,
+moving objects, organisms, and every subsystem. It does not rule out one
+logical root hierarchy for stationary planetary terrain. In that narrower
+case, independently resident hierarchy blocks can partition one global terrain
+address space while moving bodies retain object-local identity and geometry.
+
+The planet-terrain prototype sharpened that statement: an address-prefix
+hierarchy block is only a storage-residency unit. Address-range jobs,
+conformity transactions, persistence records, atomic world revisions, and GPU
+render chunks may group the same hierarchy differently. Keeping those units
+separate prevents a storage-layout choice from leaking into topology,
+publication, or rendering.
+
 ## 2.2 Multiple cuts, dynamic covers, and the actuality idea
 
 The old model made an important distinction that remains useful: **different questions require different cuts through a hierarchy**.
@@ -591,11 +604,18 @@ A second storage lesson came from the **Supercube** line of diamond-hierarchy wo
 
 ```text
 large implicit refinement address space
--> regular multi-generation page/block
+-> regular multi-generation hierarchy block
 -> compact local hierarchy and payloads inside the block
 ```
 
-This gives a useful three-way separation: a tetrahedron can remain the **material/query primitive**, a diamond or related cluster can be the **refinement/conformity primitive**, and a multi-generation block can be the **storage/streaming primitive**. Page size should therefore be chosen from locality, update, compression, and GPU-work considerations rather than by copying the logical child count of the subdivision grammar.
+This begins a useful separation: a tetrahedron can remain the
+**material/query primitive**, a diamond or related cluster can be the
+**refinement/conformity primitive**, and a multi-generation hierarchy block can
+be the **storage-residency primitive**. Address-range jobs, atomic transaction
+sets, persistence records, and fixed-capacity render chunks are separate
+groupings. Block size should therefore be chosen from hierarchy locality,
+occupancy, update amplification, and compression rather than by copying the
+logical child count or GPU batch size.
 
 ## 5.4 The runtime layout is still an experiment
 
@@ -621,7 +641,10 @@ This should be benchmarked as a first-class data-structure decision. For each ca
 - CPU/GPU transfer requirements;
 - edit invalidation behavior.
 
-The desired outcome may be a **hybrid**: stable implicit world addresses, page-local level arrays or blocks, and a compact GPU active set built from only the currently useful cut.
+The desired outcome may be a **hybrid**: stable implicit world addresses,
+block-local level arrays, a sparse prefix directory and immutable world
+revision manifest, and an independently packed GPU render front built from
+only the currently useful cut.
 
 ---
 
@@ -659,9 +682,16 @@ The fVDB discussion added another implementation possibility: some derived spars
 
 ---
 
-# 7. Paging and blocks
+# 7. Hierarchy blocks and independent batching
 
-A world-scale hierarchy needs a physical unit larger than one tetrahedron for I/O, cache management, GPU upload, edit locking, and derived-data invalidation.
+The concrete stationary-terrain architecture and implementation gates live in
+[`world-visualizer.md`](world-visualizer.md). This section states the broader
+world-design constraints that the implementation must preserve.
+
+A world-scale hierarchy needs a physical storage-residency unit larger than one
+tetrahedron. It does not follow that I/O records, scheduled work, edit locks,
+atomic publications, derived-data invalidation, and GPU uploads must all use
+that same unit.
 
 The Supercube work suggested a useful design pattern: group several generations or a coherent set of refinement primitives into a regular higher-level block.
 
@@ -669,23 +699,40 @@ The exact Dygd structure is still open, but the desired shape is something like:
 
 ```text
 global implicit address space
-        -> page/block/supercell
+        -> hierarchy block / supercell
             -> compact local hierarchy
                 -> active leaves and subsystem payloads
 ```
 
-A good page primitive should ideally support:
+A good hierarchy-block primitive should ideally support:
 
 - deterministic global addressing;
 - independent loading;
 - reproducible shared boundaries;
 - local edits without global rebuilds;
-- compact CPU/GPU transfer;
+- compact CPU storage and reconstruction;
 - parent summaries;
 - local neighbour lookup;
 - invalidation of only affected derived representations.
 
-Pages must **not** become the identity of ordinary moving objects. Crossing a page boundary must be physically invisible.
+The other units remain explicit:
+
+```text
+hierarchy block       fixed address-prefix storage and residency
+address-range job     schedulable work, able to span or subdivide blocks
+world transaction     closure-expanded mutation and dependency set
+revision manifest     atomic mapping to completed immutable block snapshots
+render chunk          fixed-capacity GPU batching independent of block borders
+persistence record    authoritative procedural version and sparse edit history
+```
+
+The current planet-terrain experiment measured three BCC red generations as
+the best bounded current-workload block width, but this remains runtime policy
+until deep sparse planet workloads measure boundary phase, halo amplification,
+affected-block count, and transaction latency. It is not a save-format rule.
+
+Hierarchy blocks must **not** become the identity of ordinary moving objects.
+Crossing a block boundary must be physically invisible.
 
 ---
 
@@ -1772,16 +1819,29 @@ The tiny planet remains a particularly important case because most untouched ter
 
 Persistent tunnels, removals, additions, repairs, attachments, and material changes must survive paging as sparse history. A tunnel is therefore not a special tunnel mesh: it is missing terrain matter plus newly exposed real boundaries, which automatically affects routes, lighting, support, construction, and later granular collapse.
 
-Independently generated terrain pages need a hard boundary contract. Shared edges/faces, material classification, orientation, and stable addresses must agree independent of load order. A page seam that creates a crack, kick, colour discontinuity, or identity change is an architecture failure.
+Independently resident terrain hierarchy blocks need a hard boundary contract,
+but they are not independently seeded meshes. They are address-prefix storage
+for one logical terrain hierarchy and one conforming cut. Shared edges/faces,
+material classification, orientation, and stable addresses must agree
+independent of load, job, or compaction order. A block seam that creates a
+crack, kick, colour discontinuity, or identity change is an architecture
+failure.
 
-The corresponding P0 validation should be concrete rather than visual-only. At minimum check matching shared boundary vertices/faces, valid and consistent orientation, duplicate or missing boundary faces, accidental disconnected slivers, overlap/gap, stable procedural addresses, preservation of sparse edits, and reproducibility when pages unload/reload or are generated in a different order.
+The corresponding P0 validation should be concrete rather than visual-only. At
+minimum check exact integer shared boundary keys, valid and consistent
+orientation, duplicate or missing boundary faces, accidental disconnected
+slivers, overlap/gap, stable procedural addresses, preservation of sparse
+edits, root-complex seams, and reproducibility when blocks unload/reload or
+jobs execute in a different order.
 
 
 The older global-hierarchy terrain generator had an additional **surface-validity pass** that is worth retaining in generalized form. Binary/thresholded tetrahedral occupancy can create isolated cells, pinched connections, edge/vertex-only ambiguities, or non-manifold boundary edges even when every individual tetrahedron is valid. For its initial simple planet it therefore required one connected closed surface, exactly two incident surface triangles per surface edge, consistent outward orientation, and deterministic refinement/tie-breaking for ambiguous local classifications.
 
-The current object-local architecture should not inherit those exact global-grid rules as universal law—later Dygd may deliberately support holes, several components, open/codimensional structures, or other exotic matter. The lasting invariant is narrower: **ordinary matter that claims to be a closed solid must validate as the intended closed solid, and exceptional topology must be intentional state rather than a meshing/classification accident**. Page-seam validation and local-shell topology validation are separate tests and both matter.
+The current object-local architecture should not inherit those exact global-grid rules as universal law—later Dygd may deliberately support holes, several components, open/codimensional structures, or other exotic matter. The lasting invariant is narrower: **ordinary matter that claims to be a closed solid must validate as the intended closed solid, and exceptional topology must be intentional state rather than a meshing/classification accident**. Block-seam validation and local-shell topology validation are separate tests and both matter.
 
-This is also why pages are storage/streaming units, not object identity. Moving a pen across a page boundary must have no material consequence whatsoever.
+This is also why hierarchy blocks are storage-residency units, not object
+identity. Moving a pen across a block boundary must have no material
+consequence whatsoever.
 
 ---
 
@@ -2142,9 +2202,17 @@ We have a strong shortlist, but no winner. Binary/diamond currently has the stro
 
 The starting space-filling arrangement matters separately from the refinement grammar. Kuhn/Freudenthal translation versus reflection, BCC-derived lattices, and the newer 24-tet construction may give very different surface character.
 
-## 25.3 Page/block format
+## 25.3 Hierarchy-block format
 
-The mathematical hierarchy should not dictate a naive memory layout. We still need to choose how many generations belong in a page, how active state is ranked/compacted, and how CPU/GPU residency works.
+The mathematical hierarchy should not dictate a naive memory layout. The
+current BCC prototype uses a fixed 128-bit-style world address and found three
+red generations to be the best bounded hierarchy-block width for its present
+depth-16 workload. The production choice remains open until planet-depth sparse
+cuts compare block width and boundary phase. We also still need to choose how
+active state is ranked and compacted, how block-local cut ranges fall back to
+coarse ancestors, and how immutable world revisions are published. GPU
+residency is a separate render-front decision rather than part of the block
+format.
 
 ## 25.4 Hierarchy-native collision
 

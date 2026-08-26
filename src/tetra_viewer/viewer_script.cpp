@@ -6,6 +6,7 @@
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
 #include "tetra_core/layer_storage.hpp"
+#include "tetra_core/world_hierarchy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1092,6 +1093,7 @@ void print_script_help(std::ostream& output) {
             "  render-image=<path.ppm>     Write a deterministic headless mesh image\n"
             "  benchmark-refinement=<1..8> Run and time increasing refinement passes\n"
             "  benchmark-cpu-camera-paths Benchmark paths with the selected CPU strategies\n"
+            "  benchmark-world-blocks Compare single-root 3/4/5-generation storage blocks\n"
             "  benchmark-multithreaded-geometry[=<1..64>] Compare deterministic planning worker counts\n"
             "  benchmark-cpu-surface-patches[=<0..32>] Compare retained patches with monolithic surfaces\n"
             "  benchmark-cpu-four-hexahedra-quality[=<0..32>[:<2..64>]] Compare five shapes and retained surfaces\n"
@@ -2086,6 +2088,93 @@ int run_script(std::string_view script, std::ostream& output, std::ostream& erro
                << ",\"duration_ms\":" << std::fixed << std::setprecision(3) << duration << ',';
         write_mesh_fields(output, state);
         output << "}\n";
+      }
+      continue;
+    }
+    if(command=="benchmark-world-blocks"){
+      auto baseline=cpu_benchmark_baseline(default_implicit_shape,16U);
+      const auto scene=prepare_cpu_benchmark_scene(baseline);
+      const auto surface_hashes=surface_geometry_hashes(scene);
+      auto logical=std::vector<tetra::TetId>(
+          baseline.mesh.logical_red_owners().begin(),
+          baseline.mesh.logical_red_owners().end());
+      auto conforming=std::vector<tetra::TetId>(
+          baseline.mesh.conforming_volume().addresses().begin(),
+          baseline.mesh.conforming_volume().addresses().end());
+      std::ranges::sort(logical);std::ranges::sort(conforming);
+      bool all_exact=true;
+      constexpr std::array candidates{3U,4U,5U};
+      std::array<tetra::BlockedHierarchyMetrics,candidates.size()> candidate_metrics;
+      for(std::size_t candidate_index=0;candidate_index<candidates.size();++candidate_index){
+        const unsigned int generations=candidates[candidate_index];
+        const auto build_start=Clock::now();
+        const auto blocked=tetra::BlockedHierarchyView::build(
+            baseline.mesh,generations);
+        const double build_ms=milliseconds_since(build_start);
+        auto blocked_logical=blocked.logical_cut().reconstructed_sources(true);
+        auto blocked_conforming=blocked.conforming_volume().reconstructed_sources(true);
+        std::ranges::sort(blocked_logical);std::ranges::sort(blocked_conforming);
+        const bool exact=blocked_logical==logical&&blocked_conforming==conforming;
+        all_exact&=exact;
+        candidate_metrics[candidate_index]=blocked.metrics();
+        std::size_t lookup_checksum{};
+        const auto lookup_start=Clock::now();
+        constexpr unsigned int lookup_repetitions=64U;
+        for(unsigned int repetition=0;repetition<lookup_repetitions;++repetition)
+          for(const auto owner:blocked.logical_cut().owner_addresses){
+            const auto* range=blocked.logical_cut().find_block(owner);
+            if(range==nullptr){all_exact=false;continue;}
+            lookup_checksum^=range->begin+range->count+repetition;
+          }
+        const double lookup_ms=milliseconds_since(lookup_start);
+        const double lookup_count=static_cast<double>(lookup_repetitions)*
+                                  static_cast<double>(logical.size());
+        output<<"{\"event\":\"world_block_benchmark\",\"block_generations\":"
+              <<generations<<",\"exact\":"<<(exact?"true":"false")
+              <<",\"blocks\":"<<blocked.metrics().blocks
+              <<",\"resident_red_records\":"
+              <<blocked.metrics().resident_red_records
+              <<",\"logical_owners\":"<<blocked.metrics().logical_owners
+              <<",\"conforming_cells\":"<<blocked.metrics().conforming_cells
+              <<",\"minimum_block_entries\":"
+              <<blocked.metrics().minimum_block_entries
+              <<",\"maximum_block_entries\":"
+              <<blocked.metrics().maximum_block_entries
+              <<",\"mean_block_entries\":"<<blocked.metrics().mean_block_entries
+              <<",\"full_block_hierarchy_capacity\":"
+              <<blocked.metrics().full_block_hierarchy_capacity
+              <<",\"full_block_terminal_capacity\":"
+              <<blocked.metrics().full_block_terminal_capacity
+              <<",\"maximum_lookup_comparisons\":"
+              <<blocked.metrics().maximum_lookup_comparisons
+              <<",\"retained_bytes\":"<<blocked.metrics().retained_bytes
+              <<",\"build_ms\":"<<std::fixed<<std::setprecision(3)<<build_ms
+              <<",\"lookup_ns\":"<<(lookup_count>0.0?lookup_ms*1.0e6/lookup_count:0.0)
+              <<",\"lookup_checksum\":"<<lookup_checksum
+              <<",\"surface_triangle_hash\":"<<surface_hashes.triangle_hash
+              <<",\"surface_edge_hash\":"<<surface_hashes.edge_hash<<"}\n";
+      }
+      unsigned int selected_generations{};
+      if(all_exact){
+        constexpr std::size_t maximum_bounded_block_records=8192U;
+        const tetra::BlockedHierarchyMetrics* selected{};
+        for(const auto& candidate:candidate_metrics){
+          if(candidate.full_block_hierarchy_capacity>maximum_bounded_block_records)
+            continue;
+          if(selected==nullptr||candidate.blocks<selected->blocks||
+             (candidate.blocks==selected->blocks&&
+              candidate.maximum_lookup_comparisons<selected->maximum_lookup_comparisons))
+            selected=&candidate;
+        }
+        if(selected!=nullptr)selected_generations=selected->block_generations;
+      }
+      output<<"{\"event\":\"world_block_selection\",\"selected_generations\":"
+            <<selected_generations
+            <<",\"reason\":\"fewest measured resident blocks among exact candidates bounded to at most 8192 hierarchy records; five generations permits 37449\",\"all_exact\":"
+            <<(all_exact?"true":"false")<<"}\n";
+      if(selected_generations==0U){
+        write_error(errors,"world block benchmark could not qualify a bounded layout",command);
+        return 1;
       }
       continue;
     }

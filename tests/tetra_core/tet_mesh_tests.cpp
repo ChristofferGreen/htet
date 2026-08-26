@@ -10,6 +10,7 @@
 #include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/parallel_commit.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
+#include "tetra_core/world_hierarchy.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
@@ -1545,6 +1546,209 @@ TEST_CASE("root cells use stable sentinel-prefixed path addresses") {
   CHECK(mesh.total_active_volume() == doctest::Approx(1.0));
   CHECK(mesh.has_positive_active_volumes());
   CHECK(mesh.has_conforming_active_faces());
+}
+
+TEST_CASE("planet hierarchy addresses preserve deep BCC red paths and page prefixes") {
+  auto address=tetra::WorldTetAddress::root(11U);
+  std::array<std::uint8_t,tetra::maximum_world_red_depth> digits{};
+  for(std::size_t depth=0;depth<digits.size();++depth){
+    digits[depth]=static_cast<std::uint8_t>((depth*5U+3U)%8U);
+    address=address.child(digits[depth]);
+    CHECK(address.root_id()==11U);
+    CHECK(address.red_depth()==depth+1U);
+  }
+  CHECK_THROWS_AS(static_cast<void>(address.child(0U)),std::overflow_error);
+  for(std::size_t depth=digits.size();depth>0U;--depth){
+    CHECK(address.red_depth()==depth);
+    address=address.parent();
+  }
+  CHECK(address==tetra::WorldTetAddress::root(11U));
+  CHECK_THROWS_AS(static_cast<void>(address.parent()),std::out_of_range);
+
+  tetra::TetId local=tetra::make_tet_id(7U,1U);
+  constexpr std::array<std::uint8_t,5> local_digits{{3U,7U,0U,6U,2U}};
+  for(const auto digit:local_digits)
+    local=tetra::make_tet_id(tetra::tet_root(local),(tetra::tet_path(local)<<3U)|digit);
+  const auto world=tetra::world_tet_address(local);
+  CHECK(world.root_id()==7U);
+  CHECK(world.red_depth()==local_digits.size());
+  REQUIRE(tetra::local_tet_id(world).has_value());
+  CHECK(*tetra::local_tet_id(world)==local);
+  const auto page=tetra::world_page_id(world,4U);
+  CHECK(page.block_generations==4U);
+  CHECK(page.prefix.red_depth()==4U);
+  CHECK(page.prefix==world.ancestor(4U));
+
+  auto beyond_local=world;
+  while(beyond_local.red_depth()<20U)beyond_local=beyond_local.child(1U);
+  CHECK_FALSE(tetra::local_tet_id(beyond_local).has_value());
+}
+
+TEST_CASE("single-root blocked views exactly reproduce monolithic BCC address sets") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<4U;++generation)
+    mesh.refine_all_binary();
+  REQUIRE(mesh.logical_red_owners().size()>=4096U);
+
+  std::vector<tetra::TetId> resident_red;
+  for(const auto& layer:mesh.layers())for(const auto& record:layer.tetrahedra)
+    if(record.transition_parent==tetra::invalid_tet&&
+       tetra::tet_depth(record.address)%3U==0U)
+      resident_red.push_back(record.address);
+  std::ranges::sort(resident_red);
+  auto logical=std::vector<tetra::TetId>(
+      mesh.logical_red_owners().begin(),mesh.logical_red_owners().end());
+  auto conforming=std::vector<tetra::TetId>(
+      mesh.conforming_volume().addresses().begin(),
+      mesh.conforming_volume().addresses().end());
+  std::ranges::sort(logical);
+  std::ranges::sort(conforming);
+
+  std::map<tetra::VertexId,tetra::WorldVertexKey> vertex_keys;
+  for(const auto& layer:mesh.layers())for(const auto& record:layer.tetrahedra){
+    if(record.transition_parent!=tetra::invalid_tet||
+       tetra::tet_depth(record.address)%3U!=0U)
+      continue;
+    const auto world=tetra::world_tet_address(record.address);
+    const auto geometry=tetra::world_tetrahedron_geometry(mesh,world);
+    const auto keys=tetra::world_tetrahedron_vertex_keys(mesh,world);
+    for(std::size_t corner=0;corner<4U;++corner){
+      const auto expected=mesh.vertices()[record.vertices[corner]];
+      CHECK(geometry[corner].x==doctest::Approx(expected.x).epsilon(1.0e-14));
+      CHECK(geometry[corner].y==doctest::Approx(expected.y).epsilon(1.0e-14));
+      CHECK(geometry[corner].z==doctest::Approx(expected.z).epsilon(1.0e-14));
+      const auto [found,inserted]=vertex_keys.emplace(record.vertices[corner],keys[corner]);
+      if(!inserted)CHECK(found->second==keys[corner]);
+    }
+    CHECK(tetra::world_edge_key(keys[0],keys[1])==
+          tetra::world_edge_key(keys[1],keys[0]));
+    CHECK(tetra::world_face_key(keys[0],keys[1],keys[2])==
+          tetra::world_face_key(keys[2],keys[0],keys[1]));
+  }
+
+  std::uint64_t logical_hash{},conforming_hash{};
+  for(const unsigned int generations:{3U,4U,5U}){
+    const auto blocked=tetra::BlockedHierarchyView::build(mesh,generations);
+    auto blocked_resident=blocked.resident_red().reconstructed_sources();
+    auto blocked_logical=blocked.logical_cut().reconstructed_sources();
+    auto reverse_logical=blocked.logical_cut().reconstructed_sources(true);
+    auto blocked_conforming=blocked.conforming_volume().reconstructed_sources();
+    auto reverse_conforming=blocked.conforming_volume().reconstructed_sources(true);
+    const auto permuted_sources=[](const tetra::BlockedAddressSet& set){
+      std::vector<std::size_t> order(set.blocks.size());
+      std::iota(order.begin(),order.end(),0U);
+      // Deterministic coprime-key ordering simulates arbitrary block
+      // compaction without making the regression probabilistic.
+      std::ranges::sort(order,[count=order.size()](std::size_t first,std::size_t second){
+        return ((first*2654435761ULL+17ULL)%std::max<std::size_t>(count,1U))<
+               ((second*2654435761ULL+17ULL)%std::max<std::size_t>(count,1U));
+      });
+      std::vector<tetra::TetId> result;
+      result.reserve(set.source_addresses.size());
+      for(const auto block_index:order){
+        const auto& block=set.blocks[block_index];
+        for(std::size_t offset=block.count;offset>0U;--offset)
+          result.push_back(set.source_addresses[block.begin+offset-1U]);
+      }
+      return result;
+    };
+    auto permuted_logical=permuted_sources(blocked.logical_cut());
+    auto permuted_conforming=permuted_sources(blocked.conforming_volume());
+    std::ranges::sort(blocked_resident);
+    std::ranges::sort(blocked_logical);
+    std::ranges::sort(reverse_logical);
+    std::ranges::sort(blocked_conforming);
+    std::ranges::sort(reverse_conforming);
+    std::ranges::sort(permuted_logical);
+    std::ranges::sort(permuted_conforming);
+    CAPTURE(generations);
+    CAPTURE(blocked.metrics().blocks);
+    CAPTURE(blocked.metrics().maximum_block_entries);
+    CAPTURE(blocked.metrics().retained_bytes);
+    CHECK(blocked_resident==resident_red);
+    CHECK(blocked_logical==logical);
+    CHECK(reverse_logical==logical);
+    CHECK(permuted_logical==logical);
+    CHECK(blocked_conforming==conforming);
+    CHECK(reverse_conforming==conforming);
+    CHECK(permuted_conforming==conforming);
+    CHECK(blocked.metrics().resident_red_records==resident_red.size());
+    CHECK(blocked.metrics().logical_owners==logical.size());
+    CHECK(blocked.metrics().conforming_cells==conforming.size());
+    CHECK(blocked.metrics().blocks>=12U);
+    CHECK(blocked.metrics().maximum_block_entries>0U);
+    std::size_t expected_terminal=1U;
+    for(unsigned int generation=0;generation<generations;++generation)
+      expected_terminal*=8U;
+    CHECK(blocked.metrics().full_block_terminal_capacity==expected_terminal);
+    CHECK(blocked.metrics().full_block_hierarchy_capacity==
+          (expected_terminal*8U-1U)/7U);
+    CHECK(blocked.metrics().maximum_lookup_comparisons>0U);
+    for(const auto owner:blocked.logical_cut().owner_addresses){
+      const auto* block=blocked.logical_cut().find_block(owner);
+      REQUIRE(block!=nullptr);
+      CHECK(block->count>0U);
+    }
+    if(logical_hash==0U){
+      logical_hash=blocked.logical_cut().canonical_hash();
+      conforming_hash=blocked.conforming_volume().canonical_hash();
+    }else{
+      CHECK(blocked.logical_cut().canonical_hash()==logical_hash);
+      CHECK(blocked.conforming_volume().canonical_hash()==conforming_hash);
+    }
+  }
+}
+
+TEST_CASE("blocked hierarchy inspection leaves production terrain geometry unchanged") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere terrain;
+  terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra::Camera camera;
+  camera.position={0.0,1.0,0.5};
+  camera.forward={0.7071067811865475,-0.7071067811865475,0.0};
+  static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,40.0,16));
+  const auto prepare=[&]{
+    return tetra_viewer::prepare_scene(
+        mesh,terrain,tetra_viewer::SurfaceMethod::surface_optimization,
+        tetra_viewer::MaterialRule::variational_smooth,true,false,true,false,
+        false,false,1.0,tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
+  };
+  const auto before=prepare();
+  const auto before_hash=tetra_viewer::surface_geometry_hashes(before);
+  std::uint64_t field_hash=1469598103934665603ULL;
+  for(const auto point:mesh.vertices()){
+    const auto bits=std::bit_cast<std::uint64_t>(terrain.signed_distance(point));
+    field_hash^=bits;field_hash*=1099511628211ULL;
+  }
+  for(const unsigned int generations:{3U,4U,5U}){
+    const auto blocked=tetra::BlockedHierarchyView::build(mesh,generations);
+    CHECK(blocked.metrics().logical_owners==mesh.logical_red_owners().size());
+    CHECK(blocked.metrics().conforming_cells==mesh.conforming_volume().size());
+  }
+  const auto after=prepare();
+  CHECK(tetra_viewer::surface_geometry_hashes(after)==before_hash);
+  std::uint64_t repeated_field_hash=1469598103934665603ULL;
+  for(const auto point:mesh.vertices()){
+    const auto bits=std::bit_cast<std::uint64_t>(terrain.signed_distance(point));
+    repeated_field_hash^=bits;repeated_field_hash*=1099511628211ULL;
+  }
+  CHECK(repeated_field_hash==field_hash);
+  CHECK(mesh.has_conforming_active_faces());
+}
+
+TEST_CASE("headless world block benchmark selects the measured bounded layout") {
+  std::ostringstream output,errors;
+  REQUIRE(tetra_viewer::run_script("benchmark-world-blocks",output,errors)==0);
+  CHECK(errors.str().empty());
+  const auto text=output.str();
+  CHECK(text.find("\"block_generations\":3,\"exact\":true")!=std::string::npos);
+  CHECK(text.find("\"block_generations\":4,\"exact\":true")!=std::string::npos);
+  CHECK(text.find("\"block_generations\":5,\"exact\":true")!=std::string::npos);
+  CHECK(text.find("\"full_block_hierarchy_capacity\":4681")!=std::string::npos);
+  CHECK(text.find("\"full_block_hierarchy_capacity\":37449")!=std::string::npos);
+  CHECK(text.find("\"event\":\"world_block_selection\",\"selected_generations\":3")!=
+        std::string::npos);
+  CHECK(text.find("\"all_exact\":true")!=std::string::npos);
 }
 
 TEST_CASE("24-tet half-edge cube matches the paper construction") {
