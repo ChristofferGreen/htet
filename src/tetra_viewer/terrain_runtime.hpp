@@ -50,6 +50,8 @@ struct TerrainRuntimeDiagnostics {
   std::size_t affected_optimizer_vertices{};
   std::size_t retained_optimizer_dependency_bytes{};
   std::size_t closure_requested_owners_scanned{};
+  std::size_t changed_closure_requested_owners{};
+  std::size_t updated_split_ancestors{};
   std::size_t reused_closure_masks{};
   std::size_t rebuilt_closure_masks{};
   std::size_t promoted_closure_owners{};
@@ -137,6 +139,8 @@ struct WorldLodCutMetrics {
   std::size_t logical_owners_before_closure{};
   std::size_t logical_owners_after_closure{};
   std::size_t closure_requested_owners_scanned{};
+  std::size_t changed_closure_requested_owners{};
+  std::size_t updated_split_ancestors{};
   std::size_t reused_closure_masks{};
   std::size_t rebuilt_closure_masks{};
   std::size_t promoted_closure_owners{};

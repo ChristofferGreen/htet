@@ -202,6 +202,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.retained_optimizer_dependency_bytes
           <<",\"closure_requested_owners_scanned\":"
           <<diagnostics.closure_requested_owners_scanned
+          <<",\"changed_closure_requested_owners\":"
+          <<diagnostics.changed_closure_requested_owners
+          <<",\"updated_split_ancestors\":"
+          <<diagnostics.updated_split_ancestors
           <<",\"reused_closure_masks\":"
           <<diagnostics.reused_closure_masks
           <<",\"rebuilt_closure_masks\":"

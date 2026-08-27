@@ -53,8 +53,11 @@ not the active queue.
       blocks are not scanned or republished. Exact same-request reuse and
       field-revisioned masks are complete. The cold oracle now retains midpoint
       and incident-depth state across its monotone promotion rounds, nearly
-      halving walking/near closure time, but changed cuts still require a
-      persistent cross-revision entity frontier.
+      halving walking/near closure time. Cross-revision split ancestry is now
+      reference counted: walking updates 4,930 ancestor entities for 24,624
+      changed leaves instead of replaying 565,451 root paths. The remaining
+      work is incremental removal/re-derivation of green-mask dependencies so
+      unchanged final owners are not evaluated.
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate

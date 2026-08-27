@@ -738,6 +738,10 @@ WorldLodCutSelection select_world_lod_cut(
   if(closure_cache){
     result.metrics.closure_requested_owners_scanned=
         closure_cache->last_requested_owners_scanned;
+    result.metrics.changed_closure_requested_owners=
+        closure_cache->last_changed_requested_owners;
+    result.metrics.updated_split_ancestors=
+        closure_cache->last_split_ancestor_updates;
     result.metrics.reused_closure_masks=closure_cache->last_reused_masks;
     result.metrics.rebuilt_closure_masks=closure_cache->last_rebuilt_masks;
     result.metrics.promoted_closure_owners=closure_cache->last_promoted_owners;
@@ -977,6 +981,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
       surface_cache.optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
       surface_cache.optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
+      surface_cache.closure.requested_split_ancestors.capacity()*
+          sizeof(tetra::WorldConformingSplitAncestor)+
       surface_cache.surface_certificates.capacity()*
           sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
       surface_cache.hierarchy.capacity()*
@@ -1023,6 +1029,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.retained_optimizer_dependency_bytes;
   diagnostics.closure_requested_owners_scanned=
       selection.metrics.closure_requested_owners_scanned;
+  diagnostics.changed_closure_requested_owners=
+      selection.metrics.changed_closure_requested_owners;
+  diagnostics.updated_split_ancestors=
+      selection.metrics.updated_split_ancestors;
   diagnostics.reused_closure_masks=selection.metrics.reused_closure_masks;
   diagnostics.rebuilt_closure_masks=selection.metrics.rebuilt_closure_masks;
   diagnostics.promoted_closure_owners=selection.metrics.promoted_closure_owners;

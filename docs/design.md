@@ -2528,5 +2528,15 @@ conforming-volume, connected-surface, and render hashes. This is a useful
 prerequisite, not a substitute for persistent changed-range closure between
 camera revisions.
 
+Split ancestry now crosses that revision boundary as an exact reference-counted
+address certificate. A sorted old/new cut difference increments and decrements
+only ancestor paths of added and removed leaves, and the retained counts define
+the same canonical midpoint requirements as a cold replay. On the production
+route, walking changed 24,624 of 565,451 requested leaves and touched 4,930
+ancestor entities; the near move changed 24,336 of 570,197 leaves and touched
+4,875 ancestors. Far moves and reversals deliberately expand rather than
+pretending to be local. Green-mask fixed-point evaluation still traverses the
+final owner array, so this certificate is not yet the completed closure gate.
+
 
 ---

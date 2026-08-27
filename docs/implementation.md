@@ -328,6 +328,16 @@ qualified topology or render hash. Cross-revision removal and re-derivation
 still need the persistent entity/address-range dependency frontier described in
 the active TODO.
 
+The first cross-revision part of that frontier is implemented as a sorted,
+reference-counted split-ancestor certificate. Symmetric address differences
+apply path deltas privately and publish them only with the completed closure;
+cancellation leaves the retained certificate unchanged. Walking updates 4,930
+ancestor records for 24,624 changed requested leaves rather than rebuilding
+ancestry from all 565,451 leaves. Diagnostics distinguish total requested
+owners, changed requested owners, and updated split ancestors. Restricted-green
+mask supports still need a deletion/re-derivation frontier before untouched
+owners can avoid evaluation entirely.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

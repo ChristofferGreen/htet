@@ -1451,7 +1451,10 @@ surface construction with the old builder retained as its oracle.
       requests reuse the exact retained result. The global fallback now retains
       active midpoints and deepest incident depths across promotion rounds,
       reducing walking and near closure from about 1.46 seconds to 0.79 seconds;
-      changed cuts still need a persistent cross-revision entity frontier.
+      a reference-counted address certificate also limits walking's split-
+      ancestor update to 4,930 entities for 24,624 changed leaves. Restricted-
+      green supports still need deletion/re-derivation before unchanged final
+      owners can avoid evaluation.
 - [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.

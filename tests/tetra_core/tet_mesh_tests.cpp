@@ -1325,6 +1325,11 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
         initial.optimizer_dependency_vertices);
   CHECK(initial.retained_optimizer_dependency_bytes>0U);
   CHECK(initial.closure_requested_owners_scanned>0U);
+  CHECK(initial.changed_closure_requested_owners==
+        initial.closure_requested_owners_scanned);
+  CHECK(initial.updated_split_ancestors>0U);
+  CHECK(initial.updated_split_ancestors<
+        initial.closure_requested_owners_scanned);
   CHECK(initial.rebuilt_closure_masks==initial.logical_cells);
   CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
   CHECK(initial.hierarchy_demand_epoch==1U);
@@ -1437,6 +1442,11 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(runtime.diagnostics().affected_optimizer_vertices>0U);
   CHECK(runtime.diagnostics().affected_optimizer_vertices<
         runtime.diagnostics().optimizer_dependency_vertices);
+  CHECK(runtime.diagnostics().changed_closure_requested_owners>0U);
+  CHECK(runtime.diagnostics().changed_closure_requested_owners<
+        runtime.diagnostics().closure_requested_owners_scanned);
+  CHECK(runtime.diagnostics().updated_split_ancestors<
+        runtime.diagnostics().changed_closure_requested_owners);
   CHECK(runtime.diagnostics().reused_surface_blocks>0U);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
@@ -2948,23 +2958,32 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(first==cold);
   CHECK(populated>0U);
   CHECK(populated<=cache.maximum_entries);
+  CHECK_FALSE(cache.requested_split_ancestors.empty());
+  CHECK(std::ranges::is_sorted(cache.requested_split_ancestors,{},
+      &tetra::WorldConformingSplitAncestor::address));
   const auto repeated=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(repeated==cold);
   CHECK(cache.geometry.size()==populated);
   CHECK(cache.last_requested_owners_scanned==raw.size());
   CHECK(cache.last_reused_masks==cache.green_masks.size());
   CHECK(cache.last_rebuilt_masks==0U);
+  CHECK(cache.last_changed_requested_owners==0U);
+  CHECK(cache.last_split_ancestor_updates==0U);
 
   std::stop_source canceled;canceled.request_stop();
   const auto cached_owners=cache.closed_owners;
+  const auto cached_ancestors=cache.requested_split_ancestors;
   CHECK_THROWS_AS(static_cast<void>(tetra::close_world_conforming_cut(
       raw,&cache,canceled.get_token())),std::runtime_error);
   CHECK(cache.closed_owners==cached_owners);
+  CHECK(cache.requested_split_ancestors==cached_ancestors);
 
   split(tetra::WorldTetAddress::root(1U));
   const auto moved=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(moved==tetra::close_world_conforming_cut(raw));
   CHECK(cache.requested_owners==raw);
+  CHECK(cache.last_changed_requested_owners==9U);
+  CHECK(cache.last_split_ancestor_updates==1U);
   CHECK(cache.last_reused_masks==0U);
   CHECK(cache.last_rebuilt_masks==cache.green_masks.size());
   CHECK(cache.geometry.size()<=cache.maximum_entries);

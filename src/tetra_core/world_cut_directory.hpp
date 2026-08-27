@@ -162,12 +162,22 @@ struct WorldConformingClosureCacheEntry {
   auto operator<=>(const WorldConformingClosureCacheEntry&) const = default;
 };
 
+struct WorldConformingSplitAncestor {
+  WorldTetAddress address{};
+  std::uint32_t descendant_leaves{};
+  auto operator<=>(const WorldConformingSplitAncestor&) const = default;
+};
+
 struct WorldConformingClosureCache {
   std::vector<WorldConformingClosureCacheEntry> geometry;
   // Exact pre-closure cut which produced the retained masks. Two distinct
   // cuts may have the same owner count, so size alone is not a valid reuse
   // certificate.
   std::vector<WorldTetAddress> requested_owners;
+  // Exact reference-counted split ancestry of requested_owners. A changed cut
+  // updates this sparse entity set from its address difference instead of
+  // replaying every unchanged root path.
+  std::vector<WorldConformingSplitAncestor> requested_split_ancestors;
   std::vector<WorldTetAddress> closed_owners;
   std::vector<std::uint8_t> green_masks;
   std::size_t maximum_entries{750000U};
@@ -175,6 +185,8 @@ struct WorldConformingClosureCache {
   std::size_t last_reused_masks{};
   std::size_t last_rebuilt_masks{};
   std::size_t last_promoted_owners{};
+  std::size_t last_changed_requested_owners{};
+  std::size_t last_split_ancestor_updates{};
 };
 
 [[nodiscard]] WorldCutCheckpoint make_sparse_world_cut_checkpoint(
