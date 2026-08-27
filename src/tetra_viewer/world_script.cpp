@@ -218,6 +218,33 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.retained_promotion_proofs
           <<",\"retained_closure_proof_bytes\":"
           <<diagnostics.retained_closure_proof_bytes
+          <<",\"closure_dependency_blocks_reused\":"
+          <<diagnostics.closure_dependency_blocks_reused
+          <<",\"closure_dependency_blocks_rebuilt\":"
+          <<diagnostics.closure_dependency_blocks_rebuilt
+          <<",\"closure_dependency_candidate_blocks\":"
+          <<diagnostics.closure_dependency_candidate_blocks
+          <<",\"closure_dependency_owners_evaluated\":"
+          <<diagnostics.closure_dependency_owners_evaluated
+          <<",\"closure_masks_evaluated\":"
+          <<diagnostics.closure_masks_evaluated
+          <<",\"retained_closure_dependency_bytes\":"
+          <<diagnostics.retained_closure_dependency_bytes
+          <<",\"closure_proof_validation_ms\":"
+          <<diagnostics.closure_proof_validation_milliseconds
+          <<",\"closure_dependency_query_ms\":"
+          <<diagnostics.closure_dependency_query_milliseconds
+          <<",\"closure_dependency_publish_ms\":"
+          <<diagnostics.closure_dependency_publish_milliseconds
+          <<",\"closure_vertex_depth_ms\":"
+          <<diagnostics.closure_vertex_depth_milliseconds
+          <<",\"closure_fixed_point_ms\":"
+          <<diagnostics.closure_fixed_point_milliseconds
+          <<",\"closure_finalization_ms\":"
+          <<diagnostics.closure_finalization_milliseconds
+          <<",\"closure_geometry_merge_ms\":"
+          <<diagnostics.closure_geometry_merge_milliseconds
+          <<",\"closure_rounds\":"<<diagnostics.closure_rounds
           <<",\"maximum_volume_blocks\":"
           <<diagnostics.maximum_volume_blocks
           <<",\"promoted_volume_blocks\":"

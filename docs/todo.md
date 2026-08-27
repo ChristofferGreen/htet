@@ -48,17 +48,16 @@ not the active queue.
 - [x] Persist conservative, field-revisioned surface-candidate certificates in
       the retained sparse-world cache instead of reclassifying deep solid and
       high empty regions downstream.
-- [ ] Make conforming closure block-local and incremental: retain exact green
+- [x] Make conforming closure block-local and incremental: retain exact green
       masks, propagate only from changed address ranges, and prove unchanged
       blocks are not scanned or republished. Exact same-request reuse and
       field-revisioned masks are complete. The cold oracle now retains midpoint
       and incident-depth state across its monotone promotion rounds, nearly
       halving walking/near closure time. Cross-revision split ancestry is now
       reference counted: walking updates 4,930 ancestor entities for 24,624
-      changed leaves instead of replaying 565,451 root paths. The remaining
-      work is incremental removal/re-derivation of green-mask dependencies so
-      unchanged final owners are not evaluated. Exact old/new comparison now
-      measures that target: walking changes 20,176 of 737,938 final masks
+      changed leaves instead of replaying 565,451 root paths. Exact old/new
+      comparison then measured the remaining dependency target: walking changes
+      20,176 of 737,938 final masks
       (2.7%), and near motion changes 18,884 of 741,900 (2.5%). A full compact
       incidence graph plus fixed entity rings was exact on the measured route
       but slower and not a general propagation proof, so it was removed. Retain
@@ -69,9 +68,21 @@ not the active queue.
       promotions. Old proofs are validated against the new request, invalid
       causes are discarded, and surviving promotions form a certified lower
       bound. Walking re-derives 2,945 rather than about 24,600 promotions while
-      matching every cold hash; the reachable graph is about 11.7 MiB. The
-      remaining step is to drive owner/mask evaluation itself from invalid and
-      newly activated edge proofs instead of scanning the warm final cut.
+      matching every cold hash; promotion-reachable proofs were about 11.7 MiB,
+      and retaining all active-edge derivations for exact sparse deletion raises
+      the qualified proof state to about 21 MiB. A persistent three-generation
+      vertex-to-block directory now drives that
+      final step. Compact fingerprints select immutable candidate blocks, exact
+      keys reject collisions, endpoint incidence selects shared-edge owners,
+      and stable block identifiers are recycled. The complete active-edge proof
+      set makes old/new edge symmetric difference an exact mask-dirty oracle.
+      Walking evaluates about 48,000 dependency incidences and only the exact
+      dirty mask frontier instead of replaying roughly 738,000 owners; near
+      motion behaves similarly. Release closure fell from roughly 0.90 to
+      0.62 seconds for walking and from 0.87 to 0.63 seconds for near motion,
+      while hierarchy, full-volume, surface, and render hashes remain identical.
+      Large replacements deliberately use the global oracle when more than one
+      eighth of requested owners change.
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate

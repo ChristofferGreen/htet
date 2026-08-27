@@ -1445,7 +1445,7 @@ surface construction with the old builder retained as its oracle.
 - [x] Carry a field-revisioned conservative `may-cross` certificate from LOD
       selection into hierarchy/block state so deep solid and high empty owners
       do not need to be rediscovered during extraction.
-- [ ] Replace the flat all-owner closure refresh with retained block-local masks
+- [x] Replace the flat all-owner closure refresh with retained block-local masks
       and exact incremental conformity propagation from changed address ranges;
       untouched surface and summary blocks must not be rescanned. Identical
       requests reuse the exact retained result. The global fallback now retains
@@ -1458,10 +1458,16 @@ surface construction with the old builder retained as its oracle.
       useful frontier is only 20,176 of 737,938 masks for walking (2.7%) and
       18,884 of 741,900 for near motion (2.5%).
       A compact causal proof DAG now validates and retains promotion chains
-      across refinement and coarsening; walking re-derives 2,945 promotions,
-      uses about 11.7 MiB of proof state, and matches the cold oracle. The warm
-      fixed-point kernel still scans unchanged owners and remains the final
-      unchecked portion of this item.
+      across refinement and coarsening; walking re-derives 2,945 promotions.
+      The completed path retains all active-edge derivations plus an immutable
+      three-generation vertex/owner directory. Endpoint intersection and exact
+      key verification drive sparse green propagation, vertex grading, mask
+      promotion, and old/new active-edge mask invalidation. Walking evaluates
+      about 48,000 dependency incidences and closes in about 0.62 seconds; near
+      motion evaluates about 46,000 and closes in about 0.63 seconds. Full-
+      volume, hierarchy, surface, and render hashes remain identical, forced
+      fingerprint collisions are covered, and changes above one eighth of the
+      requested cut deliberately use the global oracle.
 - [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.

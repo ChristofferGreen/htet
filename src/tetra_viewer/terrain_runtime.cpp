@@ -751,6 +751,33 @@ WorldLodCutSelection select_world_lod_cut(
         closure_cache->proof_nodes.capacity()*sizeof(tetra::WorldClosureProofNode)+
         closure_cache->promotion_proofs.capacity()*
             sizeof(tetra::WorldClosurePromotionProof);
+    result.metrics.closure_dependency_blocks_reused=
+        closure_cache->last_dependency_blocks_reused;
+    result.metrics.closure_dependency_blocks_rebuilt=
+        closure_cache->last_dependency_blocks_rebuilt;
+    result.metrics.closure_dependency_candidate_blocks=
+        closure_cache->last_dependency_candidate_blocks;
+    result.metrics.closure_dependency_owners_evaluated=
+        closure_cache->last_dependency_owners_evaluated;
+    result.metrics.closure_masks_evaluated=
+        closure_cache->last_masks_evaluated;
+    result.metrics.retained_closure_dependency_bytes=
+        closure_cache->last_dependency_retained_bytes;
+    result.metrics.closure_proof_validation_milliseconds=
+        closure_cache->last_proof_validation_milliseconds;
+    result.metrics.closure_dependency_query_milliseconds=
+        closure_cache->last_dependency_query_milliseconds;
+    result.metrics.closure_dependency_publish_milliseconds=
+        closure_cache->last_dependency_publish_milliseconds;
+    result.metrics.closure_vertex_depth_milliseconds=
+        closure_cache->last_vertex_depth_milliseconds;
+    result.metrics.closure_fixed_point_milliseconds=
+        closure_cache->last_fixed_point_milliseconds;
+    result.metrics.closure_finalization_milliseconds=
+        closure_cache->last_closure_finalization_milliseconds;
+    result.metrics.closure_geometry_merge_milliseconds=
+        closure_cache->last_geometry_merge_milliseconds;
+    result.metrics.closure_rounds=closure_cache->last_closure_rounds;
   }
   result.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-closure_started).count();
@@ -993,6 +1020,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(tetra::WorldClosureProofNode)+
       surface_cache.closure.promotion_proofs.capacity()*
           sizeof(tetra::WorldClosurePromotionProof)+
+      surface_cache.closure.last_dependency_retained_bytes+
       surface_cache.surface_certificates.capacity()*
           sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
       surface_cache.hierarchy.capacity()*
@@ -1050,6 +1078,33 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.retained_promotion_proofs=selection.metrics.retained_promotion_proofs;
   diagnostics.retained_closure_proof_bytes=
       selection.metrics.retained_closure_proof_bytes;
+  diagnostics.closure_dependency_blocks_reused=
+      selection.metrics.closure_dependency_blocks_reused;
+  diagnostics.closure_dependency_blocks_rebuilt=
+      selection.metrics.closure_dependency_blocks_rebuilt;
+  diagnostics.closure_dependency_candidate_blocks=
+      selection.metrics.closure_dependency_candidate_blocks;
+  diagnostics.closure_dependency_owners_evaluated=
+      selection.metrics.closure_dependency_owners_evaluated;
+  diagnostics.closure_masks_evaluated=
+      selection.metrics.closure_masks_evaluated;
+  diagnostics.retained_closure_dependency_bytes=
+      selection.metrics.retained_closure_dependency_bytes;
+  diagnostics.closure_proof_validation_milliseconds=
+      selection.metrics.closure_proof_validation_milliseconds;
+  diagnostics.closure_dependency_query_milliseconds=
+      selection.metrics.closure_dependency_query_milliseconds;
+  diagnostics.closure_dependency_publish_milliseconds=
+      selection.metrics.closure_dependency_publish_milliseconds;
+  diagnostics.closure_vertex_depth_milliseconds=
+      selection.metrics.closure_vertex_depth_milliseconds;
+  diagnostics.closure_fixed_point_milliseconds=
+      selection.metrics.closure_fixed_point_milliseconds;
+  diagnostics.closure_finalization_milliseconds=
+      selection.metrics.closure_finalization_milliseconds;
+  diagnostics.closure_geometry_merge_milliseconds=
+      selection.metrics.closure_geometry_merge_milliseconds;
+  diagnostics.closure_rounds=selection.metrics.closure_rounds;
   diagnostics.maximum_volume_blocks=profile.maximum_volume_blocks;
   diagnostics.player_collision_volume_blocks=
       residency.metrics.player_collision_blocks;

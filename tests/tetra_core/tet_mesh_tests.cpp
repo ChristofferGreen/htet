@@ -1328,12 +1328,19 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.closure_proof_nodes>initial.retained_promotion_proofs);
   CHECK(initial.retained_promotion_proofs==initial.promoted_closure_owners);
   CHECK(initial.retained_closure_proof_bytes>0U);
+  CHECK(initial.retained_closure_dependency_bytes>0U);
+  CHECK(initial.closure_dependency_blocks_rebuilt>0U);
+  CHECK(initial.closure_dependency_blocks_reused==0U);
+  CHECK(initial.closure_dependency_candidate_blocks==0U);
+  CHECK(initial.closure_dependency_owners_evaluated==0U);
+  CHECK(initial.closure_rounds>0U);
   CHECK(initial.changed_closure_requested_owners==
         initial.closure_requested_owners_scanned);
   CHECK(initial.updated_split_ancestors>0U);
   CHECK(initial.updated_split_ancestors<
         initial.closure_requested_owners_scanned);
   CHECK(initial.rebuilt_closure_masks==initial.logical_cells);
+  CHECK(initial.closure_masks_evaluated==initial.logical_cells);
   CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
   CHECK(initial.hierarchy_demand_epoch==1U);
   CHECK(initial.hierarchy_demand_records==initial.hierarchy_blocks);
@@ -1452,6 +1459,8 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
         runtime.diagnostics().changed_closure_requested_owners);
   CHECK(runtime.diagnostics().promoted_closure_owners<
         runtime.diagnostics().retained_promotion_proofs);
+  CHECK(runtime.diagnostics().closure_dependency_blocks_reused>0U);
+  CHECK(runtime.diagnostics().closure_dependency_blocks_rebuilt>0U);
   CHECK(runtime.diagnostics().reused_surface_blocks>0U);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
@@ -2979,9 +2988,42 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
     CHECK((proof.kind==tetra::WorldClosureProofKind::vertex_promotion||
            proof.kind==tetra::WorldClosureProofKind::mask_promotion));
   }
+  std::set<tetra::WorldEdgeKey> retained_active_edges;
+  for(const auto& proof:cache.proof_nodes)
+    if(proof.kind==tetra::WorldClosureProofKind::split_ancestor_edge||
+       proof.kind==tetra::WorldClosureProofKind::green_edge||
+       proof.kind==tetra::WorldClosureProofKind::promotion_edge)
+      retained_active_edges.insert(proof.edge);
+  constexpr std::array<std::array<std::size_t,2>,6> owner_edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  REQUIRE(cache.closed_owners.size()==cache.green_masks.size());
+  for(std::size_t owner=0;owner<cache.closed_owners.size();++owner){
+    const auto keys=tetra::world_tetrahedron_vertex_keys(
+        cache.closed_owners[owner]);
+    for(std::size_t edge=0;edge<owner_edges.size();++edge)
+      CHECK(retained_active_edges.contains(tetra::world_edge_key(
+                keys[owner_edges[edge][0]],keys[owner_edges[edge][1]]))==
+            ((cache.green_masks[owner]&(1U<<edge))!=0U));
+  }
   CHECK_FALSE(cache.requested_split_ancestors.empty());
   CHECK(std::ranges::is_sorted(cache.requested_split_ancestors,{},
       &tetra::WorldConformingSplitAncestor::address));
+  CHECK_FALSE(cache.dependency_blocks.empty());
+  CHECK(std::ranges::is_sorted(cache.dependency_blocks,{},
+      [](const auto& block){return block->id;}));
+  CHECK(std::ranges::is_sorted(cache.vertex_block_records));
+  CHECK(cache.last_dependency_blocks_rebuilt==cache.dependency_blocks.size());
+  CHECK(cache.last_dependency_blocks_reused==0U);
+  CHECK(cache.last_dependency_retained_bytes>0U);
+  CHECK_FALSE(cache.vertex_depths.empty());
+  CHECK(std::ranges::is_sorted(cache.vertex_depths,{},
+      &tetra::WorldClosureVertexDepth::key));
+  for(const auto& entry:cache.vertex_depths){
+    CHECK(std::ranges::binary_search(cache.closed_owners,entry.owner));
+    CHECK(entry.owner.red_depth()==entry.depth);
+    const auto keys=tetra::world_tetrahedron_vertex_keys(entry.owner);
+    CHECK(std::ranges::find(keys,entry.key)!=keys.end());
+  }
   const auto repeated=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(repeated==cold);
   CHECK(cache.geometry.size()==populated);
@@ -2990,18 +3032,30 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(cache.last_rebuilt_masks==0U);
   CHECK(cache.last_changed_requested_owners==0U);
   CHECK(cache.last_split_ancestor_updates==0U);
+  CHECK(cache.last_dependency_blocks_reused==cache.dependency_blocks.size());
+  CHECK(cache.last_dependency_blocks_rebuilt==0U);
 
   std::stop_source canceled;canceled.request_stop();
   const auto cached_owners=cache.closed_owners;
   const auto cached_ancestors=cache.requested_split_ancestors;
   const auto cached_proofs=cache.proof_nodes;
   const auto cached_promotions=cache.promotion_proofs;
+  const auto cached_dependency_blocks=cache.dependency_blocks;
+  const auto cached_vertex_records=cache.vertex_block_records;
+  const auto cached_free_dependency_ids=cache.free_dependency_block_ids;
+  const auto cached_next_dependency_id=cache.next_dependency_block_id;
+  const auto cached_vertex_depths=cache.vertex_depths;
   CHECK_THROWS_AS(static_cast<void>(tetra::close_world_conforming_cut(
       raw,&cache,canceled.get_token())),std::runtime_error);
   CHECK(cache.closed_owners==cached_owners);
   CHECK(cache.requested_split_ancestors==cached_ancestors);
   CHECK(cache.proof_nodes==cached_proofs);
   CHECK(cache.promotion_proofs==cached_promotions);
+  CHECK(cache.dependency_blocks==cached_dependency_blocks);
+  CHECK(cache.vertex_block_records==cached_vertex_records);
+  CHECK(cache.free_dependency_block_ids==cached_free_dependency_ids);
+  CHECK(cache.next_dependency_block_id==cached_next_dependency_id);
+  CHECK(cache.vertex_depths==cached_vertex_depths);
 
   split(tetra::WorldTetAddress::root(1U));
   const auto moved=tetra::close_world_conforming_cut(raw,&cache);
@@ -3012,6 +3066,34 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(cache.last_reused_masks==cache.green_masks.size());
   CHECK(cache.last_rebuilt_masks==0U);
   CHECK(cache.geometry.size()<=cache.maximum_entries);
+  CHECK(cache.last_dependency_blocks_reused>0U);
+  CHECK(cache.last_dependency_blocks_reused+
+        cache.last_dependency_blocks_rebuilt==cache.dependency_blocks.size());
+
+  tetra::WorldConformingClosureCache collision_cache;
+  collision_cache.dependency_fingerprint_bits=1U;
+  CHECK(tetra::close_world_conforming_cut(raw,&collision_cache)==
+        tetra::close_world_conforming_cut(raw));
+  CHECK_FALSE(collision_cache.vertex_block_records.empty());
+  CHECK(std::ranges::all_of(collision_cache.vertex_block_records,
+      [](std::uint64_t record){return (record>>32U)<=1U;}));
+  CHECK(std::ranges::adjacent_find(collision_cache.vertex_block_records,
+      [](std::uint64_t first,std::uint64_t second){
+        return (first>>32U)==(second>>32U);
+      })!=collision_cache.vertex_block_records.end());
+  split(tetra::WorldTetAddress::root(2U));
+  const auto collision_warm=tetra::close_world_conforming_cut(
+      raw,&collision_cache);
+  tetra::WorldConformingClosureCache collision_cold;
+  collision_cold.dependency_fingerprint_bits=1U;
+  CHECK(collision_warm==tetra::close_world_conforming_cut(
+      raw,&collision_cold));
+  CHECK(collision_cache.green_masks==collision_cold.green_masks);
+  CHECK(collision_cache.last_dependency_candidate_blocks>0U);
+  CHECK(collision_cache.last_dependency_owners_evaluated>0U);
+  collision_cache.dependency_fingerprint_bits=0U;
+  CHECK_THROWS_AS(static_cast<void>(tetra::close_world_conforming_cut(
+      raw,&collision_cache)),std::invalid_argument);
 }
 
 TEST_CASE("causal world closure proofs survive alternating refinement and coarsening") {
@@ -3019,6 +3101,7 @@ TEST_CASE("causal world closure proofs survive alternating refinement and coarse
   for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
     requested.push_back(tetra::WorldTetAddress::root(root));
   tetra::WorldConformingClosureCache retained;
+  bool observed_sparse_dependency_query=false;
   for(unsigned int step=0;step<24U;++step){
     if(step<14U||step%3U!=0U){
       const auto candidate=static_cast<std::size_t>(
@@ -3050,14 +3133,19 @@ TEST_CASE("causal world closure proofs survive alternating refinement and coarse
     tetra::WorldConformingClosureCache cold;
     const auto expected=tetra::close_world_conforming_cut(requested,&cold);
     const auto actual=tetra::close_world_conforming_cut(requested,&retained);
+    observed_sparse_dependency_query|=
+        retained.last_dependency_owners_evaluated>0U;
     CHECK(actual==expected);
     CHECK(retained.green_masks==cold.green_masks);
+    CHECK(retained.vertex_depths==cold.vertex_depths);
+    CHECK(retained.last_masks_evaluated<=retained.closed_owners.size());
     CHECK(retained.last_promoted_owners<=retained.promotion_proofs.size());
     for(std::size_t proof=0;proof<retained.proof_nodes.size();++proof)
       for(std::size_t input=0;
           input<retained.proof_nodes[proof].input_count;++input)
         CHECK(retained.proof_nodes[proof].inputs[input]<proof);
   }
+  CHECK(observed_sparse_dependency_query);
 }
 
 TEST_CASE("native sparse world surface is watertight and publishable without a mesh") {

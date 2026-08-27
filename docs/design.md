@@ -2535,8 +2535,9 @@ the same canonical midpoint requirements as a cold replay. On the production
 route, walking changed 24,624 of 565,451 requested leaves and touched 4,930
 ancestor entities; the near move changed 24,336 of 570,197 leaves and touched
 4,875 ancestors. Far moves and reversals deliberately expand rather than
-pretending to be local. Green-mask fixed-point evaluation still traverses the
-final owner array, so this certificate is not yet the completed closure gate.
+pretending to be local. At this stage green-mask fixed-point evaluation still
+traversed the final owner array, so the certificate was not yet the completed
+closure gate.
 Exact address-and-mask comparison now exposes the size of that remaining
 frontier without conflating evaluation with publication: walking retains
 717,762 of 737,938 masks and near motion retains 723,016 of 741,900. The next
@@ -2568,8 +2569,29 @@ new requested cut into a proven lower bound; invalid proofs are omitted and the
 monotone oracle re-derives only what is still required. Alternating refinement
 and coarsening tests and all production routes match cold owner, mask, hierarchy,
 volume, surface, and render hashes. Walking needs 2,945 new promotions instead
-of roughly 24,600. The fixed-point kernel still scans the warm owner stream, so
-causal proof validation is necessary progress but not the final locality gate.
+of roughly 24,600.
+
+The locality gate is now complete for ordinary camera motion. Every active-edge
+derivation, not only promotion-reachable derivations, remains in the compact
+proof DAG. A separate immutable three-generation dependency directory maps
+fingerprinted vertices to stable block identifiers and then to local owner
+indices. Edge lookup intersects both endpoints and always verifies exact dyadic
+keys, so deliberately forced fingerprint collisions preserve the cold result.
+Old/new active-edge symmetric difference is therefore a proof-complete dirty
+set for restricted-green masks; changed deepest-vertex owners use the same
+directory. Unchanged owner geometry is carried through promotion rounds, and
+only newly created child keys are evaluated.
+
+This retained index is not another topology. It accelerates discovery over the
+same canonical addresses and may conservatively return extra candidates. Its
+stable identifiers are recycled, unchanged blocks retain shared identity, and
+large replacements affecting more than one eighth of the requested cut use the
+global oracle rather than paying sparse-index overhead for dense work. Release
+walking and near updates evaluate tens of thousands of exact incidences instead
+of repeatedly scanning roughly 740,000 owners, reduce closure to about 0.62 and
+0.63 seconds, and retain exact hierarchy, full-volume, surface, and render
+hashes. Dependency and deepest-vertex state costs about 53 MiB at those poses;
+that cost follows the active surface cut and is included in runtime budgets.
 
 
 ---

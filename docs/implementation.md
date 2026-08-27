@@ -356,7 +356,36 @@ point; invalid branches disappear and normal monotone closure re-derives them.
 The production route remains bit-identical, alternating split/merge sequences
 match a fresh oracle at every step, and walking re-derives 2,945 promotions
 while retaining a roughly 11.7 MiB graph. Sparse edge-to-owner scheduling is
-still required to stop evaluating unchanged warm owners.
+now implemented by retaining the complete active-edge portion of that graph.
+
+Warm closure owns immutable three-generation dependency blocks. Each block
+retains its sorted owner addresses and compact fingerprint-to-local-owner
+records; one global sorted fingerprint-to-stable-block stream finds candidates.
+An edge lookup intersects its two endpoint incidences before reconstructing
+the exact owner keys, so a fingerprint collision can only add work and can
+never change topology. A narrowed one-bit fingerprint release test exercises
+that collision path against a cold oracle. Unchanged blocks retain their shared
+snapshot identity, changed blocks receive recycled stable identifiers, and
+sorted record subtraction/merge avoids rebuilding the complete index.
+
+The old and new active-edge sets are exact because every split-ancestor,
+restricted-green, and promotion-edge derivation remains in the causal DAG.
+Their symmetric difference identifies precisely which retained masks require
+reevaluation. Changed deepest-vertex owners are recovered through the same
+directory, while unchanged depths and geometry remain cached. Within a
+promotion transaction, unchanged owner geometry is carried through a sorted
+merge and only child geometry is generated. Large changes affecting more than
+one eighth of the requested cut deliberately fall back to the global oracle.
+
+On the qualified release route, walking closure measures about 0.62 seconds
+and near closure about 0.63 seconds, compared with roughly 0.90 and 0.87
+seconds for the retained global path. Walking performs about 48,000 exact
+dependency-owner evaluations rather than repeated scans of 737,938 final
+owners; near performs about 46,000 against 741,900. The dependency and retained
+depth state occupies about 52--53 MiB at those poses, and the complete active
+proof graph about 21--22 MiB. Stationary, walking, near, far, reversal,
+teleport, and rapid-supersession hierarchy, conforming-volume, connected-
+surface, and render hashes remain identical to the cold-oracle baseline.
 
 ## Headless experiment scripting
 

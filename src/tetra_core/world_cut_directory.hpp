@@ -168,6 +168,13 @@ struct WorldConformingSplitAncestor {
   auto operator<=>(const WorldConformingSplitAncestor&) const = default;
 };
 
+struct WorldClosureVertexDepth {
+  WorldVertexKey key{};
+  std::uint8_t depth{};
+  WorldTetAddress owner{};
+  auto operator<=>(const WorldClosureVertexDepth&) const = default;
+};
+
 enum class WorldClosureProofKind : std::uint8_t {
   owner_existence,
   split_ancestor_edge,
@@ -192,6 +199,14 @@ struct WorldClosurePromotionProof {
   auto operator<=>(const WorldClosurePromotionProof&) const = default;
 };
 
+struct WorldClosureDependencyBlock {
+  HierarchyBlockId id{};
+  std::uint32_t stable_id{};
+  std::vector<WorldTetAddress> owners;
+  // fingerprint << 32 | owner index, sorted for exact local incidence lookup.
+  std::vector<std::uint64_t> vertex_owner_records;
+};
+
 struct WorldConformingClosureCache {
   std::vector<WorldConformingClosureCacheEntry> geometry;
   // Exact pre-closure cut which produced the retained masks. Two distinct
@@ -202,10 +217,19 @@ struct WorldConformingClosureCache {
   // updates this sparse entity set from its address difference instead of
   // replaying every unchanged root path.
   std::vector<WorldConformingSplitAncestor> requested_split_ancestors;
+  std::vector<WorldClosureVertexDepth> vertex_depths;
   std::vector<WorldTetAddress> closed_owners;
   std::vector<std::uint8_t> green_masks;
   std::vector<WorldClosureProofNode> proof_nodes;
   std::vector<WorldClosurePromotionProof> promotion_proofs;
+  std::vector<std::shared_ptr<const WorldClosureDependencyBlock>> dependency_blocks;
+  std::vector<std::uint64_t> vertex_block_records;
+  std::vector<std::uint32_t> free_dependency_block_ids;
+  std::uint32_t next_dependency_block_id{};
+  // Production uses all 32 fingerprint bits. Tests may deliberately narrow
+  // this value to prove that hash collisions only add exact-check work.
+  std::uint8_t dependency_fingerprint_bits{32U};
+  std::uint8_t indexed_dependency_fingerprint_bits{32U};
   std::size_t maximum_entries{750000U};
   std::size_t last_requested_owners_scanned{};
   std::size_t last_reused_masks{};
@@ -213,6 +237,20 @@ struct WorldConformingClosureCache {
   std::size_t last_promoted_owners{};
   std::size_t last_changed_requested_owners{};
   std::size_t last_split_ancestor_updates{};
+  std::size_t last_dependency_blocks_reused{};
+  std::size_t last_dependency_blocks_rebuilt{};
+  std::size_t last_dependency_candidate_blocks{};
+  std::size_t last_dependency_owners_evaluated{};
+  std::size_t last_masks_evaluated{};
+  std::size_t last_dependency_retained_bytes{};
+  double last_proof_validation_milliseconds{};
+  double last_dependency_query_milliseconds{};
+  double last_dependency_publish_milliseconds{};
+  double last_vertex_depth_milliseconds{};
+  double last_fixed_point_milliseconds{};
+  double last_closure_finalization_milliseconds{};
+  double last_geometry_merge_milliseconds{};
+  std::size_t last_closure_rounds{};
 };
 
 [[nodiscard]] WorldCutCheckpoint make_sparse_world_cut_checkpoint(
