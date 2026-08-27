@@ -2036,6 +2036,10 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     cache->last_dependency_owners_evaluated=0U;
     cache->last_masks_evaluated=0U;
     cache->last_proof_validation_milliseconds=0.0;
+    cache->last_owner_delta_milliseconds=0.0;
+    cache->last_proof_remap_milliseconds=0.0;
+    cache->last_warm_geometry_milliseconds=0.0;
+    cache->last_ancestry_seed_milliseconds=0.0;
     cache->last_dependency_query_milliseconds=0.0;
     cache->last_dependency_publish_milliseconds=0.0;
     cache->last_vertex_depth_milliseconds=0.0;
@@ -2054,6 +2058,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   std::vector<WorldClosurePromotionProof> retained_promotions;
   std::vector<WorldEdgeKey> invalidated_edges;
   std::vector<WorldTetAddress> changed_split_ancestors;
+  const auto owner_delta_started=std::chrono::steady_clock::now();
   struct SplitAncestorDelta {
     WorldTetAddress address{};
     std::int64_t descendants{};
@@ -2093,6 +2098,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     }
     ancestor_deltas.resize(output);
   }
+  if(cache!=nullptr)cache->last_owner_delta_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-owner_delta_started).count();
   const auto proof_validation_started=std::chrono::steady_clock::now();
   if(cache!=nullptr&&!cache->requested_owners.empty()&&
      !cache->proof_nodes.empty()&&
@@ -2230,6 +2238,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   if(cache!=nullptr)cache->last_proof_validation_milliseconds=
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-proof_validation_started).count();
+  const auto proof_remap_started=std::chrono::steady_clock::now();
   std::size_t promoted_owners{};
   constexpr std::uint32_t no_proof=std::numeric_limits<std::uint32_t>::max();
   std::vector<WorldClosureProofNode> proof_nodes;
@@ -2301,6 +2310,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     owner_existence_proofs.emplace(address,proof);
     return proof;
   };
+  if(cache!=nullptr)cache->last_proof_remap_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-proof_remap_started).count();
 
   const auto load_vertex_keys=[&](std::span<const WorldTetAddress> requested){
     std::vector<std::array<WorldVertexKey,4>> result(requested.size());
@@ -2353,7 +2365,12 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     return result;
   };
 
+  const auto warm_geometry_started=std::chrono::steady_clock::now();
   auto owner_keys=load_vertex_keys(owners);
+  if(cache!=nullptr)cache->last_warm_geometry_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-warm_geometry_started).count();
+  const auto ancestry_seed_started=std::chrono::steady_clock::now();
   bool sparse_warm_start=false;
   std::vector<WorldEdgeKey> promoted_frontier_edges;
   std::vector<WorldEdgeKey> derived_frontier_edges;
@@ -2514,6 +2531,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
             WorldClosureProofKind::split_ancestor_edge,
             ordered_ancestors[ancestor],{},key));
     }
+  if(cache!=nullptr)cache->last_ancestry_seed_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-ancestry_seed_started).count();
   // Red promotion is monotone during one closure transaction. Retain the
   // deepest incident depth and active midpoint sets between rounds: replacing
   // a parent by its children can only raise a vertex maximum and adds exactly

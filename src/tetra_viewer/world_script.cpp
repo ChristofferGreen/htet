@@ -518,6 +518,14 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<milliseconds(closure_started,closure_finished)
           <<",\"closure_proof_validation_ms\":"
           <<cache.closure.last_proof_validation_milliseconds
+          <<",\"closure_owner_delta_ms\":"
+          <<cache.closure.last_owner_delta_milliseconds
+          <<",\"closure_proof_remap_ms\":"
+          <<cache.closure.last_proof_remap_milliseconds
+          <<",\"closure_warm_geometry_ms\":"
+          <<cache.closure.last_warm_geometry_milliseconds
+          <<",\"closure_ancestry_seed_ms\":"
+          <<cache.closure.last_ancestry_seed_milliseconds
           <<",\"closure_dependency_query_ms\":"
           <<cache.closure.last_dependency_query_milliseconds
           <<",\"closure_dependency_publish_ms\":"

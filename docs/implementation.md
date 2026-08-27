@@ -175,6 +175,15 @@ and 332 ms surface), so operation-budget tuning cannot reach 250 ms. Closure
 owners/proofs and surface certificates/patches must publish as changed block
 arrays without reconstructing their complete flat streams.
 
+Non-overlapping closure instrumentation confirms the first block conversion
+target. In a representative 512-operation slice, owner-delta construction is
+about 1.8 ms and retained-proof remapping about 3.3 ms, while copying retained
+geometry for the complete 736,000-owner warm cut costs about 136 ms and global
+ancestry/midpoint seeding another 69 ms. The next closure representation must
+therefore expose indexed immutable owner-key blocks directly to the fixed
+point and dependency publisher; optimizing proof remapping further would not
+materially affect latency.
+
 ## Technology choices
 
 - C++23 where supported.

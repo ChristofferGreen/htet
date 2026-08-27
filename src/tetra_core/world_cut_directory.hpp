@@ -255,6 +255,10 @@ struct WorldConformingClosureCache {
   std::vector<HierarchyBlockId> last_changed_mask_blocks;
   std::size_t last_dependency_retained_bytes{};
   double last_proof_validation_milliseconds{};
+  double last_owner_delta_milliseconds{};
+  double last_proof_remap_milliseconds{};
+  double last_warm_geometry_milliseconds{};
+  double last_ancestry_seed_milliseconds{};
   double last_dependency_query_milliseconds{};
   double last_dependency_publish_milliseconds{};
   double last_vertex_depth_milliseconds{};
