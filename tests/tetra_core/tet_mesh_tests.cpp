@@ -3806,6 +3806,72 @@ TEST_CASE("retained world checkpoint reuses payloads and rolls back invalid adop
   CHECK(directory.revision()==4U);
 }
 
+TEST_CASE("retained complete cut rebuilds only changed hierarchy paths") {
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  const auto split=[](auto leaves,tetra::WorldTetAddress owner){
+    const auto found=std::ranges::find(leaves,owner);REQUIRE(found!=leaves.end());
+    leaves.erase(found);
+    for(std::uint8_t child=0;child<8U;++child)
+      leaves.push_back(owner.child(child));
+    std::ranges::sort(leaves);return leaves;
+  };
+  const auto first=split(coarse,coarse.front());
+  const auto second=split(first,coarse.front().child(3U));
+  auto initial=tetra::make_complete_world_cut_checkpoint(
+      first,3U,1U,tetra::HierarchyResidencyTier::surface);
+  tetra::WorldCutDirectory directory(initial);
+  const auto retained_root=directory.hierarchy_blocks().back();
+  auto expected=tetra::make_complete_world_cut_checkpoint(
+      second,3U,2U,tetra::HierarchyResidencyTier::surface);
+  std::vector<tetra::HierarchyBlockId> expected_blocks;
+  for(const auto& block:expected.blocks)expected_blocks.push_back(block.id);
+  std::vector<tetra::WorldTetAddress> changed{
+      coarse.front().child(3U)};
+  for(std::uint8_t child=0;child<8U;++child)
+    changed.push_back(coarse.front().child(3U).child(child));
+  std::ranges::sort(changed);
+  const auto refined=directory.replace_complete_cut(
+      second,changed,expected_blocks,{},2U);
+  tetra::WorldCutDirectory expected_directory(expected);
+  CHECK(directory.canonical_cut_hash()==expected_directory.canonical_cut_hash());
+  REQUIRE(directory.hierarchy_blocks().size()==expected.blocks.size());
+  for(std::size_t block=0;block<expected.blocks.size();++block){
+    CHECK(directory.hierarchy_blocks()[block]->id==expected.blocks[block].id);
+    CHECK(directory.hierarchy_blocks()[block]->residency==
+          expected.blocks[block].residency);
+    CHECK(directory.hierarchy_blocks()[block]->logical_owners==
+          expected.blocks[block].logical_owners);
+    CHECK(directory.hierarchy_blocks()[block]->resident_records==
+          expected.blocks[block].resident_records);
+  }
+  CHECK(refined.metrics.loaded_blocks>0U);
+  CHECK(refined.metrics.reused_blocks>0U);
+  CHECK(directory.hierarchy_blocks().back()==retained_root);
+
+  auto coarse_expected=tetra::make_complete_world_cut_checkpoint(
+      first,3U,3U,tetra::HierarchyResidencyTier::surface);
+  std::vector<tetra::HierarchyBlockId> coarse_blocks;
+  for(const auto& block:coarse_expected.blocks)coarse_blocks.push_back(block.id);
+  const auto simplified=directory.replace_complete_cut(
+      first,changed,coarse_blocks,{},3U);
+  tetra::WorldCutDirectory coarse_directory(coarse_expected);
+  CHECK(directory.canonical_cut_hash()==coarse_directory.canonical_cut_hash());
+  REQUIRE(directory.hierarchy_blocks().size()==coarse_expected.blocks.size());
+  for(std::size_t block=0;block<coarse_expected.blocks.size();++block){
+    CHECK(directory.hierarchy_blocks()[block]->id==coarse_expected.blocks[block].id);
+    CHECK(directory.hierarchy_blocks()[block]->residency==
+          coarse_expected.blocks[block].residency);
+    CHECK(directory.hierarchy_blocks()[block]->logical_owners==
+          coarse_expected.blocks[block].logical_owners);
+    CHECK(directory.hierarchy_blocks()[block]->resident_records==
+          coarse_expected.blocks[block].resident_records);
+  }
+  CHECK(simplified.metrics.evicted_blocks+simplified.metrics.loaded_blocks>0U);
+  CHECK(simplified.metrics.reused_blocks>0U);
+}
+
 TEST_CASE("world closure crosses root seams and shared ownership is canonical") {
   auto oracle=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   tetra::WorldCutDirectory directory(tetra::make_world_cut_checkpoint(oracle,1U,1U));

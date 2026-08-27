@@ -360,6 +360,23 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] WorldDirectoryUpdate adopt_retained(
       WorldCutDirectory&& candidate);
 
+  // Replaces one complete logical cut by rebuilding only hierarchy blocks on
+  // changed owner paths or with changed residency. The changed-owner manifest
+  // may be a conservative superset (for example, closure mask changes).
+  [[nodiscard]] WorldDirectoryUpdate replace_complete_cut(
+      std::span<const WorldTetAddress> logical_leaves,
+      std::span<const WorldTetAddress> changed_owners,
+      std::span<const HierarchyBlockId> surface_blocks,
+      std::span<const HierarchyBlockId> volume_blocks,
+      std::uint64_t new_revision);
+  [[nodiscard]] WorldDirectoryUpdate replace_complete_cut(
+      std::span<const std::shared_ptr<const WorldClosureDependencyBlock>>
+          owner_blocks,
+      std::span<const WorldTetAddress> changed_owners,
+      std::span<const HierarchyBlockId> surface_blocks,
+      std::span<const HierarchyBlockId> volume_blocks,
+      std::uint64_t new_revision);
+
  private:
   [[nodiscard]] std::shared_ptr<const HierarchyBlockSnapshot> find_block(
       HierarchyBlockId id,unsigned int* comparisons=nullptr) const;

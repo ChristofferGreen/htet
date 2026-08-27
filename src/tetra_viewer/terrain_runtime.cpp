@@ -125,8 +125,9 @@ void apply_world_residency_plan(
     throw std::invalid_argument("world residency plan names an absent block");
 }
 
-WorldHierarchyDemandPlan plan_world_hierarchy_demand(
-    const tetra::WorldCutCheckpoint& checkpoint,
+template<class Blocks,class BlockValue>
+WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
+    const Blocks& blocks,std::uint64_t revision,BlockValue block_value,
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
@@ -134,7 +135,7 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand(
   if(configuration.maximum_blocks<tetra::bcc_root_tetrahedron_count)
     throw std::invalid_argument(
         "world hierarchy budget cannot hold the root complex");
-  if(checkpoint.blocks.size()>configuration.maximum_blocks)
+  if(blocks.size()>configuration.maximum_blocks)
     throw std::length_error("world hierarchy demand exceeds its block budget");
   if(configuration.player_radius<0.0||
      !std::isfinite(configuration.player_radius)||
@@ -295,11 +296,12 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand(
         previous->records,id,{},&WorldHierarchyDemandRecord::id);
     return found!=previous->records.end()&&found->id==id?&*found:nullptr;
   };
-  result.state.records.reserve(checkpoint.blocks.size());
-  for(const auto& block:checkpoint.blocks){
+  result.state.records.reserve(blocks.size());
+  for(const auto& stored_block:blocks){
+    const auto& block=block_value(stored_block);
     const auto block_bounds=bounds(block.id);
     WorldHierarchyDemandRecord record;
-    record.id=block.id;record.revision=checkpoint.revision;
+    record.id=block.id;record.revision=revision;
     record.residency=block.residency;
     const bool surface_authority=
         block.residency!=tetra::HierarchyResidencyTier::summary;
@@ -405,6 +407,30 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand(
     hash(&entry.last_visible_epoch,sizeof(entry.last_visible_epoch));
   }
   return result;
+}
+
+WorldHierarchyDemandPlan plan_world_hierarchy_demand(
+    const tetra::WorldCutCheckpoint& checkpoint,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
+    WorldHierarchyDemandConfiguration configuration,
+    const WorldHierarchyDemandState* previous) {
+  return plan_world_hierarchy_demand_impl(
+      checkpoint.blocks,checkpoint.revision,[](const auto& block)->const auto&{
+        return block;
+      },domain,camera,pins,configuration,previous);
+}
+
+WorldHierarchyDemandPlan plan_world_hierarchy_demand(
+    const tetra::WorldCutDirectory& directory,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
+    WorldHierarchyDemandConfiguration configuration,
+    const WorldHierarchyDemandState* previous) {
+  return plan_world_hierarchy_demand_impl(
+      directory.hierarchy_blocks(),directory.revision(),
+      [](const auto& block)->const auto&{return *block;},
+      domain,camera,pins,configuration,previous);
 }
 
 MonolithicTerrainRuntime::MonolithicTerrainRuntime(
@@ -1035,7 +1061,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     SparseWorldSurfaceCache surface_cache,
     WorldHierarchyDemandState hierarchy_demand,
     std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation,
-    tetra::GeometryExecutor* executor) {
+    tetra::GeometryExecutor* executor,
+    std::unique_ptr<tetra::WorldCutDirectory> directory) {
   std::size_t completed_work_units{};
   try{
   const auto started=std::chrono::steady_clock::now();
@@ -1065,15 +1092,30 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   std::set<tetra::HierarchyBlockId> previous_volume_blocks;
   for(const auto& block:surface_cache.conforming.blocks)
     previous_volume_blocks.insert(block->id);
-  auto checkpoint=tetra::make_complete_world_cut_checkpoint(
-      selection.owners,3U,hierarchy_revision,
-      tetra::HierarchyResidencyTier::surface);
-  apply_world_residency_plan(checkpoint,residency);
+  tetra::WorldDirectoryUpdate hierarchy_update;
+  if(directory){
+    hierarchy_update=directory->replace_complete_cut(
+        surface_cache.closure.dependency_blocks,
+        surface_cache.closure.last_changed_mask_owners,
+        residency.surface_blocks,residency.volume_blocks,hierarchy_revision);
+  }else{
+    auto checkpoint=tetra::make_complete_world_cut_checkpoint(
+        selection.owners,3U,hierarchy_revision,
+        tetra::HierarchyResidencyTier::surface);
+    apply_world_residency_plan(checkpoint,residency);
+    directory=std::make_unique<tetra::WorldCutDirectory>(
+        std::move(checkpoint));
+    hierarchy_update.published_revision=directory->revision();
+    hierarchy_update.metrics.requested_blocks=directory->metrics().blocks;
+    hierarchy_update.metrics.loaded_blocks=directory->metrics().blocks;
+    hierarchy_update.metrics.retained_blocks=directory->metrics().blocks;
+    hierarchy_update.metrics.affected_blocks=directory->metrics().blocks;
+  }
   const auto checkpoint_finished=std::chrono::steady_clock::now();
   WorldHierarchyDemandPlan hierarchy_plan;
   try{
     hierarchy_plan=plan_world_hierarchy_demand(
-        checkpoint,profile.domain,camera,volume_pins,
+        *directory,profile.domain,camera,volume_pins,
         {.player_radius=profile.near_volume_radius,
          .guard_frustum_scale=profile.hierarchy_guard_frustum_scale,
          .prediction_factor=profile.hierarchy_prediction_factor,
@@ -1089,8 +1131,6 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     return rejected;
   }
   const auto hierarchy_demand_finished=std::chrono::steady_clock::now();
-  auto directory=std::make_unique<tetra::WorldCutDirectory>(
-      std::move(checkpoint));
   const auto directory_finished=std::chrono::steady_clock::now();
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,field,true,cancellation,&surface_cache,
@@ -1280,6 +1320,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.reused_intersections;
   diagnostics.computed_surface_intersections=
       surface.metrics.computed_intersections;
+  diagnostics.reused_surface_blocks=surface.metrics.reused_surface_blocks;
+  diagnostics.rebuilt_surface_blocks=surface.metrics.rebuilt_surface_blocks;
   diagnostics.reused_render_blocks=prepared.reused_blocks;
   diagnostics.rebuilt_render_blocks=prepared.rebuilt_blocks;
   diagnostics.reused_conforming_blocks=surface_cache.conforming.reused_blocks;
@@ -1352,7 +1394,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       diagnostics.field_sample_hash*=prime;
     }
   }
-  return {std::move(directory),std::move(scene),diagnostics,
+  return {std::move(directory),std::move(hierarchy_update),std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
           false,false,false};
   }catch(const std::runtime_error&){
@@ -1402,12 +1444,14 @@ void BlockedTerrainRuntime::submit() {
   cancellation_=std::stop_source{};
   const auto token=cancellation_.get_token();
   const auto executor=executor_;
+  auto directory=std::make_unique<tetra::WorldCutDirectory>(*directory_);
   future_=std::async(std::launch::async,
       [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
-       executor,surface_cache=std::move(surface_cache)]() mutable {
+       executor,surface_cache=std::move(surface_cache),
+       directory=std::move(directory)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),
-        hierarchy_demand,volume_pins,token,executor.get());
+        hierarchy_demand,volume_pins,token,executor.get(),std::move(directory));
   });
   ++diagnostics_.submitted_builds;
   last_requested_position_=camera.position;
@@ -1502,15 +1546,13 @@ bool BlockedTerrainRuntime::update() {
     const auto cumulative=diagnostics_;
     host_staging_.stage_world_render_blocks(
         publication.surface_cache.render_blocks);
-    tetra::WorldDirectoryUpdate retained;
-    try{
-      if(!publication.directory)
-        throw std::logic_error("world publication has no candidate directory");
-      retained=directory_->adopt_retained(std::move(*publication.directory));
-    }catch(...){
-      host_staging_.stage_world_render_blocks(surface_cache_.render_blocks);
-      throw;
-    }
+    if(!publication.directory)
+      throw std::logic_error("world publication has no candidate directory");
+    const auto adoption_started=std::chrono::steady_clock::now();
+    directory_=std::move(publication.directory);
+    publication.hierarchy_update.metrics.update_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-adoption_started).count();
     finalize_render_front_metrics(publication.diagnostics);
     scene_=std::move(publication.scene);
     flat_scene_current_=false;
@@ -1533,12 +1575,12 @@ bool BlockedTerrainRuntime::update() {
     diagnostics_.upload_high_water_bytes=std::max(
         cumulative.upload_high_water_bytes,diagnostics_.uploaded_render_bytes);
     active_superseded_=false;
-    diagnostics_.reused_hierarchy_blocks=retained.metrics.reused_blocks;
-    diagnostics_.rebuilt_hierarchy_blocks=retained.metrics.loaded_blocks;
+    diagnostics_.reused_hierarchy_blocks=
+        publication.hierarchy_update.metrics.reused_blocks;
+    diagnostics_.rebuilt_hierarchy_blocks=
+        publication.hierarchy_update.metrics.loaded_blocks;
     diagnostics_.directory_adoption_milliseconds=
-        retained.metrics.update_milliseconds;
-    diagnostics_.reused_surface_blocks=retained.metrics.reused_surfaces;
-    diagnostics_.rebuilt_surface_blocks=retained.metrics.changed_surfaces;
+        publication.hierarchy_update.metrics.update_milliseconds;
     published=true;
   }
   if(!future_.valid()&&demand_pending_)submit();

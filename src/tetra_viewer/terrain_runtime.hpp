@@ -331,6 +331,12 @@ struct WorldHierarchyDemandPlan {
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
     const WorldHierarchyDemandState* previous=nullptr);
+[[nodiscard]] WorldHierarchyDemandPlan plan_world_hierarchy_demand(
+    const tetra::WorldCutDirectory& directory,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
+    WorldHierarchyDemandConfiguration configuration,
+    const WorldHierarchyDemandState* previous=nullptr);
 
 // Selects full-volume cache blocks independently from the global logical cut.
 // Every active owner block remains at least surface-resident; intersection
@@ -454,6 +460,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
  private:
   struct Publication {
     std::unique_ptr<tetra::WorldCutDirectory> directory;
+    tetra::WorldDirectoryUpdate hierarchy_update;
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
@@ -469,7 +476,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       WorldHierarchyDemandState hierarchy_demand={},
       std::vector<WorldVolumePin> volume_pins={},
       std::stop_token cancellation={},
-      tetra::GeometryExecutor* executor=nullptr);
+      tetra::GeometryExecutor* executor=nullptr,
+      std::unique_ptr<tetra::WorldCutDirectory> directory={});
   void submit();
   void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 

@@ -52,6 +52,10 @@
         and retain equal block allocations in place, instead of copying every
         block and surface through a second complete value checkpoint. This
         removes roughly 64 ms from the previously unmeasured handoff path.
+  - [x] Rebuild changed hierarchy paths directly from the closure's immutable
+        owner-block directory and atomically swap the already shared candidate
+        directory. Replacement falls from about 238 ms through 126 ms to
+        43--44 ms; final adoption falls from about 45 ms to 1--2 ms.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.

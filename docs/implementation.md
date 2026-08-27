@@ -107,6 +107,19 @@ checkpoint construction itself remains about 185--191 ms and must ultimately
 be replaced by retained dirty-block transactions rather than another complete
 builder.
 
+That retained transaction path is now in place for the hierarchy directory.
+The closure's exact immutable owner blocks drive reconstruction only on changed
+owner paths and residency-tier changes; all equal hierarchy snapshots keep
+their shared allocations. Reusing the closure directory avoids rescanning
+roughly 738,000 closed owners and reduces candidate-directory replacement from
+about 238 ms (ordered dirty lookup), through 125--127 ms (hashed dirty lookup),
+to 43--44 ms. Since the candidate already shares its unchanged allocations,
+publication swaps it atomically instead of comparing it again, reducing final
+adoption from about 45 ms to 1--2 ms. Release hashes and refine/simplify oracles
+remain exact. Continuous first publication improved from the original
+1.87--1.97 seconds to about 1.68 seconds, but global closure and surface work
+still dominate and the interactive gate remains open.
+
 ## Technology choices
 
 - C++23 where supported.

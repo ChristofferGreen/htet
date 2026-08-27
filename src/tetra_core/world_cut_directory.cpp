@@ -32,6 +32,14 @@ struct WorldAddressHash {
   }
 };
 
+struct HierarchyBlockIdHash {
+  std::size_t operator()(HierarchyBlockId value) const noexcept {
+    std::uint64_t hash=hash_offset;hash_value(hash,value.prefix.high);
+    hash_value(hash,value.prefix.low);hash_value(hash,value.block_generations);
+    return static_cast<std::size_t>(hash);
+  }
+};
+
 struct WorldVertexHash {
   std::size_t operator()(WorldVertexKey value) const noexcept {
     std::uint64_t hash=hash_offset;
@@ -1142,6 +1150,156 @@ WorldDirectoryUpdate WorldCutDirectory::adopt_retained(
   result.metrics.retained_blocks=blocks_.size();
   result.metrics.affected_blocks=result.metrics.loaded_blocks+
       result.metrics.evicted_blocks;
+  result.metrics.update_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  return result;
+}
+
+WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
+    std::span<const WorldTetAddress> logical_leaves,
+    std::span<const WorldTetAddress> changed_owners,
+    std::span<const HierarchyBlockId> surface_blocks,
+    std::span<const HierarchyBlockId> volume_blocks,
+    std::uint64_t new_revision) {
+  if(logical_leaves.empty()||!std::ranges::is_sorted(logical_leaves)||
+     std::ranges::adjacent_find(logical_leaves)!=logical_leaves.end())
+    throw std::invalid_argument("replacement cut leaves are not canonical");
+  std::vector<std::shared_ptr<const WorldClosureDependencyBlock>> owner_blocks;
+  for(std::size_t begin=0;begin<logical_leaves.size();){
+    const auto id=hierarchy_block_id(logical_leaves[begin],block_generations_);
+    std::size_t end=begin+1U;
+    while(end<logical_leaves.size()&&
+          hierarchy_block_id(logical_leaves[end],block_generations_)==id)++end;
+    auto block=std::make_shared<WorldClosureDependencyBlock>();block->id=id;
+    block->owners.assign(logical_leaves.begin()+static_cast<std::ptrdiff_t>(begin),
+                         logical_leaves.begin()+static_cast<std::ptrdiff_t>(end));
+    owner_blocks.push_back(std::move(block));begin=end;
+  }
+  return replace_complete_cut(
+      owner_blocks,changed_owners,surface_blocks,volume_blocks,new_revision);
+}
+
+WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
+    std::span<const std::shared_ptr<const WorldClosureDependencyBlock>>
+        owner_blocks,
+    std::span<const WorldTetAddress> changed_owners,
+    std::span<const HierarchyBlockId> surface_blocks,
+    std::span<const HierarchyBlockId> volume_blocks,
+    std::uint64_t new_revision) {
+  const auto started=std::chrono::steady_clock::now();
+  if(new_revision<=revision_)
+    throw std::invalid_argument("replacement cut revision must advance");
+  const auto canonical=[](const auto values){
+    return std::ranges::is_sorted(values)&&
+        std::ranges::adjacent_find(values)==values.end();
+  };
+  if(owner_blocks.empty()||!canonical(changed_owners)||!canonical(surface_blocks)||
+     !canonical(volume_blocks))
+    throw std::invalid_argument("replacement cut inputs are not canonical");
+  for(const auto& block:owner_blocks)
+    if(!block||block->id.block_generations!=block_generations_||
+       !canonical(std::span<const WorldTetAddress>(block->owners)))
+      throw std::invalid_argument("replacement owner blocks are not canonical");
+  for(const auto id:volume_blocks)
+    if(!std::ranges::binary_search(surface_blocks,id))
+      throw std::invalid_argument("replacement volume block lacks surface authority");
+
+  std::unordered_set<HierarchyBlockId,HierarchyBlockIdHash> dirty;
+  dirty.reserve(changed_owners.size()*2U+surface_blocks.size()/8U);
+  for(auto owner:changed_owners){
+    auto id=hierarchy_block_id(owner,block_generations_);
+    dirty.insert(id);
+    while(id.prefix.red_depth()>0U){id=parent_block(id);dirty.insert(id);}
+  }
+  const auto desired_tier=[&](HierarchyBlockId id){
+    if(std::ranges::binary_search(volume_blocks,id))
+      return HierarchyResidencyTier::conforming_volume;
+    if(std::ranges::binary_search(surface_blocks,id))
+      return HierarchyResidencyTier::surface;
+    return HierarchyResidencyTier::summary;
+  };
+  for(const auto& block:blocks_)
+    if(block->residency!=desired_tier(block->id))dirty.insert(block->id);
+  for(const auto id:surface_blocks)
+    if(!find_block(id))dirty.insert(id);
+
+  std::vector<HierarchyBlockSnapshot> rebuilt;
+  std::unordered_map<HierarchyBlockId,std::size_t,HierarchyBlockIdHash>
+      rebuilt_indices;
+  rebuilt.reserve(dirty.size());rebuilt_indices.reserve(dirty.size());
+  const auto rebuilt_block=[&](HierarchyBlockId id)
+      ->HierarchyBlockSnapshot& {
+    const auto found=rebuilt_indices.find(id);
+    if(found!=rebuilt_indices.end())return rebuilt[found->second];
+    const auto index=rebuilt.size();
+    rebuilt.push_back({.id=id,.source_revision=new_revision});
+    rebuilt_indices.emplace(id,index);return rebuilt.back();
+  };
+  for(const auto& owner_block:owner_blocks){
+    if(owner_block->id.prefix.root_id()>=bcc_root_tetrahedron_count)
+      throw std::out_of_range("replacement cut uses an unknown BCC root");
+    std::vector<HierarchyBlockId> chain{owner_block->id};
+    while(chain.back().prefix.red_depth()>0U)
+      chain.push_back(parent_block(chain.back()));
+    std::ranges::reverse(chain);
+    for(std::size_t index=0;index<chain.size();++index){
+      if(!dirty.contains(chain[index]))continue;
+      auto& block=rebuilt_block(chain[index]);
+      if(index+1U==chain.size()){
+        block.logical_owners.insert(block.logical_owners.end(),
+            owner_block->owners.begin(),owner_block->owners.end());
+        block.resident_records.insert(block.resident_records.end(),
+            owner_block->owners.begin(),owner_block->owners.end());
+      }else{
+        const auto owner=chain[index+1U].prefix;
+        block.logical_owners.push_back(owner);
+        block.resident_records.push_back(owner);
+      }
+    }
+  }
+  for(auto& block:rebuilt){
+    block.residency=desired_tier(block.id);normalize_snapshot(block);
+  }
+  std::ranges::sort(rebuilt,{},&HierarchyBlockSnapshot::id);
+
+  std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> next;
+  next.reserve(blocks_.size()+rebuilt.size());
+  WorldDirectoryUpdate result;
+  result.source_revision=revision_;result.published_revision=new_revision;
+  auto old=blocks_.begin();auto replacement=rebuilt.begin();
+  while(old!=blocks_.end()||replacement!=rebuilt.end()){
+    if(replacement==rebuilt.end()||
+       (old!=blocks_.end()&&(*old)->id<replacement->id)){
+      if(dirty.contains((*old)->id))++result.metrics.evicted_blocks;
+      else{next.push_back(*old);++result.metrics.reused_blocks;}
+      ++old;continue;
+    }
+    if(old==blocks_.end()||replacement->id<(*old)->id){
+      next.push_back(std::make_shared<const HierarchyBlockSnapshot>(
+          std::move(*replacement)));
+      ++result.metrics.loaded_blocks;++replacement;continue;
+    }
+    if(snapshot_payload_equal(**old,*replacement)){
+      next.push_back(*old);++result.metrics.reused_blocks;
+    }else{
+      next.push_back(std::make_shared<const HierarchyBlockSnapshot>(
+          std::move(*replacement)));
+      ++result.metrics.loaded_blocks;
+    }
+    ++old;++replacement;
+  }
+  auto previous_blocks=blocks_;auto previous_surfaces=surfaces_;
+  const auto previous_revision=revision_;
+  blocks_=std::move(next);surfaces_.clear();revision_=new_revision;
+  try{validate_and_refresh();}
+  catch(...){blocks_=std::move(previous_blocks);
+    surfaces_=std::move(previous_surfaces);revision_=previous_revision;
+    validate_and_refresh();throw;}
+  result.metrics.requested_blocks=blocks_.size();
+  result.metrics.retained_blocks=blocks_.size();
+  result.metrics.affected_blocks=result.metrics.loaded_blocks+
+      result.metrics.evicted_blocks;
+  result.metrics.changed_surfaces=previous_surfaces.size();
   result.metrics.update_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-started).count();
   return result;
