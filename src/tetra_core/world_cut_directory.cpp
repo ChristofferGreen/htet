@@ -1542,9 +1542,35 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     return result;
   };
 
+  auto owner_keys=load_vertex_keys(owners);
+  cancel();
+  std::unordered_set<WorldEdgeKey,WorldEdgeHash> midpoints;
+  midpoints.reserve(owners.size()*2U);
+  std::unordered_set<WorldTetAddress,WorldAddressHash> split_ancestors;
+  split_ancestors.reserve(owners.size()/4U);
+  for(auto owner:owners)while(owner.red_depth()>0U){
+    owner=owner.parent();split_ancestors.insert(owner);
+  }
+  std::vector<WorldTetAddress> ordered_ancestors(
+      split_ancestors.begin(),split_ancestors.end());
+  std::ranges::sort(ordered_ancestors);
+  const auto ancestor_keys=load_vertex_keys(ordered_ancestors);
+  for(const auto& keys:ancestor_keys)for(const auto edge:edges)
+    midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+  // Red promotion is monotone during one closure transaction. Retain the
+  // deepest incident depth and active midpoint sets between rounds: replacing
+  // a parent by its children can only raise a vertex maximum and adds exactly
+  // the six parent-edge midpoint requirements. Rebuilding ancestry and vertex
+  // incidence after every promotion round was exact but needlessly replayed
+  // the complete cut several times.
+  std::unordered_map<WorldVertexKey,unsigned int,WorldVertexHash> deepest_incident;
+  deepest_incident.reserve(owners.size());
+  for(std::size_t index=0;index<owners.size();++index)
+    for(const auto key:owner_keys[index])
+      deepest_incident[key]=std::max(
+          deepest_incident[key],owners[index].red_depth());
+
   for(;;){
-    cancel();
-    auto owner_keys=load_vertex_keys(owners);
     cancel();
     const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
         10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
@@ -1561,19 +1587,6 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       for(auto& worker:workers)worker.join();
       cancel();
     };
-    std::unordered_set<WorldEdgeKey,WorldEdgeHash> midpoints;
-    midpoints.reserve(owners.size()*2U);
-    std::unordered_set<WorldTetAddress,WorldAddressHash> split_ancestors;
-    split_ancestors.reserve(owners.size()/4U);
-    for(auto owner:owners)while(owner.red_depth()>0U){
-      owner=owner.parent();split_ancestors.insert(owner);
-    }
-    std::vector<WorldTetAddress> ordered_ancestors(
-        split_ancestors.begin(),split_ancestors.end());
-    std::ranges::sort(ordered_ancestors);
-    const auto ancestor_keys=load_vertex_keys(ordered_ancestors);
-    for(const auto& keys:ancestor_keys)for(const auto edge:edges)
-      midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
     bool changed=true;
     while(changed){
       cancel();
@@ -1607,12 +1620,6 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     // share no complete face key with it. Conservatively grading every exact
     // shared hierarchy vertex catches those configurations without an
     // all-pairs geometric face test; the extra corner-ring cells are bounded.
-    std::unordered_map<WorldVertexKey,unsigned int,WorldVertexHash> deepest_incident;
-    deepest_incident.reserve(owners.size());
-    for(std::size_t index=0;index<owners.size();++index)
-      for(const auto key:owner_keys[index])
-        deepest_incident[key]=std::max(
-            deepest_incident[key],owners[index].red_depth());
     for(std::size_t index=0;index<owners.size();++index)
       for(const auto key:owner_keys[index])
       if(deepest_incident[key]>owners[index].red_depth()+1U){
@@ -1662,9 +1669,17 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       if(promote[index]==0U){next.push_back(owner);continue;}
       if(owner.red_depth()>=maximum_world_red_depth)
         throw std::overflow_error("world conforming closure exceeds maximum depth");
+      const auto& keys=owner_keys[index];
+      for(const auto edge:edges)
+        midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
       for(std::uint8_t child=0;child<8U;++child)next.push_back(owner.child(child));
     }
     std::ranges::sort(next);owners=std::move(next);
+    owner_keys=load_vertex_keys(owners);
+    for(std::size_t index=0;index<owners.size();++index)
+      for(const auto key:owner_keys[index])
+        deepest_incident[key]=std::max(
+            deepest_incident[key],owners[index].red_depth());
   }
 }
 

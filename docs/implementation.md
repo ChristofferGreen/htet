@@ -318,6 +318,16 @@ implements direct extraction and surface-key halos, separates volume promotion,
 proves exact equivalence and surface-area scaling, and only then changes the
 production default.
 
+As a prerequisite for incremental closure, one closure transaction now retains
+its exact active-midpoint set and deepest incident-vertex map across all red
+promotion rounds. A promotion adds the parent's six midpoint requirements and
+raises depths for its children; neither fact requires replaying all split
+ancestors. Release runtime measurements reduced walking closure from 1.47 to
+0.79 seconds and near closure from 1.46 to 0.79 seconds without changing any
+qualified topology or render hash. Cross-revision removal and re-derivation
+still need the persistent entity/address-range dependency frontier described in
+the active TODO.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

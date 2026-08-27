@@ -1448,8 +1448,10 @@ surface construction with the old builder retained as its oracle.
 - [ ] Replace the flat all-owner closure refresh with retained block-local masks
       and exact incremental conformity propagation from changed address ranges;
       untouched surface and summary blocks must not be rescanned. Identical
-      requests reuse the exact retained result; changed cuts still run the
-      global closure oracle.
+      requests reuse the exact retained result. The global fallback now retains
+      active midpoints and deepest incident depths across promotion rounds,
+      reducing walking and near closure from about 1.46 seconds to 0.79 seconds;
+      changed cuts still need a persistent cross-revision entity frontier.
 - [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.

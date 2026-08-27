@@ -2518,5 +2518,15 @@ unacceptable retained incidence memory before compaction. The next design must
 operate on persistent entity or address-range dependencies, not relabel a
 coarse spatial scan as local. Until then, changed closure uses the global oracle.
 
+The global oracle itself no longer discards its entity state between promotion
+rounds. Active midpoint requirements and deepest incident-vertex depths are
+monotone while one requested cut is being closed, so they are built once and
+updated only for promoted parents and their children. On the same release
+runtime route this reduced exact closure from 1.47 to 0.79 seconds for walking
+and from 1.46 to 0.79 seconds for the near pose, with identical hierarchy,
+conforming-volume, connected-surface, and render hashes. This is a useful
+prerequisite, not a substitute for persistent changed-range closure between
+camera revisions.
+
 
 ---

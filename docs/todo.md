@@ -51,8 +51,10 @@ not the active queue.
 - [ ] Make conforming closure block-local and incremental: retain exact green
       masks, propagate only from changed address ranges, and prove unchanged
       blocks are not scanned or republished. Exact same-request reuse and
-      field-revisioned masks are complete; changed cuts still use the cold
-      global closure oracle.
+      field-revisioned masks are complete. The cold oracle now retains midpoint
+      and incident-depth state across its monotone promotion rounds, nearly
+      halving walking/near closure time, but changed cuts still require a
+      persistent cross-revision entity frontier.
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate
