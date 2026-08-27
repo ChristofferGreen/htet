@@ -2434,6 +2434,11 @@ Research should change the design only through concrete consequences that can be
   complete conforming cells are a bounded, incrementally promoted cache for
   player collision, edits, and physics; demotion changes storage, never the
   watertight logical cut or its global identities;
+- predictive hierarchy demand makes that separation temporal as well as
+  spatial: visible, guard, predicted, recent, collision, edit, physics, and
+  cold intent is revisioned independently from topology; canceled work cannot
+  age history, teleports cannot extrapolate stale motion, and demand may affect
+  scheduling or admission but never invent a different logical cut;
 - graphics subdivision-artifact work makes aesthetics a first-class subdivision criterion;
 - NOWHERE is a warning against one universal mutable tetrahedral graph and uncontrolled engine/tool scope.
 

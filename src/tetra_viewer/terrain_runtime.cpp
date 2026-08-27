@@ -124,6 +124,288 @@ void apply_world_residency_plan(
     throw std::invalid_argument("world residency plan names an absent block");
 }
 
+WorldHierarchyDemandPlan plan_world_hierarchy_demand(
+    const tetra::WorldCutCheckpoint& checkpoint,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
+    WorldHierarchyDemandConfiguration configuration,
+    const WorldHierarchyDemandState* previous) {
+  if(configuration.maximum_blocks<tetra::bcc_root_tetrahedron_count)
+    throw std::invalid_argument(
+        "world hierarchy budget cannot hold the root complex");
+  if(checkpoint.blocks.size()>configuration.maximum_blocks)
+    throw std::length_error("world hierarchy demand exceeds its block budget");
+  if(configuration.player_radius<0.0||
+     !std::isfinite(configuration.player_radius)||
+     configuration.guard_frustum_scale<1.0||
+     !std::isfinite(configuration.guard_frustum_scale)||
+     configuration.prediction_factor<0.0||
+     !std::isfinite(configuration.prediction_factor)||
+     configuration.recent_retention_epochs==0U)
+    throw std::invalid_argument("world hierarchy demand policy is invalid");
+  const auto finite=[](tetra::Vec3 value){return
+      std::isfinite(value.x)&&std::isfinite(value.y)&&std::isfinite(value.z);};
+  const auto length_squared=[](tetra::Vec3 value){return
+      value.x*value.x+value.y*value.y+value.z*value.z;};
+  const auto cross=[](tetra::Vec3 first,tetra::Vec3 second){return tetra::Vec3{
+      first.y*second.z-first.z*second.y,
+      first.z*second.x-first.x*second.z,
+      first.x*second.y-first.y*second.x};};
+  if(!finite(domain.world_origin)||!(domain.world_extent>0.0)||
+     !std::isfinite(domain.world_extent)||!finite(camera.position)||
+     !finite(camera.forward)||!finite(camera.up)||
+     !(length_squared(camera.forward)>1.0e-30)||
+     !(length_squared(cross(camera.forward,camera.up))>1.0e-30)||
+     !(camera.vertical_fov_radians>0.0)||
+     !(camera.vertical_fov_radians<3.14159265358979323846)||
+     !std::isfinite(camera.vertical_fov_radians)||
+     !(camera.aspect_ratio>0.0)||!std::isfinite(camera.aspect_ratio)||
+     !(camera.viewport_height_pixels>0.0)||
+     !std::isfinite(camera.viewport_height_pixels))
+    throw std::invalid_argument("world hierarchy demand input is invalid");
+  for(const auto& pin:pins)
+    if(static_cast<std::size_t>(pin.kind)>=3U||pin.radius<0.0||
+       !std::isfinite(pin.radius)||!std::isfinite(pin.world_position.x)||
+       !std::isfinite(pin.world_position.y)||
+       !std::isfinite(pin.world_position.z))
+      throw std::invalid_argument("world hierarchy pin is invalid");
+
+  const auto camera_equal=[](const tetra::Camera& left,
+                             const tetra::Camera& right){
+    return left.position.x==right.position.x&&
+        left.position.y==right.position.y&&
+        left.position.z==right.position.z&&
+        left.forward.x==right.forward.x&&left.forward.y==right.forward.y&&
+        left.forward.z==right.forward.z&&left.up.x==right.up.x&&
+        left.up.y==right.up.y&&left.up.z==right.up.z&&
+        left.vertical_fov_radians==right.vertical_fov_radians&&
+        left.viewport_height_pixels==right.viewport_height_pixels&&
+        left.aspect_ratio==right.aspect_ratio;
+  };
+  WorldHierarchyDemandPlan result;
+  result.metrics.maximum_blocks=configuration.maximum_blocks;
+  result.state.epoch=previous?previous->epoch:0U;
+  if(!previous||!previous->has_committed_camera||
+     !camera_equal(previous->committed_camera,camera))
+    ++result.state.epoch;
+  result.state.committed_camera=camera;
+  result.state.has_committed_camera=true;
+
+  tetra::Camera guard_camera=camera;
+  guard_camera.vertical_fov_radians=2.0*std::atan(
+      std::tan(camera.vertical_fov_radians*0.5)*
+      configuration.guard_frustum_scale);
+  const auto prepared=tetra::prepare_camera_projection(camera);
+  const auto prepared_guard=tetra::prepare_camera_projection(guard_camera);
+  std::array<tetra::PreparedCameraProjection,2> predicted{};
+  std::size_t predicted_count{};
+  if(previous&&previous->has_committed_camera&&
+     configuration.prediction_factor>0.0){
+    const auto motion=camera.position-previous->committed_camera.position;
+    const double motion_squared=motion.x*motion.x+motion.y*motion.y+
+        motion.z*motion.z;
+    const double teleport_limit=std::max(
+        configuration.player_radius*8.0,domain.world_extent*0.01);
+    if(motion_squared<=teleport_limit*teleport_limit){
+      const auto extrapolate_direction=[](tetra::Vec3 current,
+                                          tetra::Vec3 old,double amount){
+        auto value=current+(current-old)*amount;
+        const double length=std::sqrt(value.x*value.x+value.y*value.y+
+                                      value.z*value.z);
+        return length>1.0e-15?value/length:current;
+      };
+      for(const double fraction:std::array{0.25,1.0}){
+        tetra::Camera future=camera;
+        const double amount=fraction*configuration.prediction_factor;
+        future.position=camera.position+motion*amount;
+        future.forward=extrapolate_direction(
+            camera.forward,previous->committed_camera.forward,amount);
+        future.up=extrapolate_direction(
+            camera.up,previous->committed_camera.up,amount);
+        future.vertical_fov_radians=2.0*std::atan(
+            std::tan(camera.vertical_fov_radians*0.5)*
+            configuration.guard_frustum_scale);
+        predicted[predicted_count++]=tetra::prepare_camera_projection(future);
+      }
+    }
+  }
+
+  struct Bounds { tetra::Vec3 minimum{},maximum{},centre{};double radius{}; };
+  const auto bounds=[&](tetra::HierarchyBlockId id){
+    const auto geometry=tetra::world_tetrahedron_geometry(id.prefix);
+    Bounds value;
+    value.minimum=value.maximum=domain.to_world(geometry[0]);
+    for(const auto root_point:geometry){
+      const auto point=domain.to_world(root_point);
+      value.centre=value.centre+point;
+      value.minimum.x=std::min(value.minimum.x,point.x);
+      value.minimum.y=std::min(value.minimum.y,point.y);
+      value.minimum.z=std::min(value.minimum.z,point.z);
+      value.maximum.x=std::max(value.maximum.x,point.x);
+      value.maximum.y=std::max(value.maximum.y,point.y);
+      value.maximum.z=std::max(value.maximum.z,point.z);
+    }
+    value.centre=value.centre/4.0;
+    for(const auto root_point:geometry){
+      const auto delta=domain.to_world(root_point)-value.centre;
+      value.radius=std::max(value.radius,std::sqrt(
+          delta.x*delta.x+delta.y*delta.y+delta.z*delta.z));
+    }
+    return value;
+  };
+  const auto in_frustum=[](const Bounds& block,
+                           const tetra::PreparedCameraProjection& projection){
+    const auto offset=block.centre-projection.position;
+    const double depth=offset.x*projection.forward.x+
+        offset.y*projection.forward.y+offset.z*projection.forward.z;
+    if(depth+block.radius<=0.0)return false;
+    const double horizontal=std::abs(offset.x*projection.right.x+
+        offset.y*projection.right.y+offset.z*projection.right.z);
+    const double vertical=std::abs(offset.x*projection.up.x+
+        offset.y*projection.up.y+offset.z*projection.up.z);
+    const double positive_depth=std::max(depth,0.0);
+    const double horizontal_margin=block.radius*std::sqrt(
+        1.0+projection.horizontal_tangent*projection.horizontal_tangent);
+    const double vertical_margin=block.radius*std::sqrt(
+        1.0+projection.tangent*projection.tangent);
+    return horizontal<=positive_depth*projection.horizontal_tangent+
+               horizontal_margin&&
+        vertical<=positive_depth*projection.tangent+vertical_margin;
+  };
+  const auto intersects=[](const Bounds& block,tetra::Vec3 point,double radius){
+    const auto axis=[](double value,double low,double high){
+      if(value<low)return low-value;
+      if(value>high)return value-high;
+      return 0.0;
+    };
+    const double x=axis(point.x,block.minimum.x,block.maximum.x);
+    const double y=axis(point.y,block.minimum.y,block.maximum.y);
+    const double z=axis(point.z,block.minimum.z,block.maximum.z);
+    return x*x+y*y+z*z<=radius*radius;
+  };
+
+  std::map<tetra::HierarchyBlockId,std::uint64_t> history;
+  if(previous)for(const auto& entry:previous->recent_history)
+    history[entry.id]=std::max(history[entry.id],entry.last_visible_epoch);
+  const auto previous_record=[&](tetra::HierarchyBlockId id)
+      ->const WorldHierarchyDemandRecord*{
+    if(!previous)return nullptr;
+    const auto found=std::ranges::lower_bound(
+        previous->records,id,{},&WorldHierarchyDemandRecord::id);
+    return found!=previous->records.end()&&found->id==id?&*found:nullptr;
+  };
+  result.state.records.reserve(checkpoint.blocks.size());
+  for(const auto& block:checkpoint.blocks){
+    const auto block_bounds=bounds(block.id);
+    WorldHierarchyDemandRecord record;
+    record.id=block.id;record.revision=checkpoint.revision;
+    record.residency=block.residency;
+    const bool surface_authority=
+        block.residency!=tetra::HierarchyResidencyTier::summary;
+    if(surface_authority&&in_frustum(block_bounds,prepared)){
+      record.kinds|=world_hierarchy_demand_mask(
+          WorldHierarchyDemandKind::visible);
+      record.last_visible_epoch=result.state.epoch;
+    }else if(surface_authority&&in_frustum(block_bounds,prepared_guard)){
+      record.kinds|=world_hierarchy_demand_mask(
+          WorldHierarchyDemandKind::guard);
+      record.last_visible_epoch=result.state.epoch;
+    }else{
+      bool future{};
+      for(std::size_t index=0;surface_authority&&index<predicted_count&&!future;
+          ++index)
+        future=in_frustum(block_bounds,predicted[index]);
+      if(future)
+        record.kinds|=world_hierarchy_demand_mask(
+            WorldHierarchyDemandKind::predicted);
+      else{
+        const auto old=history.find(block.id);
+        if(old!=history.end()&&result.state.epoch>=old->second&&
+           result.state.epoch-old->second<=
+               configuration.recent_retention_epochs){
+          record.kinds|=world_hierarchy_demand_mask(
+              WorldHierarchyDemandKind::recent);
+          record.last_visible_epoch=old->second;
+        }else record.kinds|=world_hierarchy_demand_mask(
+            WorldHierarchyDemandKind::cold);
+      }
+    }
+    if(intersects(block_bounds,camera.position,configuration.player_radius))
+      record.kinds|=world_hierarchy_demand_mask(
+          WorldHierarchyDemandKind::player_collision);
+    for(const auto& pin:pins)if(intersects(
+        block_bounds,pin.world_position,pin.radius))
+      record.kinds|=world_hierarchy_demand_mask(
+          pin.kind==WorldVolumePinKind::player_collision?
+              WorldHierarchyDemandKind::player_collision:
+          pin.kind==WorldVolumePinKind::terrain_edit?
+              WorldHierarchyDemandKind::terrain_edit:
+              WorldHierarchyDemandKind::physics);
+    record.priority=
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::player_collision)||
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::terrain_edit)||
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::physics)?0U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::visible)?1U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::guard)?2U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::predicted)?3U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::recent)?4U:5U;
+    for(std::size_t kind=0;kind<result.metrics.blocks_by_kind.size();++kind)
+      if((record.kinds&(1U<<kind))!=0U)
+        ++result.metrics.blocks_by_kind[kind];
+    if(record.last_visible_epoch!=0U)
+      history[record.id]=record.last_visible_epoch;
+    const auto* old=previous_record(record.id);
+    if(!old)++result.metrics.loaded_blocks;
+    else if(record.priority<old->priority||record.residency>old->residency)
+      ++result.metrics.promoted_blocks;
+    else if(record.priority>old->priority||record.residency<old->residency)
+      ++result.metrics.demoted_blocks;
+    result.state.records.push_back(record);
+  }
+  if(previous)for(const auto& old:previous->records)
+    if(!std::ranges::binary_search(
+        result.state.records,old.id,{},&WorldHierarchyDemandRecord::id))
+      ++result.metrics.evicted_blocks;
+
+  result.state.recent_history.reserve(history.size());
+  for(const auto& [id,epoch]:history){
+    if(result.state.epoch>=epoch&&result.state.epoch-epoch<=
+       configuration.recent_retention_epochs)
+      result.state.recent_history.push_back({id,epoch});
+    else ++result.metrics.expired_records;
+  }
+  result.metrics.retained_bytes=
+      result.state.records.capacity()*sizeof(WorldHierarchyDemandRecord)+
+      result.state.recent_history.capacity()*sizeof(WorldHierarchyDemandHistory);
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  result.metrics.canonical_hash=offset;
+  const auto hash=[&](const void* value,std::size_t size){
+    const auto* bytes=static_cast<const unsigned char*>(value);
+    for(std::size_t index=0;index<size;++index){
+      result.metrics.canonical_hash^=bytes[index];
+      result.metrics.canonical_hash*=prime;
+    }
+  };
+  hash(&result.state.epoch,sizeof(result.state.epoch));
+  for(const auto& record:result.state.records){
+    hash(&record.id.prefix.high,sizeof(record.id.prefix.high));
+    hash(&record.id.prefix.low,sizeof(record.id.prefix.low));
+    hash(&record.id.block_generations,sizeof(record.id.block_generations));
+    hash(&record.last_visible_epoch,sizeof(record.last_visible_epoch));
+    hash(&record.kinds,sizeof(record.kinds));
+    hash(&record.residency,sizeof(record.residency));
+    hash(&record.priority,sizeof(record.priority));
+  }
+  for(const auto& entry:result.state.recent_history){
+    hash(&entry.id.prefix.high,sizeof(entry.id.prefix.high));
+    hash(&entry.id.prefix.low,sizeof(entry.id.prefix.low));
+    hash(&entry.id.block_generations,sizeof(entry.id.block_generations));
+    hash(&entry.last_visible_epoch,sizeof(entry.last_visible_epoch));
+  }
+  return result;
+}
+
 MonolithicTerrainRuntime::MonolithicTerrainRuntime(
     WorldProfile profile,std::shared_ptr<tetra::GeometryExecutor> executor)
     :profile_(profile),
@@ -494,8 +776,14 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     throw std::invalid_argument("world resource budgets must be positive");
   if(profile_.near_volume_radius<0.0||
      !std::isfinite(profile_.near_volume_radius)||
-     profile_.maximum_volume_blocks==0U)
-    throw std::invalid_argument("world volume residency policy is invalid");
+     profile_.maximum_volume_blocks==0U||
+     profile_.maximum_hierarchy_blocks<tetra::bcc_root_tetrahedron_count||
+     profile_.hierarchy_guard_frustum_scale<1.0||
+     !std::isfinite(profile_.hierarchy_guard_frustum_scale)||
+     profile_.hierarchy_prediction_factor<0.0||
+     !std::isfinite(profile_.hierarchy_prediction_factor)||
+     profile_.hierarchy_recent_retention_epochs==0U)
+    throw std::invalid_argument("world residency policy is invalid");
   field_.kind=profile_.shape;
   field_.terrain=profile_.terrain;
   field_.secondary=profile_.octave_detail_amplitude;
@@ -522,6 +810,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
       std::move(initial.checkpoint));
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
   surface_cache_=std::move(initial.surface_cache);
+  hierarchy_demand_=std::move(initial.hierarchy_demand);
   flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
   diagnostics_.submitted_builds=1U;
@@ -541,6 +830,20 @@ void BlockedTerrainRuntime::set_resource_budgets(WorldResourceBudgets budgets){
      budgets.maximum_work_units==0U||budgets.maximum_upload_bytes==0U)
     throw std::invalid_argument("world resource budgets must be positive");
   profile_.budgets=budgets;
+}
+
+void BlockedTerrainRuntime::set_hierarchy_block_budget(
+    std::size_t maximum_blocks){
+  if(maximum_blocks<tetra::bcc_root_tetrahedron_count)
+    throw std::invalid_argument(
+        "world hierarchy budget cannot hold the root complex");
+  if(profile_.maximum_hierarchy_blocks==maximum_blocks)return;
+  profile_.maximum_hierarchy_blocks=maximum_blocks;demand_pending_=true;
+  if(future_.valid()&&!active_superseded_){
+    cancellation_.request_stop();active_superseded_=true;
+    superseded_at_=std::chrono::steady_clock::now();
+    ++diagnostics_.superseded_builds;
+  }
 }
 
 void BlockedTerrainRuntime::set_volume_pins(std::vector<WorldVolumePin> pins){
@@ -579,6 +882,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint64_t generation,
     SparseWorldSurfaceCache surface_cache,
+    WorldHierarchyDemandState hierarchy_demand,
     std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation) {
   std::size_t completed_work_units{};
   try{
@@ -600,6 +904,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     Publication rejected;
     rejected.diagnostics.work_units=completed_work_units;
     rejected.surface_cache=std::move(surface_cache);
+    rejected.hierarchy_demand=std::move(hierarchy_demand);
     rejected.residency_budget_exceeded=true;
     return rejected;
   }
@@ -610,6 +915,24 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       selection.owners,3U,hierarchy_revision,
       tetra::HierarchyResidencyTier::surface);
   apply_world_residency_plan(checkpoint,residency);
+  WorldHierarchyDemandPlan hierarchy_plan;
+  try{
+    hierarchy_plan=plan_world_hierarchy_demand(
+        checkpoint,profile.domain,camera,volume_pins,
+        {.player_radius=profile.near_volume_radius,
+         .guard_frustum_scale=profile.hierarchy_guard_frustum_scale,
+         .prediction_factor=profile.hierarchy_prediction_factor,
+         .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
+         .maximum_blocks=profile.maximum_hierarchy_blocks},
+        &hierarchy_demand);
+  }catch(const std::length_error&){
+    Publication rejected;
+    rejected.diagnostics.work_units=completed_work_units;
+    rejected.surface_cache=std::move(surface_cache);
+    rejected.hierarchy_demand=std::move(hierarchy_demand);
+    rejected.hierarchy_budget_exceeded=true;
+    return rejected;
+  }
   tetra::WorldCutDirectory directory(std::move(checkpoint));
   auto surface=build_sparse_world_derived_surface(
       directory,profile.domain,field,true,cancellation,&surface_cache,
@@ -665,6 +988,28 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       residency.metrics.player_collision_blocks;
   diagnostics.terrain_edit_volume_blocks=residency.metrics.terrain_edit_blocks;
   diagnostics.physics_volume_blocks=residency.metrics.physics_blocks;
+  diagnostics.hierarchy_demand_epoch=hierarchy_plan.state.epoch;
+  diagnostics.hierarchy_demand_hash=hierarchy_plan.metrics.canonical_hash;
+  diagnostics.hierarchy_demand_records=hierarchy_plan.state.records.size();
+  diagnostics.retained_hierarchy_demand_bytes=
+      hierarchy_plan.metrics.retained_bytes;
+  diagnostics.maximum_hierarchy_blocks=profile.maximum_hierarchy_blocks;
+  diagnostics.visible_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[0];
+  diagnostics.guard_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[1];
+  diagnostics.predicted_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[2];
+  diagnostics.recent_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[3];
+  diagnostics.player_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[4];
+  diagnostics.edit_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[5];
+  diagnostics.physics_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[6];
+  diagnostics.cold_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[7];
+  diagnostics.loaded_hierarchy_demand_blocks=hierarchy_plan.metrics.loaded_blocks;
+  diagnostics.evicted_hierarchy_demand_blocks=hierarchy_plan.metrics.evicted_blocks;
+  diagnostics.promoted_hierarchy_demand_blocks=
+      hierarchy_plan.metrics.promoted_blocks;
+  diagnostics.demoted_hierarchy_demand_blocks=
+      hierarchy_plan.metrics.demoted_blocks;
+  diagnostics.expired_hierarchy_demand_records=
+      hierarchy_plan.metrics.expired_records;
   for(const auto id:residency.volume_blocks)
     diagnostics.promoted_volume_blocks+=previous_volume_blocks.contains(id)?0U:1U;
   for(const auto id:previous_volume_blocks)
@@ -679,6 +1024,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     diagnostics.retained_render_block_bytes+=
         block.triangle_vertices.capacity()*sizeof(SceneVertex);
   diagnostics.retained_cache_bytes+=diagnostics.retained_render_block_bytes;
+  diagnostics.retained_cache_bytes+=diagnostics.retained_hierarchy_demand_bytes;
   diagnostics.resident_bytes=directory.metrics().retained_bytes+
       diagnostics.retained_cache_bytes;
   diagnostics.hierarchy_blocks=directory.metrics().blocks;
@@ -730,12 +1076,15 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     }
   }
   return {directory.checkpoint(),std::move(scene),diagnostics,
-          std::move(surface_cache),false,false};
+          std::move(surface_cache),std::move(hierarchy_plan.state),
+          false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
     canceled.diagnostics.work_units=completed_work_units;
-    canceled.surface_cache=std::move(surface_cache);canceled.canceled=true;
+    canceled.surface_cache=std::move(surface_cache);
+    canceled.hierarchy_demand=std::move(hierarchy_demand);
+    canceled.canceled=true;
     return canceled;
   }
 }
@@ -770,16 +1119,17 @@ void BlockedTerrainRuntime::finalize_render_front_metrics(
 void BlockedTerrainRuntime::submit() {
   const auto profile=profile_;const auto field=field_;const auto camera=camera_;
   const auto volume_pins=volume_pins_;
+  const auto hierarchy_demand=hierarchy_demand_;
   const auto generation=++requested_generation_;
   auto surface_cache=std::move(surface_cache_);
   cancellation_=std::stop_source{};
   const auto token=cancellation_.get_token();
   future_=std::async(std::launch::async,
-      [profile,field,camera,generation,token,volume_pins,
+      [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
        surface_cache=std::move(surface_cache)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),
-        volume_pins,token);
+        hierarchy_demand,volume_pins,token);
   });
   ++diagnostics_.submitted_builds;
   last_requested_position_=camera.position;
@@ -824,7 +1174,8 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.busy=future_.valid();
       return false;
     }
-    if(publication.residency_budget_exceeded){
+    if(publication.residency_budget_exceeded||
+       publication.hierarchy_budget_exceeded){
       surface_cache_=std::move(publication.surface_cache);
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
@@ -878,6 +1229,7 @@ bool BlockedTerrainRuntime::update() {
     scene_=std::move(publication.scene);
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
+    hierarchy_demand_=std::move(publication.hierarchy_demand);
     diagnostics_=publication.diagnostics;
     diagnostics_.submitted_builds=cumulative.submitted_builds;
     diagnostics_.superseded_builds=cumulative.superseded_builds;

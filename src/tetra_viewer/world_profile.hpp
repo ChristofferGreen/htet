@@ -78,6 +78,10 @@ struct WorldProfile {
   // the substantially larger tetrahedral volume arrays.
   double near_volume_radius{0.6};
   std::size_t maximum_volume_blocks{4096U};
+  std::size_t maximum_hierarchy_blocks{65536U};
+  double hierarchy_guard_frustum_scale{1.35};
+  double hierarchy_prediction_factor{1.0};
+  std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{48.0};
   double pixel_threshold{128.0};
   unsigned int maximum_depth{16U};

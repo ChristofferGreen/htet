@@ -188,6 +188,42 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.terrain_edit_volume_blocks
           <<",\"physics_volume_blocks\":"
           <<diagnostics.physics_volume_blocks
+          <<",\"hierarchy_demand_epoch\":"
+          <<diagnostics.hierarchy_demand_epoch
+          <<",\"hierarchy_demand_hash\":"
+          <<diagnostics.hierarchy_demand_hash
+          <<",\"hierarchy_demand_records\":"
+          <<diagnostics.hierarchy_demand_records
+          <<",\"retained_hierarchy_demand_bytes\":"
+          <<diagnostics.retained_hierarchy_demand_bytes
+          <<",\"maximum_hierarchy_blocks\":"
+          <<diagnostics.maximum_hierarchy_blocks
+          <<",\"visible_hierarchy_blocks\":"
+          <<diagnostics.visible_hierarchy_blocks
+          <<",\"guard_hierarchy_blocks\":"
+          <<diagnostics.guard_hierarchy_blocks
+          <<",\"predicted_hierarchy_blocks\":"
+          <<diagnostics.predicted_hierarchy_blocks
+          <<",\"recent_hierarchy_blocks\":"
+          <<diagnostics.recent_hierarchy_blocks
+          <<",\"cold_hierarchy_blocks\":"
+          <<diagnostics.cold_hierarchy_blocks
+          <<",\"player_hierarchy_blocks\":"
+          <<diagnostics.player_hierarchy_blocks
+          <<",\"edit_hierarchy_blocks\":"
+          <<diagnostics.edit_hierarchy_blocks
+          <<",\"physics_hierarchy_blocks\":"
+          <<diagnostics.physics_hierarchy_blocks
+          <<",\"loaded_hierarchy_demand_blocks\":"
+          <<diagnostics.loaded_hierarchy_demand_blocks
+          <<",\"evicted_hierarchy_demand_blocks\":"
+          <<diagnostics.evicted_hierarchy_demand_blocks
+          <<",\"promoted_hierarchy_demand_blocks\":"
+          <<diagnostics.promoted_hierarchy_demand_blocks
+          <<",\"demoted_hierarchy_demand_blocks\":"
+          <<diagnostics.demoted_hierarchy_demand_blocks
+          <<",\"expired_hierarchy_demand_records\":"
+          <<diagnostics.expired_hierarchy_demand_records
           <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
           <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
           <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds

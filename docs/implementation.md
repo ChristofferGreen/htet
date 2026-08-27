@@ -246,6 +246,38 @@ materialization still traverse nonresident cell descriptions. This is the next
 performance target; it is not traded for approximate or history-dependent
 geometry.
 
+The predictive hierarchy-residency pass adds one revisioned demand record per
+published hierarchy block without changing that hierarchy's logical cut.
+Surface-authoritative blocks are classified as current-view, expanded-guard,
+predicted translation/rotation, recently visible, or cold. Near-player
+collision and explicit edit/physics pins are independent overlapping hard
+classes. Current and hard-pinned work outranks guard, prediction, recent
+retention, and cold fallback; recent records expire after eight committed
+camera epochs. Teleports deliberately discard extrapolation, and a repeated
+identical pose does not advance the demand epoch.
+
+Hierarchy admission has its own 65,536-block limit, separate from the
+4,096-block conforming-volume cache and the CPU, triangle, work, and upload
+budgets. An excessive hierarchy candidate is rejected before any partial front
+can publish. Cancellation and supersession retain the previously committed
+demand epoch as well as its exact hierarchy, surface, volume, and render
+front. Pure camera rotation remains a zero-build operation because production
+surface authority is deliberately omnidirectional; it is already ready for a
+turn, while positional publications predict two bounded future poses.
+
+The release qualification classified 36,785 spawn records as 5,375 visible,
+1,542 guard, and 29,868 cold blocks. A walking update added 383 predicted and
+2,749 recent blocks; far travel evicted 25,129 records, and reversal retained
+5,510 recently visible blocks. Demand metadata costs about 2 MiB. All seven
+stationary, walking, rapid-turn, near, far, reversal, and teleport routes kept
+their pre-change hierarchy, conforming-volume, connected-surface, and render
+hashes exactly. Measured update times were within run-to-run noise and slightly
+lower than the preceding captured baseline; predictive bookkeeping therefore
+introduced no observed latency regression. Spawn and translated-boundary
+captures are byte-identical to the tiered-residency images, and release visual
+inspection found no cracks, holes, overlaps, missing faces, stale layers,
+transparency, or normal discontinuities beyond the intended flat facets.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

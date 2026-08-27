@@ -922,6 +922,29 @@ and independent of the logical cut: changing a pin cannot invalidate or alter
 the authoritative surface. A separate 4,096-block hard budget rejects excessive
 volume demand before publication and leaves the last complete front untouched.
 
+Every block also has one revisioned demand record. Surface-authoritative blocks
+are conservatively tested against the current and expanded guard frusta, two
+bounded future camera samples, and a deterministic recently-visible history.
+Player collision and explicit edit/physics regions add overlapping hard pins;
+summary ancestors remain cold unless pinned. Demand priority and residency are
+recorded independently: classification can guide scheduling and retention but
+cannot rewrite the logical owner cut or substitute a different surface.
+
+The demand epoch advances only with a committed pose change. A canceled or
+budget-rejected candidate cannot age recent history or become prediction input.
+Teleports suppress extrapolation, recent history expires after a fixed number
+of committed epochs, and the canonical demand hash excludes incidental vector
+capacity and publication generation numbers. Production keeps an independent
+65,536-block hierarchy admission ceiling. If a candidate exceeds it, the last
+complete hierarchy, demand state, volume, surface, and render front remain
+published together.
+
+Production surface authority is direction-independent around the player.
+Consequently a pure camera turn is already prepared and updates view matrices
+without scheduling geometry; making the cut frustum-only would reintroduce the
+mouse-look stalls this design is intended to avoid. Translation still drives
+guard, prediction, promotion, demotion, and deterministic cold eviction.
+
 "One cut" is a logical invariant, not one flat planet-wide leaf vector. Its
 resident representation is an ordered prefix directory whose blocks contain
 local cut ranges; absent descendant ranges resolve to a published coarse
@@ -1325,7 +1348,7 @@ flat normals.
 - [x] Implement summary-only, surface, and conforming-volume residency tiers;
       default ordinary visible terrain to the surface tier and pin full volume
       only for the player, edits, or simulation.
-- [ ] Implement camera, guard, near-player, prediction, recent, physics, and
+- [x] Implement camera, guard, near-player, prediction, recent, physics, and
       cold hierarchy-demand records.
 - [ ] Add a priority queue over address-range jobs using the shared geometry
       executor; allow one job to span small blocks and a dense block to split
@@ -1339,7 +1362,7 @@ flat normals.
       non-mutating host-stage prediction and last-complete-front rejection.
 - [x] Add an independent hierarchy-block residency budget when cold eviction
       and residency tiers are introduced.
-- [ ] Implement deterministic cold-block eviction after publishing a valid
+- [x] Implement deterministic cold-block eviction after publishing a valid
       coarse replacement and retaining procedural/edit authority.
 - [x] Add block-cache, reuse, latency, and measured retained-memory metrics.
 - [x] Add a scripted route covering stationary, walking, rapid turn, near/far,

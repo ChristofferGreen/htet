@@ -43,6 +43,24 @@ struct TerrainRuntimeDiagnostics {
   std::size_t player_collision_volume_blocks{};
   std::size_t terrain_edit_volume_blocks{};
   std::size_t physics_volume_blocks{};
+  std::uint64_t hierarchy_demand_epoch{};
+  std::uint64_t hierarchy_demand_hash{};
+  std::size_t hierarchy_demand_records{};
+  std::size_t retained_hierarchy_demand_bytes{};
+  std::size_t maximum_hierarchy_blocks{};
+  std::size_t visible_hierarchy_blocks{};
+  std::size_t guard_hierarchy_blocks{};
+  std::size_t predicted_hierarchy_blocks{};
+  std::size_t recent_hierarchy_blocks{};
+  std::size_t cold_hierarchy_blocks{};
+  std::size_t player_hierarchy_blocks{};
+  std::size_t edit_hierarchy_blocks{};
+  std::size_t physics_hierarchy_blocks{};
+  std::size_t loaded_hierarchy_demand_blocks{};
+  std::size_t evicted_hierarchy_demand_blocks{};
+  std::size_t promoted_hierarchy_demand_blocks{};
+  std::size_t demoted_hierarchy_demand_blocks{};
+  std::size_t expired_hierarchy_demand_records{};
   std::size_t reused_hierarchy_blocks{};
   std::size_t rebuilt_hierarchy_blocks{};
   std::size_t reused_surface_intersections{};
@@ -142,6 +160,89 @@ struct WorldResidencyPlan {
   WorldResidencyPlanMetrics metrics{};
 };
 
+enum class WorldHierarchyDemandKind : std::uint16_t {
+  visible=1U<<0U,
+  guard=1U<<1U,
+  predicted=1U<<2U,
+  recent=1U<<3U,
+  player_collision=1U<<4U,
+  terrain_edit=1U<<5U,
+  physics=1U<<6U,
+  cold=1U<<7U,
+};
+
+struct WorldHierarchyDemandRecord {
+  tetra::HierarchyBlockId id{};
+  std::uint64_t revision{};
+  std::uint64_t last_visible_epoch{};
+  std::uint16_t kinds{};
+  tetra::HierarchyResidencyTier residency{
+      tetra::HierarchyResidencyTier::summary};
+  std::uint8_t priority{};
+  friend bool operator==(const WorldHierarchyDemandRecord&,
+                         const WorldHierarchyDemandRecord&)=default;
+};
+
+struct WorldHierarchyDemandHistory {
+  tetra::HierarchyBlockId id{};
+  std::uint64_t last_visible_epoch{};
+  friend bool operator==(const WorldHierarchyDemandHistory&,
+                         const WorldHierarchyDemandHistory&)=default;
+};
+
+struct WorldHierarchyDemandState {
+  std::uint64_t epoch{};
+  tetra::Camera committed_camera{};
+  bool has_committed_camera{};
+  std::vector<WorldHierarchyDemandRecord> records;
+  std::vector<WorldHierarchyDemandHistory> recent_history;
+};
+
+struct WorldHierarchyDemandConfiguration {
+  double player_radius{0.6};
+  double guard_frustum_scale{1.35};
+  double prediction_factor{1.0};
+  std::uint32_t recent_retention_epochs{8U};
+  std::size_t maximum_blocks{65536U};
+};
+
+struct WorldHierarchyDemandMetrics {
+  std::array<std::size_t,8> blocks_by_kind{};
+  std::size_t loaded_blocks{};
+  std::size_t evicted_blocks{};
+  std::size_t promoted_blocks{};
+  std::size_t demoted_blocks{};
+  std::size_t expired_records{};
+  std::size_t retained_bytes{};
+  std::size_t maximum_blocks{};
+  std::uint64_t canonical_hash{};
+};
+
+struct WorldHierarchyDemandPlan {
+  WorldHierarchyDemandState state;
+  WorldHierarchyDemandMetrics metrics{};
+};
+
+[[nodiscard]] constexpr std::uint16_t world_hierarchy_demand_mask(
+    WorldHierarchyDemandKind kind) noexcept {
+  return static_cast<std::uint16_t>(kind);
+}
+
+[[nodiscard]] constexpr bool has_world_hierarchy_demand(
+    const WorldHierarchyDemandRecord& record,
+    WorldHierarchyDemandKind kind) noexcept {
+  return (record.kinds&world_hierarchy_demand_mask(kind))!=0U;
+}
+
+// Classifies one complete published hierarchy revision. Demand may alter
+// storage priority and residency admission, never the logical cut itself.
+[[nodiscard]] WorldHierarchyDemandPlan plan_world_hierarchy_demand(
+    const tetra::WorldCutCheckpoint& checkpoint,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
+    WorldHierarchyDemandConfiguration configuration,
+    const WorldHierarchyDemandState* previous=nullptr);
+
 // Selects full-volume cache blocks independently from the global logical cut.
 // Every active owner block remains at least surface-resident; intersection
 // with any hard player/edit/physics pin promotes the complete block.
@@ -240,6 +341,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 
   void set_camera(const tetra::Camera& camera,bool interactive) override;
   void set_resource_budgets(WorldResourceBudgets budgets);
+  void set_hierarchy_block_budget(std::size_t maximum_blocks);
   void set_volume_pins(std::vector<WorldVolumePin> pins);
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
@@ -264,13 +366,16 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
+    WorldHierarchyDemandState hierarchy_demand;
     bool canceled{};
     bool residency_budget_exceeded{};
+    bool hierarchy_budget_exceeded{};
   };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
       const tetra::Camera& camera,std::uint64_t generation,
       SparseWorldSurfaceCache surface_cache={},
+      WorldHierarchyDemandState hierarchy_demand={},
       std::vector<WorldVolumePin> volume_pins={},
       std::stop_token cancellation={});
   void submit();
@@ -286,6 +391,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::future<Publication> future_;
   std::stop_source cancellation_;
   SparseWorldSurfaceCache surface_cache_;
+  WorldHierarchyDemandState hierarchy_demand_;
   std::vector<WorldVolumePin> volume_pins_;
   // World render blocks are deliberately fine grained.  A small slot keeps
   // retained staging proportional to their contents instead of paying the

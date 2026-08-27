@@ -3,10 +3,11 @@
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
 experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
-3 large-domain runtime adoption are complete. Gate 4's tiered volume residency
-is complete. Execute its hierarchy-demand leaf next: add guard, prediction,
-recently-visible, physics, and cold demand records without changing the one
-authoritative logical cut.
+3 large-domain runtime adoption are complete. Gate 4's tiered volume residency,
+revisioned predictive hierarchy demand, bounded recent retention, independent
+hierarchy admission, and deterministic cold eviction are complete without
+changing the one authoritative logical cut. The next closable Gate 4 leaf is
+address-range job prioritization on the shared geometry executor.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
@@ -143,3 +144,7 @@ not the active queue.
       cancellation of superseded in-flight builds.
 - [x] Promote ordinary visible blocks to surface-only residency while pinning
       conforming volume only around collision, edits, and physics demand.
+- [x] Add revisioned visible/guard/predicted/recent/player/edit/physics/cold
+      hierarchy-demand records, deterministic expiry and teleport handling,
+      independent hierarchy admission, cold eviction, diagnostics, scripted
+      benchmarks, exact-oracle tests, and release visual qualification.

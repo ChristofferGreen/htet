@@ -820,6 +820,10 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.near_red_depth==11U);
   CHECK(profile.near_volume_radius==doctest::Approx(0.6));
   CHECK(profile.maximum_volume_blocks==4096U);
+  CHECK(profile.maximum_hierarchy_blocks==65536U);
+  CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
+  CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
+  CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(48.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.maximum_depth==16U);
@@ -859,6 +863,18 @@ TEST_CASE("world resource budgets independently gate every publication cost") {
 
   invalid=tetra_viewer::production_world_profile();
   invalid.maximum_volume_blocks=0U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
+  invalid=tetra_viewer::production_world_profile();
+  invalid.maximum_hierarchy_blocks=tetra::bcc_root_tetrahedron_count-1U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
+  invalid=tetra_viewer::production_world_profile();
+  invalid.hierarchy_recent_retention_epochs=0U;
   CHECK_THROWS_AS(([&]{
       tetra_viewer::BlockedTerrainRuntime runtime{invalid};
     }()),std::invalid_argument);
@@ -918,6 +934,113 @@ TEST_CASE("world residency plans deduplicate overlapping hard volume pins") {
       centre,0.1,static_cast<tetra_viewer::WorldVolumePinKind>(255U)}};
   CHECK_THROWS_AS(([&]{static_cast<void>(tetra_viewer::plan_world_residency(
       owners,3U,domain,invalid_kind,64U));}()),std::invalid_argument);
+}
+
+TEST_CASE("world hierarchy demand is revisioned predictive recent and bounded") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int pass=0;pass<6U;++pass)mesh.refine_all_binary();
+  auto checkpoint=tetra::make_world_cut_checkpoint(mesh,3U,17U);
+  const tetra::WorldStreamingDemand::Domain domain{};
+  tetra::Camera camera;
+  camera.position={0.5,0.5,0.95};camera.forward={0.0,0.0,-1.0};
+  camera.vertical_fov_radians=0.45;camera.aspect_ratio=1.4;
+  const std::array pins{
+      tetra_viewer::WorldVolumePin{
+          {0.5,0.5,0.5},0.18,
+          tetra_viewer::WorldVolumePinKind::terrain_edit},
+      tetra_viewer::WorldVolumePin{
+          {0.5,0.5,0.5},0.18,
+          tetra_viewer::WorldVolumePinKind::physics}};
+  tetra_viewer::WorldHierarchyDemandConfiguration configuration;
+  configuration.player_radius=0.05;
+  configuration.guard_frustum_scale=1.6;
+  configuration.prediction_factor=3.0;
+  configuration.recent_retention_epochs=2U;
+  configuration.maximum_blocks=checkpoint.blocks.size();
+  const auto first=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration);
+  REQUIRE(first.state.records.size()==checkpoint.blocks.size());
+  CHECK(first.state.epoch==1U);
+  CHECK(first.metrics.canonical_hash!=0U);
+  CHECK(first.metrics.loaded_blocks==checkpoint.blocks.size());
+  CHECK(first.metrics.blocks_by_kind[0]>0U);
+  CHECK(first.metrics.blocks_by_kind[1]>0U);
+  CHECK(first.metrics.blocks_by_kind[4]>0U);
+  CHECK(first.metrics.blocks_by_kind[5]>0U);
+  CHECK(first.metrics.blocks_by_kind[6]>0U);
+  CHECK(first.metrics.blocks_by_kind[7]>0U);
+  CHECK(std::ranges::is_sorted(
+      first.state.records,{},&tetra_viewer::WorldHierarchyDemandRecord::id));
+  CHECK(std::ranges::all_of(first.state.records,[&](const auto& record){
+    return record.revision==checkpoint.revision;
+  }));
+  const auto visual_demand_has_surface_authority=[](const auto& record){
+    const auto visual=tetra_viewer::world_hierarchy_demand_mask(
+        tetra_viewer::WorldHierarchyDemandKind::visible)|
+        tetra_viewer::world_hierarchy_demand_mask(
+            tetra_viewer::WorldHierarchyDemandKind::guard)|
+        tetra_viewer::world_hierarchy_demand_mask(
+            tetra_viewer::WorldHierarchyDemandKind::predicted)|
+        tetra_viewer::world_hierarchy_demand_mask(
+            tetra_viewer::WorldHierarchyDemandKind::recent);
+    return (record.kinds&visual)==0U||
+        record.residency!=tetra::HierarchyResidencyTier::summary;
+  };
+  CHECK(std::ranges::all_of(
+      first.state.records,visual_demand_has_surface_authority));
+
+  camera.position.x+=0.12;
+  camera.forward={0.35,0.0,-0.9367496997597597};
+  const auto moved=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&first.state);
+  CHECK(moved.state.epoch==2U);
+  CHECK(moved.metrics.blocks_by_kind[2]>0U);
+  CHECK(moved.metrics.promoted_blocks>0U);
+  CHECK(moved.metrics.demoted_blocks>0U);
+  CHECK(std::ranges::all_of(
+      moved.state.records,visual_demand_has_surface_authority));
+
+  camera.forward={0.0,0.0,1.0};
+  const auto turned=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&moved.state);
+  CHECK(turned.state.epoch==3U);
+  CHECK(turned.metrics.blocks_by_kind[3]>0U);
+  CHECK(std::ranges::all_of(
+      turned.state.records,visual_demand_has_surface_authority));
+  const auto repeated=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&turned.state);
+  const auto repeated_again=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&turned.state);
+  CHECK(repeated.state.epoch==turned.state.epoch);
+  CHECK(repeated.state.records==repeated_again.state.records);
+  CHECK(repeated.metrics.canonical_hash==repeated_again.metrics.canonical_hash);
+
+  camera.position.x+=0.01;
+  const auto retained_once=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&turned.state);
+  camera.position.x+=0.01;
+  const auto expired=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,camera,pins,configuration,&retained_once.state);
+  CHECK(expired.state.epoch==turned.state.epoch+2U);
+  CHECK(expired.metrics.expired_records>0U);
+
+  configuration.maximum_blocks=checkpoint.blocks.size()-1U;
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::plan_world_hierarchy_demand(
+          checkpoint,domain,camera,pins,configuration,&turned.state)),
+      std::length_error);
+  configuration.maximum_blocks=checkpoint.blocks.size();
+  auto invalid_camera=camera;invalid_camera.forward={};
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::plan_world_hierarchy_demand(
+          checkpoint,domain,invalid_camera,pins,configuration,&turned.state)),
+      std::invalid_argument);
+  auto invalid_domain=domain;invalid_domain.world_extent=0.0;
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::plan_world_hierarchy_demand(
+          checkpoint,invalid_domain,camera,pins,configuration,&turned.state)),
+      std::invalid_argument);
 }
 
 TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
@@ -1191,6 +1314,14 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.surface_hierarchy_blocks>initial.volume_hierarchy_blocks);
   CHECK(initial.resident_volume_cells<initial.active_tetrahedra);
   CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
+  CHECK(initial.hierarchy_demand_epoch==1U);
+  CHECK(initial.hierarchy_demand_records==initial.hierarchy_blocks);
+  CHECK(initial.hierarchy_blocks<=initial.maximum_hierarchy_blocks);
+  CHECK(initial.retained_hierarchy_demand_bytes>0U);
+  CHECK(initial.visible_hierarchy_blocks>0U);
+  CHECK(initial.guard_hierarchy_blocks>0U);
+  CHECK(initial.cold_hierarchy_blocks>0U);
+  CHECK(initial.player_hierarchy_blocks>=initial.resident_volume_blocks);
   double minimum_x=std::numeric_limits<double>::infinity();
   double maximum_x=-std::numeric_limits<double>::infinity();
   double maximum_y=-std::numeric_limits<double>::infinity();
@@ -1251,6 +1382,13 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
 
   tetra::Camera camera;
   camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  // The complete surface cut is direction independent, so a pure rapid turn
+  // is already prepared and must not schedule expensive geometry work.
+  camera.forward={0.0,-0.2,1.0};runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().scene_generation==initial.scene_generation);
+  camera.forward={0.0,-0.2,-1.0};runtime.set_camera(camera,false);
   const std::array interaction_pins{
       tetra_viewer::WorldVolumePin{
           {2.0,0.5,0.5},0.3,
@@ -1289,6 +1427,10 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(runtime.diagnostics().demoted_volume_blocks>0U);
   CHECK(runtime.diagnostics().terrain_edit_volume_blocks>0U);
   CHECK(runtime.diagnostics().physics_volume_blocks>0U);
+  CHECK(runtime.diagnostics().edit_hierarchy_blocks>0U);
+  CHECK(runtime.diagnostics().physics_hierarchy_blocks>0U);
+  CHECK(runtime.diagnostics().predicted_hierarchy_blocks>0U);
+  CHECK(runtime.diagnostics().recent_hierarchy_blocks>0U);
   CHECK(runtime.diagnostics().resident_volume_blocks<
         runtime.diagnostics().player_collision_volume_blocks+
         runtime.diagnostics().terrain_edit_volume_blocks+
@@ -1311,6 +1453,8 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(final.work_high_water<=budgets.maximum_work_units);
   CHECK(final.upload_high_water_bytes<=budgets.maximum_upload_bytes);
   CHECK(final.budget_rejected_builds==0U);
+  CHECK(final.evicted_hierarchy_demand_blocks>0U);
+  CHECK(final.demoted_hierarchy_demand_blocks>0U);
 
   camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
   runtime.set_camera(camera,false);
@@ -1320,6 +1464,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(reversed.conforming_volume_hash==initial.conforming_volume_hash);
   CHECK(reversed.connected_surface_hash==initial.connected_surface_hash);
   CHECK(reversed.render_hash==initial.render_hash);
+  CHECK(reversed.recent_hierarchy_blocks>0U);
 }
 
 TEST_CASE("blocked world resource rejection preserves the complete published front") {
@@ -1394,6 +1539,47 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   REQUIRE(volume_retained.size()==recovered_vertices.size());
   CHECK(std::memcmp(volume_retained.data(),recovered_vertices.data(),
                     volume_retained.size()*sizeof(tetra_viewer::SceneVertex))==0);
+
+  runtime.set_volume_pins({});
+  runtime.set_hierarchy_block_budget(tetra::bcc_root_tetrahedron_count);
+  CHECK_FALSE(runtime.update());
+  const auto hierarchy_budget_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(10);
+  while(runtime.diagnostics().busy&&
+        std::chrono::steady_clock::now()<hierarchy_budget_deadline){
+    static_cast<void>(runtime.update());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto hierarchy_rejected=runtime.diagnostics();
+  REQUIRE_FALSE(hierarchy_rejected.busy);
+  CHECK(hierarchy_rejected.budget_exceeded);
+  CHECK(hierarchy_rejected.budget_rejected_builds==3U);
+  CHECK(hierarchy_rejected.scene_generation==recovered.scene_generation);
+  CHECK(hierarchy_rejected.hierarchy_hash==recovered.hierarchy_hash);
+  CHECK(hierarchy_rejected.conforming_volume_hash==
+        recovered.conforming_volume_hash);
+  CHECK(hierarchy_rejected.connected_surface_hash==
+        recovered.connected_surface_hash);
+  CHECK(hierarchy_rejected.render_hash==recovered.render_hash);
+
+  runtime.set_hierarchy_block_budget(profile.maximum_hierarchy_blocks);
+  CHECK_FALSE(runtime.update());
+  const auto hierarchy_recovery_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  while(std::chrono::steady_clock::now()<hierarchy_recovery_deadline){
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto hierarchy_recovered=runtime.diagnostics();
+  REQUIRE(hierarchy_recovered.converged);
+  CHECK_FALSE(hierarchy_recovered.busy);
+  CHECK_FALSE(hierarchy_recovered.budget_exceeded);
+  CHECK(hierarchy_recovered.budget_rejected_builds==3U);
+  CHECK(hierarchy_recovered.scene_generation>recovered.scene_generation);
+  CHECK(hierarchy_recovered.hierarchy_hash==recovered.hierarchy_hash);
+  CHECK(hierarchy_recovered.connected_surface_hash==
+        recovered.connected_surface_hash);
 }
 
 TEST_CASE("blocked world supersession cancels stale work and converges to newest pose") {
@@ -1449,6 +1635,14 @@ TEST_CASE("blocked world supersession cancels stale work and converges to newest
   CHECK(latest.conforming_volume_hash==expected.conforming_volume_hash);
   CHECK(latest.connected_surface_hash==expected.connected_surface_hash);
   CHECK(latest.render_hash==expected.render_hash);
+  CHECK(latest.hierarchy_demand_epoch==expected.hierarchy_demand_epoch);
+  CHECK(latest.hierarchy_demand_hash==expected.hierarchy_demand_hash);
+  CHECK(latest.hierarchy_demand_records==expected.hierarchy_demand_records);
+  CHECK(latest.visible_hierarchy_blocks==expected.visible_hierarchy_blocks);
+  CHECK(latest.guard_hierarchy_blocks==expected.guard_hierarchy_blocks);
+  CHECK(latest.predicted_hierarchy_blocks==expected.predicted_hierarchy_blocks);
+  CHECK(latest.recent_hierarchy_blocks==expected.recent_hierarchy_blocks);
+  CHECK(latest.cold_hierarchy_blocks==expected.cold_hierarchy_blocks);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
