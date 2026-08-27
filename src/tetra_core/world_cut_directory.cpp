@@ -1477,6 +1477,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   for(std::size_t index=1U;index<owners.size();++index)
     if(overlaps(owners[index-1U],owners[index]))
       throw std::invalid_argument("world conforming closure contains overlapping owners");
+  const auto requested_owners=owners;
 
   if(cache!=nullptr){
     cache->last_requested_owners_scanned=owners.size();
@@ -1491,7 +1492,153 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       return cache->closed_owners;
     }
   }
+  std::vector<std::uint8_t> retained_node_valid;
+  std::vector<WorldClosurePromotionProof> retained_promotions;
+  if(cache!=nullptr&&!cache->requested_owners.empty()&&
+     !cache->proof_nodes.empty()&&
+     std::ranges::is_sorted(cache->promotion_proofs)){
+    bool graph_valid=true;
+    for(std::size_t proof=0;proof<cache->proof_nodes.size()&&graph_valid;++proof){
+      const auto& node=cache->proof_nodes[proof];
+      graph_valid=node.input_count<=node.inputs.size();
+      for(std::size_t input=0;input<node.input_count&&graph_valid;++input)
+        graph_valid=node.inputs[input]<proof;
+    }
+    for(const auto& promotion:cache->promotion_proofs)
+      graph_valid&=promotion.proof<cache->proof_nodes.size();
+    const bool ancestry_valid=
+        std::ranges::is_sorted(cache->requested_split_ancestors,{},
+            &WorldConformingSplitAncestor::address)&&
+        std::ranges::all_of(cache->requested_split_ancestors,
+            [](const auto& entry){return entry.descendant_leaves>0U;});
+    graph_valid&=ancestry_valid;
+    if(graph_valid){
+      std::unordered_set<WorldTetAddress,WorldAddressHash> requested(
+          owners.begin(),owners.end());
+      std::map<WorldTetAddress,std::int64_t> ancestor_deltas;
+      const auto change_path=[&](WorldTetAddress owner,std::int64_t delta){
+        while(owner.red_depth()>0U){
+          owner=owner.parent();ancestor_deltas[owner]+=delta;
+        }
+      };
+      std::size_t previous{},current{};
+      while(previous<cache->requested_owners.size()||current<owners.size()){
+        if(current==owners.size()||
+           (previous<cache->requested_owners.size()&&
+            cache->requested_owners[previous]<owners[current]))
+          change_path(cache->requested_owners[previous++],-1);
+        else if(previous==cache->requested_owners.size()||
+                owners[current]<cache->requested_owners[previous])
+          change_path(owners[current++],1);
+        else{++previous;++current;}
+      }
+      const auto split_ancestor_active=[&](WorldTetAddress address){
+        const auto retained=std::ranges::lower_bound(
+            cache->requested_split_ancestors,address,{},
+            &WorldConformingSplitAncestor::address);
+        std::int64_t count=retained!=cache->requested_split_ancestors.end()&&
+            retained->address==address?retained->descendant_leaves:0U;
+        const auto delta=ancestor_deltas.find(address);
+        if(delta!=ancestor_deltas.end())count+=delta->second;
+        return count>0;
+      };
+      retained_node_valid.assign(cache->proof_nodes.size(),0U);
+      const auto promotion_for=[&](WorldTetAddress address)
+          ->const WorldClosurePromotionProof* {
+        const auto found=std::ranges::lower_bound(
+            cache->promotion_proofs,address,{},
+            &WorldClosurePromotionProof::address);
+        return found!=cache->promotion_proofs.end()&&found->address==address?
+            std::addressof(*found):nullptr;
+      };
+      const auto owner_exists=[&](WorldTetAddress address){
+        auto current_address=address;
+        while(!requested.contains(current_address)){
+          if(current_address.red_depth()==0U)return false;
+          const auto parent=current_address.parent();
+          const auto* promotion=promotion_for(parent);
+          if(promotion==nullptr||
+             retained_node_valid[promotion->proof]==0U)return false;
+          current_address=parent;
+        }
+        return true;
+      };
+      for(std::size_t proof=0;proof<cache->proof_nodes.size();++proof){
+        const auto& node=cache->proof_nodes[proof];
+        bool valid=true;
+        for(std::size_t input=0;input<node.input_count&&valid;++input)
+          valid=retained_node_valid[node.inputs[input]]!=0U;
+        if(valid)switch(node.kind){
+          case WorldClosureProofKind::owner_existence:
+          case WorldClosureProofKind::green_edge:
+          case WorldClosureProofKind::vertex_promotion:
+          case WorldClosureProofKind::mask_promotion:
+            valid=owner_exists(node.address);break;
+          case WorldClosureProofKind::split_ancestor_edge:
+            valid=split_ancestor_active(node.address);break;
+          case WorldClosureProofKind::promotion_edge:break;
+        }
+        retained_node_valid[proof]=valid?1U:0U;
+      }
+      for(const auto& promotion:cache->promotion_proofs)
+        if(retained_node_valid[promotion.proof]!=0U)
+          retained_promotions.push_back(promotion);
+      std::unordered_set<WorldTetAddress,WorldAddressHash> retained_splits;
+      retained_splits.reserve(retained_promotions.size());
+      for(const auto& promotion:retained_promotions)
+        retained_splits.insert(promotion.address);
+      if(!retained_splits.empty()){
+        std::vector<WorldTetAddress> warm;
+        warm.reserve(owners.size()+retained_splits.size()*7U);
+        const auto emit=[&](this auto&& self,WorldTetAddress owner)->void {
+          if(!retained_splits.contains(owner)){warm.push_back(owner);return;}
+          for(std::uint8_t child=0;child<8U;++child)self(owner.child(child));
+        };
+        for(const auto owner:owners)emit(owner);
+        std::ranges::sort(warm);owners=std::move(warm);
+      }
+    }
+  }
   std::size_t promoted_owners{};
+  constexpr std::uint32_t no_proof=std::numeric_limits<std::uint32_t>::max();
+  std::vector<WorldClosureProofNode> proof_nodes;
+  std::vector<WorldClosurePromotionProof> promotion_proofs;
+  if(cache!=nullptr&&!retained_node_valid.empty()){
+    std::vector<std::uint32_t> remap(retained_node_valid.size(),no_proof);
+    proof_nodes.reserve(static_cast<std::size_t>(std::ranges::count(
+        retained_node_valid,std::uint8_t{1})));
+    for(std::size_t old=0;old<retained_node_valid.size();++old){
+      if(retained_node_valid[old]==0U)continue;
+      auto node=cache->proof_nodes[old];
+      for(std::size_t input=0;input<node.input_count;++input){
+        if(remap[node.inputs[input]]==no_proof)
+          throw std::logic_error("valid closure proof retained an invalid input");
+        node.inputs[input]=remap[node.inputs[input]];
+      }
+      remap[old]=static_cast<std::uint32_t>(proof_nodes.size());
+      proof_nodes.push_back(node);
+    }
+    promotion_proofs.reserve(retained_promotions.size());
+    for(auto promotion:retained_promotions){
+      promotion.proof=remap[promotion.proof];
+      if(promotion.proof==no_proof)
+        throw std::logic_error("valid world promotion lost its proof");
+      promotion_proofs.push_back(promotion);
+    }
+  }
+  const auto add_proof=[&](WorldClosureProofKind kind,WorldTetAddress address,
+                           std::span<const std::uint32_t> inputs={},
+                           WorldEdgeKey edge={}){
+    if(inputs.size()>WorldClosureProofNode{}.inputs.size())
+      throw std::logic_error("world closure proof has too many inputs");
+    if(proof_nodes.size()>=no_proof)
+      throw std::overflow_error("world closure proof graph exceeds 32-bit indices");
+    WorldClosureProofNode node;node.kind=kind;node.address=address;node.edge=edge;
+    node.input_count=static_cast<std::uint8_t>(inputs.size());
+    std::ranges::copy(inputs,node.inputs.begin());
+    proof_nodes.push_back(node);
+    return static_cast<std::uint32_t>(proof_nodes.size()-1U);
+  };
 
   const auto load_vertex_keys=[&](std::span<const WorldTetAddress> requested){
     std::vector<std::array<WorldVertexKey,4>> result(requested.size());
@@ -1564,15 +1711,15 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     const auto change_path=[&](WorldTetAddress owner,std::int64_t delta){
       while(owner.red_depth()>0U){owner=owner.parent();deltas[owner]+=delta;}
     };
-    while(previous<cache->requested_owners.size()||current<owners.size()){
-      if(current==owners.size()||
+    while(previous<cache->requested_owners.size()||current<requested_owners.size()){
+      if(current==requested_owners.size()||
          (previous<cache->requested_owners.size()&&
-          cache->requested_owners[previous]<owners[current])){
+          cache->requested_owners[previous]<requested_owners[current])){
         change_path(cache->requested_owners[previous++],-1);
         if(cache)++cache->last_changed_requested_owners;
       }else if(previous==cache->requested_owners.size()||
-                owners[current]<cache->requested_owners[previous]){
-        change_path(owners[current++],1);
+                requested_owners[current]<cache->requested_owners[previous]){
+        change_path(requested_owners[current++],1);
         if(cache)++cache->last_changed_requested_owners;
       }else{++previous;++current;}
     }
@@ -1606,8 +1753,8 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     if(cache)cache->last_split_ancestor_updates=deltas.size();
   }else{
     std::unordered_map<WorldTetAddress,std::uint32_t,WorldAddressHash> counts;
-    counts.reserve(owners.size()/4U);
-    for(auto owner:owners)while(owner.red_depth()>0U){
+    counts.reserve(requested_owners.size()/4U);
+    for(auto owner:requested_owners)while(owner.red_depth()>0U){
       owner=owner.parent();
       auto& count=counts[owner];
       if(count==std::numeric_limits<std::uint32_t>::max())
@@ -1620,17 +1767,46 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     std::ranges::sort(requested_split_ancestors,{},
         &WorldConformingSplitAncestor::address);
     if(cache){
-      cache->last_changed_requested_owners=owners.size();
+      cache->last_changed_requested_owners=requested_owners.size();
       cache->last_split_ancestor_updates=requested_split_ancestors.size();
     }
   }
   std::vector<WorldTetAddress> ordered_ancestors;
-  ordered_ancestors.reserve(requested_split_ancestors.size());
-  for(const auto& entry:requested_split_ancestors)
-    ordered_ancestors.push_back(entry.address);
+  if(owners==requested_owners){
+    ordered_ancestors.reserve(requested_split_ancestors.size());
+    for(const auto& entry:requested_split_ancestors)
+      ordered_ancestors.push_back(entry.address);
+  }else{
+    std::unordered_set<WorldTetAddress,WorldAddressHash> closure_ancestors;
+    closure_ancestors.reserve(owners.size()/4U);
+    for(auto owner:owners)while(owner.red_depth()>0U){
+      owner=owner.parent();closure_ancestors.insert(owner);
+    }
+    ordered_ancestors.assign(closure_ancestors.begin(),closure_ancestors.end());
+    std::ranges::sort(ordered_ancestors);
+  }
   const auto ancestor_keys=load_vertex_keys(ordered_ancestors);
-  for(const auto& keys:ancestor_keys)for(const auto edge:edges)
-    midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+  std::unordered_map<WorldEdgeKey,std::uint32_t,WorldEdgeHash> edge_proofs;
+  if(cache!=nullptr){
+    edge_proofs.reserve(owners.size()*2U);
+    for(std::size_t proof=0;proof<proof_nodes.size();++proof){
+      const auto& node=proof_nodes[proof];
+      if(node.kind!=WorldClosureProofKind::split_ancestor_edge&&
+         node.kind!=WorldClosureProofKind::green_edge&&
+         node.kind!=WorldClosureProofKind::promotion_edge)continue;
+      if(midpoints.insert(node.edge).second)
+        edge_proofs.emplace(node.edge,static_cast<std::uint32_t>(proof));
+    }
+  }
+  for(std::size_t ancestor=0;ancestor<ancestor_keys.size();++ancestor)
+    for(const auto edge:edges){
+      const auto key=world_edge_key(
+          ancestor_keys[ancestor][edge[0]],ancestor_keys[ancestor][edge[1]]);
+      if(midpoints.insert(key).second&&cache!=nullptr)
+        edge_proofs.emplace(key,add_proof(
+            WorldClosureProofKind::split_ancestor_edge,
+            ordered_ancestors[ancestor],{},key));
+    }
   // Red promotion is monotone during one closure transaction. Retain the
   // deepest incident depth and active midpoint sets between rounds: replacing
   // a parent by its children can only raise a vertex maximum and adds exactly
@@ -1638,11 +1814,23 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   // incidence after every promotion round was exact but needlessly replayed
   // the complete cut several times.
   std::unordered_map<WorldVertexKey,unsigned int,WorldVertexHash> deepest_incident;
+  struct DeepestProof {
+    unsigned int depth{};
+    WorldTetAddress owner{};
+  };
+  std::unordered_map<WorldVertexKey,DeepestProof,WorldVertexHash> deepest_proofs;
   deepest_incident.reserve(owners.size());
+  if(cache!=nullptr)deepest_proofs.reserve(owners.size());
   for(std::size_t index=0;index<owners.size();++index)
-    for(const auto key:owner_keys[index])
+    for(const auto key:owner_keys[index]){
       deepest_incident[key]=std::max(
           deepest_incident[key],owners[index].red_depth());
+      if(cache!=nullptr){
+        auto& deepest=deepest_proofs[key];
+        if(owners[index].red_depth()>deepest.depth)
+          deepest={owners[index].red_depth(),owners[index]};
+      }
+    }
 
   for(;;){
     cancel();
@@ -1661,34 +1849,71 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       for(auto& worker:workers)worker.join();
       cancel();
     };
+    struct EdgeCandidate {
+      WorldEdgeKey edge{};
+      WorldTetAddress owner{};
+      std::array<std::uint32_t,7> inputs{};
+      std::uint8_t input_count{};
+    };
     bool changed=true;
     while(changed){
       cancel();
       changed=false;
-      std::vector<std::vector<WorldEdgeKey>> additions(worker_count);
+      std::vector<std::vector<EdgeCandidate>> additions(worker_count);
       run_workers([&](std::size_t worker,std::size_t begin,std::size_t end){
         auto& local=additions[worker];local.reserve((end-begin)/8U);
         for(std::size_t owner_index=begin;owner_index<end;++owner_index){
           const auto& keys=owner_keys[owner_index];
           unsigned int mask{};
+          std::array<std::uint32_t,7> inputs{};
+          std::uint8_t input_count{};
           for(std::size_t edge=0;edge<edges.size();++edge)
             if(midpoints.contains(world_edge_key(
-                  keys[edges[edge][0]],keys[edges[edge][1]])))mask|=1U<<edge;
+                  keys[edges[edge][0]],keys[edges[edge][1]]))){
+              mask|=1U<<edge;
+              if(cache!=nullptr){
+                const auto proof=edge_proofs.find(world_edge_key(
+                    keys[edges[edge][0]],keys[edges[edge][1]]));
+                if(proof==edge_proofs.end())
+                  throw std::logic_error("active world edge has no closure proof");
+                inputs[input_count++]=proof->second;
+              }
+            }
           const auto target=allowed_green_superset(mask);
           if(target==63U)continue;
           for(std::size_t edge=0;edge<edges.size();++edge)
             if((target&(1U<<edge))!=0U&&(mask&(1U<<edge))==0U)
-              local.push_back(world_edge_key(
-                  keys[edges[edge][0]],keys[edges[edge][1]]));
+              local.push_back({world_edge_key(
+                  keys[edges[edge][0]],keys[edges[edge][1]]),
+                  owners[owner_index],inputs,input_count});
         }
       });
-      for(const auto& local:additions)for(const auto& edge:local)
-        changed|=midpoints.insert(edge).second;
+      std::vector<EdgeCandidate> ordered;
+      for(auto& local:additions)
+        ordered.insert(ordered.end(),local.begin(),local.end());
+      std::ranges::sort(ordered,[](const auto& first,const auto& second){
+        return first.edge<second.edge||
+            (first.edge==second.edge&&first.owner<second.owner);
+      });
+      for(const auto& candidate:ordered)
+        if(midpoints.insert(candidate.edge).second){
+          changed=true;
+          if(cache!=nullptr)edge_proofs.emplace(candidate.edge,add_proof(
+              WorldClosureProofKind::green_edge,candidate.owner,
+              std::span(candidate.inputs.data(),candidate.input_count),
+              candidate.edge));
+        }
     }
+    if(cache!=nullptr&&edge_proofs.size()!=midpoints.size())
+      throw std::logic_error("world closure edge proof cardinality mismatch "+
+          std::to_string(edge_proofs.size())+"/"+
+          std::to_string(midpoints.size()));
     std::vector<std::uint8_t> promote(owners.size());
+    std::vector<std::uint32_t> promotion_nodes(owners.size(),no_proof);
     std::size_t promote_count{};
     const auto mark_promote=[&](std::size_t index){
-      if(promote[index]==0U){promote[index]=1U;++promote_count;}
+      if(promote[index]!=0U)return false;
+      promote[index]=1U;++promote_count;return true;
     };
     // A fine face can be tiled entirely inside a coarse face and therefore
     // share no complete face key with it. Conservatively grading every exact
@@ -1697,7 +1922,14 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     for(std::size_t index=0;index<owners.size();++index)
       for(const auto key:owner_keys[index])
       if(deepest_incident[key]>owners[index].red_depth()+1U){
-        mark_promote(index);break;
+        if(mark_promote(index)&&cache!=nullptr){
+          const std::array inputs{add_proof(
+              WorldClosureProofKind::owner_existence,
+              deepest_proofs.at(key).owner)};
+          promotion_nodes[index]=add_proof(
+              WorldClosureProofKind::vertex_promotion,owners[index],inputs);
+        }
+        break;
       }
     std::vector<std::size_t> mask_promotions(worker_count);
     run_workers([&](std::size_t worker,std::size_t begin,std::size_t end){
@@ -1715,6 +1947,23 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       mask_promotions[worker]=count;
     });
     for(const auto count:mask_promotions)promote_count+=count;
+    if(cache!=nullptr)for(std::size_t owner=0;owner<owners.size();++owner){
+      if(promote[owner]==0U||promotion_nodes[owner]!=no_proof)continue;
+      std::array<std::uint32_t,7> inputs{};
+      std::uint8_t count{};
+      for(const auto edge:edges){
+        const auto key=world_edge_key(
+            owner_keys[owner][edge[0]],owner_keys[owner][edge[1]]);
+        if(!midpoints.contains(key))continue;
+        const auto proof=edge_proofs.find(key);
+        if(proof==edge_proofs.end())
+          throw std::logic_error("promoted world mask edge has no proof");
+        inputs[count++]=proof->second;
+      }
+      promotion_nodes[owner]=add_proof(
+          WorldClosureProofKind::mask_promotion,owners[owner],
+          std::span(inputs.data(),count));
+    }
     if(promote_count==0U){
       if(cache!=nullptr){
         std::vector<std::uint8_t> new_masks(owners.size(),0U);
@@ -1736,12 +1985,49 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           ++previous;++current;
         }
         cache->last_rebuilt_masks=owners.size()-cache->last_reused_masks;
-        cache->requested_owners=std::vector<WorldTetAddress>(
-            logical_owners.begin(),logical_owners.end());
-        std::ranges::sort(cache->requested_owners);
+        cache->requested_owners=requested_owners;
         cache->requested_split_ancestors=std::move(requested_split_ancestors);
         cache->closed_owners=owners;
         cache->green_masks=std::move(new_masks);
+        std::ranges::sort(promotion_proofs);
+        std::vector<std::uint8_t> used(proof_nodes.size());
+        std::vector<std::uint32_t> stack;
+        stack.reserve(promotion_proofs.size());
+        for(const auto& promotion:promotion_proofs)
+          stack.push_back(promotion.proof);
+        while(!stack.empty()){
+          const auto proof=stack.back();stack.pop_back();
+          if(proof>=proof_nodes.size())
+            throw std::logic_error("world promotion references a missing proof");
+          if(used[proof]!=0U)continue;
+          used[proof]=1U;
+          const auto& node=proof_nodes[proof];
+          for(std::size_t input=0;input<node.input_count;++input)
+            stack.push_back(node.inputs[input]);
+        }
+        std::vector<std::uint32_t> remap(proof_nodes.size(),no_proof);
+        std::vector<WorldClosureProofNode> compact;
+        compact.reserve(static_cast<std::size_t>(std::ranges::count(
+            used,std::uint8_t{1})));
+        for(std::size_t old=0;old<proof_nodes.size();++old){
+          if(used[old]==0U)continue;
+          auto node=proof_nodes[old];
+          for(std::size_t input=0;input<node.input_count;++input){
+            if(remap[node.inputs[input]]==no_proof)
+              throw std::logic_error("world closure proof compaction broke its DAG");
+            node.inputs[input]=remap[node.inputs[input]];
+          }
+          remap[old]=static_cast<std::uint32_t>(compact.size());
+          compact.push_back(node);
+        }
+        for(auto& promotion:promotion_proofs){
+          promotion.proof=remap[promotion.proof];
+          if(promotion.proof==no_proof)
+            throw std::logic_error("world promotion proof was not retained");
+        }
+        proof_nodes=std::move(compact);
+        cache->proof_nodes=std::move(proof_nodes);
+        cache->promotion_proofs=std::move(promotion_proofs);
         cache->last_promoted_owners=promoted_owners;
       }
       return owners;
@@ -1753,12 +2039,23 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     promoted_children.reserve(promote_count*8U);
     for(std::size_t index=0;index<owners.size();++index){
       const auto owner=owners[index];
-      if(promote[index]==0U){next.push_back(owner);continue;}
+      if(promote[index]==0U){
+        next.push_back(owner);
+        continue;
+      }
       if(owner.red_depth()>=maximum_world_red_depth)
         throw std::overflow_error("world conforming closure exceeds maximum depth");
       const auto& keys=owner_keys[index];
-      for(const auto edge:edges)
-        midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
+      if(cache!=nullptr)
+        promotion_proofs.push_back({owner,promotion_nodes[index]});
+      for(const auto edge:edges){
+        const auto key=world_edge_key(keys[edge[0]],keys[edge[1]]);
+        if(midpoints.insert(key).second&&cache!=nullptr){
+          const std::array input{promotion_nodes[index]};
+          edge_proofs.emplace(key,add_proof(
+              WorldClosureProofKind::promotion_edge,owner,input,key));
+        }
+      }
       for(std::uint8_t child=0;child<8U;++child){
         const auto address=owner.child(child);
         next.push_back(address);promoted_children.push_back(address);
@@ -1775,6 +2072,11 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       for(const auto key:owner_keys[owner_index])
         deepest_incident[key]=std::max(
             deepest_incident[key],child.red_depth());
+      if(cache!=nullptr)for(const auto key:owner_keys[owner_index]){
+        auto& deepest=deepest_proofs[key];
+        if(child.red_depth()>deepest.depth)
+          deepest={child.red_depth(),child};
+      }
     }
   }
 }

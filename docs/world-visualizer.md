@@ -1457,6 +1457,11 @@ surface construction with the old builder retained as its oracle.
       owners can avoid evaluation. Exact completed-stream comparison shows the
       useful frontier is only 20,176 of 737,938 masks for walking (2.7%) and
       18,884 of 741,900 for near motion (2.5%).
+      A compact causal proof DAG now validates and retains promotion chains
+      across refinement and coarsening; walking re-derives 2,945 promotions,
+      uses about 11.7 MiB of proof state, and matches the cold oracle. The warm
+      fixed-point kernel still scans unchanged owners and remains the final
+      unchecked portion of this item.
 - [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.

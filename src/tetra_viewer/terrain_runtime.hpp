@@ -55,6 +55,9 @@ struct TerrainRuntimeDiagnostics {
   std::size_t reused_closure_masks{};
   std::size_t rebuilt_closure_masks{};
   std::size_t promoted_closure_owners{};
+  std::size_t closure_proof_nodes{};
+  std::size_t retained_promotion_proofs{};
+  std::size_t retained_closure_proof_bytes{};
   std::size_t maximum_volume_blocks{};
   std::size_t promoted_volume_blocks{};
   std::size_t demoted_volume_blocks{};
@@ -144,6 +147,9 @@ struct WorldLodCutMetrics {
   std::size_t reused_closure_masks{};
   std::size_t rebuilt_closure_masks{};
   std::size_t promoted_closure_owners{};
+  std::size_t closure_proof_nodes{};
+  std::size_t retained_promotion_proofs{};
+  std::size_t retained_closure_proof_bytes{};
   unsigned int minimum_surface_depth{};
   unsigned int maximum_surface_depth{};
   unsigned int maximum_shared_vertex_depth_delta{};

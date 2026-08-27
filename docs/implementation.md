@@ -345,6 +345,19 @@ near move retains 723,016 and changes 18,884 (2.5%). These counts define the
 acceptance target for the pending dependency algorithm and prevent a broad
 spatial approximation from being reported as locality.
 
+Closure now retains a compact causal proof DAG across revisions. Exact global
+edge keys identify base midpoint and green-derivation facts; promotion nodes
+name either the deeper owner existence that caused vertex grading or the active
+edge proofs that forced a restricted mask to red. Inputs are topologically
+ordered and the graph is compacted to nodes reachable from current promotions.
+On a new request, split-ancestor counts and owner-existence ancestry validate
+the old graph. Surviving promotions are safe members of the new least fixed
+point; invalid branches disappear and normal monotone closure re-derives them.
+The production route remains bit-identical, alternating split/merge sequences
+match a fresh oracle at every step, and walking re-derives 2,945 promotions
+while retaining a roughly 11.7 MiB graph. Sparse edge-to-owner scheduling is
+still required to stop evaluating unchanged warm owners.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

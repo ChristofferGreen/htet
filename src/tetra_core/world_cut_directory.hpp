@@ -168,6 +168,30 @@ struct WorldConformingSplitAncestor {
   auto operator<=>(const WorldConformingSplitAncestor&) const = default;
 };
 
+enum class WorldClosureProofKind : std::uint8_t {
+  owner_existence,
+  split_ancestor_edge,
+  green_edge,
+  promotion_edge,
+  vertex_promotion,
+  mask_promotion,
+};
+
+struct WorldClosureProofNode {
+  WorldClosureProofKind kind{WorldClosureProofKind::owner_existence};
+  std::uint8_t input_count{};
+  WorldTetAddress address{};
+  WorldEdgeKey edge{};
+  std::array<std::uint32_t,7> inputs{};
+  auto operator<=>(const WorldClosureProofNode&) const = default;
+};
+
+struct WorldClosurePromotionProof {
+  WorldTetAddress address{};
+  std::uint32_t proof{};
+  auto operator<=>(const WorldClosurePromotionProof&) const = default;
+};
+
 struct WorldConformingClosureCache {
   std::vector<WorldConformingClosureCacheEntry> geometry;
   // Exact pre-closure cut which produced the retained masks. Two distinct
@@ -180,6 +204,8 @@ struct WorldConformingClosureCache {
   std::vector<WorldConformingSplitAncestor> requested_split_ancestors;
   std::vector<WorldTetAddress> closed_owners;
   std::vector<std::uint8_t> green_masks;
+  std::vector<WorldClosureProofNode> proof_nodes;
+  std::vector<WorldClosurePromotionProof> promotion_proofs;
   std::size_t maximum_entries{750000U};
   std::size_t last_requested_owners_scanned{};
   std::size_t last_reused_masks{};

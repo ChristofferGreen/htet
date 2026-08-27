@@ -745,6 +745,12 @@ WorldLodCutSelection select_world_lod_cut(
     result.metrics.reused_closure_masks=closure_cache->last_reused_masks;
     result.metrics.rebuilt_closure_masks=closure_cache->last_rebuilt_masks;
     result.metrics.promoted_closure_owners=closure_cache->last_promoted_owners;
+    result.metrics.closure_proof_nodes=closure_cache->proof_nodes.size();
+    result.metrics.retained_promotion_proofs=closure_cache->promotion_proofs.size();
+    result.metrics.retained_closure_proof_bytes=
+        closure_cache->proof_nodes.capacity()*sizeof(tetra::WorldClosureProofNode)+
+        closure_cache->promotion_proofs.capacity()*
+            sizeof(tetra::WorldClosurePromotionProof);
   }
   result.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-closure_started).count();
@@ -983,6 +989,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
       surface_cache.closure.requested_split_ancestors.capacity()*
           sizeof(tetra::WorldConformingSplitAncestor)+
+      surface_cache.closure.proof_nodes.capacity()*
+          sizeof(tetra::WorldClosureProofNode)+
+      surface_cache.closure.promotion_proofs.capacity()*
+          sizeof(tetra::WorldClosurePromotionProof)+
       surface_cache.surface_certificates.capacity()*
           sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
       surface_cache.hierarchy.capacity()*
@@ -1036,6 +1046,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.reused_closure_masks=selection.metrics.reused_closure_masks;
   diagnostics.rebuilt_closure_masks=selection.metrics.rebuilt_closure_masks;
   diagnostics.promoted_closure_owners=selection.metrics.promoted_closure_owners;
+  diagnostics.closure_proof_nodes=selection.metrics.closure_proof_nodes;
+  diagnostics.retained_promotion_proofs=selection.metrics.retained_promotion_proofs;
+  diagnostics.retained_closure_proof_bytes=
+      selection.metrics.retained_closure_proof_bytes;
   diagnostics.maximum_volume_blocks=profile.maximum_volume_blocks;
   diagnostics.player_collision_volume_blocks=
       residency.metrics.player_collision_blocks;

@@ -1325,6 +1325,9 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
         initial.optimizer_dependency_vertices);
   CHECK(initial.retained_optimizer_dependency_bytes>0U);
   CHECK(initial.closure_requested_owners_scanned>0U);
+  CHECK(initial.closure_proof_nodes>initial.retained_promotion_proofs);
+  CHECK(initial.retained_promotion_proofs==initial.promoted_closure_owners);
+  CHECK(initial.retained_closure_proof_bytes>0U);
   CHECK(initial.changed_closure_requested_owners==
         initial.closure_requested_owners_scanned);
   CHECK(initial.updated_split_ancestors>0U);
@@ -1447,6 +1450,8 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
         runtime.diagnostics().closure_requested_owners_scanned);
   CHECK(runtime.diagnostics().updated_split_ancestors<
         runtime.diagnostics().changed_closure_requested_owners);
+  CHECK(runtime.diagnostics().promoted_closure_owners<
+        runtime.diagnostics().retained_promotion_proofs);
   CHECK(runtime.diagnostics().reused_surface_blocks>0U);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
@@ -2958,6 +2963,22 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(first==cold);
   CHECK(populated>0U);
   CHECK(populated<=cache.maximum_entries);
+  CHECK_FALSE(cache.proof_nodes.empty());
+  CHECK(cache.promotion_proofs.size()==cache.last_promoted_owners);
+  for(std::size_t proof=0;proof<cache.proof_nodes.size();++proof){
+    const auto& node=cache.proof_nodes[proof];
+    CHECK(node.input_count<=node.inputs.size());
+    for(std::size_t input=0;input<node.input_count;++input)
+      CHECK(node.inputs[input]<proof);
+  }
+  CHECK(std::ranges::is_sorted(cache.promotion_proofs));
+  for(const auto& promotion:cache.promotion_proofs){
+    REQUIRE(promotion.proof<cache.proof_nodes.size());
+    const auto& proof=cache.proof_nodes[promotion.proof];
+    CHECK(proof.address==promotion.address);
+    CHECK((proof.kind==tetra::WorldClosureProofKind::vertex_promotion||
+           proof.kind==tetra::WorldClosureProofKind::mask_promotion));
+  }
   CHECK_FALSE(cache.requested_split_ancestors.empty());
   CHECK(std::ranges::is_sorted(cache.requested_split_ancestors,{},
       &tetra::WorldConformingSplitAncestor::address));
@@ -2973,10 +2994,14 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   std::stop_source canceled;canceled.request_stop();
   const auto cached_owners=cache.closed_owners;
   const auto cached_ancestors=cache.requested_split_ancestors;
+  const auto cached_proofs=cache.proof_nodes;
+  const auto cached_promotions=cache.promotion_proofs;
   CHECK_THROWS_AS(static_cast<void>(tetra::close_world_conforming_cut(
       raw,&cache,canceled.get_token())),std::runtime_error);
   CHECK(cache.closed_owners==cached_owners);
   CHECK(cache.requested_split_ancestors==cached_ancestors);
+  CHECK(cache.proof_nodes==cached_proofs);
+  CHECK(cache.promotion_proofs==cached_promotions);
 
   split(tetra::WorldTetAddress::root(1U));
   const auto moved=tetra::close_world_conforming_cut(raw,&cache);
@@ -2987,6 +3012,52 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(cache.last_reused_masks==cache.green_masks.size());
   CHECK(cache.last_rebuilt_masks==0U);
   CHECK(cache.geometry.size()<=cache.maximum_entries);
+}
+
+TEST_CASE("causal world closure proofs survive alternating refinement and coarsening") {
+  std::vector<tetra::WorldTetAddress> requested;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    requested.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldConformingClosureCache retained;
+  for(unsigned int step=0;step<24U;++step){
+    if(step<14U||step%3U!=0U){
+      const auto candidate=static_cast<std::size_t>(
+          (step*37U+5U)%requested.size());
+      const auto owner=requested[candidate];
+      if(owner.red_depth()<5U){
+        requested.erase(requested.begin()+static_cast<std::ptrdiff_t>(candidate));
+        for(std::uint8_t child=0;child<8U;++child)
+          requested.push_back(owner.child(child));
+      }
+    }else{
+      std::optional<tetra::WorldTetAddress> parent;
+      for(const auto owner:requested){
+        if(owner.red_depth()==0U)continue;
+        const auto candidate=owner.parent();
+        bool complete=true;
+        for(std::uint8_t child=0;child<8U;++child)
+          complete&=std::ranges::find(requested,candidate.child(child))!=
+              requested.end();
+        if(complete){parent=candidate;break;}
+      }
+      if(parent){
+        for(std::uint8_t child=0;child<8U;++child)
+          std::erase(requested,parent->child(child));
+        requested.push_back(*parent);
+      }
+    }
+    std::ranges::sort(requested);
+    tetra::WorldConformingClosureCache cold;
+    const auto expected=tetra::close_world_conforming_cut(requested,&cold);
+    const auto actual=tetra::close_world_conforming_cut(requested,&retained);
+    CHECK(actual==expected);
+    CHECK(retained.green_masks==cold.green_masks);
+    CHECK(retained.last_promoted_owners<=retained.promotion_proofs.size());
+    for(std::size_t proof=0;proof<retained.proof_nodes.size();++proof)
+      for(std::size_t input=0;
+          input<retained.proof_nodes[proof].input_count;++input)
+        CHECK(retained.proof_nodes[proof].inputs[input]<proof);
+  }
 }
 
 TEST_CASE("native sparse world surface is watertight and publishable without a mesh") {

@@ -2557,5 +2557,19 @@ when no support changes. This follows the fine-to-coarse desired-mark,
 shared-edge-counter, coarse-to-fine commit structure in Groß and Reusken rather
 than reconstructing adjacency that did not change.
 
+That causal representation is now live. Each retained proof node is one of an
+active split-ancestor edge, a deterministic restricted-green edge derivation,
+an owner-existence witness, a promotion edge, or a vertex/mask promotion. Inputs
+always name earlier nodes, so validation is a linear DAG pass. Owner existence
+is reconstructed from canonical requested leaves and already-valid ancestor
+promotions rather than stored once per leaf. This reduced the first naive proof
+graph from about 57 MiB to 11.7 MiB on walking. Valid promotion proofs refine the
+new requested cut into a proven lower bound; invalid proofs are omitted and the
+monotone oracle re-derives only what is still required. Alternating refinement
+and coarsening tests and all production routes match cold owner, mask, hierarchy,
+volume, surface, and render hashes. Walking needs 2,945 new promotions instead
+of roughly 24,600. The fixed-point kernel still scans the warm owner stream, so
+causal proof validation is necessary progress but not the final locality gate.
+
 
 ---

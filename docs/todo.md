@@ -63,7 +63,15 @@ not the active queue.
       incidence graph plus fixed entity rings was exact on the measured route
       but slower and not a general propagation proof, so it was removed. Retain
       causal shared-edge supports and update them from the split-ancestor delta
-      instead of rebuilding complete adjacency.
+      instead of rebuilding complete adjacency. The first causal stage is now
+      implemented: a compact proof DAG records split-ancestor edge witnesses,
+      deterministic green derivations, vertex causes, and mask-driven red
+      promotions. Old proofs are validated against the new request, invalid
+      causes are discarded, and surviving promotions form a certified lower
+      bound. Walking re-derives 2,945 rather than about 24,600 promotions while
+      matching every cold hash; the reachable graph is about 11.7 MiB. The
+      remaining step is to drive owner/mask evaluation itself from invalid and
+      newly activated edge proofs instead of scanning the warm final cut.
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate

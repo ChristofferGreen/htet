@@ -212,6 +212,12 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.rebuilt_closure_masks
           <<",\"promoted_closure_owners\":"
           <<diagnostics.promoted_closure_owners
+          <<",\"closure_proof_nodes\":"
+          <<diagnostics.closure_proof_nodes
+          <<",\"retained_promotion_proofs\":"
+          <<diagnostics.retained_promotion_proofs
+          <<",\"retained_closure_proof_bytes\":"
+          <<diagnostics.retained_closure_proof_bytes
           <<",\"maximum_volume_blocks\":"
           <<diagnostics.maximum_volume_blocks
           <<",\"promoted_volume_blocks\":"
