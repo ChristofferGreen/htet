@@ -1,5 +1,31 @@
 # Implementation TODO
 
+## Active chain: bounded camera publication
+
+- [x] Add end-to-end and surface-substage timings to the production world
+      benchmark. A representative walking update measured about 288 ms in
+      certificate classification, 402 ms in conforming materialization,
+      230 ms in topology, 160 ms in optimizer dependencies, 102 ms in patch
+      selection, 226 ms in optimization, and 202 ms in snapshot/cache
+      assembly before the first locality corrections.
+- [x] Remove the unused ten-ring global hierarchy-block adjacency expansion
+      and disable the full-cut quality-statistics scan in production while
+      retaining it in the qualification oracle.
+- [x] Reuse immutable topology from unchanged surface blocks. Treat both the
+      hierarchy payload and restricted-green mask as topology dependencies;
+      the hash oracle caught the initially omitted mask dependency.
+- [ ] Replace root-to-leaf target-cut reconstruction with a persistent,
+      priority-ordered split/merge frontier that commits a bounded conforming
+      transaction from the currently published cut.
+- [ ] Feed the transaction's exact changed owner/mask ranges directly into
+      certificate, conforming-block, topology, optimizer, and render-block
+      regeneration without scanning the complete active surface.
+- [ ] Publish complete useful fronts within 250 ms during continuous walking,
+      coalesce newer poses without starvation, and converge to the final pose
+      within one second after input stops.
+- [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
+      exact settled hashes, release-script latency, and a visual capture.
+
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
 experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate

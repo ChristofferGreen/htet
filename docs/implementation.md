@@ -13,6 +13,29 @@ first-person shell but now uses the blocked sparse-world implementation behind
 `TerrainRuntime`; the original monolithic implementation remains an oracle and
 research baseline.
 
+## Bounded world-camera publication work
+
+The production runtime now reports surface classification, conforming
+materialization, topology construction, optimizer-dependency construction,
+patch extraction, optimization, snapshot assembly, and cache-publication time
+separately. This exposed two complete-front passes that did not contribute to
+the published result: an unused ten-ring block adjacency expansion and a
+second full-cut field/depth diagnostic traversal. The runtime no longer runs
+either pass; direct selection tests retain the expensive quality traversal as
+an oracle.
+
+Unchanged hierarchy blocks now reuse their immutable surface triangle topology
+instead of expanding every candidate owner's restricted-green template again.
+The reuse certificate includes both hierarchy payload and green-mask changes,
+because conformity changes in a neighbouring block can change local topology
+without changing the block's logical owners. Production hierarchy,
+conforming-volume, connected-surface, and render hashes remain exact. These
+corrections reduce the representative walking path from roughly 4.65 seconds
+to roughly 3.0 seconds, which is a material throughput improvement but remains
+well above the interactive target. The active design therefore treats the
+next publication as a bounded conforming split/merge transaction, not another
+attempt to optimize a monolithic complete-camera rebuild.
+
 ## Technology choices
 
 - C++23 where supported.

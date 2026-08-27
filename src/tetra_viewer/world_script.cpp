@@ -296,10 +296,26 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
           <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
           <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds
+          <<",\"surface_classification_ms\":"
+          <<diagnostics.surface_classification_milliseconds
+          <<",\"surface_conforming_materialization_ms\":"
+          <<diagnostics.surface_conforming_materialization_milliseconds
+          <<",\"surface_topology_ms\":"
+          <<diagnostics.surface_topology_milliseconds
+          <<",\"surface_optimizer_dependency_ms\":"
+          <<diagnostics.surface_optimizer_dependency_milliseconds
+          <<",\"surface_patch_extraction_ms\":"
+          <<diagnostics.surface_patch_extraction_milliseconds
           <<",\"volume_reconstruction_ms\":"
           <<diagnostics.volume_reconstruction_milliseconds
           <<",\"surface_extraction_ms\":"
           <<diagnostics.surface_extraction_milliseconds
+          <<",\"surface_optimization_ms\":"
+          <<diagnostics.surface_optimization_milliseconds
+          <<",\"surface_snapshot_assembly_ms\":"
+          <<diagnostics.surface_snapshot_assembly_milliseconds
+          <<",\"surface_cache_publication_ms\":"
+          <<diagnostics.surface_cache_publication_milliseconds
           <<",\"surface_assembly_ms\":"
           <<diagnostics.surface_assembly_milliseconds
           <<",\"reused_intersections\":"

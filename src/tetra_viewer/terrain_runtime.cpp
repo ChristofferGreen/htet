@@ -613,7 +613,8 @@ WorldLodCutSelection select_world_lod_cut(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
     tetra::WorldConformingClosureCache* closure_cache,
-    std::stop_token cancellation,std::size_t* completed_work_units) {
+    std::stop_token cancellation,std::size_t* completed_work_units,
+    bool compute_quality_diagnostics) {
   if(completed_work_units)*completed_work_units=0U;
   if(profile.background_red_depth>profile.near_red_depth||
      profile.near_red_depth>tetra::maximum_world_red_depth)
@@ -784,6 +785,7 @@ WorldLodCutSelection select_world_lod_cut(
   result.metrics.logical_owners_after_closure=result.owners.size();
 
   result.metrics.minimum_surface_depth=profile.near_red_depth;
+  if(!compute_quality_diagnostics)return result;
   std::map<tetra::WorldVertexKey,std::pair<unsigned int,unsigned int>> depths;
   for(const auto owner:result.owners){
     const auto evaluation=evaluate(owner);
@@ -933,7 +935,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   const auto started=std::chrono::steady_clock::now();
   auto selection=select_world_lod_cut(
       profile,field,camera,&surface_cache.closure,cancellation,
-      &completed_work_units);
+      &completed_work_units,false);
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
   const std::uint64_t hierarchy_revision=generation*2U-1U;
@@ -1165,10 +1167,25 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.cut_selection_milliseconds=selection.metrics.selection_milliseconds;
   diagnostics.cut_closure_milliseconds=selection.metrics.closure_milliseconds;
   diagnostics.surface_build_milliseconds=surface.metrics.build_milliseconds;
+  diagnostics.surface_classification_milliseconds=
+      surface.metrics.classification_milliseconds;
+  diagnostics.surface_conforming_materialization_milliseconds=
+      surface.metrics.conforming_materialization_milliseconds;
+  diagnostics.surface_topology_milliseconds=surface.metrics.topology_milliseconds;
+  diagnostics.surface_optimizer_dependency_milliseconds=
+      surface.metrics.optimizer_dependency_milliseconds;
+  diagnostics.surface_patch_extraction_milliseconds=
+      surface.metrics.patch_extraction_milliseconds;
   diagnostics.volume_reconstruction_milliseconds=
       surface.metrics.volume_reconstruction_milliseconds;
   diagnostics.surface_extraction_milliseconds=
       surface.metrics.extraction_milliseconds;
+  diagnostics.surface_optimization_milliseconds=
+      surface.metrics.optimization_milliseconds;
+  diagnostics.surface_snapshot_assembly_milliseconds=
+      surface.metrics.snapshot_assembly_milliseconds;
+  diagnostics.surface_cache_publication_milliseconds=
+      surface.metrics.cache_publication_milliseconds;
   diagnostics.surface_assembly_milliseconds=
       surface.metrics.assembly_milliseconds;
   diagnostics.last_update_milliseconds=

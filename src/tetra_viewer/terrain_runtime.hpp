@@ -132,8 +132,16 @@ struct TerrainRuntimeDiagnostics {
   double cut_selection_milliseconds{};
   double cut_closure_milliseconds{};
   double surface_build_milliseconds{};
+  double surface_classification_milliseconds{};
+  double surface_conforming_materialization_milliseconds{};
+  double surface_topology_milliseconds{};
+  double surface_optimizer_dependency_milliseconds{};
+  double surface_patch_extraction_milliseconds{};
   double volume_reconstruction_milliseconds{};
   double surface_extraction_milliseconds{};
+  double surface_optimization_milliseconds{};
+  double surface_snapshot_assembly_milliseconds{};
+  double surface_cache_publication_milliseconds{};
   double surface_assembly_milliseconds{};
   bool busy{};
   bool converged{};
@@ -324,7 +332,8 @@ void apply_world_residency_plan(
     const tetra::Camera& camera,
     tetra::WorldConformingClosureCache* closure_cache=nullptr,
     std::stop_token cancellation={},
-    std::size_t* completed_work_units=nullptr);
+    std::size_t* completed_work_units=nullptr,
+    bool compute_quality_diagnostics=true);
 
 class TerrainRuntime {
  public:

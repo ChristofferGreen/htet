@@ -760,9 +760,16 @@ struct BlockedDerivedSurfaceMetrics {
   bool connected_volume_valid{true};
   double halo_amplification{};
   double build_milliseconds{};
+  double classification_milliseconds{};
+  double conforming_materialization_milliseconds{};
+  double topology_milliseconds{};
+  double optimizer_dependency_milliseconds{};
+  double patch_extraction_milliseconds{};
   double volume_reconstruction_milliseconds{};
   double extraction_milliseconds{};
   double optimization_milliseconds{};
+  double snapshot_assembly_milliseconds{};
+  double cache_publication_milliseconds{};
   double assembly_milliseconds{};
   std::uint64_t conforming_volume_hash{};
 };
