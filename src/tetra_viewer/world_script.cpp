@@ -52,6 +52,8 @@ int run_world_script(std::string_view script,std::ostream& output,
   tetra::Sphere field;
   const auto profile=production_world_profile();
   field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
   std::size_t command_count{},step_count{};
   while(!script.empty()){
     const auto separator=script.find(',');

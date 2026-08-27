@@ -161,6 +161,22 @@ remain asynchronous and bounded below the 512 MB regression ceiling. Exact
 height-field projection fixed the steep-slope optimizer drift found during
 qualification.
 
+The player-near terrain pass retains those distant ranges and replaces the
+world application's generic octave stack with three explicit gameplay scales:
+domain-warped rolling hills, regionally masked local features and corridors,
+and subtle ground roughness. The spawn disc is smaller, but the seeded field is
+height-centred before its short blend so it does not form a procedural island.
+Collision, normals, pruning, and rendering still share the same analytic
+height-and-gradient sampler. Cell-local feature and corridor mask intervals
+avoid applying their worst-case slopes to inactive regions. The qualified
+release walking replacement contains 737,938 logical cells and 847,619 active
+tetrahedra, takes about 5.39 seconds in the headless route, and remains below
+283 MB measured CPU residency. Geometry publication remains asynchronous.
+A fixed-step traversal test also verifies that the player crosses more than
+five units of the local field, experiences measurable relief, remains grounded
+through ordinary slopes, and never penetrates the authoritative collision
+field.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

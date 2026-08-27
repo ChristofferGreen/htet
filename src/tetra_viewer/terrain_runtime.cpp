@@ -16,6 +16,8 @@ MonolithicTerrainRuntime::MonolithicTerrainRuntime(
      worker_(executor_),scene_worker_(executor_) {
   field_.kind=profile_.shape;
   field_.terrain=profile_.terrain;
+  field_.secondary=profile_.octave_detail_amplitude;
+  field_.frequency=profile_.octave_detail_frequency;
   camera_.position={0.5,0.72,0.78};
   camera_.forward={0.0,-0.2,-1.0};
   adaptation_=profile_.adaptation;
@@ -358,6 +360,8 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     :profile_(profile) {
   field_.kind=profile_.shape;
   field_.terrain=profile_.terrain;
+  field_.secondary=profile_.octave_detail_amplitude;
+  field_.frequency=profile_.octave_detail_frequency;
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_position_=camera_.position;
   auto initial=build_publication(profile_,field_,camera_,1U);

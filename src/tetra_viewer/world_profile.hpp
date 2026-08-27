@@ -16,10 +16,22 @@ struct WorldProfile {
   ShadingModel shading{ShadingModel::studio_flat};
   tetra::AdaptationConfiguration adaptation{};
   tetra::TerrainParameters terrain{
+      // Centre the seeded field on the spawn elevation before applying the
+      // short safety blend, avoiding a visible artificial island around it.
+      .height_offset=-0.56685212800775142,
       .landform_amplitude=1.5,.landform_frequency=1.0/32.0,
       .mountain_amplitude=6.0,.mountain_ridge_frequency=1.0/18.0,
       .mountain_range_frequency=1.0/64.0,
-      .spawn_flat_radius=2.0,.spawn_blend_radius=12.0};
+      .gameplay_hill_amplitude=0.7,.gameplay_hill_frequency=1.0/8.0,
+      .gameplay_feature_amplitude=0.18,.gameplay_feature_frequency=1.0/2.5,
+      .gameplay_region_frequency=1.0/18.0,
+      .gameplay_corridor_depth=0.1,
+      .gameplay_warp_amplitude=1.2,.gameplay_warp_frequency=1.0/16.0,
+      .ground_roughness_amplitude=0.025,
+      .ground_roughness_frequency=1.0/0.6,
+      .spawn_flat_radius=0.8,.spawn_blend_radius=3.0};
+  double octave_detail_amplitude{};
+  double octave_detail_frequency{3.0};
   SurfaceDrawChunkStrategy draw_chunks{default_surface_draw_chunk_strategy};
   // One coherent root-local hierarchy mapped onto a gameplay-sized world
   // cube. The spawn remains at the old 0.5-centred coordinate while the same

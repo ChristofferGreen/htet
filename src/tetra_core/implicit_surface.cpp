@@ -539,7 +539,7 @@ TerrainHeightSample terrain_height_sample(
     return std::pair{t*t*(3.0-2.0*t),6.0*t*(1.0-t)/(high-low)};
   };
 
-  Layer raw;
+  Layer raw{parameters.height_offset};
   const auto land=noise_layer(
       parameters.landform_frequency,11.371,-7.219);
   raw.value+=parameters.landform_amplitude*land.value;
@@ -570,6 +570,70 @@ TerrainHeightSample terrain_height_sample(
       range_derivative*range_noise.dx*ridge_strength+range*ridge_dx);
   raw.dz+=parameters.mountain_amplitude*(
       range_derivative*range_noise.dz*ridge_strength+range*ridge_dz);
+
+  // Player-scale terrain uses one shared domain warp so nearby hills and
+  // smaller features form coherent regions instead of unrelated noise soup.
+  const auto warp_x=noise_layer(
+      parameters.gameplay_warp_frequency,2.371,-5.913);
+  const auto warp_z=noise_layer(
+      parameters.gameplay_warp_frequency,-8.147,4.677);
+  const double warped_x=x+parameters.gameplay_warp_amplitude*warp_x.value;
+  const double warped_z=z+parameters.gameplay_warp_amplitude*warp_z.value;
+  const double warped_x_dx=1.0+parameters.gameplay_warp_amplitude*warp_x.dx;
+  const double warped_x_dz=parameters.gameplay_warp_amplitude*warp_x.dz;
+  const double warped_z_dx=parameters.gameplay_warp_amplitude*warp_z.dx;
+  const double warped_z_dz=1.0+parameters.gameplay_warp_amplitude*warp_z.dz;
+  const auto warped_noise=[&](double frequency,double offset_x,double offset_z){
+    const auto sample=gradient_noise_sample(
+        warped_x*frequency+offset_x,warped_z*frequency+offset_z);
+    return Layer{sample.value,
+        sample.dx*frequency*warped_x_dx+
+            sample.dy*frequency*warped_z_dx,
+        sample.dx*frequency*warped_x_dz+
+            sample.dy*frequency*warped_z_dz};
+  };
+
+  const auto region=noise_layer(
+      parameters.gameplay_region_frequency,-2.719,5.303);
+  const auto [activity,activity_derivative]=smooth_step(
+      region.value,-0.12,0.18);
+  const auto corridor=warped_noise(
+      parameters.gameplay_region_frequency*1.35,9.173,-3.449);
+  constexpr double corridor_softness=0.02;
+  const double corridor_absolute=std::sqrt(
+      corridor.value*corridor.value+corridor_softness*corridor_softness);
+  const auto [corridor_open,corridor_derivative]=smooth_step(
+      corridor_absolute,0.04,0.18);
+  const double corridor_absolute_derivative=
+      corridor.value/corridor_absolute;
+  raw.value-=parameters.gameplay_corridor_depth*(1.0-corridor_open);
+  raw.dx+=parameters.gameplay_corridor_depth*corridor_derivative*
+      corridor_absolute_derivative*corridor.dx;
+  raw.dz+=parameters.gameplay_corridor_depth*corridor_derivative*
+      corridor_absolute_derivative*corridor.dz;
+
+  const auto hills=warped_noise(
+      parameters.gameplay_hill_frequency,4.117,7.731);
+  raw.value+=parameters.gameplay_hill_amplitude*hills.value;
+  raw.dx+=parameters.gameplay_hill_amplitude*hills.dx;
+  raw.dz+=parameters.gameplay_hill_amplitude*hills.dz;
+
+  const auto feature=warped_noise(
+      parameters.gameplay_feature_frequency,-6.337,1.819);
+  const double feature_mask=activity;
+  const double feature_mask_dx=activity_derivative*region.dx;
+  const double feature_mask_dz=activity_derivative*region.dz;
+  raw.value+=parameters.gameplay_feature_amplitude*feature_mask*feature.value;
+  raw.dx+=parameters.gameplay_feature_amplitude*(
+      feature_mask*feature.dx+feature_mask_dx*feature.value);
+  raw.dz+=parameters.gameplay_feature_amplitude*(
+      feature_mask*feature.dz+feature_mask_dz*feature.value);
+
+  const auto roughness=warped_noise(
+      parameters.ground_roughness_frequency,13.117,-11.731);
+  raw.value+=parameters.ground_roughness_amplitude*roughness.value;
+  raw.dx+=parameters.ground_roughness_amplitude*roughness.dx;
+  raw.dz+=parameters.ground_roughness_amplitude*roughness.dz;
 
   double amplitude=terrain.secondary,scale=terrain.frequency;
   for(int octave=0;octave<terrain_octave_count;++octave){
@@ -604,8 +668,13 @@ double terrain_height_slope_bound(const Sphere& terrain) {
     relative_amplitude*=terrain_octave_gain;
   }
   const double raw_height_bound=
+      std::abs(parameters.height_offset)+
       noise_value_bound*std::abs(parameters.landform_amplitude)+
       std::abs(parameters.mountain_amplitude)+
+      noise_value_bound*(std::abs(parameters.gameplay_hill_amplitude)+
+          std::abs(parameters.gameplay_feature_amplitude)+
+          std::abs(parameters.ground_roughness_amplitude))+
+      std::abs(parameters.gameplay_corridor_depth)+
       noise_value_bound*std::abs(terrain.secondary)*detail_height_factor;
   const double landform_slope=2.0*std::abs(
       parameters.landform_amplitude*parameters.landform_frequency);
@@ -615,13 +684,31 @@ double terrain_height_slope_bound(const Sphere& terrain) {
       parameters.mountain_ridge_frequency);
   const double mountain_slope=std::abs(parameters.mountain_amplitude)*
       (range_slope+ridge_slope);
+  const double warp_factor=1.0+4.0*std::abs(
+      parameters.gameplay_warp_amplitude*parameters.gameplay_warp_frequency);
+  const double corridor_noise_slope=2.0*warp_factor*std::abs(
+      parameters.gameplay_region_frequency*1.35);
+  const double corridor_slope=std::abs(parameters.gameplay_corridor_depth)*
+      (1.5/(0.18-0.04))*corridor_noise_slope;
+  const double activity_slope=10.0*std::abs(
+      parameters.gameplay_region_frequency);
+  const double hill_slope=2.0*warp_factor*std::abs(
+      parameters.gameplay_hill_amplitude*parameters.gameplay_hill_frequency);
+  const double feature_slope=std::abs(parameters.gameplay_feature_amplitude)*(
+      2.0*warp_factor*std::abs(parameters.gameplay_feature_frequency)+
+      noise_value_bound*activity_slope);
+  const double roughness_slope=2.0*warp_factor*std::abs(
+      parameters.ground_roughness_amplitude*
+      parameters.ground_roughness_frequency);
+  const double gameplay_slope=hill_slope+feature_slope+roughness_slope+
+      corridor_slope;
   const double detail_slope=terrain_slope_bound_multiplier()*
       std::abs(terrain.secondary*terrain.frequency);
   const double blend_width=parameters.spawn_blend_radius-
       parameters.spawn_flat_radius;
   const double blend_slope=blend_width>0.0?
       1.5*raw_height_bound/blend_width:0.0;
-  return landform_slope+mountain_slope+detail_slope+blend_slope;
+  return landform_slope+mountain_slope+gameplay_slope+detail_slope+blend_slope;
 }
 
 double terrain_height_slope_bound(
@@ -640,6 +727,68 @@ double terrain_height_slope_bound(
       parameters.landform_amplitude*parameters.landform_frequency);
   const double detail_slope=terrain_slope_bound_multiplier()*
       std::abs(terrain.secondary*terrain.frequency);
+  constexpr double noise_value_bound=1.4142135623730950488;
+  const auto smooth_value=[](double value,double low,double high){
+    const double t=std::clamp((value-low)/(high-low),0.0,1.0);
+    return t*t*(3.0-2.0*t);
+  };
+  const auto smooth_derivative_max=[](
+      double minimum,double maximum,double low,double high){
+    const double t_minimum=std::clamp((minimum-low)/(high-low),0.0,1.0);
+    const double t_maximum=std::clamp((maximum-low)/(high-low),0.0,1.0);
+    const double quadratic=t_minimum<=0.5&&t_maximum>=0.5?0.25:
+        std::max(t_minimum*(1.0-t_minimum),
+                 t_maximum*(1.0-t_maximum));
+    return 6.0*quadratic/(high-low);
+  };
+  const double warp_factor=1.0+4.0*std::abs(
+      parameters.gameplay_warp_amplitude*parameters.gameplay_warp_frequency);
+  const double corridor_noise_slope=2.0*warp_factor*std::abs(
+      parameters.gameplay_region_frequency*1.35);
+  const auto region=gradient_noise_sample(
+      x*parameters.gameplay_region_frequency-2.719,
+      z*parameters.gameplay_region_frequency+5.303);
+  const double region_variation=2.0*std::abs(
+      parameters.gameplay_region_frequency)*horizontal_radius;
+  const double activity_maximum=smooth_value(
+      region.value+region_variation,-0.12,0.18);
+  const double activity_slope=smooth_derivative_max(
+      region.value-region_variation,region.value+region_variation,-0.12,0.18)*
+      2.0*std::abs(parameters.gameplay_region_frequency);
+
+  const auto warp_x=gradient_noise_sample(
+      x*parameters.gameplay_warp_frequency+2.371,
+      z*parameters.gameplay_warp_frequency-5.913);
+  const auto warp_z=gradient_noise_sample(
+      x*parameters.gameplay_warp_frequency-8.147,
+      z*parameters.gameplay_warp_frequency+4.677);
+  const double warped_x=x+parameters.gameplay_warp_amplitude*warp_x.value;
+  const double warped_z=z+parameters.gameplay_warp_amplitude*warp_z.value;
+  const double corridor_frequency=parameters.gameplay_region_frequency*1.35;
+  const auto corridor=gradient_noise_sample(
+      warped_x*corridor_frequency+9.173,
+      warped_z*corridor_frequency-3.449);
+  const double corridor_variation=corridor_noise_slope*horizontal_radius;
+  const double corridor_minimum=corridor.value-corridor_variation;
+  const double corridor_maximum=corridor.value+corridor_variation;
+  const double corridor_absolute_minimum=
+      corridor_minimum<=0.0&&corridor_maximum>=0.0?0.0:
+      std::min(std::abs(corridor_minimum),std::abs(corridor_maximum));
+  const double corridor_absolute_maximum=std::max(
+      std::abs(corridor_minimum),std::abs(corridor_maximum));
+  const double corridor_slope=std::abs(parameters.gameplay_corridor_depth)*
+      smooth_derivative_max(corridor_absolute_minimum,
+                            corridor_absolute_maximum,0.04,0.18)*
+      corridor_noise_slope;
+  const double gameplay_slope=
+      std::abs(parameters.gameplay_hill_amplitude)*(
+          2.0*warp_factor*std::abs(parameters.gameplay_hill_frequency))+
+      std::abs(parameters.gameplay_feature_amplitude)*(
+          activity_maximum*2.0*warp_factor*
+              std::abs(parameters.gameplay_feature_frequency)+
+          noise_value_bound*activity_slope)+
+      2.0*warp_factor*std::abs(parameters.ground_roughness_amplitude*
+          parameters.ground_roughness_frequency)+corridor_slope;
   double mountain_slope{},maximum_mountain_height{};
   const auto range=gradient_noise_sample(
       x*parameters.mountain_range_frequency-20.07675,
@@ -648,10 +797,6 @@ double terrain_height_slope_bound(
   // also bounds how far the mask carrier can move anywhere in this disk.
   const double range_variation=2.0*std::abs(
       parameters.mountain_range_frequency)*horizontal_radius;
-  const auto smooth_value=[](double value,double low,double high){
-    const double t=std::clamp((value-low)/(high-low),0.0,1.0);
-    return t*t*(3.0-2.0*t);
-  };
   constexpr double range_low=0.18,range_high=0.38;
   const double range_minimum=range.value-range_variation;
   const double range_maximum=range.value+range_variation;
@@ -700,17 +845,21 @@ double terrain_height_slope_bound(
         mask_maximum*ridge_strength_maximum;
   }
 
-  double result=landform_slope+mountain_slope+detail_slope;
+  double result=landform_slope+mountain_slope+gameplay_slope+detail_slope;
   if(spawn_blend_enabled&&minimum_radius<parameters.spawn_blend_radius){
-    constexpr double noise_value_bound=1.4142135623730950488;
     double detail_height_factor{},relative_amplitude=1.0;
     for(int octave=0;octave<terrain_octave_count;++octave){
       detail_height_factor+=relative_amplitude;
       relative_amplitude*=terrain_octave_gain;
     }
     const double raw_height_bound=
+        std::abs(parameters.height_offset)+
         noise_value_bound*std::abs(parameters.landform_amplitude)+
         maximum_mountain_height+
+        noise_value_bound*(std::abs(parameters.gameplay_hill_amplitude)+
+            std::abs(parameters.gameplay_feature_amplitude)+
+            std::abs(parameters.ground_roughness_amplitude))+
+        std::abs(parameters.gameplay_corridor_depth)+
         noise_value_bound*std::abs(terrain.secondary)*detail_height_factor;
     const double blend_width=parameters.spawn_blend_radius-
         parameters.spawn_flat_radius;

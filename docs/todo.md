@@ -123,6 +123,18 @@ not the active queue.
 - [x] Record the release mountain route: about 3.73 seconds for a walking
       replacement, 653,896 logical cells, and about 351 MB peak measured CPU
       residency.
+- [x] Add explicit domain-warped rolling hills, regionally masked local
+      features and corridors, and subtle ground roughness for player-near
+      gameplay without changing the unit-scale research terrain.
+- [x] Centre the deterministic field beneath the short safe-spawn blend,
+      certify analytic gradients and cell-local mask bounds, and preserve the
+      distant in-horizon mountain silhouette.
+- [x] Add grounded downhill following and release regressions for terrain
+      scale separation, slope distribution, player traversal, collision-field
+      agreement, projected LOD, refinement, simplification, and watertight
+      publication.
+- [x] Benchmark and visually inspect spawn, nearby relief, corridors, and the
+      mountain horizon using the release world executable.
 - [ ] Replace full warm conforming-cell and flat render-scene assembly with
       retained per-block conforming and render chunks so a small camera move
       copies and uploads only dirty ranges.

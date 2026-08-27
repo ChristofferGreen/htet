@@ -1238,32 +1238,43 @@ replacement, and then proves a distant camera simplifies the logical cut.
 Large-coordinate preparation is checked where world-space floats cannot
 represent a unit cell.
 
-#### Deterministic mountain landforms
+#### Deterministic mountain and player-scale landforms
 
-The production terrain field now separates three spatial scales: broad
-32-unit landforms, sparse 64-unit range masks carrying smooth 18-unit ridges,
-and the existing subordinate four-octave detail. The mask leaves extensive
-plains between grouped ranges. A two-unit disc around spawn is exactly flat,
-with a smooth transition ending at radius twelve. The deterministic phase puts
-a major six-unit-high range inside the 48-unit gameplay horizon, around
-`(-28, -32)`, so the initial world has a readable distant silhouette.
+The production terrain field separates distant and gameplay scales. Broad
+32-unit landforms and sparse 64-unit range masks carrying smooth 18-unit
+ridges leave extensive plains while placing a major six-unit-high range inside
+the 48-unit horizon, around `(-28, -32)`. Domain-warped eight-unit rolling
+hills provide the principal near-player relief. Regionally masked 2.5-unit
+features and shallow corridor bands create local ridges, hollows, routes, and
+play spaces without covering the world in uniform noise. A final 0.6-unit,
+0.025-unit-amplitude layer gives close ground subtle variation.
+
+The safe spawn is exactly flat to radius 0.8 and blends into the procedural
+field by radius three. A profile height bias centres the seeded field at spawn
+before blending, preventing the safety region from reading as an artificial
+raised island. The old generic four-octave detail remains available to the
+unit-scale research viewer but is disabled in `tetra_world`; its repeated
+high-frequency slope energy was too aggressive at player scale.
 
 One centralized height-and-gradient sampler owns rendering, collision,
 normals, projection, field pruning, and worker cache identity. Terrain
 projection is exact in one vertical step; treating `y - height(x,z)` as a
 normalized distance caused optimized vertices to drift off steep slopes.
 World-cut pruning uses height-field intervals and certified cell-local slope
-bounds. Cells wholly inside the spawn disc or a range-mask plain therefore do
-not inherit the global mountain worst case.
+bounds. Cells wholly inside the spawn disc, a range-mask plain, an inactive
+feature region, or a corridor-mask plateau therefore do not inherit unrelated
+global worst cases.
 
-Release tests cover the flat spawn, plains, relief and an in-horizon mountain,
-analytic versus finite-difference gradients, local and global slope bounds,
-field-parameter cache invalidation, projected LOD depth, simplification,
-watertight normals, and exact render/collision agreement. Headless capture now
-accepts an explicit camera and target with `--capture-view`; its face and line
-depths use perspective-correct reciprocal interpolation. Spawn, horizon, and
-close-slope captures were visually inspected without cracks, missing faces, or
-normal inversions.
+Release tests cover the flat spawn and blend, separated relief scales,
+traversable slope percentiles, grounded walking across local terrain, plains,
+an in-horizon mountain, analytic versus finite-difference gradients, local and
+global slope bounds, field-parameter cache invalidation, projected LOD depth,
+simplification, watertight normals, and exact render/collision agreement. The
+controller uses a bounded ground snap so ordinary downhill motion follows the
+height field without suppressing jumps or accepting steep contacts. Headless
+spawn, oblique, player-level, and mountain captures retain a natural spawn
+transition, nearby undulation, distant silhouettes, opaque faces, and correct
+flat normals.
 
 ### Gate 4: Sparse block cache and background streaming
 

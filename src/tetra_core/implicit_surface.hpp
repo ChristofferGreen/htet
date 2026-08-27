@@ -53,11 +53,22 @@ inline constexpr std::array<ImplicitShapeKind,9> implicit_shape_kinds{
 // detail controls. Frequencies are cycles per world unit; amplitudes are world
 // units. The range mask groups ridges so broad plains remain available.
 struct TerrainParameters {
+  double height_offset{};
   double landform_amplitude{};
   double landform_frequency{1.0/32.0};
   double mountain_amplitude{};
   double mountain_ridge_frequency{1.0/18.0};
   double mountain_range_frequency{1.0/64.0};
+  double gameplay_hill_amplitude{};
+  double gameplay_hill_frequency{1.0/8.0};
+  double gameplay_feature_amplitude{};
+  double gameplay_feature_frequency{1.0/2.5};
+  double gameplay_region_frequency{1.0/18.0};
+  double gameplay_corridor_depth{};
+  double gameplay_warp_amplitude{};
+  double gameplay_warp_frequency{1.0/16.0};
+  double ground_roughness_amplitude{};
+  double ground_roughness_frequency{1.0/0.6};
   double spawn_flat_radius{};
   double spawn_blend_radius{};
   auto operator<=>(const TerrainParameters&) const = default;

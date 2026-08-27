@@ -102,16 +102,24 @@ void FirstPersonController::resolve_collision(const tetra::Sphere& field) noexce
   // solid; maintaining radius clearance gives a stable capsule-on-SDF contact.
   const auto centre=state_.feet+tetra::Vec3{0.0,configuration_.capsule_radius,0.0};
   const double distance=field.signed_distance(centre);
+  const bool was_grounded=state_.grounded;
   state_.grounded=false;
-  if(distance>=configuration_.capsule_radius)return;
+  const bool penetrating=distance<configuration_.capsule_radius;
+  const bool may_snap=was_grounded&&state_.velocity.y<=0.0&&
+      distance<configuration_.capsule_radius+configuration_.ground_snap_distance;
+  if(!penetrating&&!may_snap)return;
   auto normal=normalized(field.normal(centre));
   if(length(normal)<0.5)normal={0.0,1.0,0.0};
-  const double penetration=std::min(configuration_.capsule_radius-distance,
-                                    configuration_.maximum_penetration_recovery);
-  state_.contact_normal=normal;
   const double slope_cosine=std::cos(
       configuration_.maximum_slope_degrees*std::acos(-1.0)/180.0);
-  if(normal.y>=slope_cosine){
+  const bool walkable=normal.y>=slope_cosine;
+  if(!penetrating&&!walkable)return;
+  const double penetration=std::clamp(
+      configuration_.capsule_radius-distance,
+      -configuration_.ground_snap_distance,
+      configuration_.maximum_penetration_recovery);
+  state_.contact_normal=normal;
+  if(walkable){
     // A walkable contact supports the capsule vertically. Correcting along
     // the sloped normal injects horizontal motion every gravity step and
     // makes an idle character creep downhill.

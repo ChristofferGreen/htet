@@ -26,6 +26,7 @@ struct FirstPersonConfiguration {
   double ground_friction{7.0};
   double maximum_slope_degrees{52.0};
   double maximum_penetration_recovery{0.04};
+  double ground_snap_distance{0.03};
 };
 
 struct FirstPersonState {

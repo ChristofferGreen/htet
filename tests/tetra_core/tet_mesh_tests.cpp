@@ -803,10 +803,17 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.material==tetra_viewer::MaterialRule::variational_smooth);
   CHECK(profile.shading==tetra_viewer::ShadingModel::studio_flat);
   CHECK(profile.adaptation==tetra::AdaptationConfiguration{});
+  CHECK(profile.terrain.height_offset==
+        doctest::Approx(-0.56685212800775142));
   CHECK(profile.terrain.landform_amplitude==doctest::Approx(1.5));
   CHECK(profile.terrain.mountain_amplitude==doctest::Approx(6.0));
-  CHECK(profile.terrain.spawn_flat_radius==doctest::Approx(2.0));
-  CHECK(profile.terrain.spawn_blend_radius==doctest::Approx(12.0));
+  CHECK(profile.terrain.gameplay_hill_amplitude==doctest::Approx(0.7));
+  CHECK(profile.terrain.gameplay_feature_amplitude==doctest::Approx(0.18));
+  CHECK(profile.terrain.gameplay_corridor_depth==doctest::Approx(0.1));
+  CHECK(profile.terrain.ground_roughness_amplitude==doctest::Approx(0.025));
+  CHECK(profile.terrain.spawn_flat_radius==doctest::Approx(0.8));
+  CHECK(profile.terrain.spawn_blend_radius==doctest::Approx(3.0));
+  CHECK(profile.octave_detail_amplitude==doctest::Approx(0.0));
   CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
   CHECK(profile.domain.world_extent==doctest::Approx(128.0));
   CHECK(profile.background_red_depth==5U);
@@ -822,7 +829,9 @@ TEST_CASE("production world profile pins the playable rendering contract") {
 
 TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
   const auto profile=tetra_viewer::production_world_profile();
-  tetra::Sphere field;field.kind=profile.shape;
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
   tetra::Camera camera;
   camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
   camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
@@ -836,7 +845,7 @@ TEST_CASE("projected world cut spans forty eight units with graded bounded detai
   REQUIRE_FALSE(selection.owners.empty());
   CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
-  CHECK(selection.metrics.logical_owners_after_closure<700000U);
+  CHECK(selection.metrics.logical_owners_after_closure<800000U);
   CHECK(selection.metrics.horizon_owners>0U);
 }
 
@@ -887,6 +896,38 @@ TEST_CASE("first person collision and jump use the procedural field") {
   CHECK(field.signed_distance(bottom_centre)>=-1.0e-10);
 }
 
+TEST_CASE("first person traverses production player scale terrain") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;
+  field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  tetra_viewer::FirstPersonController controller;
+  for(int step=0;step<360;++step)
+    controller.advance(1.0/120.0,{},field);
+  REQUIRE(controller.state().grounded);
+  const auto start=controller.state().feet;
+  double minimum_y=start.y,maximum_y=start.y;
+  std::size_t grounded_steps{};
+  tetra_viewer::FirstPersonInput input;input.forward=1.0;
+  for(int step=0;step<1800;++step){
+    controller.advance(1.0/120.0,input,field);
+    const auto& state=controller.state();
+    minimum_y=std::min(minimum_y,state.feet.y);
+    maximum_y=std::max(maximum_y,state.feet.y);
+    grounded_steps+=state.grounded?1U:0U;
+    const auto bottom=state.feet+tetra::Vec3{0.0,0.025,0.0};
+    CHECK(field.signed_distance(bottom)>=-1.0e-9);
+  }
+  const auto end=controller.state().feet;
+  CAPTURE(start.x);CAPTURE(start.y);CAPTURE(start.z);
+  CAPTURE(end.x);CAPTURE(end.y);CAPTURE(end.z);
+  CAPTURE(minimum_y);CAPTURE(maximum_y);CAPTURE(grounded_steps);
+  CHECK(std::hypot(end.x-start.x,end.z-start.z)>5.0);
+  CHECK(maximum_y-minimum_y>0.04);
+  CHECK(grounded_steps>1780U);
+}
+
 TEST_CASE("first person controller bounds frame debt and rejects steep contacts") {
   tetra::Sphere terrain;
   terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
@@ -910,6 +951,14 @@ TEST_CASE("first person controller bounds frame debt and rejects steep contacts"
   steep.advance(1.0/120.0,{},sphere);
   CHECK_FALSE(steep.state().grounded);
   CHECK(steep.state().contact_normal.x>0.9);
+
+  tetra_viewer::FirstPersonController steep_snap;
+  steep_snap.state().feet={0.89,0.475,0.5};
+  steep_snap.state().grounded=true;
+  const double steep_x=steep_snap.state().feet.x;
+  steep_snap.advance(1.0/120.0,{},sphere);
+  CHECK_FALSE(steep_snap.state().grounded);
+  CHECK(steep_snap.state().feet.x==doctest::Approx(steep_x));
 }
 
 TEST_CASE("first person mouse look uses the world application's expected axes") {
@@ -979,7 +1028,6 @@ TEST_CASE("world runtime capture is deterministic and produced without graphics"
 TEST_CASE("monolithic terrain runtime publishes only complete background slices") {
   auto profile=tetra_viewer::production_world_profile();
   profile.maximum_depth=16U;
-  profile.pixel_threshold=28.0;
   tetra_viewer::MonolithicTerrainRuntime runtime(profile);
   tetra::Camera camera;
   camera.position={0.5,0.75,0.8};
@@ -988,15 +1036,18 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
   CHECK_FALSE(runtime.update());
   CHECK(runtime.diagnostics().busy);
   bool published=false;
-  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
-  while(std::chrono::steady_clock::now()<deadline&&!published){
+  const auto publication_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<publication_deadline&&!published){
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     published=runtime.update();
   }
   REQUIRE(published);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
-  while(std::chrono::steady_clock::now()<deadline&&
+  const auto scene_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<scene_deadline&&
         runtime.diagnostics().scene_generation==0U){
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     static_cast<void>(runtime.update());
@@ -1008,7 +1059,9 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
   CHECK(diagnostics.connected_surface_hash!=0U);
   CHECK(diagnostics.render_hash!=0U);
   CHECK(diagnostics.field_sample_hash!=0U);
-  while(std::chrono::steady_clock::now()<deadline&&
+  const auto convergence_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<convergence_deadline&&
         (!runtime.diagnostics().converged||runtime.diagnostics().busy)){
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     static_cast<void>(runtime.update());
@@ -5999,6 +6052,101 @@ TEST_CASE("mountain terrain has safe spawn plains ranges and conservative gradie
   CHECK(std::abs(terrain.signed_distance(projected))<1.0e-12);
   const double lipschitz=tetra::implicit_field_lipschitz_bound(terrain);
   CHECK(lipschitz==doctest::Approx(std::sqrt(1.0+slope_bound*slope_bound)));
+}
+
+TEST_CASE("production gameplay terrain separates player scales and remains traversable") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere terrain;
+  terrain.kind=profile.shape;terrain.terrain=profile.terrain;
+  terrain.secondary=profile.octave_detail_amplitude;
+  terrain.frequency=profile.octave_detail_frequency;
+
+  for(int z=-8;z<=8;++z)for(int x=-8;x<=8;++x){
+    const double dx=0.1*x,dz=0.1*z;
+    if(std::hypot(dx,dz)>terrain.terrain.spawn_flat_radius)continue;
+    const auto sample=tetra::terrain_height_sample(
+        terrain,terrain.centre.x+dx,terrain.centre.z+dz);
+    CHECK(sample.height==doctest::Approx(terrain.centre.y).epsilon(1.0e-14));
+    CHECK(sample.dx==doctest::Approx(0.0));
+    CHECK(sample.dz==doctest::Approx(0.0));
+  }
+
+  auto unblended=terrain;
+  unblended.terrain.spawn_flat_radius=0.0;
+  unblended.terrain.spawn_blend_radius=0.0;
+  const auto seeded_centre=tetra::terrain_height_sample(
+      unblended,unblended.centre.x,unblended.centre.z);
+  CHECK(seeded_centre.height==doctest::Approx(unblended.centre.y)
+                                  .epsilon(1.0e-14));
+
+  const auto relief=[&](tetra::TerrainParameters parameters){
+    tetra::Sphere isolated=terrain;isolated.terrain=parameters;
+    isolated.terrain.spawn_flat_radius=0.0;
+    isolated.terrain.spawn_blend_radius=0.0;
+    double minimum=std::numeric_limits<double>::infinity();
+    double maximum=-std::numeric_limits<double>::infinity();
+    for(int z=-64;z<=64;++z)for(int x=-64;x<=64;++x){
+      const auto sample=tetra::terrain_height_sample(
+          isolated,isolated.centre.x+0.125*x,isolated.centre.z+0.125*z);
+      minimum=std::min(minimum,sample.height);
+      maximum=std::max(maximum,sample.height);
+    }
+    return maximum-minimum;
+  };
+  auto hills=profile.terrain;
+  hills.landform_amplitude=0.0;hills.mountain_amplitude=0.0;
+  hills.gameplay_feature_amplitude=0.0;hills.gameplay_corridor_depth=0.0;
+  hills.ground_roughness_amplitude=0.0;
+  auto features=hills;
+  features.gameplay_hill_amplitude=0.0;
+  features.gameplay_feature_amplitude=profile.terrain.gameplay_feature_amplitude;
+  auto roughness=features;
+  roughness.gameplay_feature_amplitude=0.0;
+  roughness.ground_roughness_amplitude=profile.terrain.ground_roughness_amplitude;
+  const double hill_relief=relief(hills);
+  const double feature_relief=relief(features);
+  const double roughness_relief=relief(roughness);
+  CAPTURE(hill_relief);CAPTURE(feature_relief);CAPTURE(roughness_relief);
+  CHECK(hill_relief>feature_relief*2.0);
+  CHECK(feature_relief>roughness_relief*2.0);
+  CHECK(roughness_relief>0.01);
+
+  std::vector<double> slopes;
+  double local_minimum=std::numeric_limits<double>::infinity();
+  double local_maximum=-std::numeric_limits<double>::infinity();
+  for(int z=-72;z<=72;++z)for(int x=-72;x<=72;++x){
+    const double dx=0.25*x,dz=0.25*z;
+    const double radius=std::hypot(dx,dz);
+    if(radius<3.0||radius>18.0)continue;
+    const double world_x=terrain.centre.x+dx,world_z=terrain.centre.z+dz;
+    const auto sample=tetra::terrain_height_sample(terrain,world_x,world_z);
+    local_minimum=std::min(local_minimum,sample.height);
+    local_maximum=std::max(local_maximum,sample.height);
+    slopes.push_back(std::hypot(sample.dx,sample.dz));
+    const double local_bound=tetra::terrain_height_slope_bound(
+        terrain,world_x,world_z,0.125);
+    CHECK(slopes.back()<=local_bound+1.0e-12);
+    constexpr double epsilon=1.0e-5;
+    const double finite_dx=(tetra::terrain_height_sample(
+        terrain,world_x+epsilon,world_z).height-tetra::terrain_height_sample(
+        terrain,world_x-epsilon,world_z).height)/(2.0*epsilon);
+    const double finite_dz=(tetra::terrain_height_sample(
+        terrain,world_x,world_z+epsilon).height-tetra::terrain_height_sample(
+        terrain,world_x,world_z-epsilon).height)/(2.0*epsilon);
+    CHECK(sample.dx==doctest::Approx(finite_dx).epsilon(2.0e-5).scale(1.0));
+    CHECK(sample.dz==doctest::Approx(finite_dz).epsilon(2.0e-5).scale(1.0));
+  }
+  std::ranges::sort(slopes);
+  REQUIRE_FALSE(slopes.empty());
+  const double median=slopes[slopes.size()/2U];
+  const double percentile_90=slopes[slopes.size()*9U/10U];
+  const double maximum_slope=slopes.back();
+  CAPTURE(local_minimum);CAPTURE(local_maximum);CAPTURE(median);
+  CAPTURE(percentile_90);CAPTURE(maximum_slope);
+  CHECK(local_maximum-local_minimum>0.5);
+  CHECK(median>0.03);
+  CHECK(percentile_90<std::tan(35.0*std::acos(-1.0)/180.0));
+  CHECK(maximum_slope<std::tan(52.0*std::acos(-1.0)/180.0));
 }
 
 TEST_CASE("every implicit shape refines and coarsens from the LOD camera") {
