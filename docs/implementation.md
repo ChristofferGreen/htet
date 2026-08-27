@@ -95,6 +95,18 @@ The directory costs about 3.1 MB at the current production cut; its main value
 is carrying exact dirty ownership into later bounded publications, not claiming
 that this modest isolated saving reaches the interactive target.
 
+Publication now hands its already validated immutable `WorldCutDirectory`
+directly to the visible runtime. A move-adoption operation preserves pointer
+identity for payload-equal hierarchy and surface snapshots, retains rollback
+and revision checks, and avoids serializing the complete candidate through a
+second value checkpoint. Release instrumentation attributes the remaining
+hidden work to residency planning, checkpoint construction, demand planning,
+directory construction/adoption, surface staging, and render preparation. The
+direct handoff removes roughly 64 ms from the former unmeasured gap; complete
+checkpoint construction itself remains about 185--191 ms and must ultimately
+be replaced by retained dirty-block transactions rather than another complete
+builder.
+
 ## Technology choices
 
 - C++23 where supported.

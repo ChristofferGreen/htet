@@ -3788,6 +3788,22 @@ TEST_CASE("retained world checkpoint reuses payloads and rolls back invalid adop
   CHECK_THROWS(static_cast<void>(directory.adopt_retained(std::move(invalid))));
   CHECK(directory.revision()==3U);
   CHECK(directory.checkpoint().canonical_hash()==valid_hash);
+
+  const auto retained_block=directory.hierarchy_blocks().back();
+  auto direct_checkpoint=directory.checkpoint();direct_checkpoint.revision=4U;
+  tetra::WorldCutDirectory direct_candidate(std::move(direct_checkpoint));
+  const auto direct=directory.adopt_retained(std::move(direct_candidate));
+  CHECK(direct.metrics.reused_blocks==directory.hierarchy_blocks().size());
+  CHECK(direct.metrics.loaded_blocks==0U);
+  CHECK(directory.hierarchy_blocks().back()==retained_block);
+  CHECK(directory.revision()==4U);
+
+  auto wrong_width=tetra::make_sparse_world_cut_checkpoint(
+      {},2U,5U,tetra::HierarchyResidencyTier::surface);
+  tetra::WorldCutDirectory wrong_width_candidate(std::move(wrong_width));
+  CHECK_THROWS(static_cast<void>(
+      directory.adopt_retained(std::move(wrong_width_candidate))));
+  CHECK(directory.revision()==4U);
 }
 
 TEST_CASE("world closure crosses root seams and shared ownership is canonical") {

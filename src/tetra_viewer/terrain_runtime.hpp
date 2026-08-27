@@ -134,7 +134,14 @@ struct TerrainRuntimeDiagnostics {
   double last_update_milliseconds{};
   double cut_selection_milliseconds{};
   double cut_closure_milliseconds{};
+  double residency_planning_milliseconds{};
+  double checkpoint_build_milliseconds{};
+  double hierarchy_demand_milliseconds{};
+  double directory_rebuild_milliseconds{};
+  double directory_adoption_milliseconds{};
   double surface_build_milliseconds{};
+  double surface_publication_milliseconds{};
+  double render_preparation_milliseconds{};
   double surface_classification_milliseconds{};
   double surface_conforming_materialization_milliseconds{};
   double surface_topology_milliseconds{};
@@ -446,7 +453,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 
  private:
   struct Publication {
-    tetra::WorldCutCheckpoint checkpoint;
+    std::unique_ptr<tetra::WorldCutDirectory> directory;
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;

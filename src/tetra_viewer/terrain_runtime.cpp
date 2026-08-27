@@ -958,8 +958,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     throw std::length_error("initial world front exceeds its resource budget");
   host_staging_.stage_world_render_blocks(initial.surface_cache.render_blocks);
   finalize_render_front_metrics(initial.diagnostics);
-  directory_=std::make_unique<tetra::WorldCutDirectory>(
-      std::move(initial.checkpoint));
+  directory_=std::move(initial.directory);
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
   surface_cache_=std::move(initial.surface_cache);
   hierarchy_demand_=std::move(initial.hierarchy_demand);
@@ -1048,6 +1047,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   const std::uint64_t hierarchy_revision=generation*2U-1U;
   volume_pins.push_back({camera.position,profile.near_volume_radius,
                          WorldVolumePinKind::player_collision});
+  const auto residency_started=std::chrono::steady_clock::now();
   WorldResidencyPlan residency;
   try{
     residency=plan_world_residency(
@@ -1061,6 +1061,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     rejected.residency_budget_exceeded=true;
     return rejected;
   }
+  const auto residency_finished=std::chrono::steady_clock::now();
   std::set<tetra::HierarchyBlockId> previous_volume_blocks;
   for(const auto& block:surface_cache.conforming.blocks)
     previous_volume_blocks.insert(block->id);
@@ -1068,6 +1069,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       selection.owners,3U,hierarchy_revision,
       tetra::HierarchyResidencyTier::surface);
   apply_world_residency_plan(checkpoint,residency);
+  const auto checkpoint_finished=std::chrono::steady_clock::now();
   WorldHierarchyDemandPlan hierarchy_plan;
   try{
     hierarchy_plan=plan_world_hierarchy_demand(
@@ -1086,10 +1088,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     rejected.hierarchy_budget_exceeded=true;
     return rejected;
   }
-  tetra::WorldCutDirectory directory(std::move(checkpoint));
+  const auto hierarchy_demand_finished=std::chrono::steady_clock::now();
+  auto directory=std::make_unique<tetra::WorldCutDirectory>(
+      std::move(checkpoint));
+  const auto directory_finished=std::chrono::steady_clock::now();
   auto surface=build_sparse_world_derived_surface(
-      directory,profile.domain,field,true,cancellation,&surface_cache,
+      *directory,profile.domain,field,true,cancellation,&surface_cache,
       residency.volume_blocks,true,false);
+  const auto surface_built=std::chrono::steady_clock::now();
   // Production no longer expands the complete volume merely to render its
   // boundary. Admission counts the surface classification, direct template
   // expansion, new crossings, and final triangles that were actually built.
@@ -1098,24 +1104,26 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.computed_intersections+surface.triangles.size();
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
-  directory.publish(directory.stage_derived_surfaces(
+  directory->publish(directory->stage_derived_surfaces(
       surface.snapshots,hierarchy_revision+1U));
+  const auto surface_published=std::chrono::steady_clock::now();
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
   auto prepared=prepare_retained_blocked_scene(
       surface,field,profile.show_faces,profile.show_surface_edges,
       {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)},
       surface_cache,false);
   auto scene=std::move(prepared.scene);
+  const auto render_prepared=std::chrono::steady_clock::now();
 
   TerrainRuntimeDiagnostics diagnostics;
-  diagnostics.mesh_revision=directory.revision();
-  diagnostics.world_revision=directory.revision();
-  diagnostics.scene_mesh_revision=directory.revision();
+  diagnostics.mesh_revision=directory->revision();
+  diagnostics.world_revision=directory->revision();
+  diagnostics.scene_mesh_revision=directory->revision();
   diagnostics.scene_generation=generation;
   diagnostics.published_camera_position=camera.position;
-  diagnostics.hierarchy_hash=directory.canonical_cut_hash();
+  diagnostics.hierarchy_hash=directory->canonical_cut_hash();
   diagnostics.connected_surface_hash=surface.canonical_surface_hash;
-  diagnostics.logical_cells=directory.logical_owner_count();
+  diagnostics.logical_cells=directory->logical_owner_count();
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
   diagnostics.render_triangles=surface.triangles.size();
   diagnostics.work_units=completed_work_units;
@@ -1154,9 +1162,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.retained_cache_bytes+=surface_cache.conforming.retained_bytes;
   diagnostics.retained_conforming_bytes=surface_cache.conforming.retained_bytes;
   diagnostics.retained_surface_certificate_bytes=retained_certificate_bytes;
-  diagnostics.summary_hierarchy_blocks=directory.metrics().summary_blocks;
-  diagnostics.surface_hierarchy_blocks=directory.metrics().surface_blocks;
-  diagnostics.volume_hierarchy_blocks=directory.metrics().volume_blocks;
+  diagnostics.summary_hierarchy_blocks=directory->metrics().summary_blocks;
+  diagnostics.surface_hierarchy_blocks=directory->metrics().surface_blocks;
+  diagnostics.volume_hierarchy_blocks=directory->metrics().volume_blocks;
   diagnostics.resident_volume_blocks=surface_cache.conforming.blocks.size();
   diagnostics.resident_volume_cells=surface_cache.conforming.cells;
   diagnostics.conforming_owners_considered=
@@ -1264,10 +1272,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         block.triangle_vertices.capacity()*sizeof(SceneVertex);
   diagnostics.retained_cache_bytes+=diagnostics.retained_render_block_bytes;
   diagnostics.retained_cache_bytes+=diagnostics.retained_hierarchy_demand_bytes;
-  diagnostics.resident_bytes=directory.metrics().retained_bytes+
+  diagnostics.resident_bytes=directory->metrics().retained_bytes+
       diagnostics.retained_cache_bytes;
-  diagnostics.hierarchy_blocks=directory.metrics().blocks;
-  diagnostics.surface_blocks=directory.metrics().derived_surface_blocks;
+  diagnostics.hierarchy_blocks=directory->metrics().blocks;
+  diagnostics.surface_blocks=directory->metrics().derived_surface_blocks;
   diagnostics.reused_surface_intersections=
       surface.metrics.reused_intersections;
   diagnostics.computed_surface_intersections=
@@ -1281,7 +1289,22 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.world_extent=profile.domain.world_extent;
   diagnostics.cut_selection_milliseconds=selection.metrics.selection_milliseconds;
   diagnostics.cut_closure_milliseconds=selection.metrics.closure_milliseconds;
+  const auto elapsed=[](auto begin,auto end){
+    return std::chrono::duration<double,std::milli>(end-begin).count();
+  };
+  diagnostics.residency_planning_milliseconds=
+      elapsed(residency_started,residency_finished);
+  diagnostics.checkpoint_build_milliseconds=
+      elapsed(residency_finished,checkpoint_finished);
+  diagnostics.hierarchy_demand_milliseconds=
+      elapsed(checkpoint_finished,hierarchy_demand_finished);
+  diagnostics.directory_rebuild_milliseconds=
+      elapsed(hierarchy_demand_finished,directory_finished);
   diagnostics.surface_build_milliseconds=surface.metrics.build_milliseconds;
+  diagnostics.surface_publication_milliseconds=
+      elapsed(surface_built,surface_published);
+  diagnostics.render_preparation_milliseconds=
+      elapsed(surface_published,render_prepared);
   diagnostics.surface_classification_milliseconds=
       surface.metrics.classification_milliseconds;
   diagnostics.surface_conforming_materialization_milliseconds=
@@ -1329,7 +1352,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       diagnostics.field_sample_hash*=prime;
     }
   }
-  return {directory.checkpoint(),std::move(scene),diagnostics,
+  return {std::move(directory),std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
           false,false,false};
   }catch(const std::runtime_error&){
@@ -1481,7 +1504,9 @@ bool BlockedTerrainRuntime::update() {
         publication.surface_cache.render_blocks);
     tetra::WorldDirectoryUpdate retained;
     try{
-      retained=directory_->adopt_retained(std::move(publication.checkpoint));
+      if(!publication.directory)
+        throw std::logic_error("world publication has no candidate directory");
+      retained=directory_->adopt_retained(std::move(*publication.directory));
     }catch(...){
       host_staging_.stage_world_render_blocks(surface_cache_.render_blocks);
       throw;
@@ -1510,6 +1535,8 @@ bool BlockedTerrainRuntime::update() {
     active_superseded_=false;
     diagnostics_.reused_hierarchy_blocks=retained.metrics.reused_blocks;
     diagnostics_.rebuilt_hierarchy_blocks=retained.metrics.loaded_blocks;
+    diagnostics_.directory_adoption_milliseconds=
+        retained.metrics.update_milliseconds;
     diagnostics_.reused_surface_blocks=retained.metrics.reused_surfaces;
     diagnostics_.rebuilt_surface_blocks=retained.metrics.changed_surfaces;
     published=true;

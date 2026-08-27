@@ -354,6 +354,11 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   // and derived-surface allocations whose payload is byte-for-byte unchanged.
   [[nodiscard]] WorldDirectoryUpdate adopt_retained(
       WorldCutCheckpoint checkpoint);
+  // Adopts an already validated candidate directory without serializing its
+  // immutable snapshots through a second value checkpoint. Payload-identical
+  // blocks and surfaces still retain the currently published allocations.
+  [[nodiscard]] WorldDirectoryUpdate adopt_retained(
+      WorldCutDirectory&& candidate);
 
  private:
   [[nodiscard]] std::shared_ptr<const HierarchyBlockSnapshot> find_block(

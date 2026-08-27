@@ -1088,6 +1088,65 @@ WorldDirectoryUpdate WorldCutDirectory::adopt_retained(
   return result;
 }
 
+WorldDirectoryUpdate WorldCutDirectory::adopt_retained(
+    WorldCutDirectory&& candidate) {
+  const auto started=std::chrono::steady_clock::now();
+  if(candidate.revision_<=revision_)
+    throw std::invalid_argument("retained directory revision must advance");
+  if(candidate.block_generations_!=block_generations_)
+    throw std::invalid_argument("retained directory changes block width");
+  WorldDirectoryUpdate result;
+  result.source_revision=revision_;
+  result.published_revision=candidate.revision_;
+  std::vector<std::shared_ptr<const HierarchyBlockSnapshot>> next_blocks;
+  std::vector<std::shared_ptr<const WorldDerivedSurfaceSnapshot>> next_surfaces;
+  std::vector<HierarchyBlockId> candidate_block_ids;
+  next_blocks.reserve(candidate.blocks_.size());
+  next_surfaces.reserve(candidate.surfaces_.size());
+  candidate_block_ids.reserve(candidate.blocks_.size());
+  for(const auto& block:candidate.blocks_)candidate_block_ids.push_back(block->id);
+  for(auto& desired:candidate.blocks_){
+    const auto found=std::ranges::lower_bound(
+        blocks_,desired->id,{},[](const auto& block){return block->id;});
+    if(found!=blocks_.end()&&(*found)->id==desired->id&&
+       snapshot_payload_equal(**found,*desired)){
+      next_blocks.push_back(*found);++result.metrics.reused_blocks;
+    }else{
+      next_blocks.push_back(std::move(desired));++result.metrics.loaded_blocks;
+    }
+  }
+  for(auto& desired:candidate.surfaces_){
+    const auto found=std::ranges::lower_bound(
+        surfaces_,desired->id,{},[](const auto& surface){return surface->id;});
+    if(found!=surfaces_.end()&&(*found)->id==desired->id&&
+       surface_payload_equal(**found,*desired)){
+      next_surfaces.push_back(*found);++result.metrics.reused_surfaces;
+    }else{
+      next_surfaces.push_back(std::move(desired));
+      ++result.metrics.changed_surfaces;
+    }
+  }
+  for(const auto& block:blocks_)
+    if(!std::ranges::binary_search(
+          candidate_block_ids,block->id))
+      ++result.metrics.evicted_blocks;
+  auto previous_blocks=blocks_;auto previous_surfaces=surfaces_;
+  const auto previous_revision=revision_;
+  blocks_=std::move(next_blocks);surfaces_=std::move(next_surfaces);
+  revision_=candidate.revision_;
+  try{validate_and_refresh();}
+  catch(...){blocks_=std::move(previous_blocks);
+    surfaces_=std::move(previous_surfaces);revision_=previous_revision;
+    validate_and_refresh();throw;}
+  result.metrics.requested_blocks=blocks_.size();
+  result.metrics.retained_blocks=blocks_.size();
+  result.metrics.affected_blocks=result.metrics.loaded_blocks+
+      result.metrics.evicted_blocks;
+  result.metrics.update_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  return result;
+}
+
 WorldDirectoryUpdate WorldCutDirectory::reconcile(
     const WorldCutCheckpoint& available,
     std::span<const HierarchyBlockId> desired,

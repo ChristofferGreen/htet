@@ -48,6 +48,10 @@
         keyed with the closure dependency directory. Local walking updates now
         reuse roughly 718,000 certificates, rebuild about 20,000, and reduce
         classification by 12--14 ms while preserving exact surface hashes.
+  - [x] Pass the privately built immutable directory directly to publication
+        and retain equal block allocations in place, instead of copying every
+        block and surface through a second complete value checkpoint. This
+        removes roughly 64 ms from the previously unmeasured handoff path.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.

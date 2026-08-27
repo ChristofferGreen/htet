@@ -300,7 +300,21 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.expired_hierarchy_demand_records
           <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
           <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
+          <<",\"residency_planning_ms\":"
+          <<diagnostics.residency_planning_milliseconds
+          <<",\"checkpoint_build_ms\":"
+          <<diagnostics.checkpoint_build_milliseconds
+          <<",\"hierarchy_demand_ms\":"
+          <<diagnostics.hierarchy_demand_milliseconds
+          <<",\"directory_rebuild_ms\":"
+          <<diagnostics.directory_rebuild_milliseconds
+          <<",\"directory_adoption_ms\":"
+          <<diagnostics.directory_adoption_milliseconds
           <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds
+          <<",\"surface_publication_ms\":"
+          <<diagnostics.surface_publication_milliseconds
+          <<",\"render_preparation_ms\":"
+          <<diagnostics.render_preparation_milliseconds
           <<",\"surface_classification_ms\":"
           <<diagnostics.surface_classification_milliseconds
           <<",\"surface_conforming_materialization_ms\":"
