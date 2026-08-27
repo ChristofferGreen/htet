@@ -46,6 +46,12 @@
           closure, 40 ms directory update, and 588 ms surface construction.
           Keep production slicing disabled until the remaining global proof,
           optimizer, and snapshot passes are removed.
+    - [x] Retain exact reference-counted global vertex and triangle arrays and
+          merge only rebuilt snapshot contributions. Bounded-slice snapshot
+          assembly falls from about 136 ms to 27 ms with the same hash; total
+          slice time falls from about 1.06 s to 0.87 s. Compact 40-byte indexed
+          triangle records and a linear retained-index remap keep the production
+          CPU budget intact.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

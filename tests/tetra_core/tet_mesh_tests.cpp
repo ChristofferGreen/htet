@@ -1490,7 +1490,12 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
     }
     return false;
   };
-  REQUIRE(wait_for(std::chrono::seconds(10)));
+  const bool moved_converged=wait_for(std::chrono::seconds(10));
+  CAPTURE(runtime.diagnostics().budget_exceeded);
+  CAPTURE(runtime.diagnostics().resident_bytes);
+  CAPTURE(runtime.diagnostics().cpu_high_water_bytes);
+  CAPTURE(runtime.diagnostics().busy);
+  REQUIRE(moved_converged);
   CHECK(runtime.diagnostics().scene_generation>initial.scene_generation);
   CHECK(runtime.diagnostics().affected_optimizer_vertices>0U);
   CHECK(runtime.diagnostics().affected_optimizer_vertices<
@@ -3502,6 +3507,14 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
   CHECK(optimized_repeated.canonical_surface_hash==
         optimized_cold.canonical_surface_hash);
   CHECK(optimized_repeated.metrics.rebuilt_surface_blocks==0U);
+  CHECK(optimized_cache.assembled_vertices.size()==
+        optimized_repeated.vertices.size());
+  CHECK(optimized_cache.assembled_triangles.size()==
+        optimized_repeated.triangles.size());
+  CHECK(std::ranges::all_of(optimized_cache.assembled_vertices,
+      [](const auto& vertex){return vertex.references>0U;}));
+  CHECK(std::ranges::all_of(optimized_cache.assembled_triangles,
+      [](const auto& triangle){return triangle.references==1U;}));
 }
 
 TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {

@@ -1190,6 +1190,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(SparseWorldSurfaceCache::HierarchySignature)+
       surface_cache.snapshots.capacity()*
           sizeof(tetra::WorldDerivedSurfaceSnapshot)+
+      surface_cache.assembled_vertices.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedSurfaceVertex)+
+      surface_cache.assembled_triangles.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedSurfaceTriangle)+
       surface_cache.render_blocks.capacity()*
           sizeof(SparseWorldSurfaceCache::RenderBlock)+
       surface_cache.closure.geometry.capacity()*

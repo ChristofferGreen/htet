@@ -778,6 +778,15 @@ struct BlockedDerivedSurfaceMetrics {
 // identities, so an unchanged edge is reused across block, LOD, and render
 // revisions without any per-cell allocation.
 struct SparseWorldSurfaceCache {
+  struct CountedSurfaceVertex {
+    tetra::WorldSurfaceVertex vertex;
+    std::uint32_t references{};
+  };
+  struct CountedSurfaceTriangle {
+    std::array<std::uint32_t,3> vertices{};
+    tetra::WorldTetAddress owner{};
+    std::uint32_t references{};
+  };
   struct HierarchySignature {
     tetra::HierarchyBlockId id{};
     std::uint64_t hash{};
@@ -816,6 +825,11 @@ struct SparseWorldSurfaceCache {
   std::uint64_t surface_field_signature{};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  // Exact flat directories assembled by merging only changed snapshot
+  // contributions. Reference counts preserve shared-vertex and duplicate-face
+  // validation without sorting the complete surface after every edit.
+  std::vector<CountedSurfaceVertex> assembled_vertices;
+  std::vector<CountedSurfaceTriangle> assembled_triangles;
   std::vector<RenderBlock> render_blocks;
   tetra::WorldConformingClosureCache closure;
 };

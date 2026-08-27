@@ -131,6 +131,22 @@ about 160 ms and the global optimizer dependency plus snapshot assembly costs
 about 268 ms. This explains why merely enabling the existing slicer would
 still miss the target; these retained dependency passes are the next gate.
 
+The surface cache now also retains flat reference-counted global vertex and
+triangle directories. A publication removes old contributions only for
+rebuilt/removed snapshots, merges their replacements into the sorted arrays,
+checks bit-identical positions for every still-shared vertex, rejects duplicate
+triangles, and computes the unchanged canonical hash directly from the result.
+The first exact form retained 432-byte full-key triangle records and pushed a
+boundary update to a 558 MB high-water mark, correctly failing the 512 MiB
+budget. Triangles are therefore retained as 40-byte vertex-index/owner/count
+records while vertices remain the key directory. On the 512-operation slice
+the retained vertex directory supplies a linear old-to-new index remap, avoiding
+three full-key searches for every unchanged triangle. This reduces snapshot
+assembly from about 136 ms to 27 ms and total time from about 1.06 seconds to
+0.87 seconds. Whole-camera updates change thousands of
+blocks and therefore see little improvement; the retained representation is
+specifically an enabler for bounded publication.
+
 ## Technology choices
 
 - C++23 where supported.

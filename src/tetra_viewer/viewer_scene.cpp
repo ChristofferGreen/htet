@@ -1892,6 +1892,231 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots(
   return result;
 }
 
+template<class ChangedBlocks>
+BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
+    std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots,
+    const SparseWorldSurfaceCache& cache,
+    const ChangedBlocks& changed,
+    std::vector<SparseWorldSurfaceCache::CountedSurfaceVertex>& next_vertices,
+    std::vector<SparseWorldSurfaceCache::CountedSurfaceTriangle>& next_triangles) {
+  std::ranges::sort(snapshots,{},&tetra::WorldDerivedSurfaceSnapshot::id);
+  struct VertexDelta {
+    tetra::WorldSurfaceVertex vertex;
+    std::int32_t removed{},added{};
+  };
+  struct TriangleDelta {
+    tetra::WorldSurfaceTriangle triangle;
+    std::int32_t removed{},added{};
+  };
+  std::vector<VertexDelta> vertex_deltas;
+  std::vector<TriangleDelta> triangle_deltas;
+  const bool bootstrap=cache.assembled_vertices.empty()&&
+      cache.assembled_triangles.empty();
+  const auto append_snapshot=[&](const auto& snapshot,bool addition){
+    for(const auto& vertex:snapshot.vertices)
+      vertex_deltas.push_back({vertex,addition?0:1,addition?1:0});
+    for(const auto& triangle:snapshot.triangles)
+      triangle_deltas.push_back({triangle,addition?0:1,addition?1:0});
+  };
+  if(!bootstrap)for(const auto& snapshot:cache.snapshots){
+    const auto current=std::ranges::lower_bound(
+        snapshots,snapshot.id,{},&tetra::WorldDerivedSurfaceSnapshot::id);
+    if(changed.contains(snapshot.id)||current==snapshots.end()||
+       current->id!=snapshot.id)append_snapshot(snapshot,false);
+  }
+  for(const auto& snapshot:snapshots){
+    const auto previous=std::ranges::lower_bound(
+        cache.snapshots,snapshot.id,{},&tetra::WorldDerivedSurfaceSnapshot::id);
+    if(bootstrap||changed.contains(snapshot.id)||previous==cache.snapshots.end()||
+       previous->id!=snapshot.id)append_snapshot(snapshot,true);
+  }
+  std::ranges::sort(vertex_deltas,{},
+      [](const auto& delta){return delta.vertex.key;});
+  std::vector<VertexDelta> grouped_vertices;
+  for(const auto& delta:vertex_deltas){
+    if(grouped_vertices.empty()||
+       grouped_vertices.back().vertex.key!=delta.vertex.key){
+      grouped_vertices.push_back(delta);continue;
+    }
+    auto& grouped=grouped_vertices.back();
+    if(delta.added>0){
+      const auto& first=grouped.vertex.position;
+      const auto& second=delta.vertex.position;
+      if(grouped.added>0&&(
+          std::bit_cast<std::uint64_t>(first.x)!=std::bit_cast<std::uint64_t>(second.x)||
+          std::bit_cast<std::uint64_t>(first.y)!=std::bit_cast<std::uint64_t>(second.y)||
+          std::bit_cast<std::uint64_t>(first.z)!=std::bit_cast<std::uint64_t>(second.z)))
+        throw std::logic_error("blocked surface patches disagree on a shared vertex");
+      grouped.vertex=delta.vertex;
+    }
+    grouped.removed+=delta.removed;grouped.added+=delta.added;
+  }
+  next_vertices.clear();
+  next_vertices.reserve(cache.assembled_vertices.size()+grouped_vertices.size());
+  auto old_vertex=cache.assembled_vertices.begin();
+  for(const auto& delta:grouped_vertices){
+    while(old_vertex!=cache.assembled_vertices.end()&&
+          old_vertex->vertex.key<delta.vertex.key)
+      next_vertices.push_back(*old_vertex++);
+    const bool exists=old_vertex!=cache.assembled_vertices.end()&&
+        old_vertex->vertex.key==delta.vertex.key;
+    const auto old_references=exists?old_vertex->references:0U;
+    if(delta.removed<0||delta.added<0||
+       static_cast<std::uint32_t>(delta.removed)>old_references)
+      throw std::logic_error("incremental surface vertex reference underflow");
+    const auto retained=old_references-static_cast<std::uint32_t>(delta.removed);
+    const auto references=retained+static_cast<std::uint32_t>(delta.added);
+    if(references>0U){
+      auto vertex=exists?old_vertex->vertex:delta.vertex;
+      if(delta.added>0){
+        if(retained>0U){
+          const auto& first=vertex.position;const auto& second=delta.vertex.position;
+          if(std::bit_cast<std::uint64_t>(first.x)!=std::bit_cast<std::uint64_t>(second.x)||
+             std::bit_cast<std::uint64_t>(first.y)!=std::bit_cast<std::uint64_t>(second.y)||
+             std::bit_cast<std::uint64_t>(first.z)!=std::bit_cast<std::uint64_t>(second.z))
+            throw std::logic_error("blocked surface patches disagree on a shared vertex");
+        }else vertex=delta.vertex;
+      }
+      next_vertices.push_back({vertex,references});
+    }
+    if(exists)++old_vertex;
+  }
+  next_vertices.insert(next_vertices.end(),old_vertex,
+                       cache.assembled_vertices.end());
+
+  std::ranges::sort(triangle_deltas,{},
+      [](const auto& delta){return delta.triangle;});
+  std::vector<TriangleDelta> grouped_triangles;
+  for(const auto& delta:triangle_deltas){
+    if(grouped_triangles.empty()||
+       grouped_triangles.back().triangle!=delta.triangle)
+      grouped_triangles.push_back(delta);
+    else{
+      grouped_triangles.back().removed+=delta.removed;
+      grouped_triangles.back().added+=delta.added;
+    }
+  }
+  next_triangles.clear();
+  next_triangles.reserve(cache.assembled_triangles.size()+grouped_triangles.size());
+  const auto expand_triangle=[](
+      const SparseWorldSurfaceCache::CountedSurfaceTriangle& compact,
+      const auto& vertices){
+    tetra::WorldSurfaceTriangle triangle;triangle.owner=compact.owner;
+    for(std::size_t corner=0;corner<3U;++corner){
+      if(compact.vertices[corner]>=vertices.size())
+        throw std::logic_error("incremental surface triangle vertex is invalid");
+      triangle.vertices[corner]=vertices[compact.vertices[corner]].vertex.key;
+    }
+    return triangle;
+  };
+  const auto append_compact=[&](const tetra::WorldSurfaceTriangle& triangle,
+                                std::uint32_t references){
+    SparseWorldSurfaceCache::CountedSurfaceTriangle compact;
+    compact.owner=triangle.owner;compact.references=references;
+    for(std::size_t corner=0;corner<3U;++corner){
+      const auto found=std::ranges::lower_bound(
+          next_vertices,triangle.vertices[corner],{},
+          [](const auto& vertex){return vertex.vertex.key;});
+      if(found==next_vertices.end()||
+         found->vertex.key!=triangle.vertices[corner])
+        throw std::logic_error("incremental surface triangle has no vertex");
+      const auto index=static_cast<std::size_t>(found-next_vertices.begin());
+      if(index>std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("incremental surface exceeds 32-bit vertices");
+      compact.vertices[corner]=static_cast<std::uint32_t>(index);
+    }
+    next_triangles.push_back(compact);
+  };
+  std::vector<std::uint32_t> retained_vertex_remap(
+      cache.assembled_vertices.size());
+  std::size_t next_vertex_index{};
+  for(std::size_t old_index=0;old_index<cache.assembled_vertices.size();
+      ++old_index){
+    const auto& key=cache.assembled_vertices[old_index].vertex.key;
+    while(next_vertex_index<next_vertices.size()&&
+          next_vertices[next_vertex_index].vertex.key<key)++next_vertex_index;
+    if(next_vertex_index<next_vertices.size()&&
+       next_vertices[next_vertex_index].vertex.key==key){
+      if(next_vertex_index>std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("incremental surface exceeds 32-bit vertices");
+      retained_vertex_remap[old_index]=
+          static_cast<std::uint32_t>(next_vertex_index);
+    }else retained_vertex_remap[old_index]=
+        std::numeric_limits<std::uint32_t>::max();
+  }
+  const auto append_retained_compact=[&](
+      const SparseWorldSurfaceCache::CountedSurfaceTriangle& old){
+    auto compact=old;
+    for(auto& vertex:compact.vertices){
+      if(vertex>=retained_vertex_remap.size()||
+         retained_vertex_remap[vertex]==std::numeric_limits<std::uint32_t>::max())
+        throw std::logic_error("retained surface triangle lost its vertex");
+      vertex=retained_vertex_remap[vertex];
+    }
+    next_triangles.push_back(compact);
+  };
+  auto old_triangle=cache.assembled_triangles.begin();
+  for(const auto& delta:grouped_triangles){
+    while(old_triangle!=cache.assembled_triangles.end()){
+      const auto expanded=expand_triangle(
+          *old_triangle,cache.assembled_vertices);
+      if(!(expanded<delta.triangle))break;
+      append_retained_compact(*old_triangle);++old_triangle;
+    }
+    const bool exists=old_triangle!=cache.assembled_triangles.end()&&
+        expand_triangle(*old_triangle,cache.assembled_vertices)==delta.triangle;
+    const auto old_references=exists?old_triangle->references:0U;
+    if(delta.removed<0||delta.added<0||
+       static_cast<std::uint32_t>(delta.removed)>old_references)
+      throw std::logic_error("incremental surface triangle reference underflow");
+    const auto references=old_references-static_cast<std::uint32_t>(delta.removed)+
+        static_cast<std::uint32_t>(delta.added);
+    if(references>1U)
+      throw std::logic_error("blocked surface publishes a duplicate triangle");
+    if(references==1U)append_compact(delta.triangle,references);
+    if(exists)++old_triangle;
+  }
+  while(old_triangle!=cache.assembled_triangles.end()){
+    append_retained_compact(*old_triangle);
+    ++old_triangle;
+  }
+
+  BlockedDerivedSurfaceBuild result;result.snapshots=std::move(snapshots);
+  result.vertices.reserve(next_vertices.size());
+  for(const auto& vertex:next_vertices)result.vertices.push_back(vertex.vertex);
+  result.triangles.reserve(next_triangles.size());
+  for(const auto& triangle:next_triangles){
+    tetra::WorldSurfaceTriangle expanded;expanded.owner=triangle.owner;
+    for(std::size_t corner=0;corner<3U;++corner)
+      expanded.vertices[corner]=
+          next_vertices[triangle.vertices[corner]].vertex.key;
+    result.triangles.push_back(expanded);
+  }
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t hash=offset;
+  const auto append=[&](std::uint64_t value){hash^=value;hash*=prime;};
+  const auto append_key=[&](const tetra::WorldDerivedVertexKey& key){
+    append(static_cast<std::uint8_t>(key.kind));append(key.basis_count);
+    for(std::size_t index=0;index<key.basis_count;++index){
+      append(static_cast<std::uint64_t>(key.basis[index].x));
+      append(static_cast<std::uint64_t>(key.basis[index].y));
+      append(static_cast<std::uint64_t>(key.basis[index].z));
+      append(key.basis[index].denominator_exponent);
+    }
+  };
+  for(const auto& vertex:result.vertices){
+    append_key(vertex.key);append(std::bit_cast<std::uint64_t>(vertex.position.x));
+    append(std::bit_cast<std::uint64_t>(vertex.position.y));
+    append(std::bit_cast<std::uint64_t>(vertex.position.z));
+  }
+  for(const auto& triangle:result.triangles){
+    auto keys=triangle.vertices;std::ranges::sort(keys);
+    for(const auto& key:keys)append_key(key);
+  }
+  result.canonical_surface_hash=hash;return result;
+}
+
 void append_surface_optimization(PreparedScene& scene, const tetra::TetMesh& mesh,
                                  const tetra::Sphere& sphere, bool show_faces,
                                  bool show_surface_edges) {
@@ -3578,7 +3803,13 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   std::ranges::sort(snapshots,{},&tetra::WorldDerivedSurfaceSnapshot::id);
   for(auto& snapshot:snapshots)
     snapshot.source_hierarchy_revision=directory.revision();
-  auto result=assemble_blocked_snapshots(std::move(snapshots));
+  std::vector<SparseWorldSurfaceCache::CountedSurfaceVertex>
+      next_assembled_vertices;
+  std::vector<SparseWorldSurfaceCache::CountedSurfaceTriangle>
+      next_assembled_triangles;
+  auto result=cache?assemble_blocked_snapshots_incremental(
+      std::move(snapshots),*cache,output_blocks,next_assembled_vertices,
+      next_assembled_triangles):assemble_blocked_snapshots(std::move(snapshots));
   result.metrics.block_generations=directory.block_generations();
   result.metrics.source_vertices=result.vertices.size();
   result.metrics.source_triangles=result.triangles.size();
@@ -3649,6 +3880,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     cache->hierarchy=std::move(hierarchy);
     cache->surface_certificate_blocks=std::move(certificate_blocks);
     cache->surface_field_signature=field_signature;
+    cache->assembled_vertices=std::move(next_assembled_vertices);
+    cache->assembled_triangles=std::move(next_assembled_triangles);
     if(!restrict_retained_volume)cache->conforming=std::move(volume);
     else{
       tetra::WorldBlockedConformingVolume retained;
