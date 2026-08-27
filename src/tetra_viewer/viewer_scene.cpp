@@ -3066,6 +3066,152 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       for(const auto& vertex:snapshot.vertices)
         for(std::size_t basis=0;basis<vertex.key.basis_count;++basis)
           changed_vertices.insert(vertex.key.basis[basis]);
+
+  std::vector<tetra::WorldDerivedVertexKey> optimizer_keys;
+  std::vector<std::uint64_t> optimizer_incident_hashes;
+  std::vector<std::uint32_t> optimizer_neighbor_offsets;
+  std::vector<std::uint32_t> optimizer_neighbors;
+  std::set<tetra::WorldDerivedVertexKey> optimizer_affected_keys;
+  if(cache&&optimize){
+    optimizer_keys.reserve(all_surface_vertices.size());
+    for(const auto& [key,position]:all_surface_vertices){
+      (void)position;optimizer_keys.push_back(key);
+    }
+    struct Incidence {
+      std::uint32_t vertex{};
+      std::array<std::uint32_t,3> triangle{};
+      auto operator<=>(const Incidence&) const = default;
+    };
+    std::vector<std::array<std::uint32_t,2>> graph_edges;
+    std::vector<Incidence> incidences;
+    graph_edges.reserve(all_surface_triangles.size()*3U);
+    incidences.reserve(all_surface_triangles.size()*3U);
+    for(const auto& triangle:all_surface_triangles){
+      std::array<std::uint32_t,3> ids{};
+      for(std::size_t corner=0;corner<3U;++corner){
+        const auto found=std::ranges::lower_bound(
+            optimizer_keys,triangle.vertices[corner]);
+        if(found==optimizer_keys.end()||*found!=triangle.vertices[corner])
+          throw std::logic_error("optimizer dependency triangle has no vertex");
+        const auto index=static_cast<std::size_t>(found-optimizer_keys.begin());
+        if(index>std::numeric_limits<std::uint32_t>::max())
+          throw std::overflow_error("optimizer dependency graph exceeds 32-bit indices");
+        ids[corner]=static_cast<std::uint32_t>(index);
+      }
+      std::ranges::sort(ids);
+      for(const auto vertex:ids)incidences.push_back({vertex,ids});
+      for(auto edge:std::array<std::array<std::uint32_t,2>,3>{{
+          {{ids[0],ids[1]}},{{ids[1],ids[2]}},{{ids[0],ids[2]}}}}){
+        if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
+        graph_edges.push_back(edge);
+      }
+    }
+    std::ranges::sort(graph_edges);
+    graph_edges.erase(std::unique(graph_edges.begin(),graph_edges.end()),
+                      graph_edges.end());
+    std::ranges::sort(incidences);
+    optimizer_neighbor_offsets.assign(optimizer_keys.size()+1U,0U);
+    for(const auto edge:graph_edges){
+      ++optimizer_neighbor_offsets[edge[0]+1U];
+      ++optimizer_neighbor_offsets[edge[1]+1U];
+    }
+    for(std::size_t index=1;index<optimizer_neighbor_offsets.size();++index)
+      optimizer_neighbor_offsets[index]+=optimizer_neighbor_offsets[index-1U];
+    optimizer_neighbors.resize(optimizer_neighbor_offsets.back());
+    auto cursors=optimizer_neighbor_offsets;
+    for(const auto edge:graph_edges){
+      optimizer_neighbors[cursors[edge[0]]++]=edge[1];
+      optimizer_neighbors[cursors[edge[1]]++]=edge[0];
+    }
+    for(std::size_t vertex=0;vertex<optimizer_keys.size();++vertex)
+      std::sort(optimizer_neighbors.begin()+optimizer_neighbor_offsets[vertex],
+                optimizer_neighbors.begin()+optimizer_neighbor_offsets[vertex+1U]);
+
+    constexpr std::uint64_t offset=1469598103934665603ULL;
+    constexpr std::uint64_t prime=1099511628211ULL;
+    optimizer_incident_hashes.assign(optimizer_keys.size(),offset);
+    const auto hash_key=[&](std::uint64_t& hash,
+                            const tetra::WorldDerivedVertexKey& key){
+      const auto add=[&](const auto& value){
+        const auto* bytes=reinterpret_cast<const unsigned char*>(&value);
+        for(std::size_t byte=0;byte<sizeof(value);++byte){
+          hash^=bytes[byte];hash*=prime;
+        }
+      };
+      add(key.kind);add(key.basis_count);
+      for(std::size_t basis=0;basis<key.basis_count;++basis){
+        add(key.basis[basis].x);add(key.basis[basis].y);
+        add(key.basis[basis].z);add(key.basis[basis].denominator_exponent);
+      }
+    };
+    for(const auto& incidence:incidences)
+      for(const auto vertex:incidence.triangle)
+        hash_key(optimizer_incident_hashes[incidence.vertex],
+                 optimizer_keys[vertex]);
+
+    const bool retained_graph_valid=
+        cache->optimizer_incident_hashes.size()==cache->intersections.size()&&
+        cache->optimizer_neighbor_offsets.size()==cache->intersections.size()+1U&&
+        (!cache->optimizer_neighbor_offsets.empty()&&
+         cache->optimizer_neighbor_offsets.back()==cache->optimizer_neighbors.size())&&
+        std::ranges::all_of(cache->optimizer_neighbors,[&](std::uint32_t index){
+          return index<cache->intersections.size();
+        });
+    std::set<tetra::WorldDerivedVertexKey> frontier;
+    if(field_changed||!retained_graph_valid){
+      frontier.insert(optimizer_keys.begin(),optimizer_keys.end());
+      for(const auto& vertex:cache->intersections)frontier.insert(vertex.key);
+    }else{
+      std::size_t current{},previous{};
+      while(current<optimizer_keys.size()||previous<cache->intersections.size()){
+        if(previous==cache->intersections.size()||
+           (current<optimizer_keys.size()&&
+            optimizer_keys[current]<cache->intersections[previous].key)){
+          frontier.insert(optimizer_keys[current++]);continue;
+        }
+        if(current==optimizer_keys.size()||
+           cache->intersections[previous].key<optimizer_keys[current]){
+          frontier.insert(cache->intersections[previous++].key);continue;
+        }
+        if(optimizer_incident_hashes[current]!=
+           cache->optimizer_incident_hashes[previous])
+          frontier.insert(optimizer_keys[current]);
+        ++current;++previous;
+      }
+    }
+    optimizer_affected_keys=frontier;
+    const auto expand_graph=[&](
+        const tetra::WorldDerivedVertexKey& key,
+        std::set<tetra::WorldDerivedVertexKey>& next){
+      const auto current=std::ranges::lower_bound(optimizer_keys,key);
+      if(current!=optimizer_keys.end()&&*current==key){
+        const auto index=static_cast<std::size_t>(current-optimizer_keys.begin());
+        for(std::size_t edge=optimizer_neighbor_offsets[index];
+            edge<optimizer_neighbor_offsets[index+1U];++edge)
+          if(!optimizer_affected_keys.contains(
+                 optimizer_keys[optimizer_neighbors[edge]]))
+            next.insert(optimizer_keys[optimizer_neighbors[edge]]);
+      }
+      const auto previous=std::ranges::lower_bound(
+          cache->intersections,key,{},&tetra::WorldSurfaceVertex::key);
+      if(retained_graph_valid&&previous!=cache->intersections.end()&&
+         previous->key==key){
+        const auto index=static_cast<std::size_t>(previous-cache->intersections.begin());
+        for(std::size_t edge=cache->optimizer_neighbor_offsets[index];
+            edge<cache->optimizer_neighbor_offsets[index+1U];++edge){
+          const auto& neighbor=cache->intersections[
+              cache->optimizer_neighbors[edge]].key;
+          if(!optimizer_affected_keys.contains(neighbor))next.insert(neighbor);
+        }
+      }
+    };
+    for(std::uint32_t ring=0;ring<surface_optimizer_passes&&!frontier.empty();++ring){
+      std::set<tetra::WorldDerivedVertexKey> next;
+      for(const auto& key:frontier)expand_graph(key,next);
+      optimizer_affected_keys.insert(next.begin(),next.end());
+      frontier=std::move(next);
+    }
+  }
   std::map<tetra::HierarchyBlockId,
            std::vector<tetra::WorldDerivedVertexKey>> block_surface_vertices;
   if(cache)for(const auto& triangle:all_surface_triangles){
@@ -3106,7 +3252,27 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       if(blocks.size()==before)break;
     }
   };
-  if(cache){
+  std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
+      output_blocks(0U,block_hash);
+  if(cache&&optimize){
+    for(const auto& [id,keys]:block_surface_vertices)
+      if(std::ranges::any_of(keys,[&](const auto& key){
+           return optimizer_affected_keys.contains(key);
+         }))output_blocks.insert(id);
+    for(const auto& snapshot:cache->snapshots)
+      if(current_ids.contains(snapshot.id)&&std::ranges::any_of(
+          snapshot.vertices,[&](const auto& vertex){
+            return optimizer_affected_keys.contains(vertex.key);
+          }))output_blocks.insert(snapshot.id);
+    // A triangle can retain the same geometric one-ring while changing its
+    // canonical owner block. Include changed hierarchy payloads for that
+    // ownership-only case; unchanged interior-only blocks add no triangles.
+    for(const auto id:changed_blocks)
+      if(block_surface_vertices.contains(id))output_blocks.insert(id);
+    if(!output_blocks.empty())
+      changed_blocks.insert(current_ids.begin(),current_ids.end());
+    else changed_blocks.clear();
+  }else if(cache){
     if(!changed_vertices.empty())
       for(const auto& [id,vertices]:block_surface_vertices)
         if(std::ranges::any_of(vertices,[&](const auto& key){
@@ -3114,28 +3280,16 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
                if(changed_vertices.contains(key.basis[basis]))return true;
              return false;
            }))changed_blocks.insert(id);
-    expand_shared_blocks(changed_blocks,optimize?
-        surface_optimizer_dependency_halo_rings+1U:1U);
-  }else for(const auto id:current_ids)changed_blocks.insert(id);
-  auto output_blocks=changed_blocks;
-  if(cache&&optimize&&!output_blocks.empty()){
-    // Optimize and publish one complete current graph so every rebuilt
-    // position is bit-identical to the cold oracle. The old/new key cone above
-    // remains the proven local path for unoptimized extraction; optimized
-    // publication cannot retain a block until its per-key Jacobi dependency
-    // cone is represented explicitly.
+    expand_shared_blocks(changed_blocks,1U);
+    output_blocks.insert(changed_blocks.begin(),changed_blocks.end());
+  }else{
     changed_blocks.insert(current_ids.begin(),current_ids.end());
     output_blocks.insert(current_ids.begin(),current_ids.end());
-  }else if(cache&&optimize){
-    expand_shared_blocks(changed_blocks,surface_optimizer_dependency_halo_rings+1U);
   }
   std::vector<tetra::WorldDerivedSurfaceSnapshot> reused_snapshots;
   if(cache)for(const auto& snapshot:cache->snapshots)
     if(current_ids.contains(snapshot.id)&&!output_blocks.contains(snapshot.id))
       reused_snapshots.push_back(snapshot);
-  if(cache&&optimize&&output_blocks.empty()){
-    changed_blocks.clear();
-  }
   std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> vertices;
   std::vector<KeyTriangle> triangles;
   if(cache){
@@ -3312,6 +3466,15 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   result.metrics.surface_classification_samples=surface_classification_samples;
   result.metrics.reused_surface_certificates=reused_surface_certificates;
   result.metrics.rebuilt_surface_certificates=rebuilt_surface_certificates;
+  result.metrics.optimizer_dependency_vertices=optimizer_keys.size();
+  result.metrics.affected_optimizer_vertices=static_cast<std::size_t>(
+      std::ranges::count_if(optimizer_keys,[&](const auto& key){
+        return optimizer_affected_keys.contains(key);
+      }));
+  result.metrics.retained_optimizer_dependency_bytes=
+      optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
+      optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
+      optimizer_neighbors.capacity()*sizeof(std::uint32_t);
   result.metrics.surface_blocks=result.snapshots.size();
   result.metrics.total_core_vertices=result.vertices.size();
   result.metrics.total_patch_vertices=result.vertices.size();
@@ -3333,7 +3496,21 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
           throw std::logic_error("optimized surface lost its raw edge crossing");
         cache->intersections.push_back({found->first,found->second});
       }
-    }else cache->intersections=result.vertices;
+      if(cache->intersections.size()!=optimizer_keys.size()||
+         !std::equal(cache->intersections.begin(),cache->intersections.end(),
+             optimizer_keys.begin(),[](const auto& vertex,const auto& key){
+               return vertex.key==key;
+             }))
+        throw std::logic_error("optimizer dependency keys do not match surface");
+      cache->optimizer_incident_hashes=std::move(optimizer_incident_hashes);
+      cache->optimizer_neighbor_offsets=std::move(optimizer_neighbor_offsets);
+      cache->optimizer_neighbors=std::move(optimizer_neighbors);
+    }else{
+      cache->intersections=result.vertices;
+      cache->optimizer_incident_hashes.clear();
+      cache->optimizer_neighbor_offsets.clear();
+      cache->optimizer_neighbors.clear();
+    }
     cache->hierarchy=std::move(hierarchy);
     cache->surface_certificates=std::move(surface_certificates);
     cache->surface_field_signature=field_signature;

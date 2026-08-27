@@ -58,11 +58,12 @@ not the active queue.
 - [x] Implement direct red/green-template surface extraction for candidate
       owners using stack-local template expansion, global vertex keys, and the
       current exact edge-intersection rule.
-- [ ] Replace materialized-cell surface halo discovery with global surface-key
-      and block-adjacency dependencies, including the five-ring optimizer halo.
-      Raw extraction is local and uses exact old/new key cones; the five-pass
-      optimized front deliberately remains a complete replacement because a
-      block-ring-only certificate failed the production crack test.
+- [x] Replace materialized-cell surface halo discovery with a retained per-key
+      optimizer graph. Canonical incident-topology certificates seed the exact
+      old/new union graph, a five-hop traversal names every vertex that five
+      Jacobi passes can affect, and only blocks containing those keys publish.
+      The optimizer may evaluate the complete surface graph for cold-oracle
+      arithmetic, but unchanged snapshots and render ranges remain retained.
 - [x] Isolate full conforming-volume reconstruction behind hard player,
       edit, physics, debug, and oracle demand; reuse exact masks and keys.
 - [x] Publish surface and optional volume replacements atomically under one

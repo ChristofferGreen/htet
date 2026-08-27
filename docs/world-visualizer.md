@@ -1456,11 +1456,12 @@ surface construction with the old builder retained as its oracle.
 - [x] Extract the exact current triangles directly from an owner's red/green
       template and global vertex keys. Enumerate template cells on the stack
       only for surface candidates; do not allocate a conforming-cell vector.
-- [ ] Build surface dependency and five-ring optimization halos from global
-      surface keys and block adjacency, without scanning materialized interior
-      cell arrays. Exact old/new key cones localize raw extraction. Optimized
-      terrain retains complete-front publication until per-key dependency cones
-      can replace the block-ring approximation without cracks.
+- [x] Build the five-pass optimizer dependency cone from global surface keys,
+      without scanning materialized interior cells. Retain one canonical
+      incident-topology hash and a compact CSR one-ring per key; compare the
+      old and new graphs, traverse their union for exactly five hops, and
+      publish only snapshots containing affected keys. Production LOD tests
+      require exact cold hashes and shared-key agreement before adoption.
 - [x] Keep conforming-volume reconstruction as an independent promotion path
       for near-player, edit, and physics pins, reusing the same masks and exact
       keys. Promotion and demotion must leave surface and render hashes unchanged.

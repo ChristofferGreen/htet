@@ -2505,12 +2505,18 @@ can have the same number of owners while containing different addresses, and
 canonical address order does not imply contiguous storage-block identities.
 Both cases produced real bugs and now have release tests.
 
-The remaining locality work has two strict gates. Changed-cut conformity must
-propagate from exact address ranges while matching the cold closure oracle, and
-partial optimized-surface publication must name the full per-key five-pass
-dependency cone. Until those proofs exist, changed closure uses the global
-oracle and optimized terrain publishes one complete atomic front. Correctness
-and watertightness take precedence over reporting speculative locality.
+Partial optimized-surface publication now names its full per-key five-pass
+dependency cone. A retained incident-topology certificate detects rewiring,
+and a compact old/new union graph expands those seeds by exactly the number of
+synchronous Jacobi passes. Blocks outside that cone keep their prior snapshot.
+
+Changed-cut conformity remains the final locality gate. A three-generation
+block prototype was rejected even though it was correct: ordinary walking
+spread changes across so many coarse blocks that its first local probe visited
+about 414,000 of 562,000 requested owners, increased closure latency, and added
+unacceptable retained incidence memory before compaction. The next design must
+operate on persistent entity or address-range dependencies, not relabel a
+coarse spatial scan as local. Until then, changed closure uses the global oracle.
 
 
 ---

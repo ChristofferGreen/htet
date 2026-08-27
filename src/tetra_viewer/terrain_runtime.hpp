@@ -46,6 +46,9 @@ struct TerrainRuntimeDiagnostics {
   std::size_t surface_classification_samples{};
   std::size_t reused_surface_certificates{};
   std::size_t rebuilt_surface_certificates{};
+  std::size_t optimizer_dependency_vertices{};
+  std::size_t affected_optimizer_vertices{};
+  std::size_t retained_optimizer_dependency_bytes{};
   std::size_t closure_requested_owners_scanned{};
   std::size_t reused_closure_masks{};
   std::size_t rebuilt_closure_masks{};

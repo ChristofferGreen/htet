@@ -1131,8 +1131,12 @@ count. Exact identical closure requests reuse retained masks, while changed cuts
 still invoke the full closure oracle.
 
 Raw surface extraction localizes changes through both the previous and current
-global-key graphs. The five-pass optimized surface remains a complete atomic
-front replacement: production testing showed that a block-ring halo alone can
-miss a removed old-graph dependency and produce bit-different shared vertices.
-Per-key optimizer dependency certificates and changed-range closure propagation
-remain the two explicit Gate 4A follow-ups; neither is approximated in release.
+global-key graphs. The five-pass optimizer now retains its exact surface-key
+one-ring in compact CSR arrays plus one canonical incident-topology hash per
+vertex. Added, removed, or rewired incidents seed an old/new union traversal;
+five hops are sufficient for exactly five synchronous Jacobi passes. The full
+current graph is evaluated to retain cold-oracle arithmetic, but only snapshots
+containing an affected key are published. On the walking route, 16,128 of
+48,536 current keys were affected and 5,303 of 7,778 surface blocks were reused;
+the retained dependency graph occupied 1.75 MB. Changed-range conformity
+closure is the remaining Gate 4A follow-up.

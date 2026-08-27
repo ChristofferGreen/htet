@@ -1320,6 +1320,10 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.surface_candidate_blocks<initial.hierarchy_blocks);
   CHECK(initial.retained_surface_certificate_bytes>0U);
   CHECK(initial.rebuilt_surface_certificates==initial.logical_cells);
+  CHECK(initial.optimizer_dependency_vertices>0U);
+  CHECK(initial.affected_optimizer_vertices==
+        initial.optimizer_dependency_vertices);
+  CHECK(initial.retained_optimizer_dependency_bytes>0U);
   CHECK(initial.closure_requested_owners_scanned>0U);
   CHECK(initial.rebuilt_closure_masks==initial.logical_cells);
   CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
@@ -1430,6 +1434,10 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   };
   REQUIRE(wait_for(std::chrono::seconds(10)));
   CHECK(runtime.diagnostics().scene_generation>initial.scene_generation);
+  CHECK(runtime.diagnostics().affected_optimizer_vertices>0U);
+  CHECK(runtime.diagnostics().affected_optimizer_vertices<
+        runtime.diagnostics().optimizer_dependency_vertices);
+  CHECK(runtime.diagnostics().reused_surface_blocks>0U);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
   CHECK(runtime.diagnostics().promoted_volume_blocks>0U);
@@ -3156,6 +3164,12 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
   CHECK(optimized_warm.canonical_surface_hash==
         optimized_cold.canonical_surface_hash);
   CHECK(optimized_warm.metrics.rebuilt_surface_blocks>0U);
+  CHECK(optimized_warm.metrics.affected_optimizer_vertices<=
+        optimized_warm.metrics.optimizer_dependency_vertices);
+  CHECK(optimized_cache.optimizer_incident_hashes.size()==
+        optimized_cache.intersections.size());
+  CHECK(optimized_cache.optimizer_neighbor_offsets.size()==
+        optimized_cache.intersections.size()+1U);
 }
 
 TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {

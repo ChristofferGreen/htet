@@ -742,6 +742,9 @@ struct BlockedDerivedSurfaceMetrics {
   std::size_t surface_classification_samples{};
   std::size_t reused_surface_certificates{};
   std::size_t rebuilt_surface_certificates{};
+  std::size_t optimizer_dependency_vertices{};
+  std::size_t affected_optimizer_vertices{};
+  std::size_t retained_optimizer_dependency_bytes{};
   std::size_t reused_surface_blocks{};
   std::size_t rebuilt_surface_blocks{};
   std::size_t surface_blocks{};
@@ -790,6 +793,12 @@ struct SparseWorldSurfaceCache {
     auto operator<=>(const SurfaceOwnerCertificate&) const = default;
   };
   std::vector<tetra::WorldSurfaceVertex> intersections;
+  // Exact retained optimizer graph, indexed by the sorted intersection keys.
+  // Incident hashes detect topology changes at one vertex; the CSR one-ring
+  // expands that seed by the fixed Jacobi pass count without block heuristics.
+  std::vector<std::uint64_t> optimizer_incident_hashes;
+  std::vector<std::uint32_t> optimizer_neighbor_offsets;
+  std::vector<std::uint32_t> optimizer_neighbors;
   std::vector<HierarchySignature> hierarchy;
   std::vector<SurfaceOwnerCertificate> surface_certificates;
   std::uint64_t surface_field_signature{};

@@ -974,6 +974,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.work_units=completed_work_units;
   diagnostics.retained_cache_bytes=
       surface_cache.intersections.capacity()*sizeof(tetra::WorldSurfaceVertex)+
+      surface_cache.optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
+      surface_cache.optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
+      surface_cache.optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
       surface_cache.surface_certificates.capacity()*
           sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
       surface_cache.hierarchy.capacity()*
@@ -1012,6 +1015,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.reused_surface_certificates;
   diagnostics.rebuilt_surface_certificates=
       surface.metrics.rebuilt_surface_certificates;
+  diagnostics.optimizer_dependency_vertices=
+      surface.metrics.optimizer_dependency_vertices;
+  diagnostics.affected_optimizer_vertices=
+      surface.metrics.affected_optimizer_vertices;
+  diagnostics.retained_optimizer_dependency_bytes=
+      surface.metrics.retained_optimizer_dependency_bytes;
   diagnostics.closure_requested_owners_scanned=
       selection.metrics.closure_requested_owners_scanned;
   diagnostics.reused_closure_masks=selection.metrics.reused_closure_masks;

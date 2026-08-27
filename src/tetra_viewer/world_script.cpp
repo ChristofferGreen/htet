@@ -194,6 +194,12 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.reused_surface_certificates
           <<",\"rebuilt_surface_certificates\":"
           <<diagnostics.rebuilt_surface_certificates
+          <<",\"optimizer_dependency_vertices\":"
+          <<diagnostics.optimizer_dependency_vertices
+          <<",\"affected_optimizer_vertices\":"
+          <<diagnostics.affected_optimizer_vertices
+          <<",\"retained_optimizer_dependency_bytes\":"
+          <<diagnostics.retained_optimizer_dependency_bytes
           <<",\"closure_requested_owners_scanned\":"
           <<diagnostics.closure_requested_owners_scanned
           <<",\"reused_closure_masks\":"
