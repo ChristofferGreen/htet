@@ -978,7 +978,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
             const auto runtime_status=world_runtime->diagnostics();
             if(runtime_status.scene_generation!=world_scene_generation){
-                background_prepared_scene=world_runtime->scene();
+                if(world_runtime->retained_surface()!=nullptr){
+                    background_prepared_scene={};
+                    background_prepared_scene.render_origin=
+                        world_runtime->render_origin();
+                }else background_prepared_scene=world_runtime->scene();
                 prepared_scene_mesh_revision=runtime_status.scene_mesh_revision;
                 world_scene_generation=runtime_status.scene_generation;
                 upload_dirty=true;
@@ -1951,7 +1955,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             .preparation=preparation,
             .surface_override_revision=fixed_field_surface_cut_revision};
         if(world_mode){
-            retained_surface_upload_ready=false;
+            retained_surface_upload_ready=
+                world_runtime->retained_surface()!=nullptr;
         }else if(retained_upload_check){
             const auto preparation_start=std::chrono::steady_clock::now();
             if(scene_cache.update_scene(
@@ -2746,7 +2751,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 }
             }
             if(upload_dirty){
-                if(retained_surface_upload_ready)
+                if(world_mode&&world_runtime->retained_surface()!=nullptr)
+                    g_SceneRenderer.upload_surface_ranges(
+                        *world_runtime->retained_surface(),
+                        prepared_scene.hierarchy_line_vertices,overlay_lines);
+                else if(retained_surface_upload_ready)
                     g_SceneRenderer.upload_surface_ranges(
                         surface_host_staging,prepared_scene.hierarchy_line_vertices,
                         overlay_lines);

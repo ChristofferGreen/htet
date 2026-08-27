@@ -1249,6 +1249,153 @@ WorldConformingVolume reconstruct_world_conforming_volume(
   return result;
 }
 
+WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
+    const WorldCutDirectory& directory,
+    const WorldConformingClosureCache& closure_cache,
+    const WorldBlockedConformingVolume* retained) {
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  if(closure_cache.closed_owners.size()!=directory.logical_owner_count()||
+     closure_cache.green_masks.size()!=closure_cache.closed_owners.size())
+    throw std::invalid_argument(
+        "blocked conforming reconstruction requires the published closure masks");
+  if(!std::ranges::is_sorted(closure_cache.closed_owners)||
+     !std::ranges::is_sorted(closure_cache.geometry,{},
+          &WorldConformingClosureCacheEntry::address))
+    throw std::invalid_argument(
+        "blocked conforming reconstruction requires sorted closure state");
+
+  WorldBlockedConformingVolume result;
+  result.logical_owners=closure_cache.closed_owners.size();
+  std::size_t begin{};
+  while(begin<closure_cache.closed_owners.size()){
+    const auto id=hierarchy_block_id(
+        closure_cache.closed_owners[begin],directory.block_generations());
+    std::size_t end=begin+1U;
+    while(end<closure_cache.closed_owners.size()&&hierarchy_block_id(
+          closure_cache.closed_owners[end],directory.block_generations())==id)
+      ++end;
+    constexpr std::uint64_t offset=1469598103934665603ULL;
+    constexpr std::uint64_t prime=1099511628211ULL;
+    std::uint64_t signature=offset;
+    const auto add=[&](const void* data,std::size_t size){
+      const auto* bytes=static_cast<const unsigned char*>(data);
+      for(std::size_t index=0;index<size;++index){
+        signature^=bytes[index];signature*=prime;
+      }
+    };
+    for(std::size_t index=begin;index<end;++index){
+      add(&closure_cache.closed_owners[index],
+          sizeof(closure_cache.closed_owners[index]));
+      add(&closure_cache.green_masks[index],
+          sizeof(closure_cache.green_masks[index]));
+    }
+    const auto previous=retained?std::ranges::lower_bound(
+        retained->blocks,id,{},[](const auto& block){return block->id;}):
+        std::vector<std::shared_ptr<const WorldConformingBlockSnapshot>>::const_iterator{};
+    const auto exact_previous=[&]{
+      if(!retained||previous==retained->blocks.end()||(*previous)->id!=id||
+         (*previous)->owner_mask_hash!=signature||
+         (*previous)->green_masks.size()!=end-begin||
+         !std::equal((*previous)->green_masks.begin(),
+                     (*previous)->green_masks.end(),
+                     closure_cache.green_masks.begin()+
+                         static_cast<std::ptrdiff_t>(begin)))return false;
+      std::size_t owner_index=begin;
+      bool first=true;WorldTetAddress last{};
+      for(const auto& cell:(*previous)->cells)
+        if(first||cell.logical_owner!=last){
+          if(owner_index==end||
+             cell.logical_owner!=closure_cache.closed_owners[owner_index++])
+            return false;
+          last=cell.logical_owner;first=false;
+        }
+      return owner_index==end;
+    };
+    if(exact_previous()){
+      result.blocks.push_back(*previous);++result.reused_blocks;
+      result.reused_cells+=(*previous)->cells.size();
+    }else{
+      WorldConformingBlockSnapshot block;
+      block.id=id;block.owner_mask_hash=signature;
+      block.logical_owners=end-begin;
+      block.green_masks.assign(
+          closure_cache.green_masks.begin()+static_cast<std::ptrdiff_t>(begin),
+          closure_cache.green_masks.begin()+static_cast<std::ptrdiff_t>(end));
+      std::size_t conforming_cell_count{};
+      for(std::size_t owner_index=begin;owner_index<end;++owner_index){
+        const auto mask=closure_cache.green_masks[owner_index];
+        if(mask==63U)throw std::logic_error("logical world owner is red-split");
+        conforming_cell_count+=complete_green_template(mask).count;
+      }
+      block.cells.reserve(conforming_cell_count);
+      std::size_t geometry_index{};
+      if(!closure_cache.geometry.empty()){
+        geometry_index=static_cast<std::size_t>(std::ranges::lower_bound(
+            closure_cache.geometry,closure_cache.closed_owners[begin],{},
+            &WorldConformingClosureCacheEntry::address)-
+            closure_cache.geometry.begin());
+      }
+      for(std::size_t owner_index=begin;owner_index<end;++owner_index){
+        const auto owner=closure_cache.closed_owners[owner_index];
+        std::array<WorldVertexKey,4> keys;
+        if(geometry_index<closure_cache.geometry.size()&&
+           closure_cache.geometry[geometry_index].address==owner){
+          keys=closure_cache.geometry[geometry_index].vertices;
+          ++geometry_index;
+        }else keys=world_tetrahedron_vertex_keys(owner);
+        WorldTetrahedronGeometry positions;
+        for(std::size_t corner=0;corner<4U;++corner){
+          positions[corner]={
+              std::ldexp(static_cast<double>(keys[corner].x),
+                         -keys[corner].denominator_exponent),
+              std::ldexp(static_cast<double>(keys[corner].y),
+                         -keys[corner].denominator_exponent),
+              std::ldexp(static_cast<double>(keys[corner].z),
+                         -keys[corner].denominator_exponent)};
+        }
+        const auto mask=closure_cache.green_masks[owner_index];
+        if(mask==63U)throw std::logic_error("logical world owner is red-split");
+        const auto& green=complete_green_template(mask);
+        std::array<Vec3,10> points{};
+        std::array<WorldVertexKey,10> point_keys{};
+        for(std::size_t point=0;point<points.size();++point){
+          if(grande_point_vertex[point]!=0xffU){
+            const auto vertex=grande_point_vertex[point];
+            points[point]=positions[vertex];point_keys[point]=keys[vertex];
+          }else{
+            const auto edge=edges[grande_point_edge[point]];
+            points[point]=(positions[edge[0]]+positions[edge[1]])/2.0;
+            point_keys[point]=world_vertex_key(points[point]);
+          }
+        }
+        for(std::size_t cell=0;cell<green.count;++cell){
+          WorldConformingCell output;output.logical_owner=owner;
+          for(std::size_t corner=0;corner<4U;++corner){
+            const auto point=green.tetrahedra[cell][corner];
+            output.vertices[corner]=point_keys[point];
+            output.positions[corner]=points[point];
+          }
+          block.cells.push_back(output);
+        }
+        if(mask!=0U)block.transition_cells+=green.count;
+      }
+      result.rebuilt_cells+=block.cells.size();++result.rebuilt_blocks;
+      result.blocks.push_back(std::make_shared<const WorldConformingBlockSnapshot>(
+          std::move(block)));
+    }
+    const auto& published=*result.blocks.back();
+    result.cells+=published.cells.size();
+    result.transition_cells+=published.transition_cells;
+    begin=end;
+  }
+  for(const auto& block:result.blocks)
+    result.retained_bytes+=sizeof(WorldConformingBlockSnapshot)+
+        block->green_masks.capacity()*sizeof(std::uint8_t)+
+        block->cells.capacity()*sizeof(WorldConformingCell);
+  return result;
+}
+
 std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
     WorldConformingClosureCache* cache) {

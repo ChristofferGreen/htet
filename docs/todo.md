@@ -135,7 +135,7 @@ not the active queue.
       publication.
 - [x] Benchmark and visually inspect spawn, nearby relief, corridors, and the
       mountain horizon using the release world executable.
-- [ ] Replace full warm conforming-cell and flat render-scene assembly with
+- [x] Replace full warm conforming-cell and flat render-scene assembly with
       retained per-block conforming and render chunks so a small camera move
       copies and uploads only dirty ranges.
 - [ ] Add explicit CPU-memory, triangle, work, and upload budgets plus

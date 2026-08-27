@@ -177,6 +177,24 @@ five units of the local field, experiences measurable relief, remains grounded
 through ordinary slopes, and never penetrates the authoritative collision
 field.
 
+The 2026-08-27 retained-publication pass removes routine flat scene assembly
+from `tetra_world`. Restricted-green owner/mask signatures now retain immutable
+conforming arrays by hierarchy block, while render blocks are split into
+small stable host ranges and the Vulkan front receives only dirty ranges.
+Unchanged blocks preserve their allocation identity; cold reconstruction,
+canonical hashes, and the lazily assembled flat scene remain independent
+oracles. Large replacement routes compact host staging only after fragmentation
+crosses a bounded threshold, so walking keeps range locality while far,
+reversal, and teleport paths do not accumulate old fronts.
+
+On the qualified release route, walking reuses 26,630 of 41,456 conforming
+blocks, 5,303 of 7,778 surface/render blocks, and 7,315 host ranges. It stages
+6.6 MB instead of the complete 17.4 MB render front and completes in about
+4.68 seconds, roughly 13 percent faster than the preceding 5.39-second
+baseline. The seven-pose route remains below the 512 MiB CPU ceiling; its peak
+is about 523 MB (499 MiB) at teleport. Exact stationary/reversal hierarchy,
+conforming-volume, connected-surface, render, and field hashes still match.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

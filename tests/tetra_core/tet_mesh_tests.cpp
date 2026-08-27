@@ -2273,6 +2273,121 @@ TEST_CASE("sparse world cut reconstructs the exact conforming green volume") {
       [](const auto& entry){return entry.second==1U||entry.second==2U;}));
 }
 
+TEST_CASE("blocked conforming volume is an exact local reusable reconstruction") {
+  auto make_mesh=[] {
+    auto mesh=tetra::TetMesh::make_unit_cube(
+        tetra::SubdivisionMethod::bcc_red_green);
+    mesh.refine_all_binary();mesh.refine_all_binary();
+    if(!mesh.refine_selected_binary({mesh.logical_red_owners().front()}))
+      throw std::logic_error("test mesh refinement failed");
+    return mesh;
+  };
+  const auto flatten=[](const tetra::WorldBlockedConformingVolume& blocked){
+    std::vector<tetra::WorldConformingCell> cells;
+    cells.reserve(blocked.cells);
+    for(const auto& block:blocked.blocks)
+      cells.insert(cells.end(),block->cells.begin(),block->cells.end());
+    return cells;
+  };
+  const auto equivalent=[](std::span<const tetra::WorldConformingCell> left,
+                           std::span<const tetra::WorldConformingCell> right){
+    if(left.size()!=right.size())return false;
+    for(std::size_t index=0;index<left.size();++index){
+      auto left_keys=left[index].vertices,right_keys=right[index].vertices;
+      std::ranges::sort(left_keys);std::ranges::sort(right_keys);
+      if(left[index].logical_owner!=right[index].logical_owner||
+         left_keys!=right_keys)return false;
+    }
+    return true;
+  };
+
+  auto mesh=make_mesh();
+  tetra::WorldConformingClosureCache closure;
+  std::vector<tetra::WorldTetAddress> initial_owners;
+  for(const auto owner:mesh.logical_red_owners())
+    initial_owners.push_back(tetra::world_tet_address(owner));
+  const auto closed=tetra::close_world_conforming_cut(
+      initial_owners,&closure);
+  tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
+      closed,2U,1U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto cold=tetra::reconstruct_world_conforming_volume(directory,&closure);
+  const auto blocked=tetra::reconstruct_blocked_world_conforming_volume(
+      directory,closure);
+  const auto blocked_cells=flatten(blocked);
+  CHECK(equivalent(blocked_cells,cold.cells));
+  CHECK(blocked.rebuilt_blocks==blocked.blocks.size());
+  CHECK(blocked.reused_blocks==0U);
+  CHECK(blocked.retained_bytes<
+        blocked.cells*sizeof(tetra::WorldConformingCell)*2U);
+
+  const auto repeated=tetra::reconstruct_blocked_world_conforming_volume(
+      directory,closure,&blocked);
+  REQUIRE(repeated.blocks.size()==blocked.blocks.size());
+  CHECK(repeated.reused_blocks==blocked.blocks.size());
+  CHECK(repeated.rebuilt_blocks==0U);
+  for(std::size_t index=0;index<blocked.blocks.size();++index)
+    CHECK(repeated.blocks[index].get()==blocked.blocks[index].get());
+
+  const auto selected=mesh.logical_red_owners().back();
+  REQUIRE(mesh.refine_selected_binary({selected}));
+  std::vector<tetra::WorldTetAddress> moved_owners;
+  for(const auto owner:mesh.logical_red_owners())
+    moved_owners.push_back(tetra::world_tet_address(owner));
+  const auto moved_closed=tetra::close_world_conforming_cut(
+      moved_owners,&closure);
+  tetra::WorldCutDirectory moved_directory(
+      tetra::make_complete_world_cut_checkpoint(
+          moved_closed,2U,2U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto moved=tetra::reconstruct_blocked_world_conforming_volume(
+      moved_directory,closure,&repeated);
+  CHECK(moved.reused_blocks>0U);
+  CHECK(moved.rebuilt_blocks>0U);
+  CHECK(moved.rebuilt_blocks<moved.blocks.size());
+  const auto moved_flat=tetra::reconstruct_world_conforming_volume(
+      moved_directory,&closure);
+  CHECK(equivalent(flatten(moved),moved_flat.cells));
+
+  auto forged=repeated;
+  bool forged_one{};
+  for(std::size_t moved_index=0;moved_index<moved.blocks.size()&&!forged_one;
+      ++moved_index){
+    const auto old=std::ranges::lower_bound(
+        forged.blocks,moved.blocks[moved_index]->id,{},
+        [](const auto& block){return block->id;});
+    if(old==forged.blocks.end()||(*old)->id!=moved.blocks[moved_index]->id||
+       old->get()==moved.blocks[moved_index].get())continue;
+    auto collision=std::make_shared<tetra::WorldConformingBlockSnapshot>(**old);
+    collision->owner_mask_hash=moved.blocks[moved_index]->owner_mask_hash;
+    *old=std::move(collision);forged_one=true;
+  }
+  REQUIRE(forged_one);
+  const auto collision_checked=
+      tetra::reconstruct_blocked_world_conforming_volume(
+          moved_directory,closure,&forged);
+  CHECK(collision_checked.rebuilt_blocks>0U);
+  CHECK(equivalent(flatten(collision_checked),moved_flat.cells));
+
+  // Returning to an earlier cut is an eviction/regeneration oracle: blocks
+  // whose owner/mask signature survived are retained, and every regenerated
+  // block remains byte-for-byte equivalent to a cold reconstruction.
+  auto restored_mesh=make_mesh();
+  std::vector<tetra::WorldTetAddress> restored_owners;
+  for(const auto owner:restored_mesh.logical_red_owners())
+    restored_owners.push_back(tetra::world_tet_address(owner));
+  const auto restored_closed=tetra::close_world_conforming_cut(
+      restored_owners,&closure);
+  tetra::WorldCutDirectory restored_directory(
+      tetra::make_complete_world_cut_checkpoint(
+          restored_closed,2U,3U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto restored=tetra::reconstruct_blocked_world_conforming_volume(
+      restored_directory,closure,&moved);
+  CHECK(restored.reused_blocks>0U);
+  CHECK(restored.rebuilt_blocks>0U);
+  CHECK(equivalent(flatten(restored),
+      tetra::reconstruct_world_conforming_volume(
+          restored_directory,&closure).cells));
+}
+
 TEST_CASE("direct sparse cut closure conservatively satisfies transactional grading") {
   std::vector<tetra::WorldTetAddress> raw;
   for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
@@ -8402,6 +8517,99 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
                   std::invalid_argument);
   CHECK_THROWS_AS(tetra_viewer::SurfaceHostStagingStorage(0U),
                   std::invalid_argument);
+}
+
+TEST_CASE("world render blocks retain local ranges and publish partial uploads") {
+  using Block=tetra_viewer::SparseWorldSurfaceCache::RenderBlock;
+  const auto make_block=[](std::uint8_t root,std::size_t triangles,
+                           std::uint64_t revision,float marker){
+    Block block;
+    block.id=tetra::hierarchy_block_id(
+        tetra::WorldTetAddress::root(root),2U);
+    block.surface_payload_hash=revision;
+    block.show_faces=true;block.show_edges=true;
+    block.triangle_vertices.resize(triangles*3U);
+    for(std::size_t index=0;index<block.triangle_vertices.size();++index){
+      auto& vertex=block.triangle_vertices[index];
+      vertex.position[0]=marker+static_cast<float>(index)*0.01F;
+      vertex.position[1]=static_cast<float>(root);
+      vertex.position[2]=static_cast<float>(index%3U);
+      vertex.normal[1]=1.0F;vertex.colour[1]=0.75F;vertex.edge_flags=7.0F;
+    }
+    return block;
+  };
+  const auto direct=[](std::span<const Block> blocks){
+    std::vector<tetra_viewer::SceneVertex> result;
+    for(const auto& block:blocks)result.insert(result.end(),
+        block.triangle_vertices.begin(),block.triangle_vertices.end());
+    return result;
+  };
+  const auto equal=[](std::span<const tetra_viewer::SceneVertex> left,
+                      std::span<const tetra_viewer::SceneVertex> right){
+    return left.size()==right.size()&&
+        (left.empty()||std::memcmp(
+            left.data(),right.data(),left.size_bytes())==0);
+  };
+
+  std::vector<Block> blocks;
+  blocks.push_back(make_block(0U,2U,11U,1.0F));
+  blocks.push_back(make_block(1U,20U,12U,2.0F));
+  blocks.push_back(make_block(2U,5U,13U,3.0F));
+  tetra_viewer::SurfaceHostStagingStorage staging(4U);
+  staging.stage_world_render_blocks(blocks);
+  REQUIRE(equal(tetra_viewer::assemble_surface_host_staging(staging),
+                direct(blocks)));
+  CHECK(staging.metrics().dirty_ranges==8U);
+  const std::vector first_ranges(staging.ranges().begin(),staging.ranges().end());
+
+  staging.stage_world_render_blocks(blocks);
+  CHECK(staging.metrics().dirty_ranges==0U);
+  CHECK(staging.metrics().reused_ranges==first_ranges.size());
+  for(std::size_t index=0;index<first_ranges.size();++index)
+    CHECK(staging.ranges()[index].host_slot==first_ranges[index].host_slot);
+
+  tetra_viewer::SurfaceDeviceUploadPlanner planner;
+  std::vector<tetra_viewer::SceneVertex> device;
+  planner.prepare(staging,device.size());
+  tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
+  REQUIRE(equal(tetra_viewer::assemble_surface_device_publication(
+                    planner,device),direct(blocks)));
+
+  // One changed source block dirties only its own parts. Keep the revision to
+  // exercise the collision guard: identity/hash equality is insufficient
+  // unless the retained bytes also match.
+  blocks[2].triangle_vertices[0].position[0]+=10.0F;
+  staging.stage_world_render_blocks(blocks);
+  CHECK(staging.metrics().dirty_ranges==1U);
+  CHECK(staging.metrics().reused_ranges==first_ranges.size()-1U);
+  planner.prepare(staging,device.size());
+  CHECK_FALSE(planner.metrics().full_reallocation);
+  CHECK(planner.metrics().upload_ranges==1U);
+  CHECK(planner.metrics().uploaded_bytes==
+        staging.metrics().staged_triangle_bytes);
+  CHECK(planner.metrics().uploaded_bytes<direct(blocks).size()*
+        sizeof(tetra_viewer::SceneVertex));
+  tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
+  CHECK(equal(tetra_viewer::assemble_surface_device_publication(
+                  planner,device),direct(blocks)));
+
+  const auto valid_generation=staging.metrics().publication_generation;
+  const auto valid= tetra_viewer::assemble_surface_host_staging(staging);
+  auto invalid=blocks;invalid.front().surface_payload_hash=0U;
+  CHECK_THROWS_AS(staging.stage_world_render_blocks(invalid),
+                  std::invalid_argument);
+  CHECK(staging.metrics().publication_generation==valid_generation);
+  CHECK(equal(tetra_viewer::assemble_surface_host_staging(staging),valid));
+
+  blocks.erase(blocks.begin()+1);
+  staging.stage_world_render_blocks(blocks);
+  CHECK(staging.metrics().released_slots==5U);
+  CHECK(equal(tetra_viewer::assemble_surface_host_staging(staging),
+              direct(blocks)));
+  planner.prepare(staging,device.size());
+  tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
+  CHECK(equal(tetra_viewer::assemble_surface_device_publication(
+                  planner,device),direct(blocks)));
 }
 
 TEST_CASE("parallel surface draw packing is byte identical across update paths") {

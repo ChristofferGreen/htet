@@ -25,6 +25,9 @@ struct TerrainRuntimeDiagnostics {
   std::size_t active_tetrahedra{};
   std::size_t resident_bytes{};
   std::size_t retained_cache_bytes{};
+  std::size_t retained_conforming_bytes{};
+  std::size_t retained_render_block_bytes{};
+  std::size_t retained_host_staging_bytes{};
   std::size_t hierarchy_blocks{};
   std::size_t surface_blocks{};
   std::size_t reused_hierarchy_blocks{};
@@ -35,6 +38,14 @@ struct TerrainRuntimeDiagnostics {
   std::size_t rebuilt_surface_blocks{};
   std::size_t reused_render_blocks{};
   std::size_t rebuilt_render_blocks{};
+  std::size_t reused_conforming_blocks{};
+  std::size_t rebuilt_conforming_blocks{};
+  std::size_t reused_conforming_cells{};
+  std::size_t rebuilt_conforming_cells{};
+  std::size_t retained_render_ranges{};
+  std::size_t dirty_render_ranges{};
+  std::size_t staged_render_bytes{};
+  std::size_t uploaded_render_bytes{};
   double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};
@@ -93,8 +104,13 @@ class TerrainRuntime {
   // Non-blocking publication/scheduling pump, called once per presentation frame.
   virtual bool update()=0;
   [[nodiscard]] virtual const tetra::Sphere& field() const noexcept=0;
-  [[nodiscard]] virtual const PreparedScene& scene() const noexcept=0;
+  [[nodiscard]] virtual const PreparedScene& scene() const=0;
   [[nodiscard]] virtual const WorldProfile& profile() const noexcept=0;
+  [[nodiscard]] virtual const SurfaceHostStagingStorage* retained_surface()
+      const noexcept { return nullptr; }
+  [[nodiscard]] virtual tetra::Vec3 render_origin() const noexcept {
+    return scene().render_origin;
+  }
   [[nodiscard]] virtual TerrainRuntimeDiagnostics diagnostics() const noexcept=0;
   [[nodiscard]] virtual double signed_distance(tetra::Vec3 point) const=0;
   [[nodiscard]] virtual std::vector<TerrainDebugLine> lod_zone_lines() const=0;
@@ -110,7 +126,7 @@ class MonolithicTerrainRuntime final : public TerrainRuntime {
   void set_camera(const tetra::Camera& camera,bool interactive) override;
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
-  [[nodiscard]] const PreparedScene& scene() const noexcept override { return scene_; }
+  [[nodiscard]] const PreparedScene& scene() const override { return scene_; }
   [[nodiscard]] const WorldProfile& profile() const noexcept override { return profile_; }
   [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override;
   [[nodiscard]] double signed_distance(tetra::Vec3 point) const override {
@@ -155,8 +171,13 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   void set_camera(const tetra::Camera& camera,bool interactive) override;
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
-  [[nodiscard]] const PreparedScene& scene() const noexcept override { return scene_; }
+  [[nodiscard]] const PreparedScene& scene() const override;
   [[nodiscard]] const WorldProfile& profile() const noexcept override { return profile_; }
+  [[nodiscard]] const SurfaceHostStagingStorage* retained_surface()
+      const noexcept override { return &host_staging_; }
+  [[nodiscard]] tetra::Vec3 render_origin() const noexcept override {
+    return scene_.render_origin;
+  }
   [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override {
     auto result=diagnostics_;result.busy=future_.valid();return result;
   }
@@ -177,16 +198,24 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       const tetra::Camera& camera,std::uint64_t generation,
       SparseWorldSurfaceCache surface_cache={});
   void submit();
+  void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 
   WorldProfile profile_;
   tetra::Sphere field_;
   tetra::Camera camera_;
   tetra::Vec3 last_requested_position_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
-  PreparedScene scene_;
+  mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;
   std::future<Publication> future_;
   SparseWorldSurfaceCache surface_cache_;
+  // World render blocks are deliberately fine grained.  A small slot keeps
+  // retained staging proportional to their contents instead of paying the
+  // research viewer's 256-triangle allocation quantum for every block part.
+  SurfaceHostStagingStorage host_staging_{16U};
+  SurfaceDeviceUploadPlanner upload_planner_;
+  std::size_t simulated_device_vertex_capacity_{};
+  mutable bool flat_scene_current_{};
   bool demand_pending_{true};
   std::uint64_t requested_generation_{};
 };

@@ -775,6 +775,7 @@ struct SparseWorldSurfaceCache {
   };
   std::vector<tetra::WorldSurfaceVertex> intersections;
   std::vector<HierarchySignature> hierarchy;
+  tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
   std::vector<RenderBlock> render_blocks;
   tetra::WorldConformingClosureCache closure;
@@ -819,7 +820,7 @@ struct BlockedDerivedSurfaceBuild {
 [[nodiscard]] RetainedPreparedSceneBuild prepare_retained_blocked_scene(
     const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
     bool show_faces,bool show_edges,tetra::Vec3 render_origin,
-    SparseWorldSurfaceCache& cache);
+    SparseWorldSurfaceCache& cache,bool assemble_flat_scene=true);
 
 struct SurfaceGeometryHashes {
   std::uint64_t triangle_hash{};
@@ -1092,7 +1093,14 @@ class SurfaceDrawChunkStorage {
 
 struct SurfaceHostDrawRange {
   std::size_t host_slot{};
-  std::size_t source_arena_slot{};
+  enum class SourceKind : std::uint8_t { draw_chunk, world_render_block };
+  struct SourceKey {
+    SourceKind kind{SourceKind::draw_chunk};
+    std::size_t arena_slot{};
+    tetra::HierarchyBlockId block{};
+    std::uint32_t part{};
+    auto operator<=>(const SourceKey&) const = default;
+  } source;
   std::uint64_t source_content_revision{};
   std::uint64_t host_content_revision{};
   std::size_t triangle_vertex_begin{};
@@ -1139,6 +1147,9 @@ class SurfaceHostStagingStorage {
   void stage(const SurfaceDrawChunkStorage& source,
              std::span<const SceneVertex> logical_vertices,
              tetra::GeometryExecutor* executor=nullptr);
+  void stage_world_render_blocks(
+      std::span<const SparseWorldSurfaceCache::RenderBlock> blocks,
+      tetra::GeometryExecutor* executor=nullptr);
 
   [[nodiscard]] std::size_t triangle_chunk_capacity() const noexcept {
     return triangle_chunk_capacity_;
@@ -1160,8 +1171,13 @@ class SurfaceHostStagingStorage {
   }
 
  private:
+  struct SourceView {
+    SurfaceHostDrawRange::SourceKey key{};
+    std::uint64_t content_revision{};
+    std::span<const SceneVertex> vertices;
+  };
   struct CopyJob {
-    std::size_t source_vertex_begin{};
+    std::size_t source_index{};
     std::size_t destination_vertex_begin{};
     std::size_t vertex_count{};
   };
@@ -1170,6 +1186,8 @@ class SurfaceHostStagingStorage {
       SurfaceHostStagingMetrics& candidate_metrics);
   static void normalize_free_ranges(
       std::vector<SurfaceHostFreeRange>& ranges);
+  void stage_sources(std::span<const SourceView> sources,
+                     tetra::GeometryExecutor* executor);
 
   std::size_t triangle_chunk_capacity_{};
   std::vector<SurfaceHostDrawRange> ranges_;

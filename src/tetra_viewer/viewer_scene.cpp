@@ -2524,7 +2524,7 @@ PreparedScene prepare_blocked_derived_surface_scene(
 RetainedPreparedSceneBuild prepare_retained_blocked_scene(
     const BlockedDerivedSurfaceBuild& surface,const tetra::Sphere& field,
     bool show_faces,bool show_edges,tetra::Vec3 render_origin,
-    SparseWorldSurfaceCache& cache) {
+    SparseWorldSurfaceCache& cache,bool assemble_flat_scene) {
   const auto payload_hash=[](const tetra::WorldDerivedSurfaceSnapshot& snapshot){
     constexpr std::uint64_t offset=1469598103934665603ULL;
     constexpr std::uint64_t prime=1099511628211ULL;
@@ -2560,7 +2560,8 @@ RetainedPreparedSceneBuild prepare_retained_blocked_scene(
   result.scene.optimized_surface_vertices=surface.vertices.size();
   std::vector<SparseWorldSurfaceCache::RenderBlock> next;
   next.reserve(surface.snapshots.size());
-  result.scene.triangle_vertices.reserve(surface.triangles.size()*3U);
+  if(assemble_flat_scene)
+    result.scene.triangle_vertices.reserve(surface.triangles.size()*3U);
   for(const auto& snapshot:surface.snapshots){
     const auto signature=payload_hash(snapshot);
     const auto found=std::ranges::lower_bound(cache.render_blocks,snapshot.id,{},
@@ -2572,7 +2573,10 @@ RetainedPreparedSceneBuild prepare_retained_blocked_scene(
     if(found!=cache.render_blocks.end()&&found->id==snapshot.id&&
        found->surface_payload_hash==signature&&same_origin&&
        found->show_faces==show_faces&&found->show_edges==show_edges){
-      next.push_back(*found);++result.reused_blocks;
+      // Each cached block is consumed once in sorted order and the cache is
+      // replaced below. Move its immutable vertex allocation into the next
+      // front instead of copying every retained block during publication.
+      next.push_back(std::move(*found));++result.reused_blocks;
     }else{
       BlockedDerivedSurfaceBuild block;
       block.snapshots.push_back(snapshot);block.vertices=snapshot.vertices;
@@ -2586,14 +2590,18 @@ RetainedPreparedSceneBuild prepare_retained_blocked_scene(
       rendered.triangle_vertices=std::move(prepared.triangle_vertices);
       next.push_back(std::move(rendered));++result.rebuilt_blocks;
     }
-    const auto& rendered=next.back().triangle_vertices;
-    result.scene.triangle_vertices.insert(result.scene.triangle_vertices.end(),
-        rendered.begin(),rendered.end());
+    if(assemble_flat_scene){
+      const auto& rendered=next.back().triangle_vertices;
+      result.scene.triangle_vertices.insert(result.scene.triangle_vertices.end(),
+          rendered.begin(),rendered.end());
+    }
   }
   cache.render_blocks=std::move(next);
-  append_screen_space_edges(result.scene,show_edges,false,show_faces,false);
-  result.scene.connected_surface_edges=
-      result.scene.surface_line_vertices.size()/2U;
+  if(assemble_flat_scene){
+    append_screen_space_edges(result.scene,show_edges,false,show_faces,false);
+    result.scene.connected_surface_edges=
+        result.scene.surface_line_vertices.size()/2U;
+  }
   return result;
 }
 
@@ -2605,8 +2613,48 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   const auto started=std::chrono::steady_clock::now();
   if(!(domain.world_extent>0.0)||!std::isfinite(domain.world_extent))
     throw std::invalid_argument("sparse world surface requires a finite domain");
-  const auto volume=tetra::reconstruct_world_conforming_volume(
-      directory,cache!=nullptr?&cache->closure:nullptr);
+  tetra::WorldBlockedConformingVolume volume;
+  if(cache){
+    if(cache->closure.closed_owners.size()!=directory.logical_owner_count()){
+      std::vector<tetra::WorldTetAddress> owners;
+      owners.reserve(directory.logical_owner_count());
+      directory.for_each_logical_owner(
+          [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
+      std::ranges::sort(owners);
+      const auto closed=tetra::close_world_conforming_cut(owners,&cache->closure);
+      if(closed!=owners)
+        throw std::logic_error(
+            "sparse surface directory is missing conforming closure owners");
+    }
+    volume=tetra::reconstruct_blocked_world_conforming_volume(
+        directory,cache->closure,&cache->conforming);
+  }else{
+    const auto flat=tetra::reconstruct_world_conforming_volume(directory);
+    volume.logical_owners=flat.logical_owners;
+    volume.transition_cells=flat.transition_cells;
+    volume.cells=flat.cells.size();volume.rebuilt_cells=flat.cells.size();
+    std::size_t begin{};
+    while(begin<flat.cells.size()){
+      auto block=std::make_shared<tetra::WorldConformingBlockSnapshot>();
+      block->id=tetra::hierarchy_block_id(
+          flat.cells[begin].logical_owner,directory.block_generations());
+      std::size_t end=begin+1U;
+      while(end<flat.cells.size()&&tetra::hierarchy_block_id(
+            flat.cells[end].logical_owner,directory.block_generations())==
+            block->id)++end;
+      block->cells.assign(flat.cells.begin()+static_cast<std::ptrdiff_t>(begin),
+                          flat.cells.begin()+static_cast<std::ptrdiff_t>(end));
+      bool first_owner=true;
+      tetra::WorldTetAddress previous_owner{};
+      for(const auto& cell:block->cells)
+        if(first_owner||cell.logical_owner!=previous_owner){
+          ++block->logical_owners;previous_owner=cell.logical_owner;
+          first_owner=false;
+        }
+      volume.blocks.push_back(std::move(block));++volume.rebuilt_blocks;
+      begin=end;
+    }
+  }
   const auto volume_reconstructed=std::chrono::steady_clock::now();
   constexpr std::uint64_t volume_hash_offset=1469598103934665603ULL;
   constexpr std::uint64_t volume_hash_prime=1099511628211ULL;
@@ -2618,7 +2666,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       conforming_volume_hash*=volume_hash_prime;
     }
   };
-  for(const auto& cell:volume.cells){
+  for(const auto& block:volume.blocks)for(const auto& cell:block->cells){
     auto keys=cell.vertices;std::ranges::sort(keys);
     hash_bytes(&cell.logical_owner,sizeof(cell.logical_owner));
     hash_bytes(keys.data(),sizeof(keys));
@@ -2668,10 +2716,6 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   }
   if(cache)for(const auto& previous:cache->hierarchy)
     if(!current_ids.contains(previous.id))removed_blocks.insert(previous.id);
-  std::vector<tetra::HierarchyBlockId> cell_blocks(volume.cells.size());
-  for(std::size_t index=0;index<volume.cells.size();++index)
-    cell_blocks[index]=tetra::hierarchy_block_id(
-        volume.cells[index].logical_owner,directory.block_generations());
   std::unordered_set<tetra::WorldVertexKey,decltype(vertex_hash)>
       changed_vertices(0U,vertex_hash);
   if(cache)for(const auto& snapshot:cache->snapshots)
@@ -2682,25 +2726,26 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   const auto expand_shared_blocks=[&](auto& blocks,unsigned int rings){
     for(unsigned int ring=0;ring<rings;++ring){
       changed_vertices.clear();
-      for(std::size_t index=0;index<volume.cells.size();++index)
-        if(blocks.contains(cell_blocks[index]))
-          changed_vertices.insert(volume.cells[index].vertices.begin(),
-                                  volume.cells[index].vertices.end());
+      for(const auto& block:volume.blocks)if(blocks.contains(block->id))
+        for(const auto& cell:block->cells)
+          changed_vertices.insert(cell.vertices.begin(),cell.vertices.end());
       const auto before=blocks.size();
-      for(std::size_t index=0;index<volume.cells.size();++index)
-        if(!blocks.contains(cell_blocks[index])&&
-           std::ranges::any_of(volume.cells[index].vertices,[&](const auto& key){
-             return changed_vertices.contains(key);}))
-          blocks.insert(cell_blocks[index]);
+      for(const auto& block:volume.blocks)
+        if(!blocks.contains(block->id)&&std::ranges::any_of(
+             block->cells,[&](const auto& cell){return std::ranges::any_of(
+               cell.vertices,[&](const auto& key){
+                 return changed_vertices.contains(key);});}))
+          blocks.insert(block->id);
       if(blocks.size()==before)break;
     }
   };
   if(cache){
     if(!changed_vertices.empty())
-      for(std::size_t index=0;index<volume.cells.size();++index)
-        if(std::ranges::any_of(volume.cells[index].vertices,[&](const auto& key){
-             return changed_vertices.contains(key);}))
-          changed_blocks.insert(cell_blocks[index]);
+      for(const auto& block:volume.blocks)
+        if(std::ranges::any_of(block->cells,[&](const auto& cell){
+             return std::ranges::any_of(cell.vertices,[&](const auto& key){
+               return changed_vertices.contains(key);});}))
+          changed_blocks.insert(block->id);
     expand_shared_blocks(changed_blocks,optimize?
         surface_optimizer_dependency_halo_rings:1U);
   }else for(const auto id:current_ids)changed_blocks.insert(id);
@@ -2722,18 +2767,20 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   };
   std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> vertices;
   std::vector<KeyTriangle> triangles;
-  triangles.reserve(volume.cells.size()*2U);
+  triangles.reserve(volume.cells*2U);
   std::size_t reused_intersections{},computed_intersections{};
   const auto cross=[](tetra::Vec3 a,tetra::Vec3 b){return tetra::Vec3{
       a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return
       a.x*b.x+a.y*b.y+a.z*b.z;};
-  for(std::size_t cell_index=0;cell_index<volume.cells.size();++cell_index){
-    if((cell_index&255U)==0U&&cancellation.stop_requested())
+  std::size_t cell_index{};
+  for(const auto& volume_block:volume.blocks){
+    if(cache&&!changed_blocks.contains(volume_block->id)){
+      cell_index+=volume_block->cells.size();continue;
+    }
+    for(const auto& cell:volume_block->cells){
+    if((cell_index++&255U)==0U&&cancellation.stop_requested())
       throw std::runtime_error("sparse world surface build canceled");
-    const auto& cell=volume.cells[cell_index];
-    if(cache&&!changed_blocks.contains(cell_blocks[cell_index]))
-      continue;
     std::array<tetra::Vec3,4> points{};
     std::array<double,4> distances{};
     for(std::size_t corner=0;corner<4U;++corner){
@@ -2787,6 +2834,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     for(std::size_t index=1U;index+1U<crossing_count;++index)
       triangles.push_back({{{crossings[0].key,crossings[index].key,
                              crossings[index+1U].key}},cell.logical_owner});
+    }
   }
   const auto extracted=std::chrono::steady_clock::now();
 
@@ -2862,18 +2910,15 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   result.metrics.block_generations=directory.block_generations();
   result.metrics.source_vertices=result.vertices.size();
   result.metrics.source_triangles=result.triangles.size();
-  result.metrics.conforming_cells=volume.cells.size();
+  result.metrics.conforming_cells=volume.cells;
   result.metrics.transition_cells=volume.transition_cells;
   result.metrics.conforming_volume_hash=conforming_volume_hash;
   result.metrics.reused_intersections=reused_intersections;
   result.metrics.computed_intersections=computed_intersections;
   result.metrics.reused_surface_blocks=cache?result.snapshots.size()-blocks.size():0U;
   result.metrics.rebuilt_surface_blocks=blocks.size();
-  for(std::size_t index=0;index<volume.cells.size();++index){
-    if(cache&&!changed_blocks.contains(cell_blocks[index]))
-      ++result.metrics.reused_conforming_cells;
-    else ++result.metrics.rebuilt_conforming_cells;
-  }
+  result.metrics.reused_conforming_cells=volume.reused_cells;
+  result.metrics.rebuilt_conforming_cells=volume.rebuilt_cells;
   result.metrics.surface_blocks=result.snapshots.size();
   result.metrics.total_core_vertices=result.vertices.size();
   result.metrics.total_patch_vertices=result.vertices.size();
@@ -2897,6 +2942,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       }
     }else cache->intersections=result.vertices;
     cache->hierarchy=std::move(hierarchy);
+    cache->conforming=std::move(volume);
     cache->snapshots=result.snapshots;
   }
   const auto assembled=std::chrono::steady_clock::now();
@@ -4243,7 +4289,6 @@ void SurfaceHostStagingStorage::stage(
     const SurfaceDrawChunkStorage& source,
     std::span<const SceneVertex> logical_vertices,
     tetra::GeometryExecutor* executor) {
-  const auto start=std::chrono::steady_clock::now();
   if(source.chunk_capacity()!=triangle_chunk_capacity_)
     throw std::invalid_argument(
         "surface host staging capacity differs from its source chunks");
@@ -4272,36 +4317,90 @@ void SurfaceHostStagingStorage::stage(
     throw std::invalid_argument(
         "surface host staging source order leaves unmatched vertices");
 
+  std::vector<SourceView> sources;
+  sources.reserve(source.chunks().size());
+  logical_vertex_offset=0U;
+  for(const auto& chunk:source.chunks()){
+    const auto vertex_count=chunk.triangle_count*3U;
+    sources.push_back({
+        .key={.kind=SurfaceHostDrawRange::SourceKind::draw_chunk,
+              .arena_slot=chunk.arena_slot},
+        .content_revision=chunk.content_revision,
+        .vertices=logical_vertices.subspan(logical_vertex_offset,vertex_count)});
+    logical_vertex_offset+=vertex_count;
+  }
+  stage_sources(sources,executor);
+}
+
+void SurfaceHostStagingStorage::stage_world_render_blocks(
+    std::span<const SparseWorldSurfaceCache::RenderBlock> blocks,
+    tetra::GeometryExecutor* executor) {
+  std::vector<SourceView> sources;
+  std::size_t count{};
+  for(const auto& block:blocks){
+    if(block.surface_payload_hash==0U||block.triangle_vertices.size()%3U!=0U)
+      throw std::invalid_argument("world render block is not triangle aligned");
+    count+=(block.triangle_vertices.size()+vertex_slot_capacity()-1U)/
+        vertex_slot_capacity();
+  }
+  sources.reserve(count);
+  for(const auto& block:blocks){
+    std::size_t begin{};std::uint32_t part{};
+    while(begin<block.triangle_vertices.size()){
+      const auto remaining=block.triangle_vertices.size()-begin;
+      auto vertex_count=std::min(remaining,vertex_slot_capacity());
+      vertex_count-=vertex_count%3U;
+      if(vertex_count==0U||part==std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("world render block part overflow");
+      sources.push_back({
+          .key={.kind=SurfaceHostDrawRange::SourceKind::world_render_block,
+                .block=block.id,.part=part++},
+          .content_revision=block.surface_payload_hash,
+          .vertices=std::span(block.triangle_vertices).subspan(
+              begin,vertex_count)});
+      begin+=vertex_count;
+    }
+  }
+  stage_sources(sources,executor);
+}
+
+void SurfaceHostStagingStorage::stage_sources(
+    std::span<const SourceView> sources,tetra::GeometryExecutor* executor) {
+  const auto start=std::chrono::steady_clock::now();
+
   SurfaceHostStagingMetrics candidate_metrics;
   candidate_metrics.publication_generation=metrics_.publication_generation+1U;
   if(candidate_metrics.publication_generation==0U)
     candidate_metrics.publication_generation=1U;
-  candidate_metrics.source_chunks=source.chunks().size();
+  candidate_metrics.source_chunks=sources.size();
   std::vector<SurfaceHostFreeRange> candidate_free_ranges=free_ranges_;
   std::vector<bool> retained_ranges(ranges_.size(),false);
   range_scratch_.clear();
-  range_scratch_.reserve(std::max(range_scratch_.capacity(),source.chunks().size()));
+  range_scratch_.reserve(std::max(range_scratch_.capacity(),sources.size()));
   copy_scratch_.clear();
-  copy_scratch_.reserve(std::max(copy_scratch_.capacity(),source.chunks().size()));
-  logical_vertex_offset=0U;
-  for(const auto& chunk:source.chunks()){
-    const auto vertex_count=chunk.triangle_count*3U;
-    const auto source_vertices=logical_vertices.subspan(
-        logical_vertex_offset,vertex_count);
+  copy_scratch_.reserve(std::max(copy_scratch_.capacity(),sources.size()));
+  using LookupKey=std::tuple<SurfaceHostDrawRange::SourceKey,std::uint64_t,
+                             std::size_t>;
+  std::map<LookupKey,std::size_t> previous;
+  for(std::size_t index=0;index<ranges_.size();++index)
+    previous.emplace(LookupKey{ranges_[index].source,
+        ranges_[index].source_content_revision,
+        ranges_[index].triangle_vertex_count},index);
+  for(std::size_t source_index=0;source_index<sources.size();++source_index){
+    const auto& source=sources[source_index];
+    const auto vertex_count=source.vertices.size();
+    if(vertex_count==0U||vertex_count>vertex_slot_capacity()||
+       vertex_count%3U!=0U||source.content_revision==0U)
+      throw std::invalid_argument("surface host source range is invalid");
     std::size_t retained_index=ranges_.size();
-    for(std::size_t index=0;index<ranges_.size();++index){
-      const auto& range=ranges_[index];
-      if(range.source_arena_slot==chunk.arena_slot&&
-         range.source_content_revision==chunk.content_revision&&
-         range.triangle_vertex_count==vertex_count&&
-         (source_vertices.empty()||std::memcmp(
-             source_vertices.data(),
-             arena_.data()+static_cast<std::ptrdiff_t>(
-                 range.triangle_vertex_begin),
-             source_vertices.size_bytes())==0)){
-        retained_index=index;
-        break;
-      }
+    const auto found=previous.find(
+        LookupKey{source.key,source.content_revision,vertex_count});
+    if(found!=previous.end()&&!retained_ranges[found->second]){
+      const auto& range=ranges_[found->second];
+      if(std::memcmp(source.vertices.data(),
+           arena_.data()+static_cast<std::ptrdiff_t>(range.triangle_vertex_begin),
+           source.vertices.size_bytes())==0)
+        retained_index=found->second;
     }
     std::size_t host_slot{};
     std::uint64_t host_content_revision{};
@@ -4316,7 +4415,7 @@ void SurfaceHostStagingStorage::stage(
       if(next_content_revision_==0U)next_content_revision_=1U;
       const auto destination=host_slot*vertex_slot_capacity();
       copy_scratch_.push_back({
-          .source_vertex_begin=logical_vertex_offset,
+          .source_index=source_index,
           .destination_vertex_begin=destination,
           .vertex_count=vertex_count});
       ++candidate_metrics.dirty_ranges;
@@ -4328,14 +4427,13 @@ void SurfaceHostStagingStorage::stage(
     const auto begin=host_slot*vertex_slot_capacity();
     range_scratch_.push_back({
         .host_slot=host_slot,
-        .source_arena_slot=chunk.arena_slot,
-        .source_content_revision=chunk.content_revision,
+        .source=source.key,
+        .source_content_revision=source.content_revision,
         .host_content_revision=host_content_revision,
         .triangle_vertex_begin=begin,
         .triangle_vertex_count=vertex_count,
         .wire_vertex_begin=begin,
         .wire_vertex_count=vertex_count});
-    logical_vertex_offset+=vertex_count;
   }
 
   const auto copy_job=[&](std::size_t begin,std::size_t end,std::stop_token stop){
@@ -4343,8 +4441,7 @@ void SurfaceHostStagingStorage::stage(
       if(stop.stop_requested())return;
       const auto& copy=copy_scratch_[index];
       std::copy_n(
-          logical_vertices.begin()+static_cast<std::ptrdiff_t>(
-              copy.source_vertex_begin),
+          sources[copy.source_index].vertices.begin(),
           copy.vertex_count,
           arena_.begin()+static_cast<std::ptrdiff_t>(
               copy.destination_vertex_begin));
@@ -4373,6 +4470,46 @@ void SurfaceHostStagingStorage::stage(
     ++candidate_metrics.released_slots;
   }
   normalize_free_ranges(candidate_free_ranges);
+  std::size_t candidate_free_slots{};
+  for(const auto range:candidate_free_ranges)
+    candidate_free_slots+=range.slot_count;
+  const auto retained_slots=arena_.size()/vertex_slot_capacity();
+  // A large camera jump can replace nearly every range. Transactional
+  // staging necessarily allocates the replacement before releasing the old
+  // front, but keeping those released slots forever makes repeated
+  // walk/teleport/reversal sequences grow toward the sum of every front.
+  // Compact only large, badly fragmented arenas; ordinary local movement
+  // keeps stable slots and therefore preserves partial-upload locality.
+  if(retained_slots>4096U&&
+     candidate_free_slots>range_scratch_.size()/2U){
+    std::vector<SceneVertex> compacted(
+        range_scratch_.size()*vertex_slot_capacity());
+    for(std::size_t index=0;index<range_scratch_.size();++index){
+      auto& range=range_scratch_[index];
+      std::copy_n(arena_.begin()+static_cast<std::ptrdiff_t>(
+                      range.triangle_vertex_begin),
+                  range.triangle_vertex_count,
+                  compacted.begin()+static_cast<std::ptrdiff_t>(
+                      index*vertex_slot_capacity()));
+      range.host_slot=index;
+      range.triangle_vertex_begin=index*vertex_slot_capacity();
+      range.wire_vertex_begin=range.triangle_vertex_begin;
+      range.host_content_revision=next_content_revision_++;
+      if(next_content_revision_==0U)next_content_revision_=1U;
+    }
+    arena_.swap(compacted);
+    candidate_free_ranges.clear();
+    candidate_metrics.dirty_ranges=range_scratch_.size();
+    candidate_metrics.reused_ranges=0U;
+    candidate_metrics.staged_triangle_bytes=0U;
+    candidate_metrics.aliased_wire_bytes=0U;
+    for(const auto& range:range_scratch_){
+      candidate_metrics.staged_triangle_bytes+=
+          range.triangle_vertex_count*sizeof(SceneVertex);
+      candidate_metrics.aliased_wire_bytes+=
+          range.triangle_vertex_count*sizeof(SceneVertex);
+    }
+  }
   ranges_.swap(range_scratch_);
   free_ranges_.swap(candidate_free_ranges);
   candidate_metrics.active_ranges=ranges_.size();

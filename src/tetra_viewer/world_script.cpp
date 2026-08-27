@@ -160,6 +160,12 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"active_tetrahedra\":"<<diagnostics.active_tetrahedra
           <<",\"resident_bytes\":"<<diagnostics.resident_bytes
           <<",\"retained_cache_bytes\":"<<diagnostics.retained_cache_bytes
+          <<",\"retained_conforming_bytes\":"
+          <<diagnostics.retained_conforming_bytes
+          <<",\"retained_render_block_bytes\":"
+          <<diagnostics.retained_render_block_bytes
+          <<",\"retained_host_staging_bytes\":"
+          <<diagnostics.retained_host_staging_bytes
           <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
           <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
           <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds
@@ -185,6 +191,22 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.reused_render_blocks
           <<",\"rebuilt_render_blocks\":"
           <<diagnostics.rebuilt_render_blocks
+          <<",\"reused_conforming_blocks\":"
+          <<diagnostics.reused_conforming_blocks
+          <<",\"rebuilt_conforming_blocks\":"
+          <<diagnostics.rebuilt_conforming_blocks
+          <<",\"reused_conforming_cells\":"
+          <<diagnostics.reused_conforming_cells
+          <<",\"rebuilt_conforming_cells\":"
+          <<diagnostics.rebuilt_conforming_cells
+          <<",\"retained_render_ranges\":"
+          <<diagnostics.retained_render_ranges
+          <<",\"dirty_render_ranges\":"
+          <<diagnostics.dirty_render_ranges
+          <<",\"staged_render_bytes\":"
+          <<diagnostics.staged_render_bytes
+          <<",\"uploaded_render_bytes\":"
+          <<diagnostics.uploaded_render_bytes
           <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash
           <<",\"conforming_volume_hash\":"<<diagnostics.conforming_volume_hash
           <<",\"connected_surface_hash\":"<<diagnostics.connected_surface_hash

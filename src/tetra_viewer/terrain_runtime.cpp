@@ -365,10 +365,13 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_position_=camera_.position;
   auto initial=build_publication(profile_,field_,camera_,1U);
+  host_staging_.stage_world_render_blocks(initial.surface_cache.render_blocks);
+  finalize_render_front_metrics(initial.diagnostics);
   directory_=std::make_unique<tetra::WorldCutDirectory>(
       std::move(initial.checkpoint));
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
   surface_cache_=std::move(initial.surface_cache);
+  flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
 }
 
@@ -391,7 +394,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   auto prepared=prepare_retained_blocked_scene(
       surface,field,profile.show_faces,profile.show_surface_edges,
       {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)},
-      surface_cache);
+      surface_cache,false);
   auto scene=std::move(prepared.scene);
 
   TerrainRuntimeDiagnostics diagnostics;
@@ -416,14 +419,17 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.closure.closed_owners.capacity()*
           sizeof(tetra::WorldTetAddress)+
       surface_cache.closure.green_masks.capacity()*sizeof(std::uint8_t);
+  diagnostics.retained_cache_bytes+=surface_cache.conforming.retained_bytes;
+  diagnostics.retained_conforming_bytes=surface_cache.conforming.retained_bytes;
   for(const auto& snapshot:surface_cache.snapshots)
     diagnostics.retained_cache_bytes+=
         snapshot.vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
         snapshot.triangles.capacity()*sizeof(tetra::WorldSurfaceTriangle)+
         snapshot.dependency_blocks.capacity()*sizeof(tetra::HierarchyBlockId);
   for(const auto& block:surface_cache.render_blocks)
-    diagnostics.retained_cache_bytes+=
+    diagnostics.retained_render_block_bytes+=
         block.triangle_vertices.capacity()*sizeof(SceneVertex);
+  diagnostics.retained_cache_bytes+=diagnostics.retained_render_block_bytes;
   diagnostics.resident_bytes=directory.metrics().retained_bytes+
       diagnostics.retained_cache_bytes;
   diagnostics.hierarchy_blocks=directory.metrics().blocks;
@@ -434,6 +440,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.computed_intersections;
   diagnostics.reused_render_blocks=prepared.reused_blocks;
   diagnostics.rebuilt_render_blocks=prepared.rebuilt_blocks;
+  diagnostics.reused_conforming_blocks=surface_cache.conforming.reused_blocks;
+  diagnostics.rebuilt_conforming_blocks=surface_cache.conforming.rebuilt_blocks;
+  diagnostics.reused_conforming_cells=surface_cache.conforming.reused_cells;
+  diagnostics.rebuilt_conforming_cells=surface_cache.conforming.rebuilt_cells;
   diagnostics.world_extent=profile.domain.world_extent;
   diagnostics.cut_selection_milliseconds=selection.metrics.selection_milliseconds;
   diagnostics.cut_closure_milliseconds=selection.metrics.closure_milliseconds;
@@ -453,7 +463,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   constexpr std::uint64_t prime=1099511628211ULL;
   diagnostics.conforming_volume_hash=surface.metrics.conforming_volume_hash;
   diagnostics.render_hash=offset;
-  for(const auto& vertex:scene.triangle_vertices){
+  for(const auto& block:surface_cache.render_blocks)
+  for(const auto& vertex:block.triangle_vertices){
     const auto* bytes=reinterpret_cast<const unsigned char*>(&vertex);
     for(std::size_t index=0;index<sizeof(vertex);++index){
       diagnostics.render_hash^=bytes[index];diagnostics.render_hash*=prime;
@@ -471,6 +482,33 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   return {directory.checkpoint(),std::move(scene),diagnostics,
           std::move(surface_cache)};
+}
+
+const PreparedScene& BlockedTerrainRuntime::scene() const {
+  if(!flat_scene_current_){
+    scene_.triangle_vertices=assemble_surface_host_staging(host_staging_);
+    flat_scene_current_=true;
+  }
+  return scene_;
+}
+
+void BlockedTerrainRuntime::finalize_render_front_metrics(
+    TerrainRuntimeDiagnostics& diagnostics) {
+  const auto& host=host_staging_.metrics();
+  diagnostics.retained_render_ranges=host.reused_ranges;
+  diagnostics.dirty_render_ranges=host.dirty_ranges;
+  diagnostics.staged_render_bytes=host.staged_triangle_bytes;
+  diagnostics.retained_host_staging_bytes=host.retained_bytes;
+  upload_planner_.prepare(host_staging_,simulated_device_vertex_capacity_);
+  const auto upload=upload_planner_.metrics();
+  diagnostics.uploaded_render_bytes=upload.uploaded_bytes;
+  if(upload.full_reallocation)
+    simulated_device_vertex_capacity_=std::max({
+        upload.required_vertex_capacity,
+        simulated_device_vertex_capacity_*2U,std::size_t{4096U}});
+  upload_planner_.commit();
+  diagnostics.retained_cache_bytes+=host.retained_bytes;
+  diagnostics.resident_bytes+=host.retained_bytes;
 }
 
 void BlockedTerrainRuntime::submit() {
@@ -499,9 +537,18 @@ bool BlockedTerrainRuntime::update() {
   if(future_.valid()&&future_.wait_for(std::chrono::seconds(0))==
                          std::future_status::ready){
     auto publication=future_.get();
-    const auto retained=directory_->adopt_retained(
-        std::move(publication.checkpoint));
+    host_staging_.stage_world_render_blocks(
+        publication.surface_cache.render_blocks);
+    tetra::WorldDirectoryUpdate retained;
+    try{
+      retained=directory_->adopt_retained(std::move(publication.checkpoint));
+    }catch(...){
+      host_staging_.stage_world_render_blocks(surface_cache_.render_blocks);
+      throw;
+    }
+    finalize_render_front_metrics(publication.diagnostics);
     scene_=std::move(publication.scene);
+    flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
     diagnostics_=publication.diagnostics;
     diagnostics_.reused_hierarchy_blocks=retained.metrics.reused_blocks;

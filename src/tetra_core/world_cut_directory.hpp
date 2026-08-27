@@ -123,6 +123,31 @@ struct WorldConformingVolume {
   std::size_t logical_owners{};
 };
 
+struct WorldConformingBlockSnapshot {
+  HierarchyBlockId id{};
+  std::uint64_t owner_mask_hash{};
+  std::vector<std::uint8_t> green_masks;
+  std::vector<WorldConformingCell> cells;
+  std::size_t transition_cells{};
+  std::size_t logical_owners{};
+};
+
+// Immutable block snapshots let a warm camera update retain complete
+// conforming-cell arrays. The owner/mask signature includes restricted-green
+// state, so a hierarchy block is rebuilt when a neighbouring split changes
+// one of its transition stencils even if its own logical owners are unchanged.
+struct WorldBlockedConformingVolume {
+  std::vector<std::shared_ptr<const WorldConformingBlockSnapshot>> blocks;
+  std::size_t cells{};
+  std::size_t transition_cells{};
+  std::size_t logical_owners{};
+  std::size_t reused_blocks{};
+  std::size_t rebuilt_blocks{};
+  std::size_t reused_cells{};
+  std::size_t rebuilt_cells{};
+  std::size_t retained_bytes{};
+};
+
 // Flat, allocation-free-per-entry memoization for exact hierarchy geometry
 // used by repeated conformity closure. Camera movement revisits almost all of
 // the same owners, so retaining these keys avoids replaying every root path.
@@ -157,6 +182,11 @@ struct WorldConformingClosureCache {
 [[nodiscard]] WorldConformingVolume reconstruct_world_conforming_volume(
     const WorldCutDirectory& directory,
     const WorldConformingClosureCache* closure_cache=nullptr);
+[[nodiscard]] WorldBlockedConformingVolume
+reconstruct_blocked_world_conforming_volume(
+    const WorldCutDirectory& directory,
+    const WorldConformingClosureCache& closure_cache,
+    const WorldBlockedConformingVolume* retained=nullptr);
 // Promotes only owners that cannot be represented by a restricted green
 // stencil, yielding the smallest conforming red-green superset of a sparse cut.
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(

@@ -2424,6 +2424,11 @@ Research should change the design only through concrete consequences that can be
 - Generalized XFEM and adaptive virtual-node cutting strengthen the possibility of making a discontinuity logically real before full retetrahedralization;
 - Mesh Field Theory strengthens the separation between topological interconnection and the geometry/material/dissipation laws carried by that interconnection;
 - SPGrid/fVDB strengthen sparse per-level/per-channel storage rather than one pointer tree;
+- retained world publication now validates that separation concretely:
+  immutable conforming arrays remain hierarchy-block keyed, while a distinct
+  ordered render-range front preserves unchanged allocations and uploads only
+  dirty bytes; a flat global scene is an on-demand oracle rather than runtime
+  authority;
 - graphics subdivision-artifact work makes aesthetics a first-class subdivision criterion;
 - NOWHERE is a warning against one universal mutable tetrahedral graph and uncontrolled engine/tool scope.
 

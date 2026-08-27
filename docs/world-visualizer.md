@@ -993,6 +993,17 @@ copy only dirty render ranges. Slot reuse is deferred until the GPU fence
 protecting the previous draw has completed; routine publication must not call
 `vkDeviceWaitIdle`.
 
+The first retained implementation is now in place for the existing blocked
+world runtime. Conforming cells are immutable shared arrays keyed by hierarchy
+block and by the exact logical-owner/restricted-green state. Render blocks are
+retained independently, divided into 16-triangle host slots, and published as
+an ordered draw-range table. Ordinary movement copies and uploads only changed
+ranges; an explicit compaction fallback repacks heavily fragmented fronts
+after large far/reversal/teleport replacements. The old flat scene is assembled
+only when a capture or test asks for the oracle. GPU-fence ownership and
+deferred reuse remain the next renderer-specific step; the current Vulkan
+handoff still idles before modifying a live device allocation.
+
 The renderer needs:
 
 - camera-relative vertex generation or a hierarchy-block-origin draw transform;
@@ -1315,7 +1326,7 @@ flat normals.
       boundaries.
 - [ ] Replace routine `vkDeviceWaitIdle` publication with fence-tracked staging
       and deferred slot reuse.
-- [ ] Upload only dirty render-chunk ranges.
+- [x] Upload only dirty render-chunk ranges.
 - [ ] Cull render chunks or their conservative hierarchy bounds against the
       current camera frustum.
 - [ ] Publish only complete render fronts compatible with one adopted world
