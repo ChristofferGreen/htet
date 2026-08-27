@@ -1119,6 +1119,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
   diagnostics.render_triangles=surface.triangles.size();
   diagnostics.work_units=completed_work_units;
+  std::size_t retained_certificate_bytes=
+      surface_cache.surface_certificate_blocks.capacity()*
+      sizeof(decltype(surface_cache.surface_certificate_blocks)::value_type);
+  for(const auto& block:surface_cache.surface_certificate_blocks)
+    retained_certificate_bytes+=sizeof(*block)+block->certificates.capacity()*
+        sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate);
   diagnostics.retained_cache_bytes=
       surface_cache.intersections.capacity()*sizeof(tetra::WorldSurfaceVertex)+
       surface_cache.optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
@@ -1131,8 +1137,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.closure.promotion_proofs.capacity()*
           sizeof(tetra::WorldClosurePromotionProof)+
       surface_cache.closure.last_dependency_retained_bytes+
-      surface_cache.surface_certificates.capacity()*
-          sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
+      retained_certificate_bytes+
       surface_cache.hierarchy.capacity()*
           sizeof(SparseWorldSurfaceCache::HierarchySignature)+
       surface_cache.snapshots.capacity()*
@@ -1148,9 +1153,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.closure.green_masks.capacity()*sizeof(std::uint8_t);
   diagnostics.retained_cache_bytes+=surface_cache.conforming.retained_bytes;
   diagnostics.retained_conforming_bytes=surface_cache.conforming.retained_bytes;
-  diagnostics.retained_surface_certificate_bytes=
-      surface_cache.surface_certificates.capacity()*
-      sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate);
+  diagnostics.retained_surface_certificate_bytes=retained_certificate_bytes;
   diagnostics.summary_hierarchy_blocks=directory.metrics().summary_blocks;
   diagnostics.surface_hierarchy_blocks=directory.metrics().surface_blocks;
   diagnostics.volume_hierarchy_blocks=directory.metrics().volume_blocks;

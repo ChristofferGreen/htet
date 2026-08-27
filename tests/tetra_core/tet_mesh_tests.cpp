@@ -3364,6 +3364,13 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   // The production surface path expands only certified surface candidates and
   // does not allocate a conforming volume when no gameplay pin requests one.
   tetra_viewer::SparseWorldSurfaceCache direct_cache;
+  const auto certificate_count=[](
+      const tetra_viewer::SparseWorldSurfaceCache& cached){
+    std::size_t result{};
+    for(const auto& block:cached.surface_certificate_blocks)
+      result+=block->certificates.size();
+    return result;
+  };
   const auto direct=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct.canonical_surface_hash==surface.canonical_surface_hash);
@@ -3373,14 +3380,14 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(direct.metrics.surface_candidate_owners<
         direct_cache.closure.closed_owners.size());
   CHECK(direct.metrics.green_cells_enumerated<direct.metrics.conforming_cells);
-  CHECK(direct_cache.surface_certificates.size()==
+  CHECK(certificate_count(direct_cache)==
         direct_cache.closure.closed_owners.size());
   const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);
   CHECK(direct_repeated.metrics.rebuilt_surface_certificates==0U);
   CHECK(direct_repeated.metrics.reused_surface_certificates==
-        direct_cache.surface_certificates.size());
+        certificate_count(direct_cache));
   CHECK(direct_repeated.metrics.surface_classification_samples==0U);
 
   // Surface cost and output stay fixed while gameplay residency promotes and
@@ -3412,7 +3419,7 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   const auto changed_field=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,changed_sphere,false,{},&direct_cache,{},true,false);
   CHECK(changed_field.metrics.rebuilt_surface_certificates==
-        direct_cache.surface_certificates.size());
+        certificate_count(direct_cache));
   CHECK(changed_field.canonical_surface_hash!=direct.canonical_surface_hash);
 
   const auto flat_scene=tetra_viewer::prepare_blocked_derived_surface_scene(
@@ -3490,6 +3497,11 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
         optimized_cache.intersections.size());
   CHECK(optimized_cache.optimizer_neighbor_offsets.size()==
         optimized_cache.intersections.size()+1U);
+  const auto optimized_repeated=tetra_viewer::build_sparse_world_derived_surface(
+      changed,domain,sphere,true,{},&optimized_cache);
+  CHECK(optimized_repeated.canonical_surface_hash==
+        optimized_cold.canonical_surface_hash);
+  CHECK(optimized_repeated.metrics.rebuilt_surface_blocks==0U);
 }
 
 TEST_CASE("world cut child publication and eviction atomically reveal coarse ancestors") {

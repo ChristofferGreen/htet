@@ -799,6 +799,11 @@ struct SparseWorldSurfaceCache {
     bool has_grande_signs{};
     auto operator<=>(const SurfaceOwnerCertificate&) const = default;
   };
+  struct SurfaceCertificateBlock {
+    tetra::HierarchyBlockId id{};
+    std::vector<SurfaceOwnerCertificate> certificates;
+    std::size_t candidate_owners{};
+  };
   std::vector<tetra::WorldSurfaceVertex> intersections;
   // Exact retained optimizer graph, indexed by the sorted intersection keys.
   // Incident hashes detect topology changes at one vertex; the CSR one-ring
@@ -807,7 +812,7 @@ struct SparseWorldSurfaceCache {
   std::vector<std::uint32_t> optimizer_neighbor_offsets;
   std::vector<std::uint32_t> optimizer_neighbors;
   std::vector<HierarchySignature> hierarchy;
-  std::vector<SurfaceOwnerCertificate> surface_certificates;
+  std::vector<std::shared_ptr<SurfaceCertificateBlock>> surface_certificate_blocks;
   std::uint64_t surface_field_signature{};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;

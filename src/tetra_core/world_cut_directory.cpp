@@ -1523,7 +1523,7 @@ void publish_closure_dependency_directory(
     WorldConformingClosureCache& cache,
     std::span<const WorldTetAddress> owners,
     std::span<const std::array<WorldVertexKey,4>> owner_keys,
-    std::stop_token cancellation) {
+    std::stop_token cancellation,unsigned int block_generations) {
   const auto started=std::chrono::steady_clock::now();
   if(owners.size()!=owner_keys.size())
     throw std::invalid_argument(
@@ -1548,9 +1548,10 @@ void publish_closure_dependency_directory(
   for(std::size_t begin=0;begin<owners.size();){
     if(cancellation.stop_requested())
       throw std::runtime_error("world conforming closure canceled");
-    const auto id=hierarchy_block_id(owners[begin],3U);
+    const auto id=hierarchy_block_id(owners[begin],block_generations);
     std::size_t end=begin+1U;
-    while(end<owners.size()&&hierarchy_block_id(owners[end],3U)==id)++end;
+    while(end<owners.size()&&
+          hierarchy_block_id(owners[end],block_generations)==id)++end;
     const auto old=retained.find(id);
     const bool identical=old!=retained.end()&&
         old->second->owners.size()==end-begin&&
@@ -2708,7 +2709,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         proof_nodes=std::move(compact);
         auto published_closed_owners=owners;
         publish_closure_dependency_directory(
-            *cache,owners,owner_keys,cancellation);
+            *cache,owners,owner_keys,cancellation,block_generations);
         cache->requested_owners=std::move(requested_owners);
         cache->requested_split_ancestors=std::move(requested_split_ancestors);
         cache->vertex_depths=std::move(vertex_depths);

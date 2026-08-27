@@ -86,6 +86,15 @@ redundant vertex-index reconstruction while preserving the exact historical
 surface hash. The latter saves roughly 15--45 ms on measured local moves, but
 neither change alone closes the architectural gap.
 
+Surface-crossing certificates are now retained as immutable hierarchy-block
+arrays aligned with the closure dependency directory rather than as one flat
+global array. The production walking and near updates rebuild only dirty
+certificate blocks, preserve the qualified hashes and zero-work identical-call
+path, and save roughly 12--14 ms of classification in release measurements.
+The directory costs about 3.1 MB at the current production cut; its main value
+is carrying exact dirty ownership into later bounded publications, not claiming
+that this modest isolated saving reaches the interactive target.
+
 ## Technology choices
 
 - C++23 where supported.

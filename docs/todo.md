@@ -44,6 +44,10 @@
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.
+  - [x] Store field-crossing certificates in immutable hierarchy-block arrays
+        keyed with the closure dependency directory. Local walking updates now
+        reuse roughly 718,000 certificates, rebuild about 20,000, and reduce
+        classification by 12--14 ms while preserving exact surface hashes.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.
