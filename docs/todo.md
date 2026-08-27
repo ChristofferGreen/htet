@@ -57,7 +57,9 @@ not the active queue.
       reference counted: walking updates 4,930 ancestor entities for 24,624
       changed leaves instead of replaying 565,451 root paths. The remaining
       work is incremental removal/re-derivation of green-mask dependencies so
-      unchanged final owners are not evaluated.
+      unchanged final owners are not evaluated. Exact old/new comparison now
+      measures that target: walking changes 20,176 of 737,938 final masks
+      (2.7%), and near motion changes 18,884 of 741,900 (2.5%).
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate

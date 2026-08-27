@@ -2984,8 +2984,8 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK(cache.requested_owners==raw);
   CHECK(cache.last_changed_requested_owners==9U);
   CHECK(cache.last_split_ancestor_updates==1U);
-  CHECK(cache.last_reused_masks==0U);
-  CHECK(cache.last_rebuilt_masks==cache.green_masks.size());
+  CHECK(cache.last_reused_masks==cache.green_masks.size());
+  CHECK(cache.last_rebuilt_masks==0U);
   CHECK(cache.geometry.size()<=cache.maximum_entries);
 }
 

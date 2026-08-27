@@ -1717,21 +1717,31 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     for(const auto count:mask_promotions)promote_count+=count;
     if(promote_count==0U){
       if(cache!=nullptr){
-        cache->requested_owners=std::vector<WorldTetAddress>(
-            logical_owners.begin(),logical_owners.end());
-        std::ranges::sort(cache->requested_owners);
-        cache->requested_split_ancestors=std::move(requested_split_ancestors);
-        cache->closed_owners=owners;
-        cache->green_masks.assign(owners.size(),0U);
+        std::vector<std::uint8_t> new_masks(owners.size(),0U);
         for(std::size_t owner_index=0;owner_index<owners.size();++owner_index){
           const auto& keys=owner_keys[owner_index];
           for(std::size_t edge=0;edge<edges.size();++edge)
             if(midpoints.contains(world_edge_key(
                   keys[edges[edge][0]],keys[edges[edge][1]])))
-              cache->green_masks[owner_index]|=
+              new_masks[owner_index]|=
                   static_cast<std::uint8_t>(1U<<edge);
         }
-        cache->last_rebuilt_masks=cache->green_masks.size();
+        std::size_t previous{},current{};
+        while(previous<cache->closed_owners.size()&&current<owners.size()){
+          if(cache->closed_owners[previous]<owners[current]){++previous;continue;}
+          if(owners[current]<cache->closed_owners[previous]){++current;continue;}
+          cache->last_reused_masks+=
+              cache->green_masks.size()>previous&&
+              cache->green_masks[previous]==new_masks[current];
+          ++previous;++current;
+        }
+        cache->last_rebuilt_masks=owners.size()-cache->last_reused_masks;
+        cache->requested_owners=std::vector<WorldTetAddress>(
+            logical_owners.begin(),logical_owners.end());
+        std::ranges::sort(cache->requested_owners);
+        cache->requested_split_ancestors=std::move(requested_split_ancestors);
+        cache->closed_owners=owners;
+        cache->green_masks=std::move(new_masks);
         cache->last_promoted_owners=promoted_owners;
       }
       return owners;

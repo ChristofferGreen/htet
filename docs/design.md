@@ -2537,6 +2537,11 @@ ancestor entities; the near move changed 24,336 of 570,197 leaves and touched
 4,875 ancestors. Far moves and reversals deliberately expand rather than
 pretending to be local. Green-mask fixed-point evaluation still traverses the
 final owner array, so this certificate is not yet the completed closure gate.
+Exact address-and-mask comparison now exposes the size of that remaining
+frontier without conflating evaluation with publication: walking retains
+717,762 of 737,938 masks and near motion retains 723,016 of 741,900. The next
+algorithm therefore has a concrete 2.7%/2.5% target for deletion and
+re-derivation rather than a guessed block halo.
 
 
 ---

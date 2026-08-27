@@ -1454,7 +1454,9 @@ surface construction with the old builder retained as its oracle.
       a reference-counted address certificate also limits walking's split-
       ancestor update to 4,930 entities for 24,624 changed leaves. Restricted-
       green supports still need deletion/re-derivation before unchanged final
-      owners can avoid evaluation.
+      owners can avoid evaluation. Exact completed-stream comparison shows the
+      useful frontier is only 20,176 of 737,938 masks for walking (2.7%) and
+      18,884 of 741,900 for near motion (2.5%).
 - [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.

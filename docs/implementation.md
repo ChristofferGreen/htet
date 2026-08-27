@@ -338,6 +338,13 @@ owners, changed requested owners, and updated split ancestors. Restricted-green
 mask supports still need a deletion/re-derivation frontier before untouched
 owners can avoid evaluation entirely.
 
+Closure diagnostics now compare the completed address/mask stream with the
+retained stream before publication. This is an exact equality certificate, not
+an estimate: walking retains 717,762 masks and changes 20,176 (2.7%), while the
+near move retains 723,016 and changes 18,884 (2.5%). These counts define the
+acceptance target for the pending dependency algorithm and prevent a broad
+spatial approximation from being reported as locality.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a
