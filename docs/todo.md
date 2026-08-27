@@ -66,6 +66,14 @@
           A 64-operation measurement still costs about 0.71 s, proving that
           smaller slices cannot pass until complete owner and surface streams
           become retained block transactions.
+    - [x] Stop materializing a complete owner-key array on proven sparse warm
+          closure updates. Derive exact dyadic keys only for touched owners,
+          retain the packed full-array fallback for cold/large transactions,
+          and bound the sparse ancestor spill cache. The 512-operation closure
+          falls from about 399 ms to 262 ms, total slice latency to about
+          683 ms, and memory high-water to about 501 MB with unchanged hashes.
+          Add an independent final-pose runtime oracle to the continuous
+          benchmark so coalesced-history locality errors cannot silently pass.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

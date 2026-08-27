@@ -437,6 +437,33 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     if(!diagnostics.converged||diagnostics.busy){
       errors<<"continuous world movement did not converge\n";return 1;
     }
+    const double settled_convergence_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-stopped).count();
+    // A coalesced motion history must settle to the same complete world as a
+    // fresh runtime asked for only the final pose. This catches locality bugs
+    // that per-slice warm/cold surface tests cannot observe.
+    auto oracle=make_production_terrain_runtime(production_world_profile());
+    oracle->set_camera(camera,true);
+    const auto oracle_deadline=
+        std::chrono::steady_clock::now()+std::chrono::seconds(30);
+    TerrainRuntimeDiagnostics oracle_diagnostics;
+    do{
+      static_cast<void>(oracle->update());
+      oracle_diagnostics=oracle->diagnostics();
+      if(oracle_diagnostics.converged&&!oracle_diagnostics.busy)break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }while(std::chrono::steady_clock::now()<oracle_deadline);
+    if(!oracle_diagnostics.converged||oracle_diagnostics.busy){
+      errors<<"continuous world final-pose oracle did not converge\n";return 1;
+    }
+    if(diagnostics.hierarchy_hash!=oracle_diagnostics.hierarchy_hash||
+       diagnostics.connected_surface_hash!=
+           oracle_diagnostics.connected_surface_hash||
+       diagnostics.render_hash!=oracle_diagnostics.render_hash){
+      errors<<"continuous world movement disagrees with final-pose oracle\n";
+      return 1;
+    }
     output<<"{\"event\":\"world_continuous_movement\""
           <<",\"movement_ms\":"<<std::chrono::duration<double,std::milli>(
               stopped-started).count()
@@ -445,8 +472,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"maximum_publication_interval_ms\":"
           <<maximum_publication_interval
           <<",\"settled_convergence_ms\":"
-          <<std::chrono::duration<double,std::milli>(
-              std::chrono::steady_clock::now()-stopped).count()
+          <<settled_convergence_milliseconds
           <<",\"maximum_camera_lag\":"<<maximum_camera_lag
           <<",\"publications\":"<<publications
           <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash

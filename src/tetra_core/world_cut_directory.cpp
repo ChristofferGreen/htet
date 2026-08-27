@@ -1739,12 +1739,8 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
 void publish_closure_dependency_directory(
     WorldConformingClosureCache& cache,
     std::span<const WorldTetAddress> owners,
-    std::span<const std::array<WorldVertexKey,4>> owner_keys,
     std::stop_token cancellation,unsigned int block_generations) {
   const auto started=std::chrono::steady_clock::now();
-  if(owners.size()!=owner_keys.size())
-    throw std::invalid_argument(
-        "world closure dependency owners and geometry differ in size");
   const auto bits=cache.dependency_fingerprint_bits;
   if(bits==0U||bits>32U)
     throw std::invalid_argument(
@@ -1794,7 +1790,7 @@ void publish_closure_dependency_directory(
                          owners.begin()+static_cast<std::ptrdiff_t>(end));
     block->vertex_owner_records.reserve((end-begin)*4U);
     for(std::size_t item=begin;item<end;++item){
-      const auto& keys=owner_keys[item];
+      const auto keys=world_tetrahedron_vertex_keys(owners[item]);
       for(const auto key:keys)
         block->vertex_owner_records.push_back(dependency_record(
             dependency_fingerprint(key,bits),
@@ -2366,10 +2362,12 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   };
 
   const auto warm_geometry_started=std::chrono::steady_clock::now();
-  auto owner_keys=load_vertex_keys(owners);
-  if(cache!=nullptr)cache->last_warm_geometry_milliseconds=
-      std::chrono::duration<double,std::milli>(
-          std::chrono::steady_clock::now()-warm_geometry_started).count();
+  std::vector<std::array<WorldVertexKey,4>> materialized_owner_keys;
+  const auto owner_keys=[&](std::size_t owner){
+    return materialized_owner_keys.empty()?
+        world_tetrahedron_vertex_keys(owners[owner]):
+        materialized_owner_keys[owner];
+  };
   const auto ancestry_seed_started=std::chrono::steady_clock::now();
   bool sparse_warm_start=false;
   std::vector<WorldEdgeKey> promoted_frontier_edges;
@@ -2505,6 +2503,10 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       !retained_node_valid.empty()&&
       (cache->dependency_fingerprint_bits<32U||
        cache->last_changed_requested_owners<=requested_owners.size()/8U);
+  if(!sparse_warm_start)materialized_owner_keys=load_vertex_keys(owners);
+  if(cache!=nullptr)cache->last_warm_geometry_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-warm_geometry_started).count();
   std::vector<WorldTetAddress> ordered_ancestors;
   ordered_ancestors.reserve(requested_split_ancestors.size());
   for(const auto& entry:requested_split_ancestors)
@@ -2634,7 +2636,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         std::unique(sparse_vertex_frontier.begin(),sparse_vertex_frontier.end()),
         sparse_vertex_frontier.end());
   }else for(std::size_t index=0;index<owners.size();++index)
-    for(const auto key:owner_keys[index])
+    for(const auto key:owner_keys(index))
       update_deepest(key,{owners[index].red_depth(),owners[index]});
 
   if(cache!=nullptr)cache->last_vertex_depth_milliseconds=
@@ -2703,7 +2705,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       std::vector<std::vector<EdgeCandidate>> additions(worker_count);
       const auto inspect=[&](std::size_t owner_index,
                              std::vector<EdgeCandidate>& local){
-          const auto& keys=owner_keys[owner_index];
+          const auto keys=owner_keys(owner_index);
           unsigned int mask{};
           std::array<std::uint32_t,7> inputs{};
           std::uint8_t input_count{};
@@ -2807,7 +2809,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     // shared hierarchy vertex catches those configurations without an
     // all-pairs geometric face test; the extra corner-ring cells are bounded.
     const auto inspect_vertex_promotion=[&](std::size_t index){
-      for(const auto key:owner_keys[index])
+      for(const auto key:owner_keys(index))
       if(deepest_incident[key]>owners[index].red_depth()+1U){
         if(mark_promote(index)&&cache!=nullptr){
           const std::array inputs{
@@ -2826,7 +2828,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       inspect_vertex_promotion(index);
     std::vector<std::size_t> mask_promotions(worker_count);
     const auto mask_requires_promotion=[&](std::size_t owner_index){
-      const auto& keys=owner_keys[owner_index];
+      const auto keys=owner_keys(owner_index);
       unsigned int mask{};
       for(std::size_t edge=0;edge<edges.size();++edge)
         if(midpoints.contains(world_edge_key(
@@ -2848,9 +2850,10 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       if(promote[owner]==0U||promotion_nodes[owner]!=no_proof)continue;
       std::array<std::uint32_t,7> inputs{};
       std::uint8_t count{};
+      const auto keys=owner_keys(owner);
       for(const auto edge:edges){
         const auto key=world_edge_key(
-            owner_keys[owner][edge[0]],owner_keys[owner][edge[1]]);
+            keys[edge[0]],keys[edge[1]]);
         if(!midpoints.contains(key))continue;
         const auto proof=edge_proofs.find(key);
         if(proof==edge_proofs.end())
@@ -2916,7 +2919,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         }
         for(const auto owner_index:masks_to_build){
           new_masks[owner_index]=0U;
-          const auto& keys=owner_keys[owner_index];
+          const auto keys=owner_keys(owner_index);
           for(std::size_t edge=0;edge<edges.size();++edge)
             if(midpoints.contains(world_edge_key(
                   keys[edges[edge][0]],keys[edges[edge][1]])))
@@ -3033,9 +3036,16 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
             proof_dependents[dependent_cursors[dependency]++]=
                 static_cast<std::uint32_t>(proof);
           }
+        if(sparse_warm_start){
+          constexpr std::size_t geometry_spill_entries=4096U;
+          if(cache->geometry.size()>geometry_spill_entries){
+            cache->geometry.resize(geometry_spill_entries);
+            cache->geometry.shrink_to_fit();
+          }
+        }
         auto published_closed_owners=owners;
         publish_closure_dependency_directory(
-            *cache,owners,owner_keys,cancellation,block_generations);
+            *cache,owners,cancellation,block_generations);
         cache->requested_owners=std::move(requested_owners);
         cache->requested_split_ancestors=std::move(requested_split_ancestors);
         cache->vertex_depths=std::move(vertex_depths);
@@ -3073,7 +3083,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       if(promote[index]==0U)continue;
       if(owner.red_depth()>=maximum_world_red_depth)
         throw std::overflow_error("world conforming closure exceeds maximum depth");
-      const auto& keys=owner_keys[index];
+      const auto keys=owner_keys(index);
       if(cache!=nullptr){
         promotion_proofs.push_back({owner,promotion_nodes[index]});
         active_promotion_proofs[owner]=promotion_nodes[index];
@@ -3093,11 +3103,12 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       }
     }
     std::ranges::sort(promoted_children);
-    const auto promoted_child_keys=load_vertex_keys(promoted_children);
+    const auto promoted_keys=load_vertex_keys(promoted_children);
     std::vector<WorldTetAddress> merged_owners;
-    std::vector<std::array<WorldVertexKey,4>> next_owner_keys;
+    std::vector<std::array<WorldVertexKey,4>> next_materialized_owner_keys;
+    const bool materialized=!materialized_owner_keys.empty();
     merged_owners.reserve(next_owner_count);
-    next_owner_keys.reserve(next_owner_count);
+    if(materialized)next_materialized_owner_keys.reserve(next_owner_count);
     std::size_t retained_owner{},promoted_key{};
     while(retained_owner<owners.size()||promoted_key<promoted_children.size()){
       while(retained_owner<owners.size()&&promote[retained_owner]!=0U)
@@ -3106,28 +3117,33 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
          (retained_owner<owners.size()&&
           owners[retained_owner]<promoted_children[promoted_key])){
         merged_owners.push_back(owners[retained_owner]);
-        next_owner_keys.push_back(owner_keys[retained_owner]);
+        if(materialized)
+          next_materialized_owner_keys.push_back(
+              materialized_owner_keys[retained_owner]);
         ++retained_owner;continue;
       }
       merged_owners.push_back(promoted_children[promoted_key]);
-      next_owner_keys.push_back(promoted_child_keys[promoted_key]);
+      if(materialized)
+        next_materialized_owner_keys.push_back(promoted_keys[promoted_key]);
       ++promoted_key;
     }
-    if(promoted_key!=promoted_child_keys.size()||
-       next_owner_keys.size()!=next_owner_count||
+    if(promoted_key!=promoted_keys.size()||
+       merged_owners.size()!=next_owner_count||
        !std::ranges::is_sorted(merged_owners))
       throw std::logic_error("world promoted geometry stream lost a child");
-    owners=std::move(merged_owners);owner_keys=std::move(next_owner_keys);
+    owners=std::move(merged_owners);
+    if(materialized)
+      materialized_owner_keys=std::move(next_materialized_owner_keys);
     std::vector<WorldVertexKey> raised_depth_vertices;
     for(std::size_t child_index=0;
         child_index<promoted_children.size();++child_index){
       const auto child=promoted_children[child_index];
-      for(const auto key:promoted_child_keys[child_index])
+      for(const auto key:promoted_keys[child_index])
         if(child.red_depth()>deepest_incident[key]){
           deepest_incident[key]=child.red_depth();
           raised_depth_vertices.push_back(key);
         }
-      if(cache!=nullptr)for(const auto key:promoted_child_keys[child_index]){
+      if(cache!=nullptr)for(const auto key:promoted_keys[child_index]){
         const DeepestProof candidate{child.red_depth(),child};
         auto [found,inserted]=deepest_proofs.emplace(key,candidate);
         if(!inserted&&(candidate.depth>found->second.depth||

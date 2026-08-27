@@ -184,6 +184,19 @@ therefore expose indexed immutable owner-key blocks directly to the fixed
 point and dependency publisher; optimizing proof remapping further would not
 materially affect latency.
 
+Sparse warm closure no longer allocates or copies one key array for every
+closed owner. Exact dyadic tetrahedron keys are derived on demand only for the
+owners reached by the causal frontier; cold builds and large fallback updates
+retain the packed materialized path. A bounded spill cache prevents ancestor
+queries from accumulating enough geometry to fail admission. On the qualified
+512-operation slice this removes the former 136 ms warm-key copy, reduces
+closure from about 399 ms to 262 ms and total latency to about 683 ms, while
+keeping CPU high-water near 501 MB. The continuous benchmark now constructs a
+fresh runtime at the final camera pose and requires its hierarchy, connected
+surface, and render hashes to match the coalesced movement history. Current
+continuous results are exact but still measure roughly 1.56 s to first
+publication and 2.25 s settled convergence.
+
 ## Technology choices
 
 - C++23 where supported.
