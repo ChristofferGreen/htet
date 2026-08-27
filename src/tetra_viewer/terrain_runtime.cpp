@@ -1178,6 +1178,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
       surface_cache.optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
       surface_cache.optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
+      surface_cache.optimizer_stable_keys.capacity()*
+          sizeof(tetra::WorldDerivedVertexKey)+
+      surface_cache.optimizer_edges.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge)+
+      surface_cache.optimizer_reverse_edges.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge)+
       surface_cache.closure.requested_split_ancestors.capacity()*
           sizeof(tetra::WorldConformingSplitAncestor)+
       surface_cache.closure.proof_nodes.capacity()*

@@ -52,6 +52,12 @@
           slice time falls from about 1.06 s to 0.87 s. Compact 40-byte indexed
           triangle records and a linear retained-index remap keep the production
           CPU budget intact.
+    - [x] Retain reference-counted optimizer edges under stable vertex IDs and
+          query both directions through sorted flat arrays. This removes the
+          complete edge sort/CSR rebuild, keeps identical warm/cold hashes and
+          zero-work repeated builds, and reduces the bounded optimizer-
+          dependency stage from about 121 ms to 63--67 ms. The full slice is
+          still about 0.81 s, so this does not enable production slicing.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

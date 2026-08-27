@@ -147,6 +147,20 @@ assembly from about 136 ms to 27 ms and total time from about 1.06 seconds to
 blocks and therefore see little improvement; the retained representation is
 specifically an enabler for bounded publication.
 
+Optimizer connectivity is now retained with stable vertex IDs in two sorted
+flat edge directions. Changed snapshots decrement their old edge references
+and increment replacements; five-ring dependency expansion performs bounded
+range queries without rebuilding or sorting a global CSR. The surface cache
+also records which hierarchy revision consumed the closure mask manifest, so a
+repeated build of the same revision remains a true zero-block operation while
+the manifest stays available for diagnostics. Warm/cold extraction, worker and
+budget invariants, and the canonical surface hash remain exact. On the
+512-operation slice, optimizer-dependency construction falls from about 121 ms
+to 63--67 ms, surface work from about 443 ms to 387--390 ms, and total latency
+from about 867 ms to 810--815 ms. This is useful but still far above the 250 ms
+gate; closure proof/finalization work and remaining complete surface scans are
+the next targets.
+
 ## Technology choices
 
 - C++23 where supported.

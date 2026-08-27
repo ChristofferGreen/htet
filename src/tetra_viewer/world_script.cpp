@@ -552,6 +552,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<update.metrics.loaded_blocks
           <<",\"rebuilt_surface_blocks\":"
           <<surface.metrics.rebuilt_surface_blocks
+          <<",\"optimizer_dependency_vertices\":"
+          <<surface.metrics.optimizer_dependency_vertices
+          <<",\"affected_optimizer_vertices\":"
+          <<surface.metrics.affected_optimizer_vertices
           <<",\"hierarchy_hash\":"<<directory.canonical_cut_hash()
           <<",\"surface_hash\":"<<surface.canonical_surface_hash<<"}\n";
   }

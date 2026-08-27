@@ -2054,6 +2054,43 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   std::vector<WorldClosurePromotionProof> retained_promotions;
   std::vector<WorldEdgeKey> invalidated_edges;
   std::vector<WorldTetAddress> changed_split_ancestors;
+  struct SplitAncestorDelta {
+    WorldTetAddress address{};
+    std::int64_t descendants{};
+    auto operator<=>(const SplitAncestorDelta&) const = default;
+  };
+  std::vector<SplitAncestorDelta> ancestor_deltas;
+  if(cache!=nullptr&&!cache->requested_owners.empty()){
+    const auto change_path=[&](WorldTetAddress owner,std::int64_t delta){
+      while(owner.red_depth()>0U){
+        owner=owner.parent();ancestor_deltas.push_back({owner,delta});
+      }
+    };
+    std::size_t previous{},current{};
+    while(previous<cache->requested_owners.size()||
+          current<requested_owners.size()){
+      if(current==requested_owners.size()||
+         (previous<cache->requested_owners.size()&&
+          cache->requested_owners[previous]<requested_owners[current])){
+        change_path(cache->requested_owners[previous++],-1);
+        ++cache->last_changed_requested_owners;
+      }else if(previous==cache->requested_owners.size()||
+                requested_owners[current]<cache->requested_owners[previous]){
+        change_path(requested_owners[current++],1);
+        ++cache->last_changed_requested_owners;
+      }else{++previous;++current;}
+    }
+    std::ranges::sort(ancestor_deltas,{},&SplitAncestorDelta::address);
+    std::size_t output{};
+    for(std::size_t input=0;input<ancestor_deltas.size();){
+      const auto address=ancestor_deltas[input].address;
+      std::int64_t descendants{};
+      do descendants+=ancestor_deltas[input++].descendants;
+      while(input<ancestor_deltas.size()&&ancestor_deltas[input].address==address);
+      if(descendants!=0)ancestor_deltas[output++]={address,descendants};
+    }
+    ancestor_deltas.resize(output);
+  }
   const auto proof_validation_started=std::chrono::steady_clock::now();
   if(cache!=nullptr&&!cache->requested_owners.empty()&&
      !cache->proof_nodes.empty()&&
@@ -2076,31 +2113,16 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     if(graph_valid){
       std::unordered_set<WorldTetAddress,WorldAddressHash> requested(
           owners.begin(),owners.end());
-      std::map<WorldTetAddress,std::int64_t> ancestor_deltas;
-      const auto change_path=[&](WorldTetAddress owner,std::int64_t delta){
-        while(owner.red_depth()>0U){
-          owner=owner.parent();ancestor_deltas[owner]+=delta;
-        }
-      };
-      std::size_t previous{},current{};
-      while(previous<cache->requested_owners.size()||current<owners.size()){
-        if(current==owners.size()||
-           (previous<cache->requested_owners.size()&&
-            cache->requested_owners[previous]<owners[current]))
-          change_path(cache->requested_owners[previous++],-1);
-        else if(previous==cache->requested_owners.size()||
-                owners[current]<cache->requested_owners[previous])
-          change_path(owners[current++],1);
-        else{++previous;++current;}
-      }
       const auto split_ancestor_active=[&](WorldTetAddress address){
         const auto retained=std::ranges::lower_bound(
             cache->requested_split_ancestors,address,{},
             &WorldConformingSplitAncestor::address);
         std::int64_t count=retained!=cache->requested_split_ancestors.end()&&
             retained->address==address?retained->descendant_leaves:0U;
-        const auto delta=ancestor_deltas.find(address);
-        if(delta!=ancestor_deltas.end())count+=delta->second;
+        const auto delta=std::ranges::lower_bound(
+            ancestor_deltas,address,{},&SplitAncestorDelta::address);
+        if(delta!=ancestor_deltas.end()&&delta->address==address)
+          count+=delta->descendants;
         return count>0;
       };
       retained_node_valid.assign(cache->proof_nodes.size(),0U);
@@ -2173,7 +2195,12 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           for(std::uint8_t child=0;child<8U;++child)self(owner.child(child));
         };
         for(const auto owner:owners)emit(owner);
-        std::ranges::sort(warm);owners=std::move(warm);
+        // Address ordering is prefix order, so ordered leaves expanded in
+        // child order remain ordered. Keep a defensive fallback for imported
+        // or future address encodings without paying an O(n log n) sort on
+        // every bounded publication.
+        if(!std::ranges::is_sorted(warm))std::ranges::sort(warm);
+        owners=std::move(warm);
       }
     }
   }
@@ -2340,27 +2367,10 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
        std::ranges::all_of(cache->requested_owners,
           [](WorldTetAddress owner){return owner.red_depth()==0U;}));
   if(retained_ancestry_valid){
-    std::map<WorldTetAddress,std::int64_t> deltas;
-    std::size_t previous{},current{};
-    const auto change_path=[&](WorldTetAddress owner,std::int64_t delta){
-      while(owner.red_depth()>0U){owner=owner.parent();deltas[owner]+=delta;}
-    };
-    while(previous<cache->requested_owners.size()||current<requested_owners.size()){
-      if(current==requested_owners.size()||
-         (previous<cache->requested_owners.size()&&
-          cache->requested_owners[previous]<requested_owners[current])){
-        change_path(cache->requested_owners[previous++],-1);
-        if(cache)++cache->last_changed_requested_owners;
-      }else if(previous==cache->requested_owners.size()||
-                requested_owners[current]<cache->requested_owners[previous]){
-        change_path(requested_owners[current++],1);
-        if(cache)++cache->last_changed_requested_owners;
-      }else{++previous;++current;}
-    }
     requested_split_ancestors.reserve(
-        cache->requested_split_ancestors.size()+deltas.size());
-    changed_split_ancestors.reserve(deltas.size());
-    for(const auto& [address,delta]:deltas){
+        cache->requested_split_ancestors.size()+ancestor_deltas.size());
+    changed_split_ancestors.reserve(ancestor_deltas.size());
+    for(const auto& [address,delta]:ancestor_deltas){
       const auto old=std::ranges::lower_bound(
           cache->requested_split_ancestors,address,{},
           &WorldConformingSplitAncestor::address);
@@ -2374,31 +2384,32 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         changed_split_ancestors.push_back(address);
     }
     auto retained=cache->requested_split_ancestors.begin();
-    auto changed=deltas.begin();
+    auto changed=ancestor_deltas.begin();
     while(retained!=cache->requested_split_ancestors.end()||
-          changed!=deltas.end()){
-      if(changed==deltas.end()||
+          changed!=ancestor_deltas.end()){
+      if(changed==ancestor_deltas.end()||
          (retained!=cache->requested_split_ancestors.end()&&
-          retained->address<changed->first)){
+          retained->address<changed->address)){
         requested_split_ancestors.push_back(*retained++);continue;
       }
       if(retained==cache->requested_split_ancestors.end()||
-         changed->first<retained->address){
-        if(changed->second<0)
+         changed->address<retained->address){
+        if(changed->descendants<0)
           throw std::logic_error("world closure split ancestry underflow");
-        if(changed->second>0)requested_split_ancestors.push_back({
-            changed->first,static_cast<std::uint32_t>(changed->second)});
+        if(changed->descendants>0)requested_split_ancestors.push_back({
+            changed->address,
+            static_cast<std::uint32_t>(changed->descendants)});
         ++changed;continue;
       }
       const auto count=static_cast<std::int64_t>(
-          retained->descendant_leaves)+changed->second;
+          retained->descendant_leaves)+changed->descendants;
       if(count<0||count>std::numeric_limits<std::uint32_t>::max())
         throw std::logic_error("world closure split ancestry count overflow");
       if(count>0)requested_split_ancestors.push_back({
           retained->address,static_cast<std::uint32_t>(count)});
       ++retained;++changed;
     }
-    if(cache)cache->last_split_ancestor_updates=deltas.size();
+    if(cache)cache->last_split_ancestor_updates=ancestor_deltas.size();
   }else{
     std::unordered_map<WorldTetAddress,std::uint32_t,WorldAddressHash> counts;
     counts.reserve(requested_owners.size()/4U);

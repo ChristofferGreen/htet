@@ -2886,6 +2886,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       domain.world_extent})hash_field_value(value);
   const bool field_changed=cache&&cache->surface_field_signature!=0U&&
       cache->surface_field_signature!=field_signature;
+  const bool closure_changes_unconsumed=cache&&
+      cache->surface_source_hierarchy_revision!=directory.revision();
   if(cache){
     std::vector<tetra::WorldTetAddress> owners;
     owners.reserve(directory.logical_owner_count());
@@ -3016,8 +3018,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
         cache->surface_certificate_blocks[previous_block_index]:nullptr;
     const bool dirty=field_changed||!previous||
         hierarchy_payload_changed_blocks.contains(block_id)||
-        std::ranges::binary_search(
-            cache->closure.last_changed_mask_blocks,block_id);
+        (closure_changes_unconsumed&&std::ranges::binary_search(
+            cache->closure.last_changed_mask_blocks,block_id));
     if(!dirty){
       certificate_blocks.push_back(previous);
       reused_surface_certificates+=previous->certificates.size();
@@ -3146,7 +3148,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   auto topology_changed_blocks=hierarchy_payload_changed_blocks;
   if(!cache||field_changed)
     topology_changed_blocks=topology_current_blocks;
-  else
+  else if(closure_changes_unconsumed)
     topology_changed_blocks.insert(
         cache->closure.last_changed_mask_blocks.begin(),
         cache->closure.last_changed_mask_blocks.end());
@@ -3357,6 +3359,11 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   std::vector<std::uint32_t> optimizer_neighbor_offsets;
   std::vector<std::uint32_t> optimizer_neighbors;
   std::vector<std::uint32_t> optimizer_patch_distances;
+  std::vector<tetra::WorldDerivedVertexKey> next_optimizer_stable_keys;
+  std::vector<SparseWorldSurfaceCache::CountedOptimizerEdge>
+      next_optimizer_edges,next_optimizer_reverse_edges;
+  std::vector<std::uint32_t> optimizer_stable_to_current;
+  std::vector<std::uint32_t> optimizer_current_to_stable;
   std::set<tetra::WorldDerivedVertexKey> optimizer_affected_keys;
   const auto derived_vertex_hash=[](const tetra::WorldDerivedVertexKey& key){
     std::uint64_t hash=static_cast<std::uint8_t>(key.kind)+
@@ -3388,129 +3395,161 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       optimizer_index.emplace(
           optimizer_keys[index],static_cast<std::uint32_t>(index));
     }
-    struct Incidence {
-      std::uint32_t vertex{};
-      std::array<std::uint32_t,3> triangle{};
-      auto operator<=>(const Incidence&) const = default;
+    next_optimizer_stable_keys=cache->optimizer_stable_keys;
+    std::unordered_map<tetra::WorldDerivedVertexKey,std::uint32_t,
+                       decltype(derived_vertex_hash)>
+        stable_index(0U,derived_vertex_hash);
+    stable_index.reserve(next_optimizer_stable_keys.size()+optimizer_keys.size()/8U);
+    for(std::size_t index=0;index<next_optimizer_stable_keys.size();++index)
+      stable_index.emplace(next_optimizer_stable_keys[index],
+                           static_cast<std::uint32_t>(index));
+    const auto stable_id=[&](const tetra::WorldDerivedVertexKey& key){
+      const auto found=stable_index.find(key);
+      if(found!=stable_index.end())return found->second;
+      if(next_optimizer_stable_keys.size()>
+         std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("optimizer stable key directory exceeds 32-bit IDs");
+      const auto id=static_cast<std::uint32_t>(next_optimizer_stable_keys.size());
+      next_optimizer_stable_keys.push_back(key);stable_index.emplace(key,id);
+      return id;
     };
-    std::vector<std::array<std::uint32_t,2>> graph_edges;
-    std::vector<Incidence> incidences;
-    graph_edges.reserve(all_surface_triangles.size()*3U);
-    incidences.reserve(all_surface_triangles.size()*3U);
-    for(const auto& triangle:all_surface_triangles){
-      std::array<std::uint32_t,3> ids{};
-      for(std::size_t corner=0;corner<3U;++corner){
-        const auto found=optimizer_index.find(triangle.vertices[corner]);
-        if(found==optimizer_index.end())
-          throw std::logic_error("optimizer dependency triangle has no vertex");
-        ids[corner]=found->second;
-      }
-      std::ranges::sort(ids);
-      for(const auto vertex:ids)incidences.push_back({vertex,ids});
+    for(const auto& key:optimizer_keys)static_cast<void>(stable_id(key));
+    struct EdgeDelta {
+      std::array<std::uint32_t,2> vertices{};
+      std::int32_t removed{},added{};
+    };
+    std::vector<EdgeDelta> edge_deltas;
+    const bool edge_bootstrap=cache->optimizer_edges.empty();
+    const auto append_triangle_edges=[&](
+        const std::array<tetra::WorldDerivedVertexKey,3>& vertices,
+        bool addition){
+      std::array<std::uint32_t,3> ids{{stable_id(vertices[0]),
+          stable_id(vertices[1]),stable_id(vertices[2])}};
       for(auto edge:std::array<std::array<std::uint32_t,2>,3>{{
-          {{ids[0],ids[1]}},{{ids[1],ids[2]}},{{ids[0],ids[2]}}}}){
+          {{ids[0],ids[1]}},{{ids[1],ids[2]}},{{ids[2],ids[0]}}}}){
         if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
-        graph_edges.push_back(edge);
+        edge_deltas.push_back({edge,addition?0:1,addition?1:0});
+      }
+    };
+    if(!edge_bootstrap)for(const auto& snapshot:cache->snapshots)
+      if(topology_changed_blocks.contains(snapshot.id)||
+         !topology_current_blocks.contains(snapshot.id))
+        for(const auto& triangle:snapshot.triangles)
+          append_triangle_edges(triangle.vertices,false);
+    for(const auto& triangle:all_surface_triangles){
+      const auto id=tetra::hierarchy_block_id(
+          triangle.owner,directory.block_generations());
+      if(edge_bootstrap||topology_changed_blocks.contains(id))
+        append_triangle_edges(triangle.vertices,true);
+    }
+    std::ranges::sort(edge_deltas,{},&EdgeDelta::vertices);
+    std::vector<EdgeDelta> grouped_edges;
+    for(const auto& delta:edge_deltas){
+      if(grouped_edges.empty()||
+         grouped_edges.back().vertices!=delta.vertices)
+        grouped_edges.push_back(delta);
+      else{
+        grouped_edges.back().removed+=delta.removed;
+        grouped_edges.back().added+=delta.added;
       }
     }
-    std::ranges::sort(graph_edges);
-    graph_edges.erase(std::unique(graph_edges.begin(),graph_edges.end()),
-                      graph_edges.end());
-    std::ranges::sort(incidences);
-    optimizer_neighbor_offsets.assign(optimizer_keys.size()+1U,0U);
-    for(const auto edge:graph_edges){
-      ++optimizer_neighbor_offsets[edge[0]+1U];
-      ++optimizer_neighbor_offsets[edge[1]+1U];
-    }
-    for(std::size_t index=1;index<optimizer_neighbor_offsets.size();++index)
-      optimizer_neighbor_offsets[index]+=optimizer_neighbor_offsets[index-1U];
-    optimizer_neighbors.resize(optimizer_neighbor_offsets.back());
-    auto cursors=optimizer_neighbor_offsets;
-    for(const auto edge:graph_edges){
-      optimizer_neighbors[cursors[edge[0]]++]=edge[1];
-      optimizer_neighbors[cursors[edge[1]]++]=edge[0];
-    }
-    for(std::size_t vertex=0;vertex<optimizer_keys.size();++vertex)
-      std::sort(optimizer_neighbors.begin()+optimizer_neighbor_offsets[vertex],
-                optimizer_neighbors.begin()+optimizer_neighbor_offsets[vertex+1U]);
+    const auto merge_edge_directory=[](
+        const std::vector<SparseWorldSurfaceCache::CountedOptimizerEdge>& old,
+        const std::vector<EdgeDelta>& deltas){
+      std::vector<SparseWorldSurfaceCache::CountedOptimizerEdge> result;
+      result.reserve(old.size()+deltas.size());
+      auto retained=old.begin();
+      for(const auto& delta:deltas){
+        while(retained!=old.end()&&retained->vertices<delta.vertices)
+          result.push_back(*retained++);
+        const bool exists=retained!=old.end()&&
+            retained->vertices==delta.vertices;
+        const auto old_references=exists?retained->references:0U;
+        if(delta.removed<0||delta.added<0||
+           static_cast<std::uint32_t>(delta.removed)>old_references)
+          throw std::logic_error("optimizer edge reference underflow");
+        const auto references=old_references-
+            static_cast<std::uint32_t>(delta.removed)+
+            static_cast<std::uint32_t>(delta.added);
+        if(references>0U)result.push_back({delta.vertices,references});
+        if(exists)++retained;
+      }
+      result.insert(result.end(),retained,old.end());
+      return result;
+    };
+    next_optimizer_edges=merge_edge_directory(cache->optimizer_edges,
+                                               grouped_edges);
+    auto reverse_deltas=grouped_edges;
+    for(auto& delta:reverse_deltas)
+      std::swap(delta.vertices[0],delta.vertices[1]);
+    std::ranges::sort(reverse_deltas,{},&EdgeDelta::vertices);
+    next_optimizer_reverse_edges=merge_edge_directory(
+        cache->optimizer_reverse_edges,reverse_deltas);
 
-    constexpr std::uint64_t offset=1469598103934665603ULL;
-    constexpr std::uint64_t prime=1099511628211ULL;
-    optimizer_incident_hashes.assign(optimizer_keys.size(),offset);
-    const auto hash_key=[&](std::uint64_t& hash,
-                            const tetra::WorldDerivedVertexKey& key){
-      const auto add=[&](const auto& value){
-        const auto* bytes=reinterpret_cast<const unsigned char*>(&value);
-        for(std::size_t byte=0;byte<sizeof(value);++byte){
-          hash^=bytes[byte];hash*=prime;
+    constexpr auto no_current=std::numeric_limits<std::uint32_t>::max();
+    optimizer_stable_to_current.assign(next_optimizer_stable_keys.size(),
+                                       no_current);
+    optimizer_current_to_stable.resize(optimizer_keys.size());
+    for(std::size_t current=0;current<optimizer_keys.size();++current){
+      const auto stable=stable_index.find(optimizer_keys[current]);
+      if(stable==stable_index.end())
+        throw std::logic_error("optimizer vertex has no stable ID");
+      optimizer_stable_to_current[stable->second]=
+          static_cast<std::uint32_t>(current);
+      optimizer_current_to_stable[current]=stable->second;
+    }
+    const auto visit_stable_neighbors=[&](std::uint32_t source,
+                                          const auto& visit){
+      const auto visit_directory=[&](const auto& directory){
+        const std::array<std::uint32_t,2> lower{{source,0U}};
+        auto edge=std::ranges::lower_bound(
+            directory,lower,{},
+            &SparseWorldSurfaceCache::CountedOptimizerEdge::vertices);
+        while(edge!=directory.end()&&edge->vertices[0]==source){
+          visit(edge->vertices[1]);++edge;
         }
       };
-      add(key.kind);add(key.basis_count);
-      for(std::size_t basis=0;basis<key.basis_count;++basis){
-        add(key.basis[basis].x);add(key.basis[basis].y);
-        add(key.basis[basis].z);add(key.basis[basis].denominator_exponent);
-      }
+      visit_directory(next_optimizer_edges);
+      visit_directory(next_optimizer_reverse_edges);
     };
-    for(const auto& incidence:incidences)
-      for(const auto vertex:incidence.triangle)
-        hash_key(optimizer_incident_hashes[incidence.vertex],
-                 optimizer_keys[vertex]);
+    for(const auto& edge:next_optimizer_edges)
+      if(edge.vertices[0]>=optimizer_stable_to_current.size()||
+         edge.vertices[1]>=optimizer_stable_to_current.size()||
+         optimizer_stable_to_current[edge.vertices[0]]==no_current||
+         optimizer_stable_to_current[edge.vertices[1]]==no_current)
+        throw std::logic_error("active optimizer edge has no active vertex");
+    // Preserve the public retained-vector shape while adjacency itself lives
+    // in the two stable flat edge directories above.
+    optimizer_neighbor_offsets.assign(optimizer_keys.size()+1U,0U);
+    optimizer_neighbors.clear();
 
-    const bool retained_graph_valid=
-        cache->optimizer_incident_hashes.size()==cache->intersections.size()&&
-        cache->optimizer_neighbor_offsets.size()==cache->intersections.size()+1U&&
-        (!cache->optimizer_neighbor_offsets.empty()&&
-         cache->optimizer_neighbor_offsets.back()==cache->optimizer_neighbors.size())&&
-        std::ranges::all_of(cache->optimizer_neighbors,[&](std::uint32_t index){
-          return index<cache->intersections.size();
-        });
+    optimizer_incident_hashes.assign(optimizer_keys.size(),0U);
     std::set<tetra::WorldDerivedVertexKey> frontier;
-    if(field_changed||!retained_graph_valid){
+    if(field_changed||edge_bootstrap){
       frontier.insert(optimizer_keys.begin(),optimizer_keys.end());
       for(const auto& vertex:cache->intersections)frontier.insert(vertex.key);
     }else{
-      std::size_t current{},previous{};
-      while(current<optimizer_keys.size()||previous<cache->intersections.size()){
-        if(previous==cache->intersections.size()||
-           (current<optimizer_keys.size()&&
-            optimizer_keys[current]<cache->intersections[previous].key)){
-          frontier.insert(optimizer_keys[current++]);continue;
-        }
-        if(current==optimizer_keys.size()||
-           cache->intersections[previous].key<optimizer_keys[current]){
-          frontier.insert(cache->intersections[previous++].key);continue;
-        }
-        if(optimizer_incident_hashes[current]!=
-           cache->optimizer_incident_hashes[previous])
-          frontier.insert(optimizer_keys[current]);
-        ++current;++previous;
-      }
+      for(const auto& snapshot:cache->snapshots)
+        if(topology_changed_blocks.contains(snapshot.id)||
+           !topology_current_blocks.contains(snapshot.id))
+          for(const auto& vertex:snapshot.vertices)frontier.insert(vertex.key);
+      for(const auto& triangle:all_surface_triangles)
+        if(topology_changed_blocks.contains(tetra::hierarchy_block_id(
+             triangle.owner,directory.block_generations())))
+          frontier.insert(triangle.vertices.begin(),triangle.vertices.end());
     }
     optimizer_affected_keys=frontier;
     const auto expand_graph=[&](
         const tetra::WorldDerivedVertexKey& key,
         std::set<tetra::WorldDerivedVertexKey>& next){
-      const auto current=optimizer_index.find(key);
-      if(current!=optimizer_index.end()){
-        const auto index=static_cast<std::size_t>(current->second);
-        for(std::size_t edge=optimizer_neighbor_offsets[index];
-            edge<optimizer_neighbor_offsets[index+1U];++edge)
-          if(!optimizer_affected_keys.contains(
-                 optimizer_keys[optimizer_neighbors[edge]]))
-            next.insert(optimizer_keys[optimizer_neighbors[edge]]);
-      }
-      const auto previous=std::ranges::lower_bound(
-          cache->intersections,key,{},&tetra::WorldSurfaceVertex::key);
-      if(retained_graph_valid&&previous!=cache->intersections.end()&&
-         previous->key==key){
-        const auto index=static_cast<std::size_t>(previous-cache->intersections.begin());
-        for(std::size_t edge=cache->optimizer_neighbor_offsets[index];
-            edge<cache->optimizer_neighbor_offsets[index+1U];++edge){
-          const auto& neighbor=cache->intersections[
-              cache->optimizer_neighbors[edge]].key;
-          if(!optimizer_affected_keys.contains(neighbor))next.insert(neighbor);
-        }
-      }
+      const auto stable=stable_index.find(key);
+      if(stable==stable_index.end())return;
+      visit_stable_neighbors(stable->second,[&](std::uint32_t neighbor){
+        const auto current=optimizer_stable_to_current[neighbor];
+        if(current!=no_current&&
+           !optimizer_affected_keys.contains(optimizer_keys[current]))
+          next.insert(optimizer_keys[current]);
+      });
     };
     for(std::uint32_t ring=0;ring<surface_optimizer_passes&&!frontier.empty();++ring){
       std::set<tetra::WorldDerivedVertexKey> next;
@@ -3596,13 +3635,24 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       const auto vertex=frontier.front();frontier.pop_front();
       const auto distance=optimizer_patch_distances[vertex];
       if(distance>=surface_optimizer_dependency_halo_rings)continue;
-      for(std::size_t edge=optimizer_neighbor_offsets[vertex];
-          edge<optimizer_neighbor_offsets[vertex+1U];++edge){
-        const auto neighbor=optimizer_neighbors[edge];
-        if(optimizer_patch_distances[neighbor]<=distance+1U)continue;
-        optimizer_patch_distances[neighbor]=distance+1U;
-        frontier.push_back(neighbor);
-      }
+      const auto visit_directory=[&](const auto& directory){
+        const auto stable=optimizer_current_to_stable[vertex];
+        const std::array<std::uint32_t,2> lower{{stable,0U}};
+        auto edge=std::ranges::lower_bound(
+            directory,lower,{},
+            &SparseWorldSurfaceCache::CountedOptimizerEdge::vertices);
+        while(edge!=directory.end()&&edge->vertices[0]==stable){
+          const auto neighbor=optimizer_stable_to_current[edge->vertices[1]];
+          if(neighbor==unreachable){++edge;continue;}
+          if(optimizer_patch_distances[neighbor]>distance+1U){
+            optimizer_patch_distances[neighbor]=distance+1U;
+            frontier.push_back(neighbor);
+          }
+          ++edge;
+        }
+      };
+      visit_directory(next_optimizer_edges);
+      visit_directory(next_optimizer_reverse_edges);
     }
   }else if(cache){
     if(!changed_vertices.empty())
@@ -3839,7 +3889,13 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   result.metrics.retained_optimizer_dependency_bytes=
       optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
       optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
-      optimizer_neighbors.capacity()*sizeof(std::uint32_t);
+      optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
+      next_optimizer_stable_keys.capacity()*
+          sizeof(tetra::WorldDerivedVertexKey)+
+      next_optimizer_edges.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge)+
+      next_optimizer_reverse_edges.capacity()*
+          sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge);
   result.metrics.surface_blocks=result.snapshots.size();
   result.metrics.total_core_vertices=result.vertices.size();
   result.metrics.total_patch_vertices=result.vertices.size();
@@ -3871,15 +3927,22 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       cache->optimizer_incident_hashes=std::move(optimizer_incident_hashes);
       cache->optimizer_neighbor_offsets=std::move(optimizer_neighbor_offsets);
       cache->optimizer_neighbors=std::move(optimizer_neighbors);
+      cache->optimizer_stable_keys=std::move(next_optimizer_stable_keys);
+      cache->optimizer_edges=std::move(next_optimizer_edges);
+      cache->optimizer_reverse_edges=std::move(next_optimizer_reverse_edges);
     }else{
       cache->intersections=result.vertices;
       cache->optimizer_incident_hashes.clear();
       cache->optimizer_neighbor_offsets.clear();
       cache->optimizer_neighbors.clear();
+      cache->optimizer_stable_keys.clear();
+      cache->optimizer_edges.clear();
+      cache->optimizer_reverse_edges.clear();
     }
     cache->hierarchy=std::move(hierarchy);
     cache->surface_certificate_blocks=std::move(certificate_blocks);
     cache->surface_field_signature=field_signature;
+    cache->surface_source_hierarchy_revision=directory.revision();
     cache->assembled_vertices=std::move(next_assembled_vertices);
     cache->assembled_triangles=std::move(next_assembled_triangles);
     if(!restrict_retained_volume)cache->conforming=std::move(volume);

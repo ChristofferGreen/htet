@@ -787,6 +787,11 @@ struct SparseWorldSurfaceCache {
     tetra::WorldTetAddress owner{};
     std::uint32_t references{};
   };
+  struct CountedOptimizerEdge {
+    std::array<std::uint32_t,2> vertices{};
+    std::uint32_t references{};
+    auto operator<=>(const CountedOptimizerEdge&) const = default;
+  };
   struct HierarchySignature {
     tetra::HierarchyBlockId id{};
     std::uint64_t hash{};
@@ -820,9 +825,20 @@ struct SparseWorldSurfaceCache {
   std::vector<std::uint64_t> optimizer_incident_hashes;
   std::vector<std::uint32_t> optimizer_neighbor_offsets;
   std::vector<std::uint32_t> optimizer_neighbors;
+  // Stable key IDs let topology deltas update one compact edge directory
+  // without sorting three edges from every triangle on every publication.
+  std::vector<tetra::WorldDerivedVertexKey> optimizer_stable_keys;
+  std::vector<CountedOptimizerEdge> optimizer_edges;
+  // Same reference-counted edges with endpoints reversed. Together the two
+  // sorted flat arrays provide allocation-free adjacency range queries.
+  std::vector<CountedOptimizerEdge> optimizer_reverse_edges;
   std::vector<HierarchySignature> hierarchy;
   std::vector<std::shared_ptr<SurfaceCertificateBlock>> surface_certificate_blocks;
   std::uint64_t surface_field_signature{};
+  // Closure change lists describe the directory revision that produced them.
+  // Consume them once; they remain populated for diagnostics after publication.
+  std::uint64_t surface_source_hierarchy_revision{
+      std::numeric_limits<std::uint64_t>::max()};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
   // Exact flat directories assembled by merging only changed snapshot
