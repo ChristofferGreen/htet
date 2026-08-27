@@ -203,6 +203,17 @@ struct WorldLodCutSelection {
   WorldLodCutMetrics metrics{};
 };
 
+// Advances one complete raw red cut toward another without applying
+// conformity closure. Selected split/merge families are disjoint and ordered
+// by camera distance; callers can close and publish the returned cut as one
+// atomic transaction.
+[[nodiscard]] std::vector<tetra::WorldTetAddress>
+advance_world_requested_frontier(
+    std::span<const tetra::WorldTetAddress> retained,
+    std::span<const tetra::WorldTetAddress> target,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::size_t maximum_operations);
+
 enum class WorldVolumePinKind : std::uint8_t {
   player_collision,
   terrain_edit,

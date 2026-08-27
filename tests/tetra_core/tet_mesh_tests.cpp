@@ -1065,6 +1065,43 @@ TEST_CASE("projected world cut spans forty eight units with graded bounded detai
   CHECK(selection.metrics.horizon_owners>0U);
 }
 
+TEST_CASE("batched camera frontier cuts retain exact conformity at every slice") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  tetra::Camera initial_camera;
+  initial_camera.position={0.5,0.72,0.78};
+  initial_camera.forward={0.0,-0.2,-1.0};
+  tetra::WorldConformingClosureCache retained;
+  static_cast<void>(tetra_viewer::select_world_lod_cut(
+      profile,field,initial_camera,&retained));
+  auto camera=initial_camera;camera.position.z-=0.10;
+  tetra::WorldConformingClosureCache target_cache;
+  static_cast<void>(tetra_viewer::select_world_lod_cut(
+      profile,field,camera,&target_cache));
+  const auto target=target_cache.requested_owners;
+  auto current=retained.requested_owners;
+  REQUIRE(current!=target);
+  unsigned int slices{};
+  while(current!=target&&slices<64U){
+    current=tetra_viewer::advance_world_requested_frontier(
+        current,target,profile.domain,camera,512U);
+    tetra::WorldConformingClosureCache cold;
+    const auto expected=tetra::close_world_conforming_cut(current,&cold);
+    const auto actual=tetra::close_world_conforming_cut(current,&retained);
+    CAPTURE(slices);CAPTURE(current.size());
+    CAPTURE(actual.size());CAPTURE(expected.size());
+    CHECK(actual==expected);
+    CHECK(retained.green_masks==cold.green_masks);
+    ++slices;
+  }
+  REQUIRE(current==target);
+  CHECK(slices>1U);
+  CHECK(retained.closed_owners==target_cache.closed_owners);
+  CHECK(retained.green_masks==target_cache.green_masks);
+}
+
 TEST_CASE("first person fixed steps are deterministic across frame grouping") {
   tetra::Sphere field;
   field.kind=tetra::ImplicitShapeKind::perlin_terrain;

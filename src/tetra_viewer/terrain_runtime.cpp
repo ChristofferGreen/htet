@@ -8,6 +8,7 @@
 #include <set>
 #include <thread>
 #include <tuple>
+#include <unordered_set>
 
 namespace tetra_viewer {
 namespace {
@@ -607,6 +608,81 @@ std::vector<TerrainDebugLine> MonolithicTerrainRuntime::lod_zone_lines() const {
                         mesh_.vertices()[tet.vertices[edge[1]]],colour});
   }
   return result;
+}
+
+namespace {
+struct FrontierAddressHash {
+  std::size_t operator()(tetra::WorldTetAddress address) const noexcept {
+    std::uint64_t hash=address.high*0x9e3779b97f4a7c15ULL;
+    hash^=address.low+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
+    return static_cast<std::size_t>(hash);
+  }
+};
+}  // namespace
+
+std::vector<tetra::WorldTetAddress> advance_world_requested_frontier(
+    std::span<const tetra::WorldTetAddress> retained,
+    std::span<const tetra::WorldTetAddress> target,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Camera& camera,std::size_t maximum_operations) {
+  if(retained.empty()||maximum_operations==0U||
+     std::ranges::equal(retained,target))
+    return std::vector<tetra::WorldTetAddress>(target.begin(),target.end());
+  std::unordered_set<tetra::WorldTetAddress,FrontierAddressHash> current(
+      retained.begin(),retained.end());
+  std::unordered_set<tetra::WorldTetAddress,FrontierAddressHash> desired(
+      target.begin(),target.end());
+  struct Operation {
+    tetra::WorldTetAddress owner{};double distance_squared{};bool split{};
+  };
+  const auto distance_squared=[&](tetra::WorldTetAddress owner){
+    tetra::Vec3 centre{};
+    for(const auto point:tetra::world_tetrahedron_geometry(owner))
+      centre=centre+domain.to_world(point);
+    centre=centre/4.0;
+    const auto delta=centre-camera.position;
+    return delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
+  };
+  std::vector<Operation> operations;
+  std::unordered_set<tetra::WorldTetAddress,FrontierAddressHash> merge_parents;
+  for(const auto owner:retained){
+    if(desired.contains(owner))continue;
+    auto ancestor=owner;bool target_is_coarser{};
+    while(ancestor.red_depth()>0U){
+      ancestor=ancestor.parent();
+      if(desired.contains(ancestor)){target_is_coarser=true;break;}
+    }
+    if(!target_is_coarser){
+      operations.push_back({owner,distance_squared(owner),true});continue;
+    }
+    const auto parent=owner.parent();bool complete=true;
+    for(std::uint8_t child=0;child<8U;++child)
+      complete&=current.contains(parent.child(child));
+    if(complete&&merge_parents.insert(parent).second)
+      operations.push_back({parent,distance_squared(parent),false});
+  }
+  std::ranges::sort(operations,[](const auto& first,const auto& second){
+    if(first.distance_squared!=second.distance_squared)
+      return first.distance_squared<second.distance_squared;
+    if(first.split!=second.split)return first.split>second.split;
+    return first.owner<second.owner;
+  });
+  if(operations.size()>maximum_operations)operations.resize(maximum_operations);
+  std::set<tetra::WorldTetAddress> result(retained.begin(),retained.end());
+  for(const auto& operation:operations){
+    if(operation.split){
+      if(result.erase(operation.owner)!=1U)
+        throw std::logic_error("frontier split is not a current leaf");
+      for(std::uint8_t child=0;child<8U;++child)
+        result.insert(operation.owner.child(child));
+    }else{
+      for(std::uint8_t child=0;child<8U;++child)
+        if(result.erase(operation.owner.child(child))!=1U)
+          throw std::logic_error("frontier merge is not a complete family");
+      result.insert(operation.owner);
+    }
+  }
+  return {result.begin(),result.end()};
 }
 
 WorldLodCutSelection select_world_lod_cut(

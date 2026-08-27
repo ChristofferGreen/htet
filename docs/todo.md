@@ -33,6 +33,14 @@
 - [ ] Replace root-to-leaf target-cut reconstruction with a persistent,
       priority-ordered split/merge frontier that commits a bounded conforming
       transaction from the currently published cut.
+  - [x] Implement and cold-oracle-test distance-prioritized, allocation-checked
+        split/merge batches over complete raw cuts. A production walking trace
+        remains closure-exact at every 512-operation intermediate slice.
+  - [ ] Retain the target and priority queue instead of rebuilding and scanning
+        both complete cuts for every slice.
+  - [ ] Enable sliced publication only after closure and surface work consume
+        dirty ranges; the first integration took about 10.3 seconds over six
+        walking slices and timed out while coarsening the far view.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

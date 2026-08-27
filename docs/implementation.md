@@ -61,6 +61,19 @@ publication remains roughly 2.6--2.8 seconds and is therefore still not an
 interactive solution; the persistent transactional frontier below remains the
 required next step.
 
+The first bounded-frontier experiment established the cut-editing contract but
+also showed why slicing alone is insufficient. A complete raw red cut can move
+toward the camera target through disjoint, distance-prioritized leaf splits and
+complete sibling merges. Explicit set-checked application preserves coverage;
+every 512-operation intermediate on the production walking trace matches a
+cold conformity closure exactly. Production integration is deliberately still
+disabled: each slice continued to rebuild the target and pay global closure,
+optimizer graph, snapshot assembly, checkpoint, and demand costs. Six walking
+slices took about 10.3 seconds, and far-view coarsening missed the existing
+deadline. The next implementation must retain the priority frontier and feed
+its exact dirty ranges through those downstream stages before sliced
+publication can become the default.
+
 ## Technology choices
 
 - C++23 where supported.
