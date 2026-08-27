@@ -3168,13 +3168,16 @@ TEST_CASE("causal world closure proofs survive alternating refinement and coarse
   bool observed_sparse_dependency_query=false;
   for(unsigned int step=0;step<24U;++step){
     if(step<14U||step%3U!=0U){
-      const auto candidate=static_cast<std::size_t>(
-          (step*37U+5U)%requested.size());
-      const auto owner=requested[candidate];
-      if(owner.red_depth()<5U){
-        requested.erase(requested.begin()+static_cast<std::ptrdiff_t>(candidate));
-        for(std::uint8_t child=0;child<8U;++child)
-          requested.push_back(owner.child(child));
+      for(unsigned int edit=0;edit<4U;++edit){
+        const auto candidate=static_cast<std::size_t>(
+            (step*37U+edit*53U+5U)%requested.size());
+        const auto owner=requested[candidate];
+        if(owner.red_depth()<5U){
+          requested.erase(
+              requested.begin()+static_cast<std::ptrdiff_t>(candidate));
+          for(std::uint8_t child=0;child<8U;++child)
+            requested.push_back(owner.child(child));
+        }
       }
     }else{
       std::optional<tetra::WorldTetAddress> parent;
