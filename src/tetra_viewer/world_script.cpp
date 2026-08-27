@@ -166,6 +166,28 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.retained_render_block_bytes
           <<",\"retained_host_staging_bytes\":"
           <<diagnostics.retained_host_staging_bytes
+          <<",\"summary_hierarchy_blocks\":"
+          <<diagnostics.summary_hierarchy_blocks
+          <<",\"surface_hierarchy_blocks\":"
+          <<diagnostics.surface_hierarchy_blocks
+          <<",\"volume_hierarchy_blocks\":"
+          <<diagnostics.volume_hierarchy_blocks
+          <<",\"resident_volume_blocks\":"
+          <<diagnostics.resident_volume_blocks
+          <<",\"resident_volume_cells\":"
+          <<diagnostics.resident_volume_cells
+          <<",\"maximum_volume_blocks\":"
+          <<diagnostics.maximum_volume_blocks
+          <<",\"promoted_volume_blocks\":"
+          <<diagnostics.promoted_volume_blocks
+          <<",\"demoted_volume_blocks\":"
+          <<diagnostics.demoted_volume_blocks
+          <<",\"player_collision_volume_blocks\":"
+          <<diagnostics.player_collision_volume_blocks
+          <<",\"terrain_edit_volume_blocks\":"
+          <<diagnostics.terrain_edit_volume_blocks
+          <<",\"physics_volume_blocks\":"
+          <<diagnostics.physics_volume_blocks
           <<",\"cut_selection_ms\":"<<diagnostics.cut_selection_milliseconds
           <<",\"cut_closure_ms\":"<<diagnostics.cut_closure_milliseconds
           <<",\"surface_build_ms\":"<<diagnostics.surface_build_milliseconds

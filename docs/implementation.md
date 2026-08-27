@@ -218,6 +218,34 @@ upload bytes, with no default-budget rejection. These timings are
 qualification observations, not performance improvements over the preceding
 retained-publication baseline.
 
+The 2026-08-27 tiered-residency pass separates surface authority from optional
+volumetric working storage. Every active block keeps its immutable hierarchy
+payload, optimized surface snapshot, and retained render range; only blocks
+inside the automatic 0.6-unit player/collision pin or explicit edit/physics
+pins retain complete conforming-cell arrays. Ancestor-only blocks are summary
+resident. Pin overlap is deduplicated, promotion and demotion reuse exact block
+identities, and a separate 4,096-volume-block admission limit preserves the
+last published front when demand is excessive.
+
+Selective reconstruction still streams every canonical cell through the exact
+volume hash, but only allocates requested blocks plus the dependency halo needed
+to regenerate changed optimized surfaces. Cold, walking, near/far, reversal,
+and teleport hierarchy, conforming-volume, and connected-surface hashes match
+the pre-change oracle exactly. The old raw render-buffer hash changes because
+equivalent triangles can be packed in a different block order; the pre-change
+and tiered spawn captures are nevertheless byte-identical, and reversal restores
+the tiered render hash exactly.
+
+On the qualified release route, retained conforming storage falls from about
+208 MB to 7.2 MB at walking speed and to 0.84 MB in the far view. Total measured
+CPU residency is 269 MB at spawn, 294 MB after a walking move, 248 MB far away,
+and peaks at 326 MB after teleport, versus the preceding roughly 495--523 MB
+all-volume route. Walking takes about 6.1 seconds, roughly one second slower
+than the all-volume baseline because exact canonical hashing and dependency
+materialization still traverse nonresident cell descriptions. This is the next
+performance target; it is not traded for approximate or history-dependent
+geometry.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

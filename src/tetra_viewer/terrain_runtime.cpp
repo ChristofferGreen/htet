@@ -5,7 +5,9 @@
 #include <map>
 #include <limits>
 #include <stdexcept>
+#include <set>
 #include <thread>
+#include <tuple>
 
 namespace tetra_viewer {
 namespace {
@@ -23,6 +25,104 @@ std::size_t checked_resource_multiply(std::size_t left,std::size_t right) {
 }
 
 }  // namespace
+
+WorldResidencyPlan plan_world_residency(
+    std::span<const tetra::WorldTetAddress> logical_owners,
+    unsigned int block_generations,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    std::span<const WorldVolumePin> pins,
+    std::size_t maximum_volume_blocks) {
+  if(block_generations==0U||
+     block_generations>tetra::maximum_world_red_depth)
+    throw std::invalid_argument("world residency block width is invalid");
+  if(maximum_volume_blocks==0U)
+    throw std::invalid_argument("world volume block budget must be positive");
+  for(const auto& pin:pins)
+    if(static_cast<std::size_t>(pin.kind)>=3U||
+       pin.radius<0.0||!std::isfinite(pin.radius)||
+       !std::isfinite(pin.world_position.x)||
+       !std::isfinite(pin.world_position.y)||
+       !std::isfinite(pin.world_position.z))
+      throw std::invalid_argument("world volume pin must be finite and nonnegative");
+
+  WorldResidencyPlan result;
+  result.surface_blocks.reserve(logical_owners.size());
+  for(const auto owner:logical_owners)
+    result.surface_blocks.push_back(
+        tetra::hierarchy_block_id(owner,block_generations));
+  std::ranges::sort(result.surface_blocks);
+  result.surface_blocks.erase(std::unique(result.surface_blocks.begin(),
+      result.surface_blocks.end()),result.surface_blocks.end());
+  result.metrics.surface_blocks=result.surface_blocks.size();
+  result.metrics.maximum_volume_blocks=maximum_volume_blocks;
+
+  const auto intersects=[&](tetra::HierarchyBlockId id,
+                            const WorldVolumePin& pin){
+    const auto root=tetra::world_tetrahedron_geometry(id.prefix);
+    auto minimum=domain.to_world(root[0]),maximum=minimum;
+    for(const auto point_root:root){
+      const auto point=domain.to_world(point_root);
+      minimum.x=std::min(minimum.x,point.x);
+      minimum.y=std::min(minimum.y,point.y);
+      minimum.z=std::min(minimum.z,point.z);
+      maximum.x=std::max(maximum.x,point.x);
+      maximum.y=std::max(maximum.y,point.y);
+      maximum.z=std::max(maximum.z,point.z);
+    }
+    const auto axis=[](double value,double low,double high){
+      if(value<low)return low-value;
+      if(value>high)return value-high;
+      return 0.0;
+    };
+    const double x=axis(pin.world_position.x,minimum.x,maximum.x);
+    const double y=axis(pin.world_position.y,minimum.y,maximum.y);
+    const double z=axis(pin.world_position.z,minimum.z,maximum.z);
+    return x*x+y*y+z*z<=pin.radius*pin.radius;
+  };
+  for(const auto id:result.surface_blocks){
+    bool selected{};std::array<bool,3> kinds{};
+    for(const auto& pin:pins)if(intersects(id,pin)){
+      selected=true;kinds[static_cast<std::size_t>(pin.kind)]=true;
+    }
+    if(!selected)continue;
+    result.volume_blocks.push_back(id);
+    result.metrics.player_collision_blocks+=kinds[0]?1U:0U;
+    result.metrics.terrain_edit_blocks+=kinds[1]?1U:0U;
+    result.metrics.physics_blocks+=kinds[2]?1U:0U;
+  }
+  result.metrics.volume_blocks=result.volume_blocks.size();
+  if(result.volume_blocks.size()>maximum_volume_blocks)
+    throw std::length_error("world volume pins exceed the block residency budget");
+  return result;
+}
+
+void apply_world_residency_plan(
+    tetra::WorldCutCheckpoint& checkpoint,const WorldResidencyPlan& plan) {
+  if(!std::ranges::is_sorted(plan.surface_blocks)||
+     !std::ranges::is_sorted(plan.volume_blocks)||
+     std::ranges::adjacent_find(plan.surface_blocks)!=plan.surface_blocks.end()||
+     std::ranges::adjacent_find(plan.volume_blocks)!=plan.volume_blocks.end())
+    throw std::invalid_argument("world residency plan is not canonical");
+  for(const auto id:plan.volume_blocks)
+    if(!std::binary_search(plan.surface_blocks.begin(),plan.surface_blocks.end(),id))
+      throw std::invalid_argument("world volume residency lacks surface authority");
+  std::size_t surface_found{},volume_found{};
+  for(auto& block:checkpoint.blocks){
+    block.residency=tetra::HierarchyResidencyTier::summary;
+    if(std::binary_search(plan.surface_blocks.begin(),plan.surface_blocks.end(),
+                          block.id)){
+      block.residency=tetra::HierarchyResidencyTier::surface;++surface_found;
+    }
+    if(std::binary_search(plan.volume_blocks.begin(),plan.volume_blocks.end(),
+                          block.id)){
+      block.residency=tetra::HierarchyResidencyTier::conforming_volume;
+      ++volume_found;
+    }
+  }
+  if(surface_found!=plan.surface_blocks.size()||
+     volume_found!=plan.volume_blocks.size())
+    throw std::invalid_argument("world residency plan names an absent block");
+}
 
 MonolithicTerrainRuntime::MonolithicTerrainRuntime(
     WorldProfile profile,std::shared_ptr<tetra::GeometryExecutor> executor)
@@ -392,6 +492,10 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
      profile_.budgets.maximum_work_units==0U||
      profile_.budgets.maximum_upload_bytes==0U)
     throw std::invalid_argument("world resource budgets must be positive");
+  if(profile_.near_volume_radius<0.0||
+     !std::isfinite(profile_.near_volume_radius)||
+     profile_.maximum_volume_blocks==0U)
+    throw std::invalid_argument("world volume residency policy is invalid");
   field_.kind=profile_.shape;
   field_.terrain=profile_.terrain;
   field_.secondary=profile_.octave_detail_amplitude;
@@ -439,10 +543,43 @@ void BlockedTerrainRuntime::set_resource_budgets(WorldResourceBudgets budgets){
   profile_.budgets=budgets;
 }
 
+void BlockedTerrainRuntime::set_volume_pins(std::vector<WorldVolumePin> pins){
+  const auto less=[](const WorldVolumePin& left,const WorldVolumePin& right){
+    return std::tuple{left.kind,left.world_position.x,left.world_position.y,
+                      left.world_position.z,left.radius}<
+           std::tuple{right.kind,right.world_position.x,right.world_position.y,
+                      right.world_position.z,right.radius};
+  };
+  for(const auto& pin:pins)
+    if(static_cast<std::size_t>(pin.kind)>=3U||
+       pin.radius<0.0||!std::isfinite(pin.radius)||
+       !std::isfinite(pin.world_position.x)||
+       !std::isfinite(pin.world_position.y)||
+       !std::isfinite(pin.world_position.z))
+      throw std::invalid_argument("world volume pin must be finite and nonnegative");
+  std::ranges::sort(pins,less);
+  const auto same=[](const WorldVolumePin& left,const WorldVolumePin& right){
+    return left.kind==right.kind&&left.radius==right.radius&&
+        left.world_position.x==right.world_position.x&&
+        left.world_position.y==right.world_position.y&&
+        left.world_position.z==right.world_position.z;
+  };
+  pins.erase(std::unique(pins.begin(),pins.end(),same),pins.end());
+  if(pins.size()==volume_pins_.size()&&
+     std::equal(pins.begin(),pins.end(),volume_pins_.begin(),same))return;
+  volume_pins_=std::move(pins);demand_pending_=true;
+  if(future_.valid()&&!active_superseded_){
+    cancellation_.request_stop();active_superseded_=true;
+    superseded_at_=std::chrono::steady_clock::now();
+    ++diagnostics_.superseded_builds;
+  }
+}
+
 BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint64_t generation,
-    SparseWorldSurfaceCache surface_cache,std::stop_token cancellation) {
+    SparseWorldSurfaceCache surface_cache,
+    std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation) {
   std::size_t completed_work_units{};
   try{
   const auto started=std::chrono::steady_clock::now();
@@ -452,12 +589,34 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
   const std::uint64_t hierarchy_revision=generation*2U-1U;
-  tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
+  volume_pins.push_back({camera.position,profile.near_volume_radius,
+                         WorldVolumePinKind::player_collision});
+  WorldResidencyPlan residency;
+  try{
+    residency=plan_world_residency(
+        selection.owners,3U,profile.domain,volume_pins,
+        profile.maximum_volume_blocks);
+  }catch(const std::length_error&){
+    Publication rejected;
+    rejected.diagnostics.work_units=completed_work_units;
+    rejected.surface_cache=std::move(surface_cache);
+    rejected.residency_budget_exceeded=true;
+    return rejected;
+  }
+  std::set<tetra::HierarchyBlockId> previous_volume_blocks;
+  for(const auto& block:surface_cache.conforming.blocks)
+    previous_volume_blocks.insert(block->id);
+  auto checkpoint=tetra::make_complete_world_cut_checkpoint(
       selection.owners,3U,hierarchy_revision,
-      tetra::HierarchyResidencyTier::conforming_volume));
+      tetra::HierarchyResidencyTier::surface);
+  apply_world_residency_plan(checkpoint,residency);
+  tetra::WorldCutDirectory directory(std::move(checkpoint));
   auto surface=build_sparse_world_derived_surface(
-      directory,profile.domain,field,true,cancellation,&surface_cache);
-  completed_work_units+=surface.metrics.rebuilt_conforming_cells+
+      directory,profile.domain,field,true,cancellation,&surface_cache,
+      residency.volume_blocks,true);
+  // Even nonretained cells are deterministically reconstructed into the
+  // canonical-volume hash, so they count against the publication work budget.
+  completed_work_units+=surface.metrics.conforming_cells+
       surface.metrics.computed_intersections+surface.triangles.size();
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
@@ -496,6 +655,21 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache.closure.green_masks.capacity()*sizeof(std::uint8_t);
   diagnostics.retained_cache_bytes+=surface_cache.conforming.retained_bytes;
   diagnostics.retained_conforming_bytes=surface_cache.conforming.retained_bytes;
+  diagnostics.summary_hierarchy_blocks=directory.metrics().summary_blocks;
+  diagnostics.surface_hierarchy_blocks=directory.metrics().surface_blocks;
+  diagnostics.volume_hierarchy_blocks=directory.metrics().volume_blocks;
+  diagnostics.resident_volume_blocks=surface_cache.conforming.blocks.size();
+  diagnostics.resident_volume_cells=surface_cache.conforming.cells;
+  diagnostics.maximum_volume_blocks=profile.maximum_volume_blocks;
+  diagnostics.player_collision_volume_blocks=
+      residency.metrics.player_collision_blocks;
+  diagnostics.terrain_edit_volume_blocks=residency.metrics.terrain_edit_blocks;
+  diagnostics.physics_volume_blocks=residency.metrics.physics_blocks;
+  for(const auto id:residency.volume_blocks)
+    diagnostics.promoted_volume_blocks+=previous_volume_blocks.contains(id)?0U:1U;
+  for(const auto id:previous_volume_blocks)
+    diagnostics.demoted_volume_blocks+=std::binary_search(
+        residency.volume_blocks.begin(),residency.volume_blocks.end(),id)?0U:1U;
   for(const auto& snapshot:surface_cache.snapshots)
     diagnostics.retained_cache_bytes+=
         snapshot.vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
@@ -556,7 +730,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     }
   }
   return {directory.checkpoint(),std::move(scene),diagnostics,
-          std::move(surface_cache),false};
+          std::move(surface_cache),false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
@@ -595,15 +769,17 @@ void BlockedTerrainRuntime::finalize_render_front_metrics(
 
 void BlockedTerrainRuntime::submit() {
   const auto profile=profile_;const auto field=field_;const auto camera=camera_;
+  const auto volume_pins=volume_pins_;
   const auto generation=++requested_generation_;
   auto surface_cache=std::move(surface_cache_);
   cancellation_=std::stop_source{};
   const auto token=cancellation_.get_token();
   future_=std::async(std::launch::async,
-      [profile,field,camera,generation,token,
+      [profile,field,camera,generation,token,volume_pins,
        surface_cache=std::move(surface_cache)]() mutable {
     return build_publication(
-        profile,field,camera,generation,std::move(surface_cache),token);
+        profile,field,camera,generation,std::move(surface_cache),
+        volume_pins,token);
   });
   ++diagnostics_.submitted_builds;
   last_requested_position_=camera.position;
@@ -646,6 +822,15 @@ bool BlockedTerrainRuntime::update() {
       active_superseded_=false;
       if(demand_pending_)submit();
       diagnostics_.busy=future_.valid();
+      return false;
+    }
+    if(publication.residency_budget_exceeded){
+      surface_cache_=std::move(publication.surface_cache);
+      ++diagnostics_.budget_rejected_builds;
+      diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      diagnostics_.budget_exceeded=true;
+      active_superseded_=false;demand_pending_=false;
+      diagnostics_.busy=false;
       return false;
     }
     const auto host_estimate=host_staging_.estimate_world_render_blocks(

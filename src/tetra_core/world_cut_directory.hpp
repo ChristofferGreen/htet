@@ -147,6 +147,7 @@ struct WorldBlockedConformingVolume {
   std::size_t reused_cells{};
   std::size_t rebuilt_cells{};
   std::size_t retained_bytes{};
+  std::uint64_t canonical_hash{};
 };
 
 // Flat, allocation-free-per-entry memoization for exact hierarchy geometry
@@ -187,7 +188,9 @@ struct WorldConformingClosureCache {
 reconstruct_blocked_world_conforming_volume(
     const WorldCutDirectory& directory,
     const WorldConformingClosureCache& closure_cache,
-    const WorldBlockedConformingVolume* retained=nullptr);
+    const WorldBlockedConformingVolume* retained=nullptr,
+    std::span<const HierarchyBlockId> materialized_blocks={},
+    bool restrict_materialized_blocks=false);
 // Promotes only owners that cannot be represented by a restricted green
 // stencil, yielding the smallest conforming red-green superset of a sparse cut.
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(

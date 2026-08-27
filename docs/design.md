@@ -2429,6 +2429,11 @@ Research should change the design only through concrete consequences that can be
   ordered render-range front preserves unchanged allocations and uploads only
   dirty bytes; a flat global scene is an on-demand oracle rather than runtime
   authority;
+- tiered world residency validates the same principle at the geometry level:
+  ordinary visible terrain keeps exact hierarchy and surface authority while
+  complete conforming cells are a bounded, incrementally promoted cache for
+  player collision, edits, and physics; demotion changes storage, never the
+  watertight logical cut or its global identities;
 - graphics subdivision-artifact work makes aesthetics a first-class subdivision criterion;
 - NOWHERE is a warning against one universal mutable tetrahedral graph and uncontrolled engine/tool scope.
 

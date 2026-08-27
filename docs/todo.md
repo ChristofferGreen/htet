@@ -3,9 +3,10 @@
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
 experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
-3 large-domain runtime adoption are complete. Execute Gate 4 next: turn the
-currently all-resident sparse revision into a budgeted cache with independent
-summary, surface, and conforming-volume residency.
+3 large-domain runtime adoption are complete. Gate 4's tiered volume residency
+is complete. Execute its hierarchy-demand leaf next: add guard, prediction,
+recently-visible, physics, and cold demand records without changing the one
+authoritative logical cut.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
@@ -140,5 +141,5 @@ not the active queue.
       copies and uploads only dirty ranges.
 - [x] Add explicit CPU-memory, triangle, work, and upload budgets plus
       cancellation of superseded in-flight builds.
-- [ ] Promote ordinary visible blocks to surface-only residency while pinning
+- [x] Promote ordinary visible blocks to surface-only residency while pinning
       conforming volume only around collision, edits, and physics demand.

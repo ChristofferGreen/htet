@@ -73,7 +73,11 @@ struct WorldProfile {
       .world_origin={-63.5,-63.5,-63.5},.world_extent=128.0};
   unsigned int background_red_depth{5U};
   unsigned int near_red_depth{11U};
+  // Full conforming cells are a near-player/interaction cache. Ordinary
+  // visible blocks keep their hierarchy and derived surface without retaining
+  // the substantially larger tetrahedral volume arrays.
   double near_volume_radius{0.6};
+  std::size_t maximum_volume_blocks{4096U};
   double view_distance{48.0};
   double pixel_threshold{128.0};
   unsigned int maximum_depth{16U};

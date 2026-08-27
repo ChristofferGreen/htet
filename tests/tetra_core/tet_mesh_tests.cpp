@@ -818,6 +818,8 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.domain.world_extent==doctest::Approx(128.0));
   CHECK(profile.background_red_depth==5U);
   CHECK(profile.near_red_depth==11U);
+  CHECK(profile.near_volume_radius==doctest::Approx(0.6));
+  CHECK(profile.maximum_volume_blocks==4096U);
   CHECK(profile.view_distance==doctest::Approx(48.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.maximum_depth==16U);
@@ -855,11 +857,67 @@ TEST_CASE("world resource budgets independently gate every publication cost") {
       tetra_viewer::BlockedTerrainRuntime runtime{invalid};
     }()),std::invalid_argument);
 
+  invalid=tetra_viewer::production_world_profile();
+  invalid.maximum_volume_blocks=0U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
   auto undersized=tetra_viewer::production_world_profile();
   undersized.budgets.maximum_triangles=1U;
   CHECK_THROWS_AS(([&]{
       tetra_viewer::BlockedTerrainRuntime runtime{undersized};
     }()),std::length_error);
+}
+
+TEST_CASE("world residency plans deduplicate overlapping hard volume pins") {
+  const auto target=tetra::WorldTetAddress::root(0U)
+      .child(0U).child(0U).child(0U);
+  std::array targets{target};
+  auto checkpoint=tetra::make_sparse_world_cut_checkpoint(
+      targets,3U,1U,tetra::HierarchyResidencyTier::surface);
+  tetra::WorldCutDirectory source(checkpoint);
+  std::vector<tetra::WorldTetAddress> owners;
+  source.for_each_logical_owner(
+      [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
+  std::ranges::sort(owners);
+  const auto geometry=tetra::world_tetrahedron_geometry(target);
+  tetra::Vec3 centre{};
+  for(const auto point:geometry)centre=centre+point;
+  centre=centre/4.0;
+  const tetra::WorldStreamingDemand::Domain domain{
+      .world_origin={0.0,0.0,0.0},.world_extent=1.0};
+  const std::array pins{
+      tetra_viewer::WorldVolumePin{
+          centre,0.01,tetra_viewer::WorldVolumePinKind::player_collision},
+      tetra_viewer::WorldVolumePin{
+          centre,0.01,tetra_viewer::WorldVolumePinKind::terrain_edit}};
+  const auto plan=tetra_viewer::plan_world_residency(
+      owners,3U,domain,pins,64U);
+  REQUIRE_FALSE(plan.volume_blocks.empty());
+  CHECK(plan.volume_blocks.size()<plan.surface_blocks.size());
+  CHECK(plan.metrics.player_collision_blocks==plan.volume_blocks.size());
+  CHECK(plan.metrics.terrain_edit_blocks==plan.volume_blocks.size());
+  CHECK(plan.metrics.physics_blocks==0U);
+  tetra_viewer::apply_world_residency_plan(checkpoint,plan);
+  tetra::WorldCutDirectory tiered(std::move(checkpoint));
+  CHECK(tiered.metrics().volume_blocks==plan.volume_blocks.size());
+  CHECK(tiered.metrics().surface_blocks==
+        plan.surface_blocks.size()-plan.volume_blocks.size());
+  CHECK(tiered.metrics().summary_blocks+plan.surface_blocks.size()==
+        tiered.metrics().blocks);
+
+  REQUIRE(plan.volume_blocks.size()>0U);
+  CHECK_THROWS_AS(([&]{static_cast<void>(tetra_viewer::plan_world_residency(
+      owners,3U,domain,pins,plan.volume_blocks.size()-1U));}()),std::length_error);
+  const std::array invalid_pins{tetra_viewer::WorldVolumePin{
+      centre,-1.0,tetra_viewer::WorldVolumePinKind::physics}};
+  CHECK_THROWS_AS(([&]{static_cast<void>(tetra_viewer::plan_world_residency(
+      owners,3U,domain,invalid_pins,64U));}()),std::invalid_argument);
+  const std::array invalid_kind{tetra_viewer::WorldVolumePin{
+      centre,0.1,static_cast<tetra_viewer::WorldVolumePinKind>(255U)}};
+  CHECK_THROWS_AS(([&]{static_cast<void>(tetra_viewer::plan_world_residency(
+      owners,3U,domain,invalid_kind,64U));}()),std::invalid_argument);
 }
 
 TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
@@ -1129,6 +1187,10 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.active_tetrahedra>=initial.logical_cells);
   CHECK(initial.retained_cache_bytes>0U);
   CHECK(initial.resident_bytes<512U*1024U*1024U);
+  CHECK(initial.volume_hierarchy_blocks==initial.resident_volume_blocks);
+  CHECK(initial.surface_hierarchy_blocks>initial.volume_hierarchy_blocks);
+  CHECK(initial.resident_volume_cells<initial.active_tetrahedra);
+  CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
   double minimum_x=std::numeric_limits<double>::infinity();
   double maximum_x=-std::numeric_limits<double>::infinity();
   double maximum_y=-std::numeric_limits<double>::infinity();
@@ -1189,6 +1251,15 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
 
   tetra::Camera camera;
   camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  const std::array interaction_pins{
+      tetra_viewer::WorldVolumePin{
+          {2.0,0.5,0.5},0.3,
+          tetra_viewer::WorldVolumePinKind::terrain_edit},
+      tetra_viewer::WorldVolumePin{
+          {2.0,0.5,0.5},0.3,
+          tetra_viewer::WorldVolumePinKind::physics}};
+  runtime.set_volume_pins(std::vector<tetra_viewer::WorldVolumePin>(
+      interaction_pins.begin(),interaction_pins.end()));
   // Each sample is below the rebuild threshold; cumulative motion must still
   // be compared with the last submitted demand, not the previous frame.
   for(std::size_t step=1U;step<=150U;++step){
@@ -1214,8 +1285,17 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(runtime.diagnostics().scene_generation>initial.scene_generation);
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
+  CHECK(runtime.diagnostics().promoted_volume_blocks>0U);
+  CHECK(runtime.diagnostics().demoted_volume_blocks>0U);
+  CHECK(runtime.diagnostics().terrain_edit_volume_blocks>0U);
+  CHECK(runtime.diagnostics().physics_volume_blocks>0U);
+  CHECK(runtime.diagnostics().resident_volume_blocks<
+        runtime.diagnostics().player_collision_volume_blocks+
+        runtime.diagnostics().terrain_edit_volume_blocks+
+        runtime.diagnostics().physics_volume_blocks);
   const auto boundary_cells=runtime.diagnostics().logical_cells;
 
+  runtime.set_volume_pins({});
   camera.position={2.0,3.0,8.0};
   const auto target=tetra::Vec3{2.0,0.5,0.5}-camera.position;
   const double length=std::sqrt(target.x*target.x+target.y*target.y+
@@ -1231,6 +1311,15 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(final.work_high_water<=budgets.maximum_work_units);
   CHECK(final.upload_high_water_bytes<=budgets.maximum_upload_bytes);
   CHECK(final.budget_rejected_builds==0U);
+
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  runtime.set_camera(camera,false);
+  REQUIRE(wait_for(std::chrono::seconds(10)));
+  const auto reversed=runtime.diagnostics();
+  CHECK(reversed.hierarchy_hash==initial.hierarchy_hash);
+  CHECK(reversed.conforming_volume_hash==initial.conforming_volume_hash);
+  CHECK(reversed.connected_surface_hash==initial.connected_surface_hash);
+  CHECK(reversed.render_hash==initial.render_hash);
 }
 
 TEST_CASE("blocked world resource rejection preserves the complete published front") {
@@ -1279,6 +1368,32 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   CHECK(recovered.budget_rejected_builds==1U);
   CHECK(recovered.scene_generation>initial.scene_generation);
   CHECK(recovered.hierarchy_hash!=initial.hierarchy_hash);
+
+  const auto recovered_vertices=runtime.scene().triangle_vertices;
+  runtime.set_volume_pins({tetra_viewer::WorldVolumePin{
+      camera.position,profile.domain.world_extent,
+      tetra_viewer::WorldVolumePinKind::terrain_edit}});
+  CHECK_FALSE(runtime.update());
+  const auto volume_budget_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(10);
+  while(runtime.diagnostics().busy&&
+        std::chrono::steady_clock::now()<volume_budget_deadline){
+    static_cast<void>(runtime.update());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto volume_rejected=runtime.diagnostics();
+  REQUIRE_FALSE(volume_rejected.busy);
+  CHECK(volume_rejected.budget_exceeded);
+  CHECK(volume_rejected.budget_rejected_builds==2U);
+  CHECK(volume_rejected.scene_generation==recovered.scene_generation);
+  CHECK(volume_rejected.hierarchy_hash==recovered.hierarchy_hash);
+  CHECK(volume_rejected.conforming_volume_hash==recovered.conforming_volume_hash);
+  CHECK(volume_rejected.connected_surface_hash==recovered.connected_surface_hash);
+  CHECK(volume_rejected.render_hash==recovered.render_hash);
+  const auto& volume_retained=runtime.scene().triangle_vertices;
+  REQUIRE(volume_retained.size()==recovered_vertices.size());
+  CHECK(std::memcmp(volume_retained.data(),recovered_vertices.data(),
+                    volume_retained.size()*sizeof(tetra_viewer::SceneVertex))==0);
 }
 
 TEST_CASE("blocked world supersession cancels stale work and converges to newest pose") {
@@ -2473,6 +2588,32 @@ TEST_CASE("blocked conforming volume is an exact local reusable reconstruction")
   for(std::size_t index=0;index<blocked.blocks.size();++index)
     CHECK(repeated.blocks[index].get()==blocked.blocks[index].get());
 
+  std::vector<tetra::HierarchyBlockId> materialized{
+      blocked.blocks.front()->id,blocked.blocks.back()->id};
+  std::ranges::sort(materialized);
+  materialized.erase(std::unique(materialized.begin(),materialized.end()),
+                     materialized.end());
+  const auto filtered=tetra::reconstruct_blocked_world_conforming_volume(
+      directory,closure,&blocked,materialized,true);
+  CHECK(filtered.blocks.size()==materialized.size());
+  CHECK(filtered.cells==blocked.cells);
+  CHECK(filtered.logical_owners==blocked.logical_owners);
+  CHECK(filtered.canonical_hash==blocked.canonical_hash);
+  CHECK(filtered.retained_bytes<blocked.retained_bytes);
+  for(const auto& block:filtered.blocks){
+    const auto previous=std::ranges::lower_bound(
+        blocked.blocks,block->id,{},[](const auto& candidate){return candidate->id;});
+    REQUIRE(previous!=blocked.blocks.end());
+    CHECK(previous->get()==block.get());
+  }
+  const std::span<const tetra::HierarchyBlockId> no_blocks;
+  const auto surface_only=tetra::reconstruct_blocked_world_conforming_volume(
+      directory,closure,&filtered,no_blocks,true);
+  CHECK(surface_only.blocks.empty());
+  CHECK(surface_only.cells==blocked.cells);
+  CHECK(surface_only.canonical_hash==blocked.canonical_hash);
+  CHECK(surface_only.retained_bytes==0U);
+
   const auto selected=mesh.logical_red_owners().back();
   REQUIRE(mesh.refine_selected_binary({selected}));
   std::vector<tetra::WorldTetAddress> moved_owners;
@@ -2662,6 +2803,27 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(retained.metrics.reused_surface_blocks==surface.snapshots.size());
   CHECK(cache.intersections.size()==surface.vertices.size());
   CHECK(cache.snapshots.size()==surface.snapshots.size());
+
+  // Selective volume retention changes storage only: a cold extraction still
+  // publishes exactly the same authoritative connected surface.
+  tetra_viewer::SparseWorldSurfaceCache selective_cache;
+  const std::array retained_blocks{cache.conforming.blocks.front()->id};
+  const auto selective=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&selective_cache,retained_blocks,true);
+  CHECK(selective.canonical_surface_hash==surface.canonical_surface_hash);
+  REQUIRE(selective.vertices.size()==surface.vertices.size());
+  for(std::size_t index=0;index<surface.vertices.size();++index){
+    CHECK(selective.vertices[index].key==surface.vertices[index].key);
+    CHECK(selective.vertices[index].position.x==surface.vertices[index].position.x);
+    CHECK(selective.vertices[index].position.y==surface.vertices[index].position.y);
+    CHECK(selective.vertices[index].position.z==surface.vertices[index].position.z);
+  }
+  CHECK(selective.triangles==surface.triangles);
+  REQUIRE(selective_cache.conforming.blocks.size()==1U);
+  CHECK(selective_cache.conforming.blocks.front()->id==retained_blocks.front());
+  CHECK(selective.metrics.conforming_cells==surface.metrics.conforming_cells);
+  CHECK(selective_cache.conforming.cells<selective.metrics.conforming_cells);
+  CHECK(selective_cache.conforming.retained_bytes<cache.conforming.retained_bytes);
 
   const auto flat_scene=tetra_viewer::prepare_blocked_derived_surface_scene(
       surface,sphere,true,true,{});

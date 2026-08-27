@@ -912,6 +912,16 @@ camera coarsening. The scheduler then makes the blocks and dependency halos
 needed to realize that cut resident. Missing residency may delay a transaction,
 but it cannot change its topology or permit a partial conforming cut to publish.
 
+The production runtime now assigns every published hierarchy block one explicit
+storage tier. Ancestors without active owners retain a summary, ordinary active
+terrain retains its exact optimized surface and hierarchy payload, and blocks
+intersecting the near-player collision sphere or an explicit edit/physics pin
+also retain complete restricted-green conforming cells. Overlapping pins share
+one block allocation. Promotion and demotion are incremental, deterministic,
+and independent of the logical cut: changing a pin cannot invalidate or alter
+the authoritative surface. A separate 4,096-block hard budget rejects excessive
+volume demand before publication and leaves the last complete front untouched.
+
 "One cut" is a logical invariant, not one flat planet-wide leaf vector. Its
 resident representation is an ordered prefix directory whose blocks contain
 local cut ranges; absent descendant ranges resolve to a published coarse
@@ -1312,7 +1322,7 @@ flat normals.
 - [x] Keep one sparse prefix directory, block-local ordered cut ranges, and
       conservative ancestor summaries; never instantiate every possible
       hierarchy node or one global per-cell cut array.
-- [ ] Implement summary-only, surface, and conforming-volume residency tiers;
+- [x] Implement summary-only, surface, and conforming-volume residency tiers;
       default ordinary visible terrain to the surface tier and pin full volume
       only for the player, edits, or simulation.
 - [ ] Implement camera, guard, near-player, prediction, recent, physics, and
@@ -1324,10 +1334,10 @@ flat normals.
       bounded publication checkpoints.
 - [x] Keep the previous complete conforming revision visible until its
       replacement set publishes.
-- [ ] Pin collision/edit blocks and their required ancestry and dependencies.
+- [x] Pin collision/edit blocks and their required ancestry and dependencies.
 - [x] Add configurable CPU-memory, triangle, work, and upload budgets with
       non-mutating host-stage prediction and last-complete-front rejection.
-- [ ] Add an independent hierarchy-block residency budget when cold eviction
+- [x] Add an independent hierarchy-block residency budget when cold eviction
       and residency tiers are introduced.
 - [ ] Implement deterministic cold-block eviction after publishing a valid
       coarse replacement and retaining procedural/edit authority.

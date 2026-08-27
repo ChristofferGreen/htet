@@ -32,6 +32,17 @@ struct TerrainRuntimeDiagnostics {
   std::size_t retained_host_staging_bytes{};
   std::size_t hierarchy_blocks{};
   std::size_t surface_blocks{};
+  std::size_t summary_hierarchy_blocks{};
+  std::size_t surface_hierarchy_blocks{};
+  std::size_t volume_hierarchy_blocks{};
+  std::size_t resident_volume_blocks{};
+  std::size_t resident_volume_cells{};
+  std::size_t maximum_volume_blocks{};
+  std::size_t promoted_volume_blocks{};
+  std::size_t demoted_volume_blocks{};
+  std::size_t player_collision_volume_blocks{};
+  std::size_t terrain_edit_volume_blocks{};
+  std::size_t physics_volume_blocks{};
   std::size_t reused_hierarchy_blocks{};
   std::size_t rebuilt_hierarchy_blocks{};
   std::size_t reused_surface_intersections{};
@@ -103,6 +114,48 @@ struct WorldLodCutSelection {
   std::vector<tetra::WorldTetAddress> owners;
   WorldLodCutMetrics metrics{};
 };
+
+enum class WorldVolumePinKind : std::uint8_t {
+  player_collision,
+  terrain_edit,
+  physics,
+};
+
+struct WorldVolumePin {
+  tetra::Vec3 world_position{};
+  double radius{};
+  WorldVolumePinKind kind{WorldVolumePinKind::physics};
+};
+
+struct WorldResidencyPlanMetrics {
+  std::size_t surface_blocks{};
+  std::size_t volume_blocks{};
+  std::size_t player_collision_blocks{};
+  std::size_t terrain_edit_blocks{};
+  std::size_t physics_blocks{};
+  std::size_t maximum_volume_blocks{};
+};
+
+struct WorldResidencyPlan {
+  std::vector<tetra::HierarchyBlockId> surface_blocks;
+  std::vector<tetra::HierarchyBlockId> volume_blocks;
+  WorldResidencyPlanMetrics metrics{};
+};
+
+// Selects full-volume cache blocks independently from the global logical cut.
+// Every active owner block remains at least surface-resident; intersection
+// with any hard player/edit/physics pin promotes the complete block.
+[[nodiscard]] WorldResidencyPlan plan_world_residency(
+    std::span<const tetra::WorldTetAddress> logical_owners,
+    unsigned int block_generations,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    std::span<const WorldVolumePin> pins,
+    std::size_t maximum_volume_blocks);
+
+// Applies the plan only to residency metadata. Logical owner arrays and exact
+// hierarchy identities are not changed.
+void apply_world_residency_plan(
+    tetra::WorldCutCheckpoint& checkpoint,const WorldResidencyPlan& plan);
 
 // Selects one deterministic surface-relevant cut in world coordinates. The
 // field test prunes empty volume, projected diameter controls visible detail,
@@ -187,6 +240,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 
   void set_camera(const tetra::Camera& camera,bool interactive) override;
   void set_resource_budgets(WorldResourceBudgets budgets);
+  void set_volume_pins(std::vector<WorldVolumePin> pins);
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
   [[nodiscard]] const PreparedScene& scene() const override;
@@ -211,11 +265,14 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
     bool canceled{};
+    bool residency_budget_exceeded{};
   };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
       const tetra::Camera& camera,std::uint64_t generation,
-      SparseWorldSurfaceCache surface_cache={},std::stop_token cancellation={});
+      SparseWorldSurfaceCache surface_cache={},
+      std::vector<WorldVolumePin> volume_pins={},
+      std::stop_token cancellation={});
   void submit();
   void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 
@@ -229,6 +286,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::future<Publication> future_;
   std::stop_source cancellation_;
   SparseWorldSurfaceCache surface_cache_;
+  std::vector<WorldVolumePin> volume_pins_;
   // World render blocks are deliberately fine grained.  A small slot keeps
   // retained staging proportional to their contents instead of paying the
   // research viewer's 256-triangle allocation quantum for every block part.

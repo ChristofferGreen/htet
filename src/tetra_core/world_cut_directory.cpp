@@ -1252,7 +1252,9 @@ WorldConformingVolume reconstruct_world_conforming_volume(
 WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
     const WorldCutDirectory& directory,
     const WorldConformingClosureCache& closure_cache,
-    const WorldBlockedConformingVolume* retained) {
+    const WorldBlockedConformingVolume* retained,
+    std::span<const HierarchyBlockId> materialized_blocks,
+    bool restrict_materialized_blocks) {
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   if(closure_cache.closed_owners.size()!=directory.logical_owner_count()||
@@ -1264,9 +1266,28 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
           &WorldConformingClosureCacheEntry::address))
     throw std::invalid_argument(
         "blocked conforming reconstruction requires sorted closure state");
+  if(!std::ranges::is_sorted(materialized_blocks)||
+     std::ranges::adjacent_find(materialized_blocks)!=materialized_blocks.end())
+    throw std::invalid_argument(
+        "blocked conforming materialization set is not canonical");
 
   WorldBlockedConformingVolume result;
   result.logical_owners=closure_cache.closed_owners.size();
+  constexpr std::uint64_t volume_hash_offset=1469598103934665603ULL;
+  constexpr std::uint64_t volume_hash_prime=1099511628211ULL;
+  result.canonical_hash=volume_hash_offset;
+  const auto hash_cell=[&](const WorldConformingCell& cell){
+    auto keys=cell.vertices;std::ranges::sort(keys);
+    const auto hash_bytes=[&](const void* value,std::size_t size){
+      const auto* bytes=static_cast<const unsigned char*>(value);
+      for(std::size_t index=0;index<size;++index){
+        result.canonical_hash^=bytes[index];
+        result.canonical_hash*=volume_hash_prime;
+      }
+    };
+    hash_bytes(&cell.logical_owner,sizeof(cell.logical_owner));
+    hash_bytes(keys.data(),sizeof(keys));
+  };
   std::size_t begin{};
   while(begin<closure_cache.closed_owners.size()){
     const auto id=hierarchy_block_id(
@@ -1275,6 +1296,8 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
     while(end<closure_cache.closed_owners.size()&&hierarchy_block_id(
           closure_cache.closed_owners[end],directory.block_generations())==id)
       ++end;
+    const bool materialize=!restrict_materialized_blocks||std::binary_search(
+        materialized_blocks.begin(),materialized_blocks.end(),id);
     constexpr std::uint64_t offset=1469598103934665603ULL;
     constexpr std::uint64_t prime=1099511628211ULL;
     std::uint64_t signature=offset;
@@ -1294,7 +1317,8 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
         retained->blocks,id,{},[](const auto& block){return block->id;}):
         std::vector<std::shared_ptr<const WorldConformingBlockSnapshot>>::const_iterator{};
     const auto exact_previous=[&]{
-      if(!retained||previous==retained->blocks.end()||(*previous)->id!=id||
+      if(!materialize||!retained||previous==retained->blocks.end()||
+         (*previous)->id!=id||
          (*previous)->owner_mask_hash!=signature||
          (*previous)->green_masks.size()!=end-begin||
          !std::equal((*previous)->green_masks.begin(),
@@ -1315,6 +1339,9 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
     if(exact_previous()){
       result.blocks.push_back(*previous);++result.reused_blocks;
       result.reused_cells+=(*previous)->cells.size();
+      result.cells+=(*previous)->cells.size();
+      result.transition_cells+=(*previous)->transition_cells;
+      for(const auto& cell:(*previous)->cells)hash_cell(cell);
     }else{
       WorldConformingBlockSnapshot block;
       block.id=id;block.owner_mask_hash=signature;
@@ -1328,7 +1355,7 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
         if(mask==63U)throw std::logic_error("logical world owner is red-split");
         conforming_cell_count+=complete_green_template(mask).count;
       }
-      block.cells.reserve(conforming_cell_count);
+      if(materialize)block.cells.reserve(conforming_cell_count);
       std::size_t geometry_index{};
       if(!closure_cache.geometry.empty()){
         geometry_index=static_cast<std::size_t>(std::ranges::lower_bound(
@@ -1376,19 +1403,24 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
             output.vertices[corner]=point_keys[point];
             output.positions[corner]=points[point];
           }
-          block.cells.push_back(output);
+          hash_cell(output);
+          if(materialize)block.cells.push_back(output);
         }
         if(mask!=0U)block.transition_cells+=green.count;
       }
-      result.rebuilt_cells+=block.cells.size();++result.rebuilt_blocks;
-      result.blocks.push_back(std::make_shared<const WorldConformingBlockSnapshot>(
-          std::move(block)));
+      result.cells+=conforming_cell_count;
+      result.transition_cells+=block.transition_cells;
+      if(materialize){
+        result.rebuilt_cells+=block.cells.size();++result.rebuilt_blocks;
+        result.blocks.push_back(
+            std::make_shared<const WorldConformingBlockSnapshot>(
+                std::move(block)));
+      }
     }
-    const auto& published=*result.blocks.back();
-    result.cells+=published.cells.size();
-    result.transition_cells+=published.transition_cells;
     begin=end;
   }
+  std::ranges::sort(result.blocks,{},
+      [](const auto& block){return block->id;});
   for(const auto& block:result.blocks)
     result.retained_bytes+=sizeof(WorldConformingBlockSnapshot)+
         block->green_masks.capacity()*sizeof(std::uint8_t)+

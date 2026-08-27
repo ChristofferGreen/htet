@@ -809,7 +809,9 @@ struct BlockedDerivedSurfaceBuild {
     const tetra::WorldCutDirectory& directory,
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Sphere& field,bool optimize=true,
-    std::stop_token cancellation={},SparseWorldSurfaceCache* cache=nullptr);
+    std::stop_token cancellation={},SparseWorldSurfaceCache* cache=nullptr,
+    std::span<const tetra::HierarchyBlockId> retained_volume_blocks={},
+    bool restrict_retained_volume=false);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same
