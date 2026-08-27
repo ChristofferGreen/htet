@@ -3561,11 +3561,25 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   const auto optimizer_dependencies_built=std::chrono::steady_clock::now();
   std::map<tetra::HierarchyBlockId,
            std::vector<tetra::WorldDerivedVertexKey>> block_surface_vertices;
-  if(cache)for(const auto& triangle:all_surface_triangles){
-    auto& surface_vertices=block_surface_vertices[tetra::hierarchy_block_id(
-        triangle.owner,directory.block_generations())];
-    surface_vertices.insert(surface_vertices.end(),triangle.vertices.begin(),
-                            triangle.vertices.end());
+  if(cache){
+    // Unchanged snapshots already own sorted unique vertex arrays. Reusing
+    // them avoids expanding and re-sorting three keys per retained triangle.
+    for(const auto& snapshot:cache->snapshots){
+      if(!topology_current_blocks.contains(snapshot.id)||
+         topology_changed_blocks.contains(snapshot.id))continue;
+      auto& surface_vertices=block_surface_vertices[snapshot.id];
+      surface_vertices.reserve(snapshot.vertices.size());
+      for(const auto& vertex:snapshot.vertices)
+        surface_vertices.push_back(vertex.key);
+    }
+    for(const auto& triangle:all_surface_triangles){
+      const auto id=tetra::hierarchy_block_id(
+          triangle.owner,directory.block_generations());
+      if(!topology_changed_blocks.contains(id))continue;
+      auto& surface_vertices=block_surface_vertices[id];
+      surface_vertices.insert(surface_vertices.end(),triangle.vertices.begin(),
+                              triangle.vertices.end());
+    }
   }else for(const auto& block:volume.blocks){
     auto& surface_vertices=block_surface_vertices[block->id];
     for(const auto& cell:block->cells){

@@ -874,7 +874,9 @@ WorldLodCutSelection select_world_lod_cut(
     result.metrics.retained_closure_proof_bytes=
         closure_cache->proof_nodes.capacity()*sizeof(tetra::WorldClosureProofNode)+
         closure_cache->promotion_proofs.capacity()*
-            sizeof(tetra::WorldClosurePromotionProof);
+            sizeof(tetra::WorldClosurePromotionProof)+
+        closure_cache->proof_dependent_offsets.capacity()*sizeof(std::uint32_t)+
+        closure_cache->proof_dependents.capacity()*sizeof(std::uint32_t);
     result.metrics.closure_dependency_blocks_reused=
         closure_cache->last_dependency_blocks_reused;
     result.metrics.closure_dependency_blocks_rebuilt=
@@ -1190,6 +1192,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(tetra::WorldClosureProofNode)+
       surface_cache.closure.promotion_proofs.capacity()*
           sizeof(tetra::WorldClosurePromotionProof)+
+      surface_cache.closure.proof_dependent_offsets.capacity()*
+          sizeof(std::uint32_t)+
+      surface_cache.closure.proof_dependents.capacity()*sizeof(std::uint32_t)+
       surface_cache.closure.last_dependency_retained_bytes+
       retained_certificate_bytes+
       surface_cache.hierarchy.capacity()*

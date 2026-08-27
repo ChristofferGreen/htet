@@ -161,6 +161,20 @@ from about 867 ms to 810--815 ms. This is useful but still far above the 250 ms
 gate; closure proof/finalization work and remaining complete surface scans are
 the next targets.
 
+Closure proofs now name owner existence explicitly. A requested leaf is a root
+witness; a promoted child carries the proof that materialized its parent.
+Green-edge and red-promotion facts include those witnesses as ordinary DAG
+inputs, and a flat reverse dependency array propagates invalidity from removed
+requested roots or inactive split ancestors. This removes repeated dynamic
+owner-path discovery and cuts bounded proof validation from about 69 ms to
+35--38 ms while preserving alternating refinement/coarsening and every
+production hash. Reusing each unchanged snapshot's already unique vertex list
+also reduces patch extraction by roughly 9 ms. The remaining architecture is
+unambiguous: even a 64-operation slice measures about 708 ms (332 ms closure
+and 332 ms surface), so operation-budget tuning cannot reach 250 ms. Closure
+owners/proofs and surface certificates/patches must publish as changed block
+arrays without reconstructing their complete flat streams.
+
 ## Technology choices
 
 - C++23 where supported.

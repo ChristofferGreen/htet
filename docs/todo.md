@@ -58,6 +58,14 @@
           zero-work repeated builds, and reduces the bounded optimizer-
           dependency stage from about 121 ms to 63--67 ms. The full slice is
           still about 0.81 s, so this does not enable production slicing.
+    - [x] Make closure owner-existence witnesses explicit causal DAG inputs and
+          retain a flat reverse dependency directory. Removed requested roots
+          and inactive split ancestors now invalidate their dependents without
+          reconstructing dynamic owner proofs. Proof validation falls from
+          about 69 ms to 35--38 ms with exact alternating refine/coarsen hashes.
+          A 64-operation measurement still costs about 0.71 s, proving that
+          smaller slices cannot pass until complete owner and surface streams
+          become retained block transactions.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

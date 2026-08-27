@@ -224,6 +224,9 @@ struct WorldConformingClosureCache {
   std::vector<std::uint8_t> green_masks;
   std::vector<WorldClosureProofNode> proof_nodes;
   std::vector<WorldClosurePromotionProof> promotion_proofs;
+  // Flat reverse DAG for bounded invalidation from changed causal roots.
+  std::vector<std::uint32_t> proof_dependent_offsets;
+  std::vector<std::uint32_t> proof_dependents;
   std::vector<std::shared_ptr<const WorldClosureDependencyBlock>> dependency_blocks;
   std::vector<std::uint64_t> vertex_block_records;
   std::vector<std::uint32_t> free_dependency_block_ids;
