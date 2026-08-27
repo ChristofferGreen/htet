@@ -376,7 +376,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     const double length=std::sqrt(
         delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
     superseded.forward=delta/length;
-    runtime->set_camera(superseded,true);
+    runtime->set_camera(superseded,false);
     const auto canceled_target=before.canceled_builds+step+1U;
     const auto cancellation_deadline=
         std::chrono::steady_clock::now()+std::chrono::seconds(5);

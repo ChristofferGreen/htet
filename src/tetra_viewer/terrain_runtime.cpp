@@ -1259,12 +1259,18 @@ void BlockedTerrainRuntime::submit() {
 }
 
 void BlockedTerrainRuntime::set_camera(
-    const tetra::Camera& camera,bool) {
+    const tetra::Camera& camera,bool interactive) {
   const auto delta=camera.position-last_requested_position_;
   const bool moved=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>0.02*0.02;
   camera_=camera;
   demand_pending_=demand_pending_||moved;
-  if(moved&&future_.valid()&&!active_superseded_){
+  // Interactive camera input is an unbounded stream. Canceling the active
+  // publication for every new pose can starve publication forever while the
+  // player walks. Keep the complete in-flight front, coalesce all newer poses
+  // in camera_, then submit the newest pose as soon as this front lands.
+  // A settled request is different: there is no value in finishing a front
+  // for a camera pose the user has explicitly left behind.
+  if(moved&&future_.valid()&&!interactive&&!active_superseded_){
     cancellation_.request_stop();active_superseded_=true;
     superseded_at_=std::chrono::steady_clock::now();
     ++diagnostics_.superseded_builds;

@@ -1639,7 +1639,7 @@ TEST_CASE("blocked world supersession cancels stale work and converges to newest
     const auto length=std::sqrt(
         delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
     camera.forward=delta/length;
-    runtime.set_camera(camera,true);
+    runtime.set_camera(camera,false);
     const auto cancellation_deadline=
         std::chrono::steady_clock::now()+std::chrono::seconds(5);
     while(std::chrono::steady_clock::now()<cancellation_deadline){
@@ -1684,6 +1684,40 @@ TEST_CASE("blocked world supersession cancels stale work and converges to newest
   CHECK(latest.predicted_hierarchy_blocks==expected.predicted_hierarchy_blocks);
   CHECK(latest.recent_hierarchy_blocks==expected.recent_hierarchy_blocks);
   CHECK(latest.cold_hierarchy_blocks==expected.cold_hierarchy_blocks);
+}
+
+TEST_CASE("blocked world publishes fronts during continuous interactive movement") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  tetra::Camera camera;
+  camera.position={0.60,0.72,0.75};camera.forward={0.0,-0.2,-1.0};
+  runtime.set_camera(camera,true);
+  CHECK_FALSE(runtime.update());
+  REQUIRE(runtime.diagnostics().busy);
+  const auto canceled_before=runtime.diagnostics().canceled_builds;
+  const auto superseded_before=runtime.diagnostics().superseded_builds;
+
+  bool published_while_moving=false;
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  for(std::size_t sample=0U;std::chrono::steady_clock::now()<deadline;++sample){
+    camera.position.x=sample%2U==0U?0.65:0.60;
+    runtime.set_camera(camera,true);
+    if(runtime.update()){
+      published_while_moving=true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  CHECK(published_while_moving);
+  CHECK(runtime.diagnostics().scene_generation>initial.scene_generation);
+  CHECK(runtime.diagnostics().canceled_builds==canceled_before);
+  CHECK(runtime.diagnostics().superseded_builds==superseded_before);
+  // The just-published front is complete, while a coalesced follow-up may
+  // already be running for the most recent pose.
+  CHECK(runtime.diagnostics().positive_volumes);
+  CHECK(runtime.diagnostics().conforming_faces);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
