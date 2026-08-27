@@ -598,6 +598,42 @@ The volume tier is pinned only near the player, modifications, or simulations.
 Tier changes preserve the same global address and world revision; they change
 resident derived data, not terrain identity.
 
+This tiering is not sufficient if the builder first reconstructs the complete
+conforming volume and merely discards it afterward. The production invariant is
+stronger:
+
+> Ordinary rendering work must scale with the surface band and its bounded
+> conformity/optimization halo, not with the tetrahedral volume represented by
+> the hierarchy.
+
+For untouched terrain, the procedural field plus sparse history is authority.
+The hierarchy supplies stable addresses, the logical cut, conservative
+summaries, and exact transition masks. A surface-tier block may expand the
+green template for a candidate owner directly into field crossings and owned
+triangles; it does not need a persistent `WorldConformingCell` array. Complete
+conforming tetrahedra are materialized only for collision/debugging that truly
+requires them, edits, physics, or an explicit correctness oracle.
+
+The intended production data flow is therefore:
+
+```text
+procedural field + sparse edits + hierarchy summaries
+                         |
+                  surface-band owners
+                         |
+         exact transition masks + bounded halo
+                         |
+        owned crossings/triangles -> retained render front
+
+hard player/edit/physics pins -> conforming-volume blocks (on demand)
+```
+
+Surface and pinned-volume products share canonical addresses, transition masks,
+and world revision, so independently constructing them must not create two
+terrain truths. Promotion may add volume data but cannot change the already
+published boundary. Demotion removes the optional volume cache only after its
+surface authority is independently retained.
+
 ## 7. Cross-block conformity contract
 
 Storage partitioning must not create a second meshing problem. There is one
@@ -1369,6 +1405,82 @@ flat normals.
       reversal, and teleport replacement behavior.
 - [x] Verify convergence, bounded memory, exact cold-oracle equivalence, and
       identical regenerated hashes.
+
+### Gate 4A: Surface-proportional construction — next priority
+
+The current runtime has surface-only *residency*, but it does not yet have a
+surface-only construction path. `reconstruct_blocked_world_conforming_volume`
+still visits every logical owner, expands every green cell, and feeds the
+complete canonical-volume hash. A cold publication also materializes all
+changed active blocks so the surface extractor can consume cell arrays, then
+retains only the pinned volume subset. This makes work proportional to the
+represented volume even when rendering is the only consumer.
+
+The research supports this direction without supplying a drop-in BCC
+implementation. Isodiamond hierarchies demonstrate that a compact
+surface-relevant hierarchy can be much smaller than its source volume, but its
+minimal form cannot replace editable-volume authority. Nested refinement
+domains provide the conservative descendant rejection needed to skip whole
+solid/empty subtrees. SPGrid and NanoVDB show how topology and optional data
+channels can have different residency, while concurrent binary trees show that
+active surface work can be compacted independently from addressable depth.
+The transferable combination is conservative rejection plus a derived compact
+surface active set; exact BCC ownership, transition masks, and promotion back
+to editable volume remain this project's responsibility.
+
+A separate octree/height-field render mesh would make the surface path easier,
+but would introduce another LOD seam and another geometric identity at exactly
+the point where edits and caves must agree with rendering. Direct extraction
+from the existing logical cut keeps one boundary grammar. Conversely, retaining
+the current full-volume builder and merely parallelizing it preserves exactness
+but leaves the dominant asymptotic cost unchanged. Gate 4A selects direct BCC
+surface construction with the old builder retained as its oracle.
+
+- [ ] Establish cold, walking, far, reversal, and teleport counters for logical
+      owners considered, conservative range tests, green cells enumerated,
+      conforming cells materialized, field samples, surface candidates,
+      triangles, halo blocks, bytes, and time.
+- [ ] Move complete conforming-volume hashing out of the production publication
+      critical path. Keep it as an explicit headless/test oracle, and add
+      separate canonical hashes for surface construction and actually resident
+      pinned volume.
+- [ ] Carry a field-revisioned conservative `may-cross` certificate from LOD
+      selection into hierarchy/block state so deep solid and high empty owners
+      do not need to be rediscovered during extraction.
+- [ ] Replace the flat all-owner closure refresh with retained block-local masks
+      and exact incremental conformity propagation from changed address ranges;
+      untouched surface and summary blocks must not be rescanned.
+- [ ] Add a compact surface-owner representation containing only canonical
+      owner identity, transition mask, conservative classification, and the
+      dependency information needed to regenerate its boundary.
+- [ ] Extract the exact current triangles directly from an owner's red/green
+      template and global vertex keys. Enumerate template cells on the stack
+      only for surface candidates; do not allocate a conforming-cell vector.
+- [ ] Build surface dependency and five-ring optimization halos from global
+      surface keys and block adjacency, without scanning materialized interior
+      cell arrays.
+- [ ] Keep conforming-volume reconstruction as an independent promotion path
+      for near-player, edit, and physics pins, reusing the same masks and exact
+      keys. Promotion and demotion must leave surface and render hashes unchanged.
+- [ ] Stage surface-block and optional volume-block replacements under one
+      revision manifest while retaining the last complete watertight front.
+- [ ] Compare direct surface output with the existing full-volume oracle across
+      block widths, root/block seams, mixed depths, worker counts, cancellation,
+      eviction/reload, refinement, simplification, reversal, and teleport.
+- [ ] Make cold and incremental production tests fail if noncandidate
+      solid/empty owners expand green cells, if unchanged blocks are globally
+      rescanned for closure, or if surface work grows with interior volume while
+      surface complexity is held approximately constant.
+- [ ] Benchmark cold build and camera replacement separately. Report surface
+      work, promoted-volume work, latency, memory, dirty render ranges, and
+      upload bytes rather than using complete-volume traversal as hidden work.
+- [ ] Visually inspect spawn, boundary, mountain, far, and promotion/demotion
+      captures; run the full release suite before enabling the direct path by
+      default.
+
+The address-range priority queue remains useful, but follows this gate. Better
+scheduling of unnecessary full-volume work would optimize the wrong unit of
+work.
 
 ### Gate 5: Retained multi-block Vulkan rendering
 

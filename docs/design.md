@@ -1828,6 +1828,28 @@ The tiny planet remains a particularly important case because most untouched ter
 
 Persistent tunnels, removals, additions, repairs, attachments, and material changes must survive paging as sparse history. A tunnel is therefore not a special tunnel mesh: it is missing terrain matter plus newly exposed real boundaries, which automatically affects routes, lighting, support, construction, and later granular collapse.
 
+This also fixes the dominant runtime cost model. For the overwhelming majority
+of ordinary views, the engine needs the terrain boundary, not explicit
+tetrahedra throughout the represented solid and empty volume. A surface tier is
+not genuine if it is produced by first reconstructing the entire conforming
+volume and discarding it afterward. Ordinary generation, update, validation,
+and publication should be proportional to the surface band plus bounded
+conformity and optimization halos.
+
+The tetrahedral hierarchy remains essential even when its volume is latent. It
+provides canonical material addresses, one logical cut, conservative descendant
+summaries, red/green transition masks, and an exact grammar for materializing
+volume later. Untouched terrain may therefore publish a watertight derived
+surface directly from surface-candidate owners. Complete conforming cells become
+resident only where gameplay asks volumetric questions: edits, tunnels,
+destruction, physical simulation, or deliberately strict collision/debugging.
+Both forms use the same keys, masks, sparse edit history, and world revision.
+
+This is not a surface-mesh-only world. Once an edit makes local volumetric
+matter authoritative, paging must preserve it, and the visible boundary must
+still be the boundary of that material. The optimization is to leave irrelevant
+volume implicit—not to permit rendering, physics, and editing to disagree.
+
 Independently resident terrain hierarchy blocks need a hard boundary contract,
 but they are not independently seeded meshes. They are address-prefix storage
 for one logical terrain hierarchy and one conforming cut. Shared edges/faces,
@@ -2439,6 +2461,10 @@ Research should change the design only through concrete consequences that can be
   cold intent is revisioned independently from topology; canceled work cannot
   age history, teleports cannot extrapolate stale motion, and demand may affect
   scheduling or admission but never invent a different logical cut;
+- surface-proportional construction is the necessary completion of tiered
+  residency: ordinary terrain expands only surface-candidate owners and bounded
+  dependency halos, while full conforming cells are an on-demand gameplay cache
+  and an explicit oracle rather than a prerequisite for every render update;
 - graphics subdivision-artifact work makes aesthetics a first-class subdivision criterion;
 - NOWHERE is a warning against one universal mutable tetrahedral graph and uncontrolled engine/tool scope.
 

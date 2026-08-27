@@ -6,8 +6,11 @@ experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
 3 large-domain runtime adoption are complete. Gate 4's tiered volume residency,
 revisioned predictive hierarchy demand, bounded recent retention, independent
 hierarchy admission, and deterministic cold eviction are complete without
-changing the one authoritative logical cut. The next closable Gate 4 leaf is
-address-range job prioritization on the shared geometry executor.
+changing the one authoritative logical cut. The next priority is Gate 4A:
+replace surface-only residency-after-full-reconstruction with genuinely
+surface-proportional construction. Address-range job prioritization follows
+that correction; scheduling avoidable full-volume work first would preserve
+the wrong cost model.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
@@ -28,13 +31,51 @@ adaptive-cleaving volume, retain all incident-tetrahedron validity checks,
 match the monolithic surface exactly across widths and scheduling policies,
 survive mutation, eviction, and reload, and render directly from published
 snapshots. Deeper release measurements retain three generations as the
-bounded production width. Gate 2 is complete; the next closable work is Gate
-4's bounded residency and background-streaming cache.
+bounded production width. Gate 2 and the residency portion of Gate 4 are
+complete; Gate 4A is the active correction described below.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
 
-## Next closable leaves
+## Active chain: surface-proportional construction
+
+- [ ] Capture production baselines for owners considered, range tests, green
+      cells enumerated, cells materialized, field samples, candidate surface
+      owners, halo blocks, triangles, bytes, and stage timings.
+- [ ] Split production surface correctness from the expensive complete-volume
+      oracle: retain exact surface/render hashes in normal publication and make
+      the complete conforming-volume hash an explicit headless/test operation.
+- [ ] Persist conservative, field-revisioned surface-candidate certificates in
+      hierarchy blocks instead of reclassifying deep solid and high empty
+      regions downstream.
+- [ ] Make conforming closure block-local and incremental: retain exact green
+      masks, propagate only from changed address ranges, and prove unchanged
+      blocks are not scanned or republished.
+- [ ] Introduce compact surface-owner records that reference canonical owner
+      addresses and green masks without owning conforming tetrahedron arrays.
+- [ ] Implement direct red/green-template surface extraction for candidate
+      owners using stack-local template expansion, global vertex keys, and the
+      current exact edge-intersection rule.
+- [ ] Replace materialized-cell surface halo discovery with global surface-key
+      and block-adjacency dependencies, including the five-ring optimizer halo.
+- [ ] Isolate full conforming-volume reconstruction behind hard player,
+      edit, physics, debug, and oracle demand; reuse exact masks and keys.
+- [ ] Publish surface and optional volume replacements atomically under one
+      world revision, preserving cancellation, rollback, and last-front rules.
+- [ ] Add exact oracle tests across seams, mixed depths, block widths, worker
+      counts, movement, reversal, teleport, eviction, and promotion/demotion.
+- [ ] Add scaling tests that hold visible surface complexity approximately
+      constant while increasing represented interior volume; production closure
+      scans, green expansion, and materialization must remain surface-band
+      proportional.
+- [ ] Benchmark cold and incremental builds against the current implementation,
+      including surface work, promoted-volume work, latency, memory, dirty
+      ranges, uploads, and cancellation waste.
+- [ ] Enable the direct path by default only after deterministic captures,
+      visual inspection, the full release suite, and updated implementation and
+      testcase records.
+
+## Completed foundation
 
 - [x] Define distinct hierarchy-block snapshot, address-range job,
       transaction, immutable revision-manifest, and retained-render-chunk

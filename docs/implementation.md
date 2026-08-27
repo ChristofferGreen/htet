@@ -278,6 +278,46 @@ captures are byte-identical to the tiered-residency images, and release visual
 inspection found no cracks, holes, overlaps, missing faces, stale layers,
 transparency, or normal discontinuities beyond the intended flat facets.
 
+## Surface-proportional construction correction
+
+Tiered residency solved the storage half of the dominant terrain case, not the
+construction half. The release runtime retains complete conforming-cell arrays
+only for near-player, edit, and physics blocks, but
+`reconstruct_blocked_world_conforming_volume` still iterates every logical
+owner and expands every restricted-green template to compute the complete
+volume hash. On a cold publication, every active block is also initially a
+changed surface dependency, so its cells are materialized for extraction before
+the cache is reduced to the pinned volume set. The measured memory reduction is
+real; the CPU path is not yet proportional to the visible surface.
+
+The corrected production contract is:
+
+- untouched procedural terrain is field-plus-sparse-history authority;
+- hierarchy blocks retain addresses, logical owners, conservative field
+  certificates, exact transition masks, and surface dependencies;
+- surface candidates expand red/green templates directly into globally keyed
+  crossings and triangles without allocating conforming-cell arrays;
+- deep solid and high empty regions stop at conservative summaries;
+- complete conforming tetrahedra are reconstructed independently only for hard
+  collision/edit/physics pins, debugging, or an explicit full-volume oracle;
+- surface and promoted volume share the same masks, keys, revision, and
+  boundary, so promotion never changes rendered geometry.
+
+The complete conforming-volume hash should no longer be charged to every frame
+as a production invariant. It remains a powerful qualification oracle: direct
+surface output must match the old surface and render hashes while opt-in tests
+reconstruct the complete volume and verify that both products come from the
+same logical cut. Normal publication should instead report separate surface
+construction and resident-pinned-volume hashes and work counters.
+
+Gate 4A in `world-visualizer.md` and the active chain in `todo.md` now place
+this correction ahead of address-range priority scheduling. The implementation
+sequence first makes the hidden work measurable, then establishes compact
+surface-owner/certificate contracts, makes closure block-local and incremental,
+implements direct extraction and surface-key halos, separates volume promotion,
+proves exact equivalence and surface-area scaling, and only then changes the
+production default.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a
