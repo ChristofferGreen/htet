@@ -6,7 +6,9 @@
 
 #include <memory>
 #include <array>
+#include <chrono>
 #include <future>
+#include <stop_token>
 #include <vector>
 
 namespace tetra_viewer {
@@ -46,6 +48,19 @@ struct TerrainRuntimeDiagnostics {
   std::size_t dirty_render_ranges{};
   std::size_t staged_render_bytes{};
   std::size_t uploaded_render_bytes{};
+  std::size_t render_triangles{};
+  std::size_t work_units{};
+  std::size_t cpu_high_water_bytes{};
+  std::size_t triangle_high_water{};
+  std::size_t work_high_water{};
+  std::size_t upload_high_water_bytes{};
+  std::size_t submitted_builds{};
+  std::size_t superseded_builds{};
+  std::size_t canceled_builds{};
+  std::size_t budget_rejected_builds{};
+  std::size_t discarded_work_units{};
+  double maximum_cancellation_latency_milliseconds{};
+  bool budget_exceeded{};
   double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};
@@ -95,7 +110,9 @@ struct WorldLodCutSelection {
 [[nodiscard]] WorldLodCutSelection select_world_lod_cut(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
-    tetra::WorldConformingClosureCache* closure_cache=nullptr);
+    tetra::WorldConformingClosureCache* closure_cache=nullptr,
+    std::stop_token cancellation={},
+    std::size_t* completed_work_units=nullptr);
 
 class TerrainRuntime {
  public:
@@ -166,9 +183,10 @@ class MonolithicTerrainRuntime final : public TerrainRuntime {
 class BlockedTerrainRuntime final : public TerrainRuntime {
  public:
   explicit BlockedTerrainRuntime(WorldProfile profile=production_world_profile());
-  ~BlockedTerrainRuntime() override=default;
+  ~BlockedTerrainRuntime() override;
 
   void set_camera(const tetra::Camera& camera,bool interactive) override;
+  void set_resource_budgets(WorldResourceBudgets budgets);
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
   [[nodiscard]] const PreparedScene& scene() const override;
@@ -192,11 +210,12 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
+    bool canceled{};
   };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
       const tetra::Camera& camera,std::uint64_t generation,
-      SparseWorldSurfaceCache surface_cache={});
+      SparseWorldSurfaceCache surface_cache={},std::stop_token cancellation={});
   void submit();
   void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 
@@ -208,6 +227,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;
   std::future<Publication> future_;
+  std::stop_source cancellation_;
   SparseWorldSurfaceCache surface_cache_;
   // World render blocks are deliberately fine grained.  A small slot keeps
   // retained staging proportional to their contents instead of paying the
@@ -217,6 +237,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::size_t simulated_device_vertex_capacity_{};
   mutable bool flat_scene_current_{};
   bool demand_pending_{true};
+  bool active_superseded_{};
+  std::chrono::steady_clock::time_point superseded_at_{};
   std::uint64_t requested_generation_{};
 };
 

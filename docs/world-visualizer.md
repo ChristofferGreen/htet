@@ -981,6 +981,22 @@ private transaction staging arrays. The publication coordinator validates all
 read dependencies, constructs the replacement manifest, and exposes one small
 atomic handoff; workers never install block snapshots directly.
 
+The current blocked runtime also gives each complete candidate an explicit
+resource envelope: CPU residency, triangle count, measured geometry work, and
+dirty/full upload bytes are admitted independently. Host staging first
+predicts range reuse, allocation, and fragmentation compaction without
+changing the published range table. Only an admitted candidate stages host
+bytes and adopts its directory checkpoint. Initial publication follows the
+same rule; all byte totals use checked arithmetic.
+
+Moving the LOD origin requests cooperative cancellation through cut selection,
+conforming closure, and sparse surface reconstruction. A raced stale result is
+never published, the newest pose remains pending, and the last complete front
+continues to render. Canceled candidate caches are discarded so repeated
+supersession cannot accumulate unpublished memory. Rotation alone does not
+rebuild this runtime because its present LOD demand is omnidirectional and
+position based.
+
 ## 13. Rendering
 
 The initial renderer keeps the current visual language: opaque flat-shaded
@@ -1030,6 +1046,8 @@ The application must degrade without showing invalid state:
   conservatively rather than allowing penetration;
 - if a GPU arena is full, evict cold ranges or retain older geometry;
 - if work is superseded, cancel it at a bounded checkpoint;
+- if a candidate exceeds CPU, triangle, work, or upload admission, retain the
+  complete published front and report the failed dimension;
 - if generation fails, report the hierarchy block, job, transaction, and
   revisions in headless diagnostics.
 
@@ -1307,8 +1325,10 @@ flat normals.
 - [x] Keep the previous complete conforming revision visible until its
       replacement set publishes.
 - [ ] Pin collision/edit blocks and their required ancestry and dependencies.
-- [ ] Add configurable CPU-memory, block-count, triangle, work, and upload
-      budgets.
+- [x] Add configurable CPU-memory, triangle, work, and upload budgets with
+      non-mutating host-stage prediction and last-complete-front rejection.
+- [ ] Add an independent hierarchy-block residency budget when cold eviction
+      and residency tiers are introduced.
 - [ ] Implement deterministic cold-block eviction after publishing a valid
       coarse replacement and retaining procedural/edit authority.
 - [x] Add block-cache, reuse, latency, and measured retained-memory metrics.

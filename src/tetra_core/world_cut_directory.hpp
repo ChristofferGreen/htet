@@ -3,6 +3,7 @@
 #include "tetra_core/world_hierarchy.hpp"
 
 #include <functional>
+#include <stop_token>
 
 namespace tetra {
 
@@ -191,7 +192,8 @@ reconstruct_blocked_world_conforming_volume(
 // stencil, yielding the smallest conforming red-green superset of a sparse cut.
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
-    WorldConformingClosureCache* cache=nullptr);
+    WorldConformingClosureCache* cache=nullptr,
+    std::stop_token cancellation={});
 
 // Sparse ordered published cut. It stores no flattened global leaf vector;
 // traversal resolves child overrides directly from block prefixes.

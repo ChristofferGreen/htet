@@ -1398,7 +1398,12 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
 
 std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
-    WorldConformingClosureCache* cache) {
+    WorldConformingClosureCache* cache,std::stop_token cancellation) {
+  const auto cancel=[&]{
+    if(cancellation.stop_requested())
+      throw std::runtime_error("world conforming closure canceled");
+  };
+  cancel();
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   std::vector<WorldTetAddress> owners(logical_owners.begin(),logical_owners.end());
@@ -1461,7 +1466,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   };
 
   for(;;){
+    cancel();
     auto owner_keys=load_vertex_keys(owners);
+    cancel();
     const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
         10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
                                   (owners.size()+8191U)/8192U)));
@@ -1475,6 +1482,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         workers.emplace_back([&,worker,begin,end]{work(worker,begin,end);});
       }
       for(auto& worker:workers)worker.join();
+      cancel();
     };
     std::unordered_set<WorldEdgeKey,WorldEdgeHash> midpoints;
     midpoints.reserve(owners.size()*2U);
@@ -1491,6 +1499,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
       midpoints.insert(world_edge_key(keys[edge[0]],keys[edge[1]]));
     bool changed=true;
     while(changed){
+      cancel();
       changed=false;
       std::vector<std::vector<WorldEdgeKey>> additions(worker_count);
       run_workers([&](std::size_t worker,std::size_t begin,std::size_t end){

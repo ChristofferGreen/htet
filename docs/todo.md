@@ -138,7 +138,7 @@ not the active queue.
 - [x] Replace full warm conforming-cell and flat render-scene assembly with
       retained per-block conforming and render chunks so a small camera move
       copies and uploads only dirty ranges.
-- [ ] Add explicit CPU-memory, triangle, work, and upload budgets plus
+- [x] Add explicit CPU-memory, triangle, work, and upload budgets plus
       cancellation of superseded in-flight builds.
 - [ ] Promote ordinary visible blocks to surface-only residency while pinning
       conforming volume only around collision, edits, and physics demand.

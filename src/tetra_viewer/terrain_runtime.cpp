@@ -3,9 +3,26 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 
 namespace tetra_viewer {
+namespace {
+
+std::size_t checked_resource_add(std::size_t left,std::size_t right) {
+  if(right>std::numeric_limits<std::size_t>::max()-left)
+    throw std::overflow_error("world resource byte count overflow");
+  return left+right;
+}
+
+std::size_t checked_resource_multiply(std::size_t left,std::size_t right) {
+  if(left!=0U&&right>std::numeric_limits<std::size_t>::max()/left)
+    throw std::overflow_error("world resource byte count overflow");
+  return left*right;
+}
+
+}  // namespace
 
 MonolithicTerrainRuntime::MonolithicTerrainRuntime(
     WorldProfile profile,std::shared_ptr<tetra::GeometryExecutor> executor)
@@ -213,7 +230,9 @@ std::vector<TerrainDebugLine> MonolithicTerrainRuntime::lod_zone_lines() const {
 WorldLodCutSelection select_world_lod_cut(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
-    tetra::WorldConformingClosureCache* closure_cache) {
+    tetra::WorldConformingClosureCache* closure_cache,
+    std::stop_token cancellation,std::size_t* completed_work_units) {
+  if(completed_work_units)*completed_work_units=0U;
   if(profile.background_red_depth>profile.near_red_depth||
      profile.near_red_depth>tetra::maximum_world_red_depth)
     throw std::invalid_argument("world LOD depths are inconsistent");
@@ -287,12 +306,19 @@ WorldLodCutSelection select_world_lod_cut(
   for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
     result.owners.push_back(tetra::WorldTetAddress::root(root));
   for(unsigned int depth=0;depth<profile.near_red_depth;++depth){
+    if(cancellation.stop_requested())
+      throw std::runtime_error("world LOD selection canceled");
     std::vector<tetra::WorldTetAddress> next;
     next.reserve(result.owners.size()*2U);
     bool split_any{};
     for(const auto owner:result.owners){
+      if((result.metrics.visited_owners&1023U)==0U&&
+         cancellation.stop_requested())
+        throw std::runtime_error("world LOD selection canceled");
       if(owner.red_depth()!=depth){next.push_back(owner);continue;}
       ++result.metrics.visited_owners;
+      if(completed_work_units)
+        *completed_work_units=result.metrics.visited_owners;
       const auto evaluation=evaluate(owner);
       if(!evaluation.may_cross){
         ++result.metrics.field_rejected_owners;next.push_back(owner);continue;
@@ -323,7 +349,10 @@ WorldLodCutSelection select_world_lod_cut(
   const auto closure_started=std::chrono::steady_clock::now();
   result.metrics.selection_milliseconds=std::chrono::duration<double,std::milli>(
       closure_started-started).count();
-  result.owners=tetra::close_world_conforming_cut(result.owners,closure_cache);
+  if(completed_work_units)
+    *completed_work_units=result.metrics.visited_owners;
+  result.owners=tetra::close_world_conforming_cut(
+      result.owners,closure_cache,cancellation);
   result.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-closure_started).count();
   result.metrics.logical_owners_after_closure=result.owners.size();
@@ -358,6 +387,11 @@ WorldLodCutSelection select_world_lod_cut(
 
 BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     :profile_(profile) {
+  if(profile_.budgets.maximum_cpu_bytes==0U||
+     profile_.budgets.maximum_triangles==0U||
+     profile_.budgets.maximum_work_units==0U||
+     profile_.budgets.maximum_upload_bytes==0U)
+    throw std::invalid_argument("world resource budgets must be positive");
   field_.kind=profile_.shape;
   field_.terrain=profile_.terrain;
   field_.secondary=profile_.octave_detail_amplitude;
@@ -365,6 +399,19 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_position_=camera_.position;
   auto initial=build_publication(profile_,field_,camera_,1U);
+  const auto initial_host=host_staging_.estimate_world_render_blocks(
+      initial.surface_cache.render_blocks);
+  const auto initial_render_bytes=checked_resource_multiply(
+      checked_resource_multiply(initial.diagnostics.render_triangles,3U),
+      sizeof(SceneVertex));
+  const auto initial_cpu_bytes=checked_resource_add(
+      initial.diagnostics.resident_bytes,initial_host.retained_bytes);
+  const auto initial_admission=evaluate_world_resource_budgets(
+      profile_.budgets,{initial_cpu_bytes,
+        initial.diagnostics.render_triangles,initial.diagnostics.work_units,
+        initial_render_bytes});
+  if(!initial_admission.admitted())
+    throw std::length_error("initial world front exceeds its resource budget");
   host_staging_.stage_world_render_blocks(initial.surface_cache.render_blocks);
   finalize_render_front_metrics(initial.diagnostics);
   directory_=std::make_unique<tetra::WorldCutDirectory>(
@@ -373,21 +420,47 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   surface_cache_=std::move(initial.surface_cache);
   flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
+  diagnostics_.submitted_builds=1U;
+  diagnostics_.cpu_high_water_bytes=diagnostics_.resident_bytes;
+  diagnostics_.triangle_high_water=diagnostics_.render_triangles;
+  diagnostics_.work_high_water=diagnostics_.work_units;
+  diagnostics_.upload_high_water_bytes=diagnostics_.uploaded_render_bytes;
+}
+
+BlockedTerrainRuntime::~BlockedTerrainRuntime(){
+  cancellation_.request_stop();
+  if(future_.valid())future_.wait();
+}
+
+void BlockedTerrainRuntime::set_resource_budgets(WorldResourceBudgets budgets){
+  if(budgets.maximum_cpu_bytes==0U||budgets.maximum_triangles==0U||
+     budgets.maximum_work_units==0U||budgets.maximum_upload_bytes==0U)
+    throw std::invalid_argument("world resource budgets must be positive");
+  profile_.budgets=budgets;
 }
 
 BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint64_t generation,
-    SparseWorldSurfaceCache surface_cache) {
+    SparseWorldSurfaceCache surface_cache,std::stop_token cancellation) {
+  std::size_t completed_work_units{};
+  try{
   const auto started=std::chrono::steady_clock::now();
   auto selection=select_world_lod_cut(
-      profile,field,camera,&surface_cache.closure);
+      profile,field,camera,&surface_cache.closure,cancellation,
+      &completed_work_units);
+  if(cancellation.stop_requested())
+    throw std::runtime_error("world publication canceled");
   const std::uint64_t hierarchy_revision=generation*2U-1U;
   tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
       selection.owners,3U,hierarchy_revision,
       tetra::HierarchyResidencyTier::conforming_volume));
   auto surface=build_sparse_world_derived_surface(
-      directory,profile.domain,field,true,{},&surface_cache);
+      directory,profile.domain,field,true,cancellation,&surface_cache);
+  completed_work_units+=surface.metrics.rebuilt_conforming_cells+
+      surface.metrics.computed_intersections+surface.triangles.size();
+  if(cancellation.stop_requested())
+    throw std::runtime_error("world publication canceled");
   directory.publish(directory.stage_derived_surfaces(
       surface.snapshots,hierarchy_revision+1U));
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
@@ -406,6 +479,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.connected_surface_hash=surface.canonical_surface_hash;
   diagnostics.logical_cells=directory.logical_owner_count();
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
+  diagnostics.render_triangles=surface.triangles.size();
+  diagnostics.work_units=completed_work_units;
   diagnostics.retained_cache_bytes=
       surface_cache.intersections.capacity()*sizeof(tetra::WorldSurfaceVertex)+
       surface_cache.hierarchy.capacity()*
@@ -481,7 +556,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     }
   }
   return {directory.checkpoint(),std::move(scene),diagnostics,
-          std::move(surface_cache)};
+          std::move(surface_cache),false};
+  }catch(const std::runtime_error&){
+    if(!cancellation.stop_requested())throw;
+    Publication canceled;
+    canceled.diagnostics.work_units=completed_work_units;
+    canceled.surface_cache=std::move(surface_cache);canceled.canceled=true;
+    return canceled;
+  }
 }
 
 const PreparedScene& BlockedTerrainRuntime::scene() const {
@@ -515,11 +597,15 @@ void BlockedTerrainRuntime::submit() {
   const auto profile=profile_;const auto field=field_;const auto camera=camera_;
   const auto generation=++requested_generation_;
   auto surface_cache=std::move(surface_cache_);
+  cancellation_=std::stop_source{};
+  const auto token=cancellation_.get_token();
   future_=std::async(std::launch::async,
-      [profile,field,camera,generation,surface_cache=std::move(surface_cache)]() mutable {
+      [profile,field,camera,generation,token,
+       surface_cache=std::move(surface_cache)]() mutable {
     return build_publication(
-        profile,field,camera,generation,std::move(surface_cache));
+        profile,field,camera,generation,std::move(surface_cache),token);
   });
+  ++diagnostics_.submitted_builds;
   last_requested_position_=camera.position;
   demand_pending_=false;diagnostics_.converged=false;
 }
@@ -530,6 +616,11 @@ void BlockedTerrainRuntime::set_camera(
   const bool moved=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>0.02*0.02;
   camera_=camera;
   demand_pending_=demand_pending_||moved;
+  if(moved&&future_.valid()&&!active_superseded_){
+    cancellation_.request_stop();active_superseded_=true;
+    superseded_at_=std::chrono::steady_clock::now();
+    ++diagnostics_.superseded_builds;
+  }
 }
 
 bool BlockedTerrainRuntime::update() {
@@ -537,6 +628,58 @@ bool BlockedTerrainRuntime::update() {
   if(future_.valid()&&future_.wait_for(std::chrono::seconds(0))==
                          std::future_status::ready){
     auto publication=future_.get();
+    if(publication.canceled||active_superseded_){
+      // A canceled candidate can contain an arbitrary mix of old and newly
+      // reserved capacities. Reusing it makes repeated camera supersession
+      // accumulate unpublished memory and can push the eventual newest build
+      // over its CPU budget. The visible directory and host front remain
+      // retained; restart candidate-only caches from a bounded cold state.
+      surface_cache_={};
+      ++diagnostics_.canceled_builds;
+      diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      if(active_superseded_){
+        diagnostics_.maximum_cancellation_latency_milliseconds=std::max(
+            diagnostics_.maximum_cancellation_latency_milliseconds,
+            std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-superseded_at_).count());
+      }
+      active_superseded_=false;
+      if(demand_pending_)submit();
+      diagnostics_.busy=future_.valid();
+      return false;
+    }
+    const auto host_estimate=host_staging_.estimate_world_render_blocks(
+        publication.surface_cache.render_blocks);
+    const auto total_render_bytes=checked_resource_multiply(
+        checked_resource_multiply(
+            publication.diagnostics.render_triangles,3U),sizeof(SceneVertex));
+    const auto predicted_host_bytes=host_estimate.retained_bytes;
+    const auto predicted_cpu_bytes=checked_resource_add(
+        publication.diagnostics.resident_bytes,predicted_host_bytes);
+    const auto predicted_upload_bytes=
+        host_estimate.required_vertex_capacity>simulated_device_vertex_capacity_?
+            total_render_bytes:host_estimate.staged_bytes;
+    const auto admission=evaluate_world_resource_budgets(profile_.budgets,{
+        predicted_cpu_bytes,publication.diagnostics.render_triangles,
+        publication.diagnostics.work_units,predicted_upload_bytes});
+    diagnostics_.cpu_high_water_bytes=std::max(
+        diagnostics_.cpu_high_water_bytes,predicted_cpu_bytes);
+    diagnostics_.triangle_high_water=std::max(
+        diagnostics_.triangle_high_water,publication.diagnostics.render_triangles);
+    diagnostics_.work_high_water=std::max(
+        diagnostics_.work_high_water,publication.diagnostics.work_units);
+    diagnostics_.upload_high_water_bytes=std::max(
+        diagnostics_.upload_high_water_bytes,predicted_upload_bytes);
+    if(!admission.admitted()){
+      ++diagnostics_.budget_rejected_builds;
+      diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      diagnostics_.budget_exceeded=true;
+      surface_cache_={};
+      active_superseded_=false;demand_pending_=false;
+      diagnostics_.busy=false;
+      return false;
+    }
+    const auto cumulative=diagnostics_;
     host_staging_.stage_world_render_blocks(
         publication.surface_cache.render_blocks);
     tetra::WorldDirectoryUpdate retained;
@@ -551,6 +694,22 @@ bool BlockedTerrainRuntime::update() {
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
     diagnostics_=publication.diagnostics;
+    diagnostics_.submitted_builds=cumulative.submitted_builds;
+    diagnostics_.superseded_builds=cumulative.superseded_builds;
+    diagnostics_.canceled_builds=cumulative.canceled_builds;
+    diagnostics_.budget_rejected_builds=cumulative.budget_rejected_builds;
+    diagnostics_.discarded_work_units=cumulative.discarded_work_units;
+    diagnostics_.maximum_cancellation_latency_milliseconds=
+        cumulative.maximum_cancellation_latency_milliseconds;
+    diagnostics_.cpu_high_water_bytes=std::max(
+        cumulative.cpu_high_water_bytes,diagnostics_.resident_bytes);
+    diagnostics_.triangle_high_water=std::max(
+        cumulative.triangle_high_water,diagnostics_.render_triangles);
+    diagnostics_.work_high_water=std::max(
+        cumulative.work_high_water,diagnostics_.work_units);
+    diagnostics_.upload_high_water_bytes=std::max(
+        cumulative.upload_high_water_bytes,diagnostics_.uploaded_render_bytes);
+    active_superseded_=false;
     diagnostics_.reused_hierarchy_blocks=retained.metrics.reused_blocks;
     diagnostics_.rebuilt_hierarchy_blocks=retained.metrics.loaded_blocks;
     diagnostics_.reused_surface_blocks=retained.metrics.reused_surfaces;

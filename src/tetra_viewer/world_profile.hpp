@@ -4,6 +4,39 @@
 
 namespace tetra_viewer {
 
+struct WorldResourceBudgets {
+  std::size_t maximum_cpu_bytes{512U*1024U*1024U};
+  std::size_t maximum_triangles{500000U};
+  std::size_t maximum_work_units{10000000U};
+  std::size_t maximum_upload_bytes{32U*1024U*1024U};
+};
+
+struct WorldResourceUsage {
+  std::size_t cpu_bytes{};
+  std::size_t triangles{};
+  std::size_t work_units{};
+  std::size_t upload_bytes{};
+};
+
+struct WorldBudgetAdmission {
+  bool cpu{};
+  bool triangles{};
+  bool work{};
+  bool upload{};
+  [[nodiscard]] constexpr bool admitted() const noexcept {
+    return cpu&&triangles&&work&&upload;
+  }
+};
+
+[[nodiscard]] constexpr WorldBudgetAdmission evaluate_world_resource_budgets(
+    const WorldResourceBudgets& budgets,const WorldResourceUsage& usage) noexcept {
+  return {
+      usage.cpu_bytes<=budgets.maximum_cpu_bytes,
+      usage.triangles<=budgets.maximum_triangles,
+      usage.work_units<=budgets.maximum_work_units,
+      usage.upload_bytes<=budgets.maximum_upload_bytes};
+}
+
 // The deliberately small, named configuration used by tetra_world.  Keeping
 // it separate from editor state prevents research controls from accidentally
 // changing the playable application's contract.
@@ -44,6 +77,7 @@ struct WorldProfile {
   double view_distance{48.0};
   double pixel_threshold{128.0};
   unsigned int maximum_depth{16U};
+  WorldResourceBudgets budgets{};
   bool show_faces{true};
   bool show_surface_edges{true};
   bool show_hierarchy_edges{false};

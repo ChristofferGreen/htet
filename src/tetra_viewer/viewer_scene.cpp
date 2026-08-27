@@ -4364,6 +4364,90 @@ void SurfaceHostStagingStorage::stage_world_render_blocks(
   stage_sources(sources,executor);
 }
 
+SurfaceHostStageEstimate SurfaceHostStagingStorage::estimate_world_render_blocks(
+    std::span<const SparseWorldSurfaceCache::RenderBlock> blocks) const {
+  SurfaceHostStageEstimate result;
+  const auto add=[](std::size_t left,std::size_t right){
+    if(right>std::numeric_limits<std::size_t>::max()-left)
+      throw std::overflow_error("world render block estimate size overflow");
+    return left+right;
+  };
+  const auto multiply=[](std::size_t left,std::size_t right){
+    if(left!=0U&&right>std::numeric_limits<std::size_t>::max()/left)
+      throw std::overflow_error("world render block estimate size overflow");
+    return left*right;
+  };
+  using LookupKey=std::tuple<SurfaceHostDrawRange::SourceKey,std::uint64_t,
+                             std::size_t>;
+  std::map<LookupKey,std::size_t> previous;
+  for(std::size_t index=0;index<ranges_.size();++index)
+    previous.emplace(LookupKey{ranges_[index].source,
+        ranges_[index].source_content_revision,
+        ranges_[index].triangle_vertex_count},index);
+  std::vector<bool> retained(ranges_.size(),false);
+  for(const auto& block:blocks){
+    if(block.surface_payload_hash==0U||block.triangle_vertices.size()%3U!=0U)
+      throw std::invalid_argument("world render block is not triangle aligned");
+    std::size_t begin{};std::uint32_t part{};
+    while(begin<block.triangle_vertices.size()){
+      auto count=std::min(block.triangle_vertices.size()-begin,
+                          vertex_slot_capacity());
+      count-=count%3U;
+      if(count==0U||part==std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("world render block estimate overflow");
+      const SurfaceHostDrawRange::SourceKey key{
+          .kind=SurfaceHostDrawRange::SourceKind::world_render_block,
+          .block=block.id,.part=part++};
+      const auto found=previous.find(
+          LookupKey{key,block.surface_payload_hash,count});
+      bool reuse=false;
+      if(found!=previous.end()&&!retained[found->second]){
+        const auto& range=ranges_[found->second];
+        reuse=std::memcmp(block.triangle_vertices.data()+begin,
+            arena_.data()+range.triangle_vertex_begin,
+            count*sizeof(SceneVertex))==0;
+        if(reuse)retained[found->second]=true;
+      }
+      if(reuse)++result.reused_ranges;
+      else{
+        ++result.dirty_ranges;
+        result.staged_bytes=add(
+            result.staged_bytes,multiply(count,sizeof(SceneVertex)));
+      }
+      ++result.active_ranges;begin+=count;
+    }
+  }
+  std::size_t free_slots{};
+  for(const auto range:free_ranges_)free_slots=add(free_slots,range.slot_count);
+  const auto appended=result.dirty_ranges>free_slots?
+      result.dirty_ranges-free_slots:0U;
+  auto retained_slots=add(arena_.size()/vertex_slot_capacity(),appended);
+  const auto released=ranges_.size()-result.reused_ranges;
+  const auto remaining_free=add(free_slots,released)-
+      std::min(free_slots,result.dirty_ranges);
+  result.compaction=retained_slots>4096U&&
+      remaining_free>result.active_ranges/2U;
+  if(result.compaction){
+    retained_slots=result.active_ranges;result.reused_ranges=0U;
+    result.dirty_ranges=result.active_ranges;result.staged_bytes=0U;
+    for(const auto& block:blocks)
+      result.staged_bytes=add(result.staged_bytes,multiply(
+          block.triangle_vertices.size(),sizeof(SceneVertex)));
+  }
+  result.required_vertex_capacity=multiply(
+      retained_slots,vertex_slot_capacity());
+  result.retained_bytes=multiply(
+      result.required_vertex_capacity,sizeof(SceneVertex));
+  result.retained_bytes=add(result.retained_bytes,multiply(multiply(
+      std::max(ranges_.capacity(),result.active_ranges),
+      sizeof(SurfaceHostDrawRange)),2U));
+  result.retained_bytes=add(result.retained_bytes,multiply(
+      free_ranges_.capacity(),sizeof(SurfaceHostFreeRange)));
+  result.retained_bytes=add(result.retained_bytes,multiply(
+      std::max(copy_scratch_.capacity(),result.dirty_ranges),sizeof(CopyJob)));
+  return result;
+}
+
 void SurfaceHostStagingStorage::stage_sources(
     std::span<const SourceView> sources,tetra::GeometryExecutor* executor) {
   const auto start=std::chrono::steady_clock::now();

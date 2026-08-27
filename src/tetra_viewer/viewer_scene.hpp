@@ -1136,6 +1136,16 @@ struct SurfaceHostStagingMetrics {
   std::size_t parallel_copy_tasks{};
 };
 
+struct SurfaceHostStageEstimate {
+  std::size_t active_ranges{};
+  std::size_t reused_ranges{};
+  std::size_t dirty_ranges{};
+  std::size_t staged_bytes{};
+  std::size_t required_vertex_capacity{};
+  std::size_t retained_bytes{};
+  bool compaction{};
+};
+
 // Transactional retained CPU staging for the surface draw front. New or
 // changed source chunks are copied into unused host slots, then the complete
 // ordered table is published in one swap. The preceding ranges and bytes are
@@ -1150,6 +1160,8 @@ class SurfaceHostStagingStorage {
   void stage_world_render_blocks(
       std::span<const SparseWorldSurfaceCache::RenderBlock> blocks,
       tetra::GeometryExecutor* executor=nullptr);
+  [[nodiscard]] SurfaceHostStageEstimate estimate_world_render_blocks(
+      std::span<const SparseWorldSurfaceCache::RenderBlock> blocks) const;
 
   [[nodiscard]] std::size_t triangle_chunk_capacity() const noexcept {
     return triangle_chunk_capacity_;

@@ -195,6 +195,29 @@ baseline. The seven-pose route remains below the 512 MiB CPU ceiling; its peak
 is about 523 MB (499 MiB) at teleport. Exact stationary/reversal hierarchy,
 conforming-volume, connected-surface, render, and field hashes still match.
 
+The resource-envelope pass makes that ceiling an admission rule rather than a
+test-only assertion. The production profile independently limits measured CPU
+residency to 512 MiB, the complete render front to 500,000 triangles,
+candidate geometry work to 10,000,000 units, and one device publication to
+32 MiB. Candidate host-range allocation and compaction are estimated without
+mutating the visible front. Checked byte arithmetic, initial-front admission,
+and pre-publication admission prevent wrapped or partial updates; a rejected
+candidate leaves the previous directory, hashes, host ranges, and triangles
+unchanged.
+
+Camera motion now requests a stop on obsolete selection, conformity, and
+surface work. Only the newest pending pose is restarted, and a completion that
+races cancellation is still discarded. Canceled candidate-only caches are
+released instead of accumulating unpublished capacity; the preceding complete
+front remains visible. A three-cycle supersession route records three canceled
+builds, 205,824 discarded work units, 1.27 ms maximum cancellation latency,
+and exact cold-oracle hashes for the newest pose. Four repeated release
+walking measurements span 5.43--5.55 seconds. The full route peaks at
+523,172,034 CPU bytes, 96,938 triangles, 1,735,112 work units, and 17,424,720
+upload bytes, with no default-budget rejection. These timings are
+qualification observations, not performance improvements over the preceding
+retained-publication baseline.
+
 ## Headless experiment scripting
 
 Viewer workflows must be reproducible without opening or interacting with a

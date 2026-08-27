@@ -207,12 +207,92 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.staged_render_bytes
           <<",\"uploaded_render_bytes\":"
           <<diagnostics.uploaded_render_bytes
+          <<",\"render_triangles\":"<<diagnostics.render_triangles
+          <<",\"work_units\":"<<diagnostics.work_units
+          <<",\"cpu_high_water_bytes\":"
+          <<diagnostics.cpu_high_water_bytes
+          <<",\"triangle_high_water\":"
+          <<diagnostics.triangle_high_water
+          <<",\"work_high_water\":"<<diagnostics.work_high_water
+          <<",\"upload_high_water_bytes\":"
+          <<diagnostics.upload_high_water_bytes
+          <<",\"submitted_builds\":"<<diagnostics.submitted_builds
+          <<",\"superseded_builds\":"<<diagnostics.superseded_builds
+          <<",\"canceled_builds\":"<<diagnostics.canceled_builds
+          <<",\"budget_rejected_builds\":"
+          <<diagnostics.budget_rejected_builds
+          <<",\"discarded_work_units\":"
+          <<diagnostics.discarded_work_units
+          <<",\"maximum_cancellation_latency_ms\":"
+          <<diagnostics.maximum_cancellation_latency_milliseconds
+          <<",\"budget_exceeded\":"
+          <<(diagnostics.budget_exceeded?"true":"false")
           <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash
           <<",\"conforming_volume_hash\":"<<diagnostics.conforming_volume_hash
           <<",\"connected_surface_hash\":"<<diagnostics.connected_surface_hash
           <<",\"render_hash\":"<<diagnostics.render_hash
           <<",\"field_sample_hash\":"<<diagnostics.field_sample_hash<<"}\n";
   }
+  const auto before=runtime->diagnostics();
+  tetra::Camera superseded;
+  superseded.position={0.65,0.72,0.72};
+  superseded.forward={0.0,-0.2,-1.0};
+  runtime->set_camera(superseded,true);
+  static_cast<void>(runtime->update());
+  for(std::size_t step=0;step<3U;++step){
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    superseded.position={0.7+0.08*static_cast<double>(step),0.72,
+                         0.68-0.03*static_cast<double>(step)};
+    const auto target=tetra::Vec3{
+        superseded.position.x,0.5,superseded.position.z-0.3};
+    const auto delta=target-superseded.position;
+    const double length=std::sqrt(
+        delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+    superseded.forward=delta/length;
+    runtime->set_camera(superseded,true);
+    const auto canceled_target=before.canceled_builds+step+1U;
+    const auto cancellation_deadline=
+        std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(std::chrono::steady_clock::now()<cancellation_deadline){
+      static_cast<void>(runtime->update());
+      if(runtime->diagnostics().canceled_builds>=canceled_target&&
+         runtime->diagnostics().busy)break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if(runtime->diagnostics().canceled_builds<canceled_target){
+      errors<<"world supersession cancellation did not complete\n";return 1;
+    }
+  }
+  const auto supersession_started=std::chrono::steady_clock::now();
+  const auto supersession_deadline=
+      supersession_started+std::chrono::seconds(30);
+  TerrainRuntimeDiagnostics newest;
+  do{
+    static_cast<void>(runtime->update());newest=runtime->diagnostics();
+    if(newest.converged&&!newest.busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }while(std::chrono::steady_clock::now()<supersession_deadline);
+  if(!newest.converged||newest.busy){
+    errors<<"world supersession benchmark did not converge\n";return 1;
+  }
+  output<<"{\"event\":\"world_resource_budget\",\"path\":\"rapid-supersession\""
+        <<",\"milliseconds\":"<<std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-supersession_started).count()
+        <<",\"submitted_builds\":"<<newest.submitted_builds-before.submitted_builds
+        <<",\"superseded_builds\":"
+        <<newest.superseded_builds-before.superseded_builds
+        <<",\"canceled_builds\":"<<newest.canceled_builds-before.canceled_builds
+        <<",\"discarded_work_units\":"
+        <<newest.discarded_work_units-before.discarded_work_units
+        <<",\"maximum_cancellation_latency_ms\":"
+        <<newest.maximum_cancellation_latency_milliseconds
+        <<",\"cpu_high_water_bytes\":"<<newest.cpu_high_water_bytes
+        <<",\"triangle_high_water\":"<<newest.triangle_high_water
+        <<",\"work_high_water\":"<<newest.work_high_water
+        <<",\"upload_high_water_bytes\":"<<newest.upload_high_water_bytes
+        <<",\"budget_rejected_builds\":"<<newest.budget_rejected_builds
+        <<",\"hierarchy_hash\":"<<newest.hierarchy_hash
+        <<",\"render_hash\":"<<newest.render_hash<<"}\n";
   return 0;
 }
 

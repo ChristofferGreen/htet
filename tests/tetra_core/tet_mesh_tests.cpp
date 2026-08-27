@@ -821,10 +821,45 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.view_distance==doctest::Approx(48.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.maximum_depth==16U);
+  CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
+  CHECK(profile.budgets.maximum_triangles==500000U);
+  CHECK(profile.budgets.maximum_work_units==10000000U);
+  CHECK(profile.budgets.maximum_upload_bytes==32U*1024U*1024U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);
   CHECK_FALSE(profile.show_hierarchy_edges);
   CHECK_FALSE(profile.x_cutaway);
+}
+
+TEST_CASE("world resource budgets independently gate every publication cost") {
+  const tetra_viewer::WorldResourceBudgets budgets{
+      .maximum_cpu_bytes=100U,.maximum_triangles=200U,
+      .maximum_work_units=300U,.maximum_upload_bytes=400U};
+  CHECK(tetra_viewer::evaluate_world_resource_budgets(
+      budgets,{100U,200U,300U,400U}).admitted());
+  const auto cpu=tetra_viewer::evaluate_world_resource_budgets(
+      budgets,{101U,200U,300U,400U});
+  CHECK_FALSE(cpu.cpu);CHECK(cpu.triangles);CHECK(cpu.work);CHECK(cpu.upload);
+  const auto triangles=tetra_viewer::evaluate_world_resource_budgets(
+      budgets,{100U,201U,300U,400U});
+  CHECK(triangles.cpu);CHECK_FALSE(triangles.triangles);
+  const auto work=tetra_viewer::evaluate_world_resource_budgets(
+      budgets,{100U,200U,301U,400U});
+  CHECK(work.triangles);CHECK_FALSE(work.work);
+  const auto upload=tetra_viewer::evaluate_world_resource_budgets(
+      budgets,{100U,200U,300U,401U});
+  CHECK(upload.work);CHECK_FALSE(upload.upload);
+  auto invalid=tetra_viewer::production_world_profile();
+  invalid.budgets.maximum_cpu_bytes=0U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
+  auto undersized=tetra_viewer::production_world_profile();
+  undersized.budgets.maximum_triangles=1U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{undersized};
+    }()),std::length_error);
 }
 
 TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
@@ -1188,7 +1223,117 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   camera.forward=target/length;runtime.set_camera(camera,false);
   REQUIRE(wait_for(std::chrono::seconds(10)));
   CHECK(runtime.diagnostics().logical_cells<boundary_cells);
-  CHECK(runtime.diagnostics().resident_bytes<512U*1024U*1024U);
+  const auto final=runtime.diagnostics();
+  const auto budgets=tetra_viewer::production_world_profile().budgets;
+  CHECK(final.resident_bytes<=budgets.maximum_cpu_bytes);
+  CHECK(final.cpu_high_water_bytes<=budgets.maximum_cpu_bytes);
+  CHECK(final.triangle_high_water<=budgets.maximum_triangles);
+  CHECK(final.work_high_water<=budgets.maximum_work_units);
+  CHECK(final.upload_high_water_bytes<=budgets.maximum_upload_bytes);
+  CHECK(final.budget_rejected_builds==0U);
+}
+
+TEST_CASE("blocked world resource rejection preserves the complete published front") {
+  auto profile=tetra_viewer::production_world_profile();
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  auto constrained=profile.budgets;constrained.maximum_upload_bytes=1U;
+  runtime.set_resource_budgets(constrained);
+  const auto initial=runtime.diagnostics();
+  const auto initial_vertices=runtime.scene().triangle_vertices;
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.68};camera.forward={0.0,-0.2,-1.0};
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  while(runtime.diagnostics().busy&&std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime.update());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto rejected=runtime.diagnostics();
+  REQUIRE_FALSE(rejected.busy);
+  CHECK(rejected.budget_exceeded);
+  CHECK(rejected.budget_rejected_builds==1U);
+  CHECK(rejected.scene_generation==initial.scene_generation);
+  CHECK(rejected.hierarchy_hash==initial.hierarchy_hash);
+  CHECK(rejected.conforming_volume_hash==initial.conforming_volume_hash);
+  CHECK(rejected.render_hash==initial.render_hash);
+  CHECK(rejected.discarded_work_units>0U);
+  const auto& retained=runtime.scene().triangle_vertices;
+  REQUIRE(retained.size()==initial_vertices.size());
+  CHECK(std::memcmp(retained.data(),initial_vertices.data(),
+                    retained.size()*sizeof(tetra_viewer::SceneVertex))==0);
+
+  runtime.set_resource_budgets(profile.budgets);
+  camera.position.z=0.58;runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  const auto recovery_deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  while(std::chrono::steady_clock::now()<recovery_deadline){
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto recovered=runtime.diagnostics();
+  REQUIRE(recovered.converged);CHECK_FALSE(recovered.busy);
+  CHECK_FALSE(recovered.budget_exceeded);
+  CHECK(recovered.budget_rejected_builds==1U);
+  CHECK(recovered.scene_generation>initial.scene_generation);
+  CHECK(recovered.hierarchy_hash!=initial.hierarchy_hash);
+}
+
+TEST_CASE("blocked world supersession cancels stale work and converges to newest pose") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  tetra::Camera camera;
+  camera.position={0.6,0.72,0.75};camera.forward={0.0,-0.2,-1.0};
+  runtime.set_camera(camera,true);CHECK_FALSE(runtime.update());
+  const auto canceled_before=runtime.diagnostics().canceled_builds;
+  for(std::size_t step=0;step<3U;++step){
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    camera.position={0.65+0.08*static_cast<double>(step),0.72,
+                     0.70-0.03*static_cast<double>(step)};
+    const auto target=tetra::Vec3{camera.position.x,0.5,camera.position.z-0.3};
+    const auto delta=target-camera.position;
+    const auto length=std::sqrt(
+        delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+    camera.forward=delta/length;
+    runtime.set_camera(camera,true);
+    const auto cancellation_deadline=
+        std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(std::chrono::steady_clock::now()<cancellation_deadline){
+      static_cast<void>(runtime.update());
+      if(runtime.diagnostics().canceled_builds>=canceled_before+step+1U&&
+         runtime.diagnostics().busy)break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(runtime.diagnostics().canceled_builds>=canceled_before+step+1U);
+  }
+  const auto wait=[&](tetra_viewer::BlockedTerrainRuntime& candidate){
+    const auto deadline=
+        std::chrono::steady_clock::now()+std::chrono::seconds(20);
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(candidate.update());
+      const auto diagnostics=candidate.diagnostics();
+      if(!diagnostics.busy&&diagnostics.converged)return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  REQUIRE(wait(runtime));
+  const auto latest=runtime.diagnostics();
+  CHECK(latest.superseded_builds>=3U);
+  CHECK(latest.canceled_builds>=canceled_before+3U);
+  CHECK(latest.maximum_cancellation_latency_milliseconds<2000.0);
+  CHECK_FALSE(latest.budget_exceeded);
+
+  tetra_viewer::BlockedTerrainRuntime oracle(profile);
+  oracle.set_camera(camera,false);
+  REQUIRE(wait(oracle));
+  const auto expected=oracle.diagnostics();
+  CHECK(latest.hierarchy_hash==expected.hierarchy_hash);
+  CHECK(latest.conforming_volume_hash==expected.conforming_volume_hash);
+  CHECK(latest.connected_surface_hash==expected.connected_surface_hash);
+  CHECK(latest.render_hash==expected.render_hash);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
@@ -2454,6 +2599,12 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   const auto repeated=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(repeated==cold);
   CHECK(cache.geometry.size()==populated);
+
+  std::stop_source canceled;canceled.request_stop();
+  const auto cached_owners=cache.closed_owners;
+  CHECK_THROWS_AS(static_cast<void>(tetra::close_world_conforming_cut(
+      raw,&cache,canceled.get_token())),std::runtime_error);
+  CHECK(cache.closed_owners==cached_owners);
 
   split(tetra::WorldTetAddress::root(1U));
   const auto moved=tetra::close_world_conforming_cut(raw,&cache);
@@ -8556,6 +8707,9 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   blocks.push_back(make_block(1U,20U,12U,2.0F));
   blocks.push_back(make_block(2U,5U,13U,3.0F));
   tetra_viewer::SurfaceHostStagingStorage staging(4U);
+  const auto initial_estimate=staging.estimate_world_render_blocks(blocks);
+  CHECK(initial_estimate.dirty_ranges==8U);
+  CHECK(initial_estimate.reused_ranges==0U);
   staging.stage_world_render_blocks(blocks);
   REQUIRE(equal(tetra_viewer::assemble_surface_host_staging(staging),
                 direct(blocks)));
@@ -8567,6 +8721,9 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   CHECK(staging.metrics().reused_ranges==first_ranges.size());
   for(std::size_t index=0;index<first_ranges.size();++index)
     CHECK(staging.ranges()[index].host_slot==first_ranges[index].host_slot);
+  const auto retained_estimate=staging.estimate_world_render_blocks(blocks);
+  CHECK(retained_estimate.dirty_ranges==0U);
+  CHECK(retained_estimate.reused_ranges==first_ranges.size());
 
   tetra_viewer::SurfaceDeviceUploadPlanner planner;
   std::vector<tetra_viewer::SceneVertex> device;
@@ -8579,7 +8736,14 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   // exercise the collision guard: identity/hash equality is insufficient
   // unless the retained bytes also match.
   blocks[2].triangle_vertices[0].position[0]+=10.0F;
+  const auto changed_estimate=staging.estimate_world_render_blocks(blocks);
+  auto upload_budget=tetra_viewer::production_world_profile().budgets;
+  upload_budget.maximum_upload_bytes=changed_estimate.staged_bytes;
+  CHECK(tetra_viewer::evaluate_world_resource_budgets(upload_budget,
+      {0U,0U,0U,changed_estimate.staged_bytes}).admitted());
   staging.stage_world_render_blocks(blocks);
+  CHECK(changed_estimate.dirty_ranges==staging.metrics().dirty_ranges);
+  CHECK(changed_estimate.staged_bytes==staging.metrics().staged_triangle_bytes);
   CHECK(staging.metrics().dirty_ranges==1U);
   CHECK(staging.metrics().reused_ranges==first_ranges.size()-1U);
   planner.prepare(staging,device.size());
@@ -8592,6 +8756,16 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
   CHECK(equal(tetra_viewer::assemble_surface_device_publication(
                   planner,device),direct(blocks)));
+
+  auto all_changed=blocks;
+  for(auto& block:all_changed){
+    ++block.surface_payload_hash;
+    for(auto& vertex:block.triangle_vertices)vertex.position[1]+=20.0F;
+  }
+  const auto large_dirty=staging.estimate_world_render_blocks(all_changed);
+  REQUIRE(large_dirty.staged_bytes>changed_estimate.staged_bytes);
+  CHECK_FALSE(tetra_viewer::evaluate_world_resource_budgets(upload_budget,
+      {0U,0U,0U,large_dirty.staged_bytes}).admitted());
 
   const auto valid_generation=staging.metrics().publication_generation;
   const auto valid= tetra_viewer::assemble_surface_host_staging(staging);
@@ -8610,6 +8784,32 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
   CHECK(equal(tetra_viewer::assemble_surface_device_publication(
                   planner,device),direct(blocks)));
+}
+
+TEST_CASE("world render block estimate predicts fragmentation compaction") {
+  using Block=tetra_viewer::SparseWorldSurfaceCache::RenderBlock;
+  Block block;
+  block.id=tetra::hierarchy_block_id(
+      tetra::WorldTetAddress::root(0U),2U);
+  block.surface_payload_hash=17U;
+  block.triangle_vertices.resize(4100U*3U);
+  for(auto& vertex:block.triangle_vertices){
+    vertex.normal[1]=1.0F;vertex.colour[1]=0.75F;vertex.edge_flags=7.0F;
+  }
+  tetra_viewer::SurfaceHostStagingStorage staging(1U);
+  staging.stage_world_render_blocks(std::span<const Block>(&block,1U));
+  block.triangle_vertices.resize(100U*3U);
+  ++block.surface_payload_hash;
+  const auto estimate=staging.estimate_world_render_blocks(
+      std::span<const Block>(&block,1U));
+  REQUIRE(estimate.compaction);
+  CHECK(estimate.active_ranges==100U);
+  CHECK(estimate.dirty_ranges==100U);
+  CHECK(estimate.required_vertex_capacity==300U);
+  staging.stage_world_render_blocks(std::span<const Block>(&block,1U));
+  CHECK(staging.metrics().retained_slots==100U);
+  CHECK(staging.metrics().dirty_ranges==estimate.dirty_ranges);
+  CHECK(staging.metrics().staged_triangle_bytes==estimate.staged_bytes);
 }
 
 TEST_CASE("parallel surface draw packing is byte identical across update paths") {
