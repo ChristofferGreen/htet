@@ -19,6 +19,17 @@
       cell summaries with a linear mask count and keep the complete hashed
       reconstruction as the oracle; walking materialization falls from about
       389 ms over 738,000 owners to 45 ms over about 30,000 owners.
+- [x] Publish the exact old/new green-mask owner and block symmetric difference
+      from successful closure. Cover additions, removals, changed masks,
+      alternating refinement/coarsening, and retained-memory accounting.
+- [x] Replace the sparse optimizer's full-surface fallback with a bounded
+      five-ring Jacobi dependency patch. Rebuild complete dirty output blocks,
+      use the next five graph rings as immutable inputs, and retain all other
+      surface snapshots; settled production hashes remain exact.
+- [x] Evaluate each target-cut depth in parallel on the persistent geometry
+      executor while retaining serial deterministic split decisions. Preserve
+      all production hashes and reduce walking/near selection from about
+      465 ms to roughly 140--152 ms.
 - [ ] Replace root-to-leaf target-cut reconstruction with a persistent,
       priority-ordered split/merge frontier that commits a bounded conforming
       transaction from the currently published cut.

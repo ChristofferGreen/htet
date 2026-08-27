@@ -614,7 +614,7 @@ WorldLodCutSelection select_world_lod_cut(
     const tetra::Camera& camera,
     tetra::WorldConformingClosureCache* closure_cache,
     std::stop_token cancellation,std::size_t* completed_work_units,
-    bool compute_quality_diagnostics) {
+    bool compute_quality_diagnostics,tetra::GeometryExecutor* executor) {
   if(completed_work_units)*completed_work_units=0U;
   if(profile.background_red_depth>profile.near_red_depth||
      profile.near_red_depth>tetra::maximum_world_red_depth)
@@ -693,8 +693,28 @@ WorldLodCutSelection select_world_lod_cut(
       throw std::runtime_error("world LOD selection canceled");
     std::vector<tetra::WorldTetAddress> next;
     next.reserve(result.owners.size()*2U);
+    std::vector<Evaluation> parallel_evaluations;
+    const bool parallel=executor&&executor->worker_count()>1U&&
+        result.owners.size()>=4096U;
+    if(parallel){
+      parallel_evaluations.resize(result.owners.size());
+      auto group=executor->make_group(
+          depth,tetra::GeometryTaskPriority::interactive);
+      executor->parallel_for(group,0U,result.owners.size(),4096U,
+          [&](std::size_t begin,std::size_t end,std::stop_token stop){
+        for(std::size_t index=begin;index<end;++index){
+          if(stop.stop_requested()||cancellation.stop_requested())return;
+          if(result.owners[index].red_depth()==depth)
+            parallel_evaluations[index]=evaluate(result.owners[index]);
+        }
+      });
+      executor->wait(group);
+      if(cancellation.stop_requested())
+        throw std::runtime_error("world LOD selection canceled");
+    }
     bool split_any{};
-    for(const auto owner:result.owners){
+    for(std::size_t owner_index=0;owner_index<result.owners.size();++owner_index){
+      const auto owner=result.owners[owner_index];
       if((result.metrics.visited_owners&1023U)==0U&&
          cancellation.stop_requested())
         throw std::runtime_error("world LOD selection canceled");
@@ -702,7 +722,8 @@ WorldLodCutSelection select_world_lod_cut(
       ++result.metrics.visited_owners;
       if(completed_work_units)
         *completed_work_units=result.metrics.visited_owners;
-      const auto evaluation=evaluate(owner);
+      const auto evaluation=parallel?parallel_evaluations[owner_index]:
+          evaluate(owner);
       if(!evaluation.may_cross){
         ++result.metrics.field_rejected_owners;next.push_back(owner);continue;
       }
@@ -735,7 +756,7 @@ WorldLodCutSelection select_world_lod_cut(
   if(completed_work_units)
     *completed_work_units=result.metrics.visited_owners;
   result.owners=tetra::close_world_conforming_cut(
-      result.owners,closure_cache,cancellation);
+      result.owners,closure_cache,cancellation,3U);
   if(closure_cache){
     result.metrics.closure_requested_owners_scanned=
         closure_cache->last_requested_owners_scanned;
@@ -762,6 +783,10 @@ WorldLodCutSelection select_world_lod_cut(
         closure_cache->last_dependency_owners_evaluated;
     result.metrics.closure_masks_evaluated=
         closure_cache->last_masks_evaluated;
+    result.metrics.changed_closure_mask_owners=
+        closure_cache->last_changed_mask_owners.size();
+    result.metrics.changed_closure_mask_blocks=
+        closure_cache->last_changed_mask_blocks.size();
     result.metrics.retained_closure_dependency_bytes=
         closure_cache->last_dependency_retained_bytes;
     result.metrics.closure_proof_validation_milliseconds=
@@ -814,7 +839,11 @@ WorldLodCutSelection select_world_lod_cut(
 }
 
 BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
-    :profile_(profile) {
+    :profile_(profile),executor_(std::make_shared<tetra::GeometryExecutor>(
+        tetra::GeometryExecutorConfiguration{
+            .worker_count=tetra::default_geometry_worker_count(),
+            .blocks_per_worker=4U,
+            .external_callers_may_participate=false})) {
   if(profile_.budgets.maximum_cpu_bytes==0U||
      profile_.budgets.maximum_triangles==0U||
      profile_.budgets.maximum_work_units==0U||
@@ -836,7 +865,8 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   field_.frequency=profile_.octave_detail_frequency;
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_position_=camera_.position;
-  auto initial=build_publication(profile_,field_,camera_,1U);
+  auto initial=build_publication(
+      profile_,field_,camera_,1U,{}, {}, {}, {},executor_.get());
   const auto initial_host=host_staging_.estimate_world_render_blocks(
       initial.surface_cache.render_blocks);
   const auto initial_render_bytes=checked_resource_multiply(
@@ -929,13 +959,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const tetra::Camera& camera,std::uint64_t generation,
     SparseWorldSurfaceCache surface_cache,
     WorldHierarchyDemandState hierarchy_demand,
-    std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation) {
+    std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation,
+    tetra::GeometryExecutor* executor) {
   std::size_t completed_work_units{};
   try{
   const auto started=std::chrono::steady_clock::now();
   auto selection=select_world_lod_cut(
       profile,field,camera,&surface_cache.closure,cancellation,
-      &completed_work_units,false);
+      &completed_work_units,false,executor);
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
   const std::uint64_t hierarchy_revision=generation*2U-1U;
@@ -1090,6 +1121,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       selection.metrics.closure_dependency_owners_evaluated;
   diagnostics.closure_masks_evaluated=
       selection.metrics.closure_masks_evaluated;
+  diagnostics.changed_closure_mask_owners=
+      selection.metrics.changed_closure_mask_owners;
+  diagnostics.changed_closure_mask_blocks=
+      selection.metrics.changed_closure_mask_blocks;
   diagnostics.retained_closure_dependency_bytes=
       selection.metrics.retained_closure_dependency_bytes;
   diagnostics.closure_proof_validation_milliseconds=
@@ -1263,12 +1298,13 @@ void BlockedTerrainRuntime::submit() {
   auto surface_cache=std::move(surface_cache_);
   cancellation_=std::stop_source{};
   const auto token=cancellation_.get_token();
+  const auto executor=executor_;
   future_=std::async(std::launch::async,
       [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
-       surface_cache=std::move(surface_cache)]() mutable {
+       executor,surface_cache=std::move(surface_cache)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),
-        hierarchy_demand,volume_pins,token);
+        hierarchy_demand,volume_pins,token,executor.get());
   });
   ++diagnostics_.submitted_builds;
   last_requested_position_=camera.position;

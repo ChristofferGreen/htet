@@ -242,6 +242,12 @@ struct WorldConformingClosureCache {
   std::size_t last_dependency_candidate_blocks{};
   std::size_t last_dependency_owners_evaluated{};
   std::size_t last_masks_evaluated{};
+  // Exact old/new symmetric difference after the most recent successful
+  // closure publication. Current owners include additions and mask changes;
+  // block IDs also include removals so downstream retained data can erase
+  // stale payloads without rescanning the complete cut.
+  std::vector<WorldTetAddress> last_changed_mask_owners;
+  std::vector<HierarchyBlockId> last_changed_mask_blocks;
   std::size_t last_dependency_retained_bytes{};
   double last_proof_validation_milliseconds{};
   double last_dependency_query_milliseconds{};
@@ -284,7 +290,7 @@ reconstruct_blocked_world_conforming_volume(
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
     WorldConformingClosureCache* cache=nullptr,
-    std::stop_token cancellation={});
+    std::stop_token cancellation={},unsigned int block_generations=3U);
 
 // Sparse ordered published cut. It stores no flattened global leaf vector;
 // traversal resolves child overrides directly from block prefixes.

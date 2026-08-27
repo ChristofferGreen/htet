@@ -41,6 +41,26 @@ remains well above the interactive target. The active design therefore treats th
 next publication as a bounded conforming split/merge transaction, not another
 attempt to optimize a monolithic complete-camera rebuild.
 
+Conformity closure now publishes an exact old/new mask-change manifest. The
+owner list identifies current additions and changed masks; the block list also
+identifies removals, allowing downstream caches to erase stale payloads. The
+sparse surface extractor consumes this manifest to avoid resolving hierarchy
+geometry for unchanged certificates and to extract topology only in dirty
+blocks. Its optimizer no longer widens every nonempty update to the complete
+surface: all vertices of dirty output blocks form the core, an additional
+five-ring graph halo supplies the inputs required by five synchronous Jacobi
+passes, and unchanged snapshots remain immutable. The release walking and near
+hashes remain identical to the global optimizer oracle.
+
+Target-cut field and projection evaluation is also parallel per hierarchy
+depth through the persistent geometry executor. Split decisions and ordered
+assembly remain serial, so worker scheduling cannot change the cut. On the
+production walking and near routes this reduces cut selection from about
+465 ms to 140--152 ms while preserving every qualified hash. End-to-end
+publication remains roughly 2.6--2.8 seconds and is therefore still not an
+interactive solution; the persistent transactional frontier below remains the
+required next step.
+
 ## Technology choices
 
 - C++23 where supported.

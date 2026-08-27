@@ -63,6 +63,8 @@ struct TerrainRuntimeDiagnostics {
   std::size_t closure_dependency_candidate_blocks{};
   std::size_t closure_dependency_owners_evaluated{};
   std::size_t closure_masks_evaluated{};
+  std::size_t changed_closure_mask_owners{};
+  std::size_t changed_closure_mask_blocks{};
   std::size_t retained_closure_dependency_bytes{};
   double closure_proof_validation_milliseconds{};
   double closure_dependency_query_milliseconds{};
@@ -177,6 +179,8 @@ struct WorldLodCutMetrics {
   std::size_t closure_dependency_candidate_blocks{};
   std::size_t closure_dependency_owners_evaluated{};
   std::size_t closure_masks_evaluated{};
+  std::size_t changed_closure_mask_owners{};
+  std::size_t changed_closure_mask_blocks{};
   std::size_t retained_closure_dependency_bytes{};
   double closure_proof_validation_milliseconds{};
   double closure_dependency_query_milliseconds{};
@@ -333,7 +337,8 @@ void apply_world_residency_plan(
     tetra::WorldConformingClosureCache* closure_cache=nullptr,
     std::stop_token cancellation={},
     std::size_t* completed_work_units=nullptr,
-    bool compute_quality_diagnostics=true);
+    bool compute_quality_diagnostics=true,
+    tetra::GeometryExecutor* executor=nullptr);
 
 class TerrainRuntime {
  public:
@@ -444,7 +449,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       SparseWorldSurfaceCache surface_cache={},
       WorldHierarchyDemandState hierarchy_demand={},
       std::vector<WorldVolumePin> volume_pins={},
-      std::stop_token cancellation={});
+      std::stop_token cancellation={},
+      tetra::GeometryExecutor* executor=nullptr);
   void submit();
   void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 
@@ -455,6 +461,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;
+  std::shared_ptr<tetra::GeometryExecutor> executor_;
   std::future<Publication> future_;
   std::stop_source cancellation_;
   SparseWorldSurfaceCache surface_cache_;

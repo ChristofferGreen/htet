@@ -3196,6 +3196,8 @@ TEST_CASE("causal world closure proofs survive alternating refinement and coarse
     std::ranges::sort(requested);
     tetra::WorldConformingClosureCache cold;
     const auto expected=tetra::close_world_conforming_cut(requested,&cold);
+    const auto previous_owners=retained.closed_owners;
+    const auto previous_masks=retained.green_masks;
     const auto actual=tetra::close_world_conforming_cut(requested,&retained);
     observed_sparse_dependency_query|=
         retained.last_dependency_owners_evaluated>0U;
@@ -3204,6 +3206,35 @@ TEST_CASE("causal world closure proofs survive alternating refinement and coarse
     CHECK(retained.vertex_depths==cold.vertex_depths);
     CHECK(retained.last_masks_evaluated<=retained.closed_owners.size());
     CHECK(retained.last_promoted_owners<=retained.promotion_proofs.size());
+    std::vector<tetra::WorldTetAddress> expected_changed_owners;
+    std::vector<tetra::HierarchyBlockId> expected_changed_blocks;
+    std::size_t previous{},current{};
+    while(previous<previous_owners.size()||current<actual.size()){
+      if(previous==previous_owners.size()||
+         (current<actual.size()&&actual[current]<previous_owners[previous])){
+        expected_changed_owners.push_back(actual[current]);
+        expected_changed_blocks.push_back(tetra::hierarchy_block_id(
+            actual[current],3U));
+        ++current;continue;
+      }
+      if(current==actual.size()||previous_owners[previous]<actual[current]){
+        expected_changed_blocks.push_back(tetra::hierarchy_block_id(
+            previous_owners[previous],3U));
+        ++previous;continue;
+      }
+      if(previous>=previous_masks.size()||
+         previous_masks[previous]!=retained.green_masks[current]){
+        expected_changed_owners.push_back(actual[current]);
+        expected_changed_blocks.push_back(tetra::hierarchy_block_id(
+            actual[current],3U));
+      }
+      ++previous;++current;
+    }
+    std::ranges::sort(expected_changed_blocks);
+    expected_changed_blocks.erase(std::unique(expected_changed_blocks.begin(),
+        expected_changed_blocks.end()),expected_changed_blocks.end());
+    CHECK(retained.last_changed_mask_owners==expected_changed_owners);
+    CHECK(retained.last_changed_mask_blocks==expected_changed_blocks);
     for(std::size_t proof=0;proof<retained.proof_nodes.size();++proof)
       for(std::size_t input=0;
           input<retained.proof_nodes[proof].input_count;++input)
@@ -3294,10 +3325,10 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(direct.metrics.conforming_cells_materialized==0U);
   CHECK(direct_cache.conforming.blocks.empty());
   CHECK(direct.metrics.surface_candidate_owners<
-        direct.metrics.conforming_owners_considered);
+        direct_cache.closure.closed_owners.size());
   CHECK(direct.metrics.green_cells_enumerated<direct.metrics.conforming_cells);
   CHECK(direct_cache.surface_certificates.size()==
-        direct.metrics.conforming_owners_considered);
+        direct_cache.closure.closed_owners.size());
   const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);
@@ -3388,6 +3419,7 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
       changed,domain,sphere,false,{},&cache);
   const auto cold=tetra_viewer::build_sparse_world_derived_surface(
       changed,domain,sphere,false);
+  CHECK(warm.triangles.size()==cold.triangles.size());
   CHECK(warm.canonical_surface_hash==cold.canonical_surface_hash);
   CHECK(warm.metrics.conforming_volume_hash==cold.metrics.conforming_volume_hash);
   CHECK(warm.metrics.reused_surface_blocks>0U);

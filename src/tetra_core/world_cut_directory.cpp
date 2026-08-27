@@ -1778,7 +1778,10 @@ std::vector<WorldTetAddress> query_closure_dependency_owners(
 
 std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
-    WorldConformingClosureCache* cache,std::stop_token cancellation) {
+    WorldConformingClosureCache* cache,std::stop_token cancellation,
+    unsigned int block_generations) {
+  if(block_generations==0U||block_generations>maximum_world_red_depth)
+    throw std::invalid_argument("world closure block generations are invalid");
   const auto cancel=[&]{
     if(cancellation.stop_requested())
       throw std::runtime_error("world conforming closure canceled");
@@ -1808,6 +1811,8 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     cache->last_split_ancestor_updates=0U;
     cache->last_dependency_blocks_reused=0U;
     cache->last_dependency_blocks_rebuilt=0U;
+    cache->last_changed_mask_owners.clear();
+    cache->last_changed_mask_blocks.clear();
     cache->last_dependency_candidate_blocks=0U;
     cache->last_dependency_owners_evaluated=0U;
     cache->last_masks_evaluated=0U;
@@ -2592,6 +2597,37 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
                   static_cast<std::uint8_t>(1U<<edge);
         }
         cache->last_masks_evaluated=masks_to_build.size();
+        std::size_t old_mask_index{},new_mask_index{};
+        while(old_mask_index<cache->closed_owners.size()||
+              new_mask_index<owners.size()){
+          if(old_mask_index==cache->closed_owners.size()||
+             (new_mask_index<owners.size()&&
+              owners[new_mask_index]<cache->closed_owners[old_mask_index])){
+            cache->last_changed_mask_owners.push_back(owners[new_mask_index]);
+            cache->last_changed_mask_blocks.push_back(
+                hierarchy_block_id(owners[new_mask_index],block_generations));
+            ++new_mask_index;continue;
+          }
+          if(new_mask_index==owners.size()||
+             cache->closed_owners[old_mask_index]<owners[new_mask_index]){
+            cache->last_changed_mask_blocks.push_back(
+                hierarchy_block_id(
+                    cache->closed_owners[old_mask_index],block_generations));
+            ++old_mask_index;continue;
+          }
+          if(old_mask_index>=cache->green_masks.size()||
+             cache->green_masks[old_mask_index]!=new_masks[new_mask_index]){
+            cache->last_changed_mask_owners.push_back(owners[new_mask_index]);
+            cache->last_changed_mask_blocks.push_back(
+                hierarchy_block_id(owners[new_mask_index],block_generations));
+          }
+          ++old_mask_index;++new_mask_index;
+        }
+        std::ranges::sort(cache->last_changed_mask_blocks);
+        cache->last_changed_mask_blocks.erase(std::unique(
+            cache->last_changed_mask_blocks.begin(),
+            cache->last_changed_mask_blocks.end()),
+            cache->last_changed_mask_blocks.end());
         std::size_t previous{},current{};
         while(previous<cache->closed_owners.size()&&current<owners.size()){
           if(cache->closed_owners[previous]<owners[current]){++previous;continue;}
@@ -2661,7 +2697,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         cache->requested_split_ancestors=std::move(requested_split_ancestors);
         cache->vertex_depths=std::move(vertex_depths);
         cache->last_dependency_retained_bytes+=
-            cache->vertex_depths.capacity()*sizeof(WorldClosureVertexDepth);
+            cache->vertex_depths.capacity()*sizeof(WorldClosureVertexDepth)+
+            cache->last_changed_mask_owners.capacity()*sizeof(WorldTetAddress)+
+            cache->last_changed_mask_blocks.capacity()*sizeof(HierarchyBlockId);
         cache->closed_owners=std::move(published_closed_owners);
         cache->green_masks=std::move(new_masks);
         cache->proof_nodes=std::move(proof_nodes);

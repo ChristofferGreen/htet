@@ -228,6 +228,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.closure_dependency_owners_evaluated
           <<",\"closure_masks_evaluated\":"
           <<diagnostics.closure_masks_evaluated
+          <<",\"changed_closure_mask_owners\":"
+          <<diagnostics.changed_closure_mask_owners
+          <<",\"changed_closure_mask_blocks\":"
+          <<diagnostics.changed_closure_mask_blocks
           <<",\"retained_closure_dependency_bytes\":"
           <<diagnostics.retained_closure_dependency_bytes
           <<",\"closure_proof_validation_ms\":"
