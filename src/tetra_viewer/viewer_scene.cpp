@@ -1860,26 +1860,35 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots(
   if(std::ranges::adjacent_find(result.triangles)!=result.triangles.end())
     throw std::logic_error("blocked surface publishes a duplicate triangle");
 
-  OptimizedSurface assembled;
-  assembled.positions.reserve(result.vertices.size());
-  assembled.global_keys.reserve(result.vertices.size());
-  for(const auto& vertex:result.vertices){
-    assembled.global_keys.push_back(vertex.key);
-    assembled.positions.push_back(vertex.position);
-  }
-  assembled.triangles.reserve(result.triangles.size());
-  for(const auto& triangle:result.triangles){
-    std::array<std::size_t,3> ids{};
-    for(std::size_t corner=0;corner<3U;++corner){
-      const auto found=std::ranges::lower_bound(
-          result.vertices,triangle.vertices[corner],{},&tetra::WorldSurfaceVertex::key);
-      if(found==result.vertices.end()||found->key!=triangle.vertices[corner])
-        throw std::logic_error("blocked surface triangle references a missing vertex");
-      ids[corner]=static_cast<std::size_t>(found-result.vertices.begin());
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t hash=offset;
+  const auto append=[&](std::uint64_t value){hash^=value;hash*=prime;};
+  const auto append_key=[&](const tetra::WorldDerivedVertexKey& key){
+    append(static_cast<std::uint8_t>(key.kind));append(key.basis_count);
+    for(std::size_t index=0;index<key.basis_count;++index){
+      append(static_cast<std::uint64_t>(key.basis[index].x));
+      append(static_cast<std::uint64_t>(key.basis[index].y));
+      append(static_cast<std::uint64_t>(key.basis[index].z));
+      append(key.basis[index].denominator_exponent);
     }
-    assembled.triangles.push_back(ids);
+  };
+  for(const auto& vertex:result.vertices){
+    append_key(vertex.key);
+    append(std::bit_cast<std::uint64_t>(vertex.position.x));
+    append(std::bit_cast<std::uint64_t>(vertex.position.y));
+    append(std::bit_cast<std::uint64_t>(vertex.position.z));
   }
-  result.canonical_surface_hash=hash_indexed_surface(assembled);
+  std::vector<std::array<tetra::WorldDerivedVertexKey,3>> triangle_keys;
+  triangle_keys.reserve(result.triangles.size());
+  for(const auto& triangle:result.triangles){
+    auto keys=triangle.vertices;std::ranges::sort(keys);
+    triangle_keys.push_back(keys);
+  }
+  std::ranges::sort(triangle_keys);
+  for(const auto& triangle:triangle_keys)
+    for(const auto& key:triangle)append_key(key);
+  result.canonical_surface_hash=hash;
   return result;
 }
 

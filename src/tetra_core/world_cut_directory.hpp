@@ -7,6 +7,8 @@
 
 namespace tetra {
 
+class GeometryExecutor;
+
 class WorldCutDirectory;
 
 struct WorldCutCheckpointMetrics {
@@ -290,7 +292,8 @@ reconstruct_blocked_world_conforming_volume(
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
     WorldConformingClosureCache* cache=nullptr,
-    std::stop_token cancellation={},unsigned int block_generations=3U);
+    std::stop_token cancellation={},unsigned int block_generations=3U,
+    GeometryExecutor* executor=nullptr);
 
 // Sparse ordered published cut. It stores no flattened global leaf vector;
 // traversal resolves child overrides directly from block prefixes.

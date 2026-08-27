@@ -832,7 +832,7 @@ WorldLodCutSelection select_world_lod_cut(
   if(completed_work_units)
     *completed_work_units=result.metrics.visited_owners;
   result.owners=tetra::close_world_conforming_cut(
-      result.owners,closure_cache,cancellation,3U);
+      result.owners,closure_cache,cancellation,3U,executor);
   if(closure_cache){
     result.metrics.closure_requested_owners_scanned=
         closure_cache->last_requested_owners_scanned;
@@ -1112,6 +1112,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.world_revision=directory.revision();
   diagnostics.scene_mesh_revision=directory.revision();
   diagnostics.scene_generation=generation;
+  diagnostics.published_camera_position=camera.position;
   diagnostics.hierarchy_hash=directory.canonical_cut_hash();
   diagnostics.connected_surface_hash=surface.canonical_surface_hash;
   diagnostics.logical_cells=directory.logical_owner_count();

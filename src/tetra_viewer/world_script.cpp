@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace tetra_viewer {
@@ -379,6 +380,65 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"connected_surface_hash\":"<<diagnostics.connected_surface_hash
           <<",\"render_hash\":"<<diagnostics.render_hash
           <<",\"field_sample_hash\":"<<diagnostics.field_sample_hash<<"}\n";
+  }
+  {
+    auto moving=make_production_terrain_runtime(production_world_profile());
+    tetra::Camera camera;
+    camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+    camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+    const auto started=std::chrono::steady_clock::now();
+    std::optional<double> first_publication_milliseconds;
+    double maximum_publication_interval{},maximum_camera_lag{};
+    auto previous_publication=started;
+    std::size_t publications{};
+    const auto sample=[&](bool published){
+      const auto now=std::chrono::steady_clock::now();
+      const auto diagnostics=moving->diagnostics();
+      const auto lag=camera.position-diagnostics.published_camera_position;
+      maximum_camera_lag=std::max(maximum_camera_lag,std::sqrt(
+          lag.x*lag.x+lag.y*lag.y+lag.z*lag.z));
+      if(!published)return;
+      const double elapsed=std::chrono::duration<double,std::milli>(
+          now-started).count();
+      if(!first_publication_milliseconds)first_publication_milliseconds=elapsed;
+      maximum_publication_interval=std::max(maximum_publication_interval,
+          std::chrono::duration<double,std::milli>(
+              now-previous_publication).count());
+      previous_publication=now;++publications;
+    };
+    for(std::size_t step=0;step<240U;++step){
+      camera.position.z-=0.001;
+      moving->set_camera(camera,true);
+      sample(moving->update());
+      std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+    const auto stopped=std::chrono::steady_clock::now();
+    const auto deadline=stopped+std::chrono::seconds(30);
+    TerrainRuntimeDiagnostics diagnostics;
+    do{
+      sample(moving->update());diagnostics=moving->diagnostics();
+      if(diagnostics.converged&&!diagnostics.busy)break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }while(std::chrono::steady_clock::now()<deadline);
+    if(!diagnostics.converged||diagnostics.busy){
+      errors<<"continuous world movement did not converge\n";return 1;
+    }
+    output<<"{\"event\":\"world_continuous_movement\""
+          <<",\"movement_ms\":"<<std::chrono::duration<double,std::milli>(
+              stopped-started).count()
+          <<",\"first_publication_ms\":"
+          <<first_publication_milliseconds.value_or(-1.0)
+          <<",\"maximum_publication_interval_ms\":"
+          <<maximum_publication_interval
+          <<",\"settled_convergence_ms\":"
+          <<std::chrono::duration<double,std::milli>(
+              std::chrono::steady_clock::now()-stopped).count()
+          <<",\"maximum_camera_lag\":"<<maximum_camera_lag
+          <<",\"publications\":"<<publications
+          <<",\"hierarchy_hash\":"<<diagnostics.hierarchy_hash
+          <<",\"connected_surface_hash\":"
+          <<diagnostics.connected_surface_hash
+          <<",\"render_hash\":"<<diagnostics.render_hash<<"}\n";
   }
   const auto before=runtime->diagnostics();
   tetra::Camera superseded;

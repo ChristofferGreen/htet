@@ -47,6 +47,12 @@
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.
+  - [x] Add a release continuous-walk benchmark that records first complete
+        publication, maximum publication interval, settled convergence,
+        publication count, and camera-to-published-front distance.
+  - [x] Record the exact camera pose carried by every published world front.
+        The first baseline is 1.87 s to first publication, 2.21 s maximum
+        interval, 0.22 units maximum lag, and 3.52 s settled convergence.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

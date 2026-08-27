@@ -74,6 +74,18 @@ deadline. The next implementation must retain the priority frontier and feed
 its exact dirty ranges through those downstream stages before sliced
 publication can become the default.
 
+The release benchmark now also runs a two-second 120 Hz continuous walk and
+records the camera pose carried by each published front. This makes the
+user-facing gates explicit rather than inferring them from one settled build:
+the initial measured path published first at about 1.87 seconds, reached a
+2.21-second maximum publication interval and 0.22-unit camera lag, then needed
+3.52 seconds after input stopped. Reusing the persistent geometry executor for
+closure workers removes repeated operating-system thread creation. Directly
+hashing the already sorted assembled vertex and triangle streams also removes
+redundant vertex-index reconstruction while preserving the exact historical
+surface hash. The latter saves roughly 15--45 ms on measured local moves, but
+neither change alone closes the architectural gap.
+
 ## Technology choices
 
 - C++23 where supported.

@@ -1083,13 +1083,16 @@ TEST_CASE("batched camera frontier cuts retain exact conformity at every slice")
   const auto target=target_cache.requested_owners;
   auto current=retained.requested_owners;
   REQUIRE(current!=target);
+  tetra::GeometryExecutor executor({.worker_count=4U,.blocks_per_worker=4U,
+                                    .external_callers_may_participate=false});
   unsigned int slices{};
   while(current!=target&&slices<64U){
     current=tetra_viewer::advance_world_requested_frontier(
         current,target,profile.domain,camera,512U);
     tetra::WorldConformingClosureCache cold;
     const auto expected=tetra::close_world_conforming_cut(current,&cold);
-    const auto actual=tetra::close_world_conforming_cut(current,&retained);
+    const auto actual=tetra::close_world_conforming_cut(
+        current,&retained,{},3U,&executor);
     CAPTURE(slices);CAPTURE(current.size());
     CAPTURE(actual.size());CAPTURE(expected.size());
     CHECK(actual==expected);
@@ -1343,6 +1346,9 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   const auto initial=runtime.diagnostics();
   REQUIRE(initial.converged);
   REQUIRE(initial.scene_generation>0U);
+  CHECK(initial.published_camera_position.x==0.5);
+  CHECK(initial.published_camera_position.y==0.72);
+  CHECK(initial.published_camera_position.z==0.78);
   CHECK(initial.logical_cells>0U);
   CHECK(initial.active_tetrahedra>=initial.logical_cells);
   CHECK(initial.retained_cache_bytes>0U);

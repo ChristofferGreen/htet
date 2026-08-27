@@ -1,4 +1,5 @@
 #include "tetra_core/world_cut_directory.hpp"
+#include "tetra_core/geometry_executor.hpp"
 #include "tetra_core/green_templates.hpp"
 
 #include <algorithm>
@@ -1779,7 +1780,7 @@ std::vector<WorldTetAddress> query_closure_dependency_owners(
 std::vector<WorldTetAddress> close_world_conforming_cut(
     std::span<const WorldTetAddress> logical_owners,
     WorldConformingClosureCache* cache,std::stop_token cancellation,
-    unsigned int block_generations) {
+    unsigned int block_generations,GeometryExecutor* executor) {
   if(block_generations==0U||block_generations>maximum_world_red_depth)
     throw std::invalid_argument("world closure block generations are invalid");
   const auto cancel=[&]{
@@ -2342,11 +2343,26 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
   for(;;){
     ++closure_rounds;
     cancel();
+    const std::size_t available_workers=executor?executor->worker_count():
+        std::thread::hardware_concurrency();
     const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
-        10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
+        10U,std::min<std::size_t>(available_workers,
                                   (owners.size()+8191U)/8192U)));
     const auto run_workers=[&](const auto& work){
       if(worker_count==1U){work(0U,0U,owners.size());return;}
+      if(executor!=nullptr){
+        auto group=executor->make_group(
+            closure_rounds,GeometryTaskPriority::publication_critical);
+        for(std::size_t worker=0;worker<worker_count;++worker){
+          const auto begin=owners.size()*worker/worker_count;
+          const auto end=owners.size()*(worker+1U)/worker_count;
+          executor->submit(group,[&,worker,begin,end](std::stop_token stop){
+            if(!stop.stop_requested()&&!cancellation.stop_requested())
+              work(worker,begin,end);
+          });
+        }
+        executor->wait(group);cancel();return;
+      }
       std::vector<std::thread> workers;
       workers.reserve(worker_count);
       for(std::size_t worker=0;worker<worker_count;++worker){

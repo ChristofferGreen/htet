@@ -23,6 +23,7 @@ struct TerrainRuntimeDiagnostics {
   std::uint64_t connected_surface_hash{};
   std::uint64_t render_hash{};
   std::uint64_t field_sample_hash{};
+  tetra::Vec3 published_camera_position{};
   std::size_t logical_cells{};
   std::size_t active_tetrahedra{};
   std::size_t resident_bytes{};
