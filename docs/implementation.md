@@ -120,6 +120,17 @@ remain exact. Continuous first publication improved from the original
 1.87--1.97 seconds to about 1.68 seconds, but global closure and surface work
 still dominate and the interactive gate remains open.
 
+The runtime benchmark now executes one real distance-prioritized
+512-operation walking slice through warm conformity closure, retained hierarchy
+replacement, and optimized surface generation. It changes about 4,344 closure
+owners across 125 blocks, rebuilds about 110 hierarchy blocks and 297 surface
+blocks, and remains exactly hashable and watertight. The measured total is
+about 1.06 seconds: 426 ms closure, 40 ms hierarchy replacement, and 588 ms
+surface work. Within those totals, global proof validation/finalization costs
+about 160 ms and the global optimizer dependency plus snapshot assembly costs
+about 268 ms. This explains why merely enabling the existing slicer would
+still miss the target; these retained dependency passes are the next gate.
+
 ## Technology choices
 
 - C++23 where supported.

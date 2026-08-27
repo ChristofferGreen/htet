@@ -454,6 +454,107 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.connected_surface_hash
           <<",\"render_hash\":"<<diagnostics.render_hash<<"}\n";
   }
+  {
+    const auto profile=production_world_profile();
+    tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+    field.secondary=profile.octave_detail_amplitude;
+    field.frequency=profile.octave_detail_frequency;
+    tetra::Camera initial_camera;
+    initial_camera.position={0.5,0.72,0.78};
+    initial_camera.forward={0.0,-0.2,-1.0};
+    initial_camera.viewport_height_pixels=800.0;
+    initial_camera.aspect_ratio=1.6;
+    tetra::GeometryExecutor executor({
+        .worker_count=tetra::default_geometry_worker_count(),
+        .blocks_per_worker=4U,.external_callers_may_participate=false});
+    SparseWorldSurfaceCache cache;
+    const auto initial=select_world_lod_cut(
+        profile,field,initial_camera,&cache.closure,{},nullptr,false,&executor);
+    auto checkpoint=tetra::make_complete_world_cut_checkpoint(
+        initial.owners,3U,1U,tetra::HierarchyResidencyTier::surface);
+    tetra::WorldCutDirectory directory(std::move(checkpoint));
+    static_cast<void>(build_sparse_world_derived_surface(
+        directory,profile.domain,field,true,{},&cache,{},true,false));
+    auto target_camera=initial_camera;target_camera.position.z-=0.10;
+    tetra::WorldConformingClosureCache target_cache;
+    static_cast<void>(select_world_lod_cut(
+        profile,field,target_camera,&target_cache,{},nullptr,false,&executor));
+    const auto batch=advance_world_requested_frontier(
+        cache.closure.requested_owners,target_cache.requested_owners,
+        profile.domain,target_camera,512U);
+    const auto started=std::chrono::steady_clock::now();
+    const auto closure_started=std::chrono::steady_clock::now();
+    const auto closed=tetra::close_world_conforming_cut(
+        batch,&cache.closure,{},3U,&executor);
+    const auto closure_finished=std::chrono::steady_clock::now();
+    std::vector<tetra::HierarchyBlockId> surface_blocks;
+    for(const auto& block:cache.closure.dependency_blocks)
+      surface_blocks.push_back(block->id);
+    std::ranges::sort(surface_blocks);
+    surface_blocks.erase(
+        std::unique(surface_blocks.begin(),surface_blocks.end()),
+        surface_blocks.end());
+    const auto directory_started=std::chrono::steady_clock::now();
+    const auto update=directory.replace_complete_cut(
+        cache.closure.dependency_blocks,cache.closure.last_changed_mask_owners,
+        surface_blocks,{},2U);
+    const auto directory_finished=std::chrono::steady_clock::now();
+    const auto surface=build_sparse_world_derived_surface(
+        directory,profile.domain,field,true,{},&cache,{},true,false);
+    const auto finished=std::chrono::steady_clock::now();
+    const auto milliseconds=[](auto begin,auto end){return
+        std::chrono::duration<double,std::milli>(end-begin).count();};
+    output<<"{\"event\":\"world_bounded_frontier_slice\""
+          <<",\"operations\":512"
+          <<",\"target_reached\":"
+          <<(batch==target_cache.requested_owners?"true":"false")
+          <<",\"requested_owners\":"<<batch.size()
+          <<",\"closed_owners\":"<<closed.size()
+          <<",\"changed_mask_owners\":"
+          <<cache.closure.last_changed_mask_owners.size()
+          <<",\"changed_mask_blocks\":"
+          <<cache.closure.last_changed_mask_blocks.size()
+          <<",\"closure_ms\":"
+          <<milliseconds(closure_started,closure_finished)
+          <<",\"closure_proof_validation_ms\":"
+          <<cache.closure.last_proof_validation_milliseconds
+          <<",\"closure_dependency_query_ms\":"
+          <<cache.closure.last_dependency_query_milliseconds
+          <<",\"closure_dependency_publish_ms\":"
+          <<cache.closure.last_dependency_publish_milliseconds
+          <<",\"closure_vertex_depth_ms\":"
+          <<cache.closure.last_vertex_depth_milliseconds
+          <<",\"closure_fixed_point_ms\":"
+          <<cache.closure.last_fixed_point_milliseconds
+          <<",\"closure_finalization_ms\":"
+          <<cache.closure.last_closure_finalization_milliseconds
+          <<",\"closure_geometry_merge_ms\":"
+          <<cache.closure.last_geometry_merge_milliseconds
+          <<",\"directory_ms\":"
+          <<milliseconds(directory_started,directory_finished)
+          <<",\"surface_ms\":"<<surface.metrics.build_milliseconds
+          <<",\"surface_classification_ms\":"
+          <<surface.metrics.classification_milliseconds
+          <<",\"surface_topology_ms\":"
+          <<surface.metrics.topology_milliseconds
+          <<",\"surface_optimizer_dependency_ms\":"
+          <<surface.metrics.optimizer_dependency_milliseconds
+          <<",\"surface_patch_extraction_ms\":"
+          <<surface.metrics.patch_extraction_milliseconds
+          <<",\"surface_optimization_ms\":"
+          <<surface.metrics.optimization_milliseconds
+          <<",\"surface_snapshot_assembly_ms\":"
+          <<surface.metrics.snapshot_assembly_milliseconds
+          <<",\"surface_cache_publication_ms\":"
+          <<surface.metrics.cache_publication_milliseconds
+          <<",\"total_ms\":"<<milliseconds(started,finished)
+          <<",\"rebuilt_hierarchy_blocks\":"
+          <<update.metrics.loaded_blocks
+          <<",\"rebuilt_surface_blocks\":"
+          <<surface.metrics.rebuilt_surface_blocks
+          <<",\"hierarchy_hash\":"<<directory.canonical_cut_hash()
+          <<",\"surface_hash\":"<<surface.canonical_surface_hash<<"}\n";
+  }
   const auto before=runtime->diagnostics();
   tetra::Camera superseded;
   superseded.position={0.65,0.72,0.72};

@@ -41,6 +41,11 @@
   - [ ] Enable sliced publication only after closure and surface work consume
         dirty ranges; the first integration took about 10.3 seconds over six
         walking slices and timed out while coarsening the far view.
+    - [x] Add a release 512-operation production-slice benchmark after retained
+          hierarchy adoption. One valid slice now takes about 1.06 s: 426 ms
+          closure, 40 ms directory update, and 588 ms surface construction.
+          Keep production slicing disabled until the remaining global proof,
+          optimizer, and snapshot passes are removed.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.
