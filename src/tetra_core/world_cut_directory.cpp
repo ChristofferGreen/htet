@@ -1850,6 +1850,168 @@ void publish_closure_dependency_directory(
   cache.last_dependency_retained_bytes=bytes;
   cache.last_dependency_publish_milliseconds=
       std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+}
+
+void publish_closure_dependency_directory_delta(
+    WorldConformingClosureCache& cache,
+    std::span<const WorldTetAddress> owners,
+    std::span<const WorldTetAddress> additions,
+    std::span<const WorldTetAddress> removals,
+    std::stop_token cancellation,unsigned int block_generations) {
+  if(cache.dependency_blocks.empty()){
+    publish_closure_dependency_directory(
+        cache,owners,cancellation,block_generations);
+    return;
+  }
+  const auto started=std::chrono::steady_clock::now();
+  const auto bits=cache.dependency_fingerprint_bits;
+  if(bits==0U||bits>32U)
+    throw std::invalid_argument(
+        "world closure dependency fingerprint width must be in [1,32]");
+  struct BlockDelta {
+    HierarchyBlockId id{};
+    std::vector<WorldTetAddress> additions,removals;
+  };
+  std::vector<HierarchyBlockId> dirty_ids;
+  dirty_ids.reserve(additions.size()+removals.size());
+  for(const auto owner:additions)
+    dirty_ids.push_back(hierarchy_block_id(owner,block_generations));
+  for(const auto owner:removals)
+    dirty_ids.push_back(hierarchy_block_id(owner,block_generations));
+  std::ranges::sort(dirty_ids);
+  dirty_ids.erase(std::unique(dirty_ids.begin(),dirty_ids.end()),dirty_ids.end());
+  if(dirty_ids.empty()){
+    cache.last_dependency_blocks_reused=cache.dependency_blocks.size();
+    cache.last_dependency_blocks_rebuilt=0U;
+    cache.last_dependency_publish_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-started).count();
+    return;
+  }
+  std::vector<BlockDelta> deltas;
+  deltas.reserve(dirty_ids.size());
+  for(const auto id:dirty_ids)deltas.push_back({.id=id});
+  const auto append=[&](WorldTetAddress owner,bool addition){
+    const auto id=hierarchy_block_id(owner,block_generations);
+    const auto found=std::ranges::lower_bound(deltas,id,{},&BlockDelta::id);
+    if(found==deltas.end()||found->id!=id)
+      throw std::logic_error("closure dependency delta lost a dirty block");
+    (addition?found->additions:found->removals).push_back(owner);
+  };
+  for(const auto owner:additions)append(owner,true);
+  for(const auto owner:removals)append(owner,false);
+  for(auto& delta:deltas){
+    std::ranges::sort(delta.additions);std::ranges::sort(delta.removals);
+  }
+
+  auto next_stable_id=cache.next_dependency_block_id;
+  auto free_stable_ids=cache.free_dependency_block_ids;
+  std::vector<std::shared_ptr<const WorldClosureDependencyBlock>> blocks;
+  blocks.reserve(cache.dependency_blocks.size()+deltas.size());
+  std::vector<std::uint32_t> retained_ids;
+  std::vector<std::uint64_t> added_vertex_records;
+  std::size_t reused{},rebuilt{},old_index{};
+  for(const auto& delta:deltas){
+    while(old_index<cache.dependency_blocks.size()&&
+          cache.dependency_blocks[old_index]->id<delta.id){
+      blocks.push_back(cache.dependency_blocks[old_index]);
+      retained_ids.push_back(cache.dependency_blocks[old_index]->stable_id);
+      ++reused;++old_index;
+    }
+    std::vector<WorldTetAddress> previous;
+    std::optional<std::uint32_t> stable_id;
+    while(old_index<cache.dependency_blocks.size()&&
+          cache.dependency_blocks[old_index]->id==delta.id){
+      const auto& old=*cache.dependency_blocks[old_index++];
+      previous.insert(previous.end(),old.owners.begin(),old.owners.end());
+      if(!stable_id)stable_id=old.stable_id;
+      else free_stable_ids.push_back(old.stable_id);
+    }
+    std::ranges::sort(previous);
+    std::vector<WorldTetAddress> kept;
+    kept.reserve(previous.size());
+    std::ranges::set_difference(
+        previous,delta.removals,std::back_inserter(kept));
+    std::vector<WorldTetAddress> current;
+    current.reserve(kept.size()+delta.additions.size());
+    std::ranges::merge(kept,delta.additions,std::back_inserter(current));
+    if(current.empty()){
+      if(stable_id)free_stable_ids.push_back(*stable_id);
+      continue;
+    }
+    auto block=std::make_shared<WorldClosureDependencyBlock>();
+    block->id=delta.id;
+    if(stable_id)block->stable_id=*stable_id;
+    else if(!free_stable_ids.empty()){
+      block->stable_id=free_stable_ids.back();free_stable_ids.pop_back();
+    }else{
+      if(next_stable_id==std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error(
+            "world closure dependency block identifiers exhausted");
+      block->stable_id=next_stable_id++;
+    }
+    block->owners=std::move(current);
+    block->vertex_owner_records.reserve(block->owners.size()*4U);
+    for(std::size_t item=0;item<block->owners.size();++item){
+      const auto keys=world_tetrahedron_vertex_keys(block->owners[item]);
+      for(const auto key:keys)
+        block->vertex_owner_records.push_back(dependency_record(
+            dependency_fingerprint(key,bits),static_cast<std::uint32_t>(item)));
+    }
+    std::ranges::sort(block->vertex_owner_records);
+    std::vector<std::uint32_t> fingerprints;
+    fingerprints.reserve(block->vertex_owner_records.size());
+    for(const auto record:block->vertex_owner_records)
+      fingerprints.push_back(static_cast<std::uint32_t>(record>>32U));
+    std::ranges::sort(fingerprints);
+    fingerprints.erase(std::unique(fingerprints.begin(),fingerprints.end()),
+                       fingerprints.end());
+    for(const auto fingerprint:fingerprints)
+      added_vertex_records.push_back(
+          dependency_record(fingerprint,block->stable_id));
+    blocks.push_back(std::move(block));++rebuilt;
+  }
+  while(old_index<cache.dependency_blocks.size()){
+    blocks.push_back(cache.dependency_blocks[old_index]);
+    retained_ids.push_back(cache.dependency_blocks[old_index]->stable_id);
+    ++reused;++old_index;
+  }
+  std::ranges::sort(blocks,{},[](const auto& block){return block->id;});
+  std::vector<std::uint8_t> retained_flags(next_stable_id,0U);
+  for(const auto id:retained_ids)retained_flags[id]=1U;
+  std::ranges::sort(added_vertex_records);
+  std::vector<std::uint64_t> kept_records;
+  kept_records.reserve(cache.vertex_block_records.size());
+  if(cache.indexed_dependency_fingerprint_bits==bits)
+    for(const auto record:cache.vertex_block_records)
+      if(const auto id=static_cast<std::uint32_t>(record);
+         id<retained_flags.size()&&retained_flags[id]!=0U)
+        kept_records.push_back(record);
+  std::vector<std::uint64_t> vertex_records;
+  vertex_records.reserve(kept_records.size()+added_vertex_records.size());
+  std::ranges::merge(
+      kept_records,added_vertex_records,std::back_inserter(vertex_records));
+  std::ranges::sort(free_stable_ids);
+  free_stable_ids.erase(
+      std::unique(free_stable_ids.begin(),free_stable_ids.end()),
+      free_stable_ids.end());
+  std::size_t bytes=vertex_records.capacity()*sizeof(std::uint64_t)+
+      blocks.capacity()*sizeof(decltype(blocks)::value_type)+
+      free_stable_ids.capacity()*sizeof(std::uint32_t);
+  for(const auto& block:blocks)bytes+=sizeof(*block)+
+      block->owners.capacity()*sizeof(WorldTetAddress)+
+      block->vertex_owner_records.capacity()*sizeof(std::uint64_t);
+  cache.dependency_blocks=std::move(blocks);
+  cache.vertex_block_records=std::move(vertex_records);
+  cache.free_dependency_block_ids=std::move(free_stable_ids);
+  cache.next_dependency_block_id=next_stable_id;
+  cache.indexed_dependency_fingerprint_bits=bits;
+  cache.last_dependency_blocks_reused=reused;
+  cache.last_dependency_blocks_rebuilt=rebuilt;
+  cache.last_dependency_retained_bytes=bytes;
+  cache.last_dependency_publish_milliseconds=
+      std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-started).count();
 }
 
@@ -2927,6 +3089,8 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
                   static_cast<std::uint8_t>(1U<<edge);
         }
         cache->last_masks_evaluated=masks_to_build.size();
+        std::vector<WorldTetAddress> closed_owner_additions,
+            closed_owner_removals;
         std::size_t old_mask_index{},new_mask_index{};
         while(old_mask_index<cache->closed_owners.size()||
               new_mask_index<owners.size()){
@@ -2934,12 +3098,14 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
              (new_mask_index<owners.size()&&
               owners[new_mask_index]<cache->closed_owners[old_mask_index])){
             cache->last_changed_mask_owners.push_back(owners[new_mask_index]);
+            closed_owner_additions.push_back(owners[new_mask_index]);
             cache->last_changed_mask_blocks.push_back(
                 hierarchy_block_id(owners[new_mask_index],block_generations));
             ++new_mask_index;continue;
           }
           if(new_mask_index==owners.size()||
              cache->closed_owners[old_mask_index]<owners[new_mask_index]){
+            closed_owner_removals.push_back(cache->closed_owners[old_mask_index]);
             cache->last_changed_mask_blocks.push_back(
                 hierarchy_block_id(
                     cache->closed_owners[old_mask_index],block_generations));
@@ -3044,8 +3210,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           }
         }
         auto published_closed_owners=owners;
-        publish_closure_dependency_directory(
-            *cache,owners,cancellation,block_generations);
+        publish_closure_dependency_directory_delta(
+            *cache,owners,closed_owner_additions,closed_owner_removals,
+            cancellation,block_generations);
         cache->requested_owners=std::move(requested_owners);
         cache->requested_split_ancestors=std::move(requested_split_ancestors);
         cache->vertex_depths=std::move(vertex_depths);

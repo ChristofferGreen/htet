@@ -74,6 +74,12 @@
           683 ms, and memory high-water to about 501 MB with unchanged hashes.
           Add an independent final-pose runtime oracle to the continuous
           benchmark so coalesced-history locality errors cannot silently pass.
+    - [x] Patch the retained closure vertex/owner dependency directory from the
+          exact closed-owner additions and removals. Unchanged immutable blocks
+          and their fingerprint records are retained, while only dirty blocks
+          are regenerated. Exact bounded dependency publication falls from
+          about 58 ms to 4 ms and the 512-operation slice from about 683 ms to
+          622 ms, with unchanged surface and continuous final-pose hashes.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.
