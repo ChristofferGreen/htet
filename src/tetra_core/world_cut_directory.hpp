@@ -146,6 +146,9 @@ struct WorldBlockedConformingVolume {
   std::size_t rebuilt_blocks{};
   std::size_t reused_cells{};
   std::size_t rebuilt_cells{};
+  std::size_t owners_considered{};
+  std::size_t green_cells_enumerated{};
+  std::size_t materialized_cells{};
   std::size_t retained_bytes{};
   std::uint64_t canonical_hash{};
 };
@@ -161,9 +164,17 @@ struct WorldConformingClosureCacheEntry {
 
 struct WorldConformingClosureCache {
   std::vector<WorldConformingClosureCacheEntry> geometry;
+  // Exact pre-closure cut which produced the retained masks. Two distinct
+  // cuts may have the same owner count, so size alone is not a valid reuse
+  // certificate.
+  std::vector<WorldTetAddress> requested_owners;
   std::vector<WorldTetAddress> closed_owners;
   std::vector<std::uint8_t> green_masks;
   std::size_t maximum_entries{750000U};
+  std::size_t last_requested_owners_scanned{};
+  std::size_t last_reused_masks{};
+  std::size_t last_rebuilt_masks{};
+  std::size_t last_promoted_owners{};
 };
 
 [[nodiscard]] WorldCutCheckpoint make_sparse_world_cut_checkpoint(
@@ -190,7 +201,8 @@ reconstruct_blocked_world_conforming_volume(
     const WorldConformingClosureCache& closure_cache,
     const WorldBlockedConformingVolume* retained=nullptr,
     std::span<const HierarchyBlockId> materialized_blocks={},
-    bool restrict_materialized_blocks=false);
+    bool restrict_materialized_blocks=false,
+    bool compute_complete_hash=true);
 // Promotes only owners that cannot be represented by a restricted green
 // stencil, yielding the smallest conforming red-green superset of a sparse cut.
 [[nodiscard]] std::vector<WorldTetAddress> close_world_conforming_cut(

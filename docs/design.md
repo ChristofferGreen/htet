@@ -2483,5 +2483,34 @@ Do not erase superseded thinking when it explains why a tempting old idea should
 
 The most useful future sections will probably come from actual prototypes: measured hierarchy layouts, visual subdivision comparisons, collision benchmarks, save/page experiments, state-transfer failures, and the first player-facing construction loop.
 
+---
+
+# 30. Surface construction and volume promotion
+
+The rendered terrain boundary is now derived directly from the authoritative
+logical BCC cut. A retained owner certificate stores its exact address, green
+mask, conservative field classification, and Grande-point signs. Only owners
+whose conservative bound may cross the field enumerate their small template;
+surface-only blocks never allocate tetrahedral cell arrays.
+
+This is not a second terrain representation. Surface crossings use the same
+global dyadic edge keys as promoted volume, and hard player, edit, or physics
+demand reconstructs optional conforming cells from the same owner/mask state.
+Promotion and demotion therefore cannot change the surface hash. The complete
+volume reconstruction remains available as a correctness oracle, not as a
+hidden production prerequisite.
+
+Retained state must be certified by identity, never by cardinality. Two cuts
+can have the same number of owners while containing different addresses, and
+canonical address order does not imply contiguous storage-block identities.
+Both cases produced real bugs and now have release tests.
+
+The remaining locality work has two strict gates. Changed-cut conformity must
+propagate from exact address ranges while matching the cold closure oracle, and
+partial optimized-surface publication must name the full per-key five-pass
+dependency cone. Until those proofs exist, changed closure uses the global
+oracle and optimized terrain publishes one complete atomic front. Correctness
+and watertightness take precedence over reporting speculative locality.
+
 
 ---

@@ -1313,6 +1313,15 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(initial.volume_hierarchy_blocks==initial.resident_volume_blocks);
   CHECK(initial.surface_hierarchy_blocks>initial.volume_hierarchy_blocks);
   CHECK(initial.resident_volume_cells<initial.active_tetrahedra);
+  CHECK(initial.resident_volume_cells==initial.conforming_cells_materialized);
+  CHECK(initial.conforming_cells_materialized<initial.active_tetrahedra/10U);
+  CHECK(initial.green_cells_enumerated<initial.active_tetrahedra/2U);
+  CHECK(initial.surface_candidate_owners<initial.logical_cells/2U);
+  CHECK(initial.surface_candidate_blocks<initial.hierarchy_blocks);
+  CHECK(initial.retained_surface_certificate_bytes>0U);
+  CHECK(initial.rebuilt_surface_certificates==initial.logical_cells);
+  CHECK(initial.closure_requested_owners_scanned>0U);
+  CHECK(initial.rebuilt_closure_masks==initial.logical_cells);
   CHECK(initial.resident_volume_blocks<=initial.maximum_volume_blocks);
   CHECK(initial.hierarchy_demand_epoch==1U);
   CHECK(initial.hierarchy_demand_records==initial.hierarchy_blocks);
@@ -2934,6 +2943,9 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   const auto repeated=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(repeated==cold);
   CHECK(cache.geometry.size()==populated);
+  CHECK(cache.last_requested_owners_scanned==raw.size());
+  CHECK(cache.last_reused_masks==cache.green_masks.size());
+  CHECK(cache.last_rebuilt_masks==0U);
 
   std::stop_source canceled;canceled.request_stop();
   const auto cached_owners=cache.closed_owners;
@@ -2944,6 +2956,9 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   split(tetra::WorldTetAddress::root(1U));
   const auto moved=tetra::close_world_conforming_cut(raw,&cache);
   CHECK(moved==tetra::close_world_conforming_cut(raw));
+  CHECK(cache.requested_owners==raw);
+  CHECK(cache.last_reused_masks==0U);
+  CHECK(cache.last_rebuilt_masks==cache.green_masks.size());
   CHECK(cache.geometry.size()<=cache.maximum_entries);
 }
 
@@ -3019,6 +3034,60 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(selective_cache.conforming.cells<selective.metrics.conforming_cells);
   CHECK(selective_cache.conforming.retained_bytes<cache.conforming.retained_bytes);
 
+  // The production surface path expands only certified surface candidates and
+  // does not allocate a conforming volume when no gameplay pin requests one.
+  tetra_viewer::SparseWorldSurfaceCache direct_cache;
+  const auto direct=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&direct_cache,{},true,false);
+  CHECK(direct.canonical_surface_hash==surface.canonical_surface_hash);
+  CHECK(direct.triangles==surface.triangles);
+  CHECK(direct.metrics.conforming_cells_materialized==0U);
+  CHECK(direct_cache.conforming.blocks.empty());
+  CHECK(direct.metrics.surface_candidate_owners<
+        direct.metrics.conforming_owners_considered);
+  CHECK(direct.metrics.green_cells_enumerated<direct.metrics.conforming_cells);
+  CHECK(direct_cache.surface_certificates.size()==
+        direct.metrics.conforming_owners_considered);
+  const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&direct_cache,{},true,false);
+  CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);
+  CHECK(direct_repeated.metrics.rebuilt_surface_certificates==0U);
+  CHECK(direct_repeated.metrics.reused_surface_certificates==
+        direct_cache.surface_certificates.size());
+  CHECK(direct_repeated.metrics.surface_classification_samples==0U);
+
+  // Surface cost and output stay fixed while gameplay residency promotes and
+  // then demotes the entire conforming volume behind that surface.
+  std::vector<tetra::HierarchyBlockId> all_volume_blocks;
+  all_volume_blocks.reserve(cache.conforming.blocks.size());
+  for(const auto& block:cache.conforming.blocks)
+    all_volume_blocks.push_back(block->id);
+  tetra_viewer::SparseWorldSurfaceCache promoted_cache;
+  const auto promoted=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&promoted_cache,all_volume_blocks,
+      true,false);
+  CHECK(promoted.canonical_surface_hash==direct.canonical_surface_hash);
+  CHECK(promoted.triangles==direct.triangles);
+  CHECK(promoted.metrics.surface_candidate_owners==
+        direct.metrics.surface_candidate_owners);
+  CHECK(promoted.metrics.conforming_cells_materialized==
+        promoted_cache.conforming.cells);
+  CHECK(promoted.metrics.conforming_cells_materialized>0U);
+  CHECK(promoted_cache.conforming.blocks.size()==all_volume_blocks.size());
+  const auto demoted=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,sphere,false,{},&promoted_cache,{},true,false);
+  CHECK(demoted.canonical_surface_hash==direct.canonical_surface_hash);
+  CHECK(demoted.triangles==direct.triangles);
+  CHECK(demoted.metrics.conforming_cells_materialized==0U);
+  CHECK(promoted_cache.conforming.blocks.empty());
+
+  auto changed_sphere=sphere;changed_sphere.radius*=0.9;
+  const auto changed_field=tetra_viewer::build_sparse_world_derived_surface(
+      directory,domain,changed_sphere,false,{},&direct_cache,{},true,false);
+  CHECK(changed_field.metrics.rebuilt_surface_certificates==
+        direct_cache.surface_certificates.size());
+  CHECK(changed_field.canonical_surface_hash!=direct.canonical_surface_hash);
+
   const auto flat_scene=tetra_viewer::prepare_blocked_derived_surface_scene(
       surface,sphere,true,true,{});
   const auto retained_scene=tetra_viewer::prepare_retained_blocked_scene(
@@ -3050,7 +3119,18 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
       initial,domain,sphere,false,{},&cache);
   REQUIRE_FALSE(baseline.snapshots.empty());
 
-  const auto selected=mesh.logical_red_owners().front();
+  const auto selected_found=std::ranges::find_if(
+      mesh.logical_red_owners(),[&](tetra::TetId owner){
+        const auto& cell=mesh.tetrahedron(owner);
+        bool negative{},positive{};
+        for(const auto vertex:cell.vertices){
+          const auto distance=sphere.signed_distance(mesh.vertices()[vertex]);
+          negative|=distance<0.0;positive|=distance>=0.0;
+        }
+        return negative&&positive;
+      });
+  REQUIRE(selected_found!=mesh.logical_red_owners().end());
+  const auto selected=*selected_found;
   REQUIRE(mesh.refine_selected_binary({selected}));
   tetra::WorldCutDirectory changed(
       tetra::make_world_cut_checkpoint(mesh,2U,2U));

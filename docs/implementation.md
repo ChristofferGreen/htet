@@ -1102,3 +1102,37 @@ volume-conforming would require a separate surface-insertion construction.
 GPU-side mesh construction, compute-based refinement, mesh shaders, and
 simulation belong after the CPU implementation has established correct and
 well-tested refinement behaviour.
+
+## Surface-proportional world construction
+
+`tetra_world` now keeps one field-revisioned certificate per logical owner and
+directly enumerates only conservative surface candidates through stack-local
+BCC red/green templates. Global edge identities still own every crossing, so
+the production connected-surface hash is identical to the former full-volume
+oracle. Complete conforming-cell arrays are constructed only for hard player,
+edit, and physics pins; debug and tests can explicitly request the old complete
+volume and hash.
+
+At the spawn pose, 226,862 of 732,744 owners are surface candidates. Production
+enumerates 293,954 green cells rather than all 841,848 conceptual conforming
+cells, and materializes 40,842 pinned cells. The retained candidate certificates
+occupy about 16.8 MiB. Walking reuses 717,762 certificates and rebuilds 20,176.
+The qualified route measured 5.35 seconds walking, 5.12 seconds near, 3.03
+seconds far, 6.36 seconds on reversal, and 5.54 seconds after teleport. These
+are improvements over the captured pre-direct measurements of 11.13, 11.26,
+6.92, 10.01, and 6.50 seconds respectively.
+
+Two correctness bugs were exposed while qualifying the path. Conforming owners
+are not contiguous by hierarchy-block identity in canonical address order, so
+the retained-volume builder now explicitly orders owner references by block;
+resident and reported materialized cells consequently agree. Closure state is
+also validated by exact owner identity before classification, never by owner
+count. Exact identical closure requests reuse retained masks, while changed cuts
+still invoke the full closure oracle.
+
+Raw surface extraction localizes changes through both the previous and current
+global-key graphs. The five-pass optimized surface remains a complete atomic
+front replacement: production testing showed that a block-ring halo alone can
+miss a removed old-graph dependency and produce bit-different shared vertices.
+Per-key optimizer dependency certificates and changed-range closure propagation
+remain the two explicit Gate 4A follow-ups; neither is approximated in release.

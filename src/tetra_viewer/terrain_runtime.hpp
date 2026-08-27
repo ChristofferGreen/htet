@@ -28,6 +28,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t resident_bytes{};
   std::size_t retained_cache_bytes{};
   std::size_t retained_conforming_bytes{};
+  std::size_t retained_surface_certificate_bytes{};
   std::size_t retained_render_block_bytes{};
   std::size_t retained_host_staging_bytes{};
   std::size_t hierarchy_blocks{};
@@ -37,6 +38,18 @@ struct TerrainRuntimeDiagnostics {
   std::size_t volume_hierarchy_blocks{};
   std::size_t resident_volume_blocks{};
   std::size_t resident_volume_cells{};
+  std::size_t conforming_owners_considered{};
+  std::size_t green_cells_enumerated{};
+  std::size_t conforming_cells_materialized{};
+  std::size_t surface_candidate_owners{};
+  std::size_t surface_candidate_blocks{};
+  std::size_t surface_classification_samples{};
+  std::size_t reused_surface_certificates{};
+  std::size_t rebuilt_surface_certificates{};
+  std::size_t closure_requested_owners_scanned{};
+  std::size_t reused_closure_masks{};
+  std::size_t rebuilt_closure_masks{};
+  std::size_t promoted_closure_owners{};
   std::size_t maximum_volume_blocks{};
   std::size_t promoted_volume_blocks{};
   std::size_t demoted_volume_blocks{};
@@ -120,6 +133,10 @@ struct WorldLodCutMetrics {
   std::size_t horizon_owners{};
   std::size_t logical_owners_before_closure{};
   std::size_t logical_owners_after_closure{};
+  std::size_t closure_requested_owners_scanned{};
+  std::size_t reused_closure_masks{};
+  std::size_t rebuilt_closure_masks{};
+  std::size_t promoted_closure_owners{};
   unsigned int minimum_surface_depth{};
   unsigned int maximum_surface_depth{};
   unsigned int maximum_shared_vertex_depth_delta{};

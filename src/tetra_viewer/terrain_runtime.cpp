@@ -735,6 +735,13 @@ WorldLodCutSelection select_world_lod_cut(
     *completed_work_units=result.metrics.visited_owners;
   result.owners=tetra::close_world_conforming_cut(
       result.owners,closure_cache,cancellation);
+  if(closure_cache){
+    result.metrics.closure_requested_owners_scanned=
+        closure_cache->last_requested_owners_scanned;
+    result.metrics.reused_closure_masks=closure_cache->last_reused_masks;
+    result.metrics.rebuilt_closure_masks=closure_cache->last_rebuilt_masks;
+    result.metrics.promoted_closure_owners=closure_cache->last_promoted_owners;
+  }
   result.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-closure_started).count();
   result.metrics.logical_owners_after_closure=result.owners.size();
@@ -936,10 +943,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   tetra::WorldCutDirectory directory(std::move(checkpoint));
   auto surface=build_sparse_world_derived_surface(
       directory,profile.domain,field,true,cancellation,&surface_cache,
-      residency.volume_blocks,true);
-  // Even nonretained cells are deterministically reconstructed into the
-  // canonical-volume hash, so they count against the publication work budget.
-  completed_work_units+=surface.metrics.conforming_cells+
+      residency.volume_blocks,true,false);
+  // Production no longer expands the complete volume merely to render its
+  // boundary. Admission counts the surface classification, direct template
+  // expansion, new crossings, and final triangles that were actually built.
+  completed_work_units+=surface.metrics.surface_classification_samples+
+      surface.metrics.green_cells_enumerated+
       surface.metrics.computed_intersections+surface.triangles.size();
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
@@ -965,6 +974,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.work_units=completed_work_units;
   diagnostics.retained_cache_bytes=
       surface_cache.intersections.capacity()*sizeof(tetra::WorldSurfaceVertex)+
+      surface_cache.surface_certificates.capacity()*
+          sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate)+
       surface_cache.hierarchy.capacity()*
           sizeof(SparseWorldSurfaceCache::HierarchySignature)+
       surface_cache.snapshots.capacity()*
@@ -973,16 +984,39 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(SparseWorldSurfaceCache::RenderBlock)+
       surface_cache.closure.geometry.capacity()*
           sizeof(tetra::WorldConformingClosureCacheEntry)+
+      surface_cache.closure.requested_owners.capacity()*
+          sizeof(tetra::WorldTetAddress)+
       surface_cache.closure.closed_owners.capacity()*
           sizeof(tetra::WorldTetAddress)+
       surface_cache.closure.green_masks.capacity()*sizeof(std::uint8_t);
   diagnostics.retained_cache_bytes+=surface_cache.conforming.retained_bytes;
   diagnostics.retained_conforming_bytes=surface_cache.conforming.retained_bytes;
+  diagnostics.retained_surface_certificate_bytes=
+      surface_cache.surface_certificates.capacity()*
+      sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate);
   diagnostics.summary_hierarchy_blocks=directory.metrics().summary_blocks;
   diagnostics.surface_hierarchy_blocks=directory.metrics().surface_blocks;
   diagnostics.volume_hierarchy_blocks=directory.metrics().volume_blocks;
   diagnostics.resident_volume_blocks=surface_cache.conforming.blocks.size();
   diagnostics.resident_volume_cells=surface_cache.conforming.cells;
+  diagnostics.conforming_owners_considered=
+      surface.metrics.conforming_owners_considered;
+  diagnostics.green_cells_enumerated=surface.metrics.green_cells_enumerated;
+  diagnostics.conforming_cells_materialized=
+      surface.metrics.conforming_cells_materialized;
+  diagnostics.surface_candidate_owners=surface.metrics.surface_candidate_owners;
+  diagnostics.surface_candidate_blocks=surface.metrics.surface_candidate_blocks;
+  diagnostics.surface_classification_samples=
+      surface.metrics.surface_classification_samples;
+  diagnostics.reused_surface_certificates=
+      surface.metrics.reused_surface_certificates;
+  diagnostics.rebuilt_surface_certificates=
+      surface.metrics.rebuilt_surface_certificates;
+  diagnostics.closure_requested_owners_scanned=
+      selection.metrics.closure_requested_owners_scanned;
+  diagnostics.reused_closure_masks=selection.metrics.reused_closure_masks;
+  diagnostics.rebuilt_closure_masks=selection.metrics.rebuilt_closure_masks;
+  diagnostics.promoted_closure_owners=selection.metrics.promoted_closure_owners;
   diagnostics.maximum_volume_blocks=profile.maximum_volume_blocks;
   diagnostics.player_collision_volume_blocks=
       residency.metrics.player_collision_blocks;

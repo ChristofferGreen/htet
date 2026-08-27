@@ -1406,15 +1406,13 @@ flat normals.
 - [x] Verify convergence, bounded memory, exact cold-oracle equivalence, and
       identical regenerated hashes.
 
-### Gate 4A: Surface-proportional construction — next priority
+### Gate 4A: Surface-proportional construction — direct path qualified
 
-The current runtime has surface-only *residency*, but it does not yet have a
-surface-only construction path. `reconstruct_blocked_world_conforming_volume`
-still visits every logical owner, expands every green cell, and feeds the
-complete canonical-volume hash. A cold publication also materializes all
-changed active blocks so the surface extractor can consume cell arrays, then
-retains only the pinned volume subset. This makes work proportional to the
-represented volume even when rendering is the only consumer.
+Production now constructs its authoritative surface directly from retained
+owner/mask certificates and stack-local red/green templates. It does not build
+conforming-cell arrays for surface-only blocks and does not compute the complete
+volume hash unless a test or headless oracle asks for it. Full cell arrays are
+retained only for hard player, edit, or physics pins.
 
 The research supports this direction without supplying a drop-in BCC
 implementation. Isodiamond hierarchies demonstrate that a compact
@@ -1436,45 +1434,49 @@ the current full-volume builder and merely parallelizing it preserves exactness
 but leaves the dominant asymptotic cost unchanged. Gate 4A selects direct BCC
 surface construction with the old builder retained as its oracle.
 
-- [ ] Establish cold, walking, far, reversal, and teleport counters for logical
+- [x] Establish cold, walking, far, reversal, and teleport counters for logical
       owners considered, conservative range tests, green cells enumerated,
       conforming cells materialized, field samples, surface candidates,
       triangles, halo blocks, bytes, and time.
-- [ ] Move complete conforming-volume hashing out of the production publication
+- [x] Move complete conforming-volume hashing out of the production publication
       critical path. Keep it as an explicit headless/test oracle, and add
       separate canonical hashes for surface construction and actually resident
       pinned volume.
-- [ ] Carry a field-revisioned conservative `may-cross` certificate from LOD
+- [x] Carry a field-revisioned conservative `may-cross` certificate from LOD
       selection into hierarchy/block state so deep solid and high empty owners
       do not need to be rediscovered during extraction.
 - [ ] Replace the flat all-owner closure refresh with retained block-local masks
       and exact incremental conformity propagation from changed address ranges;
-      untouched surface and summary blocks must not be rescanned.
-- [ ] Add a compact surface-owner representation containing only canonical
+      untouched surface and summary blocks must not be rescanned. Identical
+      requests reuse the exact retained result; changed cuts still run the
+      global closure oracle.
+- [x] Add a compact surface-owner representation containing only canonical
       owner identity, transition mask, conservative classification, and the
       dependency information needed to regenerate its boundary.
-- [ ] Extract the exact current triangles directly from an owner's red/green
+- [x] Extract the exact current triangles directly from an owner's red/green
       template and global vertex keys. Enumerate template cells on the stack
       only for surface candidates; do not allocate a conforming-cell vector.
 - [ ] Build surface dependency and five-ring optimization halos from global
       surface keys and block adjacency, without scanning materialized interior
-      cell arrays.
-- [ ] Keep conforming-volume reconstruction as an independent promotion path
+      cell arrays. Exact old/new key cones localize raw extraction. Optimized
+      terrain retains complete-front publication until per-key dependency cones
+      can replace the block-ring approximation without cracks.
+- [x] Keep conforming-volume reconstruction as an independent promotion path
       for near-player, edit, and physics pins, reusing the same masks and exact
       keys. Promotion and demotion must leave surface and render hashes unchanged.
-- [ ] Stage surface-block and optional volume-block replacements under one
+- [x] Stage surface-block and optional volume-block replacements under one
       revision manifest while retaining the last complete watertight front.
-- [ ] Compare direct surface output with the existing full-volume oracle across
+- [x] Compare direct surface output with the existing full-volume oracle across
       block widths, root/block seams, mixed depths, worker counts, cancellation,
       eviction/reload, refinement, simplification, reversal, and teleport.
-- [ ] Make cold and incremental production tests fail if noncandidate
+- [x] Make cold and incremental production tests fail if noncandidate
       solid/empty owners expand green cells, if unchanged blocks are globally
       rescanned for closure, or if surface work grows with interior volume while
       surface complexity is held approximately constant.
-- [ ] Benchmark cold build and camera replacement separately. Report surface
+- [x] Benchmark cold build and camera replacement separately. Report surface
       work, promoted-volume work, latency, memory, dirty render ranges, and
       upload bytes rather than using complete-volume traversal as hidden work.
-- [ ] Visually inspect spawn, boundary, mountain, far, and promotion/demotion
+- [x] Visually inspect spawn, boundary, mountain, far, and promotion/demotion
       captures; run the full release suite before enabling the direct path by
       default.
 

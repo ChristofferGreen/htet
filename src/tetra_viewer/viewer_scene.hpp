@@ -734,6 +734,14 @@ struct BlockedDerivedSurfaceMetrics {
   std::size_t computed_intersections{};
   std::size_t reused_conforming_cells{};
   std::size_t rebuilt_conforming_cells{};
+  std::size_t conforming_owners_considered{};
+  std::size_t green_cells_enumerated{};
+  std::size_t conforming_cells_materialized{};
+  std::size_t surface_candidate_owners{};
+  std::size_t surface_candidate_blocks{};
+  std::size_t surface_classification_samples{};
+  std::size_t reused_surface_certificates{};
+  std::size_t rebuilt_surface_certificates{};
   std::size_t reused_surface_blocks{};
   std::size_t rebuilt_surface_blocks{};
   std::size_t surface_blocks{};
@@ -773,8 +781,18 @@ struct SparseWorldSurfaceCache {
     bool show_edges{};
     std::vector<SceneVertex> triangle_vertices;
   };
+  struct SurfaceOwnerCertificate {
+    tetra::WorldTetAddress owner{};
+    std::uint16_t negative_grande_points{};
+    std::uint8_t green_mask{};
+    bool may_cross{};
+    bool has_grande_signs{};
+    auto operator<=>(const SurfaceOwnerCertificate&) const = default;
+  };
   std::vector<tetra::WorldSurfaceVertex> intersections;
   std::vector<HierarchySignature> hierarchy;
+  std::vector<SurfaceOwnerCertificate> surface_certificates;
+  std::uint64_t surface_field_signature{};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
   std::vector<RenderBlock> render_blocks;
@@ -811,7 +829,8 @@ struct BlockedDerivedSurfaceBuild {
     const tetra::Sphere& field,bool optimize=true,
     std::stop_token cancellation={},SparseWorldSurfaceCache* cache=nullptr,
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks={},
-    bool restrict_retained_volume=false);
+    bool restrict_retained_volume=false,
+    bool compute_complete_volume_oracle=true);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same

@@ -162,6 +162,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"retained_cache_bytes\":"<<diagnostics.retained_cache_bytes
           <<",\"retained_conforming_bytes\":"
           <<diagnostics.retained_conforming_bytes
+          <<",\"retained_surface_certificate_bytes\":"
+          <<diagnostics.retained_surface_certificate_bytes
           <<",\"retained_render_block_bytes\":"
           <<diagnostics.retained_render_block_bytes
           <<",\"retained_host_staging_bytes\":"
@@ -176,6 +178,30 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.resident_volume_blocks
           <<",\"resident_volume_cells\":"
           <<diagnostics.resident_volume_cells
+          <<",\"conforming_owners_considered\":"
+          <<diagnostics.conforming_owners_considered
+          <<",\"green_cells_enumerated\":"
+          <<diagnostics.green_cells_enumerated
+          <<",\"conforming_cells_materialized\":"
+          <<diagnostics.conforming_cells_materialized
+          <<",\"surface_candidate_owners\":"
+          <<diagnostics.surface_candidate_owners
+          <<",\"surface_candidate_blocks\":"
+          <<diagnostics.surface_candidate_blocks
+          <<",\"surface_classification_samples\":"
+          <<diagnostics.surface_classification_samples
+          <<",\"reused_surface_certificates\":"
+          <<diagnostics.reused_surface_certificates
+          <<",\"rebuilt_surface_certificates\":"
+          <<diagnostics.rebuilt_surface_certificates
+          <<",\"closure_requested_owners_scanned\":"
+          <<diagnostics.closure_requested_owners_scanned
+          <<",\"reused_closure_masks\":"
+          <<diagnostics.reused_closure_masks
+          <<",\"rebuilt_closure_masks\":"
+          <<diagnostics.rebuilt_closure_masks
+          <<",\"promoted_closure_owners\":"
+          <<diagnostics.promoted_closure_owners
           <<",\"maximum_volume_blocks\":"
           <<diagnostics.maximum_volume_blocks
           <<",\"promoted_volume_blocks\":"

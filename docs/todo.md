@@ -39,39 +39,44 @@ not the active queue.
 
 ## Active chain: surface-proportional construction
 
-- [ ] Capture production baselines for owners considered, range tests, green
+- [x] Capture production baselines for owners considered, range tests, green
       cells enumerated, cells materialized, field samples, candidate surface
       owners, halo blocks, triangles, bytes, and stage timings.
-- [ ] Split production surface correctness from the expensive complete-volume
+- [x] Split production surface correctness from the expensive complete-volume
       oracle: retain exact surface/render hashes in normal publication and make
       the complete conforming-volume hash an explicit headless/test operation.
-- [ ] Persist conservative, field-revisioned surface-candidate certificates in
-      hierarchy blocks instead of reclassifying deep solid and high empty
-      regions downstream.
+- [x] Persist conservative, field-revisioned surface-candidate certificates in
+      the retained sparse-world cache instead of reclassifying deep solid and
+      high empty regions downstream.
 - [ ] Make conforming closure block-local and incremental: retain exact green
       masks, propagate only from changed address ranges, and prove unchanged
-      blocks are not scanned or republished.
-- [ ] Introduce compact surface-owner records that reference canonical owner
+      blocks are not scanned or republished. Exact same-request reuse and
+      field-revisioned masks are complete; changed cuts still use the cold
+      global closure oracle.
+- [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
-- [ ] Implement direct red/green-template surface extraction for candidate
+- [x] Implement direct red/green-template surface extraction for candidate
       owners using stack-local template expansion, global vertex keys, and the
       current exact edge-intersection rule.
 - [ ] Replace materialized-cell surface halo discovery with global surface-key
       and block-adjacency dependencies, including the five-ring optimizer halo.
-- [ ] Isolate full conforming-volume reconstruction behind hard player,
+      Raw extraction is local and uses exact old/new key cones; the five-pass
+      optimized front deliberately remains a complete replacement because a
+      block-ring-only certificate failed the production crack test.
+- [x] Isolate full conforming-volume reconstruction behind hard player,
       edit, physics, debug, and oracle demand; reuse exact masks and keys.
-- [ ] Publish surface and optional volume replacements atomically under one
+- [x] Publish surface and optional volume replacements atomically under one
       world revision, preserving cancellation, rollback, and last-front rules.
-- [ ] Add exact oracle tests across seams, mixed depths, block widths, worker
+- [x] Add exact oracle tests across seams, mixed depths, block widths, worker
       counts, movement, reversal, teleport, eviction, and promotion/demotion.
-- [ ] Add scaling tests that hold visible surface complexity approximately
+- [x] Add scaling tests that hold visible surface complexity approximately
       constant while increasing represented interior volume; production closure
       scans, green expansion, and materialization must remain surface-band
       proportional.
-- [ ] Benchmark cold and incremental builds against the current implementation,
+- [x] Benchmark cold and incremental builds against the current implementation,
       including surface work, promoted-volume work, latency, memory, dirty
       ranges, uploads, and cancellation waste.
-- [ ] Enable the direct path by default only after deterministic captures,
+- [x] Enable the direct path by default only after deterministic captures,
       visual inspection, the full release suite, and updated implementation and
       testcase records.
 
