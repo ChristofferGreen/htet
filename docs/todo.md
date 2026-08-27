@@ -59,7 +59,11 @@ not the active queue.
       work is incremental removal/re-derivation of green-mask dependencies so
       unchanged final owners are not evaluated. Exact old/new comparison now
       measures that target: walking changes 20,176 of 737,938 final masks
-      (2.7%), and near motion changes 18,884 of 741,900 (2.5%).
+      (2.7%), and near motion changes 18,884 of 741,900 (2.5%). A full compact
+      incidence graph plus fixed entity rings was exact on the measured route
+      but slower and not a general propagation proof, so it was removed. Retain
+      causal shared-edge supports and update them from the split-ancestor delta
+      instead of rebuilding complete adjacency.
 - [x] Introduce compact surface-owner records that reference canonical owner
       addresses and green masks without owning conforming tetrahedron arrays.
 - [x] Implement direct red/green-template surface extraction for candidate

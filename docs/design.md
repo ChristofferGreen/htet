@@ -2543,5 +2543,19 @@ frontier without conflating evaluation with publication: walking retains
 algorithm therefore has a concrete 2.7%/2.5% target for deletion and
 re-derivation rather than a guessed block halo.
 
+A second rejected prototype sharpened that requirement. It replaced the large
+per-owner geometry memo with a compact canonical vertex pool and full vertex/
+edge CSR incidence, then reset old closure sources in exact entity rings.
+Two rings reproduced walking, three reproduced near and far motion, and four
+reproduced every measured route including reversal and teleport. Nevertheless,
+building and walking the complete graph increased update time, and a fixed
+four-ring limit is empirical rather than a proof for arbitrary deep edits. The
+prototype was removed. The retained state must instead be the much smaller
+causal graph of active shared-edge supports: split-ancestor reference changes
+invalidate their derived green proofs, and deterministic re-derivation stops
+when no support changes. This follows the fine-to-coarse desired-mark,
+shared-edge-counter, coarse-to-fine commit structure in Groß and Reusken rather
+than reconstructing adjacency that did not change.
+
 
 ---
