@@ -14,6 +14,11 @@
 - [x] Reuse immutable topology from unchanged surface blocks. Treat both the
       hierarchy payload and restricted-green mask as topology dependencies;
       the hash oracle caught the initially omitted mask dependency.
+- [x] Make restricted conforming-volume reconstruction enumerate only closure
+      dependency runs belonging to player/edit/physics blocks. Preserve global
+      cell summaries with a linear mask count and keep the complete hashed
+      reconstruction as the oracle; walking materialization falls from about
+      389 ms over 738,000 owners to 45 ms over about 30,000 owners.
 - [ ] Replace root-to-leaf target-cut reconstruction with a persistent,
       priority-ordered split/merge frontier that commits a bounded conforming
       transaction from the currently published cut.

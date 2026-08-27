@@ -1294,6 +1294,16 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
 
   WorldBlockedConformingVolume result;
   result.logical_owners=closure_cache.closed_owners.size();
+  const bool restricted_summary_path=
+      restrict_materialized_blocks&&!compute_complete_hash&&
+      directory.block_generations()==3U;
+  if(restricted_summary_path)
+    for(const auto mask:closure_cache.green_masks){
+      if(mask==63U)throw std::logic_error("logical world owner is red-split");
+      const auto count=complete_green_template(mask).count;
+      result.cells+=count;
+      if(mask!=0U)result.transition_cells+=count;
+    }
   constexpr std::uint64_t volume_hash_offset=1469598103934665603ULL;
   constexpr std::uint64_t volume_hash_prime=1099511628211ULL;
   result.canonical_hash=volume_hash_offset;
@@ -1314,10 +1324,34 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
     std::size_t owner_index{};
   };
   std::vector<BlockOwner> block_owners;
-  block_owners.reserve(closure_cache.closed_owners.size());
-  for(std::size_t index=0;index<closure_cache.closed_owners.size();++index)
-    block_owners.push_back({hierarchy_block_id(
-        closure_cache.closed_owners[index],directory.block_generations()),index});
+  if(restricted_summary_path){
+    for(const auto id:materialized_blocks){
+      const auto block=std::ranges::lower_bound(
+          closure_cache.dependency_blocks,id,{},
+          [](const auto& candidate){return candidate->id;});
+      if(block==closure_cache.dependency_blocks.end()||(*block)->id!=id)
+        throw std::invalid_argument(
+            "conforming materialization names no closure dependency block");
+      for(auto run=block;run!=closure_cache.dependency_blocks.end()&&
+          (*run)->id==id;++run){
+        block_owners.reserve(block_owners.size()+(*run)->owners.size());
+        for(const auto owner:(*run)->owners){
+          const auto found=std::ranges::lower_bound(
+              closure_cache.closed_owners,owner);
+          if(found==closure_cache.closed_owners.end()||*found!=owner)
+            throw std::logic_error(
+                "materialized hierarchy block names no closed owner");
+          block_owners.push_back({id,static_cast<std::size_t>(
+              found-closure_cache.closed_owners.begin())});
+        }
+      }
+    }
+  }else{
+    block_owners.reserve(closure_cache.closed_owners.size());
+    for(std::size_t index=0;index<closure_cache.closed_owners.size();++index)
+      block_owners.push_back({hierarchy_block_id(
+          closure_cache.closed_owners[index],directory.block_generations()),index});
+  }
   std::ranges::sort(block_owners,[](const BlockOwner& first,
                                     const BlockOwner& second){
     return first.id<second.id||
@@ -1374,9 +1408,10 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
     if(exact_previous()){
       result.blocks.push_back(*previous);++result.reused_blocks;
       result.reused_cells+=(*previous)->cells.size();
-      result.cells+=(*previous)->cells.size();
+      if(!restricted_summary_path)result.cells+=(*previous)->cells.size();
       result.materialized_cells+=(*previous)->cells.size();
-      result.transition_cells+=(*previous)->transition_cells;
+      if(!restricted_summary_path)
+        result.transition_cells+=(*previous)->transition_cells;
       if(compute_complete_hash)for(const auto& cell:(*previous)->cells){
         hash_cell(cell);++result.green_cells_enumerated;
       }
@@ -1455,8 +1490,10 @@ WorldBlockedConformingVolume reconstruct_blocked_world_conforming_volume(
         }
         if(mask!=0U)block.transition_cells+=green.count;
       }
-      result.cells+=conforming_cell_count;
-      result.transition_cells+=block.transition_cells;
+      if(!restricted_summary_path){
+        result.cells+=conforming_cell_count;
+        result.transition_cells+=block.transition_cells;
+      }
       if(materialize){
         result.materialized_cells+=block.cells.size();
         result.rebuilt_cells+=block.cells.size();++result.rebuilt_blocks;

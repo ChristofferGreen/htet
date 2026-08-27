@@ -30,9 +30,14 @@ The reuse certificate includes both hierarchy payload and green-mask changes,
 because conformity changes in a neighbouring block can change local topology
 without changing the block's logical owners. Production hierarchy,
 conforming-volume, connected-surface, and render hashes remain exact. These
-corrections reduce the representative walking path from roughly 4.65 seconds
-to roughly 3.0 seconds, which is a material throughput improvement but remains
-well above the interactive target. The active design therefore treats the
+The restricted production volume path also enumerates only the closure
+dependency runs for explicitly retained player/edit/physics blocks; a linear
+green-mask summary preserves the complete conforming-cell count without
+sorting all surface owners. Walking conforming materialization falls from
+roughly 389 ms over 738,000 owners to 45 ms over about 30,000 owners. Together
+these corrections reduce the representative walking path from roughly 4.65
+seconds to roughly 2.7 seconds, which is a material throughput improvement but
+remains well above the interactive target. The active design therefore treats the
 next publication as a bounded conforming split/merge transaction, not another
 attempt to optimize a monolithic complete-camera rebuild.
 

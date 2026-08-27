@@ -2875,6 +2875,36 @@ TEST_CASE("blocked conforming volume is an exact local reusable reconstruction")
     REQUIRE(previous!=blocked.blocks.end());
     CHECK(previous->get()==block.get());
   }
+  // The production three-generation surface-only path must not sort every
+  // closed owner merely to retain a small volume subset. It uses the closure
+  // dependency runs for the requested blocks while preserving exact global
+  // cell summaries and byte-identical retained blocks.
+  tetra::WorldCutDirectory directory3(tetra::make_complete_world_cut_checkpoint(
+      closed,3U,1U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto blocked3=tetra::reconstruct_blocked_world_conforming_volume(
+      directory3,closure);
+  std::vector<tetra::HierarchyBlockId> materialized3{
+      blocked3.blocks.front()->id,blocked3.blocks.back()->id};
+  std::ranges::sort(materialized3);
+  materialized3.erase(std::unique(materialized3.begin(),materialized3.end()),
+                      materialized3.end());
+  const auto restricted3=tetra::reconstruct_blocked_world_conforming_volume(
+      directory3,closure,&blocked3,materialized3,true,false);
+  CHECK(restricted3.canonical_hash==0U);
+  CHECK(restricted3.cells==blocked3.cells);
+  CHECK(restricted3.transition_cells==blocked3.transition_cells);
+  CHECK(restricted3.logical_owners==blocked3.logical_owners);
+  CHECK(restricted3.blocks.size()==materialized3.size());
+  CHECK(restricted3.owners_considered<restricted3.logical_owners);
+  std::size_t expected_materialized_cells{};
+  for(const auto id:materialized3){
+    const auto found=std::ranges::lower_bound(
+        blocked3.blocks,id,{},[](const auto& candidate){return candidate->id;});
+    REQUIRE(found!=blocked3.blocks.end());
+    REQUIRE((*found)->id==id);
+    expected_materialized_cells+=(*found)->cells.size();
+  }
+  CHECK(restricted3.materialized_cells==expected_materialized_cells);
   const std::span<const tetra::HierarchyBlockId> no_blocks;
   const auto surface_only=tetra::reconstruct_blocked_world_conforming_volume(
       directory,closure,&filtered,no_blocks,true);
