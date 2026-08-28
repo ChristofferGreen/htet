@@ -77,7 +77,6 @@ bool extinction_changed(const AtmosphereParameters& first,
          !equal(first.mie_absorption_per_metre,
                 second.mie_absorption_per_metre) ||
          first.mie_scale_height_metres != second.mie_scale_height_metres ||
-         first.mie_anisotropy != second.mie_anisotropy ||
          !equal(first.absorption_per_metre, second.absorption_per_metre) ||
          first.absorption_peak_altitude_metres !=
              second.absorption_peak_altitude_metres ||
@@ -166,6 +165,9 @@ std::optional<std::string> validate_atmosphere(
     return "ground radius must be positive and finite";
   if (!positive_finite(parameters.atmosphere_height_metres))
     return "atmosphere height must be positive and finite";
+  if (!std::isfinite(parameters.ground_radius_metres +
+                     parameters.atmosphere_height_metres))
+    return "atmosphere top radius must be finite";
   if (!positive_finite(parameters.metres_per_world_unit))
     return "metres per world unit must be positive and finite";
   if (!positive_finite(parameters.rayleigh_scale_height_metres) ||
@@ -261,11 +263,13 @@ AtmosphereInvalidation atmosphere_invalidation(
     const AtmosphereParameters& before, const AtmosphereParameters& after) {
   const bool optical = extinction_changed(before, after);
   const bool albedo = !equal(before.ground_albedo, after.ground_albedo);
+  const bool phase = before.mie_anisotropy != after.mie_anisotropy;
   const bool solar = !equal(before.solar_irradiance, after.solar_irradiance) ||
                      before.solar_angular_radius_radians !=
                          after.solar_angular_radius_radians;
-  return {optical, optical || albedo || solar,
-          optical || albedo || solar, optical || albedo || solar};
+  return {optical, optical || albedo || phase || solar,
+          optical || albedo || phase || solar,
+          optical || albedo || phase || solar};
 }
 
 std::optional<AtmosphereRaySegment> atmosphere_ray_segment(
@@ -282,8 +286,12 @@ std::optional<AtmosphereRaySegment> atmosphere_ray_segment(
   double end = (*outer)[1];
   if (const auto ground = sphere_roots(position, direction,
                                        parameters.ground_radius_metres)) {
-    for (double root : *ground)
-      if (root > begin + 1.0e-7) end = std::min(end, root);
+    if (length(position) < parameters.ground_radius_metres) {
+      begin = std::max(begin, (*ground)[1]);
+    } else {
+      for (double root : *ground)
+        if (root > begin + 1.0e-7) end = std::min(end, root);
+    }
   }
   if (!(end > begin)) return std::nullopt;
   return AtmosphereRaySegment{begin, end};

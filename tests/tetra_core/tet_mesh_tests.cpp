@@ -13930,6 +13930,14 @@ TEST_CASE("atmosphere LUT invalidation follows the documented dependency graph")
   CHECK(invalidation.multiple_scattering);
   CHECK(invalidation.sky_view);
   CHECK(invalidation.aerial_perspective);
+
+  auto phase = original;
+  phase.mie_anisotropy -= 0.1;
+  invalidation = tetra_viewer::atmosphere_invalidation(original, phase);
+  CHECK_FALSE(invalidation.transmittance);
+  CHECK(invalidation.multiple_scattering);
+  CHECK(invalidation.sky_view);
+  CHECK(invalidation.aerial_perspective);
 }
 
 TEST_CASE("headless atmosphere check exposes deterministic camera sun and preset probes") {
