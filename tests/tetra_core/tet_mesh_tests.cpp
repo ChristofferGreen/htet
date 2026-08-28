@@ -14407,6 +14407,36 @@ TEST_CASE("horizon-aware transmittance coordinates are invertible and bounded") 
   }
 }
 
+TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and local") {
+  using tetra_viewer::AtmosphereSpectrum;
+  const auto vacuum=tetra_viewer::atmosphere_multiple_scattering_closure(
+      AtmosphereSpectrum{0.0,0.0,0.0},AtmosphereSpectrum{0.0,0.0,0.0});
+  CHECK((vacuum==AtmosphereSpectrum{0.0,0.0,0.0}));
+
+  const AtmosphereSpectrum second_order{0.2,0.4,0.8};
+  const auto no_transfer=tetra_viewer::atmosphere_multiple_scattering_closure(
+      second_order,AtmosphereSpectrum{0.0,0.0,0.0});
+  CHECK(no_transfer==second_order);
+  const auto varying=tetra_viewer::atmosphere_multiple_scattering_closure(
+      second_order,AtmosphereSpectrum{0.25,0.5,0.75});
+  CHECK(varying[0]==doctest::Approx(0.2/0.75));
+  CHECK(varying[1]==doctest::Approx(0.4/0.5));
+  CHECK(varying[2]==doctest::Approx(0.8/0.25));
+  CHECK(varying[0]>second_order[0]);
+  CHECK(varying[1]>varying[0]);
+  CHECK(varying[2]>varying[1]);
+
+  const auto bounded=tetra_viewer::atmosphere_multiple_scattering_closure(
+      AtmosphereSpectrum{1.0,1.0,1.0},
+      AtmosphereSpectrum{1.0,2.0,std::numeric_limits<double>::infinity()});
+  CHECK(std::isfinite(bounded[0]));
+  CHECK(std::isfinite(bounded[1]));
+  CHECK(std::isfinite(bounded[2]));
+  CHECK(bounded[0]==doctest::Approx(1000.0));
+  CHECK(bounded[1]==doctest::Approx(1000.0));
+  CHECK(bounded[2]==doctest::Approx(1.0));
+}
+
 TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
   constexpr double maximum_distance=200'000.0;
   constexpr double default_depth_slices=16.0;

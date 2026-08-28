@@ -203,6 +203,8 @@ vec3 lookup_multiple_scattering(vec3 point,vec3 sun_direction) {
   const vec3 density=densities(altitude);
   const vec3 scattering=atmosphere.rayleigh_ground_radius.rgb*density.x+
       atmosphere.mie_scattering_top_radius.rgb*density.y;
+  if(faithful_transport())
+    return scattering*average_radiance*atmosphere.solar_absorption_peak.rgb;
   return scattering*average_radiance/(1.0-0.35);
 }
 
@@ -349,8 +351,10 @@ void generate_multiple_scattering(ivec2 coordinate) {
   const vec3 sun_direction=normalize(vec3(
       sqrt(max(0.0,1.0-sun_cosine*sun_cosine)),sun_cosine,0.0));
   vec3 incoming=vec3(0.0);
-  const int direction_count=8;
-  for(int direction_index=0;direction_index<direction_count;++direction_index){
+  vec3 transfer=vec3(0.0);
+  const int direction_count=faithful_transport()?64:8;
+  for(int direction_index=0;direction_index<64;++direction_index){
+    if(direction_index>=direction_count)break;
     const float y=1.0-2.0*(float(direction_index)+0.5)/
         float(direction_count);
     const float angle=float(direction_index)*2.39996323;
@@ -358,7 +362,7 @@ void generate_multiple_scattering(ivec2 coordinate) {
                               sqrt(max(0.0,1.0-y*y))*sin(angle));
     float begin,end;
     if(!medium_segment(origin,direction,begin,end))continue;
-    const int steps=6;
+    const int steps=faithful_transport()?20:6;
     const float step_length=(end-begin)/float(steps);
     vec3 view_transmittance=vec3(1.0);
     for(int step=0;step<steps;++step){
@@ -366,17 +370,39 @@ void generate_multiple_scattering(ivec2 coordinate) {
       const vec3 density=densities(length(point)-ground_radius());
       const vec3 local_extinction=extinction(density);
       const vec3 segment_transmittance=exp(-local_extinction*step_length);
-      const vec3 source=(atmosphere.rayleigh_ground_radius.rgb*density.x+
-          atmosphere.mie_scattering_top_radius.rgb*density.y)*
-          lookup_transmittance(point,sun_direction)*
-          atmosphere.solar_absorption_peak.rgb/(4.0*PI);
+      const vec3 scattering=atmosphere.rayleigh_ground_radius.rgb*density.x+
+          atmosphere.mie_scattering_top_radius.rgb*density.y;
+      const vec3 unit_illuminance=faithful_transport()?vec3(1.0):
+          atmosphere.solar_absorption_peak.rgb;
+      const vec3 source=scattering*lookup_transmittance(point,sun_direction)*
+          unit_illuminance/(4.0*PI);
       const vec3 integral=(vec3(1.0)-segment_transmittance)/
           max(local_extinction,vec3(1.0e-9));
       incoming+=view_transmittance*source*integral;
+      if(faithful_transport())
+        transfer+=view_transmittance*scattering*integral;
       view_transmittance*=segment_transmittance;
+    }
+    if(faithful_transport()){
+      const vec3 endpoint=origin+direction*end;
+      if(length(endpoint)<=ground_radius()+5.0){
+        const vec3 normal=normalize(endpoint);
+        const float n_dot_l=max(dot(normal,sun_direction),0.0);
+        const vec3 reflected=atmosphere.ground_albedo_mie_anisotropy.rgb*
+            lookup_transmittance(endpoint+normal,sun_direction)*n_dot_l/PI;
+        incoming+=view_transmittance*reflected;
+      }
     }
   }
   incoming/=float(direction_count);
+  transfer/=float(direction_count);
+  if(faithful_transport()){
+    // Hillaire 2020, equations 7-10: integrate the unitless local transfer
+    // f_ms independently from second-order light, then close all remaining
+    // isotropic orders as a bounded geometric series.
+    const vec3 f_ms=clamp(transfer,vec3(0.0),vec3(0.999));
+    incoming*=vec3(1.0)/max(vec3(1.0)-f_ms,vec3(1.0e-3));
+  }
   // Preserve average incident radiance directly. Storing the much smaller
   // scattering*incoming source in RGBA16F loses dusk illumination precision;
   // lookup_multiple_scattering reconstructs that source where it is needed.

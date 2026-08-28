@@ -226,6 +226,9 @@ struct AtmosphereTransmittanceParameters {
 atmosphere_transmittance_parameters(
     AtmosphereLookupCoordinates uv,
     const AtmosphereParameters& parameters) noexcept;
+[[nodiscard]] AtmosphereSpectrum atmosphere_multiple_scattering_closure(
+    const AtmosphereSpectrum& second_order,
+    const AtmosphereSpectrum& transfer_factor) noexcept;
 // Cubic aerial-volume depth distribution: resolves local paths without giving
 // up the finite ground-to-space extent or changing the physical atmosphere.
 [[nodiscard]] double aerial_lut_distance(double slice,

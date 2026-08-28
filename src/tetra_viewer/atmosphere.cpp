@@ -542,6 +542,20 @@ AtmosphereTransmittanceParameters atmosphere_transmittance_parameters(
           std::clamp(cosine,-1.0,1.0)};
 }
 
+AtmosphereSpectrum atmosphere_multiple_scattering_closure(
+    const AtmosphereSpectrum& second_order,
+    const AtmosphereSpectrum& transfer_factor) noexcept {
+  AtmosphereSpectrum result{};
+  for(std::size_t channel=0;channel<result.size();++channel){
+    const double radiance=std::isfinite(second_order[channel])?
+        std::max(0.0,second_order[channel]):0.0;
+    const double transfer=std::isfinite(transfer_factor[channel])?
+        std::clamp(transfer_factor[channel],0.0,0.999):0.0;
+    result[channel]=radiance/(1.0-transfer);
+  }
+  return result;
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||

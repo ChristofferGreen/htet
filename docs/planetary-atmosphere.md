@@ -699,7 +699,7 @@ round-trip within tolerance, and show no interpolation seam across the horizon.
 
 #### H3: Implement faithful Hillaire multiple-scattering closure
 
-- [ ] Compute local second-order radiance and transfer factor `f_ms`, then close
+- [x] Compute local second-order radiance and transfer factor `f_ms`, then close
       higher orders with an energy-bounded geometric series rather than the
       fixed `1 / (1 - 0.35)` amplification.
 - [ ] Validate vacuum, absorption-only, conservative-scattering, altitude, thick-
