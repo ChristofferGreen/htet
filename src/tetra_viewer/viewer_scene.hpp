@@ -24,6 +24,12 @@ namespace tetra { class WorldCutDirectory; }
 
 namespace tetra_viewer {
 
+enum class SceneSampledImageDimension { two_d, two_d_array };
+// tone_map.frag declares sampler2D. A shadow-array refactor must not silently
+// change the HDR scene target to an incompatible array view again.
+inline constexpr SceneSampledImageDimension scene_colour_sample_dimension=
+    SceneSampledImageDimension::two_d;
+
 inline constexpr std::uint32_t surface_optimizer_passes=5U;
 inline constexpr std::uint32_t surface_optimizer_dependency_halo_rings=5U;
 inline constexpr float default_world_sun_azimuth_radians=-1.8F;

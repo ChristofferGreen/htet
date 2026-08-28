@@ -8782,6 +8782,13 @@ TEST_CASE("world sun controls produce normalized sky directions") {
   CHECK(initial.z==doctest::Approx(-0.970142).epsilon(1.0e-5));
 }
 
+TEST_CASE("HDR scene colour uses the sampler2D-compatible image view") {
+  CHECK(tetra_viewer::scene_colour_sample_dimension==
+        tetra_viewer::SceneSampledImageDimension::two_d);
+  CHECK(tetra_viewer::scene_colour_sample_dimension!=
+        tetra_viewer::SceneSampledImageDimension::two_d_array);
+}
+
 TEST_CASE("camera-relative scene preparation preserves geometry at planet coordinates") {
   // Far beyond the point where a world-space float can preserve a unit cell.
   constexpr double world_offset=1.0e6;

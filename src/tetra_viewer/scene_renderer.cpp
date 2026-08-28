@@ -483,7 +483,11 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
       throw std::runtime_error("unable to bind HDR scene colour image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image=colour.image;
-    view.viewType=VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    // tone_map.frag binds this image as sampler2D. A 2D-array view is not
+    // compatible and silently sampled as the clear colour on MoltenVK.
+    view.viewType=scene_colour_sample_dimension==
+        SceneSampledImageDimension::two_d?VK_IMAGE_VIEW_TYPE_2D:
+                                         VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     view.format=scene_colour_format_;
     view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
     view.subresourceRange.levelCount=1;
