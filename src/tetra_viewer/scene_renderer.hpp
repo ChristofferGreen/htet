@@ -29,7 +29,9 @@ class SceneRenderer {
       const noexcept { return surface_upload_planner_.metrics(); }
   // camera_data is a column-major view-projection matrix followed by a
   // camera-relative key-light direction and rendering-mode parameters.
-  void record(VkCommandBuffer command_buffer, VkImageView colour_view, std::uint32_t image_index, VkExtent2D extent, const float* camera_data) const;
+  void record(VkCommandBuffer command_buffer, VkImageView colour_view,
+              std::uint32_t image_index,VkExtent2D extent,
+              const float* camera_data,bool black_clear=false) const;
   void shutdown();
 
  private:

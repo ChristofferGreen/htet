@@ -253,13 +253,16 @@ inline constexpr double screen_space_edge_depth_epsilon=5.0e-6;
   return screen_space_edge_coverage(closest_edge_pixels);
 }
 
-enum class ShadingModel { studio_flat, dihedral_angle, normal_error, reflection_stripes };
+enum class ShadingModel {
+  studio_flat,dihedral_angle,normal_error,reflection_stripes,stone_pbr
+};
 
 inline constexpr std::array shading_models{
     ShadingModel::studio_flat,
     ShadingModel::dihedral_angle,
     ShadingModel::normal_error,
     ShadingModel::reflection_stripes,
+    ShadingModel::stone_pbr,
 };
 
 [[nodiscard]] constexpr std::string_view shading_model_name(ShadingModel model) {
@@ -268,6 +271,7 @@ inline constexpr std::array shading_models{
     case ShadingModel::dihedral_angle: return "Dihedral angle";
     case ShadingModel::normal_error: return "Normal error";
     case ShadingModel::reflection_stripes: return "Reflection stripes";
+    case ShadingModel::stone_pbr: return "Stone (physically based)";
   }
   return "Unknown";
 }
@@ -278,6 +282,7 @@ inline constexpr std::array shading_models{
     case ShadingModel::dihedral_angle: return "dihedral-angle";
     case ShadingModel::normal_error: return "normal-error";
     case ShadingModel::reflection_stripes: return "reflection-stripes";
+    case ShadingModel::stone_pbr: return "stone-pbr";
   }
   return "unknown";
 }

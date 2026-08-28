@@ -323,8 +323,12 @@ void SceneRenderer::upload_surface_ranges(
   upload_lines(editor_lines_,editor_ribbons);
 }
 
-void SceneRenderer::record(VkCommandBuffer command_buffer, VkImageView colour_view, std::uint32_t image_index, VkExtent2D extent, const float* camera_data) const {
-  VkClearValue colour{}; colour.color = {{0.06F, 0.08F, 0.11F, 1.0F}};
+void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_view,
+                           std::uint32_t image_index,VkExtent2D extent,
+                           const float* camera_data,bool black_clear) const {
+  VkClearValue colour{};
+  colour.color=black_clear?VkClearColorValue{{0.0F,0.0F,0.0F,1.0F}}:
+      VkClearColorValue{{0.06F,0.08F,0.11F,1.0F}};
   VkClearValue depth{}; depth.depthStencil = {1.0F, 0};
   VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = colour_view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
   VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = depth_images_.at(image_index).view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; depth_attachment.clearValue = depth;

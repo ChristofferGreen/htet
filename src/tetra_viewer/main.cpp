@@ -85,6 +85,7 @@ static int                      g_MinImageCount = 2;
 static bool                     g_SwapChainRebuild = false;
 static tetra_viewer::SceneRenderer g_SceneRenderer;
 static std::array<float, 24> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+static bool g_BlackSceneClear = false;
 
 static void glfw_error_callback(int error, const char* description)
 {
@@ -378,7 +379,8 @@ static void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
         check_vk_result(err);
     }
     const VkExtent2D extent{static_cast<std::uint32_t>(wd->Width), static_cast<std::uint32_t>(wd->Height)};
-    g_SceneRenderer.record(fd->CommandBuffer, fd->BackbufferView, wd->FrameIndex, extent, g_CameraData.data());
+    g_SceneRenderer.record(fd->CommandBuffer,fd->BackbufferView,wd->FrameIndex,
+                           extent,g_CameraData.data(),g_BlackSceneClear);
     VkRenderingAttachmentInfo overlay{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     overlay.imageView = fd->BackbufferView;
     overlay.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -663,9 +665,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             : tetra_viewer::StencilConstruction::fixed;
     tetra_viewer::StencilSelectionObjective stencil_selection_objective =
         tetra_viewer::StencilSelectionObjective::balanced;
-    tetra_viewer::ShadingModel shading_model = selected_atlas_check
-        ? tetra_viewer::ShadingModel::dihedral_angle
-        : tetra_viewer::ShadingModel::studio_flat;
+    tetra_viewer::ShadingModel shading_model = world_mode
+        ? tetra_viewer::production_world_profile().shading
+        : (selected_atlas_check?tetra_viewer::ShadingModel::dihedral_angle:
+                                  tetra_viewer::ShadingModel::studio_flat);
     std::size_t material_rule_index = static_cast<std::size_t>(std::distance(
         tetra_viewer::material_rules.begin(),
         std::find(tetra_viewer::material_rules.begin(),tetra_viewer::material_rules.end(),
@@ -930,6 +933,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     };
     tetra_viewer::FirstPersonController world_controller;
     std::unique_ptr<tetra_viewer::TerrainRuntime> world_runtime;
+    std::future<std::unique_ptr<tetra_viewer::TerrainRuntime>>
+        world_runtime_startup;
     std::uint64_t world_scene_generation{};
     bool world_pointer_captured=world_mode;
     bool world_paused=false;
@@ -940,13 +945,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
-        world_runtime=tetra_viewer::make_production_terrain_runtime(
-            tetra_viewer::production_world_profile());
-        sphere=world_runtime->field();
+        const auto profile=tetra_viewer::production_world_profile();
+        sphere.kind=profile.shape;sphere.terrain=profile.terrain;
+        sphere.secondary=profile.octave_detail_amplitude;
+        sphere.frequency=profile.octave_detail_frequency;
         const auto framebuffer_aspect=static_cast<double>(std::max(w,1))/
             static_cast<double>(std::max(h,1));
         camera=world_controller.camera(std::max(h,1),framebuffer_aspect);
-        world_runtime->set_camera(camera,false);
+        world_runtime_startup=
+            tetra_viewer::make_production_terrain_runtime_async(profile);
         glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_DISABLED);
         glfwGetCursorPos(window,&world_cursor_x,&world_cursor_y);
         view_camera_position=world_controller.eye_position();
@@ -971,13 +978,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         // continues presenting the previous complete scene.
         bool mesh_slice_published_this_frame=false;
         if(world_mode){
-            if(world_runtime->update()){
+            if(!world_runtime&&world_runtime_startup.valid()&&
+               world_runtime_startup.wait_for(std::chrono::seconds(0))==
+                   std::future_status::ready){
+                world_runtime=world_runtime_startup.get();
+                sphere=world_runtime->field();
+                world_runtime->set_camera(camera,false);
+            }
+            g_BlackSceneClear=!world_runtime;
+            if(world_runtime&&world_runtime->update()){
                 sphere=world_runtime->field();
                 mesh_slice_published_this_frame=true;
                 mesh_validation_current=false;
             }
-            const auto runtime_status=world_runtime->diagnostics();
-            if(runtime_status.scene_generation!=world_scene_generation){
+            const auto runtime_status=world_runtime?
+                world_runtime->diagnostics():tetra_viewer::TerrainRuntimeDiagnostics{};
+            if(world_runtime&&
+               runtime_status.scene_generation!=world_scene_generation){
                 if(world_runtime->retained_surface()!=nullptr){
                     background_prepared_scene={};
                     background_prepared_scene.render_origin=
@@ -1955,7 +1972,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             .preparation=preparation,
             .surface_override_revision=fixed_field_surface_cut_revision};
         if(world_mode){
-            retained_surface_upload_ready=
+            retained_surface_upload_ready=world_runtime&&
                 world_runtime->retained_surface()!=nullptr;
         }else if(retained_upload_check){
             const auto preparation_start=std::chrono::steady_clock::now();
@@ -2183,21 +2200,26 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::Begin("World status",nullptr,
                 ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|
                 ImGuiWindowFlags_NoFocusOnAppearing);
-            const auto status=world_runtime->diagnostics();
             ImGui::TextUnformatted("WASD move  Shift sprint  Space jump");
+            ImGui::TextUnformatted("Ctrl super speed");
             ImGui::TextUnformatted("Mouse look  Esc releases pointer  Click captures");
             ImGui::Separator();
-            ImGui::Text("Terrain %s",status.busy?"updating...":"ready");
-            ImGui::Text("Cells %zu   tetrahedra %zu",status.logical_cells,
-                        status.active_tetrahedra);
-            ImGui::Text("Mesh revision %llu   %.2f ms",
-                        static_cast<unsigned long long>(status.mesh_revision),
-                        status.last_update_milliseconds);
-            ImGui::Text("World %.0f units   revision %llu",
-                        status.world_extent,
-                        static_cast<unsigned long long>(status.world_revision));
-            ImGui::Text("Blocks %zu   surface blocks %zu",
-                        status.hierarchy_blocks,status.surface_blocks);
+            if(!world_runtime){
+                ImGui::TextUnformatted("Terrain loading...");
+            }else{
+                const auto status=world_runtime->diagnostics();
+                ImGui::Text("Terrain %s",status.busy?"updating...":"ready");
+                ImGui::Text("Cells %zu   tetrahedra %zu",status.logical_cells,
+                            status.active_tetrahedra);
+                ImGui::Text("Mesh revision %llu   %.2f ms",
+                            static_cast<unsigned long long>(status.mesh_revision),
+                            status.last_update_milliseconds);
+                ImGui::Text("World %.0f units   revision %llu",
+                            status.world_extent,
+                            static_cast<unsigned long long>(status.world_revision));
+                ImGui::Text("Blocks %zu   surface blocks %zu",
+                            status.hierarchy_blocks,status.surface_blocks);
+            }
             ImGui::Text("Position %.3f  %.3f  %.3f",
                         world_controller.state().feet.x,
                         world_controller.state().feet.y,
@@ -2207,6 +2229,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::SameLine();
             if(ImGui::Button("Single step"))world_single_step=true;
             ImGui::Checkbox("Free fly",&world_free_fly);
+            ImGui::Checkbox("Triangle wireframe",&show_surface_edges);
             if(ImGui::Checkbox("Capsule diagnostic",&world_show_capsule))
                 overlay_dirty=true;
             if(ImGui::Checkbox("Contact normal",&world_show_contact_normal))
@@ -2255,6 +2278,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     (glfwGetKey(window,GLFW_KEY_A)==GLFW_PRESS?1.0:0.0);
                 movement.sprint=glfwGetKey(window,GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS||
                     glfwGetKey(window,GLFW_KEY_RIGHT_SHIFT)==GLFW_PRESS;
+                movement.super_speed=
+                    glfwGetKey(window,GLFW_KEY_LEFT_CONTROL)==GLFW_PRESS||
+                    glfwGetKey(window,GLFW_KEY_RIGHT_CONTROL)==GLFW_PRESS;
                 movement.jump=glfwGetKey(window,GLFW_KEY_SPACE)==GLFW_PRESS;
             }
             if(world_free_fly){
@@ -2266,7 +2292,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const double magnitude=std::sqrt(direction.x*direction.x+
                     direction.y*direction.y+direction.z*direction.z);
                 if(magnitude>1.0)direction=direction/magnitude;
-                const double speed=0.42*(movement.sprint?2.0:1.0);
+                const double speed=0.42*(movement.super_speed?12.0:
+                    (movement.sprint?2.0:1.0));
                 if(!world_paused||world_single_step)
                     world_controller.state().feet=world_controller.state().feet+
                         direction*speed*(world_single_step?1.0/120.0:elapsed);
@@ -2275,14 +2302,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }else if(!world_paused||world_single_step){
                 world_controller.advance(
                     world_single_step?1.0/120.0:elapsed,movement,
-                    world_runtime->field());
+                    sphere);
             }
             world_single_step=false;
             camera=world_controller.camera(
                 static_cast<double>(std::max(1.0F,input.DisplaySize.y)),
                 static_cast<double>(std::max(1.0F,input.DisplaySize.x))/
                     static_cast<double>(std::max(1.0F,input.DisplaySize.y)));
-            world_runtime->set_camera(camera,
+            if(world_runtime)world_runtime->set_camera(camera,
                 movement.forward!=0.0||movement.right!=0.0||
                 (!world_free_fly&&!world_controller.state().grounded));
             view_camera_position=world_controller.eye_position();
@@ -2605,7 +2632,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         {0.18F,0.86F,0.96F});
             }
             if(show_camera_lod_zones){
-                if(world_mode){
+                if(world_mode&&world_runtime){
                     for(const auto& line:world_runtime->lod_zone_lines())
                         add_overlay_line(line.first,line.second,line.colour);
                 }else{
@@ -2752,7 +2779,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 }
             }
             if(upload_dirty){
-                if(world_mode&&world_runtime->retained_surface()!=nullptr)
+                if(world_mode&&world_runtime&&
+                   world_runtime->retained_surface()!=nullptr)
                     g_SceneRenderer.upload_surface_ranges(
                         *world_runtime->retained_surface(),
                         prepared_scene.hierarchy_line_vertices,overlay_lines);

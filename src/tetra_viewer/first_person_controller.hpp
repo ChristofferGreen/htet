@@ -8,6 +8,7 @@ struct FirstPersonInput {
   double forward{};
   double right{};
   bool sprint{};
+  bool super_speed{};
   bool jump{};
 };
 
@@ -15,6 +16,7 @@ struct FirstPersonConfiguration {
   double fixed_step_seconds{1.0/120.0};
   double walk_speed{0.42};
   double sprint_multiplier{2.0};
+  double super_speed_multiplier{12.0};
   double jump_speed{0.72};
   double gravity{1.8};
   double capsule_radius{0.025};

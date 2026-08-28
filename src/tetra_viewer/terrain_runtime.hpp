@@ -520,5 +520,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 
 [[nodiscard]] std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
     WorldProfile profile=production_world_profile());
+[[nodiscard]] std::future<std::unique_ptr<TerrainRuntime>>
+make_production_terrain_runtime_async(
+    WorldProfile profile=production_world_profile());
 
 }  // namespace tetra_viewer

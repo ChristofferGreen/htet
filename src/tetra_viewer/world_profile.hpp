@@ -46,7 +46,7 @@ struct WorldProfile {
   SurfaceMethod surface{default_surface_method};
   VolumeConnectionMethod volume_connection{VolumeConnectionMethod::adaptive_cleaving};
   MaterialRule material{MaterialRule::variational_smooth};
-  ShadingModel shading{ShadingModel::studio_flat};
+  ShadingModel shading{ShadingModel::stone_pbr};
   tetra::AdaptationConfiguration adaptation{};
   tetra::TerrainParameters terrain{
       // Centre the seeded field on the spawn elevation before applying the

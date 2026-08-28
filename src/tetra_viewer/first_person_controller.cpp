@@ -73,8 +73,9 @@ void FirstPersonController::step(const FirstPersonInput& input,
   auto wish=horizontal_forward*input.forward+right()*input.right;
   const double wish_length=length(wish);
   if(wish_length>1.0)wish=wish/wish_length;
-  const double speed=configuration_.walk_speed*
-      (input.sprint?configuration_.sprint_multiplier:1.0);
+  const double speed=configuration_.walk_speed*(input.super_speed?
+      configuration_.super_speed_multiplier:
+      (input.sprint?configuration_.sprint_multiplier:1.0));
   const auto approach=[](double current,double target,double amount){
     return current<target?std::min(current+amount,target):
         std::max(current-amount,target);};

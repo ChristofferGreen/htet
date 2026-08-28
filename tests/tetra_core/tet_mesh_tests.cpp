@@ -801,7 +801,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.volume_connection==
         tetra_viewer::VolumeConnectionMethod::adaptive_cleaving);
   CHECK(profile.material==tetra_viewer::MaterialRule::variational_smooth);
-  CHECK(profile.shading==tetra_viewer::ShadingModel::studio_flat);
+  CHECK(profile.shading==tetra_viewer::ShadingModel::stone_pbr);
   CHECK(profile.adaptation==tetra::AdaptationConfiguration{});
   CHECK(profile.terrain.height_offset==
         doctest::Approx(-0.56685212800775142));
@@ -1226,6 +1226,36 @@ TEST_CASE("first person fixed steps are deterministic across frame grouping") {
   CHECK(first.velocity.y==doctest::Approx(second.velocity.y).epsilon(1.0e-12));
   CHECK(first.velocity.z==doctest::Approx(second.velocity.z).epsilon(1.0e-12));
   CHECK(first.grounded==second.grounded);
+}
+
+TEST_CASE("first person control boost is substantially faster than sprint") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::FirstPersonConfiguration configuration;
+  configuration.ground_acceleration=100.0;
+  configuration.air_acceleration=100.0;
+  tetra_viewer::FirstPersonController walking{configuration},
+      sprinting{configuration},boosted{configuration};
+  for(int step=0;step<360;++step){
+    walking.advance(1.0/120.0,{},field);
+    sprinting.advance(1.0/120.0,{},field);
+    boosted.advance(1.0/120.0,{},field);
+  }
+  const auto origin=walking.state().feet;
+  tetra_viewer::FirstPersonInput walk;walk.forward=1.0;
+  auto sprint=walk;sprint.sprint=true;
+  auto boost=walk;boost.super_speed=true;
+  for(int step=0;step<12;++step){
+    walking.advance(1.0/120.0,walk,field);
+    sprinting.advance(1.0/120.0,sprint,field);
+    boosted.advance(1.0/120.0,boost,field);
+  }
+  const auto travelled=[origin](const tetra_viewer::FirstPersonController& controller){
+    const auto delta=controller.state().feet-origin;
+    return std::hypot(delta.x,delta.z);
+  };
+  CHECK(travelled(sprinting)>travelled(walking));
+  CHECK(travelled(boosted)>travelled(sprinting)*4.0);
 }
 
 TEST_CASE("first person collision and jump use the procedural field") {
@@ -1771,6 +1801,18 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   CHECK(hierarchy_recovered.hierarchy_hash==recovered.hierarchy_hash);
   CHECK(hierarchy_recovered.connected_surface_hash==
         recovered.connected_surface_hash);
+}
+
+TEST_CASE("production world cold construction can begin without blocking presentation") {
+  const auto started=std::chrono::steady_clock::now();
+  auto startup=tetra_viewer::make_production_terrain_runtime_async();
+  const double submission_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  CHECK(submission_milliseconds<250.0);
+  CHECK(startup.wait_for(std::chrono::seconds(0))!=std::future_status::deferred);
+  auto runtime=startup.get();
+  REQUIRE(runtime!=nullptr);
+  CHECK(runtime->diagnostics().scene_generation>0U);
 }
 
 TEST_CASE("blocked world supersession cancels stale work and converges to newest pose") {
@@ -8492,11 +8534,12 @@ TEST_CASE("blocked surface eviction never retains a partial fine shell") {
 }
 
 TEST_CASE("diagnostic shading models and surface angle data are registered") {
-  CHECK(tetra_viewer::shading_models.size() == 4);
+  CHECK(tetra_viewer::shading_models.size() == 5);
   CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::studio_flat) == "studio-flat");
   CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::dihedral_angle) == "dihedral-angle");
   CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::normal_error) == "normal-error");
   CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::reflection_stripes) == "reflection-stripes");
+  CHECK(tetra_viewer::shading_model_key(tetra_viewer::ShadingModel::stone_pbr) == "stone-pbr");
 
   auto mesh=tetra::TetMesh::make_unit_cube();
   const tetra::Sphere sphere{};

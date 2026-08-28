@@ -72,6 +72,36 @@ void main() {
     const float wave = 0.5+0.5*cos(dot(reflected, stripe_axis)*56.5486678);
     const float stripe = smoothstep(0.18, 0.82, wave);
     shaded_colour = mix(vec3(0.025,0.055,0.10),vec3(0.88,0.96,1.0),stripe);
+  } else if (shading_model == 4 && (!volume_cut || connected_surface)) {
+    // Neutral stone under a camera-relative area-light approximation. This is
+    // a dielectric Cook-Torrance BRDF (GGX distribution, Smith masking, and
+    // Schlick Fresnel) with a broad rough highlight rather than painted-on
+    // vertex colour.
+    const vec3 albedo=vec3(0.32,0.33,0.34);
+    const float roughness=0.82;
+    const float metallic=0.0;
+    const vec3 view_direction=light_direction;
+    const vec3 half_direction=normalize(light_direction+view_direction);
+    const float n_dot_l=max(dot(unit_normal,light_direction),0.0);
+    const float n_dot_v=max(dot(unit_normal,view_direction),0.0);
+    const float n_dot_h=max(dot(unit_normal,half_direction),0.0);
+    const float v_dot_h=max(dot(view_direction,half_direction),0.0);
+    const float alpha=roughness*roughness;
+    const float alpha_squared=alpha*alpha;
+    const float denominator=n_dot_h*n_dot_h*(alpha_squared-1.0)+1.0;
+    const float distribution=alpha_squared/
+        max(3.14159265359*denominator*denominator,1.0e-5);
+    const float k=(roughness+1.0)*(roughness+1.0)/8.0;
+    const float geometry_v=n_dot_v/max(n_dot_v*(1.0-k)+k,1.0e-5);
+    const float geometry_l=n_dot_l/max(n_dot_l*(1.0-k)+k,1.0e-5);
+    const vec3 f0=mix(vec3(0.04),albedo,metallic);
+    const vec3 fresnel=f0+(1.0-f0)*pow(1.0-v_dot_h,5.0);
+    const vec3 specular=distribution*geometry_v*geometry_l*fresnel/
+        max(4.0*n_dot_v*n_dot_l,1.0e-5);
+    const vec3 diffuse=(1.0-fresnel)*(1.0-metallic)*albedo/3.14159265359;
+    const vec3 ambient=albedo*0.14;
+    const vec3 linear_colour=ambient+(diffuse+specular)*n_dot_l*2.4;
+    shaded_colour=pow(linear_colour/(linear_colour+vec3(1.0)),vec3(1.0/2.2));
   } else {
     // Cutaway faces are deliberately viewed from either side. One-sided
     // lighting makes intact back-facing tetrahedron faces look like holes.

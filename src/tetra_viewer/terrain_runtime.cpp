@@ -1700,4 +1700,11 @@ std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
   return std::make_unique<BlockedTerrainRuntime>(profile);
 }
 
+std::future<std::unique_ptr<TerrainRuntime>>
+make_production_terrain_runtime_async(WorldProfile profile) {
+  return std::async(std::launch::async,[profile]{
+    return make_production_terrain_runtime(profile);
+  });
+}
+
 }  // namespace tetra_viewer
