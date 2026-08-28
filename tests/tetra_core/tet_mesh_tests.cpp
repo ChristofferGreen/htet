@@ -14603,6 +14603,128 @@ TEST_CASE("double precision multiple scattering oracle covers physical regimes")
   }
 }
 
+TEST_CASE("double precision atmosphere transport oracle covers ground to orbit") {
+  using tetra_viewer::AtmospherePreset;
+  using tetra_viewer::AtmosphereSpectrum;
+  const auto finite_nonnegative=[](const AtmosphereSpectrum& value){
+    return std::ranges::all_of(value,[](double component){
+      return std::isfinite(component)&&component>=0.0;
+    });
+  };
+
+  auto vacuum=tetra_viewer::atmosphere_preset(AtmospherePreset::earth);
+  vacuum.rayleigh_scattering_per_metre={0.0,0.0,0.0};
+  vacuum.mie_scattering_per_metre={0.0,0.0,0.0};
+  vacuum.mie_absorption_per_metre={0.0,0.0,0.0};
+  vacuum.absorption_per_metre={0.0,0.0,0.0};
+  vacuum.ground_albedo={0.0,0.0,0.0};
+  const tetra::Vec3 upward{0.0,1.0,0.0};
+  const auto empty=tetra_viewer::atmosphere_scattering_reference(
+      vacuum,{0.0,vacuum.ground_radius_metres+1.0,0.0},upward,upward,
+      vacuum.atmosphere_height_metres,16U,8U,4U);
+  CHECK((empty.radiance==AtmosphereSpectrum{}));
+  CHECK((empty.transmittance==AtmosphereSpectrum{1.0,1.0,1.0}));
+
+  auto absorption_only=vacuum;
+  absorption_only.mie_absorption_per_metre={1.0e-5,2.0e-5,3.0e-5};
+  const auto absorbed=tetra_viewer::atmosphere_scattering_reference(
+      absorption_only,
+      {0.0,absorption_only.ground_radius_metres+1.0,0.0},upward,upward,
+      absorption_only.atmosphere_height_metres,32U,8U,4U);
+  CHECK((absorbed.radiance==AtmosphereSpectrum{}));
+  for(const double value:absorbed.transmittance){
+    CHECK(value>0.0);
+    CHECK(value<1.0);
+  }
+
+  for(const auto preset:{AtmospherePreset::gameplay_planet,
+                         AtmospherePreset::earth,
+                         AtmospherePreset::mars_like,
+                         AtmospherePreset::dense_haze,
+                         AtmospherePreset::nearly_airless}){
+    const auto parameters=tetra_viewer::atmosphere_preset(preset);
+    const double radius=parameters.ground_radius_metres;
+    for(const auto probe:std::array{
+            std::pair{tetra::Vec3{0.0,radius+2.0,0.0},
+                      tetra::Vec3{0.999,0.0447,0.0}},
+            std::pair{tetra::Vec3{0.0,radius+
+                                      parameters.atmosphere_height_metres*0.5,
+                                  0.0},tetra::Vec3{0.7,0.7,0.0}},
+            std::pair{tetra::Vec3{0.0,radius+
+                                      parameters.atmosphere_height_metres+
+                                      radius*0.2,0.0},
+                      tetra::Vec3{0.0,-1.0,0.0}}}){
+      const auto reference=tetra_viewer::atmosphere_scattering_reference(
+          parameters,probe.first,probe.second,{0.6,0.7,0.2},
+          radius*3.0,24U,12U,6U);
+      CHECK(finite_nonnegative(reference.radiance));
+      CHECK(finite_nonnegative(reference.transmittance));
+      for(const double value:reference.transmittance)CHECK(value<=1.0);
+    }
+  }
+}
+
+TEST_CASE("atmosphere transport oracle composes split paths and distance") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  const tetra::Vec3 origin{0.0,parameters.ground_radius_metres+100.0,0.0};
+  const tetra::Vec3 direction{0.0,1.0,0.0};
+  const tetra::Vec3 sun{0.3,0.95,0.0};
+  constexpr double split_distance=5'000.0;
+  constexpr double complete_distance=20'000.0;
+  const auto short_path=tetra_viewer::atmosphere_scattering_reference(
+      parameters,origin,direction,sun,split_distance,64U,16U,8U);
+  const auto complete=tetra_viewer::atmosphere_scattering_reference(
+      parameters,origin,direction,sun,complete_distance,128U,16U,8U);
+  const auto remainder=tetra_viewer::atmosphere_scattering_reference(
+      parameters,origin+direction*split_distance,direction,sun,
+      complete_distance-split_distance,96U,16U,8U);
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(complete.transmittance[channel]<=short_path.transmittance[channel]);
+    CHECK(complete.radiance[channel]>=short_path.radiance[channel]);
+    CHECK(short_path.radiance[channel]+short_path.transmittance[channel]*
+              remainder.radiance[channel]==
+          doctest::Approx(complete.radiance[channel]).epsilon(0.03)
+              .scale(1.0e-8));
+    CHECK(short_path.transmittance[channel]*remainder.transmittance[channel]==
+          doctest::Approx(complete.transmittance[channel]).epsilon(0.01));
+  }
+}
+
+TEST_CASE("numeric atmosphere probe reference detects every perturbed stage") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const tetra_viewer::AtmosphereNumericProbeInput input{
+      .parameters=parameters,
+      .camera_position_from_planet_centre_metres=
+          {0.0,parameters.ground_radius_metres+18.0,0.0},
+      .camera_right={1.0,0.0,0.0},
+      .camera_down={0.0,1.0,0.0},
+      .camera_forward={0.0,0.0,-1.0},
+      .sun_direction={0.3,0.8,-0.5},
+      .vertical_tangent=0.7,
+      .aspect_ratio=16.0/9.0,
+      .maximum_aerial_distance_metres=5'000.0,
+      .quality=tetra_viewer::AtmosphereQuality::low};
+  const auto reference=tetra_viewer::atmosphere_numeric_probe_reference(input);
+  for(std::size_t index=0;index<reference.size();++index)
+    for(const double value:reference[index])CHECK(std::isfinite(value));
+  const auto exact=tetra_viewer::evaluate_atmosphere_numeric_probe(
+      reference,input);
+  CHECK(exact.passed);
+  REQUIRE(exact.comparisons.size()==reference.size());
+  for(const auto& comparison:exact.comparisons)CHECK(comparison.passed);
+
+  auto perturbed=reference;
+  for(auto& stage:perturbed)stage[0]+=10.0;
+  const auto rejected=tetra_viewer::evaluate_atmosphere_numeric_probe(
+      perturbed,input);
+  CHECK_FALSE(rejected.passed);
+  REQUIRE(rejected.comparisons.size()==reference.size());
+  for(const auto& comparison:rejected.comparisons)
+    CHECK_FALSE(comparison.passed);
+}
+
 TEST_CASE("double precision sky irradiance oracle preserves Lambertian energy") {
   using tetra_viewer::AtmosphereSpectrum;
   const tetra::Vec3 up{0.0,1.0,0.0};
@@ -14820,9 +14942,6 @@ TEST_CASE("atmospheric shadow cascades cover the gameplay horizon without a ligh
   REQUIRE(shader_stream.good());
   const std::string shader(std::istreambuf_iterator<char>(shader_stream),{});
   CHECK(shader.find("atmosphere_sun_visibility(point)")!=std::string::npos);
-  CHECK(shader.find("const int steps=32")!=std::string::npos);
-  CHECK(shader.find("segment_length*interval_begin*interval_begin")!=
-        std::string::npos);
 
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(4U,4U,1.0)==1.0);
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(0U,4U,1.0)==0.0);

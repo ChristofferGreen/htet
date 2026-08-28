@@ -35,9 +35,8 @@ struct AtmosphereFrameInput {
   bool enabled{};
 };
 
-inline constexpr std::size_t atmosphere_gpu_probe_value_count=10U;
 struct AtmosphereGpuProbe {
-  std::array<std::array<float,4>,atmosphere_gpu_probe_value_count> values{};
+  std::array<std::array<float,4>,atmosphere_numeric_probe_value_count> values{};
   bool valid{};
 };
 

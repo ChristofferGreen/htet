@@ -384,6 +384,43 @@ and show a diagnostic. Invalid parameters never publish. Atmosphere-disabled
 mode reproduces the qualified terrain scene except for the intentional HDR and
 tone-mapping migration.
 
+### 11.1 Gate H numeric probe contract
+
+`tetra_world --atmosphere-transport=faithful-hillaire
+--gpu-atmosphere-probe` performs fence-safe storage-buffer readback without a
+global device idle. Probe runs deliberately use unit terrain visibility so the
+transport comparison is independent of whichever mesh occupies the shadow
+cascades; H7 qualifies shadow visibility separately. The command exits nonzero
+if any stage fails and reports actual and expected values plus per-component
+absolute and relative errors.
+
+The shared transmittance coordinate is sampled at five percent of atmosphere
+height and zenith cosine 0.25. Multiple scattering uses the physical centre of
+the selected lookup texel. Full-sky radiance uses the camera-forward ray and
+irradiance uses local up. Aerial lookup values use the centre screen voxel and
+the nearest cubic-depth slice to half range; independent aerial values use the
+camera-forward ray at exactly half the current local range. All positions and
+distances are SI metres from planet centre.
+
+| Stage | Absolute floor | Relative allowance |
+| --- | ---: | ---: |
+| Transmittance lookup/direct | 0.002 | 2% |
+| Multiple-scattering incident radiance | 0.0002 | 15% |
+| Full-sky and direct aerial radiance | 0.0005 | 15% |
+| Sky irradiance | 0.00075 | 20% |
+| Aerial lookup radiance | 0.0005 | 20% |
+| Aerial transmittance lookup/direct | 0.003 | 3% |
+| Mapping coordinates and cosine | 0.0002 | none |
+| Mapping inverse altitude | max(0.25 m, height x 0.00002) | none |
+| Lookup validity channel | 0.0001 | none |
+
+Errors pass when `absolute_error <= absolute_floor + relative_allowance *
+abs(reference)`. The reference uses double-precision stable sphere
+intersections, 512-step optical transmittance, Hillaire's 64-direction/20-step
+multiple-scattering closure, and a 32-step view integral. This is the current
+implementation-independent Hillaire oracle; the H0 fixed-image contract and
+external Bruneton/Wilkie overlap comparisons remain separate unfinished work.
+
 ## 12. Post-implementation research reassessment
 
 ### 12.1 Decision
@@ -756,7 +793,7 @@ out the atmosphere, and remain continuous through cascades and the H6 handoff.
 
 #### H8: Replace implementation-string tests with transport oracles
 
-- [ ] Add numeric GPU readback probes for mappings, transmittance, multiple
+- [x] Add numeric GPU readback probes for mappings, transmittance, multiple
       scattering, sky radiance, irradiance, and aerial transport at exact SI
       coordinates, compared with the independent double-precision CPU path.
 - [ ] Add deterministic fixed-exposure comparisons for the complete matrix in

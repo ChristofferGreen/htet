@@ -850,6 +850,161 @@ AtmosphereScatteringReference atmosphere_scattering_reference(
   return result;
 }
 
+AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
+    const AtmosphereNumericProbeInput& input) {
+  AtmosphereNumericProbeValues result{};
+  const auto& parameters=input.parameters;
+  if(validate_atmosphere(parameters))return result;
+  const auto assign_spectrum=[&](std::size_t index,
+                                 const AtmosphereSpectrum& spectrum){
+    std::copy(spectrum.begin(),spectrum.end(),result[index].begin());
+    result[index][3]=1.0;
+  };
+  const double height=parameters.atmosphere_height_metres;
+  const double altitude=std::clamp(height*0.05,1.0,height-1.0);
+  constexpr double cosine_angle=0.25;
+  const tetra::Vec3 transmittance_origin{
+      0.0,parameters.ground_radius_metres+altitude,0.0};
+  const tetra::Vec3 transmittance_direction=normalized({
+      std::sqrt(1.0-cosine_angle*cosine_angle),cosine_angle,0.0});
+  AtmosphereSpectrum transmittance{1.0,1.0,1.0};
+  if(const auto segment=atmosphere_ray_segment(
+         transmittance_origin,transmittance_direction,parameters)){
+    const auto start=transmittance_origin+
+        transmittance_direction*segment->begin_metres;
+    const auto end=transmittance_origin+
+        transmittance_direction*segment->end_metres;
+    transmittance=atmosphere_transmittance(start,end,parameters,512U);
+  }
+  assign_spectrum(0U,transmittance);
+  assign_spectrum(1U,transmittance);
+
+  const auto quality=atmosphere_quality_settings(input.quality);
+  const auto multiple_size=static_cast<std::size_t>(
+      quality.multiple_scattering_size);
+  const auto lookup_coordinate=[&](double unit){
+    return std::min(multiple_size-1U,static_cast<std::size_t>(
+        std::floor(std::clamp(unit,0.0,1.0)*
+                   static_cast<double>(multiple_size))));
+  };
+  const std::size_t multiple_x=lookup_coordinate(
+      cosine_angle*0.5+0.5);
+  const std::size_t multiple_y=lookup_coordinate(altitude/height);
+  const double multiple_u=(static_cast<double>(multiple_x)+0.5)/
+      static_cast<double>(multiple_size);
+  const double multiple_v=(static_cast<double>(multiple_y)+0.5)/
+      static_cast<double>(multiple_size);
+  const double multiple_altitude=1.0+(height-2.0)*multiple_v;
+  const double multiple_cosine=multiple_u*2.0-1.0;
+  assign_spectrum(2U,atmosphere_multiple_scattering_reference(
+      parameters,multiple_altitude,multiple_cosine,64U,20U).
+          closed_contribution);
+
+  const auto camera_forward=normalized(input.camera_forward);
+  const auto sun_direction=normalized(input.sun_direction);
+  const auto full_sky=atmosphere_scattering_reference(
+      parameters,input.camera_position_from_planet_centre_metres,
+      camera_forward,sun_direction,1.0e9,32U,64U,20U);
+  assign_spectrum(3U,full_sky.radiance);
+
+  const auto local_up=normalized(
+      input.camera_position_from_planet_centre_metres);
+  const auto irradiance=atmosphere_sky_irradiance_reference(
+      local_up,local_up,[&](tetra::Vec3 direction){
+        return atmosphere_scattering_reference(
+            parameters,input.camera_position_from_planet_centre_metres,
+            direction,sun_direction,1.0e9,32U,64U,20U).radiance;
+      },64U);
+  assign_spectrum(4U,irradiance);
+
+  const double aerial_width=static_cast<double>(quality.aerial_width);
+  const double aerial_height=static_cast<double>(quality.aerial_height);
+  const auto aerial_x=quality.aerial_width/2U;
+  const auto aerial_y=quality.aerial_height/2U;
+  const AtmosphereLookupCoordinates aerial_uv{
+      (static_cast<double>(aerial_x)+0.5)/aerial_width,
+      (static_cast<double>(aerial_y)+0.5)/aerial_height};
+  const double ndc_x=aerial_uv.u*2.0-1.0;
+  const double ndc_y=aerial_uv.v*2.0-1.0;
+  const auto aerial_direction=normalized(input.camera_forward+
+      input.camera_right*(ndc_x*input.vertical_tangent*input.aspect_ratio)+
+      input.camera_down*(ndc_y*input.vertical_tangent));
+  const auto depth_minus_one=std::max(quality.aerial_depth-1U,1U);
+  const auto aerial_z=static_cast<unsigned>(std::clamp<long long>(
+      std::llround(std::cbrt(0.5)*static_cast<double>(depth_minus_one)),
+      0LL,static_cast<long long>(quality.aerial_depth-1U)));
+  const double aerial_slice=static_cast<double>(aerial_z)/
+      static_cast<double>(depth_minus_one);
+  const double aerial_distance=aerial_lut_distance(
+      aerial_slice,input.maximum_aerial_distance_metres);
+  const auto aerial=atmosphere_scattering_reference(
+      parameters,input.camera_position_from_planet_centre_metres,
+      aerial_direction,sun_direction,aerial_distance,32U,64U,20U);
+  assign_spectrum(5U,aerial.radiance);
+  assign_spectrum(6U,aerial.transmittance);
+
+  const auto direct_aerial=atmosphere_scattering_reference(
+      parameters,input.camera_position_from_planet_centre_metres,
+      camera_forward,sun_direction,
+      input.maximum_aerial_distance_metres*0.5,32U,64U,20U);
+  assign_spectrum(7U,direct_aerial.radiance);
+  assign_spectrum(8U,direct_aerial.transmittance);
+
+  const auto uv=atmosphere_transmittance_uv(
+      altitude,cosine_angle,parameters);
+  const auto inverse=atmosphere_transmittance_parameters(uv,parameters);
+  result[9U]={uv.u,uv.v,inverse.altitude_metres,inverse.zenith_cosine};
+  return result;
+}
+
+AtmosphereNumericProbeReport evaluate_atmosphere_numeric_probe(
+    const AtmosphereNumericProbeValues& actual,
+    const AtmosphereNumericProbeInput& input) {
+  AtmosphereNumericProbeReport report;
+  report.reference=atmosphere_numeric_probe_reference(input);
+  const std::array<std::string_view,atmosphere_numeric_probe_value_count> names{
+      "transmittance_lookup","transmittance_direct",
+      "multiple_scattering_lookup","full_sky_lookup",
+      "sky_irradiance_lookup","aerial_scattering_lookup",
+      "aerial_transmittance_lookup","aerial_scattering_direct",
+      "aerial_transmittance_direct","transmittance_mapping"};
+  const std::array<double,atmosphere_numeric_probe_value_count> absolute{
+      2.0e-3,2.0e-3,2.0e-4,5.0e-4,7.5e-4,
+      5.0e-4,3.0e-3,5.0e-4,3.0e-3,2.0e-4};
+  const std::array<double,atmosphere_numeric_probe_value_count> relative{
+      0.02,0.02,0.15,0.15,0.20,0.20,0.03,0.15,0.03,0.0};
+  report.passed=true;
+  for(std::size_t index=0;index<names.size();++index){
+    AtmosphereNumericProbeComparison comparison;
+    comparison.name=names[index];
+    comparison.actual=actual[index];
+    comparison.expected=report.reference[index];
+    comparison.passed=true;
+    for(std::size_t channel=0;channel<4U;++channel){
+      const double expected=comparison.expected[channel];
+      const double observed=comparison.actual[channel];
+      comparison.absolute_error[channel]=std::abs(observed-expected);
+      comparison.relative_error[channel]=comparison.absolute_error[channel]/
+          std::max(std::abs(expected),1.0e-12);
+      double absolute_tolerance=absolute[index];
+      double relative_tolerance=relative[index];
+      if(index==9U&&channel==2U)
+        absolute_tolerance=std::max(
+            0.25,input.parameters.atmosphere_height_metres*2.0e-5);
+      if(channel==3U&&index!=9U){
+        absolute_tolerance=1.0e-4;
+        relative_tolerance=0.0;
+      }
+      const bool finite=std::isfinite(observed)&&std::isfinite(expected);
+      comparison.passed&=finite&&comparison.absolute_error[channel]<=
+          absolute_tolerance+relative_tolerance*std::abs(expected);
+    }
+    report.passed&=comparison.passed;
+    report.comparisons.push_back(std::move(comparison));
+  }
+  return report;
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||

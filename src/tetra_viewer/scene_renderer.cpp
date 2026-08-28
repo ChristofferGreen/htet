@@ -629,7 +629,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
        VK_SUCCESS)
       throw std::runtime_error("unable to bind atmosphere uniform buffer");
     VkBufferCreateInfo probe{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    probe.size=sizeof(float)*4U*atmosphere_gpu_probe_value_count;
+    probe.size=sizeof(float)*4U*atmosphere_numeric_probe_value_count;
     probe.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     if(vkCreateBuffer(device_,&probe,nullptr,&frame.probe_buffer)!=VK_SUCCESS)
       throw std::runtime_error("unable to create atmosphere probe buffer");
@@ -884,7 +884,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     atmosphere_writes[8].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     atmosphere_writes[8].pImageInfo=&storage_images[5];
     VkDescriptorBufferInfo probe_info{frame.probe_buffer,0,
-        sizeof(float)*4U*atmosphere_gpu_probe_value_count};
+        sizeof(float)*4U*atmosphere_numeric_probe_value_count};
     atmosphere_writes[9].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     atmosphere_writes[9].dstSet=frame.descriptor_set;
     atmosphere_writes[9].dstBinding=9U;
@@ -1110,11 +1110,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   if(atmosphere_frame.probe_pending){
     void* probe_mapped{};
     if(vkMapMemory(device_,atmosphere_frame.probe_memory,0,
-          sizeof(float)*4U*atmosphere_gpu_probe_value_count,0,
+          sizeof(float)*4U*atmosphere_numeric_probe_value_count,0,
           &probe_mapped)!=VK_SUCCESS)
       throw std::runtime_error("unable to map atmosphere probe buffer");
     std::memcpy(latest_atmosphere_probe_.values.data(),probe_mapped,
-        sizeof(float)*4U*atmosphere_gpu_probe_value_count);
+        sizeof(float)*4U*atmosphere_numeric_probe_value_count);
     vkUnmapMemory(device_,atmosphere_frame.probe_memory);
     latest_atmosphere_probe_.valid=true;
     atmosphere_frame.probe_pending=false;
@@ -1193,6 +1193,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
   atmosphere_uniform[53]=static_cast<float>(atmosphere_input.transport==
       AtmosphereTransport::faithful_hillaire?1:0);
+  atmosphere_uniform[54]=atmosphere_input.numeric_probe_requested?1.0F:0.0F;
   void* mapped{};
   if(vkMapMemory(device_,atmosphere_frame.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)

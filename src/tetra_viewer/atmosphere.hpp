@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace tetra_viewer {
 
@@ -205,6 +206,39 @@ struct AtmosphereScatteringReference {
   AtmosphereSpectrum transmittance{1.0,1.0,1.0};
 };
 
+inline constexpr std::size_t atmosphere_numeric_probe_value_count=10U;
+using AtmosphereNumericProbeValue=std::array<double,4>;
+using AtmosphereNumericProbeValues=
+    std::array<AtmosphereNumericProbeValue,atmosphere_numeric_probe_value_count>;
+
+struct AtmosphereNumericProbeInput {
+  AtmosphereParameters parameters{};
+  tetra::Vec3 camera_position_from_planet_centre_metres{};
+  tetra::Vec3 camera_right{1.0,0.0,0.0};
+  tetra::Vec3 camera_down{0.0,1.0,0.0};
+  tetra::Vec3 camera_forward{0.0,0.0,1.0};
+  tetra::Vec3 sun_direction{0.0,1.0,0.0};
+  double vertical_tangent{1.0};
+  double aspect_ratio{1.0};
+  double maximum_aerial_distance_metres{default_world_aerial_distance_metres};
+  AtmosphereQuality quality{AtmosphereQuality::standard};
+};
+
+struct AtmosphereNumericProbeComparison {
+  std::string name;
+  AtmosphereNumericProbeValue actual{};
+  AtmosphereNumericProbeValue expected{};
+  AtmosphereNumericProbeValue absolute_error{};
+  AtmosphereNumericProbeValue relative_error{};
+  bool passed{};
+};
+
+struct AtmosphereNumericProbeReport {
+  AtmosphereNumericProbeValues reference{};
+  std::vector<AtmosphereNumericProbeComparison> comparisons;
+  bool passed{};
+};
+
 using AtmosphereSkyRadianceFunction=
     std::function<AtmosphereSpectrum(tetra::Vec3 direction)>;
 
@@ -273,6 +307,11 @@ atmosphere_multiple_scattering_reference(
     std::size_t view_steps=32U,
     std::size_t multiple_direction_count=16U,
     std::size_t multiple_ray_steps=8U);
+[[nodiscard]] AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
+    const AtmosphereNumericProbeInput& input);
+[[nodiscard]] AtmosphereNumericProbeReport evaluate_atmosphere_numeric_probe(
+    const AtmosphereNumericProbeValues& actual,
+    const AtmosphereNumericProbeInput& input);
 // Independent double-precision cosine convolution used to qualify the GPU
 // irradiance lookup. The returned value is E/pi, ready for Lambertian albedo.
 [[nodiscard]] AtmosphereSpectrum atmosphere_sky_irradiance_reference(

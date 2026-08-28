@@ -1013,6 +1013,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_gpu_atmosphere_resize_check=false;
     bool world_gpu_atmosphere_resize_requested=false;
     std::size_t world_gpu_pre_resize_scene_bytes{};
+    int world_process_exit_code{};
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
@@ -3460,17 +3461,71 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                !world_runtime->diagnostics().busy&&
                g_SceneRenderer.latest_atmosphere_probe().valid){
                 const auto& probe=g_SceneRenderer.latest_atmosphere_probe();
-                std::cout<<"{\"event\":\"gpu_atmosphere_probe\",\"values\":[";
-                for(std::size_t value=0;value<probe.values.size();++value){
-                    if(value!=0U)std::cout<<',';
+                tetra_viewer::AtmosphereNumericProbeValues actual{};
+                for(std::size_t value=0;value<probe.values.size();++value)
+                    for(std::size_t channel=0;channel<4U;++channel)
+                        actual[value][channel]=probe.values[value][channel];
+                const double metres=
+                    g_AtmosphereFrame.parameters.metres_per_world_unit;
+                const auto camera_from_centre=
+                    (g_AtmosphereFrame.camera_relative_world-
+                     g_AtmosphereFrame.planet_centre_relative_world)*metres;
+                const double camera_altitude=std::sqrt(
+                    camera_from_centre.x*camera_from_centre.x+
+                    camera_from_centre.y*camera_from_centre.y+
+                    camera_from_centre.z*camera_from_centre.z)-
+                    g_AtmosphereFrame.parameters.ground_radius_metres;
+                const double aerial_distance=
+                    tetra_viewer::atmosphere_local_aerial_distance(
+                        g_AtmosphereFrame.parameters,camera_altitude,
+                        g_AtmosphereFrame.maximum_aerial_distance_metres);
+                const tetra_viewer::AtmosphereNumericProbeInput input{
+                    .parameters=g_AtmosphereFrame.parameters,
+                    .camera_position_from_planet_centre_metres=
+                        camera_from_centre,
+                    .camera_right=g_AtmosphereFrame.camera_right,
+                    .camera_down=g_AtmosphereFrame.camera_down,
+                    .camera_forward=g_AtmosphereFrame.camera_forward,
+                    .sun_direction=g_AtmosphereFrame.sun_direction,
+                    .vertical_tangent=g_AtmosphereFrame.vertical_tangent,
+                    .aspect_ratio=g_AtmosphereFrame.aspect_ratio,
+                    .maximum_aerial_distance_metres=aerial_distance,
+                    .quality=g_AtmosphereFrame.quality};
+                const auto report=tetra_viewer::evaluate_atmosphere_numeric_probe(
+                    actual,input);
+                const auto write_value=[](double value){
+                    if(std::isfinite(value))std::cout<<value;
+                    else std::cout<<"null";
+                };
+                const auto write_vector=[&](const auto& values){
                     std::cout<<'[';
-                    for(std::size_t channel=0;channel<4U;++channel){
+                    for(std::size_t channel=0;channel<values.size();++channel){
                         if(channel!=0U)std::cout<<',';
-                        std::cout<<probe.values[value][channel];
+                        write_value(values[channel]);
                     }
                     std::cout<<']';
+                };
+                std::cout<<"{\"event\":\"gpu_atmosphere_probe\",\"status\":\""
+                         <<(report.passed?"pass":"fail")
+                         <<"\",\"comparisons\":[";
+                for(std::size_t index=0;index<report.comparisons.size();++index){
+                    if(index!=0U)std::cout<<',';
+                    const auto& comparison=report.comparisons[index];
+                    std::cout<<"{\"stage\":\""<<comparison.name
+                             <<"\",\"pass\":"
+                             <<(comparison.passed?"true":"false")
+                             <<",\"actual\":";
+                    write_vector(comparison.actual);
+                    std::cout<<",\"expected\":";
+                    write_vector(comparison.expected);
+                    std::cout<<",\"absolute_error\":";
+                    write_vector(comparison.absolute_error);
+                    std::cout<<",\"relative_error\":";
+                    write_vector(comparison.relative_error);
+                    std::cout<<'}';
                 }
                 std::cout<<"]}\n";
+                world_process_exit_code=report.passed?0:3;
                 world_gpu_atmosphere_probe=false;
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
@@ -3493,5 +3548,5 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    return 0;
+    return world_process_exit_code;
 }

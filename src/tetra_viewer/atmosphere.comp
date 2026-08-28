@@ -131,6 +131,7 @@ vec4 checked_lut_value(vec3 value,float maximum_value) {
 }
 
 bool faithful_transport(){return atmosphere.reserved1.y>0.5;}
+bool numeric_probe(){return atmosphere.reserved1.z>0.5;}
 
 vec2 linear_lookup_uv(float altitude,float cosine_angle) {
   return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
@@ -238,6 +239,10 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade) {
 }
 
 float atmosphere_sun_visibility(vec3 point_metres) {
+  // Numeric qualification compares the transport stages with an independent
+  // unshadowed CPU integrator. Scene-dependent cascade contents are qualified
+  // separately by H7 and would make an exact probe depend on current terrain.
+  if(numeric_probe())return 1.0;
   const float metres_per_world=atmosphere.profile_and_mode.y;
   const vec3 point_world=atmosphere.reserved0.xyz+
       (point_metres-atmosphere.camera_position_near.xyz)/metres_per_world;
@@ -505,7 +510,7 @@ void generate_aerial(ivec3 coordinate) {
 void generate_sky_irradiance(ivec2 coordinate) {
   const ivec2 size=imageSize(sky_irradiance_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
-  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const vec2 uv=vec2(coordinate)/vec2(max(size-1,ivec2(1)));
   const vec3 normal=full_sky_direction(uv);
   const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
   vec3 irradiance_over_pi=vec3(0.0);
@@ -527,8 +532,19 @@ void generate_sky_irradiance(ivec2 coordinate) {
 vec3 irradiance_load(vec3 normal) {
   const vec2 uv=full_sky_uv(normal);
   const ivec2 size=imageSize(sky_irradiance_lut);
-  const ivec2 coordinate=clamp(ivec2(uv*vec2(size)),ivec2(0),size-1);
-  return imageLoad(sky_irradiance_lut,coordinate).rgb;
+  // The compact directional table includes both poles and the duplicated
+  // longitude seam as endpoints. Bilinear reconstruction then evaluates the
+  // requested normal instead of substituting a distant texel centre.
+  const vec2 texel=clamp(uv,vec2(0.0),vec2(1.0))*vec2(size-1);
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=min(low+1,size-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(imageLoad(sky_irradiance_lut,low).rgb,
+      imageLoad(sky_irradiance_lut,ivec2(high.x,low.y)).rgb,fraction.x);
+  const vec3 upper=mix(imageLoad(sky_irradiance_lut,
+      ivec2(low.x,high.y)).rgb,imageLoad(sky_irradiance_lut,high).rgb,
+      fraction.x);
+  return mix(lower,upper,fraction.y);
 }
 
 void generate_numeric_probe() {
