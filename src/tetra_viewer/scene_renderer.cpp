@@ -417,6 +417,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                              AtmosphereQuality quality) {
   quality_settings_=atmosphere_quality_settings(quality);
+  atmosphere_dispatch_counts_={};
   if(timing_query_pool_!=VK_NULL_HANDLE){
     vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
     timing_query_pool_=VK_NULL_HANDLE;
@@ -1253,6 +1254,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
           VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
       vkCmdDispatch(command_buffer,x,y,z);
+      if(mode==0U)++atmosphere_dispatch_counts_.transmittance;
+      else if(mode==1U)++atmosphere_dispatch_counts_.multiple_scattering;
+      else if(mode==2U)++atmosphere_dispatch_counts_.sky_view;
+      else if(mode==3U)++atmosphere_dispatch_counts_.aerial_perspective;
     };
     const auto compute_barrier=[&](std::span<const VkImage> images,
                                    VkPipelineStageFlags destination_stage){

@@ -2669,6 +2669,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     static_cast<double>(
                         g_SceneRenderer.scene_target_allocation_bytes())/
                         (1024.0*1024.0));
+                const auto& dispatches=
+                    g_SceneRenderer.atmosphere_dispatch_counts();
+                ImGui::Text("LUT dispatch T %llu  M %llu  S %llu  A %llu",
+                    static_cast<unsigned long long>(dispatches.transmittance),
+                    static_cast<unsigned long long>(
+                        dispatches.multiple_scattering),
+                    static_cast<unsigned long long>(dispatches.sky_view),
+                    static_cast<unsigned long long>(
+                        dispatches.aerial_perspective));
             }
             ImGui::SetNextItemWidth(190.0F);
             const double exposure_minimum=-6.0;
@@ -3417,6 +3426,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
                         <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<"\"dispatches\":{"
+                        <<"\"transmittance\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().transmittance
+                        <<",\"multiple_scattering\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().multiple_scattering
+                        <<",\"sky_view\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().sky_view
+                        <<",\"aerial_perspective\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().aerial_perspective
+                        <<"},"
                         <<"\"resize_checked\":"
                         <<(world_gpu_atmosphere_resize_check?"true":"false")
                         <<"}\n";

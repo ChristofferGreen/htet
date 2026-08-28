@@ -41,6 +41,13 @@ struct SceneGpuTimings {
   bool valid{};
 };
 
+struct AtmosphereDispatchCounts {
+  std::uint64_t transmittance{};
+  std::uint64_t multiple_scattering{};
+  std::uint64_t sky_view{};
+  std::uint64_t aerial_perspective{};
+};
+
 class SceneRenderer {
  public:
   void initialize(VkPhysicalDevice physical_device, VkDevice device, VkFormat colour_format, VkFormat depth_format);
@@ -61,6 +68,8 @@ class SceneRenderer {
   [[nodiscard]] const SceneGpuTimings& gpu_timings() const noexcept {
     return gpu_timings_;
   }
+  [[nodiscard]] const AtmosphereDispatchCounts& atmosphere_dispatch_counts()
+      const noexcept { return atmosphere_dispatch_counts_; }
   [[nodiscard]] std::size_t atmosphere_allocation_bytes() const noexcept {
     return atmosphere_allocation_bytes_;
   }
@@ -104,6 +113,7 @@ class SceneRenderer {
   float timestamp_period_nanoseconds_{};
   std::vector<bool> timing_queries_written_;
   SceneGpuTimings gpu_timings_{};
+  AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
   std::size_t atmosphere_allocation_bytes_{};
   std::size_t scene_target_allocation_bytes_{};
   std::uint64_t geometry_revision_{};
