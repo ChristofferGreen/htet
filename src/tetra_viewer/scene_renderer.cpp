@@ -467,6 +467,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkFreeMemory(device_,capture.image_memory,nullptr);
     vkDestroyBuffer(device_,capture.buffer,nullptr);
     vkFreeMemory(device_,capture.buffer_memory,nullptr);
+    vkDestroyBuffer(device_,capture.depth_buffer,nullptr);
+    vkFreeMemory(device_,capture.depth_buffer_memory,nullptr);
   }
   atmosphere_frames_.clear();
   capture_frames_.clear();
@@ -504,7 +506,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   atmosphere_allocation_bytes_=lookup_bytes+frames*shadow_bytes;
   depth_images_.assign(image_count, {});
   for (auto& depth : depth_images_) {
-    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if(vkCreateImage(device_, &image, nullptr, &depth.image)!=VK_SUCCESS)
       throw std::runtime_error("unable to create sampleable scene depth image");
     VkMemoryRequirements requirements{}; vkGetImageMemoryRequirements(device_, depth.image, &requirements);
@@ -1137,6 +1139,19 @@ void SceneRenderer::ensure_capture_resources(CaptureFrameResources& capture,
   if(vkBindBufferMemory(device_,capture.buffer,capture.buffer_memory,0)!=
      VK_SUCCESS)
     throw std::runtime_error("unable to bind scene capture buffer");
+  if(vkCreateBuffer(device_,&buffer,nullptr,&capture.depth_buffer)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene depth capture buffer");
+  vkGetBufferMemoryRequirements(device_,capture.depth_buffer,&requirements);
+  allocation.allocationSize=requirements.size;
+  allocation.memoryTypeIndex=memory_type(
+      physical_device_,requirements.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if(vkAllocateMemory(device_,&allocation,nullptr,
+                      &capture.depth_buffer_memory)!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate scene depth capture buffer");
+  if(vkBindBufferMemory(device_,capture.depth_buffer,
+                        capture.depth_buffer_memory,0)!=VK_SUCCESS)
+    throw std::runtime_error("unable to bind scene depth capture buffer");
 }
 
 void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_view,
@@ -1195,6 +1210,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       throw std::runtime_error("unable to map scene capture buffer");
     std::memcpy(latest_capture_.pixels.data(),capture_mapped,byte_count);
     vkUnmapMemory(device_,capture_frame.buffer_memory);
+    latest_capture_.reversed_depth.resize(byte_count/sizeof(float));
+    if(vkMapMemory(device_,capture_frame.depth_buffer_memory,0,byte_count,0,
+                   &capture_mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map scene depth capture buffer");
+    std::memcpy(latest_capture_.reversed_depth.data(),capture_mapped,byte_count);
+    vkUnmapMemory(device_,capture_frame.depth_buffer_memory);
     latest_capture_.width=extent.width;
     latest_capture_.height=extent.height;
     latest_capture_.bgra=colour_format_==VK_FORMAT_B8G8R8A8_UNORM||
@@ -1719,16 +1740,47 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     copy.imageExtent={extent.width,extent.height,1U};
     vkCmdCopyImageToBuffer(command_buffer,capture_frame.image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture_frame.buffer,1,&copy);
-    VkBufferMemoryBarrier host_read{
-        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    host_read.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
-    host_read.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-    host_read.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-    host_read.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
-    host_read.buffer=capture_frame.buffer;
-    host_read.size=VK_WHOLE_SIZE;
+
+    VkImageMemoryBarrier depth_to_readback{
+        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    depth_to_readback.srcAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    depth_to_readback.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+    depth_to_readback.oldLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    depth_to_readback.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    depth_to_readback.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    depth_to_readback.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    depth_to_readback.image=depth_images_.at(image_index).image;
+    depth_to_readback.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+    depth_to_readback.subresourceRange.levelCount=1;
+    depth_to_readback.subresourceRange.layerCount=1;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,
+        &depth_to_readback);
+    copy.imageSubresource.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+    vkCmdCopyImageToBuffer(command_buffer,depth_images_.at(image_index).image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture_frame.depth_buffer,1,&copy);
+    std::swap(depth_to_readback.srcAccessMask,
+              depth_to_readback.dstAccessMask);
+    std::swap(depth_to_readback.oldLayout,depth_to_readback.newLayout);
     vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host_read,0,nullptr);
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,
+        &depth_to_readback);
+
+    std::array<VkBufferMemoryBarrier,2> host_reads{};
+    for(auto& host_read:host_reads){
+      host_read.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+      host_read.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+      host_read.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+      host_read.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      host_read.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      host_read.size=VK_WHOLE_SIZE;
+    }
+    host_reads[0].buffer=capture_frame.buffer;
+    host_reads[1].buffer=capture_frame.depth_buffer;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,
+        static_cast<std::uint32_t>(host_reads.size()),host_reads.data(),
+        0,nullptr);
     capture_frame.initialized=true;
     capture_frame.pending=true;
   }
@@ -1773,6 +1825,8 @@ void SceneRenderer::shutdown() {
     vkFreeMemory(device_,capture.image_memory,nullptr);
     vkDestroyBuffer(device_,capture.buffer,nullptr);
     vkFreeMemory(device_,capture.buffer_memory,nullptr);
+    vkDestroyBuffer(device_,capture.depth_buffer,nullptr);
+    vkFreeMemory(device_,capture.depth_buffer_memory,nullptr);
   }
   for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, editor_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
   if(descriptor_pool_!=VK_NULL_HANDLE)

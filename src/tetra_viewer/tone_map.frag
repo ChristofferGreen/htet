@@ -102,21 +102,7 @@ vec2 atmosphere_full_sky_uv(vec3 direction) {
 
 vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   if(atmosphere.reserved1.y<0.5)return texture(sky_view_lut,screen_uv).rgb;
-  const vec2 uv=atmosphere_full_sky_uv(direction);
-  const ivec2 size=textureSize(sky_view_lut,0);
-  const vec2 texel=uv*vec2(size)-0.5;
-  const ivec2 low=ivec2(floor(texel));
-  const ivec2 high=low+1;
-  const int low_x=(low.x%size.x+size.x)%size.x;
-  const int high_x=(high.x%size.x+size.x)%size.x;
-  const int low_y=clamp(low.y,0,size.y-1);
-  const int high_y=clamp(high.y,0,size.y-1);
-  const vec2 fraction=fract(texel);
-  const vec3 lower=mix(texelFetch(sky_view_lut,ivec2(low_x,low_y),0).rgb,
-      texelFetch(sky_view_lut,ivec2(high_x,low_y),0).rgb,fraction.x);
-  const vec3 upper=mix(texelFetch(sky_view_lut,ivec2(low_x,high_y),0).rgb,
-      texelFetch(sky_view_lut,ivec2(high_x,high_y),0).rgb,fraction.x);
-  return mix(lower,upper,fraction.y);
+  return texture(sky_view_lut,atmosphere_full_sky_uv(direction)).rgb;
 }
 
 vec3 sample_sky_irradiance(vec3 normal) {
@@ -375,8 +361,7 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   return ambient+direct;
 }
 
-vec3 composite_aerial(vec3 surface_radiance,float distance_metres,
-                      bool analytic_ground) {
+vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
   const float local_distance=atmosphere.camera_forward_maximum_distance.w;
   const float slice=pow(clamp(distance_metres/local_distance,0.0,1.0),
       1.0/3.0);
@@ -386,30 +371,29 @@ vec3 composite_aerial(vec3 surface_radiance,float distance_metres,
   const vec3 local_result=surface_radiance*transmittance+scattering;
   if(atmosphere.reserved1.y>0.5&&distance_metres>local_distance*0.75){
     const vec3 direction=atmosphere_view_direction(texture_coordinate);
-    vec3 long_transmittance;
-    vec3 long_scattering;
-    if(analytic_ground){
-      const vec3 endpoint=atmosphere.camera_position_near.xyz+
-          direction*distance_metres;
-      const vec3 reverse_direction=-direction;
-      const float endpoint_altitude=length(endpoint)-
-          atmosphere.rayleigh_ground_radius.w;
-      const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
-          atmosphere.rayleigh_ground_radius.w;
-      const vec3 endpoint_to_top=texture(transmittance_lut,
-          atmosphere_transmittance_uv(endpoint_altitude,
-              dot(normalize(endpoint),reverse_direction))).rgb;
-      const vec3 camera_to_top=texture(transmittance_lut,
-          atmosphere_transmittance_uv(camera_altitude,
-              dot(normalize(atmosphere.camera_position_near.xyz),
-                  reverse_direction))).rgb;
-      long_transmittance=clamp(endpoint_to_top/
-          max(camera_to_top,vec3(1.0e-6)),vec3(0.0),vec3(1.0));
-      long_scattering=sample_sky_view(direction,texture_coordinate);
-    }else{
-      long_scattering=integrate_long_aerial(
-          direction,distance_metres,long_transmittance);
-    }
+    // The faithful full-sky table is already a camera-position-dependent,
+    // terrain-shadowed integration over the complete atmospheric segment.
+    // Reuse it for far opaque geometry instead of repeating the same 32-step
+    // march at every full-resolution fragment.  The endpoint/top ratio gives
+    // transmittance only over camera-to-surface, including elevated terrain.
+    const vec3 endpoint=atmosphere.camera_position_near.xyz+
+        direction*distance_metres;
+    const vec3 reverse_direction=-direction;
+    const float endpoint_altitude=length(endpoint)-
+        atmosphere.rayleigh_ground_radius.w;
+    const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
+        atmosphere.rayleigh_ground_radius.w;
+    const vec3 endpoint_to_top=texture(transmittance_lut,
+        atmosphere_transmittance_uv(endpoint_altitude,
+            dot(normalize(endpoint),reverse_direction))).rgb;
+    const vec3 camera_to_top=texture(transmittance_lut,
+        atmosphere_transmittance_uv(camera_altitude,
+            dot(normalize(atmosphere.camera_position_near.xyz),
+                reverse_direction))).rgb;
+    const vec3 long_transmittance=clamp(endpoint_to_top/
+        max(camera_to_top,vec3(1.0e-6)),vec3(0.0),vec3(1.0));
+    const vec3 long_scattering=sample_sky_view(
+        direction,texture_coordinate);
     const vec3 long_result=surface_radiance*long_transmittance+long_scattering;
     const float handoff=smoothstep(local_distance*0.75,local_distance,
                                    distance_metres);
@@ -473,7 +457,7 @@ void main() {
       if(ground_distance>0.0){
         hdr=composite_aerial(
             analytic_ground_radiance(view_direction,ground_distance),
-            ground_distance,true);
+            ground_distance);
       }else{
         hdr=sample_sky_view(view_direction,texture_coordinate);
       }
@@ -491,7 +475,7 @@ void main() {
       }
     }else{
       const float distance_metres=atmosphere.camera_position_near.w/depth;
-      hdr=composite_aerial(hdr,distance_metres,false);
+      hdr=composite_aerial(hdr,distance_metres);
     }
   }
   out_colour=vec4(linear_to_srgb(aces_fitted(

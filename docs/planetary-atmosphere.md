@@ -325,17 +325,18 @@ views show no objectionable banding, ghosting, or discontinuity.
 Implemented profiles use 128/256/512-wide transmittance, 16/32/64-wide
 multiple scattering, 192x108/384x216/768x432 sky view,
 16x16x8/32x32x16/64x64x32 aerial volumes, and 512/1024/2048 shadow maps.
-The larger sky-view tables are required for a clean orbital limb. The current
-composition still samples the same compact 3D aerial volume for analytic ground
-paths, including long flight and orbital paths; this is a known representation
-limit rather than the intended final orbital solution. On the
-qualification machine, the final scriptable release benchmark measured Default
-at 1.23 ms atmosphere, 0.36 ms composition, and 34.0 MiB buffered atmosphere
-allocation after enabling the 32-interval shadowed ray march. Shadow-map and
-terrain passes measured 1.24 ms and 1.74 ms respectively. This remains inside
-the 2.0 ms steady-state atmosphere and 0.5 ms composition gates; the higher
-cost is retained because the former uniform march skipped gameplay-scale
-mountain-shadow intervals.
+The larger sky-view tables are required for a clean orbital limb. Faithful
+long-path composition now reuses that camera-position-dependent, shadowed
+full-sky integration and derives camera-to-surface transmittance from the
+endpoint/top ratio. Repeating a 32-step march in every full-resolution far
+fragment was rejected: at 1920x1080 it cost about 3.9 ms in orbit even though
+the same integral was already present in the full-sky lookup. Lookup reuse
+reduced faithful orbit composition to roughly 1.0 ms without a visible limb
+regression, but this still exceeds the 0.5 ms gate. A later restored-sampler
+baseline run measured 1.20 ms in orbit and 1.49 ms at the terminator. These
+measurements supersede the
+earlier one-frame 0.36 ms figure; Default must not be promoted until repeated
+steady-state orbital composition meets budget.
 
 Depth-clear rays that hit the planet use an analytic spherical ground.
 Full-resolution composition evaluates the same neutral Lambertian terrain
@@ -430,6 +431,58 @@ intersections, 512-step optical transmittance, Hillaire's 64-direction/20-step
 multiple-scattering closure, and a 32-step view integral. This is the current
 implementation-independent Hillaire oracle; the H0 fixed-image contract and
 external Bruneton/Wilkie overlap comparisons remain separate unfinished work.
+
+### 11.2 Gate H fixed-image contract
+
+`scripts/qualify_atmosphere_images.sh` launches eight fixed views for both the
+qualified baseline and faithful transport. It uses a 960x540 logical macOS
+window, which is a 1920x1080 Retina framebuffer, fixed exposure -0.62 EV, the
+gameplay-planet preset, free-flight camera locking, eight timing warm-up frames,
+and 31 measured frames. Automated launches explicitly disable captured-mouse
+input; synthetic GLFW cursor movement must never perturb the requested pose.
+Each run writes RGB PPM, real-geometry depth PGM, exact launch values, image
+statistics, lookup revisions, allocation, dispatch counts, timing median/p95/
+maximum, and deterministic CPU or CPU/GPU probes.
+
+The baseline renderer provenance is the qualified-baseline transport frozen at
+commit `7cde143`; Gate H harness additions do not change that transport branch.
+On the qualification machine, an exact rerun must reproduce these RGB hashes:
+
+| View | Camera feet | Yaw / pitch | Sun azimuth / elevation | RGB hash |
+| --- | --- | --- | --- | ---: |
+| Ground | 0.5, 0.72, 0.78 | 180 / -14.3239 | -103.1324 / 5 | 1017618018756611780 |
+| Noon | 0.5, 0.72, 0.78 | 180 / -14.3239 | -103.1324 / 60 | 15212081441207868440 |
+| Sunset | 0.5, 0.72, 0.78 | 180 / -8 | -103.1324 / 1 | 15176623370563764336 |
+| Mountain shadow | 0.5, 0.72, 0.78 | 180 / -6 | -75 / 5 | 633643013591238589 |
+| Flight | 0.5, 100.5, 0.78 | 180 / -5 | -103.1324 / 25 | 183239760964395729 |
+| Limb | 0.5, 5000.5, 0.5 | 180 / -38.5 | -103.1324 / 10 | 10939517008660135268 |
+| Orbit | 0.5, 25000.5, 0.5 | 180 / -88 | -103.1324 / 35 | 8557311184167545749 |
+| Terminator | 0.5, 25000.5, 0.5 | 180 / -88 | 90 / 0 | 63645154188428305 |
+
+The same run measured 34,623,488 atmosphere bytes and 49,766,400 scene-target
+bytes. Baseline median pass times in milliseconds were:
+
+| View | Shadows | Atmosphere | Terrain | Composite |
+| --- | ---: | ---: | ---: | ---: |
+| Ground | 1.471 | 0.004 | 2.957 | 0.260 |
+| Noon | 2.314 | 0.004 | 3.287 | 0.323 |
+| Sunset | 2.324 | 0.006 | 3.226 | 0.323 |
+| Mountain shadow | 2.313 | 0.004 | 2.555 | 0.322 |
+| Flight | 2.303 | 0.006 | 3.072 | 0.308 |
+| Limb | 1.109 | 0.006 | 2.733 | 0.389 |
+| Orbit | 0.513 | 0.006 | 1.854 | 1.205 |
+| Terminator | 0.513 | 0.006 | 1.856 | 1.493 |
+
+Image comparisons use four explicit masks: full frame; real geometry where
+reversed depth is greater than 1e-8; clear depth as its complement; and a
+three-pixel silhouette band formed by dilating both sides of the depth-mask
+boundary. Ground/flight horizon checks additionally use the middle 20 percent
+of image height, while limb/orbit checks use the silhouette band. Same-driver
+baseline runs require an exact hash. Cross-driver and external-reference runs
+permit full/masked RGB mean absolute error up to 2/255, RMS up to 4/255, and a
+silhouette-band luminance mean error up to 3/255; no mask may hide non-finite,
+black, clipped, or discontinuous output. Bruneton and Wilkie provenance and
+their domain-overlap tolerances remain the separate H8 acceptance criterion.
 
 ## 12. Post-implementation research reassessment
 
@@ -711,10 +764,10 @@ accepted until its dependencies and exit criteria pass in release mode.
 
 #### H0: Freeze the baseline and reference contract
 
-- [ ] Capture the current qualified Default at fixed exposure for ground, limb,
+- [x] Capture the current qualified Default at fixed exposure for ground, limb,
       flight, orbit, noon, sunset, terminator, and mountain-shadow views; record
       per-pass time, memory, lookup revisions, and numeric CPU probes.
-- [ ] Define physical coordinates, expected values, absolute/relative error
+- [x] Define physical coordinates, expected values, absolute/relative error
       tolerances, image masks, and reference provenance for every golden probe.
 - [x] Add an experimental transport selector so the qualified baseline remains
       usable and directly comparable throughout H1-H8.
@@ -781,8 +834,9 @@ directional, and terrain lighting contains no undocumented compensation term.
 
 - [x] Bound local/flight froxels using visible distance, altitude, density scale,
       and a documented precision target rather than one fixed 200 km volume.
-- [x] Add a deterministic screen-space atmosphere march for long and orbital
-      paths, with an explicit overlap band and continuous regime selection.
+- [x] Add deterministic long-path orbital transport with an explicit overlap
+      band and continuous regime selection. Reuse the shadowed full-sky
+      integration rather than repeating its march per full-resolution pixel.
 - [x] Remove `max(scattering, directional_airlight)` and replace its source-
       string assertion with distance, silhouette, chromaticity, and continuity
       probes that fail on under-resolved haze.
@@ -793,7 +847,7 @@ crossing the handoff produces no luminance, colour, depth, or temporal seam.
 #### H7: Reintegrate terrain shadows
 
 - [x] Apply the shared cascaded visibility only to direct solar in-scattering in
-      both local froxels and the long-path march, preserving unshadowed higher-
+      both local froxels and the long-path lookup, preserving unshadowed higher-
       order fill and generation compatibility.
 - [ ] Test ridges inside, across, and beyond cascades at noon and low sun; measure
       bias, filtering, cascade blending, off-screen caster guards, and motion.

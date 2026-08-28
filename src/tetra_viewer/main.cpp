@@ -25,6 +25,7 @@
 #include "tetra_viewer/atmosphere.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
+#include "tetra_viewer/image_oracle.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
@@ -552,8 +553,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     }
     std::size_t geometry_worker_count=tetra::default_geometry_worker_count();
     constexpr std::string_view geometry_workers_prefix="--geometry-workers=";
+    constexpr std::string_view window_size_prefix="--window-size=";
+    std::array<std::uint32_t,2> initial_window_size{1280U,800U};
     for(int argument=1;argument<argc;++argument){
         const std::string_view value=argv[argument];
+        if(value.starts_with(window_size_prefix)){
+            const auto extent=tetra_viewer::parse_pixel_extent(
+                value.substr(window_size_prefix.size()));
+            if(!extent){
+                fprintf(stderr,"window size must be WIDTHxHEIGHT in [64,8192]\n");
+                return 2;
+            }
+            initial_window_size=*extent;
+            continue;
+        }
         if(!value.starts_with(geometry_workers_prefix))continue;
         const auto count=value.substr(geometry_workers_prefix.size());
         const std::string count_text(count);
@@ -593,7 +606,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     // Create window with Vulkan context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(
-        1280,800,world_mode?"Tetra World":"Tetrahedral refinement",nullptr,nullptr);
+        static_cast<int>(initial_window_size[0]),
+        static_cast<int>(initial_window_size[1]),
+        world_mode?"Tetra World":"Tetrahedral refinement",nullptr,nullptr);
     if (argc > 1 && (strcmp(argv[1], "--whole-cell-check") == 0 ||
                     strcmp(argv[1], "--whole-cell-cutaway-check") == 0))
         glfwSetWindowPos(window, 20, 40);
@@ -1014,6 +1029,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_gpu_atmosphere_capture_submitted=false;
     bool world_gpu_atmosphere_resize_check=false;
     bool world_gpu_atmosphere_resize_requested=false;
+    bool world_gpu_automation_requested=false;
+    std::size_t world_gpu_benchmark_warmup_frames{};
+    std::array<std::vector<double>,4> world_gpu_benchmark_samples;
+    std::array<double,4> world_gpu_refresh_maximum{};
     std::size_t world_gpu_pre_resize_scene_bytes{};
     int world_process_exit_code{};
     double world_cursor_x{},world_cursor_y{};
@@ -1162,6 +1181,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 g_AtmosphereFrame.transport=*transport;
             }
         }
+        world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
+            world_gpu_atmosphere_probe||
+            !world_gpu_atmosphere_capture_path.empty();
         if(g_AtmosphereFrame.quality!=
            tetra_viewer::AtmosphereQuality::standard){
             g_SceneRenderer.recreate(
@@ -1190,7 +1212,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         world_lod_camera=camera;
         world_runtime_startup=
             tetra_viewer::make_production_terrain_runtime_async(profile);
-        glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_DISABLED);
+        world_pointer_captured=!world_gpu_automation_requested;
+        glfwSetInputMode(window,GLFW_CURSOR,world_pointer_captured?
+            GLFW_CURSOR_DISABLED:GLFW_CURSOR_NORMAL);
         glfwGetCursorPos(window,&world_cursor_x,&world_cursor_y);
         view_camera_position=world_controller.eye_position();
         depth_colours=false;
@@ -3445,11 +3469,49 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                        g_SceneRenderer.scene_target_allocation_bytes()==
                            world_gpu_pre_resize_scene_bytes)
                         continue;
+                    const std::array values{
+                        timing.shadows_milliseconds,
+                        timing.atmosphere_milliseconds,
+                        timing.terrain_milliseconds,
+                        timing.composite_milliseconds};
+                    constexpr std::size_t warmup_frames=8U;
+                    constexpr std::size_t measured_frames=31U;
+                    if(world_gpu_benchmark_warmup_frames<warmup_frames){
+                        for(std::size_t pass=0;pass<values.size();++pass)
+                            world_gpu_refresh_maximum[pass]=std::max(
+                                world_gpu_refresh_maximum[pass],values[pass]);
+                        ++world_gpu_benchmark_warmup_frames;
+                        continue;
+                    }
+                    for(std::size_t pass=0;pass<values.size();++pass)
+                        world_gpu_benchmark_samples[pass].push_back(values[pass]);
+                    if(world_gpu_benchmark_samples[0].size()<measured_frames)
+                        continue;
+                    std::array<tetra_viewer::ScalarSampleSummary,4> summaries{};
+                    for(std::size_t pass=0;pass<summaries.size();++pass)
+                        summaries[pass]=*tetra_viewer::summarize_samples(
+                            world_gpu_benchmark_samples[pass]);
+                    const auto write_pass=[&](std::string_view name,
+                                               std::size_t pass){
+                        std::cout<<"\""<<name<<"\":{\"median_ms\":"
+                            <<summaries[pass].median<<",\"p95_ms\":"
+                            <<summaries[pass].percentile_95
+                            <<",\"maximum_ms\":"<<summaries[pass].maximum
+                            <<",\"initial_refresh_maximum_ms\":"
+                            <<world_gpu_refresh_maximum[pass]<<'}';
+                    };
                     std::cout<<"{\"event\":\"gpu_atmosphere_benchmark\","
-                        <<"\"shadows_ms\":"<<timing.shadows_milliseconds<<','
-                        <<"\"atmosphere_ms\":"<<timing.atmosphere_milliseconds<<','
-                        <<"\"terrain_ms\":"<<timing.terrain_milliseconds<<','
-                        <<"\"composite_ms\":"<<timing.composite_milliseconds<<','
+                        <<"\"sample_count\":"<<measured_frames<<','
+                        <<"\"warmup_frames\":"<<warmup_frames<<','
+                        <<"\"shadows_ms\":"<<summaries[0].median<<','
+                        <<"\"atmosphere_ms\":"<<summaries[1].median<<','
+                        <<"\"terrain_ms\":"<<summaries[2].median<<','
+                        <<"\"composite_ms\":"<<summaries[3].median<<',';
+                    write_pass("shadows",0U);std::cout<<',';
+                    write_pass("atmosphere",1U);std::cout<<',';
+                    write_pass("terrain",2U);std::cout<<',';
+                    write_pass("composite",3U);std::cout<<',';
+                    std::cout
                         <<"\"atmosphere_bytes\":"
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
@@ -3470,7 +3532,6 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(world_gpu_atmosphere_resize_check?"true":"false")
                         <<"}\n";
                     world_gpu_atmosphere_benchmark=false;
-                    glfwSetWindowShouldClose(window,GLFW_TRUE);
                 }
             }
             if(world_gpu_atmosphere_probe&&world_runtime&&
@@ -3543,43 +3604,122 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 std::cout<<"]}\n";
                 world_process_exit_code=report.passed?0:3;
                 world_gpu_atmosphere_probe=false;
-                glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
             if(world_gpu_atmosphere_capture_submitted&&
                g_SceneRenderer.latest_capture().valid){
                 const auto& capture=g_SceneRenderer.latest_capture();
-                std::ofstream image(world_gpu_atmosphere_capture_path,
-                                    std::ios::binary);
-                if(!image){
-                    std::cerr<<"could not open GPU atmosphere capture path\n";
+                tetra_viewer::Rgb8Image image;
+                std::vector<std::uint8_t> depth_mask;
+                std::string image_error;
+                auto depth_mask_path=std::filesystem::path(
+                    world_gpu_atmosphere_capture_path);
+                depth_mask_path.replace_extension(".depth.pgm");
+                if(!tetra_viewer::make_rgb8_image(
+                       capture.pixels,capture.width,capture.height,
+                       capture.bgra,false,image,image_error)||
+                   !tetra_viewer::write_ppm(
+                       world_gpu_atmosphere_capture_path,image,image_error)||
+                   !tetra_viewer::make_reversed_depth_mask(
+                       capture.reversed_depth,capture.width,capture.height,
+                       depth_mask,image_error)||
+                   !tetra_viewer::write_pgm(
+                       depth_mask_path.string(),capture.width,capture.height,
+                       depth_mask,image_error)){
+                    std::cerr<<"could not write GPU atmosphere capture: "
+                             <<image_error<<'\n';
                     world_process_exit_code=2;
                 }else{
-                    image<<"P6\n"<<capture.width<<' '<<capture.height<<"\n255\n";
-                    std::uint64_t hash=1469598103934665603ULL;
-                    for(std::size_t pixel=0;
-                        pixel<capture.pixels.size()/4U;++pixel){
-                        const std::size_t offset=pixel*4U;
-                        const std::array<std::uint8_t,3> rgb{
-                            capture.pixels[offset+(capture.bgra?2U:0U)],
-                            capture.pixels[offset+1U],
-                            capture.pixels[offset+(capture.bgra?0U:2U)]};
-                        image.write(reinterpret_cast<const char*>(rgb.data()),
-                                    static_cast<std::streamsize>(rgb.size()));
-                        for(const auto value:rgb){hash^=value;hash*=1099511628211ULL;}
+                    const auto analysis=tetra_viewer::analyse_rgb8_image(image);
+                    const auto quality_name=[&]{
+                        switch(g_AtmosphereFrame.quality){
+                        case tetra_viewer::AtmosphereQuality::low:return "low";
+                        case tetra_viewer::AtmosphereQuality::standard:
+                            return "default";
+                        case tetra_viewer::AtmosphereQuality::high:return "high";
+                        }
+                        return "unknown";
+                    }();
+                    std::cout<<"{\"event\":\"gpu_atmosphere_capture\","
+                             <<"\"path\":\""
+                             <<world_gpu_atmosphere_capture_path
+                             <<"\",\"depth_mask_path\":\""
+                             <<depth_mask_path.string()
+                             <<"\",\"width\":"<<capture.width
+                             <<",\"height\":"<<capture.height
+                             <<",\"rgb_hash\":"
+                             <<tetra_viewer::rgb8_hash(image)
+                             <<",\"transport\":\""
+                             <<tetra_viewer::atmosphere_transport_name(
+                                   g_AtmosphereFrame.transport)
+                             <<"\",\"quality\":\""<<quality_name
+                             <<"\",\"preset\":\""
+                             <<tetra_viewer::atmosphere_preset_name(
+                                   world_atmosphere_preset)
+                             <<"\",\"exposure_ev\":"<<world_exposure_ev
+                             <<",\"camera_feet\":["
+                             <<world_controller.state().feet.x<<','
+                             <<world_controller.state().feet.y<<','
+                             <<world_controller.state().feet.z
+                             <<"],\"camera_yaw_degrees\":"
+                             <<world_controller.state().yaw*180.0/
+                                   std::numbers::pi
+                             <<",\"camera_pitch_degrees\":"
+                             <<world_controller.state().pitch*180.0/
+                                   std::numbers::pi
+                             <<",\"sun_azimuth_degrees\":"
+                             <<world_sun_azimuth*180.0F/
+                                   static_cast<float>(std::numbers::pi)
+                             <<",\"sun_elevation_degrees\":"
+                             <<world_sun_elevation*180.0F/
+                                   static_cast<float>(std::numbers::pi)
+                             <<",\"analysis\":{\"minimum\":["
+                             <<static_cast<unsigned>(analysis.minimum[0])<<','
+                             <<static_cast<unsigned>(analysis.minimum[1])<<','
+                             <<static_cast<unsigned>(analysis.minimum[2])
+                             <<"],\"maximum\":["
+                             <<static_cast<unsigned>(analysis.maximum[0])<<','
+                             <<static_cast<unsigned>(analysis.maximum[1])<<','
+                             <<static_cast<unsigned>(analysis.maximum[2])
+                             <<"],\"luminance_mean\":"
+                             <<analysis.luminance_mean
+                             <<",\"luminance_standard_deviation\":"
+                             <<analysis.luminance_standard_deviation
+                             <<",\"black_fraction\":"
+                             <<analysis.black_fraction
+                             <<",\"clipped_fraction\":"
+                             <<analysis.clipped_fraction
+                             <<",\"geometry_fraction\":"
+                             <<static_cast<double>(std::ranges::count_if(
+                                   depth_mask,[](std::uint8_t value){
+                                     return value!=0U;}))/
+                                   static_cast<double>(depth_mask.size())
+                             <<'}';
+                    const auto& revisions=
+                        g_SceneRenderer.latest_atmosphere_lookup_revisions();
+                    if(revisions){
+                        std::cout<<",\"lookup_revisions\":{\"optical\":"
+                                 <<revisions->optical.value
+                                 <<",\"scattering\":"
+                                 <<revisions->scattering.value
+                                 <<",\"sun\":"<<revisions->sun.value
+                                 <<",\"camera_position\":"
+                                 <<revisions->camera_position.value
+                                 <<",\"sky_position\":"
+                                 <<revisions->sky_position.value
+                                 <<",\"camera_orientation\":"
+                                 <<revisions->camera_orientation.value
+                                 <<",\"shadow\":"<<revisions->shadow.value
+                                 <<",\"render_origin\":"
+                                 <<revisions->render_origin.value<<'}';
                     }
-                    if(!image){
-                        std::cerr<<"could not write GPU atmosphere capture\n";
-                        world_process_exit_code=2;
-                    }else{
-                        std::cout<<"{\"event\":\"gpu_atmosphere_capture\","
-                                 <<"\"path\":\""
-                                 <<world_gpu_atmosphere_capture_path
-                                 <<"\",\"width\":"<<capture.width
-                                 <<",\"height\":"<<capture.height
-                                 <<",\"rgb_hash\":"<<hash<<"}\n";
-                    }
+                    std::cout<<"}\n";
                 }
                 world_gpu_atmosphere_capture_path.clear();
+            }
+            if(world_gpu_automation_requested&&
+               !world_gpu_atmosphere_benchmark&&
+               !world_gpu_atmosphere_probe&&
+               world_gpu_atmosphere_capture_path.empty()){
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
         }

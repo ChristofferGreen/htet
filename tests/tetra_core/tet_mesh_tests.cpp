@@ -16,6 +16,7 @@
 #include "tetra_viewer/atmosphere.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
+#include "tetra_viewer/image_oracle.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
@@ -13839,6 +13840,103 @@ TEST_CASE("headless renderer writes a deterministic comparison image") {
   image.read(magic.data(), static_cast<std::streamsize>(magic.size()));
   CHECK(magic == std::array<char, 2>{{'P', '6'}});
   image.close();
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("GPU capture conversion canonicalizes channel order and row direction") {
+  // Top row is red/green and bottom row is blue/white in canonical RGB order.
+  const std::array<std::uint8_t,16> rgba{
+      255,0,0,9, 0,255,0,9, 0,0,255,9, 255,255,255,9};
+  const std::array<std::uint8_t,16> bgra_bottom_up{
+      255,0,0,9, 255,255,255,9, 0,0,255,9, 0,255,0,9};
+  tetra_viewer::Rgb8Image rgba_image,bgra_image;
+  std::string error;
+  REQUIRE(tetra_viewer::make_rgb8_image(
+      rgba,2U,2U,false,false,rgba_image,error));
+  REQUIRE(tetra_viewer::make_rgb8_image(
+      bgra_bottom_up,2U,2U,true,true,bgra_image,error));
+  CHECK(rgba_image.pixels==bgra_image.pixels);
+  CHECK(rgba_image.pixels==std::vector<std::uint8_t>{
+      255,0,0,0,255,0,0,0,255,255,255,255});
+  CHECK(tetra_viewer::rgb8_hash(rgba_image)==
+        tetra_viewer::rgb8_hash(bgra_image));
+
+  tetra_viewer::Rgb8Image invalid;
+  CHECK_FALSE(tetra_viewer::make_rgb8_image(
+      std::span<const std::uint8_t>{rgba}.first(15),2U,2U,false,false,
+      invalid,error));
+  CHECK(error.find("source size")!=std::string::npos);
+
+  CHECK(tetra_viewer::parse_pixel_extent("960x540")==
+        std::optional{std::array<std::uint32_t,2>{960U,540U}});
+  CHECK_FALSE(tetra_viewer::parse_pixel_extent("960X540"));
+  CHECK_FALSE(tetra_viewer::parse_pixel_extent("0x540"));
+  CHECK_FALSE(tetra_viewer::parse_pixel_extent("960x9000"));
+
+  const std::array<double,5> samples{9.0,1.0,5.0,3.0,7.0};
+  const auto summary=tetra_viewer::summarize_samples(samples);
+  REQUIRE(summary);
+  CHECK(summary->minimum==1.0);
+  CHECK(summary->median==5.0);
+  CHECK(summary->percentile_95==doctest::Approx(8.6));
+  CHECK(summary->maximum==9.0);
+  CHECK_FALSE(tetra_viewer::summarize_samples(
+      std::array<double,1>{std::numeric_limits<double>::infinity()}));
+}
+
+TEST_CASE("RGB image oracle round trips PPM and supports masked comparisons") {
+  tetra_viewer::Rgb8Image reference{
+      2U,2U,{0,0,0, 32,64,96, 128,160,192, 255,255,255}};
+  const auto path=std::filesystem::temp_directory_path()/
+      "tetra-atmosphere-image-oracle.ppm";
+  std::filesystem::remove(path);
+  std::string error;
+  REQUIRE(tetra_viewer::write_ppm(path.string(),reference,error));
+  tetra_viewer::Rgb8Image loaded;
+  REQUIRE(tetra_viewer::read_ppm(path.string(),loaded,error));
+  CHECK(loaded.width==reference.width);
+  CHECK(loaded.height==reference.height);
+  CHECK(loaded.pixels==reference.pixels);
+  const auto analysis=tetra_viewer::analyse_rgb8_image(loaded);
+  CHECK(analysis.sampled_pixels==4U);
+  CHECK(analysis.minimum==std::array<std::uint8_t,3>{0,0,0});
+  CHECK(analysis.maximum==std::array<std::uint8_t,3>{255,255,255});
+  CHECK(analysis.black_fraction==doctest::Approx(0.25));
+  CHECK(analysis.clipped_fraction==doctest::Approx(0.25));
+  CHECK(analysis.luminance_standard_deviation>0.3);
+
+  auto candidate=reference;
+  candidate.pixels[0]=255U;
+  tetra_viewer::Rgb8ImageComparison comparison;
+  const std::array<std::uint8_t,4> exclude_first{0,1,1,1};
+  REQUIRE(tetra_viewer::compare_rgb8_images(
+      reference,candidate,comparison,error,exclude_first));
+  CHECK(comparison.changed_fraction==0.0);
+  const std::array<std::uint8_t,4> only_first{1,0,0,0};
+  REQUIRE(tetra_viewer::compare_rgb8_images(
+      reference,candidate,comparison,error,only_first));
+  CHECK(comparison.changed_fraction==1.0);
+  CHECK(comparison.maximum_absolute_error==
+        std::array<std::uint8_t,3>{255,0,0});
+  CHECK(comparison.mean_absolute_error[0]==doctest::Approx(1.0));
+  std::vector<std::uint8_t> depth_mask;
+  REQUIRE(tetra_viewer::make_reversed_depth_mask(
+      std::array<float,4>{0.0F,1.0F,0.5F,1.0e-9F},2U,2U,
+      depth_mask,error));
+  CHECK(depth_mask==std::vector<std::uint8_t>{0,255,255,0});
+  auto invalid_depth=std::array<float,4>{0.0F,1.0F,0.5F,2.0F};
+  CHECK_FALSE(tetra_viewer::make_reversed_depth_mask(
+      invalid_depth,2U,2U,depth_mask,error));
+  CHECK(error.find("out-of-range")!=std::string::npos);
+  const auto mask_path=std::filesystem::temp_directory_path()/
+      "tetra-atmosphere-image-oracle.pgm";
+  REQUIRE(tetra_viewer::make_reversed_depth_mask(
+      std::array<float,4>{0.0F,1.0F,0.5F,1.0e-9F},2U,2U,
+      depth_mask,error));
+  REQUIRE(tetra_viewer::write_pgm(
+      mask_path.string(),2U,2U,depth_mask,error));
+  CHECK(std::filesystem::file_size(mask_path)==15U);
+  std::filesystem::remove(mask_path);
   std::filesystem::remove(path);
 }
 

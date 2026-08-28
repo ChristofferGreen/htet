@@ -43,6 +43,7 @@ struct AtmosphereGpuProbe {
 
 struct SceneCapture {
   std::vector<std::uint8_t> pixels;
+  std::vector<float> reversed_depth;
   std::uint32_t width{};
   std::uint32_t height{};
   bool bgra{};
@@ -97,6 +98,10 @@ class SceneRenderer {
       const noexcept { return latest_atmosphere_probe_; }
   [[nodiscard]] const SceneCapture& latest_capture() const noexcept {
     return latest_capture_;
+  }
+  [[nodiscard]] const std::optional<AtmosphereLookupRevisions>&
+  latest_atmosphere_lookup_revisions() const noexcept {
+    return atmosphere_lookups_.lookup_revisions;
   }
   // camera_data is a column-major view-projection matrix followed by the
   // legacy diagnostic light, rendering parameters, and relative view point.
@@ -196,6 +201,8 @@ class SceneRenderer {
     VkImageView view{VK_NULL_HANDLE};
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory buffer_memory{VK_NULL_HANDLE};
+    VkBuffer depth_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory depth_buffer_memory{VK_NULL_HANDLE};
     bool initialized{};
     bool pending{};
   };
