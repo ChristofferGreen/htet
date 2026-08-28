@@ -14437,6 +14437,70 @@ TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and loc
   CHECK(bounded[2]==doctest::Approx(1.0));
 }
 
+TEST_CASE("double precision multiple scattering oracle covers physical regimes") {
+  using tetra_viewer::AtmospherePreset;
+  const auto finite_nonnegative=[](const tetra_viewer::AtmosphereSpectrum& v){
+    return std::ranges::all_of(v,[](double x){
+      return std::isfinite(x)&&x>=0.0;
+    });
+  };
+
+  auto vacuum=tetra_viewer::atmosphere_preset(AtmospherePreset::earth);
+  vacuum.rayleigh_scattering_per_metre={0.0,0.0,0.0};
+  vacuum.mie_scattering_per_metre={0.0,0.0,0.0};
+  vacuum.mie_absorption_per_metre={0.0,0.0,0.0};
+  vacuum.absorption_per_metre={0.0,0.0,0.0};
+  vacuum.ground_albedo={0.0,0.0,0.0};
+  const auto empty=tetra_viewer::atmosphere_multiple_scattering_reference(
+      vacuum,1000.0,0.5,16U,8U);
+  CHECK((empty.second_order==tetra_viewer::AtmosphereSpectrum{}));
+  CHECK((empty.transfer_factor==tetra_viewer::AtmosphereSpectrum{}));
+  CHECK((empty.closed_contribution==tetra_viewer::AtmosphereSpectrum{}));
+
+  auto absorption_only=vacuum;
+  absorption_only.mie_absorption_per_metre={1.0e-4,2.0e-4,3.0e-4};
+  const auto absorbed=tetra_viewer::atmosphere_multiple_scattering_reference(
+      absorption_only,1000.0,0.5,16U,8U);
+  CHECK((absorbed.second_order==tetra_viewer::AtmosphereSpectrum{}));
+  CHECK((absorbed.transfer_factor==tetra_viewer::AtmosphereSpectrum{}));
+
+  const auto earth=tetra_viewer::atmosphere_preset(AtmospherePreset::earth);
+  const auto reference=tetra_viewer::atmosphere_multiple_scattering_reference(
+      earth,1000.0,0.5,64U,20U);
+  CHECK(finite_nonnegative(reference.second_order));
+  CHECK(finite_nonnegative(reference.transfer_factor));
+  CHECK(finite_nonnegative(reference.closed_contribution));
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(reference.transfer_factor[channel]<1.0);
+    CHECK(reference.closed_contribution[channel]>=reference.second_order[channel]);
+  }
+
+  auto thick=earth;
+  for(auto& value:thick.rayleigh_scattering_per_metre)value*=20.0;
+  for(auto& value:thick.mie_scattering_per_metre)value*=20.0;
+  const auto thick_reference=
+      tetra_viewer::atmosphere_multiple_scattering_reference(
+          thick,1000.0,0.1,32U,12U);
+  CHECK(finite_nonnegative(thick_reference.closed_contribution));
+  CHECK(*std::max_element(thick_reference.closed_contribution.begin(),
+                          thick_reference.closed_contribution.end())<1000.0);
+
+  for(const auto preset:{AtmospherePreset::gameplay_planet,
+                         AtmospherePreset::mars_like,
+                         AtmospherePreset::dense_haze,
+                         AtmospherePreset::nearly_airless}){
+    const auto parameters=tetra_viewer::atmosphere_preset(preset);
+    const auto low=tetra_viewer::atmosphere_multiple_scattering_reference(
+        parameters,parameters.atmosphere_height_metres*0.05,0.25,16U,8U);
+    const auto high=tetra_viewer::atmosphere_multiple_scattering_reference(
+        parameters,parameters.atmosphere_height_metres*0.9,0.25,16U,8U);
+    CHECK(finite_nonnegative(low.closed_contribution));
+    CHECK(finite_nonnegative(high.closed_contribution));
+    for(const double transfer:low.transfer_factor)CHECK(transfer<1.0);
+    for(const double transfer:high.transfer_factor)CHECK(transfer<1.0);
+  }
+}
+
 TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
   constexpr double maximum_distance=200'000.0;
   constexpr double default_depth_slices=16.0;

@@ -183,6 +183,12 @@ struct AtmosphereTransmittanceParameters {
   double zenith_cosine{1.0};
 };
 
+struct AtmosphereMultipleScatteringReference {
+  AtmosphereSpectrum second_order{};
+  AtmosphereSpectrum transfer_factor{};
+  AtmosphereSpectrum closed_contribution{};
+};
+
 [[nodiscard]] AtmosphereParameters atmosphere_preset(AtmospherePreset preset);
 [[nodiscard]] std::optional<AtmospherePreset> parse_atmosphere_preset(
     std::string_view name);
@@ -229,6 +235,11 @@ atmosphere_transmittance_parameters(
 [[nodiscard]] AtmosphereSpectrum atmosphere_multiple_scattering_closure(
     const AtmosphereSpectrum& second_order,
     const AtmosphereSpectrum& transfer_factor) noexcept;
+[[nodiscard]] AtmosphereMultipleScatteringReference
+atmosphere_multiple_scattering_reference(
+    const AtmosphereParameters& parameters, double altitude_metres,
+    double sun_zenith_cosine, std::size_t direction_count=64U,
+    std::size_t ray_steps=20U);
 // Cubic aerial-volume depth distribution: resolves local paths without giving
 // up the finite ground-to-space extent or changing the physical atmosphere.
 [[nodiscard]] double aerial_lut_distance(double slice,

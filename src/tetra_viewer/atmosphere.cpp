@@ -556,6 +556,98 @@ AtmosphereSpectrum atmosphere_multiple_scattering_closure(
   return result;
 }
 
+AtmosphereMultipleScatteringReference
+atmosphere_multiple_scattering_reference(
+    const AtmosphereParameters& parameters, double altitude,
+    double sun_zenith_cosine, std::size_t direction_count,
+    std::size_t ray_steps) {
+  AtmosphereMultipleScatteringReference result;
+  if(validate_atmosphere(parameters)||!std::isfinite(altitude)||
+     !std::isfinite(sun_zenith_cosine))return result;
+  altitude=std::clamp(altitude,0.0,parameters.atmosphere_height_metres);
+  sun_zenith_cosine=std::clamp(sun_zenith_cosine,-1.0,1.0);
+  direction_count=std::clamp<std::size_t>(direction_count,1U,4096U);
+  ray_steps=std::clamp<std::size_t>(ray_steps,1U,4096U);
+  const tetra::Vec3 origin{0.0,parameters.ground_radius_metres+altitude,0.0};
+  const tetra::Vec3 sun_direction{
+      std::sqrt(std::max(0.0,1.0-sun_zenith_cosine*sun_zenith_cosine)),
+      sun_zenith_cosine,0.0};
+  const AtmosphereSpectrum zero{};
+  const auto sun_transmittance=[&](tetra::Vec3 point){
+    if(const auto ground=sphere_roots(point,sun_direction,
+                                      parameters.ground_radius_metres))
+      for(const double root:*ground)if(root>1.0e-5)return zero;
+    const auto segment=atmosphere_ray_segment(point,sun_direction,parameters);
+    if(!segment)return AtmosphereSpectrum{1.0,1.0,1.0};
+    return atmosphere_transmittance(
+        point+sun_direction*segment->begin_metres,
+        point+sun_direction*segment->end_metres,parameters,64U);
+  };
+
+  for(std::size_t direction_index=0;direction_index<direction_count;
+      ++direction_index){
+    const double y=1.0-2.0*(static_cast<double>(direction_index)+0.5)/
+        static_cast<double>(direction_count);
+    const double angle=static_cast<double>(direction_index)*2.399963229728653;
+    const double radial=std::sqrt(std::max(0.0,1.0-y*y));
+    const tetra::Vec3 direction{radial*std::cos(angle),y,
+                                radial*std::sin(angle)};
+    const auto segment=atmosphere_ray_segment(origin,direction,parameters);
+    if(!segment)continue;
+    const double step_length=(segment->end_metres-segment->begin_metres)/
+        static_cast<double>(ray_steps);
+    AtmosphereSpectrum view_transmittance{1.0,1.0,1.0};
+    for(std::size_t step=0;step<ray_steps;++step){
+      const double distance=segment->begin_metres+
+          (static_cast<double>(step)+0.5)*step_length;
+      const tetra::Vec3 point=origin+direction*distance;
+      const double local_altitude=length(point)-
+          parameters.ground_radius_metres;
+      const double rayleigh=atmosphere_rayleigh_density(
+          local_altitude,parameters);
+      const double mie=atmosphere_mie_density(local_altitude,parameters);
+      const double absorption=atmosphere_absorption_density(
+          local_altitude,parameters);
+      const auto solar=sun_transmittance(point);
+      for(std::size_t channel=0;channel<3U;++channel){
+        const double scattering=
+            parameters.rayleigh_scattering_per_metre[channel]*rayleigh+
+            parameters.mie_scattering_per_metre[channel]*mie;
+        const double extinction=scattering+
+            parameters.mie_absorption_per_metre[channel]*mie+
+            parameters.absorption_per_metre[channel]*absorption;
+        const double segment_transmittance=
+            std::exp(-std::max(0.0,extinction)*step_length);
+        const double integral=extinction>1.0e-15?
+            (1.0-segment_transmittance)/extinction:step_length;
+        result.second_order[channel]+=view_transmittance[channel]*
+            scattering*solar[channel]*integral/(4.0*std::numbers::pi);
+        result.transfer_factor[channel]+=view_transmittance[channel]*
+            scattering*integral;
+        view_transmittance[channel]*=segment_transmittance;
+      }
+    }
+
+    const tetra::Vec3 endpoint=origin+direction*segment->end_metres;
+    if(length(endpoint)<=parameters.ground_radius_metres+5.0){
+      const tetra::Vec3 normal=normalized(endpoint);
+      const auto solar=sun_transmittance(endpoint+normal*1.0e-3);
+      const double n_dot_l=std::max(0.0,dot(normal,sun_direction));
+      for(std::size_t channel=0;channel<3U;++channel)
+        result.second_order[channel]+=view_transmittance[channel]*
+            parameters.ground_albedo[channel]*solar[channel]*n_dot_l/
+            std::numbers::pi;
+    }
+  }
+  for(std::size_t channel=0;channel<3U;++channel){
+    result.second_order[channel]/=static_cast<double>(direction_count);
+    result.transfer_factor[channel]/=static_cast<double>(direction_count);
+  }
+  result.closed_contribution=atmosphere_multiple_scattering_closure(
+      result.second_order,result.transfer_factor);
+  return result;
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||
