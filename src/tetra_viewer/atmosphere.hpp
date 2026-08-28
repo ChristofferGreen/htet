@@ -269,7 +269,11 @@ struct AtmosphereScatteringReference {
   AtmosphereSpectrum transmittance{1.0,1.0,1.0};
 };
 
-inline constexpr std::size_t atmosphere_numeric_probe_value_count=10U;
+inline constexpr std::size_t atmosphere_boundary_probe_case_count=7U;
+inline constexpr std::size_t atmosphere_numeric_probe_base_value_count=10U;
+inline constexpr std::size_t atmosphere_numeric_probe_value_count=
+    atmosphere_numeric_probe_base_value_count+
+    atmosphere_boundary_probe_case_count*3U;
 using AtmosphereNumericProbeValue=std::array<double,4>;
 using AtmosphereNumericProbeValues=
     std::array<AtmosphereNumericProbeValue,atmosphere_numeric_probe_value_count>;

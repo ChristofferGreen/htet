@@ -402,9 +402,19 @@ the nearest cubic-depth slice to half range; independent aerial values use the
 camera-forward ray at exactly half the current local range. All positions and
 distances are SI metres from planet centre.
 
+The H2 boundary extension additionally probes ground-up, ground-tangent,
+one-metre geometric-horizon, mid-atmosphere horizontal and upward, and
+top-boundary inward and outward rays. Each case reads back mapping and inverse,
+interpolated lookup transmittance, and an independent direct GPU integral. The
+faithful transmittance grid includes exact coordinate endpoints; its optical
+quadrature splits at closest approach and concentrates intervals toward the
+density maximum. Tangential contact remains in atmosphere, while only a strict
+surface crossing terminates a ray.
+
 | Stage | Absolute floor | Relative allowance |
 | --- | ---: | ---: |
 | Transmittance lookup/direct | 0.002 | 2% |
+| Boundary transmittance lookup interpolation | 0.002 | 8% |
 | Multiple-scattering incident radiance | 0.0002 | 15% |
 | Full-sky and direct aerial radiance | 0.0005 | 15% |
 | Sky irradiance | 0.00075 | 20% |
@@ -728,7 +738,7 @@ sun motion, translation, rotation, rebasing, shadow changes, and frame buffering
 
 - [x] Specify one invertible Bruneton/Hillaire transmittance mapping and one
       nonlinear horizon-concentrated sky mapping in shared CPU/shader math.
-- [ ] Replace linear lookup coordinates in every producer and consumer; add
+- [x] Replace linear lookup coordinates in every producer and consumer; add
       round-trip, boundary, grazing-ray, monotonicity, and CPU/GPU parity probes.
 
 Exit: mappings are finite and continuous at ground and atmosphere boundaries,

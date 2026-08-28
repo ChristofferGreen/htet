@@ -8,7 +8,7 @@ layout(rgba16f,set=0,binding=3) uniform image3D aerial_scattering_lut;
 layout(rgba16f,set=0,binding=4) uniform image3D aerial_transmittance_lut;
 layout(rgba16f,set=0,binding=8) uniform image2D sky_irradiance_lut;
 layout(std430,set=0,binding=9) buffer AtmosphereProbe {
-  vec4 values[10];
+  vec4 values[31];
 } atmosphere_probe;
 layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
 
@@ -62,15 +62,37 @@ vec2 sphere_roots(vec3 origin,vec3 direction,float radius) {
   return vec2(-b-root,-b+root);
 }
 
-bool medium_segment(vec3 origin,vec3 direction,out float begin,out float end) {
+bool outer_medium_segment(vec3 origin,vec3 direction,
+                          out float begin,out float end) {
   const vec2 outer=sphere_roots(origin,direction,top_radius());
   if(outer.y<0.0)return false;
   begin=max(0.0,outer.x);
   end=outer.y;
-  const vec2 ground=sphere_roots(origin,direction,ground_radius());
-  if(ground.y>=0.0){
-    if(length(origin)<ground_radius())begin=max(begin,ground.y);
-    else if(ground.x>begin+0.01)end=min(end,ground.x);
+  return end>begin;
+}
+
+bool medium_segment(vec3 origin,vec3 direction,out float begin,out float end) {
+  if(!outer_medium_segment(origin,direction,begin,end))return false;
+  const float radial_distance=length(origin);
+  if(radial_distance<ground_radius()){
+    const vec2 ground=sphere_roots(origin,direction,ground_radius());
+    if(ground.y>=0.0)begin=max(begin,ground.y);
+  }else{
+    // Classify a ground hit from altitude and horizon angle before solving its
+    // distance. b*b-c loses the complete discriminant for metre-scale tangent
+    // rays around a compact planet because both terms are about 4e5 in float.
+    const float altitude=radial_distance-ground_radius();
+    const float radial_cosine=dot(origin/radial_distance,direction);
+    const float horizon_sine_squared=max(0.0,
+        altitude*(radial_distance+ground_radius())/
+            (radial_distance*radial_distance));
+    const float cosine_squared=radial_cosine*radial_cosine;
+    if(radial_cosine<0.0&&cosine_squared>
+       horizon_sine_squared*(1.0+2.0e-6)){
+      const float root=radial_distance*(-radial_cosine-
+          sqrt(max(cosine_squared-horizon_sine_squared,0.0)));
+      if(root>begin+0.01)end=min(end,root);
+    }
   }
   return end>begin;
 }
@@ -108,13 +130,47 @@ vec3 extinction(vec3 density) {
 }
 
 vec3 integrate_transmittance(vec3 origin,vec3 direction,float distance,
-                             int steps) {
+                             int steps,bool concentrate_near_planet) {
   if(distance<=0.0)return vec3(1.0);
-  const float step_length=distance/float(steps);
   vec3 optical_depth=vec3(0.0);
-  for(int index=0;index<32;++index){
+  const float closest_fraction=clamp(
+      -dot(origin,direction)/distance,0.0,1.0);
+  for(int index=0;index<64;++index){
     if(index>=steps)break;
-    const vec3 point=origin+direction*((float(index)+0.5)*step_length);
+    float fraction_begin=float(index)/float(steps);
+    float fraction_end=float(index+1)/float(steps);
+    if(concentrate_near_planet){
+      if(closest_fraction<=1.0e-6){
+        fraction_begin*=fraction_begin;
+        fraction_end*=fraction_end;
+      }else if(closest_fraction>=1.0-1.0e-6){
+        fraction_begin=1.0-(1.0-fraction_begin)*(1.0-fraction_begin);
+        fraction_end=1.0-(1.0-fraction_end)*(1.0-fraction_end);
+      }else{
+        const int lower_steps=max(steps/2,1);
+        const int upper_steps=max(steps-lower_steps,1);
+        if(index<lower_steps){
+          const float lower_begin=float(index)/float(lower_steps);
+          const float lower_end=float(index+1)/float(lower_steps);
+          fraction_begin=closest_fraction*(1.0-
+              (1.0-lower_begin)*(1.0-lower_begin));
+          fraction_end=closest_fraction*(1.0-
+              (1.0-lower_end)*(1.0-lower_end));
+        }else{
+          const float upper_begin=float(index-lower_steps)/float(upper_steps);
+          const float upper_end=float(index-lower_steps+1)/float(upper_steps);
+          fraction_begin=closest_fraction+
+              (1.0-closest_fraction)*upper_begin*upper_begin;
+          fraction_end=closest_fraction+
+              (1.0-closest_fraction)*upper_end*upper_end;
+        }
+      }
+    }
+    const float distance_begin=distance*fraction_begin;
+    const float distance_end=distance*fraction_end;
+    const float step_length=distance_end-distance_begin;
+    const vec3 point=origin+direction*
+        (0.5*(distance_begin+distance_end));
     optical_depth+=extinction(densities(length(point)-ground_radius()))*
         step_length;
   }
@@ -160,23 +216,28 @@ vec2 transmittance_parameters(vec2 uv) {
   const float top=top_radius();
   const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
   const float rho=horizon*uv.y;
-  const float radius=sqrt(rho*rho+bottom*bottom);
+  const float radial_distance=sqrt(rho*rho+bottom*bottom);
+  const float altitude=rho*rho/max(radial_distance+bottom,1.0e-6);
+  const float radius=bottom+altitude;
   const float minimum=top-radius;
   const float maximum=rho+horizon;
   const float distance=mix(minimum,maximum,uv.x);
   float cosine_angle=1.0;
-  if(distance>1.0e-6){
+  if(uv.x>=1.0-1.0e-7)cosine_angle=-rho/radius;
+  else if(distance>1.0e-6){
     const float top_minus_radius_squared=(top-radius)*(top+radius);
     cosine_angle=(top_minus_radius_squared-distance*distance)/
         (2.0*radius*distance);
   }
-  return vec2(clamp(radius-bottom,0.0,atmosphere_height()),
+  return vec2(clamp(altitude,0.0,atmosphere_height()),
               clamp(cosine_angle,-1.0,1.0));
 }
 
 vec3 bilinear_transmittance_load(vec2 uv) {
   const ivec2 size=imageSize(transmittance_lut);
-  const vec2 texel=clamp(uv*vec2(size)-0.5,vec2(0.0),vec2(size-1));
+  const vec2 texel=faithful_transport()?
+      clamp(uv,vec2(0.0),vec2(1.0))*vec2(size-1):
+      clamp(uv*vec2(size)-0.5,vec2(0.0),vec2(size-1));
   const ivec2 low=ivec2(floor(texel));
   const ivec2 high=min(low+1,size-1);
   const vec2 fraction=fract(texel);
@@ -393,7 +454,9 @@ vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
 void generate_transmittance(ivec2 coordinate) {
   const ivec2 size=imageSize(transmittance_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
-  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const vec2 uv=faithful_transport()?
+      vec2(coordinate)/vec2(max(size-1,ivec2(1))):
+      (vec2(coordinate)+0.5)/vec2(size);
   const vec2 parameters=faithful_transport()?
       transmittance_parameters(uv):
       vec2(mix(1.0,atmosphere_height()-1.0,uv.y),uv.x*2.0-1.0);
@@ -404,8 +467,12 @@ void generate_transmittance(ivec2 coordinate) {
       cosine_angle*cosine_angle)),cosine_angle,0.0));
   float begin,end;
   vec3 value=vec3(1.0);
-  if(medium_segment(origin,direction,begin,end))
-    value=integrate_transmittance(origin+direction*begin,direction,end-begin,32);
+  const bool has_segment=faithful_transport()?
+      outer_medium_segment(origin,direction,begin,end):
+      medium_segment(origin,direction,begin,end);
+  if(has_segment)
+    value=integrate_transmittance(origin+direction*begin,direction,end-begin,
+        faithful_transport()?64:32,faithful_transport());
   imageStore(transmittance_lut,coordinate,checked_lut_value(value,1.0));
 }
 
@@ -547,6 +614,25 @@ vec3 irradiance_load(vec3 normal) {
   return mix(lower,upper,fraction.y);
 }
 
+void generate_boundary_probe(int case_index,float altitude,
+                             float cosine_angle) {
+  const int base=10+case_index*3;
+  const vec2 uv=transmittance_uv(altitude,cosine_angle);
+  atmosphere_probe.values[base]=vec4(
+      uv,transmittance_parameters(uv));
+  atmosphere_probe.values[base+1]=vec4(
+      bilinear_transmittance_load(uv),1.0);
+  const vec3 origin=vec3(0.0,ground_radius()+altitude,0.0);
+  const vec3 direction=normalize(vec3(sqrt(max(0.0,1.0-
+      cosine_angle*cosine_angle)),cosine_angle,0.0));
+  float begin,end;
+  vec3 exact=vec3(1.0);
+  if(medium_segment(origin,direction,begin,end))
+    exact=integrate_transmittance(origin+direction*begin,direction,end-begin,
+        faithful_transport()?64:32,faithful_transport());
+  atmosphere_probe.values[base+2]=vec4(exact,1.0);
+}
+
 void generate_numeric_probe() {
   if(any(notEqual(gl_GlobalInvocationID,uvec3(0))))return;
   const float altitude=clamp(atmosphere_height()*0.05,1.0,
@@ -560,7 +646,8 @@ void generate_numeric_probe() {
   float begin,end;
   if(medium_segment(lookup_origin,lookup_direction,begin,end))
     exact_transmittance=integrate_transmittance(
-        lookup_origin+lookup_direction*begin,lookup_direction,end-begin,32);
+        lookup_origin+lookup_direction*begin,lookup_direction,end-begin,
+        faithful_transport()?64:32,faithful_transport());
   atmosphere_probe.values[0]=vec4(
       bilinear_transmittance_load(lookup_uv),1.0);
   atmosphere_probe.values[1]=vec4(exact_transmittance,1.0);
@@ -593,6 +680,18 @@ void generate_numeric_probe() {
   atmosphere_probe.values[8]=vec4(exact_aerial_transmittance,1.0);
   const vec2 inverse_parameters=transmittance_parameters(lookup_uv);
   atmosphere_probe.values[9]=vec4(lookup_uv,inverse_parameters);
+  const float one_metre_altitude=min(1.0,atmosphere_height());
+  const float one_metre_radius=ground_radius()+one_metre_altitude;
+  const float horizon_cosine=-sqrt(max(0.0,
+      one_metre_altitude*(one_metre_radius+ground_radius())/
+          (one_metre_radius*one_metre_radius)));
+  generate_boundary_probe(0,0.0,1.0);
+  generate_boundary_probe(1,0.0,0.0);
+  generate_boundary_probe(2,one_metre_altitude,horizon_cosine);
+  generate_boundary_probe(3,atmosphere_height()*0.5,0.0);
+  generate_boundary_probe(4,atmosphere_height()*0.5,1.0);
+  generate_boundary_probe(5,atmosphere_height(),-1.0);
+  generate_boundary_probe(6,atmosphere_height(),1.0);
 }
 
 void main() {

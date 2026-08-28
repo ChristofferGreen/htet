@@ -7,6 +7,7 @@
 #include <limits>
 #include <numbers>
 #include <sstream>
+#include <utility>
 
 namespace tetra_viewer {
 namespace {
@@ -518,13 +519,25 @@ std::optional<AtmosphereRaySegment> atmosphere_ray_segment(
   if (!outer || (*outer)[1] < 0.0) return std::nullopt;
   double begin = std::max(0.0, (*outer)[0]);
   double end = (*outer)[1];
-  if (const auto ground = sphere_roots(position, direction,
-                                       parameters.ground_radius_metres)) {
-    if (length(position) < parameters.ground_radius_metres) {
-      begin = std::max(begin, (*ground)[1]);
-    } else {
-      for (double root : *ground)
-        if (root > begin + 1.0e-7) end = std::min(end, root);
+  const double radial_distance=length(position);
+  const double ground_radius=parameters.ground_radius_metres;
+  if(radial_distance<ground_radius){
+    if(const auto ground=sphere_roots(position,direction,ground_radius))
+      begin=std::max(begin,(*ground)[1]);
+  }else{
+    const double altitude=radial_distance-ground_radius;
+    const double radial_cosine=dot(position/radial_distance,direction);
+    const double horizon_sine_squared=std::max(0.0,
+        altitude*(radial_distance+ground_radius)/
+            (radial_distance*radial_distance));
+    const double cosine_squared=radial_cosine*radial_cosine;
+    // A tangent touches the boundary at one zero-measure point but never
+    // enters the opaque sphere, so only a strict crossing terminates medium.
+    if(radial_cosine<0.0&&cosine_squared>
+       horizon_sine_squared*(1.0+2.0e-12)){
+      const double root=radial_distance*(-radial_cosine-
+          std::sqrt(std::max(0.0,cosine_squared-horizon_sine_squared)));
+      if(root>begin+1.0e-7)end=std::min(end,root);
     }
   }
   if (!(end > begin)) return std::nullopt;
@@ -652,17 +665,20 @@ AtmosphereTransmittanceParameters atmosphere_transmittance_parameters(
   const double horizon=std::sqrt(
       std::max(0.0,(top-ground)*(top+ground)));
   const double rho=horizon*uv.v;
-  const double radius=std::sqrt(rho*rho+ground*ground);
+  const double radial_distance=std::sqrt(rho*rho+ground*ground);
+  const double altitude=rho*rho/(radial_distance+ground);
+  const double radius=ground+altitude;
   const double minimum=top-radius;
   const double maximum=rho+horizon;
   const double distance=minimum+uv.u*(maximum-minimum);
   double cosine=1.0;
-  if(distance>1.0e-12){
+  if(uv.u>=1.0-1.0e-14)cosine=-rho/radius;
+  else if(distance>1.0e-12){
     const double top_minus_radius_squared=(top-radius)*(top+radius);
     cosine=(top_minus_radius_squared-distance*distance)/
         (2.0*radius*distance);
   }
-  return {std::clamp(radius-ground,0.0,
+  return {std::clamp(altitude,0.0,
                      parameters.atmosphere_height_metres),
           std::clamp(cosine,-1.0,1.0)};
 }
@@ -935,19 +951,22 @@ AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
   const double height=parameters.atmosphere_height_metres;
   const double altitude=std::clamp(height*0.05,1.0,height-1.0);
   constexpr double cosine_angle=0.25;
-  const tetra::Vec3 transmittance_origin{
-      0.0,parameters.ground_radius_metres+altitude,0.0};
-  const tetra::Vec3 transmittance_direction=normalized({
-      std::sqrt(1.0-cosine_angle*cosine_angle),cosine_angle,0.0});
-  AtmosphereSpectrum transmittance{1.0,1.0,1.0};
-  if(const auto segment=atmosphere_ray_segment(
-         transmittance_origin,transmittance_direction,parameters)){
-    const auto start=transmittance_origin+
-        transmittance_direction*segment->begin_metres;
-    const auto end=transmittance_origin+
-        transmittance_direction*segment->end_metres;
-    transmittance=atmosphere_transmittance(start,end,parameters,512U);
-  }
+  const auto transmittance_reference=[&](double sample_altitude,
+                                         double sample_cosine){
+    const tetra::Vec3 origin{
+        0.0,parameters.ground_radius_metres+sample_altitude,0.0};
+    const tetra::Vec3 direction=normalized({
+        std::sqrt(std::max(0.0,1.0-sample_cosine*sample_cosine)),
+        sample_cosine,0.0});
+    AtmosphereSpectrum transmittance{1.0,1.0,1.0};
+    if(const auto segment=atmosphere_ray_segment(origin,direction,parameters)){
+      const auto start=origin+direction*segment->begin_metres;
+      const auto end=origin+direction*segment->end_metres;
+      transmittance=atmosphere_transmittance(start,end,parameters,512U);
+    }
+    return transmittance;
+  };
+  const auto transmittance=transmittance_reference(altitude,cosine_angle);
   assign_spectrum(0U,transmittance);
   assign_spectrum(1U,transmittance);
 
@@ -1026,6 +1045,37 @@ AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
       altitude,cosine_angle,parameters);
   const auto inverse=atmosphere_transmittance_parameters(uv,parameters);
   result[9U]={uv.u,uv.v,inverse.altitude_metres,inverse.zenith_cosine};
+  const double one_metre_altitude=std::min(1.0,height);
+  const double one_metre_radius=
+      parameters.ground_radius_metres+one_metre_altitude;
+  const double horizon_cosine=-std::sqrt(std::max(0.0,
+      one_metre_altitude*(one_metre_radius+parameters.ground_radius_metres)/
+          (one_metre_radius*one_metre_radius)));
+  const std::array<std::pair<double,double>,
+                   atmosphere_boundary_probe_case_count> boundary_cases{
+      std::pair{0.0,1.0},std::pair{0.0,0.0},
+      std::pair{one_metre_altitude,horizon_cosine},
+      std::pair{height*0.5,0.0},std::pair{height*0.5,1.0},
+      std::pair{height,-1.0},std::pair{height,1.0}};
+  for(std::size_t case_index=0;case_index<boundary_cases.size();++case_index){
+    const auto [case_altitude,case_cosine]=boundary_cases[case_index];
+    const auto case_uv=atmosphere_transmittance_uv(
+        case_altitude,case_cosine,parameters);
+    const auto case_inverse=atmosphere_transmittance_parameters(
+        case_uv,parameters);
+    const std::size_t base=atmosphere_numeric_probe_base_value_count+
+        case_index*3U;
+    result[base]={case_uv.u,case_uv.v,case_inverse.altitude_metres,
+                  case_inverse.zenith_cosine};
+    // A transmittance table stores the physical ray represented by its mapped
+    // coordinate. Below-horizon inputs clamp to the table boundary and are
+    // separately rejected by sunlight visibility, so lookup and direct-ray
+    // references intentionally differ there.
+    assign_spectrum(base+1U,transmittance_reference(
+        case_inverse.altitude_metres,case_inverse.zenith_cosine));
+    assign_spectrum(base+2U,transmittance_reference(
+        case_altitude,case_cosine));
+  }
   return result;
 }
 
@@ -1034,21 +1084,38 @@ AtmosphereNumericProbeReport evaluate_atmosphere_numeric_probe(
     const AtmosphereNumericProbeInput& input) {
   AtmosphereNumericProbeReport report;
   report.reference=atmosphere_numeric_probe_reference(input);
-  const std::array<std::string_view,atmosphere_numeric_probe_value_count> names{
+  const std::array<std::string_view,
+                   atmosphere_numeric_probe_base_value_count> base_names{
       "transmittance_lookup","transmittance_direct",
       "multiple_scattering_lookup","full_sky_lookup",
       "sky_irradiance_lookup","aerial_scattering_lookup",
       "aerial_transmittance_lookup","aerial_scattering_direct",
       "aerial_transmittance_direct","transmittance_mapping"};
-  const std::array<double,atmosphere_numeric_probe_value_count> absolute{
+  const std::array<double,
+                   atmosphere_numeric_probe_base_value_count> base_absolute{
       2.0e-3,2.0e-3,2.0e-4,5.0e-4,7.5e-4,
       5.0e-4,3.0e-3,5.0e-4,3.0e-3,2.0e-4};
-  const std::array<double,atmosphere_numeric_probe_value_count> relative{
+  const std::array<double,
+                   atmosphere_numeric_probe_base_value_count> base_relative{
       0.02,0.02,0.15,0.15,0.20,0.20,0.03,0.15,0.03,0.0};
+  const std::array<std::string_view,atmosphere_boundary_probe_case_count>
+      boundary_names{"ground_up","ground_tangent","one_metre_horizon",
+                     "mid_horizontal","mid_up","top_down","top_up"};
   report.passed=true;
-  for(std::size_t index=0;index<names.size();++index){
+  report.comparisons.reserve(atmosphere_numeric_probe_value_count);
+  for(std::size_t index=0;index<atmosphere_numeric_probe_value_count;++index){
     AtmosphereNumericProbeComparison comparison;
-    comparison.name=names[index];
+    const bool base=index<atmosphere_numeric_probe_base_value_count;
+    const std::size_t boundary_offset=base?0U:
+        index-atmosphere_numeric_probe_base_value_count;
+    const std::size_t boundary_component=boundary_offset%3U;
+    const bool mapping=index==9U||(!base&&boundary_component==0U);
+    if(base)comparison.name=base_names[index];
+    else{
+      comparison.name=std::string{boundary_names[boundary_offset/3U]}+
+          (boundary_component==0U?"_mapping":
+           boundary_component==1U?"_lookup":"_direct");
+    }
     comparison.actual=actual[index];
     comparison.expected=report.reference[index];
     comparison.passed=true;
@@ -1058,12 +1125,14 @@ AtmosphereNumericProbeReport evaluate_atmosphere_numeric_probe(
       comparison.absolute_error[channel]=std::abs(observed-expected);
       comparison.relative_error[channel]=comparison.absolute_error[channel]/
           std::max(std::abs(expected),1.0e-12);
-      double absolute_tolerance=absolute[index];
-      double relative_tolerance=relative[index];
-      if(index==9U&&channel==2U)
+      double absolute_tolerance=base?base_absolute[index]:
+          (mapping?2.0e-4:2.0e-3);
+      double relative_tolerance=base?base_relative[index]:
+          (mapping?0.0:(boundary_component==1U?0.08:0.02));
+      if(mapping&&channel==2U)
         absolute_tolerance=std::max(
             0.25,input.parameters.atmosphere_height_metres*2.0e-5);
-      if(channel==3U&&index!=9U){
+      if(channel==3U&&!mapping){
         absolute_tolerance=1.0e-4;
         relative_tolerance=0.0;
       }

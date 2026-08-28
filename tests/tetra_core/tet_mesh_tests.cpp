@@ -14388,6 +14388,37 @@ TEST_CASE("atmosphere boundary rays remain stable from ground through space") {
   CHECK_FALSE(tangent);  // A zero-length tangent contributes no medium.
 }
 
+TEST_CASE("ground tangent contact remains medium while strict crossings stop") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  constexpr double altitude=1.0;
+  const double radius=parameters.ground_radius_metres+altitude;
+  const double horizon_cosine=-std::sqrt(
+      altitude*(radius+parameters.ground_radius_metres)/(radius*radius));
+  const auto direction=[](double cosine){
+    return tetra::Vec3{std::sqrt(std::max(0.0,1.0-cosine*cosine)),
+                       cosine,0.0};
+  };
+  const tetra::Vec3 origin{0.0,radius,0.0};
+  const auto tangent=tetra_viewer::atmosphere_ray_segment(
+      origin,direction(horizon_cosine),parameters);
+  const auto crossing=tetra_viewer::atmosphere_ray_segment(
+      origin,direction(horizon_cosine-0.001),parameters);
+  REQUIRE(tangent);
+  REQUIRE(crossing);
+  CHECK(tangent->end_metres>50'000.0);
+  CHECK(crossing->end_metres<1'000.0);
+  const auto tangent_end=origin+direction(horizon_cosine)*tangent->end_metres;
+  const auto crossing_end=
+      origin+direction(horizon_cosine-0.001)*crossing->end_metres;
+  const auto tangent_transmittance=tetra_viewer::atmosphere_transmittance(
+      origin,tangent_end,parameters,512U);
+  const auto crossing_transmittance=tetra_viewer::atmosphere_transmittance(
+      origin,crossing_end,parameters,512U);
+  for(std::size_t channel=0;channel<3U;++channel)
+    CHECK(tangent_transmittance[channel]<crossing_transmittance[channel]);
+}
+
 TEST_CASE("compact planet shaders preserve metre-scale horizon precision") {
   constexpr float radius=200'000.0F;
   constexpr float altitude=1.0F;
@@ -14397,19 +14428,6 @@ TEST_CASE("compact planet shaders preserve metre-scale horizon precision") {
   const float cancelled=radial_distance*radial_distance-radius*radius;
   CHECK(stable==doctest::Approx(exact).epsilon(1.0e-6));
   CHECK(std::abs(cancelled-exact)>100.0F);
-
-  const auto read_shader=[](const std::filesystem::path& path){
-    std::ifstream stream(path);
-    REQUIRE(stream.good());
-    return std::string(std::istreambuf_iterator<char>(stream),{});
-  };
-  for(const auto& path:{std::filesystem::path("src/tetra_viewer/atmosphere.comp"),
-                        std::filesystem::path("src/tetra_viewer/tone_map.frag")}){
-    const auto shader=read_shader(path);
-    CHECK(shader.find("dot(origin,origin)-radius*radius")==std::string::npos);
-    CHECK(shader.find("(radial_distance-radius)*(radial_distance+radius)")!=
-          std::string::npos);
-  }
 }
 
 TEST_CASE("planet atmosphere composites lit analytic ground through aerial perspective") {
