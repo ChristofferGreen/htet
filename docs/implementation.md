@@ -256,6 +256,25 @@ all hashes remain exact while walking dependency construction measures about
 and settled continuous convergence about 1.39 s. The bounded 32-operation path
 is unchanged at roughly 243 ms.
 
+The assembled surface directory now keeps triangle corners under the same
+persistent stable vertex IDs as the optimizer graph. Changed triangle keys are
+canonicalized once before their sort/merge, retained triangles no longer need
+global vertex-index remapping after an insertion, and new corners reuse the
+optimizer's existing key-to-current-index table. This preserves the canonical
+surface and render hashes while reducing walking snapshot assembly from about
+218 ms to 135--140 ms, dense surface construction from about 633 ms to
+550--560 ms, and the isolated 32-operation transaction to about 234--240 ms.
+
+A complete-manifest runtime scheduling experiment then combined one-root
+discovery with those bounded transactions and switched to an exact dense build
+after 40 ms without camera input. It was not retained. A complete runtime front
+still included residency, hierarchy demand, render preparation, staging, and
+publication work omitted by the isolated diagnostic, so first publication was
+about 530 ms; dense catch-up took about two seconds; and repeated fronts pushed
+the candidate beyond the 512 MiB admission budget. This confirms that the
+complete transaction must become materially cheaper before spatial discovery
+is introduced into the production scheduler.
+
 ## Technology choices
 
 - C++23 where supported.

@@ -1194,6 +1194,14 @@ TEST_CASE("root-local target fronts retain complete directory root fallbacks") {
     auto surface=tetra_viewer::build_sparse_world_derived_surface(
         directory,profile.domain,field,true,{},&surface_cache,
         residency.volume_blocks,true,false,update.changed_blocks,nullptr,false);
+    CHECK(surface_cache.assembled_triangles_use_optimizer_stable_ids);
+    CHECK(std::ranges::all_of(surface_cache.assembled_triangles,
+        [&](const auto& triangle){
+      if(std::ranges::any_of(triangle.vertices,[&](const auto vertex){
+           return vertex>=surface_cache.optimizer_stable_keys.size();
+         }))return false;
+      return true;
+    }));
     directory.publish(directory.stage_owned_derived_surfaces(
         std::move(surface.snapshots),hierarchy_revision+1U));
   }

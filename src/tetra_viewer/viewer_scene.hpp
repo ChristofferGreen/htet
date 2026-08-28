@@ -866,6 +866,7 @@ struct SparseWorldSurfaceCache {
   // validation without sorting the complete surface after every edit.
   std::vector<CountedSurfaceVertex> assembled_vertices;
   std::vector<CountedSurfaceTriangle> assembled_triangles;
+  bool assembled_triangles_use_optimizer_stable_ids{};
   std::vector<RenderBlock> render_blocks;
   tetra::WorldConformingClosureCache closure;
 };

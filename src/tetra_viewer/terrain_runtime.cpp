@@ -711,6 +711,57 @@ std::vector<tetra::WorldTetAddress> advance_world_requested_frontier(
   return {result.begin(),result.end()};
 }
 
+static void capture_world_closure_metrics(
+    WorldLodCutSelection& selection,
+    const tetra::WorldConformingClosureCache& cache) {
+  selection.metrics.closure_requested_owners_scanned=
+      cache.last_requested_owners_scanned;
+  selection.metrics.changed_closure_requested_owners=
+      cache.last_changed_requested_owners;
+  selection.metrics.updated_split_ancestors=cache.last_split_ancestor_updates;
+  selection.metrics.reused_closure_masks=cache.last_reused_masks;
+  selection.metrics.rebuilt_closure_masks=cache.last_rebuilt_masks;
+  selection.metrics.promoted_closure_owners=cache.last_promoted_owners;
+  selection.metrics.closure_proof_nodes=cache.proof_nodes.size();
+  selection.metrics.retained_promotion_proofs=cache.promotion_proofs.size();
+  selection.metrics.retained_closure_proof_bytes=
+      cache.proof_nodes.capacity()*sizeof(tetra::WorldClosureProofNode)+
+      cache.promotion_proofs.capacity()*
+          sizeof(tetra::WorldClosurePromotionProof)+
+      cache.proof_dependent_offsets.capacity()*sizeof(std::uint32_t)+
+      cache.proof_dependents.capacity()*sizeof(std::uint32_t);
+  selection.metrics.closure_dependency_blocks_reused=
+      cache.last_dependency_blocks_reused;
+  selection.metrics.closure_dependency_blocks_rebuilt=
+      cache.last_dependency_blocks_rebuilt;
+  selection.metrics.closure_dependency_candidate_blocks=
+      cache.last_dependency_candidate_blocks;
+  selection.metrics.closure_dependency_owners_evaluated=
+      cache.last_dependency_owners_evaluated;
+  selection.metrics.closure_masks_evaluated=cache.last_masks_evaluated;
+  selection.metrics.changed_closure_mask_owners=
+      cache.last_changed_mask_owners.size();
+  selection.metrics.changed_closure_mask_blocks=
+      cache.last_changed_mask_blocks.size();
+  selection.metrics.retained_closure_dependency_bytes=
+      cache.last_dependency_retained_bytes;
+  selection.metrics.closure_proof_validation_milliseconds=
+      cache.last_proof_validation_milliseconds;
+  selection.metrics.closure_dependency_query_milliseconds=
+      cache.last_dependency_query_milliseconds;
+  selection.metrics.closure_dependency_publish_milliseconds=
+      cache.last_dependency_publish_milliseconds;
+  selection.metrics.closure_vertex_depth_milliseconds=
+      cache.last_vertex_depth_milliseconds;
+  selection.metrics.closure_fixed_point_milliseconds=
+      cache.last_fixed_point_milliseconds;
+  selection.metrics.closure_finalization_milliseconds=
+      cache.last_closure_finalization_milliseconds;
+  selection.metrics.closure_geometry_merge_milliseconds=
+      cache.last_geometry_merge_milliseconds;
+  selection.metrics.closure_rounds=cache.last_closure_rounds;
+}
+
 static WorldLodCutSelection select_world_lod_cut_impl(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
@@ -888,56 +939,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     *completed_work_units=result.metrics.visited_owners;
   result.owners=tetra::close_world_conforming_cut(
       result.owners,closure_cache,cancellation,3U,executor);
-  if(closure_cache){
-    result.metrics.closure_requested_owners_scanned=
-        closure_cache->last_requested_owners_scanned;
-    result.metrics.changed_closure_requested_owners=
-        closure_cache->last_changed_requested_owners;
-    result.metrics.updated_split_ancestors=
-        closure_cache->last_split_ancestor_updates;
-    result.metrics.reused_closure_masks=closure_cache->last_reused_masks;
-    result.metrics.rebuilt_closure_masks=closure_cache->last_rebuilt_masks;
-    result.metrics.promoted_closure_owners=closure_cache->last_promoted_owners;
-    result.metrics.closure_proof_nodes=closure_cache->proof_nodes.size();
-    result.metrics.retained_promotion_proofs=closure_cache->promotion_proofs.size();
-    result.metrics.retained_closure_proof_bytes=
-        closure_cache->proof_nodes.capacity()*sizeof(tetra::WorldClosureProofNode)+
-        closure_cache->promotion_proofs.capacity()*
-            sizeof(tetra::WorldClosurePromotionProof)+
-        closure_cache->proof_dependent_offsets.capacity()*sizeof(std::uint32_t)+
-        closure_cache->proof_dependents.capacity()*sizeof(std::uint32_t);
-    result.metrics.closure_dependency_blocks_reused=
-        closure_cache->last_dependency_blocks_reused;
-    result.metrics.closure_dependency_blocks_rebuilt=
-        closure_cache->last_dependency_blocks_rebuilt;
-    result.metrics.closure_dependency_candidate_blocks=
-        closure_cache->last_dependency_candidate_blocks;
-    result.metrics.closure_dependency_owners_evaluated=
-        closure_cache->last_dependency_owners_evaluated;
-    result.metrics.closure_masks_evaluated=
-        closure_cache->last_masks_evaluated;
-    result.metrics.changed_closure_mask_owners=
-        closure_cache->last_changed_mask_owners.size();
-    result.metrics.changed_closure_mask_blocks=
-        closure_cache->last_changed_mask_blocks.size();
-    result.metrics.retained_closure_dependency_bytes=
-        closure_cache->last_dependency_retained_bytes;
-    result.metrics.closure_proof_validation_milliseconds=
-        closure_cache->last_proof_validation_milliseconds;
-    result.metrics.closure_dependency_query_milliseconds=
-        closure_cache->last_dependency_query_milliseconds;
-    result.metrics.closure_dependency_publish_milliseconds=
-        closure_cache->last_dependency_publish_milliseconds;
-    result.metrics.closure_vertex_depth_milliseconds=
-        closure_cache->last_vertex_depth_milliseconds;
-    result.metrics.closure_fixed_point_milliseconds=
-        closure_cache->last_fixed_point_milliseconds;
-    result.metrics.closure_finalization_milliseconds=
-        closure_cache->last_closure_finalization_milliseconds;
-    result.metrics.closure_geometry_merge_milliseconds=
-        closure_cache->last_geometry_merge_milliseconds;
-    result.metrics.closure_rounds=closure_cache->last_closure_rounds;
-  }
+  if(closure_cache)capture_world_closure_metrics(result,*closure_cache);
   result.metrics.closure_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-closure_started).count();
   result.metrics.logical_owners_after_closure=result.owners.size();
@@ -1530,7 +1532,8 @@ void BlockedTerrainRuntime::submit() {
   auto directory=std::make_unique<tetra::WorldCutDirectory>(*directory_);
   future_=std::async(std::launch::async,
       [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
-       executor,surface_cache=std::move(surface_cache),
+       executor,
+       surface_cache=std::move(surface_cache),
        directory=std::move(directory)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),

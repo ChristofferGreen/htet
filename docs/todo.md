@@ -190,6 +190,15 @@
         keys only when no current ID exists. Dense walking surface work falls
         to about 650 ms and settled convergence to about 1.39 s without
         changing the roughly 243 ms bounded front or any canonical hash.
+  - [x] Store retained assembled triangle corners under the optimizer's stable
+        vertex IDs and canonicalize each changed triangle once before sorting
+        and merging it. Reuse the optimizer's existing key index for new
+        corners instead of rebuilding or binary-searching another directory.
+        This removes global retained-triangle remapping, reduces dense walking
+        snapshot assembly from about 218 ms to 135--140 ms and surface work
+        from about 633 ms to 550--560 ms, while preserving oriented rendering
+        and the exact surface and render hashes. The exact 32-operation slice
+        measures about 234--240 ms in isolation.
   - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
         the now roughly 78--86 ms target-cut selection does not remain serially
         ahead of every complete publication. Parent-to-child geometry carrying
@@ -199,6 +208,11 @@
         root-local transaction regression, or make full discovery cooperatively
         pauseable. Equal-priority overlap of the two
         complete stages was measured and rejected because it regressed latency.
+        A second complete-manifest runtime prototype refreshed one root per
+        moving front and used a dense idle catch-up. It was also rejected: the
+        real publication path cost about 530 ms rather than the isolated slice's
+        234--247 ms, settled catch-up took about two seconds, and repeated
+        fronts grew retained state beyond the 512 MiB admission limit.
         Retain the dense large-transition path for settled catch-up and prove
         sub-one-second convergence.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,

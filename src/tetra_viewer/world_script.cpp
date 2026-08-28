@@ -435,7 +435,16 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }while(std::chrono::steady_clock::now()<deadline);
     if(!diagnostics.converged||diagnostics.busy){
-      errors<<"continuous world movement did not converge\n";return 1;
+      errors<<"continuous world movement did not converge: busy="
+            <<diagnostics.busy<<" budget_exceeded="
+            <<diagnostics.budget_exceeded<<" submitted="
+            <<diagnostics.submitted_builds<<" rejected="
+            <<diagnostics.budget_rejected_builds<<" resident="
+            <<diagnostics.resident_bytes<<" cpu_high_water="
+            <<diagnostics.cpu_high_water_bytes<<" published_camera="
+            <<diagnostics.published_camera_position.x<<','
+            <<diagnostics.published_camera_position.y<<','
+            <<diagnostics.published_camera_position.z<<'\n';return 1;
     }
     const double settled_convergence_milliseconds=
         std::chrono::duration<double,std::milli>(

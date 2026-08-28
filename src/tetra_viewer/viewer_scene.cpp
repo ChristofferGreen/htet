@@ -1547,15 +1547,26 @@ void optimize_surface_graph(
     }
     return energy;
   };
+  const auto incident_fairness=[&](std::span<const tetra::Vec3> read_positions,
+                                   std::size_t vertex){
+    double fairness{};
+    for(std::size_t offset=incident_offsets[vertex];
+        offset<incident_offsets[vertex+1U];++offset){
+      const auto& ids=triangles[incidents[offset]];
+      fairness+=triangle_fairness({{read_positions[ids[0]],
+          read_positions[ids[1]],read_positions[ids[2]]}});
+    }
+    return fairness;
+  };
   const auto valid_move=[&](std::span<const tetra::Vec3> read_positions,
-                            std::size_t vertex,tetra::Vec3 candidate){
-    double fairness_before{},fairness_after{};
+                            std::size_t vertex,tetra::Vec3 candidate,
+                            double fairness_before){
+    double fairness_after{};
     for(std::size_t offset=incident_offsets[vertex];
         offset<incident_offsets[vertex+1U];++offset){
       const auto& ids=triangles[incidents[offset]];
       std::array<tetra::Vec3,3> points{{read_positions[ids[0]],
           read_positions[ids[1]],read_positions[ids[2]]}};
-      fairness_before+=triangle_fairness(points);
       for(std::size_t corner=0;corner<3U;++corner)
         if(ids[corner]==vertex)points[corner]=candidate;
       fairness_after+=triangle_fairness(points);
@@ -1584,13 +1595,14 @@ void optimize_surface_graph(
           average=average+previous[neighbors[offset]];
         average=average/static_cast<double>(degree);
         const auto original=previous[vertex];
+        const double fairness_before=incident_fairness(previous,vertex);
         auto target=sphere.project_to_surface(
             original*(1.0-relaxation)+average*relaxation);
         double step=1.0;
         for(std::size_t attempt=0;attempt<line_search_steps;++attempt,step*=0.5){
           auto candidate=sphere.project_to_surface(
               original*(1.0-step)+target*step);
-          if(valid_move(previous,vertex,candidate))return candidate;
+          if(valid_move(previous,vertex,candidate,fairness_before))return candidate;
         }
         ++rejected;
         return std::nullopt;
@@ -1908,14 +1920,17 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots(
   return result;
 }
 
-template<class ChangedBlocks>
+template<class ChangedBlocks,class CurrentIndex>
 BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
     std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots,
     const SparseWorldSurfaceCache& cache,
     const ChangedBlocks& changed,
     std::vector<SparseWorldSurfaceCache::CountedSurfaceVertex>& next_vertices,
     std::vector<SparseWorldSurfaceCache::CountedSurfaceTriangle>& next_triangles,
-    bool assemble_flat_output) {
+    bool assemble_flat_output,
+    std::span<const tetra::WorldDerivedVertexKey> stable_keys={},
+    std::span<const std::uint32_t> current_to_stable={},
+    const CurrentIndex* current_index=nullptr) {
   std::ranges::sort(snapshots,{},&tetra::WorldDerivedSurfaceSnapshot::id);
   struct VertexDelta {
     tetra::WorldSurfaceVertex vertex;
@@ -1923,17 +1938,23 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   };
   struct TriangleDelta {
     tetra::WorldSurfaceTriangle triangle;
+    std::array<tetra::WorldDerivedVertexKey,3> canonical_vertices;
     std::int32_t removed{},added{};
   };
   std::vector<VertexDelta> vertex_deltas;
   std::vector<TriangleDelta> triangle_deltas;
   const bool bootstrap=cache.assembled_vertices.empty()&&
       cache.assembled_triangles.empty();
+  const bool stable_mode=!stable_keys.empty();
+  if(!bootstrap&&stable_mode!=
+      cache.assembled_triangles_use_optimizer_stable_ids)
+    throw std::logic_error("incremental surface triangle identity mode changed");
   const auto append_snapshot=[&](const auto& snapshot,bool addition){
     for(const auto& vertex:snapshot.vertices)
       vertex_deltas.push_back({vertex,addition?0:1,addition?1:0});
     for(const auto& triangle:snapshot.triangles)
-      triangle_deltas.push_back({triangle,addition?0:1,addition?1:0});
+      triangle_deltas.push_back({triangle,triangle.canonical_vertices(),
+          addition?0:1,addition?1:0});
   };
   if(!bootstrap)for(const auto& snapshot:cache.snapshots){
     const auto current=std::ranges::lower_bound(
@@ -2000,13 +2021,41 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   }
   next_vertices.insert(next_vertices.end(),old_vertex,
                        cache.assembled_vertices.end());
+  if(stable_mode){
+    if(current_to_stable.size()!=next_vertices.size())
+      throw std::logic_error("stable surface identity map has the wrong size");
+    for(std::size_t current=0;current<next_vertices.size();++current)
+      if(current_to_stable[current]>=stable_keys.size()||
+         stable_keys[current_to_stable[current]]!=
+             next_vertices[current].vertex.key)
+        throw std::logic_error("stable surface identity map disagrees with vertices");
+  }
 
-  std::ranges::sort(triangle_deltas,{},
-      [](const auto& delta){return delta.triangle;});
+  const auto triangle_less=[](
+      const std::array<tetra::WorldDerivedVertexKey,3>& first_vertices,
+      tetra::WorldTetAddress first_owner,
+      const std::array<tetra::WorldDerivedVertexKey,3>& second_vertices,
+      tetra::WorldTetAddress second_owner){
+    return first_vertices<second_vertices||
+        (first_vertices==second_vertices&&first_owner<second_owner);
+  };
+  const auto triangle_equal=[](
+      const std::array<tetra::WorldDerivedVertexKey,3>& first_vertices,
+      tetra::WorldTetAddress first_owner,
+      const std::array<tetra::WorldDerivedVertexKey,3>& second_vertices,
+      tetra::WorldTetAddress second_owner){
+    return first_vertices==second_vertices&&first_owner==second_owner;
+  };
+  std::ranges::sort(triangle_deltas,[&](const auto& first,const auto& second){
+    return triangle_less(first.canonical_vertices,first.triangle.owner,
+                         second.canonical_vertices,second.triangle.owner);
+  });
   std::vector<TriangleDelta> grouped_triangles;
   for(const auto& delta:triangle_deltas){
     if(grouped_triangles.empty()||
-       grouped_triangles.back().triangle!=delta.triangle)
+       !triangle_equal(grouped_triangles.back().canonical_vertices,
+           grouped_triangles.back().triangle.owner,delta.canonical_vertices,
+           delta.triangle.owner))
       grouped_triangles.push_back(delta);
     else{
       grouped_triangles.back().removed+=delta.removed;
@@ -2017,12 +2066,19 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   next_triangles.reserve(cache.assembled_triangles.size()+grouped_triangles.size());
   const auto expand_triangle=[](
       const SparseWorldSurfaceCache::CountedSurfaceTriangle& compact,
-      const auto& vertices){
+      const auto& vertices,
+      std::span<const tetra::WorldDerivedVertexKey> identities){
     tetra::WorldSurfaceTriangle triangle;triangle.owner=compact.owner;
     for(std::size_t corner=0;corner<3U;++corner){
-      if(compact.vertices[corner]>=vertices.size())
-        throw std::logic_error("incremental surface triangle vertex is invalid");
-      triangle.vertices[corner]=vertices[compact.vertices[corner]].vertex.key;
+      if(!identities.empty()){
+        if(compact.vertices[corner]>=identities.size())
+          throw std::logic_error("stable surface triangle vertex is invalid");
+        triangle.vertices[corner]=identities[compact.vertices[corner]];
+      }else{
+        if(compact.vertices[corner]>=vertices.size())
+          throw std::logic_error("incremental surface triangle vertex is invalid");
+        triangle.vertices[corner]=vertices[compact.vertices[corner]].vertex.key;
+      }
     }
     return triangle;
   };
@@ -2031,39 +2087,53 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
     SparseWorldSurfaceCache::CountedSurfaceTriangle compact;
     compact.owner=triangle.owner;compact.references=references;
     for(std::size_t corner=0;corner<3U;++corner){
-      const auto found=std::ranges::lower_bound(
-          next_vertices,triangle.vertices[corner],{},
-          [](const auto& vertex){return vertex.vertex.key;});
-      if(found==next_vertices.end()||
-         found->vertex.key!=triangle.vertices[corner])
-        throw std::logic_error("incremental surface triangle has no vertex");
-      const auto index=static_cast<std::size_t>(found-next_vertices.begin());
-      if(index>std::numeric_limits<std::uint32_t>::max())
+      std::size_t index{};
+      if(stable_mode){
+        if(current_index==nullptr)
+          throw std::logic_error("stable surface identity has no current index");
+        const auto found=current_index->find(triangle.vertices[corner]);
+        if(found==current_index->end())
+          throw std::logic_error("incremental surface triangle has no vertex");
+        index=found->second;
+      }else{
+        const auto found=std::ranges::lower_bound(
+            next_vertices,triangle.vertices[corner],{},
+            [](const auto& vertex){return vertex.vertex.key;});
+        if(found==next_vertices.end()||
+           found->vertex.key!=triangle.vertices[corner])
+          throw std::logic_error("incremental surface triangle has no vertex");
+        index=static_cast<std::size_t>(found-next_vertices.begin());
+      }
+      const auto identity=stable_mode?current_to_stable[index]:index;
+      if(identity>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("incremental surface exceeds 32-bit vertices");
-      compact.vertices[corner]=static_cast<std::uint32_t>(index);
+      compact.vertices[corner]=static_cast<std::uint32_t>(identity);
     }
     next_triangles.push_back(compact);
   };
-  std::vector<std::uint32_t> retained_vertex_remap(
-      cache.assembled_vertices.size());
-  std::size_t next_vertex_index{};
-  for(std::size_t old_index=0;old_index<cache.assembled_vertices.size();
-      ++old_index){
-    const auto& key=cache.assembled_vertices[old_index].vertex.key;
-    while(next_vertex_index<next_vertices.size()&&
-          next_vertices[next_vertex_index].vertex.key<key)++next_vertex_index;
-    if(next_vertex_index<next_vertices.size()&&
-       next_vertices[next_vertex_index].vertex.key==key){
-      if(next_vertex_index>std::numeric_limits<std::uint32_t>::max())
-        throw std::overflow_error("incremental surface exceeds 32-bit vertices");
-      retained_vertex_remap[old_index]=
-          static_cast<std::uint32_t>(next_vertex_index);
-    }else retained_vertex_remap[old_index]=
-        std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::uint32_t> retained_vertex_remap;
+  if(!stable_mode){
+    retained_vertex_remap.resize(cache.assembled_vertices.size());
+    std::size_t next_vertex_index{};
+    for(std::size_t old_index=0;old_index<cache.assembled_vertices.size();
+        ++old_index){
+      const auto& key=cache.assembled_vertices[old_index].vertex.key;
+      while(next_vertex_index<next_vertices.size()&&
+            next_vertices[next_vertex_index].vertex.key<key)++next_vertex_index;
+      if(next_vertex_index<next_vertices.size()&&
+         next_vertices[next_vertex_index].vertex.key==key){
+        if(next_vertex_index>std::numeric_limits<std::uint32_t>::max())
+          throw std::overflow_error("incremental surface exceeds 32-bit vertices");
+        retained_vertex_remap[old_index]=
+            static_cast<std::uint32_t>(next_vertex_index);
+      }else retained_vertex_remap[old_index]=
+          std::numeric_limits<std::uint32_t>::max();
+    }
   }
   const auto append_retained_compact=[&](
       const SparseWorldSurfaceCache::CountedSurfaceTriangle& old){
     auto compact=old;
+    if(stable_mode){next_triangles.push_back(compact);return;}
     for(auto& vertex:compact.vertices){
       if(vertex>=retained_vertex_remap.size()||
          retained_vertex_remap[vertex]==std::numeric_limits<std::uint32_t>::max())
@@ -2076,12 +2146,23 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   for(const auto& delta:grouped_triangles){
     while(old_triangle!=cache.assembled_triangles.end()){
       const auto expanded=expand_triangle(
-          *old_triangle,cache.assembled_vertices);
-      if(!(expanded<delta.triangle))break;
+          *old_triangle,cache.assembled_vertices,
+          stable_mode?std::span(cache.optimizer_stable_keys):
+                      std::span<const tetra::WorldDerivedVertexKey>{});
+      const auto canonical=expanded.canonical_vertices();
+      if(!triangle_less(canonical,expanded.owner,delta.canonical_vertices,
+                        delta.triangle.owner))break;
       append_retained_compact(*old_triangle);++old_triangle;
     }
     const bool exists=old_triangle!=cache.assembled_triangles.end()&&
-        expand_triangle(*old_triangle,cache.assembled_vertices)==delta.triangle;
+        [&]{
+          const auto expanded=expand_triangle(
+              *old_triangle,cache.assembled_vertices,
+            stable_mode?std::span(cache.optimizer_stable_keys):
+                        std::span<const tetra::WorldDerivedVertexKey>{});
+          return triangle_equal(expanded.canonical_vertices(),expanded.owner,
+              delta.canonical_vertices,delta.triangle.owner);
+        }();
     const auto old_references=exists?old_triangle->references:0U;
     if(delta.removed<0||delta.added<0||
        static_cast<std::uint32_t>(delta.removed)>old_references)
@@ -2106,7 +2187,8 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
     for(const auto& triangle:next_triangles){
       tetra::WorldSurfaceTriangle expanded;expanded.owner=triangle.owner;
       for(std::size_t corner=0;corner<3U;++corner)
-        expanded.vertices[corner]=
+        expanded.vertices[corner]=stable_mode?
+            stable_keys[triangle.vertices[corner]]:
             next_vertices[triangle.vertices[corner]].vertex.key;
       result.triangles.push_back(expanded);
     }
@@ -2133,7 +2215,8 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   for(const auto& triangle:next_triangles){
     std::array<tetra::WorldDerivedVertexKey,3> keys;
     for(std::size_t corner=0;corner<3U;++corner)
-      keys[corner]=next_vertices[triangle.vertices[corner]].vertex.key;
+      keys[corner]=stable_mode?stable_keys[triangle.vertices[corner]]:
+          next_vertices[triangle.vertices[corner]].vertex.key;
     std::ranges::sort(keys);
     for(const auto& key:keys)append_key(key);
   }
@@ -4101,7 +4184,12 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       next_assembled_triangles;
   auto result=cache?assemble_blocked_snapshots_incremental(
       std::move(snapshots),*cache,output_blocks,next_assembled_vertices,
-      next_assembled_triangles,assemble_flat_output):
+      next_assembled_triangles,assemble_flat_output,
+      optimize?std::span(next_optimizer_stable_keys):
+               std::span<const tetra::WorldDerivedVertexKey>{},
+      optimize?std::span(optimizer_current_to_stable):
+               std::span<const std::uint32_t>{},
+      optimize?&optimizer_index:nullptr):
       assemble_blocked_snapshots(std::move(snapshots));
   result.metrics.block_generations=directory.block_generations();
   result.metrics.source_vertices=cache?next_assembled_vertices.size():
@@ -4179,6 +4267,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     cache->surface_source_hierarchy_revision=directory.revision();
     cache->assembled_vertices=std::move(next_assembled_vertices);
     cache->assembled_triangles=std::move(next_assembled_triangles);
+    cache->assembled_triangles_use_optimizer_stable_ids=optimize;
     if(!restrict_retained_volume)cache->conforming=std::move(volume);
     else{
       tetra::WorldBlockedConformingVolume retained;
