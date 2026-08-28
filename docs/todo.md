@@ -95,6 +95,18 @@
         owner-block directory and atomically swap the already shared candidate
         directory. Replacement falls from about 238 ms through 126 ms to
         43--44 ms; final adoption falls from about 45 ms to 1--2 ms.
+  - [x] Carry the directory transaction's exact changed hierarchy-block IDs
+        into surface construction and certify the private directory revision
+        against the closure that built it. Reuse retained signatures for every
+        other immutable block, keep the complete owner/hash comparison as the
+        standalone fallback, and compute the directory's validated logical
+        owner count once. Bounded classification falls from about 65--84 ms to
+        12 ms without weakening the exact cold oracle.
+  - [x] Remove the duplicate complete hierarchy payload-hash pass and lower the
+        deterministic optimizer's parallel grain from 4096 to 1024 vertices.
+        A typical bounded five-pass patch falls from about 79 ms to 29 ms; the
+        exact 512-operation slice is now about 466 ms versus 683 ms before this
+        group of retained-block changes.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.
@@ -104,6 +116,11 @@
   - [x] Record the exact camera pose carried by every published world front.
         The first baseline is 1.87 s to first publication, 2.21 s maximum
         interval, 0.22 units maximum lag, and 3.52 s settled convergence.
+  - [ ] Retain ancestry-edge provenance independently of deduplicated proof
+        nodes, and incrementally maintain causal-root indices. A local-ancestor
+        shortcut changed the continuous final hashes and was removed; rebuilding
+        a complete root index merely moved about 10 ms from validation into
+        finalization and added about 5 MB, so it was also removed.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

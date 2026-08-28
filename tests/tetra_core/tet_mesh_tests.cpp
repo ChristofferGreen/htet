@@ -3861,6 +3861,11 @@ TEST_CASE("retained complete cut rebuilds only changed hierarchy paths") {
   }
   CHECK(refined.metrics.loaded_blocks>0U);
   CHECK(refined.metrics.reused_blocks>0U);
+  CHECK(std::ranges::is_sorted(refined.changed_blocks));
+  CHECK(refined.changed_blocks.size()==
+        refined.metrics.loaded_blocks+refined.metrics.evicted_blocks);
+  CHECK(!std::ranges::binary_search(
+      refined.changed_blocks,retained_root->id));
   CHECK(directory.hierarchy_blocks().back()==retained_root);
 
   auto coarse_expected=tetra::make_complete_world_cut_checkpoint(
@@ -3883,6 +3888,9 @@ TEST_CASE("retained complete cut rebuilds only changed hierarchy paths") {
   }
   CHECK(simplified.metrics.evicted_blocks+simplified.metrics.loaded_blocks>0U);
   CHECK(simplified.metrics.reused_blocks>0U);
+  CHECK(std::ranges::is_sorted(simplified.changed_blocks));
+  CHECK(simplified.changed_blocks.size()==
+        simplified.metrics.loaded_blocks+simplified.metrics.evicted_blocks);
 }
 
 TEST_CASE("world closure crosses root seams and shared ownership is canonical") {

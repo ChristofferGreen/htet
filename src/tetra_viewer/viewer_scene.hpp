@@ -839,6 +839,11 @@ struct SparseWorldSurfaceCache {
   // Consume them once; they remain populated for diagnostics after publication.
   std::uint64_t surface_source_hierarchy_revision{
       std::numeric_limits<std::uint64_t>::max()};
+  // The runtime sets this only after constructing a private directory from
+  // this cache's exact closure blocks. Other callers retain the full owner
+  // comparison fallback in build_sparse_world_derived_surface.
+  std::uint64_t closure_source_hierarchy_revision{
+      std::numeric_limits<std::uint64_t>::max()};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
   // Exact flat directories assembled by merging only changed snapshot
@@ -881,7 +886,8 @@ struct BlockedDerivedSurfaceBuild {
     std::stop_token cancellation={},SparseWorldSurfaceCache* cache=nullptr,
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks={},
     bool restrict_retained_volume=false,
-    bool compute_complete_volume_oracle=true);
+    bool compute_complete_volume_oracle=true,
+    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks={});
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same

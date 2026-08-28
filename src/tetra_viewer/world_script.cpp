@@ -525,8 +525,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
         cache.closure.dependency_blocks,cache.closure.last_changed_mask_owners,
         surface_blocks,{},2U);
     const auto directory_finished=std::chrono::steady_clock::now();
+    cache.closure_source_hierarchy_revision=directory.revision();
     const auto surface=build_sparse_world_derived_surface(
-        directory,profile.domain,field,true,{},&cache,{},true,false);
+        directory,profile.domain,field,true,{},&cache,{},true,false,
+        update.changed_blocks);
     const auto finished=std::chrono::steady_clock::now();
     const auto milliseconds=[](auto begin,auto end){return
         std::chrono::duration<double,std::milli>(end-begin).count();};

@@ -1596,9 +1596,12 @@ void optimize_surface_graph(
       };
   const std::size_t work_items=evaluation_order.empty()?
       positions.size():evaluation_order.size();
+  // A retained camera patch is commonly only a few thousand vertices. The
+  // previous 4096-item grain left the expensive projected line searches on
+  // one or two cores even though the Jacobi pass is read-only per vertex.
   const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
       10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
-                                (work_items+4095U)/4096U)));
+                                (work_items+1023U)/1024U)));
   for(std::uint32_t pass=0;pass<surface_optimizer_passes;++pass){
     const auto previous=positions;auto next=previous;
     std::vector<std::size_t> rejected(worker_count);
@@ -2847,7 +2850,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     const tetra::Sphere& field,bool optimize,
     std::stop_token cancellation,SparseWorldSurfaceCache* cache,
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks,
-    bool restrict_retained_volume,bool compute_complete_volume_oracle) {
+    bool restrict_retained_volume,bool compute_complete_volume_oracle,
+    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks) {
   const auto started=std::chrono::steady_clock::now();
   if(!(domain.world_extent>0.0)||!std::isfinite(domain.world_extent))
     throw std::invalid_argument("sparse world surface requires a finite domain");
@@ -2855,6 +2859,10 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
      std::ranges::adjacent_find(retained_volume_blocks)!=
          retained_volume_blocks.end())
     throw std::invalid_argument("retained world volume block set is not canonical");
+  if(!std::ranges::is_sorted(changed_hierarchy_blocks)||
+     std::ranges::adjacent_find(changed_hierarchy_blocks)!=
+         changed_hierarchy_blocks.end())
+    throw std::invalid_argument("changed hierarchy block set is not canonical");
   constexpr std::uint64_t field_hash_offset=1469598103934665603ULL;
   constexpr std::uint64_t field_hash_prime=1099511628211ULL;
   std::uint64_t field_signature=field_hash_offset;
@@ -2888,19 +2896,31 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       cache->surface_field_signature!=field_signature;
   const bool closure_changes_unconsumed=cache&&
       cache->surface_source_hierarchy_revision!=directory.revision();
+  const bool closure_directory_certified=cache&&
+      cache->closure_source_hierarchy_revision==directory.revision();
   if(cache){
-    std::vector<tetra::WorldTetAddress> owners;
-    owners.reserve(directory.logical_owner_count());
-    directory.for_each_logical_owner(
-        [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
-    std::ranges::sort(owners);
-    if(cache->closure.closed_owners!=owners||
-       cache->closure.green_masks.size()!=owners.size()){
-      const auto closed=tetra::close_world_conforming_cut(
-          owners,&cache->closure,cancellation,directory.block_generations());
-      if(closed!=owners)
-        throw std::logic_error(
-            "sparse surface directory is missing conforming closure owners");
+    const bool certified=closure_directory_certified;
+    if(!certified){
+      std::vector<tetra::WorldTetAddress> owners;
+      owners.reserve(directory.logical_owner_count());
+      directory.for_each_logical_owner(
+          [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
+      std::ranges::sort(owners);
+      if(cache->closure.closed_owners!=owners||
+         cache->closure.green_masks.size()!=owners.size()){
+        const auto closed=tetra::close_world_conforming_cut(
+            owners,&cache->closure,cancellation,directory.block_generations());
+        if(closed!=owners)
+          throw std::logic_error(
+              "sparse surface directory is missing conforming closure owners");
+      }
+      cache->closure_source_hierarchy_revision=directory.revision();
+    }else if(cache->closure.closed_owners.size()!=
+                 directory.logical_owner_count()||
+             cache->closure.green_masks.size()!=
+                 cache->closure.closed_owners.size()){
+      throw std::logic_error(
+          "certified sparse surface closure has inconsistent owner counts");
     }
   }
   const auto previous_conforming_blocks=cache?cache->conforming.blocks:
@@ -2921,18 +2941,26 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   };
   std::set<tetra::HierarchyBlockId> topology_current_blocks,
       hierarchy_payload_changed_blocks;
+  std::vector<SparseWorldSurfaceCache::HierarchySignature> hierarchy;
+  hierarchy.reserve(directory.hierarchy_blocks().size());
   for(const auto& block:directory.hierarchy_blocks()){
     topology_current_blocks.insert(block->id);
     const auto previous=cache?std::ranges::lower_bound(
         cache->hierarchy,block->id,{},
         &SparseWorldSurfaceCache::HierarchySignature::id):
         std::vector<SparseWorldSurfaceCache::HierarchySignature>::const_iterator{};
+    const bool manifest_changed=!closure_directory_certified||
+        std::ranges::binary_search(changed_hierarchy_blocks,block->id);
+    const auto payload_hash=!manifest_changed&&previous!=cache->hierarchy.end()&&
+            previous->id==block->id?
+        previous->hash:topology_payload_hash(*block);
+    hierarchy.push_back({block->id,payload_hash});
     if(!cache||field_changed||previous==cache->hierarchy.end()||
-       previous->id!=block->id||previous->hash!=topology_payload_hash(*block))
+       previous->id!=block->id||previous->hash!=payload_hash)
       hierarchy_payload_changed_blocks.insert(block->id);
   }
   std::set<tetra::HierarchyBlockId> active_owner_blocks;
-  for(const auto& block:directory.hierarchy_blocks())
+  if(!cache)for(const auto& block:directory.hierarchy_blocks())
     if(!block->logical_owners.empty())active_owner_blocks.insert(block->id);
   std::set<tetra::HierarchyBlockId> surface_candidate_blocks;
   struct CandidateOwner {
@@ -3294,21 +3322,6 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     }
   }
   const auto topology_built=std::chrono::steady_clock::now();
-  const auto block_payload_hash=[](const tetra::HierarchyBlockSnapshot& block){
-    constexpr std::uint64_t offset=1469598103934665603ULL;
-    constexpr std::uint64_t prime=1099511628211ULL;
-    std::uint64_t hash=offset;
-    const auto add=[&](const void* value,std::size_t size){
-      const auto* bytes=static_cast<const unsigned char*>(value);
-      for(std::size_t index=0;index<size;++index){hash^=bytes[index];hash*=prime;}
-    };
-    // Surface topology depends on the logical block payload, not whether its
-    // optional conforming-cell cache is currently promoted near a pin.
-    add(&block.id,sizeof(block.id));
-    for(const auto owner:block.logical_owners)add(&owner,sizeof(owner));
-    for(const auto resident:block.resident_records)add(&resident,sizeof(resident));
-    return hash;
-  };
   const auto block_hash=[](const tetra::HierarchyBlockId& id){
     std::uint64_t hash=id.prefix.high*0x9e3779b97f4a7c15ULL;
     hash^=id.prefix.low+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
@@ -3322,22 +3335,15 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     hash^=key.denominator_exponent+(hash<<6U)+(hash>>2U);
     return static_cast<std::size_t>(hash);
   };
-  std::vector<SparseWorldSurfaceCache::HierarchySignature> hierarchy;
-  hierarchy.reserve(directory.hierarchy_blocks().size());
   std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
       current_ids(0U,block_hash),changed_blocks(0U,block_hash),
       removed_blocks(0U,block_hash);
   current_ids.reserve(directory.hierarchy_blocks().size());
   changed_blocks.reserve(directory.hierarchy_blocks().size()/8U);
-  for(const auto& block:directory.hierarchy_blocks()){
-    const auto signature=SparseWorldSurfaceCache::HierarchySignature{
-        block->id,block_payload_hash(*block)};
-    hierarchy.push_back(signature);current_ids.insert(block->id);
-    const auto previous=cache?std::ranges::lower_bound(cache->hierarchy,block->id,{},
-        &SparseWorldSurfaceCache::HierarchySignature::id):
-        std::vector<SparseWorldSurfaceCache::HierarchySignature>::const_iterator{};
-    if(!cache||previous==cache->hierarchy.end()||previous->id!=block->id||
-       previous->hash!=signature.hash)changed_blocks.insert(block->id);
+  for(const auto& signature:hierarchy){
+    current_ids.insert(signature.id);
+    if(hierarchy_payload_changed_blocks.contains(signature.id))
+      changed_blocks.insert(signature.id);
   }
   if(field_changed)changed_blocks.insert(current_ids.begin(),current_ids.end());
   if(cache)for(const auto& previous:cache->hierarchy)

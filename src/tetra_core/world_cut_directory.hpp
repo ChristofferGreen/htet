@@ -75,6 +75,10 @@ struct WorldDirectoryUpdate {
   std::uint64_t source_revision{};
   std::uint64_t published_revision{};
   WorldDirectoryUpdateMetrics metrics{};
+  // Exact canonical IDs whose immutable hierarchy payload was replaced or
+  // removed. Downstream derived-data stages consume this instead of hashing
+  // every retained block to rediscover the same transaction boundary.
+  std::vector<HierarchyBlockId> changed_blocks;
 };
 
 struct WorldStagedTransaction {

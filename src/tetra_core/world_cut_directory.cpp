@@ -576,9 +576,7 @@ void WorldCutDirectory::for_each_logical_owner(
 }
 
 std::size_t WorldCutDirectory::logical_owner_count() const noexcept {
-  std::size_t count{};
-  for_each_logical_owner([&](WorldTetAddress){++count;});
-  return count;
+  return metrics_.effective_logical_owners;
 }
 
 WorldTetAddress WorldCutDirectory::logical_owner(std::size_t index) const {
@@ -964,7 +962,10 @@ void WorldCutDirectory::validate_and_refresh() {
   }
   metrics_.mean_block_owners=blocks_.empty()?0.0:
       static_cast<double>(owner_sum)/static_cast<double>(blocks_.size());
-  metrics_.effective_logical_owners=logical_owner_count();
+  // validate_and_refresh is the one place that pays for resolving parent
+  // fallback leaves. Public count queries use this retained exact value.
+  for_each_logical_owner(
+      [&](WorldTetAddress){++metrics_.effective_logical_owners;});
   metrics_.maximum_fallback_levels=maximum_world_red_depth/block_generations_;
   metrics_.maximum_lookup_comparisons=(metrics_.maximum_fallback_levels+1U)*
       (static_cast<unsigned int>(std::bit_width(blocks_.size()))+
@@ -1270,13 +1271,17 @@ WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
   while(old!=blocks_.end()||replacement!=rebuilt.end()){
     if(replacement==rebuilt.end()||
        (old!=blocks_.end()&&(*old)->id<replacement->id)){
-      if(dirty.contains((*old)->id))++result.metrics.evicted_blocks;
+      if(dirty.contains((*old)->id)){
+        ++result.metrics.evicted_blocks;
+        result.changed_blocks.push_back((*old)->id);
+      }
       else{next.push_back(*old);++result.metrics.reused_blocks;}
       ++old;continue;
     }
     if(old==blocks_.end()||replacement->id<(*old)->id){
       next.push_back(std::make_shared<const HierarchyBlockSnapshot>(
           std::move(*replacement)));
+      result.changed_blocks.push_back(next.back()->id);
       ++result.metrics.loaded_blocks;++replacement;continue;
     }
     if(snapshot_payload_equal(**old,*replacement)){
@@ -1284,6 +1289,7 @@ WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
     }else{
       next.push_back(std::make_shared<const HierarchyBlockSnapshot>(
           std::move(*replacement)));
+      result.changed_blocks.push_back(next.back()->id);
       ++result.metrics.loaded_blocks;
     }
     ++old;++replacement;

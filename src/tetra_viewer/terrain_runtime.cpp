@@ -1114,6 +1114,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     hierarchy_update.metrics.affected_blocks=directory->metrics().blocks;
   }
   const auto checkpoint_finished=std::chrono::steady_clock::now();
+  // replace_complete_cut (and the cold checkpoint above) consumed this
+  // private cache's exact closed cut. Certify that association so surface
+  // construction need not enumerate and sort the same complete cut again.
+  surface_cache.closure_source_hierarchy_revision=directory->revision();
   WorldHierarchyDemandPlan hierarchy_plan;
   try{
     hierarchy_plan=plan_world_hierarchy_demand(
@@ -1136,7 +1140,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   const auto directory_finished=std::chrono::steady_clock::now();
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,field,true,cancellation,&surface_cache,
-      residency.volume_blocks,true,false);
+      residency.volume_blocks,true,false,hierarchy_update.changed_blocks);
   const auto surface_built=std::chrono::steady_clock::now();
   // Production no longer expands the complete volume merely to render its
   // boundary. Admission counts the surface classification, direct template
