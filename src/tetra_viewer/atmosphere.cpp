@@ -88,6 +88,82 @@ bool extinction_changed(const AtmosphereParameters& first,
 
 }  // namespace
 
+std::optional<AtmosphereTransport> parse_atmosphere_transport(
+    std::string_view name) {
+  if (name == "qualified-baseline")
+    return AtmosphereTransport::qualified_baseline;
+  if (name == "faithful-hillaire")
+    return AtmosphereTransport::faithful_hillaire;
+  return std::nullopt;
+}
+
+std::string_view atmosphere_transport_name(
+    AtmosphereTransport transport) noexcept {
+  switch (transport) {
+    case AtmosphereTransport::qualified_baseline:
+      return "qualified-baseline";
+    case AtmosphereTransport::faithful_hillaire:
+      return "faithful-hillaire";
+  }
+  return "qualified-baseline";
+}
+
+AtmosphereDispatchPlan atmosphere_dispatch_plan(
+    std::optional<AtmosphereLookupRevisions> previous,
+    const AtmosphereLookupRevisions& next,
+    AtmosphereTransport transport) noexcept {
+  if (!previous)
+    return {.transmittance=true, .multiple_scattering=true, .sky_view=true,
+            .aerial_perspective=true};
+
+  const bool optical=previous->optical!=next.optical;
+  const bool scattering=previous->scattering!=next.scattering;
+  const bool sun=previous->sun!=next.sun;
+  const bool position=previous->camera_position!=next.camera_position;
+  const bool orientation=
+      previous->camera_orientation!=next.camera_orientation;
+  const bool shadow=previous->shadow!=next.shadow;
+  const bool origin=previous->render_origin!=next.render_origin;
+  const bool baseline=transport==AtmosphereTransport::qualified_baseline;
+  return {
+      .transmittance=optical,
+      .multiple_scattering=optical||scattering,
+      .sky_view=optical||scattering||sun||position||origin||
+          (baseline&&orientation),
+      .aerial_perspective=
+          optical||scattering||sun||position||orientation||shadow||origin,
+  };
+}
+
+std::uint64_t atmosphere_optical_hash(
+    const AtmosphereParameters& parameters) {
+  std::uint64_t hash=1469598103934665603ULL;
+  hash_double(hash,parameters.ground_radius_metres);
+  hash_double(hash,parameters.atmosphere_height_metres);
+  for(double value:parameters.rayleigh_scattering_per_metre)
+    hash_double(hash,value);
+  hash_double(hash,parameters.rayleigh_scale_height_metres);
+  for(double value:parameters.mie_scattering_per_metre)
+    hash_double(hash,value);
+  for(double value:parameters.mie_absorption_per_metre)
+    hash_double(hash,value);
+  hash_double(hash,parameters.mie_scale_height_metres);
+  for(double value:parameters.absorption_per_metre)hash_double(hash,value);
+  hash_double(hash,parameters.absorption_peak_altitude_metres);
+  hash_double(hash,parameters.absorption_half_width_metres);
+  return hash;
+}
+
+std::uint64_t atmosphere_scattering_hash(
+    const AtmosphereParameters& parameters) {
+  std::uint64_t hash=atmosphere_optical_hash(parameters);
+  hash_double(hash,parameters.mie_anisotropy);
+  for(double value:parameters.ground_albedo)hash_double(hash,value);
+  for(double value:parameters.solar_irradiance)hash_double(hash,value);
+  hash_double(hash,parameters.solar_angular_radius_radians);
+  return hash;
+}
+
 AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
   AtmosphereParameters result;
   switch (preset) {

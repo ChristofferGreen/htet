@@ -1021,6 +1021,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view exposure_prefix="--exposure-ev=";
         constexpr std::string_view debug_prefix="--atmosphere-debug=";
         constexpr std::string_view quality_prefix="--atmosphere-quality=";
+        constexpr std::string_view transport_prefix="--atmosphere-transport=";
         constexpr std::string_view camera_prefix="--camera-feet=";
         constexpr std::string_view yaw_prefix="--camera-yaw-degrees=";
         constexpr std::string_view pitch_prefix="--camera-pitch-degrees=";
@@ -1136,6 +1137,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     fprintf(stderr,"unknown atmosphere quality\n");
                     return 2;
                 }
+            }else if(value.starts_with(transport_prefix)){
+                const auto transport=tetra_viewer::parse_atmosphere_transport(
+                    value.substr(transport_prefix.size()));
+                if(!transport){
+                    fprintf(stderr,"unknown atmosphere transport\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.transport=*transport;
             }
         }
         if(g_AtmosphereFrame.quality!=
@@ -2478,6 +2487,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::SeparatorText("Atmosphere");
             CheckboxWithHotkey("Atmosphere","H",ImGuiKey_H,
                                &g_AtmosphereFrame.enabled);
+            ImGui::SetNextItemWidth(190.0F);
+            const auto transport_name=tetra_viewer::atmosphere_transport_name(
+                g_AtmosphereFrame.transport);
+            if(ImGui::BeginCombo("Transport",transport_name.data())){
+                constexpr std::array transports{
+                    tetra_viewer::AtmosphereTransport::qualified_baseline,
+                    tetra_viewer::AtmosphereTransport::faithful_hillaire};
+                for(const auto transport:transports){
+                    const auto name=
+                        tetra_viewer::atmosphere_transport_name(transport);
+                    const bool selected=g_AtmosphereFrame.transport==transport;
+                    if(ImGui::Selectable(name.data(),selected))
+                        g_AtmosphereFrame.transport=transport;
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
             ImGui::SetNextItemWidth(190.0F);
             const auto preset_name=tetra_viewer::atmosphere_preset_name(
                 world_atmosphere_preset);

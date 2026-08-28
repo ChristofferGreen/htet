@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <vector>
 
 namespace tetra_viewer {
@@ -28,6 +29,7 @@ struct AtmosphereFrameInput {
   float exposure{0.65F};
   int debug_view{};
   AtmosphereQuality quality{AtmosphereQuality::standard};
+  AtmosphereTransport transport{default_atmosphere_transport};
   bool enabled{};
 };
 
@@ -104,6 +106,7 @@ class SceneRenderer {
   SceneGpuTimings gpu_timings_{};
   std::size_t atmosphere_allocation_bytes_{};
   std::size_t scene_target_allocation_bytes_{};
+  std::uint64_t geometry_revision_{};
   AtmosphereQualitySettings quality_settings_{
       atmosphere_quality_settings(AtmosphereQuality::standard)};
   struct VertexBuffer {
@@ -140,7 +143,8 @@ class SceneRenderer {
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
     VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
-    std::uint64_t optical_hash{};
+    std::optional<AtmosphereLookupRevisions> lookup_revisions;
+    AtmosphereTransport transport{default_atmosphere_transport};
     bool images_initialized{};
   };
   std::vector<AtmosphereFrameResources> atmosphere_frames_;

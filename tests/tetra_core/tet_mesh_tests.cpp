@@ -14055,6 +14055,121 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(default_shadow_bytes<64U*1024U*1024U);
 }
 
+TEST_CASE("atmosphere transport keeps the qualified baseline explicit") {
+  using tetra_viewer::AtmosphereTransport;
+  CHECK(tetra_viewer::default_atmosphere_transport==
+        AtmosphereTransport::qualified_baseline);
+  CHECK(tetra_viewer::parse_atmosphere_transport("qualified-baseline")==
+        AtmosphereTransport::qualified_baseline);
+  CHECK(tetra_viewer::parse_atmosphere_transport("faithful-hillaire")==
+        AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(tetra_viewer::parse_atmosphere_transport("approximately-blue"));
+  CHECK(tetra_viewer::atmosphere_transport_name(
+            AtmosphereTransport::qualified_baseline)=="qualified-baseline");
+  CHECK(tetra_viewer::atmosphere_transport_name(
+            AtmosphereTransport::faithful_hillaire)=="faithful-hillaire");
+}
+
+TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
+  using namespace tetra_viewer;
+  AtmosphereLookupRevisions state{
+      .optical={1}, .scattering={2}, .sun={3}, .camera_position={4},
+      .camera_orientation={5}, .shadow={6}, .render_origin={7}};
+  auto plan=atmosphere_dispatch_plan(std::nullopt,state,
+      AtmosphereTransport::qualified_baseline);
+  CHECK(plan.transmittance);
+  CHECK(plan.multiple_scattering);
+  CHECK(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+
+  plan=atmosphere_dispatch_plan(state,state,
+      AtmosphereTransport::qualified_baseline);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK_FALSE(plan.sky_view);
+  CHECK_FALSE(plan.aerial_perspective);
+
+  auto rotated=state;
+  rotated.camera_orientation.value++;
+  const auto baseline_rotation=atmosphere_dispatch_plan(state,rotated,
+      AtmosphereTransport::qualified_baseline);
+  CHECK(baseline_rotation.sky_view);
+  CHECK(baseline_rotation.aerial_perspective);
+  const auto faithful_rotation=atmosphere_dispatch_plan(state,rotated,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(faithful_rotation.transmittance);
+  CHECK_FALSE(faithful_rotation.multiple_scattering);
+  CHECK_FALSE(faithful_rotation.sky_view);
+  CHECK(faithful_rotation.aerial_perspective);
+
+  auto moved=state;
+  moved.camera_position.value++;
+  plan=atmosphere_dispatch_plan(state,moved,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+
+  auto relit=state;
+  relit.sun.value++;
+  plan=atmosphere_dispatch_plan(state,relit,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+
+  auto reshaded=state;
+  reshaded.shadow.value++;
+  plan=atmosphere_dispatch_plan(state,reshaded,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK_FALSE(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+
+  auto material=state;
+  material.optical.value++;
+  plan=atmosphere_dispatch_plan(state,material,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK(plan.transmittance);
+  CHECK(plan.multiple_scattering);
+  CHECK(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+
+  auto scattering=state;
+  scattering.scattering.value++;
+  plan=atmosphere_dispatch_plan(state,scattering,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK(plan.multiple_scattering);
+  CHECK(plan.sky_view);
+  CHECK(plan.aerial_perspective);
+}
+
+TEST_CASE("atmosphere optical and scattering hashes separate dependencies") {
+  auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  const auto optical=tetra_viewer::atmosphere_optical_hash(parameters);
+  const auto scattering=tetra_viewer::atmosphere_scattering_hash(parameters);
+
+  auto exposure=parameters;
+  exposure.solar_irradiance[0]*=1.1;
+  CHECK(tetra_viewer::atmosphere_optical_hash(exposure)==optical);
+  CHECK(tetra_viewer::atmosphere_scattering_hash(exposure)!=scattering);
+
+  auto albedo=parameters;
+  albedo.ground_albedo[1]+=0.1;
+  CHECK(tetra_viewer::atmosphere_optical_hash(albedo)==optical);
+  CHECK(tetra_viewer::atmosphere_scattering_hash(albedo)!=scattering);
+
+  auto density=parameters;
+  density.rayleigh_scale_height_metres+=1.0;
+  CHECK(tetra_viewer::atmosphere_optical_hash(density)!=optical);
+  CHECK(tetra_viewer::atmosphere_scattering_hash(density)!=scattering);
+}
+
 TEST_CASE("atmosphere presets are valid deterministic physical snapshots") {
   using tetra_viewer::AtmospherePreset;
   const std::array presets{

@@ -669,7 +669,7 @@ accepted until its dependencies and exit criteria pass in release mode.
       per-pass time, memory, lookup revisions, and numeric CPU probes.
 - [ ] Define physical coordinates, expected values, absolute/relative error
       tolerances, image masks, and reference provenance for every golden probe.
-- [ ] Add an experimental transport selector so the qualified baseline remains
+- [x] Add an experimental transport selector so the qualified baseline remains
       usable and directly comparable throughout H1-H8.
 
 Exit: the same command reproduces baseline evidence, and no later stage can

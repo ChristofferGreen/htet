@@ -3,14 +3,37 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace tetra_viewer {
 namespace {
+
+void hash_scalar(std::uint64_t& hash,double value) {
+  constexpr std::uint64_t prime=1099511628211ULL;
+  const auto bits=std::bit_cast<std::uint64_t>(value);
+  for(unsigned byte=0;byte<8U;++byte){
+    hash^=(bits>>(byte*8U))&0xffU;
+    hash*=prime;
+  }
+}
+
+std::uint64_t hash_vectors(std::initializer_list<tetra::Vec3> vectors,
+                           std::initializer_list<double> scalars={}) {
+  std::uint64_t hash=1469598103934665603ULL;
+  for(const auto vector:vectors){
+    hash_scalar(hash,vector.x);
+    hash_scalar(hash,vector.y);
+    hash_scalar(hash,vector.z);
+  }
+  for(const double scalar:scalars)hash_scalar(hash,scalar);
+  return hash;
+}
 
 VkCompareOp depth_compare(DepthConvention convention,bool overlay=false) {
   if(convention==DepthConvention::reversed_infinite)
@@ -834,6 +857,7 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
   upload_buffer(hierarchy_lines_, hierarchy_ribbons);
   upload_buffer(editor_lines_, editor_ribbons);
   surface_upload_planner_.reset();
+  ++geometry_revision_;
 }
 
 void SceneRenderer::upload_editor_lines(
@@ -982,6 +1006,7 @@ void SceneRenderer::upload_surface_ranges(
   expand_line_segments_for_upload(editor_line_vertices,editor_ribbons);
   upload_lines(hierarchy_lines_,hierarchy_ribbons);
   upload_lines(editor_lines_,editor_ribbons);
+  ++geometry_revision_;
 }
 
 void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_view,
@@ -1082,6 +1107,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[51]=static_cast<float>(
       atmosphere_input.minimum_analytic_ground_distance_metres);
   atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
+  atmosphere_uniform[53]=static_cast<float>(atmosphere_input.transport==
+      AtmosphereTransport::faithful_hillaire?1:0);
   void* mapped{};
   if(vkMapMemory(device_,atmosphere.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)
@@ -1250,24 +1277,48 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           destination_stage,0,0,nullptr,0,nullptr,
           static_cast<std::uint32_t>(barriers.size()),barriers.data());
     };
-    const auto parameter_hash=atmosphere_parameter_hash(parameters);
-    if(atmosphere.optical_hash!=parameter_hash){
+    const AtmosphereLookupRevisions next_revisions{
+        .optical={atmosphere_optical_hash(parameters)},
+        .scattering={atmosphere_scattering_hash(parameters)},
+        .sun={hash_vectors({atmosphere_input.sun_direction})},
+        .camera_position={hash_vectors({camera_from_centre})},
+        .camera_orientation={hash_vectors(
+            {atmosphere_input.camera_right,atmosphere_input.camera_down,
+             atmosphere_input.camera_forward},
+            {atmosphere_input.vertical_tangent,atmosphere_input.aspect_ratio})},
+        .shadow={geometry_revision_},
+        .render_origin={hash_vectors(
+            {atmosphere_input.planet_centre_relative_world})}};
+    const auto previous_revisions=atmosphere.transport==
+        atmosphere_input.transport?atmosphere.lookup_revisions:std::nullopt;
+    // Until H4 changes the shader representation, both selectors intentionally
+    // render through the qualified frustum-space sky and therefore retain its
+    // orientation dependency.  This keeps the experimental option safe while
+    // H2/H3 are introduced behind it.
+    const auto plan=atmosphere_dispatch_plan(previous_revisions,next_revisions,
+        AtmosphereTransport::qualified_baseline);
+    if(plan.transmittance){
       dispatch(0U,(quality_settings_.transmittance_width+7U)/8U,
                (quality_settings_.transmittance_height+7U)/8U,1U);
       compute_barrier(std::span<const VkImage>{atmosphere_images.data(),1U},
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
+    if(plan.multiple_scattering){
       dispatch(1U,(quality_settings_.multiple_scattering_size+7U)/8U,
                (quality_settings_.multiple_scattering_size+7U)/8U,1U);
       compute_barrier(std::span<const VkImage>{atmosphere_images.data(),2U},
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-      atmosphere.optical_hash=parameter_hash;
     }
-    dispatch(2U,(quality_settings_.sky_width+7U)/8U,
-             (quality_settings_.sky_height+7U)/8U,1U);
-    dispatch(3U,(quality_settings_.aerial_width+7U)/8U,
-             (quality_settings_.aerial_height+7U)/8U,
-             quality_settings_.aerial_depth);
+    if(plan.sky_view)
+      dispatch(2U,(quality_settings_.sky_width+7U)/8U,
+               (quality_settings_.sky_height+7U)/8U,1U);
+    if(plan.aerial_perspective)
+      dispatch(3U,(quality_settings_.aerial_width+7U)/8U,
+               (quality_settings_.aerial_height+7U)/8U,
+               quality_settings_.aerial_depth);
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    atmosphere.lookup_revisions=next_revisions;
+    atmosphere.transport=atmosphere_input.transport;
   }
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timing_query_pool_,timing_base+2U);

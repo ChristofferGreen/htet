@@ -13,6 +13,7 @@
 namespace tetra_viewer {
 
 using AtmosphereSpectrum = std::array<double, 3>;
+struct AtmosphereParameters;
 
 enum class AtmospherePreset {
   gameplay_planet,
@@ -32,6 +33,83 @@ enum class AtmosphereQuality {
   standard,
   high
 };
+
+// Keep the already-qualified renderer selectable until the faithful path has
+// passed every Gate H oracle and performance gate.  The default changes only
+// at the atomic H9 promotion.
+enum class AtmosphereTransport {
+  qualified_baseline,
+  faithful_hillaire,
+};
+
+inline constexpr AtmosphereTransport default_atmosphere_transport=
+    AtmosphereTransport::qualified_baseline;
+
+[[nodiscard]] std::optional<AtmosphereTransport> parse_atmosphere_transport(
+    std::string_view name);
+[[nodiscard]] std::string_view atmosphere_transport_name(
+    AtmosphereTransport transport) noexcept;
+
+template<class Tag>
+struct AtmosphereRevision {
+  std::uint64_t value{};
+  friend constexpr bool operator==(AtmosphereRevision,
+                                   AtmosphereRevision) noexcept = default;
+};
+
+struct AtmosphereOpticalRevisionTag;
+struct AtmosphereScatteringRevisionTag;
+struct AtmosphereSunRevisionTag;
+struct AtmosphereCameraPositionRevisionTag;
+struct AtmosphereCameraOrientationRevisionTag;
+struct AtmosphereShadowRevisionTag;
+struct AtmosphereRenderOriginRevisionTag;
+
+using AtmosphereOpticalRevision=
+    AtmosphereRevision<AtmosphereOpticalRevisionTag>;
+using AtmosphereScatteringRevision=
+    AtmosphereRevision<AtmosphereScatteringRevisionTag>;
+using AtmosphereSunRevision=AtmosphereRevision<AtmosphereSunRevisionTag>;
+using AtmosphereCameraPositionRevision=
+    AtmosphereRevision<AtmosphereCameraPositionRevisionTag>;
+using AtmosphereCameraOrientationRevision=
+    AtmosphereRevision<AtmosphereCameraOrientationRevisionTag>;
+using AtmosphereShadowRevision=AtmosphereRevision<AtmosphereShadowRevisionTag>;
+using AtmosphereRenderOriginRevision=
+    AtmosphereRevision<AtmosphereRenderOriginRevisionTag>;
+
+struct AtmosphereLookupRevisions {
+  AtmosphereOpticalRevision optical{};
+  AtmosphereScatteringRevision scattering{};
+  AtmosphereSunRevision sun{};
+  AtmosphereCameraPositionRevision camera_position{};
+  AtmosphereCameraOrientationRevision camera_orientation{};
+  AtmosphereShadowRevision shadow{};
+  AtmosphereRenderOriginRevision render_origin{};
+  friend constexpr bool operator==(const AtmosphereLookupRevisions&,
+                                   const AtmosphereLookupRevisions&) noexcept =
+      default;
+};
+
+struct AtmosphereDispatchPlan {
+  bool transmittance{};
+  bool multiple_scattering{};
+  bool sky_view{};
+  bool aerial_perspective{};
+};
+
+// This is the authoritative lookup dependency model.  The baseline sky image
+// is view-frustum data and therefore follows orientation; the faithful path is
+// a local-up/sun full-sky table and deliberately does not.
+[[nodiscard]] AtmosphereDispatchPlan atmosphere_dispatch_plan(
+    std::optional<AtmosphereLookupRevisions> previous,
+    const AtmosphereLookupRevisions& next,
+    AtmosphereTransport transport) noexcept;
+
+[[nodiscard]] std::uint64_t atmosphere_optical_hash(
+    const AtmosphereParameters& parameters);
+[[nodiscard]] std::uint64_t atmosphere_scattering_hash(
+    const AtmosphereParameters& parameters);
 
 struct AtmosphereQualitySettings {
   unsigned transmittance_width{};
