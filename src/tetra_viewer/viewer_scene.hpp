@@ -818,7 +818,21 @@ struct SparseWorldSurfaceCache {
     std::vector<SurfaceOwnerCertificate> certificates;
     std::size_t candidate_owners{};
   };
+  struct SurfaceRawBlock {
+    struct Triangle {
+      std::array<std::uint32_t,3> vertices{};
+      tetra::WorldTetAddress owner{};
+    };
+    tetra::HierarchyBlockId id{};
+    std::uint64_t source_hierarchy_revision{};
+    // Raw crossings and compact local-index triangles retain the exact
+    // ordered owner contributions independently of global uniqueness. The
+    // optimized snapshot is the second half of the atomic block arena.
+    std::vector<tetra::WorldSurfaceVertex> vertices;
+    std::vector<Triangle> triangles;
+  };
   std::vector<tetra::WorldSurfaceVertex> intersections;
+  std::vector<std::uint32_t> intersection_references;
   // Exact retained optimizer graph, indexed by the sorted intersection keys.
   // Incident hashes detect topology changes at one vertex; the CSR one-ring
   // expands that seed by the fixed Jacobi pass count without block heuristics.
@@ -846,6 +860,7 @@ struct SparseWorldSurfaceCache {
       std::numeric_limits<std::uint64_t>::max()};
   tetra::WorldBlockedConformingVolume conforming;
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
+  std::vector<std::shared_ptr<const SurfaceRawBlock>> raw_blocks;
   // Exact flat directories assembled by merging only changed snapshot
   // contributions. Reference counts preserve shared-vertex and duplicate-face
   // validation without sorting the complete surface after every edit.
@@ -887,7 +902,8 @@ struct BlockedDerivedSurfaceBuild {
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks={},
     bool restrict_retained_volume=false,
     bool compute_complete_volume_oracle=true,
-    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks={});
+    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks={},
+    tetra::GeometryExecutor* executor=nullptr);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same

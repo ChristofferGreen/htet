@@ -154,7 +154,7 @@
         promotion, so the retained form must preserve the ordered causal
         contributions independently of whichever proof currently represents
         the midpoint.
-  - [ ] Retain one authoritative per-block raw topology arena, including exact
+  - [x] Retain one authoritative per-block raw topology arena, including exact
         contribution order and multiplicity. A shortcut through the global
         counted vertex/triangle set changed the refine/far/reverse render hash
         and was removed; global uniqueness is not a lossless topology oracle.
@@ -165,7 +165,15 @@
         Keep stable traversal order as part of that contract: replacing the
         ordered five-ring optimizer frontier with an exact hash set preserved
         the fixed route hashes but repeatedly failed the independent continuous
-        final-pose oracle.
+        final-pose oracle. The completed arena stores sorted raw crossings,
+        compact local triangle indices, exact owner contribution order, and
+        source revision beside the optimized snapshot. Reference-counted global
+        crossings are now validation/assembly data rather than the topology
+        source. Dirty blocks patch that directory linearly, persistent workers
+        execute five-pass Jacobi updates at a 512-vertex grain, and unchanged
+        arena allocations remain shared. The exact 512-operation slice is about
+        344 ms; a 64-operation slice is about 285 ms, with the remaining gap to
+        250 ms matching the roughly 34 ms global ancestry seed.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

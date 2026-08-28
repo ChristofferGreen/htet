@@ -3368,6 +3368,16 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(retained.metrics.reused_surface_blocks==surface.snapshots.size());
   CHECK(cache.intersections.size()==surface.vertices.size());
   CHECK(cache.snapshots.size()==surface.snapshots.size());
+  REQUIRE(cache.raw_blocks.size()==cache.snapshots.size());
+  for(std::size_t block=0;block<cache.snapshots.size();++block){
+    CHECK(cache.raw_blocks[block]->id==cache.snapshots[block].id);
+    CHECK(cache.raw_blocks[block]->source_hierarchy_revision<=
+          cache.snapshots[block].source_hierarchy_revision);
+    CHECK(cache.raw_blocks[block]->vertices.size()==
+          cache.snapshots[block].vertices.size());
+    CHECK(cache.raw_blocks[block]->triangles.size()==
+          cache.snapshots[block].triangles.size());
+  }
 
   // Selective volume retention changes storage only: a cold extraction still
   // publishes exactly the same authoritative connected surface.
@@ -3509,6 +3519,16 @@ TEST_CASE("sparse world surface cache localizes topology edits and matches cold 
   CHECK(warm.metrics.computed_intersections<cold.metrics.computed_intersections);
   CHECK(cache.intersections.size()==warm.vertices.size());
   CHECK(cache.snapshots.size()==warm.snapshots.size());
+  REQUIRE(cache.raw_blocks.size()==cache.snapshots.size());
+  for(std::size_t block=0;block<cache.snapshots.size();++block){
+    CHECK(cache.raw_blocks[block]->id==cache.snapshots[block].id);
+    CHECK(cache.raw_blocks[block]->source_hierarchy_revision<=
+          cache.snapshots[block].source_hierarchy_revision);
+    CHECK(cache.raw_blocks[block]->vertices.size()==
+          cache.snapshots[block].vertices.size());
+    CHECK(cache.raw_blocks[block]->triangles.size()==
+          cache.snapshots[block].triangles.size());
+  }
 
   tetra_viewer::SparseWorldSurfaceCache optimized_cache;
   static_cast<void>(tetra_viewer::build_sparse_world_derived_surface(

@@ -1140,7 +1140,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   const auto directory_finished=std::chrono::steady_clock::now();
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,field,true,cancellation,&surface_cache,
-      residency.volume_blocks,true,false,hierarchy_update.changed_blocks);
+      residency.volume_blocks,true,false,hierarchy_update.changed_blocks,
+      executor);
   const auto surface_built=std::chrono::steady_clock::now();
   // Production no longer expands the complete volume merely to render its
   // boundary. Admission counts the surface classification, direct template
@@ -1181,6 +1182,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         sizeof(SparseWorldSurfaceCache::SurfaceOwnerCertificate);
   diagnostics.retained_cache_bytes=
       surface_cache.intersections.capacity()*sizeof(tetra::WorldSurfaceVertex)+
+      surface_cache.intersection_references.capacity()*sizeof(std::uint32_t)+
       surface_cache.optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
       surface_cache.optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
       surface_cache.optimizer_neighbors.capacity()*sizeof(std::uint32_t)+
@@ -1205,6 +1207,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(SparseWorldSurfaceCache::HierarchySignature)+
       surface_cache.snapshots.capacity()*
           sizeof(tetra::WorldDerivedSurfaceSnapshot)+
+      surface_cache.raw_blocks.capacity()*
+          sizeof(decltype(surface_cache.raw_blocks)::value_type)+
       surface_cache.assembled_vertices.capacity()*
           sizeof(SparseWorldSurfaceCache::CountedSurfaceVertex)+
       surface_cache.assembled_triangles.capacity()*
@@ -1326,6 +1330,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         snapshot.vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
         snapshot.triangles.capacity()*sizeof(tetra::WorldSurfaceTriangle)+
         snapshot.dependency_blocks.capacity()*sizeof(tetra::HierarchyBlockId);
+  for(const auto& block:surface_cache.raw_blocks)
+    diagnostics.retained_cache_bytes+=
+        sizeof(SparseWorldSurfaceCache::SurfaceRawBlock)+
+        block->vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
+        block->triangles.capacity()*
+            sizeof(SparseWorldSurfaceCache::SurfaceRawBlock::Triangle);
   for(const auto& block:surface_cache.render_blocks)
     diagnostics.retained_render_block_bytes+=
         block.triangle_vertices.capacity()*sizeof(SceneVertex);

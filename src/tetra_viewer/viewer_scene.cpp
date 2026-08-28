@@ -1475,7 +1475,8 @@ struct OptimizedSurface {
 void optimize_surface_graph(
     PreparedScene& scene,const tetra::Sphere& sphere,OptimizedSurface& surface,
     std::span<const std::uint32_t> dependency_distance={},
-    std::span<const std::size_t> evaluation_order={}) {
+    std::span<const std::size_t> evaluation_order={},
+    tetra::GeometryExecutor* executor=nullptr) {
   auto& positions=surface.positions;
   const auto& triangles=surface.triangles;
   const auto& global_keys=surface.global_keys;
@@ -1601,7 +1602,7 @@ void optimize_surface_graph(
   // one or two cores even though the Jacobi pass is read-only per vertex.
   const std::size_t worker_count=std::max<std::size_t>(1U,std::min<std::size_t>(
       10U,std::min<std::size_t>(std::thread::hardware_concurrency(),
-                                (work_items+1023U)/1024U)));
+                                (work_items+511U)/512U)));
   for(std::uint32_t pass=0;pass<surface_optimizer_passes;++pass){
     const auto previous=positions;auto next=previous;
     std::vector<std::size_t> rejected(worker_count);
@@ -1615,6 +1616,18 @@ void optimize_surface_graph(
       }
     };
     if(worker_count==1U)work(0U,0U,work_items);
+    else if(executor!=nullptr){
+      auto group=executor->make_group(
+          pass,tetra::GeometryTaskPriority::publication_critical);
+      for(std::size_t worker=0;worker<worker_count;++worker){
+        const auto begin=work_items*worker/worker_count;
+        const auto end=work_items*(worker+1U)/worker_count;
+        executor->submit(group,[&,worker,begin,end](std::stop_token stop){
+          if(!stop.stop_requested())work(worker,begin,end);
+        });
+      }
+      executor->wait_and_help(group);
+    }
     else{
       std::vector<std::thread> workers;workers.reserve(worker_count);
       for(std::size_t worker=0;worker<worker_count;++worker){
@@ -2851,7 +2864,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     std::stop_token cancellation,SparseWorldSurfaceCache* cache,
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks,
     bool restrict_retained_volume,bool compute_complete_volume_oracle,
-    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks) {
+    std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks,
+    tetra::GeometryExecutor* executor) {
   const auto started=std::chrono::steady_clock::now();
   if(!(domain.world_extent>0.0)||!std::isfinite(domain.world_extent))
     throw std::invalid_argument("sparse world surface requires a finite domain");
@@ -3215,21 +3229,58 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return
       a.x*b.x+a.y*b.y+a.z*b.z;};
+  bool retained_raw_complete=cache&&
+      cache->raw_blocks.size()==cache->snapshots.size()&&
+      cache->intersection_references.size()==cache->intersections.size();
+  if(retained_raw_complete)
+    for(std::size_t block=0;block<cache->snapshots.size();++block)
+      retained_raw_complete=retained_raw_complete&&
+          cache->raw_blocks[block]->id==cache->snapshots[block].id&&
+          cache->raw_blocks[block]->vertices.size()==
+              cache->snapshots[block].vertices.size()&&
+          cache->raw_blocks[block]->triangles.size()==
+              cache->snapshots[block].triangles.size();
   if(cache){
     if(!field_changed)for(const auto& snapshot:cache->snapshots){
       if(!topology_current_blocks.contains(snapshot.id)||
          topology_changed_blocks.contains(snapshot.id))continue;
-      for(const auto& triangle:snapshot.triangles)
-        all_surface_triangles.push_back({triangle.vertices,triangle.owner});
-      for(const auto& vertex:snapshot.vertices){
-        const auto raw=std::ranges::lower_bound(
-            cache->intersections,vertex.key,{},
-            &tetra::WorldSurfaceVertex::key);
-        if(raw==cache->intersections.end()||raw->key!=vertex.key)
-          throw std::logic_error(
-              "retained surface snapshot has no raw field crossing");
-        if(all_surface_vertices.emplace(raw->key,raw->position).second)
-          ++reused_intersections;
+      if(retained_raw_complete)continue;
+      const auto raw_block=std::ranges::lower_bound(
+          cache->raw_blocks,snapshot.id,{},
+          [](const auto& block){return block->id;});
+      const bool has_raw_block=raw_block!=cache->raw_blocks.end()&&
+          (*raw_block)->id==snapshot.id;
+      if(has_raw_block&&(*raw_block)->vertices.size()!=snapshot.vertices.size())
+        throw std::logic_error(
+            "retained surface raw block does not match its snapshot");
+      if(has_raw_block){
+        for(const auto& triangle:(*raw_block)->triangles){
+          KeyTriangle expanded;expanded.owner=triangle.owner;
+          for(std::size_t corner=0;corner<3U;++corner){
+            if(triangle.vertices[corner]>=(*raw_block)->vertices.size())
+              throw std::logic_error(
+                  "retained surface raw triangle has an invalid vertex");
+            expanded.vertices[corner]=
+                (*raw_block)->vertices[triangle.vertices[corner]].key;
+          }
+          all_surface_triangles.push_back(expanded);
+        }
+        for(const auto& vertex:(*raw_block)->vertices)
+          if(all_surface_vertices.emplace(vertex.key,vertex.position).second)
+            ++reused_intersections;
+      }else{
+        for(const auto& triangle:snapshot.triangles)
+          all_surface_triangles.push_back({triangle.vertices,triangle.owner});
+        for(const auto& vertex:snapshot.vertices){
+          const auto raw=std::ranges::lower_bound(
+              cache->intersections,vertex.key,{},
+              &tetra::WorldSurfaceVertex::key);
+          if(raw==cache->intersections.end()||raw->key!=vertex.key)
+            throw std::logic_error(
+                "retained surface snapshot has no raw field crossing");
+          if(all_surface_vertices.emplace(raw->key,raw->position).second)
+            ++reused_intersections;
+        }
       }
     }
     for(const auto& candidate:surface_candidate_owner_records){
@@ -3338,6 +3389,133 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       }
     }
   }
+  std::map<tetra::HierarchyBlockId,std::vector<KeyTriangle>>
+      rebuilt_raw_triangles;
+  for(const auto& triangle:all_surface_triangles)
+    rebuilt_raw_triangles[tetra::hierarchy_block_id(
+        triangle.owner,directory.block_generations())].push_back(triangle);
+  std::vector<std::shared_ptr<const SparseWorldSurfaceCache::SurfaceRawBlock>>
+      current_raw_blocks;
+  if(retained_raw_complete&&!field_changed)
+    for(const auto& block:cache->raw_blocks)
+      if(topology_current_blocks.contains(block->id)&&
+         !topology_changed_blocks.contains(block->id))
+        current_raw_blocks.push_back(block);
+  for(auto& [id,block_triangles]:rebuilt_raw_triangles){
+    auto block=std::make_shared<SparseWorldSurfaceCache::SurfaceRawBlock>();
+    block->id=id;block->source_hierarchy_revision=directory.revision();
+    std::set<tetra::WorldDerivedVertexKey> block_keys;
+    for(const auto& triangle:block_triangles)
+      block_keys.insert(triangle.vertices.begin(),triangle.vertices.end());
+    block->vertices.reserve(block_keys.size());
+    for(const auto& key:block_keys){
+      const auto found=all_surface_vertices.find(key);
+      if(found==all_surface_vertices.end())
+        throw std::logic_error("raw surface block has no field crossing");
+      block->vertices.push_back({found->first,found->second});
+    }
+    block->triangles.reserve(block_triangles.size());
+    for(const auto& triangle:block_triangles){
+      SparseWorldSurfaceCache::SurfaceRawBlock::Triangle compact;
+      compact.owner=triangle.owner;
+      for(std::size_t corner=0;corner<3U;++corner){
+        const auto found=std::ranges::lower_bound(
+            block->vertices,triangle.vertices[corner],{},
+            &tetra::WorldSurfaceVertex::key);
+        if(found==block->vertices.end()||
+           found->key!=triangle.vertices[corner])
+          throw std::logic_error("raw surface triangle has no local vertex");
+        compact.vertices[corner]=static_cast<std::uint32_t>(
+            found-block->vertices.begin());
+      }
+      block->triangles.push_back(compact);
+    }
+    current_raw_blocks.push_back(std::move(block));
+  }
+  std::ranges::sort(current_raw_blocks,{},
+      [](const auto& block){return block->id;});
+  if(std::ranges::adjacent_find(current_raw_blocks,[](const auto& first,
+                                                      const auto& second){
+       return first->id==second->id;
+     })!=current_raw_blocks.end())
+    throw std::logic_error("surface raw arena contains duplicate blocks");
+
+  struct RawVertexDelta {
+    tetra::WorldSurfaceVertex vertex;
+    std::int32_t removed{},added{};
+  };
+  std::vector<RawVertexDelta> raw_vertex_deltas;
+  if(retained_raw_complete&&!field_changed){
+    for(const auto& block:cache->raw_blocks)
+      if(!topology_current_blocks.contains(block->id)||
+         topology_changed_blocks.contains(block->id))
+        for(const auto& vertex:block->vertices)
+          raw_vertex_deltas.push_back({vertex,1,0});
+    for(const auto& block:current_raw_blocks)
+      if(topology_changed_blocks.contains(block->id))
+        for(const auto& vertex:block->vertices)
+          raw_vertex_deltas.push_back({vertex,0,1});
+  }else for(const auto& block:current_raw_blocks)
+    for(const auto& vertex:block->vertices)
+      raw_vertex_deltas.push_back({vertex,0,1});
+  std::ranges::sort(raw_vertex_deltas,[](const auto& first,const auto& second){
+    return first.vertex.key<second.vertex.key;
+  });
+  std::vector<RawVertexDelta> grouped_raw_vertices;
+  for(const auto& delta:raw_vertex_deltas){
+    if(grouped_raw_vertices.empty()||
+       grouped_raw_vertices.back().vertex.key!=delta.vertex.key){
+      grouped_raw_vertices.push_back(delta);continue;
+    }
+    auto& grouped=grouped_raw_vertices.back();
+    if(delta.added>0){
+      const auto difference=grouped.vertex.position-delta.vertex.position;
+      if(grouped.added>0&&dot(difference,difference)>1.0e-20)
+        throw std::logic_error("raw surface blocks disagree on a crossing");
+      grouped.vertex=delta.vertex;
+    }
+    grouped.removed+=delta.removed;grouped.added+=delta.added;
+  }
+  std::vector<tetra::WorldSurfaceVertex> next_intersections;
+  std::vector<std::uint32_t> next_intersection_references;
+  next_intersections.reserve(cache?cache->intersections.size():
+                             grouped_raw_vertices.size());
+  next_intersection_references.reserve(next_intersections.capacity());
+  const bool retain_raw_directory=retained_raw_complete&&!field_changed;
+  auto retained_raw_vertex=retain_raw_directory?cache->intersections.begin():
+      std::vector<tetra::WorldSurfaceVertex>::const_iterator{};
+  const auto retained_raw_end=retain_raw_directory?cache->intersections.end():
+      std::vector<tetra::WorldSurfaceVertex>::const_iterator{};
+  std::size_t retained_reference{};
+  for(const auto& delta:grouped_raw_vertices){
+    while(retained_raw_vertex!=retained_raw_end&&
+          retained_raw_vertex->key<delta.vertex.key){
+      next_intersections.push_back(*retained_raw_vertex++);
+      next_intersection_references.push_back(
+          cache->intersection_references[retained_reference++]);
+    }
+    const bool exists=retained_raw_vertex!=retained_raw_end&&
+        retained_raw_vertex->key==delta.vertex.key;
+    const auto old_references=exists?
+        cache->intersection_references[retained_reference]:0U;
+    if(delta.removed<0||delta.added<0||
+       static_cast<std::uint32_t>(delta.removed)>old_references)
+      throw std::logic_error("raw surface vertex reference underflow");
+    const auto references=old_references-
+        static_cast<std::uint32_t>(delta.removed)+
+        static_cast<std::uint32_t>(delta.added);
+    if(references>0U){
+      next_intersections.push_back(
+          delta.added>0?delta.vertex:*retained_raw_vertex);
+      next_intersection_references.push_back(references);
+    }
+    if(exists){++retained_raw_vertex;++retained_reference;}
+  }
+  while(retained_raw_vertex!=retained_raw_end){
+    next_intersections.push_back(*retained_raw_vertex++);
+    next_intersection_references.push_back(
+        cache->intersection_references[retained_reference++]);
+  }
   const auto topology_built=std::chrono::steady_clock::now();
   const auto vertex_hash=[](const tetra::WorldVertexKey& key){
     std::uint64_t hash=static_cast<std::uint64_t>(key.x)*0x9e3779b97f4a7c15ULL;
@@ -3401,10 +3579,9 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
                      decltype(derived_vertex_hash)>
       optimizer_index(0U,derived_vertex_hash);
   if(cache&&optimize){
-    optimizer_keys.reserve(all_surface_vertices.size());
-    for(const auto& [key,position]:all_surface_vertices){
-      (void)position;optimizer_keys.push_back(key);
-    }
+    optimizer_keys.reserve(next_intersections.size());
+    for(const auto& vertex:next_intersections)
+      optimizer_keys.push_back(vertex.key);
     optimizer_index.reserve(optimizer_keys.size());
     for(std::size_t index=0;index<optimizer_keys.size();++index){
       if(index>std::numeric_limits<std::uint32_t>::max())
@@ -3453,12 +3630,14 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
          !topology_current_blocks.contains(snapshot.id))
         for(const auto& triangle:snapshot.triangles)
           append_triangle_edges(triangle.vertices,false);
-    for(const auto& triangle:all_surface_triangles){
-      const auto id=tetra::hierarchy_block_id(
-          triangle.owner,directory.block_generations());
-      if(edge_bootstrap||topology_changed_blocks.contains(id))
-        append_triangle_edges(triangle.vertices,true);
-    }
+    for(const auto& block:current_raw_blocks)
+      if(edge_bootstrap||topology_changed_blocks.contains(block->id))
+        for(const auto& triangle:block->triangles){
+          std::array<tetra::WorldDerivedVertexKey,3> keys;
+          for(std::size_t corner=0;corner<3U;++corner)
+            keys[corner]=block->vertices[triangle.vertices[corner]].key;
+          append_triangle_edges(keys,true);
+        }
     std::ranges::sort(edge_deltas,{},&EdgeDelta::vertices);
     std::vector<EdgeDelta> grouped_edges;
     for(const auto& delta:edge_deltas){
@@ -3579,23 +3758,11 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   std::map<tetra::HierarchyBlockId,
            std::vector<tetra::WorldDerivedVertexKey>> block_surface_vertices;
   if(cache){
-    // Unchanged snapshots already own sorted unique vertex arrays. Reusing
-    // them avoids expanding and re-sorting three keys per retained triangle.
-    for(const auto& snapshot:cache->snapshots){
-      if(!topology_current_blocks.contains(snapshot.id)||
-         topology_changed_blocks.contains(snapshot.id))continue;
-      auto& surface_vertices=block_surface_vertices[snapshot.id];
-      surface_vertices.reserve(snapshot.vertices.size());
-      for(const auto& vertex:snapshot.vertices)
+    for(const auto& block:current_raw_blocks){
+      auto& surface_vertices=block_surface_vertices[block->id];
+      surface_vertices.reserve(block->vertices.size());
+      for(const auto& vertex:block->vertices)
         surface_vertices.push_back(vertex.key);
-    }
-    for(const auto& triangle:all_surface_triangles){
-      const auto id=tetra::hierarchy_block_id(
-          triangle.owner,directory.block_generations());
-      if(!topology_changed_blocks.contains(id))continue;
-      auto& surface_vertices=block_surface_vertices[id];
-      surface_vertices.insert(surface_vertices.end(),triangle.vertices.begin(),
-                              triangle.vertices.end());
     }
   }else for(const auto& block:volume.blocks){
     auto& surface_vertices=block_surface_vertices[block->id];
@@ -3706,25 +3873,32 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> vertices;
   std::vector<KeyTriangle> triangles;
   if(cache){
-    for(const auto& triangle:all_surface_triangles){
-      const auto id=tetra::hierarchy_block_id(
-          triangle.owner,directory.block_generations());
-      if(optimize){
-        const bool in_patch=std::ranges::any_of(
-            triangle.vertices,[&](const auto& key){
-              const auto found=optimizer_index.find(key);
-              return found!=optimizer_index.end()&&
-                  optimizer_patch_distances[found->second]<=
-                      surface_optimizer_dependency_halo_rings-1U;
-            });
-        if(!in_patch)continue;
-      }else if(!changed_blocks.contains(id))continue;
-      triangles.push_back(triangle);
-      for(const auto& key:triangle.vertices){
-        const auto found=all_surface_vertices.find(key);
-        if(found==all_surface_vertices.end())
-          throw std::logic_error("direct sparse surface triangle has no crossing");
-        vertices.emplace(found->first,found->second);
+    for(const auto& block:current_raw_blocks){
+      if(!optimize&&!changed_blocks.contains(block->id))continue;
+      for(const auto& compact:block->triangles){
+        KeyTriangle triangle;triangle.owner=compact.owner;
+        for(std::size_t corner=0;corner<3U;++corner)
+          triangle.vertices[corner]=
+              block->vertices[compact.vertices[corner]].key;
+        if(optimize){
+          const bool in_patch=std::ranges::any_of(
+              triangle.vertices,[&](const auto& key){
+                const auto found=optimizer_index.find(key);
+                return found!=optimizer_index.end()&&
+                    optimizer_patch_distances[found->second]<=
+                        surface_optimizer_dependency_halo_rings-1U;
+              });
+          if(!in_patch)continue;
+        }
+        triangles.push_back(triangle);
+        for(const auto& key:triangle.vertices){
+          const auto found=std::ranges::lower_bound(
+              next_intersections,key,{},&tetra::WorldSurfaceVertex::key);
+          if(found==next_intersections.end()||found->key!=key)
+            throw std::logic_error(
+                "direct sparse surface triangle has no crossing");
+          vertices.emplace(found->key,found->position);
+        }
       }
     }
   }else{
@@ -3804,12 +3978,9 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
                      decltype(derived_vertex_hash)>
       patch_index(0U,derived_vertex_hash);
   patch_index.reserve(vertices.size());
-  std::vector<tetra::WorldSurfaceVertex> raw_intersections;
-  raw_intersections.reserve(vertices.size());
   for(const auto& [key,position]:vertices){
     patch_index.emplace(key,surface.global_keys.size());
     surface.global_keys.push_back(key);surface.positions.push_back(position);
-    raw_intersections.push_back({key,position});
   }
   surface.triangles.reserve(triangles.size());
   for(const auto& triangle:triangles){
@@ -3836,7 +4007,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   PreparedScene optimization_metrics;
   if(optimize&&!surface.triangles.empty())
     optimize_surface_graph(
-        optimization_metrics,field,surface,patch_dependency_distances);
+        optimization_metrics,field,surface,patch_dependency_distances,{},executor);
   const auto optimized=std::chrono::steady_clock::now();
 
   struct BlockOutput {
@@ -3937,18 +4108,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       // Retain raw edge crossings, not their optimized surface positions.
       // A derived key names the source hierarchy edge and must remain valid
       // when a neighbouring output block is rebuilt later.
-      std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> retained_raw;
-      if(!field_changed)for(const auto& vertex:cache->intersections)
-        retained_raw.emplace(vertex.key,vertex.position);
-      for(const auto& vertex:raw_intersections)
-        retained_raw[vertex.key]=vertex.position;
-      cache->intersections.clear();cache->intersections.reserve(retained_raw.size());
-      for(const auto& active:result.vertices){
-        const auto found=retained_raw.find(active.key);
-        if(found==retained_raw.end())
-          throw std::logic_error("optimized surface lost its raw edge crossing");
-        cache->intersections.push_back({found->first,found->second});
-      }
+      cache->intersections=std::move(next_intersections);
+      cache->intersection_references=std::move(next_intersection_references);
       if(cache->intersections.size()!=optimizer_keys.size()||
          !std::equal(cache->intersections.begin(),cache->intersections.end(),
              optimizer_keys.begin(),[](const auto& vertex,const auto& key){
@@ -3962,7 +4123,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       cache->optimizer_edges=std::move(next_optimizer_edges);
       cache->optimizer_reverse_edges=std::move(next_optimizer_reverse_edges);
     }else{
-      cache->intersections=result.vertices;
+      cache->intersections=std::move(next_intersections);
+      cache->intersection_references=std::move(next_intersection_references);
       cache->optimizer_incident_hashes.clear();
       cache->optimizer_neighbor_offsets.clear();
       cache->optimizer_neighbors.clear();
@@ -4013,6 +4175,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
             std::to_string(retained_volume_blocks.size())+" pin ids)");
       cache->conforming=std::move(retained);
     }
+    cache->raw_blocks=std::move(current_raw_blocks);
     cache->snapshots=result.snapshots;
   }
   const auto assembled=std::chrono::steady_clock::now();
