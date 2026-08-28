@@ -26,6 +26,7 @@ struct AtmosphereFrameInput {
   double maximum_aerial_distance_metres{1'000'000.0};
   float exposure{0.65F};
   int debug_view{};
+  AtmosphereQuality quality{AtmosphereQuality::standard};
   bool enabled{};
 };
 
@@ -40,7 +41,8 @@ struct SceneGpuTimings {
 class SceneRenderer {
  public:
   void initialize(VkPhysicalDevice physical_device, VkDevice device, VkFormat colour_format, VkFormat depth_format);
-  void recreate(VkExtent2D extent, std::uint32_t image_count);
+  void recreate(VkExtent2D extent, std::uint32_t image_count,
+                AtmosphereQuality quality=AtmosphereQuality::standard);
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
               std::span<const SceneVertex> surface_line_vertices);
@@ -58,6 +60,9 @@ class SceneRenderer {
   }
   [[nodiscard]] std::size_t atmosphere_allocation_bytes() const noexcept {
     return atmosphere_allocation_bytes_;
+  }
+  [[nodiscard]] std::size_t scene_target_allocation_bytes() const noexcept {
+    return scene_target_allocation_bytes_;
   }
   // camera_data is a column-major view-projection matrix followed by the
   // legacy diagnostic light, rendering parameters, and relative view point.
@@ -97,6 +102,9 @@ class SceneRenderer {
   std::vector<bool> timing_queries_written_;
   SceneGpuTimings gpu_timings_{};
   std::size_t atmosphere_allocation_bytes_{};
+  std::size_t scene_target_allocation_bytes_{};
+  AtmosphereQualitySettings quality_settings_{
+      atmosphere_quality_settings(AtmosphereQuality::standard)};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};

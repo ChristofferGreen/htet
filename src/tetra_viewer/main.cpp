@@ -617,7 +617,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     wd->UseDynamicRendering = true;
     SetupVulkanWindow(wd, surface, w, h);
     g_SceneRenderer.initialize(g_PhysicalDevice, g_Device, wd->SurfaceFormat.format, VK_FORMAT_D32_SFLOAT);
-    g_SceneRenderer.recreate({static_cast<std::uint32_t>(wd->Width), static_cast<std::uint32_t>(wd->Height)}, wd->ImageCount);
+    g_SceneRenderer.recreate(
+        {static_cast<std::uint32_t>(wd->Width),
+         static_cast<std::uint32_t>(wd->Height)},wd->ImageCount,
+        g_AtmosphereFrame.quality);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -1000,6 +1003,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     tetra_viewer::AtmospherePreset world_atmosphere_preset=
         tetra_viewer::AtmospherePreset::earth;
     double world_exposure_ev=-0.62;
+    bool world_gpu_atmosphere_benchmark=false;
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
@@ -1008,6 +1012,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view elevation_prefix="--sun-elevation-degrees=";
         constexpr std::string_view exposure_prefix="--exposure-ev=";
         constexpr std::string_view debug_prefix="--atmosphere-debug=";
+        constexpr std::string_view quality_prefix="--atmosphere-quality=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1021,6 +1026,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const std::string_view value=argv[argument];
             if(value=="--atmosphere-off"){
                 g_AtmosphereFrame.enabled=false;
+            }else if(value=="--gpu-atmosphere-benchmark"){
+                world_gpu_atmosphere_benchmark=true;
             }else if(value.starts_with(preset_prefix)){
                 const auto preset=tetra_viewer::parse_atmosphere_preset(
                     value.substr(preset_prefix.size()));
@@ -1065,7 +1072,29 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
+            }else if(value.starts_with(quality_prefix)){
+                const auto quality=value.substr(quality_prefix.size());
+                if(quality=="low")
+                    g_AtmosphereFrame.quality=
+                        tetra_viewer::AtmosphereQuality::low;
+                else if(quality=="default")
+                    g_AtmosphereFrame.quality=
+                        tetra_viewer::AtmosphereQuality::standard;
+                else if(quality=="high")
+                    g_AtmosphereFrame.quality=
+                        tetra_viewer::AtmosphereQuality::high;
+                else{
+                    fprintf(stderr,"unknown atmosphere quality\n");
+                    return 2;
+                }
             }
+        }
+        if(g_AtmosphereFrame.quality!=
+           tetra_viewer::AtmosphereQuality::standard){
+            g_SceneRenderer.recreate(
+                {static_cast<std::uint32_t>(g_MainWindowData.Width),
+                 static_cast<std::uint32_t>(g_MainWindowData.Height)},
+                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
         }
     }
     if(world_mode){
@@ -1183,7 +1212,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         {
             ImGui_ImplVulkan_SetMinImageCount(g_MinImageCount);
             ImGui_ImplVulkanH_CreateOrResizeWindow(g_Instance, g_PhysicalDevice, g_Device, &g_MainWindowData, g_QueueFamily, g_Allocator, fb_width, fb_height, g_MinImageCount);
-            g_SceneRenderer.recreate({static_cast<std::uint32_t>(g_MainWindowData.Width), static_cast<std::uint32_t>(g_MainWindowData.Height)}, g_MainWindowData.ImageCount);
+            g_SceneRenderer.recreate(
+                {static_cast<std::uint32_t>(g_MainWindowData.Width),
+                 static_cast<std::uint32_t>(g_MainWindowData.Height)},
+                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
             g_MainWindowData.FrameIndex = 0;
             g_SwapChainRebuild = false;
         }
@@ -2506,6 +2538,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_atmosphere_preset=
                     tetra_viewer::AtmospherePreset::custom;
             if(ImGui::CollapsingHeader("Atmosphere quality")){
+                constexpr std::array<const char*,3> quality_names{
+                    "Low","Default","High"};
+                int quality_index=static_cast<int>(g_AtmosphereFrame.quality);
+                ImGui::SetNextItemWidth(190.0F);
+                if(ImGui::Combo("Profile",&quality_index,quality_names.data(),
+                                static_cast<int>(quality_names.size()))){
+                    g_AtmosphereFrame.quality=
+                        static_cast<tetra_viewer::AtmosphereQuality>(quality_index);
+                    if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
+                        throw std::runtime_error(
+                            "unable to idle Vulkan for atmosphere quality change");
+                    g_SceneRenderer.recreate(
+                        {static_cast<std::uint32_t>(g_MainWindowData.Width),
+                         static_cast<std::uint32_t>(g_MainWindowData.Height)},
+                        g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
+                }
                 const double distance_minimum=10'000.0;
                 const double distance_maximum=10'000'000.0;
                 ImGui::DragScalar("Aerial range (m)",ImGuiDataType_Double,
@@ -2534,9 +2582,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                 timings.terrain_milliseconds,
                                 timings.composite_milliseconds);
                 }else ImGui::TextDisabled("GPU timings pending");
-                ImGui::Text("Scene/atmosphere allocation %.1f MiB",
+                ImGui::Text("Atmosphere allocation %.1f MiB",
                     static_cast<double>(
                         g_SceneRenderer.atmosphere_allocation_bytes())/
+                        (1024.0*1024.0));
+                ImGui::Text("HDR/depth allocation %.1f MiB",
+                    static_cast<double>(
+                        g_SceneRenderer.scene_target_allocation_bytes())/
                         (1024.0*1024.0));
             }
             ImGui::SetNextItemWidth(190.0F);
@@ -3253,6 +3305,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                          <<",\"draw_calls\":"<<upload.draw_calls<<"}\n";
                 retained_upload_present_pending=false;
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
+            }
+            if(world_gpu_atmosphere_benchmark&&world_runtime&&
+               !world_runtime->diagnostics().busy){
+                const auto& timing=g_SceneRenderer.gpu_timings();
+                if(timing.valid){
+                    std::cout<<"{\"event\":\"gpu_atmosphere_benchmark\","
+                        <<"\"shadows_ms\":"<<timing.shadows_milliseconds<<','
+                        <<"\"atmosphere_ms\":"<<timing.atmosphere_milliseconds<<','
+                        <<"\"terrain_ms\":"<<timing.terrain_milliseconds<<','
+                        <<"\"composite_ms\":"<<timing.composite_milliseconds<<','
+                        <<"\"atmosphere_bytes\":"
+                        <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
+                        <<"\"scene_target_bytes\":"
+                        <<g_SceneRenderer.scene_target_allocation_bytes()<<"}\n";
+                    world_gpu_atmosphere_benchmark=false;
+                    glfwSetWindowShouldClose(window,GLFW_TRUE);
+                }
             }
         }
         // Avoid spinning the event loop when present returns immediately.

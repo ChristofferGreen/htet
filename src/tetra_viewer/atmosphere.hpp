@@ -22,6 +22,33 @@ enum class AtmospherePreset {
   custom,
 };
 
+enum class AtmosphereQuality {
+  low,
+  standard,
+  high
+};
+
+struct AtmosphereQualitySettings {
+  unsigned transmittance_width{};
+  unsigned transmittance_height{};
+  unsigned multiple_scattering_size{};
+  unsigned sky_width{};
+  unsigned sky_height{};
+  unsigned aerial_width{};
+  unsigned aerial_height{};
+  unsigned aerial_depth{};
+  unsigned shadow_resolution{};
+};
+
+[[nodiscard]] constexpr AtmosphereQualitySettings atmosphere_quality_settings(
+    AtmosphereQuality quality) noexcept {
+  if(quality==AtmosphereQuality::low)
+    return {128U,32U,16U,96U,54U,16U,16U,8U,512U};
+  if(quality==AtmosphereQuality::high)
+    return {512U,128U,64U,384U,216U,64U,64U,32U,2048U};
+  return {256U,64U,32U,192U,108U,32U,32U,16U,1024U};
+}
+
 struct AtmosphereParameters {
   double ground_radius_metres{6'360'000.0};
   double atmosphere_height_metres{100'000.0};

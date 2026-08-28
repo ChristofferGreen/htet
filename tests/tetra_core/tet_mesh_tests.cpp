@@ -13799,6 +13799,26 @@ TEST_CASE("headless viewer script rejects malformed and unknown commands") {
   CHECK(errors.str().find("solid volume must be on or off") != std::string::npos);
 }
 
+TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") {
+  const auto low=tetra_viewer::atmosphere_quality_settings(
+      tetra_viewer::AtmosphereQuality::low);
+  const auto standard=tetra_viewer::atmosphere_quality_settings(
+      tetra_viewer::AtmosphereQuality::standard);
+  const auto high=tetra_viewer::atmosphere_quality_settings(
+      tetra_viewer::AtmosphereQuality::high);
+  CHECK(low.transmittance_width<standard.transmittance_width);
+  CHECK(standard.transmittance_width<high.transmittance_width);
+  CHECK(low.aerial_depth<standard.aerial_depth);
+  CHECK(standard.aerial_depth<high.aerial_depth);
+  CHECK(low.shadow_resolution<standard.shadow_resolution);
+  CHECK(standard.shadow_resolution<high.shadow_resolution);
+  constexpr std::size_t buffered_frames=3U;
+  const std::size_t default_shadow_bytes=buffered_frames*
+      tetra_viewer::shadow_cascade_count*standard.shadow_resolution*
+      standard.shadow_resolution*sizeof(float);
+  CHECK(default_shadow_bytes<64U*1024U*1024U);
+}
+
 TEST_CASE("atmosphere presets are valid deterministic physical snapshots") {
   using tetra_viewer::AtmospherePreset;
   const std::array presets{

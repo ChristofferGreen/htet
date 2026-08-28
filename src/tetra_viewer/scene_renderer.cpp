@@ -380,7 +380,9 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_,atmosphere_compute_shader,nullptr);
 }
 
-void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
+void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
+                             AtmosphereQuality quality) {
+  quality_settings_=atmosphere_quality_settings(quality);
   if(timing_query_pool_!=VK_NULL_HANDLE){
     vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
     timing_query_pool_=VK_NULL_HANDLE;
@@ -426,10 +428,19 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     throw std::runtime_error("unable to create scene timing query pool");
   timing_queries_written_.assign(image_count,false);
   gpu_timings_={};
-  atmosphere_allocation_bytes_=static_cast<std::size_t>(image_count)*(
-      static_cast<std::size_t>(extent.width)*extent.height*(8U+4U)+
-      256U*64U*8U+32U*32U*8U+192U*108U*8U+
-      2U*32U*32U*16U*8U+4U*2048U*2048U*4U);
+  const auto frames=static_cast<std::size_t>(image_count);
+  scene_target_allocation_bytes_=frames*
+      static_cast<std::size_t>(extent.width)*extent.height*(8U+4U);
+  atmosphere_allocation_bytes_=frames*(
+      quality_settings_.transmittance_width*
+          quality_settings_.transmittance_height*8U+
+      quality_settings_.multiple_scattering_size*
+          quality_settings_.multiple_scattering_size*8U+
+      quality_settings_.sky_width*quality_settings_.sky_height*8U+
+      2U*quality_settings_.aerial_width*quality_settings_.aerial_height*
+          quality_settings_.aerial_depth*8U+shadow_cascade_count*
+          quality_settings_.shadow_resolution*
+          quality_settings_.shadow_resolution*4U);
   depth_images_.assign(image_count, {});
   for (auto& depth : depth_images_) {
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -520,15 +531,26 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   atmosphere_frames_.resize(image_count);
   for(auto& frame:atmosphere_frames_){
     make_atmosphere_image(frame.transmittance,VK_IMAGE_TYPE_2D,
-                          VK_IMAGE_VIEW_TYPE_2D,{256U,64U,1U});
+                          VK_IMAGE_VIEW_TYPE_2D,
+                          {quality_settings_.transmittance_width,
+                           quality_settings_.transmittance_height,1U});
     make_atmosphere_image(frame.multiple_scattering,VK_IMAGE_TYPE_2D,
-                          VK_IMAGE_VIEW_TYPE_2D,{32U,32U,1U});
+                          VK_IMAGE_VIEW_TYPE_2D,
+                          {quality_settings_.multiple_scattering_size,
+                           quality_settings_.multiple_scattering_size,1U});
     make_atmosphere_image(frame.sky_view,VK_IMAGE_TYPE_2D,
-                          VK_IMAGE_VIEW_TYPE_2D,{192U,108U,1U});
+                          VK_IMAGE_VIEW_TYPE_2D,{quality_settings_.sky_width,
+                                                quality_settings_.sky_height,1U});
     make_atmosphere_image(frame.aerial_scattering,VK_IMAGE_TYPE_3D,
-                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,16U});
+                          VK_IMAGE_VIEW_TYPE_3D,
+                          {quality_settings_.aerial_width,
+                           quality_settings_.aerial_height,
+                           quality_settings_.aerial_depth});
     make_atmosphere_image(frame.aerial_transmittance,VK_IMAGE_TYPE_3D,
-                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,16U});
+                          VK_IMAGE_VIEW_TYPE_3D,
+                          {quality_settings_.aerial_width,
+                           quality_settings_.aerial_height,
+                           quality_settings_.aerial_depth});
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buffer.size=sizeof(float)*64U;
     buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
@@ -548,7 +570,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
       throw std::runtime_error("unable to bind atmosphere uniform buffer");
   }
 
-  constexpr std::uint32_t shadow_extent=2048U;
+  const std::uint32_t shadow_extent=quality_settings_.shadow_resolution;
   shadow_images_.resize(image_count);
   for(auto& shadow:shadow_images_){
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1032,7 +1054,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   auto& shadow=shadow_images_.at(image_index);
   const auto cascades=make_stable_shadow_cascades(
       atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
-      atmosphere_input.sun_direction,2048U);
+      atmosphere_input.sun_direction,quality_settings_.shadow_resolution);
   std::array<float,16U*shadow_cascade_count+4U> shadow_uniform{};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     std::copy(cascades.cascades[cascade].matrix.begin(),
@@ -1068,8 +1090,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
 
   VkClearValue shadow_clear{};
   shadow_clear.depthStencil={depth_clear(shadow_map_depth_convention),0U};
-  VkViewport shadow_viewport{0.0F,0.0F,2048.0F,2048.0F,0.0F,1.0F};
-  VkRect2D shadow_scissor{{0,0},{2048U,2048U}};
+  VkViewport shadow_viewport{0.0F,0.0F,
+      static_cast<float>(quality_settings_.shadow_resolution),
+      static_cast<float>(quality_settings_.shadow_resolution),0.0F,1.0F};
+  VkRect2D shadow_scissor{{0,0},
+      {quality_settings_.shadow_resolution,
+       quality_settings_.shadow_resolution}};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     VkRenderingAttachmentInfo shadow_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1079,7 +1105,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     shadow_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
     shadow_attachment.clearValue=shadow_clear;
     VkRenderingInfo shadow_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    shadow_rendering.renderArea.extent={2048U,2048U};
+    shadow_rendering.renderArea.extent={quality_settings_.shadow_resolution,
+                                       quality_settings_.shadow_resolution};
     shadow_rendering.layerCount=1;
     shadow_rendering.pDepthAttachment=&shadow_attachment;
     begin_rendering(command_buffer,
@@ -1187,16 +1214,21 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     };
     const auto parameter_hash=atmosphere_parameter_hash(parameters);
     if(atmosphere.optical_hash!=parameter_hash){
-      dispatch(0U,32U,8U,1U);
+      dispatch(0U,(quality_settings_.transmittance_width+7U)/8U,
+               (quality_settings_.transmittance_height+7U)/8U,1U);
       compute_barrier(std::span<const VkImage>{atmosphere_images.data(),1U},
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-      dispatch(1U,4U,4U,1U);
+      dispatch(1U,(quality_settings_.multiple_scattering_size+7U)/8U,
+               (quality_settings_.multiple_scattering_size+7U)/8U,1U);
       compute_barrier(std::span<const VkImage>{atmosphere_images.data(),2U},
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
       atmosphere.optical_hash=parameter_hash;
     }
-    dispatch(2U,24U,14U,1U);
-    dispatch(3U,4U,4U,16U);
+    dispatch(2U,(quality_settings_.sky_width+7U)/8U,
+             (quality_settings_.sky_height+7U)/8U,1U);
+    dispatch(3U,(quality_settings_.aerial_width+7U)/8U,
+             (quality_settings_.aerial_height+7U)/8U,
+             quality_settings_.aerial_depth);
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
   }
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,

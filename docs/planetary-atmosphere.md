@@ -263,6 +263,14 @@ Default, and High profiles change resolution and samples through the same
 quality model. Default advances only after ground, horizon, flight, and orbit
 views show no objectionable banding, ghosting, or discontinuity.
 
+Implemented profiles use 128/256/512-wide transmittance, 16/32/64-wide
+multiple scattering, 96x54/192x108/384x216 sky view,
+16x16x8/32x32x16/64x64x32 aerial volumes, and 512/1024/2048 shadow maps.
+On the qualification machine, the scriptable release benchmark measured
+Default at 0.19 ms atmosphere, 0.25 ms composition, and 33.1 MiB buffered
+atmosphere allocation. Low used 8.2 MiB; deliberately expensive High used
+134.3 MiB. Shadow and terrain costs are reported separately.
+
 ## 11. Validation
 
 CPU/reference tests cover stable boundary intersections; density, phase,
@@ -356,7 +364,7 @@ advance until each preceding gate passes in release mode.
 
 ### Gate G: Qualification and default
 
-- [ ] Benchmark every pass, refresh class, allocation, worker interaction, and
+- [x] Benchmark every pass, refresh class, allocation, worker interaction, and
       quality profile.
 - [ ] Sustain movement and edits without blocking input, mixing revisions,
       leaking resources, or globally idling the device.
