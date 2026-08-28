@@ -8,6 +8,7 @@ layout(location = 4) in float world_x;
 layout(location = 5) flat in float in_edge_flags;
 layout(location = 6) in vec3 fragment_position;
 layout(location = 0) out vec4 out_colour;
+layout(set = 0, binding = 0) uniform sampler2D sun_shadow_map;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
@@ -15,6 +16,25 @@ layout(push_constant) uniform Camera {
   vec4 rendering;
   vec4 view_position;
 } camera;
+
+float sun_visibility(vec3 position,float n_dot_l) {
+  const vec3 sun_direction=normalize(vec3(-0.55,0.52,0.65));
+  const vec3 sun_right=normalize(cross(vec3(0.0,1.0,0.0),sun_direction));
+  const vec3 sun_up=cross(sun_direction,sun_right);
+  const float radius=64.0;
+  const vec2 projected=vec2(dot(position,sun_right),dot(position,sun_up))/radius;
+  if(any(greaterThan(abs(projected),vec2(1.0))))return 1.0;
+  const vec2 uv=projected*0.5+0.5;
+  const float receiver_depth=(radius-dot(position,sun_direction))/(2.0*radius);
+  const float bias=mix(0.00035,0.0018,1.0-n_dot_l);
+  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0));
+  float visibility=0.0;
+  for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+    const float blocker=texture(sun_shadow_map,uv+vec2(x,y)*texel).r;
+    visibility+=receiver_depth-bias<=blocker?1.0:0.0;
+  }
+  return visibility/9.0;
+}
 
 vec3 angle_colour(float angle_degrees) {
   const vec3 blue = vec3(0.08, 0.20, 0.82);
@@ -81,7 +101,7 @@ void main() {
     const vec3 albedo=vec3(0.32,0.33,0.34);
     const float roughness=0.82;
     const float metallic=0.0;
-    const vec3 sun_direction=normalize(vec3(-0.35,0.82,0.44));
+    const vec3 sun_direction=normalize(vec3(-0.55,0.52,0.65));
     const vec3 view_delta=camera.view_position.xyz-fragment_position;
     const vec3 view_direction=length(view_delta)>1.0e-5?
         normalize(view_delta):sun_direction;
@@ -104,10 +124,12 @@ void main() {
         max(4.0*n_dot_v*n_dot_l,1.0e-5);
     const vec3 diffuse=(1.0-fresnel)*(1.0-metallic)*albedo/3.14159265359;
     const float sky_mix=clamp(unit_normal.y*0.5+0.5,0.0,1.0);
-    const vec3 environment=mix(vec3(0.14,0.13,0.12),
-        vec3(0.38,0.42,0.48),sky_mix);
+    const vec3 environment=mix(vec3(0.08,0.075,0.07),
+        vec3(0.24,0.28,0.34),sky_mix);
     const vec3 ambient=albedo*environment;
-    const vec3 linear_colour=ambient+(diffuse+specular)*n_dot_l*2.0;
+    const float shadow=sun_visibility(fragment_position,n_dot_l);
+    const vec3 linear_colour=ambient+
+        (diffuse+specular)*n_dot_l*vec3(2.8,2.60,2.30)*shadow;
     shaded_colour=pow(linear_colour/(linear_colour+vec3(1.0)),vec3(1.0/2.2));
   } else {
     // Cutaway faces are deliberately viewed from either side. One-sided

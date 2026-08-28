@@ -68,7 +68,8 @@ class FirstPersonController {
   FirstPersonState state_;
   double accumulator_{};
   bool jump_was_down_{};
-  bool queued_jump_{};
+  bool jump_pressed_{};
+  unsigned air_jumps_remaining_{1U};
 };
 
 }  // namespace tetra_viewer

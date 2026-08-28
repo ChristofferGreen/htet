@@ -31,7 +31,7 @@ class SceneRenderer {
   // legacy diagnostic light, rendering parameters, and relative view point.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view,
               std::uint32_t image_index,VkExtent2D extent,
-              const float* camera_data,bool black_clear=false) const;
+              const float* camera_data,bool black_clear=false);
   void shutdown();
 
  private:
@@ -39,7 +39,12 @@ class SceneRenderer {
   VkDevice device_{VK_NULL_HANDLE};
   VkFormat colour_format_{VK_FORMAT_UNDEFINED};
   VkFormat depth_format_{VK_FORMAT_UNDEFINED};
+  VkDescriptorSetLayout descriptor_set_layout_{VK_NULL_HANDLE};
+  VkDescriptorPool descriptor_pool_{VK_NULL_HANDLE};
+  VkSampler shadow_sampler_{VK_NULL_HANDLE};
   VkPipelineLayout pipeline_layout_{VK_NULL_HANDLE};
+  VkPipelineLayout shaded_pipeline_layout_{VK_NULL_HANDLE};
+  VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
@@ -56,6 +61,9 @@ class SceneRenderer {
   SurfaceDeviceUploadPlanner surface_upload_planner_;
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; };
   std::vector<DepthImage> depth_images_;
+  struct ShadowImage : DepthImage { bool initialized{}; };
+  std::vector<ShadowImage> shadow_images_;
+  std::vector<VkDescriptorSet> descriptor_sets_;
 };
 
 }  // namespace tetra_viewer

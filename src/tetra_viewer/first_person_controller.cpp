@@ -57,7 +57,7 @@ tetra::Camera FirstPersonController::camera(double viewport_height,
 void FirstPersonController::advance(double elapsed_seconds,
                                     const FirstPersonInput& input,
                                     const tetra::Sphere& field) noexcept {
-  if(input.jump&&!jump_was_down_)queued_jump_=true;
+  if(input.jump&&!jump_was_down_)jump_pressed_=true;
   jump_was_down_=input.jump;
   accumulator_+=std::clamp(elapsed_seconds,0.0,configuration_.maximum_frame_seconds);
   while(accumulator_+1.0e-15>=configuration_.fixed_step_seconds){
@@ -88,10 +88,17 @@ void FirstPersonController::step(const FirstPersonInput& input,
         0.0,1.0-configuration_.ground_friction*configuration_.fixed_step_seconds);
     state_.velocity.x*=friction;state_.velocity.z*=friction;
   }
-  if(queued_jump_&&state_.grounded){
-    state_.velocity.y=configuration_.jump_speed;
-    state_.grounded=false;
-    queued_jump_=false;
+  if(jump_pressed_){
+    if(state_.grounded){
+      state_.velocity.y=configuration_.jump_speed;
+      state_.grounded=false;
+    }else if(air_jumps_remaining_>0U){
+      state_.velocity.y=configuration_.jump_speed;
+      --air_jumps_remaining_;
+    }
+    // A press is consumed by this simulation step even when no jump remains.
+    // It must never wait for a later landing and fire unexpectedly.
+    jump_pressed_=false;
   }
   state_.velocity.y-=configuration_.gravity*configuration_.fixed_step_seconds;
   state_.feet=state_.feet+state_.velocity*configuration_.fixed_step_seconds;
@@ -127,6 +134,7 @@ void FirstPersonController::resolve_collision(const tetra::Sphere& field) noexce
     state_.feet.y+=penetration/std::max(normal.y,1.0e-6);
     if(state_.velocity.y<0.0)state_.velocity.y=0.0;
     state_.grounded=true;
+    air_jumps_remaining_=1U;
   }else{
     state_.feet=state_.feet+normal*penetration;
     const double inward=dot(state_.velocity,normal);

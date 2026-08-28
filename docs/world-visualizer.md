@@ -1080,7 +1080,13 @@ position based.
 ## 13. Rendering
 
 The initial renderer keeps the current visual language: opaque flat-shaded
-triangles, camera-relative lighting, and depth-tested surface edges.
+triangles and optional depth-tested surface edges. Neutral stone uses a fixed
+world-space directional sun, a rough dielectric realtime BRDF, stable
+sky/ground environment light, and a filtered directional shadow map. The
+current 128-unit prototype fits one render-origin-relative orthographic shadow
+volume. Planetary views will require camera-anchored cascades or virtual shadow
+pages so shadow precision follows visible surface demand without allocating a
+planet-wide depth texture; lighting direction must never rotate with the view.
 
 The retained render front owns fixed-capacity GPU ranges for triangles and
 optional debug lines. A range records the world revision and address ranges it
@@ -1555,6 +1561,10 @@ todo chain are in
 - [x] Upload only dirty render-chunk ranges.
 - [ ] Cull render chunks or their conservative hierarchy bounds against the
       current camera frustum.
+- [ ] Replace the prototype's single directional shadow volume with stable
+      camera-relative cascades or virtual shadow pages before planetary
+      extents; qualify cascade transitions, texel stability, off-screen
+      casters, and bounded shadow draw/upload work.
 - [ ] Publish only complete render fronts compatible with one adopted world
       revision, atomically replacing parent/child draw authority at frame
       boundaries.

@@ -33,15 +33,16 @@ std::array<double,3> stone_pbr_colour(
     return magnitude>1.0e-12?value/magnitude:tetra::Vec3{0.0,1.0,0.0};
   };
   normal=normalize(normal);view_direction=normalize(view_direction);
-  const auto sun=normalize({-0.35,0.82,0.44});
+  const auto sun=normalize({-0.55,0.52,0.65});
   const auto half_direction=normalize(sun+view_direction);
   const double n_dot_l=std::max(0.0,dot(normal,sun));
   const double n_dot_v=std::max(0.0,dot(normal,view_direction));
   const double n_dot_h=std::max(0.0,dot(normal,half_direction));
   const double v_dot_h=std::max(0.0,dot(view_direction,half_direction));
   constexpr std::array<double,3> albedo{0.32,0.33,0.34};
-  constexpr std::array<double,3> ground{0.14,0.13,0.12};
-  constexpr std::array<double,3> sky{0.38,0.42,0.48};
+  constexpr std::array<double,3> ground{0.08,0.075,0.07};
+  constexpr std::array<double,3> sky{0.24,0.28,0.34};
+  constexpr std::array<double,3> sun_radiance{2.8,2.60,2.30};
   constexpr double roughness=0.82;
   const double alpha=roughness*roughness;
   const double alpha_squared=alpha*alpha;
@@ -63,7 +64,7 @@ std::array<double,3> stone_pbr_colour(
     const double environment=ground[channel]+
         (sky[channel]-ground[channel])*sky_mix;
     const double linear=albedo[channel]*environment+
-        (diffuse+specular)*n_dot_l*2.0;
+        (diffuse+specular)*n_dot_l*sun_radiance[channel];
     result[channel]=std::pow(linear/(linear+1.0),1.0/2.2);
   }
   return result;

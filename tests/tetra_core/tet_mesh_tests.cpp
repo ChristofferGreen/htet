@@ -1284,6 +1284,44 @@ TEST_CASE("first person collision and jump use the procedural field") {
   CHECK(field.signed_distance(bottom_centre)>=-1.0e-10);
 }
 
+TEST_CASE("first person supports one air jump and never queues a landing jump") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  tetra_viewer::FirstPersonController controller;
+  for(int step=0;step<360;++step)
+    controller.advance(1.0/120.0,{},field);
+  REQUIRE(controller.state().grounded);
+
+  tetra_viewer::FirstPersonInput jump;
+  jump.jump=true;
+  controller.advance(1.0/120.0,jump,field);
+  controller.advance(1.0/120.0,{},field);
+  REQUIRE_FALSE(controller.state().grounded);
+  for(int step=0;step<12;++step)
+    controller.advance(1.0/120.0,{},field);
+
+  const double before_air_jump=controller.state().velocity.y;
+  controller.advance(1.0/120.0,jump,field);
+  CHECK(controller.state().velocity.y>before_air_jump);
+  CHECK(controller.state().velocity.y>0.6);
+  controller.advance(1.0/120.0,{},field);
+
+  // A third distinct press is ignored. The old implementation retained this
+  // press until contact and launched the character again on landing.
+  for(int step=0;step<12;++step)
+    controller.advance(1.0/120.0,{},field);
+  const double before_rejected_jump=controller.state().velocity.y;
+  controller.advance(1.0/120.0,jump,field);
+  CHECK(controller.state().velocity.y<before_rejected_jump);
+  controller.advance(1.0/120.0,{},field);
+  for(int step=0;step<600&&!controller.state().grounded;++step)
+    controller.advance(1.0/120.0,{},field);
+  REQUIRE(controller.state().grounded);
+  controller.advance(1.0/120.0,{},field);
+  CHECK(controller.state().grounded);
+  CHECK(controller.state().velocity.y==doctest::Approx(0.0));
+}
+
 TEST_CASE("first person traverses production player scale terrain") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;
