@@ -1431,6 +1431,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       atmosphere_frame.probe_pending=true;
     }
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    const auto material=atmosphere_material_snapshot(
+        parameters,atmosphere_input.transport);
+    const auto snapshots=advance_atmosphere_lookup_snapshots(
+        atmosphere.transport==atmosphere_input.transport?
+            atmosphere.lookup_snapshots:std::nullopt,
+        material,next_revisions,plan);
+    const auto validation=atmosphere_validation_snapshot(
+        material,snapshots,next_revisions);
+    if(!validation.compatible())
+      throw std::runtime_error("incompatible atmosphere lookup generation: "+
+                               *validation.incompatibility);
+    atmosphere.lookup_snapshots=snapshots;
     atmosphere.lookup_revisions=next_revisions;
     atmosphere.transport=atmosphere_input.transport;
   }

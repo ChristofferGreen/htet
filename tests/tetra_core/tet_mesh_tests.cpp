@@ -14171,6 +14171,75 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.aerial_perspective);
 }
 
+TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
+  using namespace tetra_viewer;
+  const auto parameters=atmosphere_preset(AtmospherePreset::gameplay_planet);
+  const auto material=atmosphere_material_snapshot(
+      parameters,AtmosphereTransport::faithful_hillaire);
+  AtmosphereLookupRevisions frame{
+      .optical=material.optical,
+      .scattering=material.scattering,
+      .sun={3},
+      .camera_position={4},
+      .sky_position={5},
+      .camera_orientation={6},
+      .shadow={7},
+      .render_origin={8}};
+  const auto initial_plan=atmosphere_dispatch_plan(
+      std::nullopt,frame,material.transport);
+  const auto initial=advance_atmosphere_lookup_snapshots(
+      std::nullopt,material,frame,initial_plan);
+  CHECK(atmosphere_validation_snapshot(material,initial,frame).compatible());
+
+  auto rotated=frame;
+  ++rotated.camera_orientation.value;
+  const auto rotation_plan=atmosphere_dispatch_plan(
+      frame,rotated,material.transport);
+  CHECK_FALSE(rotation_plan.sky_view);
+  CHECK(rotation_plan.aerial_perspective);
+  const auto after_rotation=advance_atmosphere_lookup_snapshots(
+      initial,material,rotated,rotation_plan);
+  CHECK(atmosphere_validation_snapshot(
+            material,after_rotation,rotated).compatible());
+  REQUIRE(initial.lighting);
+  REQUIRE(after_rotation.lighting);
+  REQUIRE(initial.view);
+  REQUIRE(after_rotation.view);
+  CHECK(after_rotation.lighting->camera_orientation==
+        initial.lighting->camera_orientation);
+  CHECK(after_rotation.view->camera_orientation==rotated.camera_orientation);
+  CHECK(initial.view->camera_orientation==frame.camera_orientation);
+
+  auto relit=rotated;
+  ++relit.sun.value;
+  const AtmosphereDispatchPlan broken_plan{};
+  const auto stale=advance_atmosphere_lookup_snapshots(
+      after_rotation,material,relit,broken_plan);
+  const auto stale_validation=atmosphere_validation_snapshot(
+      material,stale,relit);
+  CHECK_FALSE(stale_validation.compatible());
+  REQUIRE(stale_validation.incompatibility);
+  CHECK(stale_validation.incompatibility->find("lighting")!=
+        std::string::npos);
+
+  const auto relight_plan=atmosphere_dispatch_plan(
+      rotated,relit,material.transport);
+  const auto relighted=advance_atmosphere_lookup_snapshots(
+      after_rotation,material,relit,relight_plan);
+  CHECK(atmosphere_validation_snapshot(material,relighted,relit).compatible());
+
+  const auto baseline_material=atmosphere_material_snapshot(
+      parameters,AtmosphereTransport::qualified_baseline);
+  CHECK_FALSE(atmosphere_validation_snapshot(
+      baseline_material,relighted,relit).compatible());
+  const auto switched=advance_atmosphere_lookup_snapshots(
+      std::nullopt,baseline_material,relit,
+      atmosphere_dispatch_plan(std::nullopt,relit,
+          baseline_material.transport));
+  CHECK(atmosphere_validation_snapshot(
+            baseline_material,switched,relit).compatible());
+}
+
 TEST_CASE("faithful full sky ignores sub-resolution camera motion") {
   const auto parameters=tetra_viewer::atmosphere_preset(
       tetra_viewer::AtmospherePreset::gameplay_planet);

@@ -167,6 +167,69 @@ struct AtmosphereParameters {
   double solar_angular_radius_radians{0.004675};
 };
 
+// These are whole-value generation records. A renderer constructs a new value
+// after dispatch and publishes it atomically; retained lookup resources never
+// have their dependency identity edited field by field.
+struct AtmosphereMaterialSnapshot {
+  AtmosphereParameters parameters{};
+  AtmosphereOpticalRevision optical{};
+  AtmosphereScatteringRevision scattering{};
+  AtmosphereTransport transport{default_atmosphere_transport};
+};
+
+struct AtmosphereOpticalLookupSnapshot {
+  AtmosphereOpticalRevision optical{};
+  AtmosphereTransport transport{default_atmosphere_transport};
+};
+
+struct AtmosphereLightingLookupSnapshot {
+  AtmosphereOpticalRevision optical{};
+  AtmosphereScatteringRevision scattering{};
+  AtmosphereSunRevision sun{};
+  AtmosphereSkyPositionRevision sky_position{};
+  AtmosphereCameraOrientationRevision camera_orientation{};
+  AtmosphereTransport transport{default_atmosphere_transport};
+};
+
+struct AtmosphereViewLookupSnapshot {
+  AtmosphereOpticalRevision optical{};
+  AtmosphereScatteringRevision scattering{};
+  AtmosphereSunRevision sun{};
+  AtmosphereCameraPositionRevision camera_position{};
+  AtmosphereCameraOrientationRevision camera_orientation{};
+  AtmosphereShadowRevision shadow{};
+  AtmosphereRenderOriginRevision render_origin{};
+  AtmosphereTransport transport{default_atmosphere_transport};
+};
+
+struct AtmosphereLookupSnapshotSet {
+  std::optional<AtmosphereOpticalLookupSnapshot> optical;
+  std::optional<AtmosphereLightingLookupSnapshot> lighting;
+  std::optional<AtmosphereViewLookupSnapshot> view;
+};
+
+struct AtmosphereValidationSnapshot {
+  AtmosphereMaterialSnapshot material{};
+  AtmosphereLookupSnapshotSet lookups{};
+  AtmosphereLookupRevisions frame{};
+  std::optional<std::string> incompatibility;
+  [[nodiscard]] bool compatible() const noexcept {
+    return !incompatibility.has_value();
+  }
+};
+
+[[nodiscard]] AtmosphereMaterialSnapshot atmosphere_material_snapshot(
+    const AtmosphereParameters& parameters,AtmosphereTransport transport);
+[[nodiscard]] AtmosphereLookupSnapshotSet advance_atmosphere_lookup_snapshots(
+    std::optional<AtmosphereLookupSnapshotSet> previous,
+    const AtmosphereMaterialSnapshot& material,
+    const AtmosphereLookupRevisions& next,
+    const AtmosphereDispatchPlan& dispatch);
+[[nodiscard]] AtmosphereValidationSnapshot atmosphere_validation_snapshot(
+    const AtmosphereMaterialSnapshot& material,
+    const AtmosphereLookupSnapshotSet& lookups,
+    const AtmosphereLookupRevisions& frame);
+
 struct AtmosphereInvalidation {
   bool transmittance{};
   bool multiple_scattering{};

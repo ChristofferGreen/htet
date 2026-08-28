@@ -714,11 +714,11 @@ silently alter its renderer, parameters, exposure, or reference data.
 
 #### H1: Separate data ownership and invalidation
 
-- [ ] Introduce immutable atmosphere-material, optical-lookup, lighting-lookup,
+- [x] Introduce immutable atmosphere-material, optical-lookup, lighting-lookup,
       view-lookup, and validation snapshots with explicit typed revisions.
 - [x] Share static optical tables across buffered frames and dispatch only when
       their actual material, sun, camera-position, or shadow dependencies change.
-- [ ] Add invalidation tests proving that pure camera rotation does not rebuild
+- [x] Add invalidation tests proving that pure camera rotation does not rebuild
       optical or full-sky data and that incompatible generations never compose.
 
 Exit: recorded dispatch counts match the dependency table under parameter edits,

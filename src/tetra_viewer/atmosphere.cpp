@@ -217,6 +217,78 @@ AtmosphereSkyPositionRevision atmosphere_sky_position_revision(
   return {hash};
 }
 
+AtmosphereMaterialSnapshot atmosphere_material_snapshot(
+    const AtmosphereParameters& parameters,AtmosphereTransport transport) {
+  return {.parameters=parameters,
+          .optical={atmosphere_optical_hash(parameters)},
+          .scattering={atmosphere_scattering_hash(parameters)},
+          .transport=transport};
+}
+
+AtmosphereLookupSnapshotSet advance_atmosphere_lookup_snapshots(
+    std::optional<AtmosphereLookupSnapshotSet> previous,
+    const AtmosphereMaterialSnapshot& material,
+    const AtmosphereLookupRevisions& next,
+    const AtmosphereDispatchPlan& dispatch) {
+  AtmosphereLookupSnapshotSet result=previous.value_or(
+      AtmosphereLookupSnapshotSet{});
+  if(dispatch.transmittance)
+    result.optical=AtmosphereOpticalLookupSnapshot{
+        next.optical,material.transport};
+  if(dispatch.multiple_scattering||dispatch.sky_view||dispatch.sky_irradiance)
+    result.lighting=AtmosphereLightingLookupSnapshot{
+        next.optical,next.scattering,next.sun,next.sky_position,
+        next.camera_orientation,material.transport};
+  if(dispatch.aerial_perspective)
+    result.view=AtmosphereViewLookupSnapshot{
+        next.optical,next.scattering,next.sun,next.camera_position,
+        next.camera_orientation,next.shadow,next.render_origin,
+        material.transport};
+  return result;
+}
+
+AtmosphereValidationSnapshot atmosphere_validation_snapshot(
+    const AtmosphereMaterialSnapshot& material,
+    const AtmosphereLookupSnapshotSet& lookups,
+    const AtmosphereLookupRevisions& frame) {
+  AtmosphereValidationSnapshot result{material,lookups,frame,std::nullopt};
+  const auto reject=[&](std::string message){
+    if(!result.incompatibility)result.incompatibility=std::move(message);
+  };
+  if(const auto invalid=validate_atmosphere(material.parameters))reject(*invalid);
+  if(material.optical.value!=atmosphere_optical_hash(material.parameters))
+    reject("material optical revision does not match its parameters");
+  if(material.scattering.value!=
+     atmosphere_scattering_hash(material.parameters))
+    reject("material scattering revision does not match its parameters");
+  if(material.optical!=frame.optical||material.scattering!=frame.scattering)
+    reject("frame material revisions are incompatible");
+  if(!lookups.optical)reject("optical lookup snapshot is missing");
+  else if(lookups.optical->transport!=material.transport||
+          lookups.optical->optical!=frame.optical)
+    reject("optical lookup generation is incompatible");
+  if(!lookups.lighting)reject("lighting lookup snapshot is missing");
+  else if(lookups.lighting->transport!=material.transport||
+          lookups.lighting->optical!=frame.optical||
+          lookups.lighting->scattering!=frame.scattering||
+          lookups.lighting->sun!=frame.sun||
+          lookups.lighting->sky_position!=frame.sky_position||
+          (material.transport==AtmosphereTransport::qualified_baseline&&
+           lookups.lighting->camera_orientation!=frame.camera_orientation))
+    reject("lighting lookup generation is incompatible");
+  if(!lookups.view)reject("view lookup snapshot is missing");
+  else if(lookups.view->transport!=material.transport||
+          lookups.view->optical!=frame.optical||
+          lookups.view->scattering!=frame.scattering||
+          lookups.view->sun!=frame.sun||
+          lookups.view->camera_position!=frame.camera_position||
+          lookups.view->camera_orientation!=frame.camera_orientation||
+          lookups.view->shadow!=frame.shadow||
+          lookups.view->render_origin!=frame.render_origin)
+    reject("view lookup generation is incompatible");
+  return result;
+}
+
 AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
   AtmosphereParameters result;
   switch (preset) {

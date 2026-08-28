@@ -171,6 +171,7 @@ class SceneRenderer {
     AtmosphereImage aerial_scattering;
     AtmosphereImage aerial_transmittance;
     std::optional<AtmosphereLookupRevisions> lookup_revisions;
+    std::optional<AtmosphereLookupSnapshotSet> lookup_snapshots;
     AtmosphereTransport transport{default_atmosphere_transport};
     bool images_initialized{};
   };
