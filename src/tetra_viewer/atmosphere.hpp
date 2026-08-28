@@ -272,6 +272,9 @@ atmosphere_multiple_scattering_reference(
                                          double maximum_distance_metres) noexcept;
 [[nodiscard]] double aerial_lut_slice(double distance_metres,
                                       double maximum_distance_metres) noexcept;
+[[nodiscard]] double atmosphere_local_aerial_distance(
+    const AtmosphereParameters& parameters, double camera_altitude_metres,
+    double visible_distance_metres) noexcept;
 
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude_metres,
                          double view_zenith_degrees,

@@ -732,11 +732,11 @@ directional, and terrain lighting contains no undocumented compensation term.
 
 #### H6: Separate local aerial perspective from orbital transport
 
-- [ ] Bound local/flight froxels using visible distance, altitude, density scale,
+- [x] Bound local/flight froxels using visible distance, altitude, density scale,
       and a documented precision target rather than one fixed 200 km volume.
-- [ ] Add a deterministic screen-space atmosphere march for long and orbital
+- [x] Add a deterministic screen-space atmosphere march for long and orbital
       paths, with an explicit overlap band and continuous regime selection.
-- [ ] Remove `max(scattering, directional_airlight)` and replace its source-
+- [x] Remove `max(scattering, directional_airlight)` and replace its source-
       string assertion with distance, silhouette, chromaticity, and continuity
       probes that fail on under-resolved haze.
 

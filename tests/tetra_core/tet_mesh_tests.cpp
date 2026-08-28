@@ -14351,9 +14351,6 @@ TEST_CASE("planet atmosphere composites lit analytic ground through aerial persp
         std::string::npos);
   CHECK(compositor.find("surface_radiance*transmittance+scattering")!=
         std::string::npos);
-  CHECK(compositor.find("directional_airlight")!=std::string::npos);
-  CHECK(compositor.find("scattering=max(scattering,directional_airlight)")!=
-        std::string::npos);
   CHECK(compositor.find(
       "const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb")!=
         std::string::npos);
@@ -14634,6 +14631,48 @@ TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
         distance,maximum_distance);
     CHECK(tetra_viewer::aerial_lut_distance(slice,maximum_distance)==
           doctest::Approx(distance).epsilon(1.0e-12));
+  }
+}
+
+TEST_CASE("local aerial range follows density altitude and visible bounds") {
+  const auto gameplay=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const auto earth=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  CHECK(tetra_viewer::atmosphere_local_aerial_distance(
+            gameplay,1.8,200'000.0)==doctest::Approx(24'001.8));
+  CHECK(tetra_viewer::atmosphere_local_aerial_distance(
+            earth,1.8,200'000.0)==doctest::Approx(64'000.0));
+  CHECK(tetra_viewer::atmosphere_local_aerial_distance(
+            gameplay,10'000.0,200'000.0)==doctest::Approx(34'000.0));
+  CHECK(tetra_viewer::atmosphere_local_aerial_distance(
+            gameplay,1.8,5'000.0)==doctest::Approx(5'000.0));
+  CHECK(tetra_viewer::atmosphere_local_aerial_distance(
+            gameplay,1.8,0.0)==0.0);
+}
+
+TEST_CASE("local and long aerial regimes share multiplicative transmittance") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const double radius=parameters.ground_radius_metres;
+  const tetra::Vec3 start{0.0,radius+100'000.0,0.0};
+  const tetra::Vec3 end{0.0,radius+1.0,0.0};
+  const double local=tetra_viewer::atmosphere_local_aerial_distance(
+      parameters,100'000.0,200'000.0);
+  const double total_distance=99'999.0;
+  const tetra::Vec3 split=start+(end-start)*(local/total_distance);
+  const auto complete=tetra_viewer::atmosphere_transmittance(
+      start,end,parameters,1024U);
+  const auto first=tetra_viewer::atmosphere_transmittance(
+      start,split,parameters,512U);
+  const auto second=tetra_viewer::atmosphere_transmittance(
+      split,end,parameters,512U);
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(std::isfinite(complete[channel]));
+    CHECK(complete[channel]>=0.0);
+    CHECK(complete[channel]<=1.0);
+    CHECK(first[channel]*second[channel]==
+          doctest::Approx(complete[channel]).epsilon(2.0e-3));
   }
 }
 

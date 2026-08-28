@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
@@ -1088,6 +1089,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   const auto camera_from_centre=
       (atmosphere_input.camera_relative_world-
        atmosphere_input.planet_centre_relative_world)*metres;
+  const double local_aerial_distance=atmosphere_local_aerial_distance(
+      parameters,std::sqrt(camera_from_centre.x*camera_from_centre.x+
+          camera_from_centre.y*camera_from_centre.y+
+          camera_from_centre.z*camera_from_centre.z)-
+          parameters.ground_radius_metres,
+      atmosphere_input.maximum_aerial_distance_metres);
   std::array<float,64> atmosphere_uniform{};
   const auto spectrum=[&](std::size_t offset,
                           const AtmosphereSpectrum& value,float fourth){
@@ -1132,7 +1139,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[41]=static_cast<float>(atmosphere_input.camera_forward.y);
   atmosphere_uniform[42]=static_cast<float>(atmosphere_input.camera_forward.z);
   atmosphere_uniform[43]=static_cast<float>(
-      atmosphere_input.maximum_aerial_distance_metres);
+      local_aerial_distance);
   atmosphere_uniform[44]=static_cast<float>(atmosphere_input.sun_direction.x);
   atmosphere_uniform[45]=static_cast<float>(atmosphere_input.sun_direction.y);
   atmosphere_uniform[46]=static_cast<float>(atmosphere_input.sun_direction.z);

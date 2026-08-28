@@ -784,6 +784,28 @@ double aerial_lut_slice(double distance_metres,
                               0.0, 1.0));
 }
 
+double atmosphere_local_aerial_distance(
+    const AtmosphereParameters& parameters, double camera_altitude_metres,
+    double visible_distance_metres) noexcept {
+  if(validate_atmosphere(parameters)||
+     !(visible_distance_metres>0.0)||!std::isfinite(visible_distance_metres))
+    return 0.0;
+  camera_altitude_metres=std::isfinite(camera_altitude_metres)?
+      camera_altitude_metres:0.0;
+  // Eight scale heights retain more than 99.9% of either exponential medium.
+  // The floor preserves useful ground-distance resolution for compact worlds;
+  // the ceiling prevents a thin high-altitude medium from wasting the froxel
+  // depth axis on orbital empty space. Longer paths use the explicit march.
+  const double medium_extent=8.0*std::max(
+      parameters.rayleigh_scale_height_metres,
+      parameters.mie_scale_height_metres);
+  const double altitude_headroom=std::clamp(camera_altitude_metres,0.0,
+      parameters.atmosphere_height_metres);
+  const double physical_extent=std::clamp(
+      std::max(2'000.0,medium_extent+altitude_headroom),2'000.0,64'000.0);
+  return std::min(visible_distance_metres,physical_extent);
+}
+
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude,
                          double view_zenith_degrees,
                          double sun_zenith_degrees, std::ostream& output,
