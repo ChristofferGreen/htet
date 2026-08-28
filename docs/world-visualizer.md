@@ -1503,6 +1503,35 @@ The address-range priority queue remains useful, but follows this gate. Better
 scheduling of unnecessary full-volume work would optimize the wrong unit of
 work.
 
+### Gate 4B: Progressive visual terrain front
+
+Release profiling established a practical 475--505 ms CPU floor for a complete
+exact publication after including selection, conformity, residency, surface
+construction, staging, and publication. The former 250 ms exact-front gate is
+retired. The exact tetrahedral cut remains the sole authority and continues to
+converge atomically in the background.
+
+The next user-visible gate is a disposable height-field geometry clipmap built
+from the same procedural terrain function. Unlike the separately authoritative
+octree rejected above, this preview has no collision, edit, residency, seam,
+or hash authority. It exists only while the exact world lags the camera and is
+retired by a matching or newer exact generation. Its complete contract and
+todo chain are in
+[`progressive-world-preview.md`](progressive-world-preview.md).
+
+- [ ] Publish a useful immutable preview below 100 ms normally and 250 ms in
+      the worst qualified release case.
+- [ ] Weld all clipmap rings on shared integer sample coordinates and validate
+      their two-manifold incidence, winding, and negative-coordinate behavior.
+- [ ] Keep preview work off `WorldCutDirectory` and out of collision, editing,
+      exact hashes, and convergence state.
+- [ ] Coalesce and cancel preview requests independently without starving the
+      exact worker.
+- [ ] Suppress overlapping exact faces so preview rendering remains opaque and
+      free of z-fighting.
+- [ ] Retire preview data only by request generation and verify exact output is
+      byte-identical when preview is enabled or disabled.
+
 ### Gate 5: Retained multi-block Vulkan rendering
 
 - [x] Generate camera-relative positions from a snapped double-precision

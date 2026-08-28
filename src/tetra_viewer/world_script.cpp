@@ -402,6 +402,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
     const auto started=std::chrono::steady_clock::now();
     std::optional<double> first_publication_milliseconds;
+    TerrainRuntimeDiagnostics first_publication_diagnostics;
     double maximum_publication_interval{},maximum_camera_lag{};
     auto previous_publication=started;
     std::size_t publications{};
@@ -414,7 +415,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
       if(!published)return;
       const double elapsed=std::chrono::duration<double,std::milli>(
           now-started).count();
-      if(!first_publication_milliseconds)first_publication_milliseconds=elapsed;
+      if(!first_publication_milliseconds){
+        first_publication_milliseconds=elapsed;
+        first_publication_diagnostics=diagnostics;
+      }
       maximum_publication_interval=std::max(maximum_publication_interval,
           std::chrono::duration<double,std::milli>(
               now-previous_publication).count());
@@ -484,6 +488,20 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
               stopped-started).count()
           <<",\"first_publication_ms\":"
           <<first_publication_milliseconds.value_or(-1.0)
+          <<",\"first_cut_selection_ms\":"
+          <<first_publication_diagnostics.cut_selection_milliseconds
+          <<",\"first_cut_closure_ms\":"
+          <<first_publication_diagnostics.cut_closure_milliseconds
+          <<",\"first_residency_ms\":"
+          <<first_publication_diagnostics.residency_planning_milliseconds
+          <<",\"first_hierarchy_demand_ms\":"
+          <<first_publication_diagnostics.hierarchy_demand_milliseconds
+          <<",\"first_surface_ms\":"
+          <<first_publication_diagnostics.surface_build_milliseconds
+          <<",\"first_render_preparation_ms\":"
+          <<first_publication_diagnostics.render_preparation_milliseconds
+          <<",\"first_surface_publication_ms\":"
+          <<first_publication_diagnostics.surface_publication_milliseconds
           <<",\"maximum_publication_interval_ms\":"
           <<maximum_publication_interval
           <<",\"settled_convergence_ms\":"

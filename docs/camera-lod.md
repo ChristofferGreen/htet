@@ -391,6 +391,19 @@ budgeting. Guard bands, motion prediction, recent-visibility retention, and
 turn-readiness measurements are the game-oriented policy layered above those
 algorithms.
 
+## Visual-latency decision
+
+Release profiling on 2026-08-28 established that the exact CPU world front
+cannot meet a 250 ms end-to-end publication gate without weakening conformity
+or atomicity. Even a very small camera move remains roughly 475--505 ms after
+the retained-state optimizations, while isolated bounded geometry timings omit
+substantial residency, demand, staging, and publication work. Camera LOD now
+uses two products: the last exact tetrahedral front remains authoritative, and
+a disposable terrain clipmap supplies fast visual response during motion. The
+preview policy and todo chain are specified in
+[`progressive-world-preview.md`](progressive-world-preview.md). It does not
+alter the guarded/recent demand policy or exact convergence semantics.
+
 ## Qualification result
 
 Release qualification on 2026-08-25 selected `guarded-recent` with the

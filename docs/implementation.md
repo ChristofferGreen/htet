@@ -11,7 +11,10 @@ front is [`world-visualizer.md`](world-visualizer.md). The active execution
 queue is [`todo.md`](todo.md). `tetra_world` shares the existing renderer and
 first-person shell but now uses the blocked sparse-world implementation behind
 `TerrainRuntime`; the original monolithic implementation remains an oracle and
-research baseline.
+research baseline. The current responsiveness plan is the explicitly
+non-authoritative render front in
+[`progressive-world-preview.md`](progressive-world-preview.md); exact world
+state continues to converge independently in the existing runtime.
 
 ## Bounded world-camera publication work
 
@@ -37,9 +40,10 @@ sorting all surface owners. Walking conforming materialization falls from
 roughly 389 ms over 738,000 owners to 45 ms over about 30,000 owners. Together
 these corrections reduce the representative walking path from roughly 4.65
 seconds to roughly 2.7 seconds, which is a material throughput improvement but
-remains well above the interactive target. The active design therefore treats the
-next publication as a bounded conforming split/merge transaction, not another
-attempt to optimize a monolithic complete-camera rebuild.
+remains well above interactive latency. Later work reduced this further, but
+complete exact publication still cannot satisfy the former 250 ms contract;
+the renderer now gets a separate preview product instead of weakening exact
+world authority.
 
 Conformity closure now publishes an exact old/new mask-change manifest. The
 owner list identifies current additions and changed masks; the block list also
@@ -58,8 +62,8 @@ assembly remain serial, so worker scheduling cannot change the cut. On the
 production walking and near routes this reduces cut selection from about
 465 ms to 140--152 ms while preserving every qualified hash. End-to-end
 publication remains roughly 2.6--2.8 seconds and is therefore still not an
-interactive solution; the persistent transactional frontier below remains the
-required next step.
+interactive solution. These measurements remain useful exact-path throughput
+baselines, not a requirement that the exact path drive every visual response.
 
 The first bounded-frontier experiment established the cut-editing contract but
 also showed why slicing alone is insufficient. A complete raw red cut can move
@@ -70,9 +74,10 @@ cold conformity closure exactly. Production integration is deliberately still
 disabled: each slice continued to rebuild the target and pay global closure,
 optimizer graph, snapshot assembly, checkpoint, and demand costs. Six walking
 slices took about 10.3 seconds, and far-view coarsening missed the existing
-deadline. The next implementation must retain the priority frontier and feed
-its exact dirty ranges through those downstream stages before sliced
-publication can become the default.
+deadline. Subsequent retained-state work improved the slice substantially, but
+the complete production front still remained too expensive. Bounded exact
+publication is therefore retained as research infrastructure rather than the
+default visual-latency mechanism.
 
 The release benchmark now also runs a two-second 120 Hz continuous walk and
 records the camera pose carried by each published front. This makes the
@@ -271,9 +276,18 @@ after 40 ms without camera input. It was not retained. A complete runtime front
 still included residency, hierarchy demand, render preparation, staging, and
 publication work omitted by the isolated diagnostic, so first publication was
 about 530 ms; dense catch-up took about two seconds; and repeated fronts pushed
-the candidate beyond the 512 MiB admission budget. This confirms that the
-complete transaction must become materially cheaper before spatial discovery
-is introduced into the production scheduler.
+the candidate beyond the 512 MiB admission budget. This confirms that complete
+exact scheduling should not remain the visual-response gate.
+
+The qualified CPU result is now treated as a measured architectural boundary:
+a very small camera move costs about 475--505 ms to publish completely, with
+roughly 71--73 ms in selection, 118--125 ms in closure, 38--40 ms in residency
+and demand, 103--110 ms in surface construction, and 67--72 ms in surface
+publication. Exact convergence remains atomic, watertight, hash-stable, and
+useful for collision and editing, but it runs behind a disposable terrain
+preview. The preview has its own generation, worker, memory and upload budget,
+never enters `WorldCutDirectory`, and is retired only by an exact publication
+for the same or a newer camera request.
 
 ## Technology choices
 

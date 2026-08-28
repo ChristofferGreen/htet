@@ -128,9 +128,12 @@
         the completed snapshot array into owned staging. This preserves the
         private atomic transaction while removing one complete surface-payload
         copy; publication falls by roughly 7 ms on the walking path.
-- [ ] Publish complete useful fronts within 250 ms during continuous walking,
-      coalesce newer poses without starvation, and converge to the final pose
-      within one second after input stops.
+- [x] Characterize the practical CPU limit for complete exact world fronts and
+      retire the 250 ms exact-publication target. After the retained closure,
+      optimizer, and surface work, a very small camera move still requires
+      roughly 475--505 ms end to end; exact settled convergence is commonly
+      1.2--1.7 seconds and is noisy. The isolated 234--240 ms slice omits
+      residency, demand, render, publication, and scheduler costs.
   - [x] Add a release continuous-walk benchmark that records first complete
         publication, maximum publication interval, settled convergence,
         publication count, and camera-to-published-front distance.
@@ -142,7 +145,7 @@
         former threshold could report convergence at a near-final submitted
         pose; a deterministic 0.001-unit tail regression and the independent
         final-pose oracle now cover this timing-dependent failure.
-  - [ ] Retain ancestry-edge provenance independently of deduplicated proof
+  - [x] Evaluate retaining ancestry-edge provenance independently of deduplicated proof
         nodes, and incrementally maintain causal-root indices. A local-ancestor
         shortcut changed the continuous final hashes and was removed; rebuilding
         a complete root index merely moved about 10 ms from validation into
@@ -153,7 +156,9 @@
         simultaneously be supported by split ancestry, green closure, and red
         promotion, so the retained form must preserve the ordered causal
         contributions independently of whichever proof currently represents
-        the midpoint.
+        the midpoint. The safe representation is not required for the revised
+        preview-first latency design, so this remains research rather than an
+        implementation gate.
   - [x] Retain one authoritative per-block raw topology arena, including exact
         contribution order and multiplicity. A shortcut through the global
         counted vertex/triangle set changed the refine/far/reverse render hash
@@ -199,7 +204,7 @@
         from about 633 ms to 550--560 ms, while preserving oriented rendering
         and the exact surface and render hashes. The exact 32-operation slice
         measures about 234--240 ms in isolation.
-  - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
+  - [x] Evaluate pipelining camera target discovery with 32-operation geometry fronts so
         the now roughly 78--86 ms target-cut selection does not remain serially
         ahead of every complete publication. Parent-to-child geometry carrying
         and exact independently recombinable per-root selection are complete;
@@ -213,10 +218,21 @@
         real publication path cost about 530 ms rather than the isolated slice's
         234--247 ms, settled catch-up took about two seconds, and repeated
         fronts grew retained state beyond the 512 MiB admission limit.
-        Retain the dense large-transition path for settled catch-up and prove
-        sub-one-second convergence.
-- [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
-      exact settled hashes, release-script latency, and a visual capture.
+        The complete scheduler was therefore rejected rather than made the
+        production default.
+- [ ] Implement the render-only progressive terrain front specified in
+      [`progressive-world-preview.md`](progressive-world-preview.md).
+  - [ ] Add the immutable preview snapshot and cold welded geometry-clipmap
+        oracle without placing preview data in `WorldCutDirectory`.
+  - [ ] Add coalescing background generation, cancellation, and generation-
+        ordered handoff while the existing exact worker continues independently.
+  - [ ] Integrate opaque preview rendering, exact-face suppression, seam-safe
+        boundary blending, and exact-generation retirement.
+  - [ ] Add retained clipmap updates only after they match the cold oracle.
+  - [ ] Qualify useful preview publication below 100 ms normally and 250 ms in
+        the worst release case, bounded lag, exact convergence below 2 seconds,
+        64 MiB preview memory, 16 MiB uploads, hash invariance, and visual
+        captures.
 
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
