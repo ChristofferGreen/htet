@@ -26,6 +26,15 @@ namespace tetra_viewer {
 
 inline constexpr std::uint32_t surface_optimizer_passes=5U;
 inline constexpr std::uint32_t surface_optimizer_dependency_halo_rings=5U;
+inline constexpr float default_world_sun_azimuth_radians=-1.8F;
+inline constexpr float default_world_sun_elevation_radians=0.0872665F;
+
+[[nodiscard]] inline tetra::Vec3 world_sun_direction(
+    double azimuth_radians,double elevation_radians) noexcept {
+  const double horizontal=std::cos(elevation_radians);
+  return {horizontal*std::cos(azimuth_radians),std::sin(elevation_radians),
+          horizontal*std::sin(azimuth_radians)};
+}
 
 struct BoundedJacobiMetrics {
   std::size_t passes{};
@@ -620,6 +629,9 @@ struct SceneVertex {
   float edge_flags{7.0F};
   // Triangle-local coordinates used for anti-aliased surface wireframes.
   float barycentric[3]{};
+  // Analytic implicit-field normal. The geometric normal above remains the
+  // default and is also retained for flat shading and volume faces.
+  float smooth_normal[3]{};
 };
 
 struct PreparedScene {

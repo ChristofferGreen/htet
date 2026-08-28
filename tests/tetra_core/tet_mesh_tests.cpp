@@ -8757,6 +8757,24 @@ TEST_CASE("stone PBR keeps fixed-light terrain exposure stable while viewing ang
   CHECK(std::abs(overhead[0]-overhead[2])<0.08);
 }
 
+TEST_CASE("world sun controls produce normalized sky directions") {
+  const auto horizon=tetra_viewer::world_sun_direction(0.0,0.0);
+  CHECK(horizon.x==doctest::Approx(1.0));
+  CHECK(horizon.y==doctest::Approx(0.0));
+  CHECK(horizon.z==doctest::Approx(0.0));
+  const auto overhead=tetra_viewer::world_sun_direction(1.7,std::acos(-1.0)*0.5);
+  CHECK(overhead.y==doctest::Approx(1.0));
+  const auto initial=tetra_viewer::world_sun_direction(
+      tetra_viewer::default_world_sun_azimuth_radians,
+      tetra_viewer::default_world_sun_elevation_radians);
+  const double length=std::sqrt(
+      initial.x*initial.x+initial.y*initial.y+initial.z*initial.z);
+  CHECK(length==doctest::Approx(1.0));
+  CHECK(initial.x==doctest::Approx(-0.226338).epsilon(1.0e-5));
+  CHECK(initial.y==doctest::Approx(0.0871558).epsilon(1.0e-5));
+  CHECK(initial.z==doctest::Approx(-0.970142).epsilon(1.0e-5));
+}
+
 TEST_CASE("camera-relative scene preparation preserves geometry at planet coordinates") {
   // Far beyond the point where a world-space float can preserve a unit cell.
   constexpr double world_offset=1.0e6;
@@ -12205,6 +12223,7 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
         tetra_viewer::default_volume_connection_for_shape(terrain.kind));
     REQUIRE_FALSE(scene.triangle_vertices.empty());
     REQUIRE(scene.triangle_vertices.size()%3U==0U);
+    bool found_smooth_variation=false;
     for(std::size_t triangle=0;triangle<scene.triangle_vertices.size();triangle+=3U){
       const auto& first=scene.triangle_vertices[triangle];
       const auto& second=scene.triangle_vertices[triangle+1U];
@@ -12233,6 +12252,16 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
         CHECK(vertex.normal[0]==doctest::Approx(first.normal[0]));
         CHECK(vertex.normal[1]==doctest::Approx(first.normal[1]));
         CHECK(vertex.normal[2]==doctest::Approx(first.normal[2]));
+        const double smooth_length=std::sqrt(
+            vertex.smooth_normal[0]*vertex.smooth_normal[0]+
+            vertex.smooth_normal[1]*vertex.smooth_normal[1]+
+            vertex.smooth_normal[2]*vertex.smooth_normal[2]);
+        CHECK(smooth_length==doctest::Approx(1.0).epsilon(1.0e-5));
+        const double normal_delta=
+            std::abs(vertex.smooth_normal[0]-vertex.normal[0])+
+            std::abs(vertex.smooth_normal[1]-vertex.normal[1])+
+            std::abs(vertex.smooth_normal[2]-vertex.normal[2]);
+        found_smooth_variation|=normal_delta>1.0e-4;
       }
       if(first.diagnostics[0]<-1.5F){
         const auto analytic=terrain.normal((a+b+c)/3.0);
@@ -12240,6 +12269,7 @@ TEST_CASE("default connected cutaway keeps unit geometric normals through refine
               first.normal[2]*analytic.z>0.0);
       }
     }
+    CHECK(found_smooth_variation);
   };
 
   static_cast<void>(tetra::refine_to_sphere(mesh,terrain,camera,28.0,9U));

@@ -99,6 +99,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   const auto edge_vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/edge.vert.spv");
   const auto edge_fragment_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/edge.frag.spv");
   const auto shadow_vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/shadow.vert.spv");
+  const auto sky_vertex_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/sky.vert.spv");
+  const auto sky_fragment_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/sky.frag.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -108,10 +112,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   edge_stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, edge_vertex_shader, "main"};
   edge_stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, edge_fragment_shader, "main"};
   VkVertexInputBindingDescription binding{0, sizeof(SceneVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  VkVertexInputAttributeDescription attributes[6]{{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12}, {2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24}, {3, 0, VK_FORMAT_R32G32_SFLOAT, 36}, {4, 0, VK_FORMAT_R32G32B32_SFLOAT, 48}, {5, 0, VK_FORMAT_R32_SFLOAT, 44}};
+  VkVertexInputAttributeDescription attributes[7]{{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12}, {2, 0, VK_FORMAT_R32G32B32_SFLOAT, 24}, {3, 0, VK_FORMAT_R32G32_SFLOAT, 36}, {4, 0, VK_FORMAT_R32G32B32_SFLOAT, 48}, {5, 0, VK_FORMAT_R32_SFLOAT, 44}, {6, 0, VK_FORMAT_R32G32B32_SFLOAT, 60}};
   VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   vertex_input.vertexBindingDescriptionCount = 1; vertex_input.pVertexBindingDescriptions = &binding;
-  vertex_input.vertexAttributeDescriptionCount = 6; vertex_input.pVertexAttributeDescriptions = attributes;
+  vertex_input.vertexAttributeDescriptionCount = 7; vertex_input.pVertexAttributeDescriptions = attributes;
   VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; viewport.viewportCount = 1; viewport.scissorCount = 1;
   VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
   VkPipelineColorBlendAttachmentState blend_attachment{}; blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT; blend_attachment.blendEnable = VK_FALSE;
@@ -175,6 +179,13 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   // own buffer and pipeline so mesh-edge visibility remains depth correct.
   create_pipeline(edge_stages,VK_POLYGON_MODE_FILL,false,true,true,false,
                   pipeline_layout_,&editor_line_pipeline_);
+  VkPipelineShaderStageCreateInfo sky_stages[2]{
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
+       VK_SHADER_STAGE_VERTEX_BIT,sky_vertex_shader,"main"},
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
+       VK_SHADER_STAGE_FRAGMENT_BIT,sky_fragment_shader,"main"}};
+  create_pipeline(sky_stages,VK_POLYGON_MODE_FILL,false,false,false,false,
+                  pipeline_layout_,&sky_pipeline_);
 
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
@@ -222,6 +233,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_, wire_fragment_shader, nullptr);
   vkDestroyShaderModule(device_, edge_vertex_shader, nullptr); vkDestroyShaderModule(device_, edge_fragment_shader, nullptr);
   vkDestroyShaderModule(device_,shadow_vertex_shader,nullptr);
+  vkDestroyShaderModule(device_,sky_vertex_shader,nullptr);
+  vkDestroyShaderModule(device_,sky_fragment_shader,nullptr);
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
@@ -543,6 +556,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     VkDeviceSize shadow_offset{};
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                       shadow_pipeline_);
+    vkCmdPushConstants(command_buffer,pipeline_layout_,VK_SHADER_STAGE_VERTEX_BIT,
+                       0,sizeof(float)*28,camera_data);
     vkCmdBindVertexBuffers(command_buffer,0,1,&triangles_.buffer,&shadow_offset);
     const auto ranges=surface_upload_planner_.published_draws();
     if(ranges.empty())
@@ -600,6 +615,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // Opaque geometry establishes visibility first. The native line-mode pass
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
+  vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,sky_pipeline_);
+  vkCmdPushConstants(command_buffer,pipeline_layout_,
+      VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
+      sizeof(float)*28,push_data.data());
+  vkCmdDraw(command_buffer,6U,1U,0U,0U);
   draw(triangle_pipeline_,shaded_pipeline_layout_,triangles_,
        surface_upload_planner_.published_draws());
   draw(triangle_wire_pipeline_,pipeline_layout_,triangles_,
@@ -628,6 +648,7 @@ void SceneRenderer::shutdown() {
   vkDestroySampler(device_,shadow_sampler_,nullptr);
   vkDestroyDescriptorSetLayout(device_,descriptor_set_layout_,nullptr);
   vkDestroyPipeline(device_,shadow_pipeline_,nullptr);
+  vkDestroyPipeline(device_,sky_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);

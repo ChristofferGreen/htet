@@ -45,6 +45,7 @@ class SceneRenderer {
   VkPipelineLayout pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout shaded_pipeline_layout_{VK_NULL_HANDLE};
   VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
+  VkPipeline sky_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};

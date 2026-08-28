@@ -958,6 +958,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_free_fly=false;
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
+    bool world_smooth_normals=false;
+    float world_sun_azimuth=
+        tetra_viewer::default_world_sun_azimuth_radians;
+    float world_sun_elevation=
+        tetra_viewer::default_world_sun_elevation_radians;
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
@@ -2250,6 +2255,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 ImGui::TextDisabled("Terrain LOD camera locked");
             CheckboxWithHotkey("Triangle wireframe","T",ImGuiKey_T,
                                &show_surface_edges);
+            CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
+                               &world_smooth_normals);
             if(CheckboxWithHotkey("Capsule diagnostic","K",ImGuiKey_K,
                                   &world_show_capsule))
                 overlay_dirty=true;
@@ -2259,6 +2266,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             if(CheckboxWithHotkey("LOD zones","L",ImGuiKey_L,
                                   &show_camera_lod_zones))
                 overlay_dirty=true;
+            ImGui::SeparatorText("Sun");
+            ImGui::SetNextItemWidth(190.0F);
+            ImGui::SliderAngle("Azimuth",&world_sun_azimuth,-180.0F,180.0F);
+            ImGui::SetNextItemWidth(190.0F);
+            ImGui::SliderAngle("Elevation",&world_sun_elevation,5.0F,85.0F);
+            if(ImGui::Button("Reset sun")){
+                world_sun_azimuth=
+                    tetra_viewer::default_world_sun_azimuth_radians;
+                world_sun_elevation=
+                    tetra_viewer::default_world_sun_elevation_radians;
+            }
             controls_hovered=ImGui::IsWindowHovered(
                 ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
             ImGui::End();
@@ -2588,15 +2606,21 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const tetra::Vec3 camera_position=projection.camera_relative;
         std::copy(projection.matrix.begin(),projection.matrix.end(),
                   g_CameraData.begin());
+        const auto sun=tetra_viewer::world_sun_direction(
+            world_sun_azimuth,world_sun_elevation);
+        const tetra::Vec3 light=shading_model==tetra_viewer::ShadingModel::stone_pbr?
+            sun:tetra::Vec3{-f.x,-f.y,-f.z};
         const std::array<float,12> render_parameters{
-            static_cast<float>(-f.x), static_cast<float>(-f.y), static_cast<float>(-f.z), show_volume_edges ? 1.0F : 0.0F,
+            static_cast<float>(light.x),static_cast<float>(light.y),
+            static_cast<float>(light.z),show_volume_edges ? 1.0F : 0.0F,
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
             show_faces ? 1.0F : 0.0F,
             x_cutaway ? x_cut_position-static_cast<float>(prepared_scene.render_origin.x)
                       :2.0F,
             static_cast<float>(camera_position.x),
             static_cast<float>(camera_position.y),
-            static_cast<float>(camera_position.z),1.0F};
+            static_cast<float>(camera_position.z),
+            world_mode&&world_smooth_normals?1.0F:0.0F};
         std::copy(render_parameters.begin(),render_parameters.end(),
                   g_CameraData.begin()+16);
         if (upload_dirty||overlay_dirty) {

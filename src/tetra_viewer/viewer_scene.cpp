@@ -33,7 +33,8 @@ std::array<double,3> stone_pbr_colour(
     return magnitude>1.0e-12?value/magnitude:tetra::Vec3{0.0,1.0,0.0};
   };
   normal=normalize(normal);view_direction=normalize(view_direction);
-  const auto sun=normalize({-0.55,0.52,0.65});
+  const auto sun=world_sun_direction(default_world_sun_azimuth_radians,
+                                     default_world_sun_elevation_radians);
   const auto half_direction=normalize(sun+view_direction);
   const double n_dot_l=std::max(0.0,dot(normal,sun));
   const double n_dot_v=std::max(0.0,dot(normal,view_direction));
@@ -316,7 +317,8 @@ SceneVertex make_scene_vertex(
 }
 
 void prepare_surface_render_attributes(
-    PreparedScene& scene,tetra::GeometryExecutor* executor=nullptr) {
+    PreparedScene& scene,const tetra::Sphere* smooth_field=nullptr,
+    tetra::GeometryExecutor* executor=nullptr) {
   const std::size_t triangle_count=scene.triangle_vertices.size()/3;
   if (triangle_count==0) return;
   const auto dot=[](tetra::Vec3 a,tetra::Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
@@ -349,6 +351,18 @@ void prepare_surface_render_attributes(
         output.normal[0]=static_cast<float>(normal.x);
         output.normal[1]=static_cast<float>(normal.y);
         output.normal[2]=static_cast<float>(normal.z);
+        auto smooth=normal;
+        if(smooth_field!=nullptr){
+          const tetra::Vec3 point{
+              static_cast<double>(output.position[0])+scene.render_origin.x,
+              static_cast<double>(output.position[1])+scene.render_origin.y,
+              static_cast<double>(output.position[2])+scene.render_origin.z};
+          smooth=normalize(smooth_field->normal(point));
+          if(dot(smooth,normal)<0.0)smooth=smooth*-1.0;
+        }
+        output.smooth_normal[0]=static_cast<float>(smooth.x);
+        output.smooth_normal[1]=static_cast<float>(smooth.y);
+        output.smooth_normal[2]=static_cast<float>(smooth.z);
         output.barycentric[0]=vertex==0?1.0F:0.0F;
         output.barycentric[1]=vertex==1?1.0F:0.0F;
         output.barycentric[2]=vertex==2?1.0F:0.0F;
@@ -2904,7 +2918,7 @@ PreparedScene prepare_blocked_derived_surface_scene(
   // the fragment shader's zero-normal sentinel and appeared as isolated,
   // fully bright triangles. This is the same flat-face attribute preparation
   // used by the monolithic scene path.
-  prepare_surface_render_attributes(scene);
+  prepare_surface_render_attributes(scene,&field);
   append_screen_space_edges(scene,show_edges,false,show_faces,false);
   scene.connected_surface_edges=scene.surface_line_vertices.size()/2U;
   return scene;
@@ -6508,7 +6522,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
     append_mixed_depth_dual(scene,mesh,sphere,show_faces,show_surface_edges);
   else if (surface_method == SurfaceMethod::surface_optimization)
     append_surface_optimization(scene, mesh, sphere, show_faces, show_surface_edges);
-  prepare_surface_render_attributes(scene,executor);
+  prepare_surface_render_attributes(scene,&sphere,executor);
   if(preparation.surface_diagnostics)annotate_surface_diagnostics(scene,sphere);
   // Cut caps are diagnostic volume geometry, not part of the generated
   // isosurface metrics. Append them after surface annotation.
@@ -6543,7 +6557,7 @@ PreparedScene prepare_scene(const tetra::TetMesh& mesh, const tetra::Sphere& sph
   // Volume and connected-shell triangles are appended after surface
   // diagnostics. Finalize the complete draw list so every publication path,
   // including incremental cutaway updates, carries unit geometric normals.
-  prepare_surface_render_attributes(scene,executor);
+  prepare_surface_render_attributes(scene,&sphere,executor);
   append_screen_space_edges(scene,show_surface_edges,show_volume_edges,
                             show_faces,show_volume_faces);
   scene.upload_preparation_milliseconds = std::chrono::duration<double, std::milli>(
@@ -7213,7 +7227,7 @@ bool SceneCache::update_scene(const tetra::TetMesh& mesh, const tetra::Sphere& s
   // reusable base surface. Finalize that complete publication just like the
   // monolithic prepare_scene path; otherwise refined faces retain tiny raw
   // area vectors that the fragment shader can mistake for missing normals.
-  prepare_surface_render_attributes(scene_);
+  prepare_surface_render_attributes(scene_,&sphere);
   mesh_revision_ = mesh.revision();
   subdivision_method_ = mesh.subdivision_method();
   has_subdivision_method_ = true;

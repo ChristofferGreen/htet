@@ -7,6 +7,7 @@ layout(location = 3) noperspective in vec3 barycentric;
 layout(location = 4) in float world_x;
 layout(location = 5) flat in float in_edge_flags;
 layout(location = 6) in vec3 fragment_position;
+layout(location = 7) in vec3 smooth_normal;
 layout(location = 0) out vec4 out_colour;
 layout(set = 0, binding = 0) uniform sampler2D sun_shadow_map;
 
@@ -18,7 +19,7 @@ layout(push_constant) uniform Camera {
 } camera;
 
 float sun_visibility(vec3 position,float n_dot_l) {
-  const vec3 sun_direction=normalize(vec3(-0.55,0.52,0.65));
+  const vec3 sun_direction=normalize(camera.light_direction.xyz);
   const vec3 sun_right=normalize(cross(vec3(0.0,1.0,0.0),sun_direction));
   const vec3 sun_up=cross(sun_direction,sun_right);
   const float radius=64.0;
@@ -76,13 +77,16 @@ void main() {
     out_colour = vec4(show_solid_faces ? colour : hidden_face_colour, 1.0);
     return;
   }
-  const vec3 unit_normal = normal/normal_length;
+  const int shading_model = int(camera.rendering.x+0.5);
+  const bool smooth_surface = camera.view_position.w>0.5 &&
+      shading_model==4 && (!volume_cut || connected_surface) &&
+      length(smooth_normal)>0.0001;
+  const vec3 unit_normal = normalize(smooth_surface?smooth_normal:normal);
   const vec3 up_seed = abs(light_direction.y) < 0.9 ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0);
   const vec3 camera_right = normalize(cross(up_seed,light_direction));
   const vec3 camera_up = cross(light_direction,camera_right);
   const vec3 diagnostic_light = normalize(light_direction+0.55*camera_right+0.35*camera_up);
   const float diagnostic_relief = 0.78+0.22*max(dot(unit_normal,diagnostic_light),0.0);
-  const int shading_model = int(camera.rendering.x+0.5);
   vec3 shaded_colour;
   if (shading_model == 1 && !volume_cut) {
     shaded_colour = angle_colour(diagnostics.x)*diagnostic_relief;
@@ -101,7 +105,7 @@ void main() {
     const vec3 albedo=vec3(0.32,0.33,0.34);
     const float roughness=0.82;
     const float metallic=0.0;
-    const vec3 sun_direction=normalize(vec3(-0.55,0.52,0.65));
+    const vec3 sun_direction=light_direction;
     const vec3 view_delta=camera.view_position.xyz-fragment_position;
     const vec3 view_direction=length(view_delta)>1.0e-5?
         normalize(view_delta):sun_direction;

@@ -1080,13 +1080,19 @@ position based.
 ## 13. Rendering
 
 The initial renderer keeps the current visual language: opaque flat-shaded
-triangles and optional depth-tested surface edges. Neutral stone uses a fixed
-world-space directional sun, a rough dielectric realtime BRDF, stable
-sky/ground environment light, and a filtered directional shadow map. The
-current 128-unit prototype fits one render-origin-relative orthographic shadow
-volume. Planetary views will require camera-anchored cascades or virtual shadow
-pages so shadow precision follows visible surface demand without allocating a
-planet-wide depth texture; lighting direction must never rotate with the view.
+triangles and optional depth-tested surface edges. Smooth analytic terrain
+normals are an explicit `M` diagnostic toggle; they affect only terrain and
+connected surface material, never volume faces or topology, and flat shading
+remains the default. Neutral stone uses a movable world-space directional sun,
+a rough dielectric realtime BRDF, stable sky/ground environment light, and a
+filtered directional shadow map. Azimuth and elevation controls drive the
+lighting direction, shadow projection, and a large procedural sun disc through
+one shared normalized direction. The disc is rendered behind opaque terrain so
+the horizon occludes it correctly. The current 128-unit prototype fits one
+render-origin-relative orthographic shadow volume. Planetary views will require
+camera-anchored cascades or virtual shadow pages so shadow precision follows
+visible surface demand without allocating a planet-wide depth texture;
+lighting direction must never rotate with the view.
 
 The main camera now has one shared CPU/Vulkan projection contract. It uses a
 32-bit floating-point depth attachment, a fixed 0.001-unit near plane,
@@ -1587,6 +1593,9 @@ todo chain are in
 - [ ] Replace routine `vkDeviceWaitIdle` publication with fence-tracked staging
       and deferred slot reuse.
 - [x] Upload only dirty render-chunk ranges.
+- [x] Add optional analytic smooth terrain normals while preserving flat
+      shading as the default, plus a visible sky sun and shared azimuth/elevation
+      controls for the light, shadow, and disc directions.
 - [ ] Cull render chunks or their conservative hierarchy bounds against the
       current camera frustum.
 - [ ] Replace the prototype's single directional shadow volume with stable
