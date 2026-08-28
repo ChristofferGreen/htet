@@ -14080,6 +14080,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.transmittance);
   CHECK(plan.multiple_scattering);
   CHECK(plan.sky_view);
+  CHECK(plan.sky_irradiance);
   CHECK(plan.aerial_perspective);
 
   plan=atmosphere_dispatch_plan(state,state,
@@ -14087,6 +14088,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.transmittance);
   CHECK_FALSE(plan.multiple_scattering);
   CHECK_FALSE(plan.sky_view);
+  CHECK_FALSE(plan.sky_irradiance);
   CHECK_FALSE(plan.aerial_perspective);
 
   auto rotated=state;
@@ -14100,6 +14102,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(faithful_rotation.transmittance);
   CHECK_FALSE(faithful_rotation.multiple_scattering);
   CHECK_FALSE(faithful_rotation.sky_view);
+  CHECK_FALSE(faithful_rotation.sky_irradiance);
   CHECK(faithful_rotation.aerial_perspective);
 
   auto moved=state;
@@ -14109,6 +14112,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.transmittance);
   CHECK_FALSE(plan.multiple_scattering);
   CHECK(plan.sky_view);
+  CHECK(plan.sky_irradiance);
   CHECK(plan.aerial_perspective);
 
   auto relit=state;

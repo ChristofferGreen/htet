@@ -140,7 +140,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
     AtmosphereTransport transport) noexcept {
   if (!previous)
     return {.transmittance=true, .multiple_scattering=true, .sky_view=true,
-            .aerial_perspective=true};
+            .sky_irradiance=true, .aerial_perspective=true};
 
   const bool optical=previous->optical!=next.optical;
   const bool scattering=previous->scattering!=next.scattering;
@@ -156,6 +156,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
       .multiple_scattering=optical||scattering,
       .sky_view=optical||scattering||sun||position||origin||
           (baseline&&orientation),
+      .sky_irradiance=optical||scattering||sun||position||origin,
       .aerial_perspective=
           optical||scattering||sun||position||orientation||shadow||origin,
   };

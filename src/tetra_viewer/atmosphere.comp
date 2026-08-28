@@ -6,6 +6,7 @@ layout(rgba16f,set=0,binding=1) uniform image2D multiple_scattering_lut;
 layout(rgba16f,set=0,binding=2) uniform image2D sky_view_lut;
 layout(rgba16f,set=0,binding=3) uniform image3D aerial_scattering_lut;
 layout(rgba16f,set=0,binding=4) uniform image3D aerial_transmittance_lut;
+layout(rgba16f,set=0,binding=8) uniform image2D sky_irradiance_lut;
 layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
 
 layout(std140,set=0,binding=5) uniform Atmosphere {
@@ -300,6 +301,36 @@ vec3 full_sky_direction(vec2 uv) {
       local_up*sin(latitude));
 }
 
+vec2 full_sky_uv(vec3 direction) {
+  vec3 local_up,sun_tangent,longitude_tangent;
+  full_sky_basis(local_up,sun_tangent,longitude_tangent);
+  const float latitude=asin(clamp(dot(direction,local_up),-1.0,1.0));
+  const float normalized_latitude=latitude/(0.5*PI);
+  const float mapped_latitude=abs(normalized_latitude)<1.0e-6?0.0:
+      sign(normalized_latitude)*sqrt(abs(normalized_latitude));
+  const float longitude=atan(dot(direction,longitude_tangent),
+                             dot(direction,sun_tangent));
+  return vec2(longitude/(2.0*PI)+0.5,mapped_latitude*0.5+0.5);
+}
+
+vec3 full_sky_load(vec3 direction) {
+  const vec2 uv=full_sky_uv(direction);
+  const ivec2 size=imageSize(sky_view_lut);
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const int low_x=(low.x%size.x+size.x)%size.x;
+  const int high_x=(high.x%size.x+size.x)%size.x;
+  const int low_y=clamp(low.y,0,size.y-1);
+  const int high_y=clamp(high.y,0,size.y-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(imageLoad(sky_view_lut,ivec2(low_x,low_y)).rgb,
+      imageLoad(sky_view_lut,ivec2(high_x,low_y)).rgb,fraction.x);
+  const vec3 upper=mix(imageLoad(sky_view_lut,ivec2(low_x,high_y)).rgb,
+      imageLoad(sky_view_lut,ivec2(high_x,high_y)).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
 vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
                           out vec3 path_transmittance) {
   float begin,end;
@@ -466,10 +497,34 @@ void generate_aerial(ivec3 coordinate) {
              checked_lut_value(transmittance,1.0));
 }
 
+void generate_sky_irradiance(ivec2 coordinate) {
+  const ivec2 size=imageSize(sky_irradiance_lut);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const vec3 normal=full_sky_direction(uv);
+  const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
+  vec3 irradiance_over_pi=vec3(0.0);
+  const int direction_count=64;
+  for(int index=0;index<direction_count;++index){
+    const float y=1.0-2.0*(float(index)+0.5)/float(direction_count);
+    const float angle=float(index)*2.39996323;
+    const float radial=sqrt(max(0.0,1.0-y*y));
+    const vec3 direction=vec3(radial*cos(angle),y,radial*sin(angle));
+    const float cosine_weight=max(dot(normal,direction),0.0);
+    const float sky_visibility=dot(local_up,direction)>0.0?1.0:0.0;
+    irradiance_over_pi+=full_sky_load(direction)*cosine_weight*sky_visibility;
+  }
+  irradiance_over_pi*=4.0/float(direction_count);
+  imageStore(sky_irradiance_lut,coordinate,
+             checked_lut_value(irradiance_over_pi,65504.0));
+}
+
 void main() {
   if(dispatch_mode.mode==0U)generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==1U)
     generate_multiple_scattering(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==2U)generate_sky_view(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==3U)generate_aerial(ivec3(gl_GlobalInvocationID));
+  else if(dispatch_mode.mode==4U)
+    generate_sky_irradiance(ivec2(gl_GlobalInvocationID.xy));
 }

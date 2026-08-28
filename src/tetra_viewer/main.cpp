@@ -2671,11 +2671,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         (1024.0*1024.0));
                 const auto& dispatches=
                     g_SceneRenderer.atmosphere_dispatch_counts();
-                ImGui::Text("LUT dispatch T %llu  M %llu  S %llu  A %llu",
+                ImGui::Text("LUT dispatch T %llu M %llu S %llu I %llu A %llu",
                     static_cast<unsigned long long>(dispatches.transmittance),
                     static_cast<unsigned long long>(
                         dispatches.multiple_scattering),
                     static_cast<unsigned long long>(dispatches.sky_view),
+                    static_cast<unsigned long long>(dispatches.sky_irradiance),
                     static_cast<unsigned long long>(
                         dispatches.aerial_perspective));
             }
@@ -3433,6 +3434,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_dispatch_counts().multiple_scattering
                         <<",\"sky_view\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().sky_view
+                        <<",\"sky_irradiance\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().sky_irradiance
                         <<",\"aerial_perspective\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().aerial_perspective
                         <<"},"

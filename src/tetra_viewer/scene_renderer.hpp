@@ -45,6 +45,7 @@ struct AtmosphereDispatchCounts {
   std::uint64_t transmittance{};
   std::uint64_t multiple_scattering{};
   std::uint64_t sky_view{};
+  std::uint64_t sky_irradiance{};
   std::uint64_t aerial_perspective{};
 };
 
@@ -148,6 +149,7 @@ class SceneRenderer {
     AtmosphereImage transmittance;
     AtmosphereImage multiple_scattering;
     AtmosphereImage sky_view;
+    AtmosphereImage sky_irradiance;
     AtmosphereImage aerial_scattering;
     AtmosphereImage aerial_transmittance;
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
