@@ -186,9 +186,13 @@
         32-operation front now measures about 247 ms for closure, directory,
         optimized surface, and cache publication, with unchanged hashes.
   - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
-        the roughly 110 ms target-cut selection does not remain serially ahead
-        of every complete publication; retain the dense large-transition path
-        for settled catch-up and prove sub-one-second convergence.
+        the now roughly 78--86 ms target-cut selection does not remain serially
+        ahead of every complete publication. Parent-to-child geometry carrying
+        is complete; next expose completed spatial/root discovery incrementally
+        or make it cooperatively pauseable. Equal-priority overlap of the two
+        complete stages was measured and rejected because it regressed latency.
+        Retain the dense large-transition path for settled catch-up and prove
+        sub-one-second convergence.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

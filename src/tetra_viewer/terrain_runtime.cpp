@@ -736,9 +736,9 @@ WorldLodCutSelection select_world_lod_cut(
     double horizontal_distance{};
     double projected_diameter{};
   };
-  const auto evaluate=[&](tetra::WorldTetAddress owner){
+  const auto evaluate_geometry=[&](
+      const tetra::WorldTetrahedronGeometry& normalized){
     Evaluation result;
-    const auto normalized=tetra::world_tetrahedron_geometry(owner);
     std::array<tetra::Vec3,4> points{};
     bool negative{},positive{};
     double minimum_y=std::numeric_limits<double>::infinity();
@@ -785,49 +785,35 @@ WorldLodCutSelection select_world_lod_cut(
             std::max(eye_distance-result.radius,1.0e-12);
     return result;
   };
+  const auto evaluate=[&](tetra::WorldTetAddress owner){
+    return evaluate_geometry(tetra::world_tetrahedron_geometry(owner));
+  };
 
   WorldLodCutSelection result;
-  result.owners.reserve(tetra::bcc_root_tetrahedron_count);
-  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
-    result.owners.push_back(tetra::WorldTetAddress::root(root));
-  for(unsigned int depth=0;depth<profile.near_red_depth;++depth){
-    if(cancellation.stop_requested())
-      throw std::runtime_error("world LOD selection canceled");
-    std::vector<tetra::WorldTetAddress> next;
-    next.reserve(result.owners.size()*2U);
-    std::vector<Evaluation> parallel_evaluations;
-    const bool parallel=executor&&executor->worker_count()>1U&&
-        result.owners.size()>=4096U;
-    if(parallel){
-      parallel_evaluations.resize(result.owners.size());
-      auto group=executor->make_group(
-          depth,tetra::GeometryTaskPriority::interactive);
-      executor->parallel_for(group,0U,result.owners.size(),4096U,
-          [&](std::size_t begin,std::size_t end,std::stop_token stop){
-        for(std::size_t index=begin;index<end;++index){
-          if(stop.stop_requested()||cancellation.stop_requested())return;
-          if(result.owners[index].red_depth()==depth)
-            parallel_evaluations[index]=evaluate(result.owners[index]);
-        }
-      });
-      executor->wait(group);
-      if(cancellation.stop_requested())
-        throw std::runtime_error("world LOD selection canceled");
-    }
-    bool split_any{};
-    for(std::size_t owner_index=0;owner_index<result.owners.size();++owner_index){
-      const auto owner=result.owners[owner_index];
-      if((result.metrics.visited_owners&1023U)==0U&&
-         cancellation.stop_requested())
-        throw std::runtime_error("world LOD selection canceled");
-      if(owner.red_depth()!=depth){next.push_back(owner);continue;}
-      ++result.metrics.visited_owners;
-      if(completed_work_units)
-        *completed_work_units=result.metrics.visited_owners;
-      const auto evaluation=parallel?parallel_evaluations[owner_index]:
-          evaluate(owner);
+  struct RootTraversal {
+    std::array<std::vector<tetra::WorldTetAddress>,
+               tetra::maximum_world_red_depth+1U> owners_by_depth;
+    std::size_t owner_count{};
+    WorldLodCutMetrics metrics{};
+  };
+  std::array<RootTraversal,tetra::bcc_root_tetrahedron_count> roots;
+  const auto traverse_root=[&](std::uint8_t root){
+    auto& local=roots[root];
+    const auto append=[&](tetra::WorldTetAddress owner){
+      local.owners_by_depth[owner.red_depth()].push_back(owner);
+      ++local.owner_count;
+    };
+    const auto visit=[&](auto&& self,tetra::WorldTetAddress owner,
+                         const tetra::WorldTetrahedronGeometry& geometry)->void{
+      const auto depth=owner.red_depth();
+      if(depth>=profile.near_red_depth){append(owner);return;}
+      if((local.metrics.visited_owners&1023U)==0U&&
+         cancellation.stop_requested())return;
+      ++local.metrics.visited_owners;
+      const auto evaluation=evaluate_geometry(geometry);
       if(!evaluation.may_cross){
-        ++result.metrics.field_rejected_owners;next.push_back(owner);continue;
+        ++local.metrics.field_rejected_owners;
+        append(owner);return;
       }
       const bool background=depth<profile.background_red_depth;
       const bool in_horizon=evaluation.horizontal_distance-evaluation.radius<=
@@ -835,22 +821,53 @@ WorldLodCutSelection select_world_lod_cut(
       const bool projected=in_horizon&&
           evaluation.projected_diameter>profile.pixel_threshold;
       if(!background&&!projected){
-        if(!in_horizon)++result.metrics.horizon_owners;
-        result.metrics.maximum_retained_projected_diameter=std::max(
-            result.metrics.maximum_retained_projected_diameter,
+        if(!in_horizon)++local.metrics.horizon_owners;
+        local.metrics.maximum_retained_projected_diameter=std::max(
+            local.metrics.maximum_retained_projected_diameter,
             evaluation.projected_diameter);
-        next.push_back(owner);continue;
+        append(owner);return;
       }
-      result.metrics.background_splits+=background?1U:0U;
-      result.metrics.projected_splits+=!background?1U:0U;
+      local.metrics.background_splits+=background?1U:0U;
+      local.metrics.projected_splits+=!background?1U:0U;
+      const auto children=tetra::world_tetrahedron_red_children(geometry);
       for(std::uint8_t child=0;child<8U;++child)
-        next.push_back(owner.child(child));
-      split_any=true;
-    }
-    result.owners=std::move(next);
-    if(!split_any)break;
+        self(self,owner.child(child),children[child]);
+    };
+    const auto owner=tetra::WorldTetAddress::root(root);
+    visit(visit,owner,tetra::world_tetrahedron_geometry(owner));
+  };
+  if(executor&&executor->worker_count()>1U){
+    auto group=executor->make_group(
+        0U,tetra::GeometryTaskPriority::interactive);
+    for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+      executor->submit(group,[&,root](std::stop_token stop){
+        if(!stop.stop_requested()&&!cancellation.stop_requested())
+          traverse_root(root);
+      });
+    executor->wait(group);
+  }else for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    traverse_root(root);
+  if(cancellation.stop_requested())
+    throw std::runtime_error("world LOD selection canceled");
+  std::size_t owner_count{};
+  for(const auto& root:roots)owner_count+=root.owner_count;
+  result.owners.reserve(owner_count);
+  for(auto& root:roots){
+    for(auto& depth:root.owners_by_depth)
+      result.owners.insert(result.owners.end(),
+          std::make_move_iterator(depth.begin()),
+          std::make_move_iterator(depth.end()));
+    result.metrics.visited_owners+=root.metrics.visited_owners;
+    result.metrics.field_rejected_owners+=root.metrics.field_rejected_owners;
+    result.metrics.horizon_owners+=root.metrics.horizon_owners;
+    result.metrics.background_splits+=root.metrics.background_splits;
+    result.metrics.projected_splits+=root.metrics.projected_splits;
+    result.metrics.maximum_retained_projected_diameter=std::max(
+        result.metrics.maximum_retained_projected_diameter,
+        root.metrics.maximum_retained_projected_diameter);
   }
-  std::ranges::sort(result.owners);
+  if(!std::ranges::is_sorted(result.owners))
+    throw std::logic_error("recursive world target traversal is not canonical");
   result.metrics.logical_owners_before_closure=result.owners.size();
   const auto closure_started=std::chrono::steady_clock::now();
   result.metrics.selection_milliseconds=std::chrono::duration<double,std::milli>(

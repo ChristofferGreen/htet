@@ -209,6 +209,22 @@ about 247 ms. Camera target-cut discovery still costs about 110 ms ahead of
 that pipeline, so the next step is to overlap retained-target discovery with
 these bounded geometry fronts and use the dense path for settled catch-up.
 
+Target discovery now carries each parent's exact tetrahedron geometry into its
+eight deterministic shortest-diagonal red children and emits leaves directly
+into canonical depth buckets. This removes repeated address-path replay and the
+final 560,000-owner comparison sort without retaining another hierarchy-sized
+cache. Release measurements reduce selection from roughly 110 ms to 78--86 ms
+and first continuous publication from roughly 550 ms to about 503--506 ms with
+unchanged final hashes. Settled convergence remains noisy at roughly 1.4--1.7
+s. A complete-selection
+overlap prototype was rejected because both stages saturated the same memory
+path and raised first publication to about 716 ms. Incremental discovery must
+therefore expose completed spatial/root work to publication or be cooperatively
+pauseable; merely placing the existing full stages on two futures is slower.
+Front sizing is also constrained by conformity: 16 and 24 raw operations make
+no closed-cut change, while 28--32 trigger the first useful family and already
+cost roughly 242--247 ms.
+
 ## Technology choices
 
 - C++23 where supported.

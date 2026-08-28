@@ -360,6 +360,42 @@ WorldTetrahedronGeometry world_tetrahedron_geometry(WorldTetAddress address) {
   return geometry;
 }
 
+std::array<WorldTetrahedronGeometry,8> world_tetrahedron_red_children(
+    const WorldTetrahedronGeometry& parent) {
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  constexpr std::array<std::array<std::size_t,2>,3> opposite_pairs{{
+      {{0,5}},{{1,4}},{{2,3}}}};
+  constexpr std::array<std::array<std::size_t,4>,3> equators{{
+      {{1,2,4,3}},{{0,2,5,3}},{{0,1,5,4}}}};
+  std::array<Vec3,6> midpoints{};
+  for(std::size_t edge=0;edge<edges.size();++edge){
+    const auto [a,b]=edges[edge];midpoints[edge]=(parent[a]+parent[b])/2.0;
+  }
+  std::size_t diagonal{};double best=std::numeric_limits<double>::infinity();
+  for(std::size_t candidate=0;candidate<opposite_pairs.size();++candidate){
+    const auto [a,b]=opposite_pairs[candidate];
+    const auto delta=midpoints[b]-midpoints[a];
+    const double length=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
+    if(length<best){best=length;diagonal=candidate;}
+  }
+  const auto poles=opposite_pairs[diagonal];const auto ring=equators[diagonal];
+  return {{
+      {{parent[0],midpoints[0],midpoints[1],midpoints[2]}},
+      {{parent[1],midpoints[0],midpoints[3],midpoints[4]}},
+      {{parent[2],midpoints[1],midpoints[3],midpoints[5]}},
+      {{parent[3],midpoints[2],midpoints[4],midpoints[5]}},
+      {{midpoints[poles[0]],midpoints[ring[0]],midpoints[ring[1]],
+        midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[1]],midpoints[ring[2]],
+        midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[2]],midpoints[ring[3]],
+        midpoints[poles[1]]}},
+      {{midpoints[poles[0]],midpoints[ring[3]],midpoints[ring[0]],
+        midpoints[poles[1]]}},
+  }};
+}
+
 std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     const TetMesh& root_complex,WorldTetAddress address) {
   if(root_complex.subdivision_method()!=SubdivisionMethod::bcc_red_green)

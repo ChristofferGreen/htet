@@ -2680,6 +2680,26 @@ TEST_CASE("world dyadic keys are reduced exact and stable at maximum depth") {
     }
 }
 
+TEST_CASE("carried red child geometry matches exact address reconstruction") {
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    auto address=tetra::WorldTetAddress::root(root);
+    auto geometry=tetra::world_tetrahedron_geometry(address);
+    for(unsigned int depth=0;depth<12U;++depth){
+      const auto children=tetra::world_tetrahedron_red_children(geometry);
+      for(std::uint8_t child=0;child<8U;++child){
+        const auto exact=tetra::world_tetrahedron_geometry(address.child(child));
+        for(std::size_t corner=0;corner<4U;++corner){
+          CHECK(children[child][corner].x==exact[corner].x);
+          CHECK(children[child][corner].y==exact[corner].y);
+          CHECK(children[child][corner].z==exact[corner].z);
+        }
+      }
+      const auto chosen=static_cast<std::uint8_t>((root+depth*5U)%8U);
+      address=address.child(chosen);geometry=children[chosen];
+    }
+  }
+}
+
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

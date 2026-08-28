@@ -131,6 +131,11 @@ inline constexpr std::size_t bcc_root_tetrahedron_count=12U;
     const TetMesh& root_complex,WorldTetAddress address);
 [[nodiscard]] WorldTetrahedronGeometry world_tetrahedron_geometry(
     WorldTetAddress address);
+// Produces the same deterministic shortest-diagonal red children as appending
+// each child digit to the address, while allowing hierarchy traversals to
+// carry geometry forward instead of replaying the complete address path.
+[[nodiscard]] std::array<WorldTetrahedronGeometry,8>
+world_tetrahedron_red_children(const WorldTetrahedronGeometry& parent);
 [[nodiscard]] std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
     const TetMesh& root_complex,WorldTetAddress address);
 [[nodiscard]] std::array<WorldVertexKey,4> world_tetrahedron_vertex_keys(
