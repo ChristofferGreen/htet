@@ -340,12 +340,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F}; VkRect2D scissor{{0, 0}, extent}; VkDeviceSize offset{};
   vkCmdSetViewport(command_buffer, 0, 1, &viewport); vkCmdSetScissor(command_buffer, 0, 1, &scissor);
   std::array<float,28> push_data{};
-  std::copy_n(camera_data,24,push_data.begin());
-  push_data[24]=static_cast<float>(extent.width);
-  push_data[25]=static_cast<float>(extent.height);
-  // One-pixel half-extent provides the complete filter footprint for an
-  // analytically antialiased one-pixel centre line.
-  push_data[26]=1.0F;
+  std::copy_n(camera_data,28,push_data.begin());
   const auto draw = [&](VkPipeline pipeline, const VertexBuffer& vertices,
                         std::span<const SurfaceDeviceDrawRange> ranges={}) {
     if (vertices.count == 0) return;
@@ -363,6 +358,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // depth test and visible edges do not depend on triangle shape.
   draw(triangle_pipeline_,triangles_,surface_upload_planner_.published_draws());
   draw(triangle_wire_pipeline_,triangles_,surface_upload_planner_.published_draws());
+  push_data[24]=static_cast<float>(extent.width);
+  push_data[25]=static_cast<float>(extent.height);
+  // One-pixel half-extent provides the complete filter footprint for an
+  // analytically antialiased one-pixel centre line.
+  push_data[26]=1.0F;
+  push_data[27]=0.0F;
   draw(line_pipeline_, hierarchy_lines_);
   draw(editor_line_pipeline_, editor_lines_);
   end_rendering(command_buffer);

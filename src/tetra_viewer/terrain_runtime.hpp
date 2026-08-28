@@ -159,6 +159,13 @@ struct TerrainRuntimeDiagnostics {
   bool conforming_faces{};
 };
 
+// Free-fly is a render/navigation inspection mode, not terrain demand. Keep
+// the last gameplay camera until normal movement resumes; entity pins remain
+// an independent runtime input and can still trigger updates while locked.
+[[nodiscard]] tetra::Camera resolve_world_lod_camera(
+    const tetra::Camera& player_camera,bool free_fly,
+    tetra::Camera& locked_camera) noexcept;
+
 struct TerrainDebugLine {
   tetra::Vec3 first{};
   tetra::Vec3 second{};

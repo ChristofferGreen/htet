@@ -988,28 +988,7 @@ bool render_image(const ScriptState& state, std::string_view path,
       shaded={{0.025+(0.88-0.025)*smooth,0.055+(0.96-0.055)*smooth,0.10+(1.0-0.10)*smooth}};
     }else if(state.shading_model==ShadingModel::stone_pbr&&
              (!volume_cut||va.diagnostics[0]<-1.5F)){
-      // CPU visual-oracle equivalent of the dielectric stone shader. With
-      // the camera-relative light, view and light directions coincide.
-      constexpr std::array<double,3> albedo{0.32,0.33,0.34};
-      constexpr double roughness=0.82;
-      const double n_dot_l=std::max(0.0,facing);
-      const double alpha=roughness*roughness;
-      const double alpha_squared=alpha*alpha;
-      const double denominator=n_dot_l*n_dot_l*(alpha_squared-1.0)+1.0;
-      const double distribution=alpha_squared/
-          std::max(std::acos(-1.0)*denominator*denominator,1.0e-5);
-      const double k=(roughness+1.0)*(roughness+1.0)/8.0;
-      const double geometry=n_dot_l/
-          std::max(n_dot_l*(1.0-k)+k,1.0e-5);
-      for(std::size_t channel=0;channel<3U;++channel){
-        constexpr double fresnel=0.04;
-        const double specular=distribution*geometry*geometry*fresnel/
-            std::max(4.0*n_dot_l*n_dot_l,1.0e-5);
-        const double diffuse=(1.0-fresnel)*albedo[channel]/std::acos(-1.0);
-        const double linear=albedo[channel]*0.14+
-            (diffuse+specular)*n_dot_l*2.4;
-        shaded[channel]=std::pow(linear/(linear+1.0),1.0/2.2);
-      }
+      shaded=stone_pbr_colour(normal,render_camera-centre);
     }else{
       shaded={{va.colour[0]*illumination,va.colour[1]*illumination,va.colour[2]*illumination}};
     }

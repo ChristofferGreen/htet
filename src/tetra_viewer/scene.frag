@@ -6,12 +6,14 @@ layout(location = 2) flat in vec2 diagnostics;
 layout(location = 3) noperspective in vec3 barycentric;
 layout(location = 4) in float world_x;
 layout(location = 5) flat in float in_edge_flags;
+layout(location = 6) in vec3 fragment_position;
 layout(location = 0) out vec4 out_colour;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
   vec4 light_direction;
   vec4 rendering;
+  vec4 view_position;
 } camera;
 
 vec3 angle_colour(float angle_degrees) {
@@ -73,16 +75,18 @@ void main() {
     const float stripe = smoothstep(0.18, 0.82, wave);
     shaded_colour = mix(vec3(0.025,0.055,0.10),vec3(0.88,0.96,1.0),stripe);
   } else if (shading_model == 4 && (!volume_cut || connected_surface)) {
-    // Neutral stone under a camera-relative area-light approximation. This is
-    // a dielectric Cook-Torrance BRDF (GGX distribution, Smith masking, and
-    // Schlick Fresnel) with a broad rough highlight rather than painted-on
-    // vertex colour.
+    // Conventional realtime dielectric BRDF: fixed world-space sun,
+    // per-fragment view direction, GGX distribution, Smith masking, Schlick
+    // Fresnel, and a stable diffuse environment term.
     const vec3 albedo=vec3(0.32,0.33,0.34);
     const float roughness=0.82;
     const float metallic=0.0;
-    const vec3 view_direction=light_direction;
-    const vec3 half_direction=normalize(light_direction+view_direction);
-    const float n_dot_l=max(dot(unit_normal,light_direction),0.0);
+    const vec3 sun_direction=normalize(vec3(-0.35,0.82,0.44));
+    const vec3 view_delta=camera.view_position.xyz-fragment_position;
+    const vec3 view_direction=length(view_delta)>1.0e-5?
+        normalize(view_delta):sun_direction;
+    const vec3 half_direction=normalize(sun_direction+view_direction);
+    const float n_dot_l=max(dot(unit_normal,sun_direction),0.0);
     const float n_dot_v=max(dot(unit_normal,view_direction),0.0);
     const float n_dot_h=max(dot(unit_normal,half_direction),0.0);
     const float v_dot_h=max(dot(view_direction,half_direction),0.0);
@@ -99,8 +103,11 @@ void main() {
     const vec3 specular=distribution*geometry_v*geometry_l*fresnel/
         max(4.0*n_dot_v*n_dot_l,1.0e-5);
     const vec3 diffuse=(1.0-fresnel)*(1.0-metallic)*albedo/3.14159265359;
-    const vec3 ambient=albedo*0.14;
-    const vec3 linear_colour=ambient+(diffuse+specular)*n_dot_l*2.4;
+    const float sky_mix=clamp(unit_normal.y*0.5+0.5,0.0,1.0);
+    const vec3 environment=mix(vec3(0.14,0.13,0.12),
+        vec3(0.38,0.42,0.48),sky_mix);
+    const vec3 ambient=albedo*environment;
+    const vec3 linear_colour=ambient+(diffuse+specular)*n_dot_l*2.0;
     shaded_colour=pow(linear_colour/(linear_colour+vec3(1.0)),vec3(1.0/2.2));
   } else {
     // Cutaway faces are deliberately viewed from either side. One-sided

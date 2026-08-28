@@ -27,8 +27,8 @@ class SceneRenderer {
   void upload_editor_lines(std::span<const SceneVertex> editor_line_vertices);
   [[nodiscard]] const SurfaceDeviceUploadMetrics& surface_upload_metrics()
       const noexcept { return surface_upload_planner_.metrics(); }
-  // camera_data is a column-major view-projection matrix followed by a
-  // camera-relative key-light direction and rendering-mode parameters.
+  // camera_data is a column-major view-projection matrix followed by the
+  // legacy diagnostic light, rendering parameters, and relative view point.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view,
               std::uint32_t image_index,VkExtent2D extent,
               const float* camera_data,bool black_clear=false) const;

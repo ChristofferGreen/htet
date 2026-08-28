@@ -776,8 +776,9 @@ int capture_world_runtime_view(std::string_view path,
     const int minimum_y=std::max(0,static_cast<int>(std::floor(std::min({a.y,b.y,c.y}))));
     const int maximum_y=std::min(height-1,static_cast<int>(std::ceil(std::max({a.y,b.y,c.y}))));
     const auto normal=normalize({first.normal[0],first.normal[1],first.normal[2]});
-    const double illumination=0.28+0.72*std::max(0.0,dot(normal,normalize(
-        render_camera-tetra::Vec3{first.position[0],first.position[1],first.position[2]})));
+    const auto shaded=stone_pbr_colour(normal,
+        render_camera-tetra::Vec3{
+            first.position[0],first.position[1],first.position[2]});
     for(int y=minimum_y;y<=maximum_y;++y)for(int x=minimum_x;x<=maximum_x;++x){
       const double sample_x=x+0.5,sample_y=y+0.5;
       const double wa=edge(b,c,sample_x,sample_y)/area;
@@ -789,8 +790,8 @@ int capture_world_runtime_view(std::string_view path,
       if(depth>=depths[index])continue;
       depths[index]=depth;
       for(std::size_t channel=0;channel<3U;++channel)
-        pixels[index][channel]=static_cast<unsigned char>(255.0*std::clamp(
-            static_cast<double>(first.colour[channel])*illumination,0.0,1.0));
+        pixels[index][channel]=static_cast<unsigned char>(
+            255.0*std::clamp(shaded[channel],0.0,1.0));
     }
   }
   // Match the production presentation closely enough for visual inspection:
@@ -816,7 +817,7 @@ int capture_world_runtime_view(std::string_view path,
         const double depth=1.0/((1.0-amount)/a.depth+amount/b.depth);
         const auto index=static_cast<std::size_t>(y*width+x);
         if(depth>depths[index]+1.0e-3)continue;
-        pixels[index]={18,36,28};
+        pixels[index]={18,20,22};
       }
     }
   }

@@ -11,6 +11,14 @@
 #include <unordered_set>
 
 namespace tetra_viewer {
+
+tetra::Camera resolve_world_lod_camera(
+    const tetra::Camera& player_camera,bool free_fly,
+    tetra::Camera& locked_camera) noexcept {
+  if(!free_fly)locked_camera=player_camera;
+  return locked_camera;
+}
+
 namespace {
 
 std::size_t checked_resource_add(std::size_t left,std::size_t right) {

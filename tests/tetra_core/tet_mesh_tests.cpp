@@ -1358,6 +1358,26 @@ TEST_CASE("first person mouse look uses the world application's expected axes") 
   CHECK(vertical.forward().y<initial.y);
 }
 
+TEST_CASE("free fly retains the last gameplay camera for terrain LOD") {
+  tetra::Camera locked;
+  locked.position={1.0,2.0,3.0};
+  tetra::Camera gameplay=locked;
+  gameplay.position={2.0,3.0,4.0};
+  auto resolved=tetra_viewer::resolve_world_lod_camera(
+      gameplay,false,locked);
+  CHECK(resolved.position.x==2.0);
+  CHECK(locked.position.x==2.0);
+  tetra::Camera free_fly=gameplay;
+  free_fly.position={20.0,30.0,40.0};
+  resolved=tetra_viewer::resolve_world_lod_camera(free_fly,true,locked);
+  CHECK(resolved.position.x==2.0);
+  CHECK(resolved.position.y==3.0);
+  CHECK(resolved.position.z==4.0);
+  resolved=tetra_viewer::resolve_world_lod_camera(free_fly,false,locked);
+  CHECK(resolved.position.x==20.0);
+  CHECK(locked.position.z==40.0);
+}
+
 TEST_CASE("implicit edge intersection preserves an endpoint already on the surface") {
   tetra::Sphere terrain;terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
   const tetra::Vec3 surface{terrain.centre.x,terrain.centre.y,
@@ -8571,6 +8591,20 @@ TEST_CASE("diagnostic shading models and surface angle data are registered") {
     CHECK(scene.triangle_vertices[triangle+1].edge_flags == first.edge_flags);
     CHECK(scene.triangle_vertices[triangle+2].edge_flags == first.edge_flags);
   }
+}
+
+TEST_CASE("stone PBR keeps fixed-light terrain exposure stable while viewing angle changes") {
+  const auto overhead=tetra_viewer::stone_pbr_colour(
+      {0.0,1.0,0.0},{0.0,1.0,0.0});
+  const auto oblique=tetra_viewer::stone_pbr_colour(
+      {0.0,1.0,0.0},{0.8,0.6,0.0});
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(std::isfinite(overhead[channel]));
+    CHECK(std::isfinite(oblique[channel]));
+    CHECK(overhead[channel]>0.0);CHECK(overhead[channel]<1.0);
+    CHECK(std::abs(overhead[channel]-oblique[channel])<0.08);
+  }
+  CHECK(std::abs(overhead[0]-overhead[2])<0.08);
 }
 
 TEST_CASE("camera-relative scene preparation preserves geometry at planet coordinates") {

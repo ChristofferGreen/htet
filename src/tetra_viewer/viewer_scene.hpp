@@ -287,6 +287,9 @@ inline constexpr std::array shading_models{
   return "unknown";
 }
 
+[[nodiscard]] std::array<double,3> stone_pbr_colour(
+    tetra::Vec3 normal,tetra::Vec3 view_direction) noexcept;
+
 enum class SurfaceMethod { full_tetrahedra, marching_tetrahedra, lattice_cleaving,
                            tetrahedral_layer, dual_contouring, four_hexahedra,
                            mixed_depth_dual, surface_optimization };

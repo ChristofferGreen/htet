@@ -84,7 +84,7 @@ static ImGui_ImplVulkanH_Window g_MainWindowData;
 static int                      g_MinImageCount = 2;
 static bool                     g_SwapChainRebuild = false;
 static tetra_viewer::SceneRenderer g_SceneRenderer;
-static std::array<float, 24> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+static std::array<float, 28> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
 static bool g_BlackSceneClear = false;
 
 static void glfw_error_callback(int error, const char* description)
@@ -932,6 +932,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         return parameters;
     };
     tetra_viewer::FirstPersonController world_controller;
+    tetra::Camera world_lod_camera;
     std::unique_ptr<tetra_viewer::TerrainRuntime> world_runtime;
     std::future<std::unique_ptr<tetra_viewer::TerrainRuntime>>
         world_runtime_startup;
@@ -952,6 +953,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const auto framebuffer_aspect=static_cast<double>(std::max(w,1))/
             static_cast<double>(std::max(h,1));
         camera=world_controller.camera(std::max(h,1),framebuffer_aspect);
+        world_lod_camera=camera;
         world_runtime_startup=
             tetra_viewer::make_production_terrain_runtime_async(profile);
         glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_DISABLED);
@@ -983,7 +985,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                    std::future_status::ready){
                 world_runtime=world_runtime_startup.get();
                 sphere=world_runtime->field();
-                world_runtime->set_camera(camera,false);
+                world_runtime->set_camera(world_lod_camera,false);
             }
             g_BlackSceneClear=!world_runtime;
             if(world_runtime&&world_runtime->update()){
@@ -2229,6 +2231,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::SameLine();
             if(ImGui::Button("Single step"))world_single_step=true;
             ImGui::Checkbox("Free fly",&world_free_fly);
+            if(world_free_fly)
+                ImGui::TextDisabled("Terrain LOD camera locked");
             ImGui::Checkbox("Triangle wireframe",&show_surface_edges);
             if(ImGui::Checkbox("Capsule diagnostic",&world_show_capsule))
                 overlay_dirty=true;
@@ -2309,9 +2313,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 static_cast<double>(std::max(1.0F,input.DisplaySize.y)),
                 static_cast<double>(std::max(1.0F,input.DisplaySize.x))/
                     static_cast<double>(std::max(1.0F,input.DisplaySize.y)));
-            if(world_runtime)world_runtime->set_camera(camera,
-                movement.forward!=0.0||movement.right!=0.0||
-                (!world_free_fly&&!world_controller.state().grounded));
+            const auto lod_camera=tetra_viewer::resolve_world_lod_camera(
+                camera,world_free_fly,world_lod_camera);
+            if(world_runtime)world_runtime->set_camera(lod_camera,
+                !world_free_fly&&(movement.forward!=0.0||movement.right!=0.0||
+                    !world_controller.state().grounded));
             view_camera_position=world_controller.eye_position();
             if(world_show_capsule||world_show_contact_normal)overlay_dirty=true;
         }else{
@@ -2580,7 +2586,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
             show_faces ? 1.0F : 0.0F,
             x_cutaway ? x_cut_position-static_cast<float>(prepared_scene.render_origin.x)
-                      :2.0F};
+                      :2.0F,
+            static_cast<float>(camera_position.x),
+            static_cast<float>(camera_position.y),
+            static_cast<float>(camera_position.z),1.0F};
         if (upload_dirty||overlay_dirty) {
             // Editor overlays deliberately do not include mesh surface-edge
             // segments. The mesh wireframe has its own depth-tested native

@@ -12,11 +12,13 @@ layout(location = 2) flat out vec2 diagnostics;
 layout(location = 3) noperspective out vec3 barycentric;
 layout(location = 4) out float world_x;
 layout(location = 5) flat out float edge_flags;
+layout(location = 6) out vec3 fragment_position;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
   vec4 light_direction;
   vec4 rendering;
+  vec4 view_position;
 } camera;
 
 void main() {
@@ -27,4 +29,5 @@ void main() {
   barycentric = in_barycentric;
   world_x = in_position.x;
   edge_flags = in_edge_flags;
+  fragment_position = in_position;
 }

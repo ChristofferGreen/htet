@@ -23,6 +23,52 @@
 
 namespace tetra_viewer {
 
+std::array<double,3> stone_pbr_colour(
+    tetra::Vec3 normal,tetra::Vec3 view_direction) noexcept {
+  const auto dot=[](tetra::Vec3 first,tetra::Vec3 second){
+    return first.x*second.x+first.y*second.y+first.z*second.z;
+  };
+  const auto normalize=[&](tetra::Vec3 value){
+    const double magnitude=std::sqrt(dot(value,value));
+    return magnitude>1.0e-12?value/magnitude:tetra::Vec3{0.0,1.0,0.0};
+  };
+  normal=normalize(normal);view_direction=normalize(view_direction);
+  const auto sun=normalize({-0.35,0.82,0.44});
+  const auto half_direction=normalize(sun+view_direction);
+  const double n_dot_l=std::max(0.0,dot(normal,sun));
+  const double n_dot_v=std::max(0.0,dot(normal,view_direction));
+  const double n_dot_h=std::max(0.0,dot(normal,half_direction));
+  const double v_dot_h=std::max(0.0,dot(view_direction,half_direction));
+  constexpr std::array<double,3> albedo{0.32,0.33,0.34};
+  constexpr std::array<double,3> ground{0.14,0.13,0.12};
+  constexpr std::array<double,3> sky{0.38,0.42,0.48};
+  constexpr double roughness=0.82;
+  const double alpha=roughness*roughness;
+  const double alpha_squared=alpha*alpha;
+  const double denominator=n_dot_h*n_dot_h*(alpha_squared-1.0)+1.0;
+  const double distribution=alpha_squared/
+      std::max(std::acos(-1.0)*denominator*denominator,1.0e-5);
+  const double k=(roughness+1.0)*(roughness+1.0)/8.0;
+  const double geometry_l=n_dot_l/
+      std::max(n_dot_l*(1.0-k)+k,1.0e-5);
+  const double geometry_v=n_dot_v/
+      std::max(n_dot_v*(1.0-k)+k,1.0e-5);
+  const double sky_mix=std::clamp(normal.y*0.5+0.5,0.0,1.0);
+  const double fresnel=0.04+0.96*std::pow(1.0-v_dot_h,5.0);
+  std::array<double,3> result{};
+  for(std::size_t channel=0;channel<3U;++channel){
+    const double specular=distribution*geometry_l*geometry_v*fresnel/
+        std::max(4.0*n_dot_l*n_dot_v,1.0e-5);
+    const double diffuse=(1.0-fresnel)*albedo[channel]/std::acos(-1.0);
+    const double environment=ground[channel]+
+        (sky[channel]-ground[channel])*sky_mix;
+    const double linear=albedo[channel]*environment+
+        (diffuse+specular)*n_dot_l*2.0;
+    result[channel]=std::pow(linear/(linear+1.0),1.0/2.2);
+  }
+  return result;
+}
+
 TetrahedronQuality evaluate_tetrahedron_quality(
     const std::array<tetra::Vec3,4>& points) {
   const auto dot=[](tetra::Vec3 first,tetra::Vec3 second){
