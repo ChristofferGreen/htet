@@ -485,6 +485,30 @@ silhouette-band luminance mean error up to 3/255; no mask may hide non-finite,
 black, clipped, or discontinuous output. Bruneton and Wilkie provenance and
 their domain-overlap tolerances remain the separate H8 acceptance criterion.
 
+### 11.3 External reference provenance
+
+`scripts/prepare_atmosphere_references.sh` acquires the external H8 inputs
+without adding their datasets to Git. Bruneton's tested BSD implementation is
+pinned to commit `34f14e745cff948f4ca3157d1b62a445ffa7286f`; its published
+640x360 double-precision CPU noon and sunset radiance/luminance images are
+downloaded from the accompanying test report and checked against four recorded
+SHA-256 values. These images use Bruneton's documented sphere-and-ground test
+scene and therefore constrain horizon colour, shadowed shafts, and low-sun
+continuity rather than serving as pixel-aligned terrain goldens.
+
+The Wilkie comparison uses the authors' Apache-2.0 standalone Prague Sky Model
+at commit `2385c912e9051c1258013ff8c3ce2e19e10fb917` and their 103 MB
+ground-level dataset with SHA-256
+`76bd619dc6dfcbc900c2996436dd6cf68197c03e3982fe5580f2b109ce1c71c2`.
+The script builds the serial reference CLI and renders 128-square side-facing
+fisheye EXRs at zero altitude, albedo 0.32, visibility 59.4 km, azimuth zero,
+and solar elevations 60 and 1 degrees. Their current hashes are respectively
+`707395df2ec17f3c7fa0e68c9958a8283014f1f6a346287877b8f1586056afea`
+and `c07fb96c0242f9ebbfd0f533080078af502a80e7fc12b068434f41e6b8749001`.
+The large dataset and generated images stay in the ignored build/output cache.
+H8 remains open until matched-domain renderer outputs are compared in linear
+radiance/chromaticity space and the resulting thresholds are recorded.
+
 ## 12. Post-implementation research reassessment
 
 ### 12.1 Decision
