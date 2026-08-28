@@ -164,6 +164,21 @@ forced to the root merely because it is behind the camera. Future world-region
 streaming may unload cold pages entirely while preserving procedural authority
 and sparse edit history.
 
+For a spherical world, cold demand also has a **planet-silhouette floor**. The
+camera may climb from the surface into orbit, so the coarsest resident surface
+must still approximate the planet's curvature and limb within a configured
+screen-space silhouette error. This floor is derived from planet radius,
+camera altitude, field-of-view, viewport height, and a conservative bound on
+each ancestor's radial surface error; it is not a fixed global hierarchy depth.
+The visible limb can therefore remain more detailed than the far-side interior,
+while the complete selected cut remains conforming and watertight.
+
+The orbital floor is a visual-surface demand only. It does not materialize the
+planet's tetrahedral volume, override physics/edit pins, or keep fine terrain
+resident behind the planet. At extreme distance it may reduce to a compact
+coarse shell, but tests must still bound projected limb deviation and prevent
+the planet from becoming visibly faceted or losing its spherical silhouette.
+
 ## Screen-space quality metric
 
 ### First implementation: projected cell diameter

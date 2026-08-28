@@ -1010,6 +1010,17 @@ defects.
 The scheduler should maintain approximately constant visible triangle and
 update complexity as view distance grows.
 
+The player camera is allowed to leave the atmosphere and view the whole
+planet. Far-terrain policy therefore includes a planet-silhouette floor: coarse
+surface ancestry must approximate the curved limb to a bounded screen-space
+error even when ordinary ground-distance rings would choose a lower level.
+The bound is evaluated from conservative radial error and projected size, so it
+adapts continuously with altitude and viewport rather than imposing one costly
+minimum depth everywhere. Only the visible/guarded limb and the ancestry needed
+for a conforming closed shell receive this demand. Occluded far-side detail and
+volumetric cells remain eligible for aggressive coarsening or eviction unless
+an independent physics/edit/entity pin requests them.
+
 ### 11.4 Temporal LOD quality
 
 Watertight output can still pop, shimmer, or change silhouette abruptly. These
@@ -1566,6 +1577,13 @@ todo chain are in
 - [x] Verify mixed-depth neighbours use the existing global BCC transition
       grammar independent of their storage-block placement.
 - [ ] Add distance-ring budgets that target stable visible triangle counts.
+- [ ] Add an altitude-aware planet-silhouette LOD floor based on conservative
+      radial error and projected limb deviation; retain a spherical closed
+      shell from ground level through orbital and distant whole-planet views
+      without materializing fine far-side volume.
+- [ ] Test ascent, low orbit, whole-planet framing, limb grazing, rapid orbital
+      rotation, and descent; assert bounded pixel silhouette error, watertight
+      closure, stable triangle budgets, and no forced fine volume residency.
 - [ ] Add guarded, predicted, recent, and cold behavior at hierarchy-region
       and block-residency levels.
 - [ ] Add horizon fog/atmospheric perspective without using it to hide missing

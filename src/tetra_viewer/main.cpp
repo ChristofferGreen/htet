@@ -87,6 +87,20 @@ static tetra_viewer::SceneRenderer g_SceneRenderer;
 static std::array<float, 28> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
 static bool g_BlackSceneClear = false;
 
+static bool CheckboxWithHotkey(const char* label,const char* hotkey,
+                               ImGuiKey key,bool* value)
+{
+    const std::string visible_label=std::string(label)+" ("+hotkey+")";
+    bool changed=ImGui::Checkbox(visible_label.c_str(),value);
+    const auto& input=ImGui::GetIO();
+    if(!input.WantTextInput&&!ImGui::IsAnyItemActive()&&
+       ImGui::IsKeyPressed(key,false)){
+        *value=!*value;
+        changed=true;
+    }
+    return changed;
+}
+
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
@@ -2227,18 +2241,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         world_controller.state().feet.y,
                         world_controller.state().feet.z);
             ImGui::Separator();
-            ImGui::Checkbox("Pause simulation",&world_paused);
+            CheckboxWithHotkey("Pause simulation","P",ImGuiKey_P,&world_paused);
             ImGui::SameLine();
             if(ImGui::Button("Single step"))world_single_step=true;
-            ImGui::Checkbox("Free fly",&world_free_fly);
+            CheckboxWithHotkey("Free fly","F",ImGuiKey_F,&world_free_fly);
             if(world_free_fly)
                 ImGui::TextDisabled("Terrain LOD camera locked");
-            ImGui::Checkbox("Triangle wireframe",&show_surface_edges);
-            if(ImGui::Checkbox("Capsule diagnostic",&world_show_capsule))
+            CheckboxWithHotkey("Triangle wireframe","T",ImGuiKey_T,
+                               &show_surface_edges);
+            if(CheckboxWithHotkey("Capsule diagnostic","K",ImGuiKey_K,
+                                  &world_show_capsule))
                 overlay_dirty=true;
-            if(ImGui::Checkbox("Contact normal",&world_show_contact_normal))
+            if(CheckboxWithHotkey("Contact normal","N",ImGuiKey_N,
+                                  &world_show_contact_normal))
                 overlay_dirty=true;
-            if(ImGui::Checkbox("LOD zones",&show_camera_lod_zones))
+            if(CheckboxWithHotkey("LOD zones","L",ImGuiKey_L,
+                                  &show_camera_lod_zones))
                 overlay_dirty=true;
             controls_hovered=ImGui::IsWindowHovered(
                 ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
