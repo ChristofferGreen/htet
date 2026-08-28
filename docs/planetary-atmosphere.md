@@ -296,7 +296,7 @@ advance until each preceding gate passes in release mode.
 - [x] Render opaque terrain into floating-point HDR scene colour.
 - [x] Make infinite-far reversed-Z depth sampleable on Vulkan and MoltenVK.
 - [x] Add one tone-map/output pass and render Dear ImGui afterward.
-- [ ] Retire the independent swapchain sun disc while keeping an atmosphere-off
+- [x] Retire the independent swapchain sun disc while keeping an atmosphere-off
       compatibility view.
 - [ ] Test depth reconstruction, resize, swapchain recreation, display transfer,
       and visually resolve unintended terrain/shadow/UI changes.
@@ -305,8 +305,8 @@ advance until each preceding gate passes in release mode.
 
 - [ ] Implement dimensionally checked transmittance and Hillaire-style
       multiple-scattering LUTs with CPU probe comparisons.
-- [ ] Implement the camera/sun-dependent sky-view LUT.
-- [ ] Render physical sky and attenuated angular solar disc into HDR.
+- [x] Implement the camera/sun-dependent sky-view LUT.
+- [x] Render physical sky and attenuated angular solar disc into HDR.
 - [ ] Add LUT debug views, finite/nonnegative checks, and Earth captures from
       ground through space.
 - [ ] Verify barriers, descriptors, resize lifetimes, and revision rejection
@@ -314,8 +314,8 @@ advance until each preceding gate passes in release mode.
 
 ### Gate D: Aerial perspective
 
-- [ ] Implement the camera-relative 3D aerial-perspective LUT.
-- [ ] Composite terrain as `surface * transmittance + in-scattering` using
+- [x] Implement the camera-relative 3D aerial-perspective LUT.
+- [x] Composite terrain as `surface * transmittance + in-scattering` using
       reconstructed reversed-Z distance.
 - [ ] Handle rays entering, leaving, grazing, or missing the atmosphere without
       a horizon seam.
@@ -339,7 +339,7 @@ advance until each preceding gate passes in release mode.
 
 - [ ] Add a compact floating panel grouped into Physical, Quality, Art,
       Diagnostics, and Presets that ignores mouse input while captured.
-- [ ] Add Earth, Mars-like, dense stylized, nearly airless, and Custom presets.
+- [x] Add Earth, Mars-like, dense stylized, nearly airless, and Custom presets.
 - [ ] Follow the tested invalidation graph and keep controls responsive while
       previous compatible LUTs render.
 - [ ] Add optional automatic exposure only after fixed exposure qualifies.

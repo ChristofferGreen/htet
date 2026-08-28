@@ -1,0 +1,275 @@
+#version 450
+
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+layout(rgba16f,set=0,binding=0) uniform image2D transmittance_lut;
+layout(rgba16f,set=0,binding=1) uniform image2D multiple_scattering_lut;
+layout(rgba16f,set=0,binding=2) uniform image2D sky_view_lut;
+layout(rgba16f,set=0,binding=3) uniform image3D aerial_scattering_lut;
+layout(rgba16f,set=0,binding=4) uniform image3D aerial_transmittance_lut;
+
+layout(std140,set=0,binding=5) uniform Atmosphere {
+  vec4 rayleigh_ground_radius;
+  vec4 mie_scattering_top_radius;
+  vec4 mie_absorption_rayleigh_scale;
+  vec4 absorption_mie_scale;
+  vec4 ground_albedo_mie_anisotropy;
+  vec4 solar_absorption_peak;
+  vec4 profile_and_mode;
+  vec4 camera_position_near;
+  vec4 camera_right_tangent_x;
+  vec4 camera_down_tangent_y;
+  vec4 camera_forward_maximum_distance;
+  vec4 sun_direction_exposure;
+  vec4 reserved0;
+  vec4 reserved1;
+  vec4 reserved2;
+  vec4 reserved3;
+} atmosphere;
+
+layout(push_constant) uniform DispatchMode {
+  uint mode;
+  uint reserved0;
+  uint reserved1;
+  uint reserved2;
+} dispatch_mode;
+
+const float PI=3.14159265358979323846;
+
+float ground_radius(){return atmosphere.rayleigh_ground_radius.w;}
+float top_radius(){return atmosphere.mie_scattering_top_radius.w;}
+float atmosphere_height(){return top_radius()-ground_radius();}
+
+vec2 sphere_roots(vec3 origin,vec3 direction,float radius) {
+  const float b=dot(origin,direction);
+  const float c=dot(origin,origin)-radius*radius;
+  const float discriminant=b*b-c;
+  if(discriminant<0.0)return vec2(1.0,-1.0);
+  const float root=sqrt(max(discriminant,0.0));
+  return vec2(-b-root,-b+root);
+}
+
+bool medium_segment(vec3 origin,vec3 direction,out float begin,out float end) {
+  const vec2 outer=sphere_roots(origin,direction,top_radius());
+  if(outer.y<0.0)return false;
+  begin=max(0.0,outer.x);
+  end=outer.y;
+  const vec2 ground=sphere_roots(origin,direction,ground_radius());
+  if(ground.y>=0.0){
+    if(length(origin)<ground_radius())begin=max(begin,ground.y);
+    else if(ground.x>begin+0.01)end=min(end,ground.x);
+  }
+  return end>begin;
+}
+
+bool ground_blocks(vec3 origin,vec3 direction) {
+  const vec2 roots=sphere_roots(origin,direction,ground_radius());
+  return roots.x>0.01;
+}
+
+vec3 densities(float altitude) {
+  if(altitude<0.0||altitude>atmosphere_height())return vec3(0.0);
+  const float rayleigh=exp(-altitude/atmosphere.mie_absorption_rayleigh_scale.w);
+  const float mie=exp(-altitude/atmosphere.absorption_mie_scale.w);
+  const float absorption=max(0.0,1.0-
+      abs(altitude-atmosphere.solar_absorption_peak.w)/
+          atmosphere.profile_and_mode.x);
+  return vec3(rayleigh,mie,absorption);
+}
+
+vec3 extinction(vec3 density) {
+  return atmosphere.rayleigh_ground_radius.rgb*density.x+
+      (atmosphere.mie_scattering_top_radius.rgb+
+       atmosphere.mie_absorption_rayleigh_scale.rgb)*density.y+
+      atmosphere.absorption_mie_scale.rgb*density.z;
+}
+
+vec3 integrate_transmittance(vec3 origin,vec3 direction,float distance,
+                             int steps) {
+  if(distance<=0.0)return vec3(1.0);
+  const float step_length=distance/float(steps);
+  vec3 optical_depth=vec3(0.0);
+  for(int index=0;index<32;++index){
+    if(index>=steps)break;
+    const vec3 point=origin+direction*((float(index)+0.5)*step_length);
+    optical_depth+=extinction(densities(length(point)-ground_radius()))*
+        step_length;
+  }
+  return exp(-max(optical_depth,vec3(0.0)));
+}
+
+ivec2 lookup_coordinate(float altitude,float cosine_angle,ivec2 size) {
+  const float u=clamp(cosine_angle*0.5+0.5,0.0,1.0);
+  const float v=clamp(altitude/atmosphere_height(),0.0,1.0);
+  return clamp(ivec2(vec2(u,v)*vec2(size)),ivec2(0),size-1);
+}
+
+vec3 lookup_transmittance(vec3 point,vec3 direction) {
+  if(ground_blocks(point,direction))return vec3(0.0);
+  const float altitude=length(point)-ground_radius();
+  const float cosine_angle=dot(normalize(point),direction);
+  return imageLoad(transmittance_lut,
+      lookup_coordinate(altitude,cosine_angle,imageSize(transmittance_lut))).rgb;
+}
+
+vec3 lookup_multiple_scattering(vec3 point,vec3 sun_direction) {
+  const float altitude=length(point)-ground_radius();
+  const float cosine_angle=dot(normalize(point),sun_direction);
+  return imageLoad(multiple_scattering_lut,
+      lookup_coordinate(altitude,cosine_angle,
+                        imageSize(multiple_scattering_lut))).rgb;
+}
+
+float rayleigh_phase(float cosine_angle) {
+  return 3.0*(1.0+cosine_angle*cosine_angle)/(16.0*PI);
+}
+
+float mie_phase(float cosine_angle) {
+  const float g=atmosphere.ground_albedo_mie_anisotropy.w;
+  return (1.0-g*g)/(4.0*PI*pow(
+      max(1.0+g*g-2.0*g*cosine_angle,1.0e-4),1.5));
+}
+
+vec3 view_direction(vec2 texture_coordinate) {
+  const vec2 ndc=texture_coordinate*2.0-1.0;
+  return normalize(atmosphere.camera_forward_maximum_distance.xyz+
+      atmosphere.camera_right_tangent_x.xyz*ndc.x*
+          atmosphere.camera_right_tangent_x.w+
+      atmosphere.camera_down_tangent_y.xyz*ndc.y*
+          atmosphere.camera_down_tangent_y.w);
+}
+
+vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
+                          out vec3 path_transmittance) {
+  float begin,end;
+  path_transmittance=vec3(1.0);
+  if(!medium_segment(origin,direction,begin,end)||maximum_distance<=begin)
+    return vec3(0.0);
+  end=min(end,maximum_distance);
+  const int steps=24;
+  const float step_length=(end-begin)/float(steps);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float phase_cosine=dot(direction,sun_direction);
+  const float phase_rayleigh=rayleigh_phase(phase_cosine);
+  const float phase_mie=mie_phase(phase_cosine);
+  vec3 radiance=vec3(0.0);
+  vec3 transmittance=vec3(1.0);
+  for(int index=0;index<steps;++index){
+    const float distance=begin+(float(index)+0.5)*step_length;
+    const vec3 point=origin+direction*distance;
+    const vec3 density=densities(length(point)-ground_radius());
+    const vec3 local_extinction=extinction(density);
+    const vec3 segment_transmittance=exp(-local_extinction*step_length);
+    const vec3 direct_source=(
+        atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
+        atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie)*
+        lookup_transmittance(point,sun_direction)*
+        atmosphere.solar_absorption_peak.rgb;
+    const vec3 multiple_source=lookup_multiple_scattering(point,sun_direction);
+    const vec3 source=direct_source+multiple_source;
+    const vec3 integral=(vec3(1.0)-segment_transmittance)/
+        max(local_extinction,vec3(1.0e-9));
+    radiance+=transmittance*source*integral;
+    transmittance*=segment_transmittance;
+  }
+  path_transmittance=transmittance;
+  return radiance;
+}
+
+void generate_transmittance(ivec2 coordinate) {
+  const ivec2 size=imageSize(transmittance_lut);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const float altitude=mix(1.0,atmosphere_height()-1.0,uv.y);
+  const float cosine_angle=uv.x*2.0-1.0;
+  const vec3 origin=vec3(0.0,ground_radius()+altitude,0.0);
+  const vec3 direction=normalize(vec3(sqrt(max(0.0,1.0-
+      cosine_angle*cosine_angle)),cosine_angle,0.0));
+  float begin,end;
+  vec3 value=vec3(1.0);
+  if(medium_segment(origin,direction,begin,end))
+    value=integrate_transmittance(origin+direction*begin,direction,end-begin,32);
+  imageStore(transmittance_lut,coordinate,vec4(value,1.0));
+}
+
+void generate_multiple_scattering(ivec2 coordinate) {
+  const ivec2 size=imageSize(multiple_scattering_lut);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const float altitude=mix(1.0,atmosphere_height()-1.0,uv.y);
+  const float sun_cosine=uv.x*2.0-1.0;
+  const vec3 origin=vec3(0.0,ground_radius()+altitude,0.0);
+  const vec3 sun_direction=normalize(vec3(
+      sqrt(max(0.0,1.0-sun_cosine*sun_cosine)),sun_cosine,0.0));
+  vec3 incoming=vec3(0.0);
+  const int direction_count=8;
+  for(int direction_index=0;direction_index<direction_count;++direction_index){
+    const float y=1.0-2.0*(float(direction_index)+0.5)/
+        float(direction_count);
+    const float angle=float(direction_index)*2.39996323;
+    const vec3 direction=vec3(sqrt(max(0.0,1.0-y*y))*cos(angle),y,
+                              sqrt(max(0.0,1.0-y*y))*sin(angle));
+    float begin,end;
+    if(!medium_segment(origin,direction,begin,end))continue;
+    const int steps=6;
+    const float step_length=(end-begin)/float(steps);
+    vec3 view_transmittance=vec3(1.0);
+    for(int step=0;step<steps;++step){
+      const vec3 point=origin+direction*(begin+(float(step)+0.5)*step_length);
+      const vec3 density=densities(length(point)-ground_radius());
+      const vec3 local_extinction=extinction(density);
+      const vec3 segment_transmittance=exp(-local_extinction*step_length);
+      const vec3 source=(atmosphere.rayleigh_ground_radius.rgb*density.x+
+          atmosphere.mie_scattering_top_radius.rgb*density.y)*
+          lookup_transmittance(point,sun_direction)*
+          atmosphere.solar_absorption_peak.rgb/(4.0*PI);
+      const vec3 integral=(vec3(1.0)-segment_transmittance)/
+          max(local_extinction,vec3(1.0e-9));
+      incoming+=view_transmittance*source*integral;
+      view_transmittance*=segment_transmittance;
+    }
+  }
+  incoming/=float(direction_count);
+  const vec3 local_density=densities(altitude);
+  const vec3 scattering=atmosphere.rayleigh_ground_radius.rgb*local_density.x+
+      atmosphere.mie_scattering_top_radius.rgb*local_density.y;
+  // Hillaire-style isotropic closure: convert average incident radiance into
+  // a local higher-order source and account for the remaining geometric tail.
+  const vec3 source=scattering*incoming/(1.0-0.35);
+  imageStore(multiple_scattering_lut,coordinate,vec4(source,1.0));
+}
+
+void generate_sky_view(ivec2 coordinate) {
+  const ivec2 size=imageSize(sky_view_lut);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  const vec3 direction=view_direction(uv);
+  vec3 transmittance;
+  vec3 radiance=integrate_scattering(atmosphere.camera_position_near.xyz,
+      direction,1.0e9,transmittance);
+  imageStore(sky_view_lut,coordinate,vec4(max(radiance,vec3(0.0)),1.0));
+}
+
+void generate_aerial(ivec3 coordinate) {
+  const ivec3 size=imageSize(aerial_scattering_lut);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate.xy)+0.5)/vec2(size.xy);
+  const float slice=float(coordinate.z)/float(max(size.z-1,1));
+  const float distance=slice*slice*
+      atmosphere.camera_forward_maximum_distance.w;
+  vec3 transmittance;
+  const vec3 radiance=integrate_scattering(
+      atmosphere.camera_position_near.xyz,view_direction(uv),distance,
+      transmittance);
+  imageStore(aerial_scattering_lut,coordinate,
+             vec4(max(radiance,vec3(0.0)),1.0));
+  imageStore(aerial_transmittance_lut,coordinate,
+             vec4(clamp(transmittance,vec3(0.0),vec3(1.0)),1.0));
+}
+
+void main() {
+  if(dispatch_mode.mode==0U)generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==1U)
+    generate_multiple_scattering(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==2U)generate_sky_view(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==3U)generate_aerial(ivec3(gl_GlobalInvocationID));
+}

@@ -70,10 +70,11 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,2> composite_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,9> composite_bindings{};
   for(std::uint32_t binding=0;binding<composite_bindings.size();++binding){
     composite_bindings[binding].binding=binding;
-    composite_bindings[binding].descriptorType=
+    composite_bindings[binding].descriptorType=binding==7U?
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     composite_bindings[binding].descriptorCount=1;
     composite_bindings[binding].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -86,6 +87,23 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateDescriptorSetLayout(device_,&composite_descriptor_layout,nullptr,
                                  &composite_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite descriptor layout");
+
+  std::array<VkDescriptorSetLayoutBinding,6> atmosphere_bindings{};
+  for(std::uint32_t binding=0;binding<atmosphere_bindings.size();++binding){
+    atmosphere_bindings[binding].binding=binding;
+    atmosphere_bindings[binding].descriptorType=binding==5U?
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    atmosphere_bindings[binding].descriptorCount=1;
+    atmosphere_bindings[binding].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo atmosphere_descriptor_layout{
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  atmosphere_descriptor_layout.bindingCount=
+      static_cast<std::uint32_t>(atmosphere_bindings.size());
+  atmosphere_descriptor_layout.pBindings=atmosphere_bindings.data();
+  if(vkCreateDescriptorSetLayout(device_,&atmosphere_descriptor_layout,nullptr,
+                                 &atmosphere_descriptor_set_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create atmosphere descriptor layout");
 
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter=VK_FILTER_LINEAR;
@@ -126,6 +144,17 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreatePipelineLayout(device_,&composite_layout,nullptr,
                             &composite_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite pipeline layout");
+  VkPushConstantRange atmosphere_push{VK_SHADER_STAGE_COMPUTE_BIT,0,
+                                      sizeof(std::uint32_t)*4U};
+  VkPipelineLayoutCreateInfo atmosphere_layout{
+      VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  atmosphere_layout.setLayoutCount=1;
+  atmosphere_layout.pSetLayouts=&atmosphere_descriptor_set_layout_;
+  atmosphere_layout.pushConstantRangeCount=1;
+  atmosphere_layout.pPushConstantRanges=&atmosphere_push;
+  if(vkCreatePipelineLayout(device_,&atmosphere_layout,nullptr,
+                            &atmosphere_pipeline_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create atmosphere pipeline layout");
 
   const auto vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.vert.spv");
   const auto fragment_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.frag.spv");
@@ -141,6 +170,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
       device_,TETRA_VIEWER_SHADER_DIR "/fullscreen.vert.spv");
   const auto tone_map_fragment_shader=shader_module(
       device_,TETRA_VIEWER_SHADER_DIR "/tone_map.frag.spv");
+  const auto atmosphere_compute_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/atmosphere.comp.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -262,6 +293,19 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                nullptr,&composite_pipeline_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create HDR scene composite pipeline");
 
+  VkPipelineShaderStageCreateInfo atmosphere_stage{
+      VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+  atmosphere_stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;
+  atmosphere_stage.module=atmosphere_compute_shader;
+  atmosphere_stage.pName="main";
+  VkComputePipelineCreateInfo atmosphere_pipeline{
+      VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+  atmosphere_pipeline.stage=atmosphere_stage;
+  atmosphere_pipeline.layout=atmosphere_pipeline_layout_;
+  if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
+                              nullptr,&atmosphere_pipeline_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create atmosphere compute pipeline");
+
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
       VK_SHADER_STAGE_VERTEX_BIT,shadow_vertex_shader,"main"};
@@ -312,6 +356,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_,sky_fragment_shader,nullptr);
   vkDestroyShaderModule(device_,fullscreen_vertex_shader,nullptr);
   vkDestroyShaderModule(device_,tone_map_fragment_shader,nullptr);
+  vkDestroyShaderModule(device_,atmosphere_compute_shader,nullptr);
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
@@ -326,6 +371,18 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     vkDestroyImage(device_,shadow.image,nullptr);
     vkFreeMemory(device_,shadow.memory,nullptr);
   }
+  for(auto& frame:atmosphere_frames_){
+    for(auto* image:{&frame.transmittance,&frame.multiple_scattering,
+                     &frame.sky_view,&frame.aerial_scattering,
+                     &frame.aerial_transmittance}){
+      vkDestroyImageView(device_,image->view,nullptr);
+      vkDestroyImage(device_,image->image,nullptr);
+      vkFreeMemory(device_,image->memory,nullptr);
+    }
+    vkDestroyBuffer(device_,frame.uniform_buffer,nullptr);
+    vkFreeMemory(device_,frame.uniform_memory,nullptr);
+  }
+  atmosphere_frames_.clear();
   shadow_images_.clear();
   descriptor_sets_.clear();
   composite_descriptor_sets_.clear();
@@ -384,6 +441,73 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
       throw std::runtime_error("unable to create HDR scene colour view");
   }
 
+  const auto make_atmosphere_image=[this](AtmosphereImage& destination,
+                                           VkImageType image_type,
+                                           VkImageViewType view_type,
+                                           VkExtent3D image_extent){
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType=image_type;
+    image.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+    image.extent=image_extent;
+    image.mipLevels=1;
+    image.arrayLayers=1;
+    image.samples=VK_SAMPLE_COUNT_1_BIT;
+    image.tiling=VK_IMAGE_TILING_OPTIMAL;
+    image.usage=VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
+    if(vkCreateImage(device_,&image,nullptr,&destination.image)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create atmosphere lookup image");
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device_,destination.image,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&destination.memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate atmosphere lookup image");
+    if(vkBindImageMemory(device_,destination.image,destination.memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to bind atmosphere lookup image");
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image=destination.image;
+    view.viewType=view_type;
+    view.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+    view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount=1;
+    view.subresourceRange.layerCount=1;
+    if(vkCreateImageView(device_,&view,nullptr,&destination.view)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create atmosphere lookup view");
+  };
+  atmosphere_frames_.resize(image_count);
+  for(auto& frame:atmosphere_frames_){
+    make_atmosphere_image(frame.transmittance,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,{256U,64U,1U});
+    make_atmosphere_image(frame.multiple_scattering,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,{32U,32U,1U});
+    make_atmosphere_image(frame.sky_view,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,{192U,108U,1U});
+    make_atmosphere_image(frame.aerial_scattering,VK_IMAGE_TYPE_3D,
+                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,16U});
+    make_atmosphere_image(frame.aerial_transmittance,VK_IMAGE_TYPE_3D,
+                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,16U});
+    VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size=sizeof(float)*64U;
+    buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if(vkCreateBuffer(device_,&buffer,nullptr,&frame.uniform_buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create atmosphere uniform buffer");
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_,frame.uniform_buffer,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&frame.uniform_memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate atmosphere uniform buffer");
+    if(vkBindBufferMemory(device_,frame.uniform_buffer,frame.uniform_memory,0)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to bind atmosphere uniform buffer");
+  }
+
   constexpr std::uint32_t shadow_extent=2048U;
   shadow_images_.resize(image_count);
   for(auto& shadow:shadow_images_){
@@ -421,12 +545,15 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
       throw std::runtime_error("unable to create sun shadow view");
   }
 
-  VkDescriptorPoolSize pool_size{
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,image_count*3U};
+  const std::array<VkDescriptorPoolSize,3> pool_sizes{
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           image_count*9U},
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*5U},
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*2U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets=image_count*2U;
-  pool.poolSizeCount=1;
-  pool.pPoolSizes=&pool_size;
+  pool.maxSets=image_count*3U;
+  pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
+  pool.pPoolSizes=pool_sizes.data();
   if(vkCreateDescriptorPool(device_,&pool,nullptr,&descriptor_pool_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create sun shadow descriptor pool");
   descriptor_sets_.resize(image_count);
@@ -444,6 +571,13 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   if(vkAllocateDescriptorSets(device_,&allocate,
                               composite_descriptor_sets_.data())!=VK_SUCCESS)
     throw std::runtime_error("unable to allocate scene composite descriptors");
+  std::vector<VkDescriptorSet> atmosphere_sets(image_count);
+  layouts.assign(image_count,atmosphere_descriptor_set_layout_);
+  allocate.pSetLayouts=layouts.data();
+  if(vkAllocateDescriptorSets(device_,&allocate,atmosphere_sets.data())!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate atmosphere descriptors");
+  for(std::size_t index=0;index<atmosphere_sets.size();++index)
+    atmosphere_frames_[index].descriptor_set=atmosphere_sets[index];
   for(std::size_t index=0;index<descriptor_sets_.size();++index){
     VkDescriptorImageInfo image_info{
         shadow_sampler_,shadow_images_[index].view,
@@ -456,24 +590,74 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     write.pImageInfo=&image_info;
     vkUpdateDescriptorSets(device_,1,&write,0,nullptr);
 
-    const std::array<VkDescriptorImageInfo,2> composite_images{
+    auto& atmosphere=atmosphere_frames_[index];
+    const std::array<VkDescriptorImageInfo,8> composite_images{
         VkDescriptorImageInfo{scene_sampler_,scene_colour_images_[index].view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         VkDescriptorImageInfo{depth_sampler_,depth_images_[index].view,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.transmittance.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.multiple_scattering.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.sky_view.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.aerial_scattering.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.aerial_transmittance.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{shadow_sampler_,shadow_images_[index].view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-    std::array<VkWriteDescriptorSet,2> composite_writes{};
-    for(std::uint32_t binding=0;binding<composite_writes.size();++binding){
-      composite_writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      composite_writes[binding].dstSet=composite_descriptor_sets_[index];
-      composite_writes[binding].dstBinding=binding;
-      composite_writes[binding].descriptorCount=1;
-      composite_writes[binding].descriptorType=
-          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      composite_writes[binding].pImageInfo=&composite_images[binding];
+    VkDescriptorBufferInfo uniform_info{atmosphere.uniform_buffer,0,
+                                        sizeof(float)*64U};
+    std::array<VkWriteDescriptorSet,9> composite_writes{};
+    for(std::uint32_t write_index=0;write_index<composite_writes.size();
+        ++write_index){
+      const std::uint32_t binding=write_index<7U?write_index:
+                                  (write_index==7U?8U:7U);
+      auto& descriptor=composite_writes[write_index];
+      descriptor.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      descriptor.dstSet=composite_descriptor_sets_[index];
+      descriptor.dstBinding=binding;
+      descriptor.descriptorCount=1;
+      if(binding==7U){
+        descriptor.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor.pBufferInfo=&uniform_info;
+      }else{
+        const std::size_t image_index=binding<7U?binding:7U;
+        descriptor.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptor.pImageInfo=&composite_images[image_index];
+      }
     }
     vkUpdateDescriptorSets(device_,
         static_cast<std::uint32_t>(composite_writes.size()),
         composite_writes.data(),0,nullptr);
+
+    const std::array<VkImageView,5> storage_views{
+        atmosphere.transmittance.view,atmosphere.multiple_scattering.view,
+        atmosphere.sky_view.view,atmosphere.aerial_scattering.view,
+        atmosphere.aerial_transmittance.view};
+    std::array<VkDescriptorImageInfo,5> storage_images{};
+    std::array<VkWriteDescriptorSet,6> atmosphere_writes{};
+    for(std::uint32_t binding=0;binding<storage_images.size();++binding){
+      storage_images[binding].imageView=storage_views[binding];
+      storage_images[binding].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+      atmosphere_writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      atmosphere_writes[binding].dstSet=atmosphere.descriptor_set;
+      atmosphere_writes[binding].dstBinding=binding;
+      atmosphere_writes[binding].descriptorCount=1;
+      atmosphere_writes[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      atmosphere_writes[binding].pImageInfo=&storage_images[binding];
+    }
+    atmosphere_writes[5].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[5].dstSet=atmosphere.descriptor_set;
+    atmosphere_writes[5].dstBinding=5U;
+    atmosphere_writes[5].descriptorCount=1;
+    atmosphere_writes[5].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    atmosphere_writes[5].pBufferInfo=&uniform_info;
+    vkUpdateDescriptorSets(device_,
+        static_cast<std::uint32_t>(atmosphere_writes.size()),
+        atmosphere_writes.data(),0,nullptr);
   }
 }
 
@@ -654,13 +838,80 @@ void SceneRenderer::upload_surface_ranges(
 
 void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_view,
                            std::uint32_t image_index,VkExtent2D extent,
-                           const float* camera_data,bool black_clear) {
+                           const float* camera_data,
+                           const AtmosphereFrameInput& atmosphere_input,
+                           bool black_clear) {
   const auto begin_rendering = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(
       vkGetDeviceProcAddr(device_, "vkCmdBeginRenderingKHR"));
   const auto end_rendering = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(
       vkGetDeviceProcAddr(device_, "vkCmdEndRenderingKHR"));
   if (begin_rendering == nullptr || end_rendering == nullptr)
     throw std::runtime_error("dynamic rendering is unavailable");
+
+  auto& atmosphere=atmosphere_frames_.at(image_index);
+  const auto& parameters=atmosphere_input.parameters;
+  const bool atmosphere_valid=!validate_atmosphere(parameters).has_value();
+  const bool atmosphere_enabled=atmosphere_input.enabled&&atmosphere_valid&&
+                                !black_clear;
+  const double metres=parameters.metres_per_world_unit;
+  const auto camera_from_centre=
+      (atmosphere_input.camera_relative_world-
+       atmosphere_input.planet_centre_relative_world)*metres;
+  std::array<float,64> atmosphere_uniform{};
+  const auto spectrum=[&](std::size_t offset,
+                          const AtmosphereSpectrum& value,float fourth){
+    atmosphere_uniform[offset]=static_cast<float>(value[0]);
+    atmosphere_uniform[offset+1U]=static_cast<float>(value[1]);
+    atmosphere_uniform[offset+2U]=static_cast<float>(value[2]);
+    atmosphere_uniform[offset+3U]=fourth;
+  };
+  spectrum(0U,parameters.rayleigh_scattering_per_metre,
+           static_cast<float>(parameters.ground_radius_metres));
+  spectrum(4U,parameters.mie_scattering_per_metre,
+           static_cast<float>(parameters.ground_radius_metres+
+                              parameters.atmosphere_height_metres));
+  spectrum(8U,parameters.mie_absorption_per_metre,
+           static_cast<float>(parameters.rayleigh_scale_height_metres));
+  spectrum(12U,parameters.absorption_per_metre,
+           static_cast<float>(parameters.mie_scale_height_metres));
+  spectrum(16U,parameters.ground_albedo,
+           static_cast<float>(parameters.mie_anisotropy));
+  spectrum(20U,parameters.solar_irradiance,
+           static_cast<float>(parameters.absorption_peak_altitude_metres));
+  atmosphere_uniform[24]=static_cast<float>(
+      parameters.absorption_half_width_metres);
+  atmosphere_uniform[25]=static_cast<float>(metres);
+  atmosphere_uniform[26]=static_cast<float>(
+      parameters.solar_angular_radius_radians);
+  atmosphere_uniform[27]=atmosphere_enabled?1.0F:0.0F;
+  atmosphere_uniform[28]=static_cast<float>(camera_from_centre.x);
+  atmosphere_uniform[29]=static_cast<float>(camera_from_centre.y);
+  atmosphere_uniform[30]=static_cast<float>(camera_from_centre.z);
+  atmosphere_uniform[31]=static_cast<float>(default_camera_near_plane*metres);
+  atmosphere_uniform[32]=static_cast<float>(atmosphere_input.camera_right.x);
+  atmosphere_uniform[33]=static_cast<float>(atmosphere_input.camera_right.y);
+  atmosphere_uniform[34]=static_cast<float>(atmosphere_input.camera_right.z);
+  atmosphere_uniform[35]=static_cast<float>(
+      atmosphere_input.vertical_tangent*atmosphere_input.aspect_ratio);
+  atmosphere_uniform[36]=static_cast<float>(atmosphere_input.camera_down.x);
+  atmosphere_uniform[37]=static_cast<float>(atmosphere_input.camera_down.y);
+  atmosphere_uniform[38]=static_cast<float>(atmosphere_input.camera_down.z);
+  atmosphere_uniform[39]=static_cast<float>(atmosphere_input.vertical_tangent);
+  atmosphere_uniform[40]=static_cast<float>(atmosphere_input.camera_forward.x);
+  atmosphere_uniform[41]=static_cast<float>(atmosphere_input.camera_forward.y);
+  atmosphere_uniform[42]=static_cast<float>(atmosphere_input.camera_forward.z);
+  atmosphere_uniform[43]=static_cast<float>(
+      atmosphere_input.maximum_aerial_distance_metres);
+  atmosphere_uniform[44]=static_cast<float>(atmosphere_input.sun_direction.x);
+  atmosphere_uniform[45]=static_cast<float>(atmosphere_input.sun_direction.y);
+  atmosphere_uniform[46]=static_cast<float>(atmosphere_input.sun_direction.z);
+  atmosphere_uniform[47]=atmosphere_input.exposure;
+  void* mapped{};
+  if(vkMapMemory(device_,atmosphere.uniform_memory,0,
+                 sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)
+    throw std::runtime_error("unable to map atmosphere uniform buffer");
+  std::memcpy(mapped,atmosphere_uniform.data(),sizeof(atmosphere_uniform));
+  vkUnmapMemory(device_,atmosphere.uniform_memory);
 
   auto& shadow=shadow_images_.at(image_index);
   VkImageMemoryBarrier to_shadow{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -729,6 +980,81 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&to_sample);
   shadow.initialized=true;
 
+  const std::array<VkImage,5> atmosphere_images{
+      atmosphere.transmittance.image,atmosphere.multiple_scattering.image,
+      atmosphere.sky_view.image,atmosphere.aerial_scattering.image,
+      atmosphere.aerial_transmittance.image};
+  if(!atmosphere.images_initialized){
+    std::array<VkImageMemoryBarrier,5> initialize_barriers{};
+    for(std::size_t index=0;index<initialize_barriers.size();++index){
+      auto& barrier=initialize_barriers[index];
+      barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.image=atmosphere_images[index];
+      barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount=1;
+      barrier.subresourceRange.layerCount=1;
+    }
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(initialize_barriers.size()),
+        initialize_barriers.data());
+    atmosphere.images_initialized=true;
+  }
+  if(atmosphere_enabled){
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                      atmosphere_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+        atmosphere_pipeline_layout_,0,1,&atmosphere.descriptor_set,0,nullptr);
+    const auto dispatch=[&](std::uint32_t mode,std::uint32_t x,
+                            std::uint32_t y,std::uint32_t z){
+      const std::array<std::uint32_t,4> push{mode,0U,0U,0U};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
+      vkCmdDispatch(command_buffer,x,y,z);
+    };
+    const auto compute_barrier=[&](std::span<const VkImage> images,
+                                   VkPipelineStageFlags destination_stage){
+      std::vector<VkImageMemoryBarrier> barriers(images.size());
+      for(std::size_t index=0;index<images.size();++index){
+        auto& barrier=barriers[index];
+        barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+            (destination_stage==VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT?
+                 VK_ACCESS_SHADER_WRITE_BIT:0U);
+        barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.image=images[index];
+        barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount=1;
+        barrier.subresourceRange.layerCount=1;
+      }
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          destination_stage,0,0,nullptr,0,nullptr,
+          static_cast<std::uint32_t>(barriers.size()),barriers.data());
+    };
+    const auto parameter_hash=atmosphere_parameter_hash(parameters);
+    if(atmosphere.optical_hash!=parameter_hash){
+      dispatch(0U,32U,8U,1U);
+      compute_barrier(std::span<const VkImage>{atmosphere_images.data(),1U},
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+      dispatch(1U,4U,4U,1U);
+      compute_barrier(std::span<const VkImage>{atmosphere_images.data(),2U},
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+      atmosphere.optical_hash=parameter_hash;
+    }
+    dispatch(2U,24U,14U,1U);
+    dispatch(3U,4U,4U,16U);
+    compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  }
+
   auto& scene_colour=scene_colour_images_.at(image_index);
   auto& scene_depth=depth_images_.at(image_index);
   std::array<VkImageMemoryBarrier,2> to_scene{};
@@ -794,7 +1120,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // Opaque geometry establishes visibility first. The native line-mode pass
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
-  if(!black_clear){
+  if(!black_clear&&!atmosphere_enabled){
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,sky_pipeline_);
     vkCmdPushConstants(command_buffer,pipeline_layout_,
         VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
@@ -877,6 +1203,17 @@ void SceneRenderer::shutdown() {
     vkDestroyImage(device_,shadow.image,nullptr);
     vkFreeMemory(device_,shadow.memory,nullptr);
   }
+  for(auto& frame:atmosphere_frames_){
+    for(auto* image:{&frame.transmittance,&frame.multiple_scattering,
+                     &frame.sky_view,&frame.aerial_scattering,
+                     &frame.aerial_transmittance}){
+      vkDestroyImageView(device_,image->view,nullptr);
+      vkDestroyImage(device_,image->image,nullptr);
+      vkFreeMemory(device_,image->memory,nullptr);
+    }
+    vkDestroyBuffer(device_,frame.uniform_buffer,nullptr);
+    vkFreeMemory(device_,frame.uniform_memory,nullptr);
+  }
   for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, editor_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
   if(descriptor_pool_!=VK_NULL_HANDLE)
     vkDestroyDescriptorPool(device_,descriptor_pool_,nullptr);
@@ -885,15 +1222,18 @@ void SceneRenderer::shutdown() {
   vkDestroySampler(device_,depth_sampler_,nullptr);
   vkDestroyDescriptorSetLayout(device_,descriptor_set_layout_,nullptr);
   vkDestroyDescriptorSetLayout(device_,composite_descriptor_set_layout_,nullptr);
+  vkDestroyDescriptorSetLayout(device_,atmosphere_descriptor_set_layout_,nullptr);
   vkDestroyPipeline(device_,shadow_pipeline_,nullptr);
   vkDestroyPipeline(device_,sky_pipeline_,nullptr);
   vkDestroyPipeline(device_,composite_pipeline_,nullptr);
+  vkDestroyPipeline(device_,atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
   vkDestroyPipeline(device_, editor_line_pipeline_, nullptr);
   vkDestroyPipelineLayout(device_,shaded_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,composite_pipeline_layout_,nullptr);
+  vkDestroyPipelineLayout(device_,atmosphere_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
 }
 

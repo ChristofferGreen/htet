@@ -43,6 +43,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <vector>
@@ -88,6 +89,7 @@ static bool                     g_SwapChainRebuild = false;
 static tetra_viewer::SceneRenderer g_SceneRenderer;
 static std::array<float, 28> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
 static bool g_BlackSceneClear = false;
+static tetra_viewer::AtmosphereFrameInput g_AtmosphereFrame;
 
 static bool CheckboxWithHotkey(const char* label,const char* hotkey,
                                ImGuiKey key,bool* value)
@@ -396,7 +398,8 @@ static void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
     }
     const VkExtent2D extent{static_cast<std::uint32_t>(wd->Width), static_cast<std::uint32_t>(wd->Height)};
     g_SceneRenderer.record(fd->CommandBuffer,fd->BackbufferView,wd->FrameIndex,
-                           extent,g_CameraData.data(),g_BlackSceneClear);
+                           extent,g_CameraData.data(),g_AtmosphereFrame,
+                           g_BlackSceneClear);
     VkRenderingAttachmentInfo overlay{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     overlay.imageView = fd->BackbufferView;
     overlay.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -458,6 +461,9 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd)
 int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
 {
     const bool world_mode=mode==ApplicationMode::world;
+    g_AtmosphereFrame={};
+    g_AtmosphereFrame.enabled=world_mode;
+    g_AtmosphereFrame.parameters.metres_per_world_unit=10.0;
     // The headless path intentionally returns before any platform Vulkan
     // loading, GLFW initialization, or window creation.
     if (argc >= 2 && strcmp(argv[1], "--script-help") == 0) {
@@ -991,8 +997,67 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
         tetra_viewer::default_world_sun_elevation_radians;
+    tetra_viewer::AtmospherePreset world_atmosphere_preset=
+        tetra_viewer::AtmospherePreset::earth;
+    double world_exposure_ev=-0.62;
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
+    if(world_mode){
+        constexpr std::string_view preset_prefix="--atmosphere-preset=";
+        constexpr std::string_view azimuth_prefix="--sun-azimuth-degrees=";
+        constexpr std::string_view elevation_prefix="--sun-elevation-degrees=";
+        constexpr std::string_view exposure_prefix="--exposure-ev=";
+        const auto parse_argument_double=[&](std::string_view text,
+                                             double& destination){
+            const std::string value(text);
+            char* end=nullptr;
+            const double parsed=std::strtod(value.c_str(),&end);
+            if(end==value.c_str()||*end!='\0'||!std::isfinite(parsed))return false;
+            destination=parsed;
+            return true;
+        };
+        for(int argument=1;argument<argc;++argument){
+            const std::string_view value=argv[argument];
+            if(value=="--atmosphere-off"){
+                g_AtmosphereFrame.enabled=false;
+            }else if(value.starts_with(preset_prefix)){
+                const auto preset=tetra_viewer::parse_atmosphere_preset(
+                    value.substr(preset_prefix.size()));
+                if(!preset||*preset==tetra_viewer::AtmospherePreset::custom){
+                    fprintf(stderr,"unknown launch atmosphere preset\n");
+                    return 2;
+                }
+                const double scale=
+                    g_AtmosphereFrame.parameters.metres_per_world_unit;
+                g_AtmosphereFrame.parameters=
+                    tetra_viewer::atmosphere_preset(*preset);
+                g_AtmosphereFrame.parameters.metres_per_world_unit=scale;
+                world_atmosphere_preset=*preset;
+            }else if(value.starts_with(azimuth_prefix)){
+                double degrees{};
+                if(!parse_argument_double(value.substr(azimuth_prefix.size()),
+                                          degrees)){
+                    fprintf(stderr,"sun azimuth must be finite\n");return 2;
+                }
+                world_sun_azimuth=static_cast<float>(degrees*
+                    std::numbers::pi/180.0);
+            }else if(value.starts_with(elevation_prefix)){
+                double degrees{};
+                if(!parse_argument_double(value.substr(elevation_prefix.size()),
+                                          degrees)){
+                    fprintf(stderr,"sun elevation must be finite\n");return 2;
+                }
+                world_sun_elevation=static_cast<float>(degrees*
+                    std::numbers::pi/180.0);
+            }else if(value.starts_with(exposure_prefix)){
+                if(!parse_argument_double(value.substr(exposure_prefix.size()),
+                                          world_exposure_ev)){
+                    fprintf(stderr,"exposure must be finite\n");return 2;
+                }
+                world_exposure_ev=std::clamp(world_exposure_ev,-6.0,6.0);
+            }
+        }
+    }
     if(world_mode){
         const auto profile=tetra_viewer::production_world_profile();
         sphere.kind=profile.shape;sphere.terrain=profile.terrain;
@@ -2316,6 +2381,137 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_sun_elevation=
                     tetra_viewer::default_world_sun_elevation_radians;
             }
+            ImGui::SeparatorText("Atmosphere");
+            CheckboxWithHotkey("Atmosphere","H",ImGuiKey_H,
+                               &g_AtmosphereFrame.enabled);
+            ImGui::SetNextItemWidth(190.0F);
+            const auto preset_name=tetra_viewer::atmosphere_preset_name(
+                world_atmosphere_preset);
+            if(ImGui::BeginCombo("Preset",preset_name.data())){
+                constexpr std::array presets{
+                    tetra_viewer::AtmospherePreset::earth,
+                    tetra_viewer::AtmospherePreset::mars_like,
+                    tetra_viewer::AtmospherePreset::dense_haze,
+                    tetra_viewer::AtmospherePreset::nearly_airless};
+                for(const auto preset:presets){
+                    const auto name=tetra_viewer::atmosphere_preset_name(preset);
+                    const bool selected=world_atmosphere_preset==preset;
+                    if(ImGui::Selectable(name.data(),selected)){
+                        const double metres_per_world_unit=
+                            g_AtmosphereFrame.parameters.metres_per_world_unit;
+                        g_AtmosphereFrame.parameters=
+                            tetra_viewer::atmosphere_preset(preset);
+                        g_AtmosphereFrame.parameters.metres_per_world_unit=
+                            metres_per_world_unit;
+                        world_atmosphere_preset=preset;
+                    }
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            bool physical_changed=false;
+            if(ImGui::CollapsingHeader("Physical parameters")){
+                const auto drag_double=[&](const char* label,double& value,
+                                           double speed,double minimum,
+                                           double maximum,const char* format){
+                    return ImGui::DragScalar(label,ImGuiDataType_Double,&value,
+                        static_cast<float>(speed),&minimum,&maximum,format,
+                        ImGuiSliderFlags_AlwaysClamp|
+                        ImGuiSliderFlags_Logarithmic);
+                };
+                physical_changed|=drag_double("Ground radius (m)",
+                    g_AtmosphereFrame.parameters.ground_radius_metres,1000.0,
+                    1000.0,1.0e9,"%.0f");
+                physical_changed|=drag_double("Atmosphere height (m)",
+                    g_AtmosphereFrame.parameters.atmosphere_height_metres,100.0,
+                    100.0,1.0e7,"%.0f");
+                physical_changed|=drag_double("Rayleigh height (m)",
+                    g_AtmosphereFrame.parameters.rayleigh_scale_height_metres,
+                    20.0,100.0,1.0e6,"%.0f");
+                physical_changed|=drag_double("Aerosol height (m)",
+                    g_AtmosphereFrame.parameters.mie_scale_height_metres,
+                    10.0,10.0,1.0e6,"%.0f");
+                const double coefficient_minimum=0.0;
+                const double coefficient_maximum=1.0e-3;
+                physical_changed|=ImGui::DragScalarN("Rayleigh scattering",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.rayleigh_scattering_per_metre.data(),
+                    3,1.0e-7,&coefficient_minimum,&coefficient_maximum,"%.3e",
+                    ImGuiSliderFlags_AlwaysClamp);
+                physical_changed|=ImGui::DragScalarN("Aerosol scattering",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.mie_scattering_per_metre.data(),
+                    3,1.0e-7,&coefficient_minimum,&coefficient_maximum,"%.3e",
+                    ImGuiSliderFlags_AlwaysClamp);
+                physical_changed|=ImGui::DragScalarN("Aerosol absorption",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.mie_absorption_per_metre.data(),
+                    3,1.0e-7,&coefficient_minimum,&coefficient_maximum,"%.3e",
+                    ImGuiSliderFlags_AlwaysClamp);
+                physical_changed|=ImGui::DragScalarN("Upper-air absorption",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.absorption_per_metre.data(),
+                    3,1.0e-7,&coefficient_minimum,&coefficient_maximum,"%.3e",
+                    ImGuiSliderFlags_AlwaysClamp);
+                const double anisotropy_minimum=-0.95;
+                const double anisotropy_maximum=0.95;
+                physical_changed|=ImGui::DragScalar("Aerosol anisotropy",
+                    ImGuiDataType_Double,
+                    &g_AtmosphereFrame.parameters.mie_anisotropy,0.005,
+                    &anisotropy_minimum,&anisotropy_maximum,"%.3f",
+                    ImGuiSliderFlags_AlwaysClamp);
+                const double albedo_minimum=0.0;
+                const double albedo_maximum=1.0;
+                physical_changed|=ImGui::DragScalarN("Ground albedo",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.ground_albedo.data(),3,0.005,
+                    &albedo_minimum,&albedo_maximum,"%.3f",
+                    ImGuiSliderFlags_AlwaysClamp);
+                const double altitude_minimum=0.0;
+                const double altitude_maximum=1.0e7;
+                physical_changed|=ImGui::DragScalar("Absorption peak (m)",
+                    ImGuiDataType_Double,
+                    &g_AtmosphereFrame.parameters.absorption_peak_altitude_metres,
+                    100.0F,&altitude_minimum,&altitude_maximum,"%.0f",
+                    ImGuiSliderFlags_AlwaysClamp);
+                physical_changed|=drag_double("Absorption width (m)",
+                    g_AtmosphereFrame.parameters.absorption_half_width_metres,
+                    100.0,1.0,1.0e7,"%.0f");
+                const double irradiance_minimum=0.0;
+                const double irradiance_maximum=20.0;
+                physical_changed|=ImGui::DragScalarN("Solar irradiance",
+                    ImGuiDataType_Double,
+                    g_AtmosphereFrame.parameters.solar_irradiance.data(),3,0.01,
+                    &irradiance_minimum,&irradiance_maximum,"%.3f",
+                    ImGuiSliderFlags_AlwaysClamp);
+                const double sun_radius_minimum=0.0001;
+                const double sun_radius_maximum=0.1;
+                physical_changed|=ImGui::DragScalar("Solar radius (rad)",
+                    ImGuiDataType_Double,
+                    &g_AtmosphereFrame.parameters.solar_angular_radius_radians,
+                    0.00005,&sun_radius_minimum,&sun_radius_maximum,"%.5f",
+                    ImGuiSliderFlags_AlwaysClamp);
+            }
+            if(physical_changed)
+                world_atmosphere_preset=
+                    tetra_viewer::AtmospherePreset::custom;
+            if(ImGui::CollapsingHeader("Atmosphere quality")){
+                const double distance_minimum=10'000.0;
+                const double distance_maximum=10'000'000.0;
+                ImGui::DragScalar("Aerial range (m)",ImGuiDataType_Double,
+                    &g_AtmosphereFrame.maximum_aerial_distance_metres,1000.0,
+                    &distance_minimum,&distance_maximum,"%.0f",
+                    ImGuiSliderFlags_AlwaysClamp|
+                    ImGuiSliderFlags_Logarithmic);
+            }
+            ImGui::SetNextItemWidth(190.0F);
+            const double exposure_minimum=-6.0;
+            const double exposure_maximum=6.0;
+            ImGui::SliderScalar("Exposure (EV)",ImGuiDataType_Double,
+                &world_exposure_ev,&exposure_minimum,
+                &exposure_maximum,"%.2f");
+            g_AtmosphereFrame.exposure=static_cast<float>(
+                std::exp2(world_exposure_ev));
             controls_hovered=ImGui::IsWindowHovered(
                 ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
             ImGui::End();
@@ -2647,6 +2843,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                   g_CameraData.begin());
         const auto sun=tetra_viewer::world_sun_direction(
             world_sun_azimuth,world_sun_elevation);
+        g_AtmosphereFrame.camera_relative_world=camera_position;
+        g_AtmosphereFrame.camera_right=projection.right;
+        g_AtmosphereFrame.camera_down=projection.up;
+        g_AtmosphereFrame.camera_forward=projection.forward;
+        g_AtmosphereFrame.sun_direction=sun;
+        g_AtmosphereFrame.vertical_tangent=projection.tangent;
+        g_AtmosphereFrame.aspect_ratio=projection.aspect_ratio;
+        const double planet_radius_world=
+            g_AtmosphereFrame.parameters.ground_radius_metres/
+            g_AtmosphereFrame.parameters.metres_per_world_unit;
+        const tetra::Vec3 planet_centre_world{
+            0.5,0.5-planet_radius_world,0.5};
+        g_AtmosphereFrame.planet_centre_relative_world=
+            planet_centre_world-prepared_scene.render_origin;
         const tetra::Vec3 light=shading_model==tetra_viewer::ShadingModel::stone_pbr?
             sun:tetra::Vec3{-f.x,-f.y,-f.z};
         const std::array<float,12> render_parameters{
