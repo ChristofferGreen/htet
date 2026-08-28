@@ -621,10 +621,18 @@ std::shared_ptr<const WorldDerivedSurfaceSnapshot> WorldCutDirectory::surface(
 WorldRevisionManifest WorldCutDirectory::stage_derived_surfaces(
     std::span<const WorldDerivedSurfaceSnapshot> surfaces,
     std::uint64_t new_revision,const std::function<bool()>& canceled) const {
+  return stage_owned_derived_surfaces(
+      std::vector<WorldDerivedSurfaceSnapshot>(surfaces.begin(),surfaces.end()),
+      new_revision,canceled);
+}
+
+WorldRevisionManifest WorldCutDirectory::stage_owned_derived_surfaces(
+    std::vector<WorldDerivedSurfaceSnapshot>&& surfaces,
+    std::uint64_t new_revision,const std::function<bool()>& canceled) const {
   if(new_revision<=revision_)
     throw std::invalid_argument("derived surface revision must advance");
   if(surfaces.empty())throw std::invalid_argument("derived surface transaction is empty");
-  std::vector<WorldDerivedSurfaceSnapshot> staged(surfaces.begin(),surfaces.end());
+  auto staged=std::move(surfaces);
   std::vector<WorldBlockDependency> dependencies;
   std::vector<HierarchyBlockId> dependency_ids;
   for(const auto& surface:staged){

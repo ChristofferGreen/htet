@@ -1150,9 +1150,6 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface.metrics.computed_intersections+surface.triangles.size();
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
-  directory->publish(directory->stage_derived_surfaces(
-      surface.snapshots,hierarchy_revision+1U));
-  const auto surface_published=std::chrono::steady_clock::now();
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
   auto prepared=prepare_retained_blocked_scene(
       surface,field,profile.show_faces,profile.show_surface_edges,
@@ -1160,6 +1157,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache,false);
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
+  directory->publish(directory->stage_owned_derived_surfaces(
+      std::move(surface.snapshots),hierarchy_revision+1U));
+  const auto surface_published=std::chrono::steady_clock::now();
 
   TerrainRuntimeDiagnostics diagnostics;
   diagnostics.mesh_revision=directory->revision();
@@ -1363,9 +1363,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       elapsed(hierarchy_demand_finished,directory_finished);
   diagnostics.surface_build_milliseconds=surface.metrics.build_milliseconds;
   diagnostics.surface_publication_milliseconds=
-      elapsed(surface_built,surface_published);
+      elapsed(render_prepared,surface_published);
   diagnostics.render_preparation_milliseconds=
-      elapsed(surface_published,render_prepared);
+      elapsed(surface_built,render_prepared);
   diagnostics.surface_classification_milliseconds=
       surface.metrics.classification_milliseconds;
   diagnostics.surface_conforming_materialization_milliseconds=
@@ -1479,10 +1479,16 @@ void BlockedTerrainRuntime::submit() {
 
 void BlockedTerrainRuntime::set_camera(
     const tetra::Camera& camera,bool interactive) {
+  const bool changed=camera.position.x!=camera_.position.x||
+      camera.position.y!=camera_.position.y||
+      camera.position.z!=camera_.position.z;
   const auto delta=camera.position-last_requested_position_;
   const bool moved=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>0.02*0.02;
   camera_=camera;
-  demand_pending_=demand_pending_||moved;
+  // The movement threshold controls settled cancellation, not whether the
+  // latest pose must eventually be built. Otherwise a sub-threshold tail of
+  // an interactive motion can be reported as converged at the wrong camera.
+  demand_pending_=demand_pending_||changed;
   // Interactive camera input is an unbounded stream. Canceling the active
   // publication for every new pose can starve publication forever while the
   // player walks. Keep the complete in-flight front, coalesce all newer poses

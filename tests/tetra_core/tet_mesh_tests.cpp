@@ -1766,6 +1766,30 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   // already be running for the most recent pose.
   CHECK(runtime.diagnostics().positive_volumes);
   CHECK(runtime.diagnostics().conforming_faces);
+
+  const auto settle=[&]{
+    const auto settle_deadline=
+        std::chrono::steady_clock::now()+std::chrono::seconds(20);
+    while(std::chrono::steady_clock::now()<settle_deadline){
+      static_cast<void>(runtime.update());
+      const auto diagnostics=runtime.diagnostics();
+      if(!diagnostics.busy&&diagnostics.converged)return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  REQUIRE(settle());
+  const auto submitted=runtime.diagnostics().submitted_builds;
+  camera.position.x=runtime.diagnostics().published_camera_position.x+0.001;
+  camera.position.y=runtime.diagnostics().published_camera_position.y;
+  camera.position.z=runtime.diagnostics().published_camera_position.z;
+  runtime.set_camera(camera,true);
+  static_cast<void>(runtime.update());
+  CHECK(runtime.diagnostics().submitted_builds==submitted+1U);
+  REQUIRE(settle());
+  CHECK(runtime.diagnostics().published_camera_position.x==camera.position.x);
+  CHECK(runtime.diagnostics().published_camera_position.y==camera.position.y);
+  CHECK(runtime.diagnostics().published_camera_position.z==camera.position.z);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {

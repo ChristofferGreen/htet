@@ -461,7 +461,13 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
        diagnostics.connected_surface_hash!=
            oracle_diagnostics.connected_surface_hash||
        diagnostics.render_hash!=oracle_diagnostics.render_hash){
-      errors<<"continuous world movement disagrees with final-pose oracle\n";
+      errors<<"continuous world movement disagrees with final-pose oracle: "
+            <<diagnostics.hierarchy_hash<<'/'
+            <<oracle_diagnostics.hierarchy_hash<<' '
+            <<diagnostics.connected_surface_hash<<'/'
+            <<oracle_diagnostics.connected_surface_hash<<' '
+            <<diagnostics.render_hash<<'/'
+            <<oracle_diagnostics.render_hash<<'\n';
       return 1;
     }
     output<<"{\"event\":\"world_continuous_movement\""

@@ -124,6 +124,10 @@
         ordered maps only where traversal order participates in stable patch
         scheduling. Bounded surface work falls from about 214 ms to 194 ms and
         the exact 512-operation slice to about 395 ms.
+  - [x] Prepare retained render blocks before directory publication and move
+        the completed snapshot array into owned staging. This preserves the
+        private atomic transaction while removing one complete surface-payload
+        copy; publication falls by roughly 7 ms on the walking path.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.
@@ -133,11 +137,23 @@
   - [x] Record the exact camera pose carried by every published world front.
         The first baseline is 1.87 s to first publication, 2.21 s maximum
         interval, 0.22 units maximum lag, and 3.52 s settled convergence.
+  - [x] Treat every positional camera change as pending eventual work while
+        retaining the 0.02-unit threshold only for cancellation policy. The
+        former threshold could report convergence at a near-final submitted
+        pose; a deterministic 0.001-unit tail regression and the independent
+        final-pose oracle now cover this timing-dependent failure.
   - [ ] Retain ancestry-edge provenance independently of deduplicated proof
         nodes, and incrementally maintain causal-root indices. A local-ancestor
         shortcut changed the continuous final hashes and was removed; rebuilding
         a complete root index merely moved about 10 ms from validation into
-        finalization and added about 5 MB, so it was also removed.
+        finalization and added about 5 MB, so it was also removed. A compact
+        reference count stored only on the surviving split-edge proof passed
+        focused alternating tests and improved ordinary walking, but failed to
+        converge on the reversal-to-teleport stress transition. A midpoint can
+        simultaneously be supported by split ancestry, green closure, and red
+        promotion, so the retained form must preserve the ordered causal
+        contributions independently of whichever proof currently represents
+        the midpoint.
   - [ ] Retain one authoritative per-block raw topology arena, including exact
         contribution order and multiplicity. A shortcut through the global
         counted vertex/triangle set changed the refine/far/reverse render hash
@@ -146,6 +162,10 @@
         failed the independent continuous final-pose oracle and was removed.
         The arena must atomically retain raw crossing, optimized position,
         owner contribution order/multiplicity, and source revision together.
+        Keep stable traversal order as part of that contract: replacing the
+        ordered five-ring optimizer frontier with an exact hash set preserved
+        the fixed route hashes but repeatedly failed the independent continuous
+        final-pose oracle.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

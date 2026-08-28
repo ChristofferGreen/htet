@@ -343,6 +343,9 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] WorldRevisionManifest stage_derived_surfaces(
       std::span<const WorldDerivedSurfaceSnapshot> surfaces,
       std::uint64_t new_revision,const std::function<bool()>& canceled={}) const;
+  [[nodiscard]] WorldRevisionManifest stage_owned_derived_surfaces(
+      std::vector<WorldDerivedSurfaceSnapshot>&& surfaces,
+      std::uint64_t new_revision,const std::function<bool()>& canceled={}) const;
 
   // Plans against the effective global cut and builds every replacement
   // snapshot privately. The directory is unchanged until publish().
