@@ -14142,6 +14142,16 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.sky_view);
   CHECK(plan.aerial_perspective);
 
+  auto rebased=state;
+  rebased.render_origin.value++;
+  plan=atmosphere_dispatch_plan(state,rebased,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK_FALSE(plan.sky_view);
+  CHECK_FALSE(plan.sky_irradiance);
+  CHECK(plan.aerial_perspective);
+
   auto material=state;
   material.optical.value++;
   plan=atmosphere_dispatch_plan(state,material,
@@ -14471,6 +14481,18 @@ TEST_CASE("full sky coordinates round trip and concentrate samples at the horizo
       zenith_direction,up,up);
   CHECK(zenith_uv.u==doctest::Approx(0.2).epsilon(2.0e-12));
   CHECK(zenith_uv.v==doctest::Approx(0.6).epsilon(2.0e-12));
+
+  for(const tetra::Vec3 pole_up:{tetra::Vec3{1.0,0.0,0.0},
+                                  tetra::Vec3{0.0,1.0,0.0},
+                                  tetra::Vec3{0.0,0.0,1.0},
+                                  tetra::Vec3{-1.0,0.0,0.0}}){
+    const auto pole_direction=tetra_viewer::atmosphere_full_sky_direction(
+        {0.73,0.42},pole_up,{0.0,1.0,0.0});
+    const auto pole_uv=tetra_viewer::atmosphere_full_sky_uv(
+        pole_direction,pole_up,{0.0,1.0,0.0});
+    CHECK(pole_uv.u==doctest::Approx(0.73).epsilon(2.0e-12));
+    CHECK(pole_uv.v==doctest::Approx(0.42).epsilon(2.0e-12));
+  }
 }
 
 TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and local") {
@@ -14529,6 +14551,20 @@ TEST_CASE("double precision multiple scattering oracle covers physical regimes")
       absorption_only,1000.0,0.5,16U,8U);
   CHECK((absorbed.second_order==tetra_viewer::AtmosphereSpectrum{}));
   CHECK((absorbed.transfer_factor==tetra_viewer::AtmosphereSpectrum{}));
+
+  auto conservative=vacuum;
+  conservative.rayleigh_scattering_per_metre={8.0e-6,12.0e-6,20.0e-6};
+  conservative.mie_scattering_per_metre={4.0e-6,4.0e-6,4.0e-6};
+  const auto conservative_reference=
+      tetra_viewer::atmosphere_multiple_scattering_reference(
+          conservative,1000.0,0.5,64U,20U);
+  CHECK(finite_nonnegative(conservative_reference.closed_contribution));
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(conservative_reference.transfer_factor[channel]>=0.0);
+    CHECK(conservative_reference.transfer_factor[channel]<1.0);
+    CHECK(conservative_reference.closed_contribution[channel]>=
+          conservative_reference.second_order[channel]);
+  }
 
   const auto earth=tetra_viewer::atmosphere_preset(AtmospherePreset::earth);
   const auto reference=tetra_viewer::atmosphere_multiple_scattering_reference(

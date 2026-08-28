@@ -702,7 +702,7 @@ round-trip within tolerance, and show no interpolation seam across the horizon.
 - [x] Compute local second-order radiance and transfer factor `f_ms`, then close
       higher orders with an energy-bounded geometric series rather than the
       fixed `1 / (1 - 0.35)` amplification.
-- [ ] Validate vacuum, absorption-only, conservative-scattering, altitude, thick-
+- [x] Validate vacuum, absorption-only, conservative-scattering, altitude, thick-
       atmosphere, and preset probes against the CPU oracle and physical limits.
 
 Exit: all probes pass without a fitted global amplification constant, divergence,
@@ -712,7 +712,7 @@ negative radiance, or regression in the frozen capture set.
 
 - [x] Generate a local-up/sun-oriented full-sky table using the H2 mapping and
       sample it from arbitrary camera views, terrain lighting, and diagnostics.
-- [ ] Rebuild only when position changes the local frame materially or the sun or
+- [x] Rebuild only when position changes the local frame materially or the sun or
       atmosphere changes; explicitly test yaw, pitch, roll, poles, and rebasing.
 
 Exit: pure camera rotation produces zero sky dispatches and agrees with direct

@@ -155,9 +155,9 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
   return {
       .transmittance=optical,
       .multiple_scattering=optical||scattering,
-      .sky_view=optical||scattering||sun||sky_position||origin||
+      .sky_view=optical||scattering||sun||sky_position||
           (baseline&&orientation),
-      .sky_irradiance=optical||scattering||sun||sky_position||origin,
+      .sky_irradiance=optical||scattering||sun||sky_position,
       .aerial_perspective=
           optical||scattering||sun||position||orientation||shadow||origin,
   };
