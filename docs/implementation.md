@@ -245,6 +245,17 @@ sound; asynchronous scheduler ownership/coalescing must be added without ever
 publishing or reusing a root-subset manifest as though it were the complete
 target.
 
+Optimizer dependency expansion no longer allocates ordered sets of large exact
+vertex keys for each of its five one-ring passes. The already retained stable
+and current integer vertex IDs now drive a byte-marked frontier over the flat
+edge directories; a small exact set is kept only for retired old-surface keys
+that no longer have a current ID. The boundary/reversal oracle caught the
+omission of those retired keys in the first prototype. With that case restored,
+all hashes remain exact while walking dependency construction measures about
+27 ms, dense surface work about 650 ms, the walking transaction about 1.36 s,
+and settled continuous convergence about 1.39 s. The bounded 32-operation path
+is unchanged at roughly 243 ms.
+
 ## Technology choices
 
 - C++23 where supported.

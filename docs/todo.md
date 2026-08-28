@@ -185,6 +185,11 @@
         hash is computed directly from compact counted directories. An exact
         32-operation front now measures about 247 ms for closure, directory,
         optimized surface, and cache publication, with unchanged hashes.
+  - [x] Replace five ordered exact-key optimizer frontier expansions with byte
+        flags over stable/current integer vertex IDs, retaining exact retired
+        keys only when no current ID exists. Dense walking surface work falls
+        to about 650 ms and settled convergence to about 1.39 s without
+        changing the roughly 243 ms bounded front or any canonical hash.
   - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
         the now roughly 78--86 ms target-cut selection does not remain serially
         ahead of every complete publication. Parent-to-child geometry carrying

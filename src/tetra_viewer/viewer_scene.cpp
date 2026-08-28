@@ -3566,7 +3566,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       next_optimizer_edges,next_optimizer_reverse_edges;
   std::vector<std::uint32_t> optimizer_stable_to_current;
   std::vector<std::uint32_t> optimizer_current_to_stable;
-  std::set<tetra::WorldDerivedVertexKey> optimizer_affected_keys;
+  std::vector<std::uint8_t> optimizer_affected;
+  std::set<tetra::WorldDerivedVertexKey> optimizer_affected_retired;
   const auto derived_vertex_hash=[](const tetra::WorldDerivedVertexKey& key){
     std::uint64_t hash=static_cast<std::uint8_t>(key.kind)+
         0x9e3779b97f4a7c15ULL;
@@ -3727,40 +3728,52 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     optimizer_neighbors.clear();
 
     optimizer_incident_hashes.assign(optimizer_keys.size(),0U);
-    std::set<tetra::WorldDerivedVertexKey> frontier;
+    optimizer_affected.assign(optimizer_keys.size(),0U);
+    std::vector<std::uint32_t> frontier;
+    const auto mark_affected=[&](const tetra::WorldDerivedVertexKey& key){
+      const auto found=optimizer_index.find(key);
+      if(found==optimizer_index.end()){
+        optimizer_affected_retired.insert(key);return;
+      }
+      if(optimizer_affected[found->second]!=0U)
+        return;
+      optimizer_affected[found->second]=1U;frontier.push_back(found->second);
+    };
     if(field_changed||edge_bootstrap){
-      frontier.insert(optimizer_keys.begin(),optimizer_keys.end());
-      for(const auto& vertex:cache->intersections)frontier.insert(vertex.key);
+      frontier.resize(optimizer_keys.size());
+      std::iota(frontier.begin(),frontier.end(),0U);
+      std::ranges::fill(optimizer_affected,std::uint8_t{1U});
+      for(const auto& vertex:cache->intersections)mark_affected(vertex.key);
     }else{
       for(const auto& snapshot:cache->snapshots)
         if(topology_changed_blocks.contains(snapshot.id)||
            !topology_current_blocks.contains(snapshot.id))
-          for(const auto& vertex:snapshot.vertices)frontier.insert(vertex.key);
+          for(const auto& vertex:snapshot.vertices)mark_affected(vertex.key);
       for(const auto& triangle:all_surface_triangles)
         if(topology_changed_blocks.contains(tetra::hierarchy_block_id(
              triangle.owner,directory.block_generations())))
-          frontier.insert(triangle.vertices.begin(),triangle.vertices.end());
+          for(const auto& key:triangle.vertices)mark_affected(key);
     }
-    optimizer_affected_keys=frontier;
-    const auto expand_graph=[&](
-        const tetra::WorldDerivedVertexKey& key,
-        std::set<tetra::WorldDerivedVertexKey>& next){
-      const auto stable=stable_index.find(key);
-      if(stable==stable_index.end())return;
-      visit_stable_neighbors(stable->second,[&](std::uint32_t neighbor){
-        const auto current=optimizer_stable_to_current[neighbor];
-        if(current!=no_current&&
-           !optimizer_affected_keys.contains(optimizer_keys[current]))
-          next.insert(optimizer_keys[current]);
-      });
-    };
     for(std::uint32_t ring=0;ring<surface_optimizer_passes&&!frontier.empty();++ring){
-      std::set<tetra::WorldDerivedVertexKey> next;
-      for(const auto& key:frontier)expand_graph(key,next);
-      optimizer_affected_keys.insert(next.begin(),next.end());
+      std::vector<std::uint32_t> next;
+      for(const auto current_vertex:frontier){
+        const auto stable=optimizer_current_to_stable[current_vertex];
+        visit_stable_neighbors(stable,[&](std::uint32_t neighbor){
+        const auto current=optimizer_stable_to_current[neighbor];
+        if(current!=no_current&&optimizer_affected[current]==0U){
+          optimizer_affected[current]=1U;next.push_back(current);
+        }
+        });
+      }
       frontier=std::move(next);
     }
   }
+  const auto optimizer_is_affected=[&](
+      const tetra::WorldDerivedVertexKey& key){
+    const auto found=optimizer_index.find(key);
+    return (found!=optimizer_index.end()&&optimizer_affected[found->second]!=0U)||
+        optimizer_affected_retired.contains(key);
+  };
   const auto optimizer_dependencies_built=std::chrono::steady_clock::now();
   std::map<tetra::HierarchyBlockId,
            std::vector<tetra::WorldDerivedVertexKey>> block_surface_vertices;
@@ -3809,12 +3822,12 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   if(cache&&optimize){
     for(const auto& [id,keys]:block_surface_vertices)
       if(std::ranges::any_of(keys,[&](const auto& key){
-           return optimizer_affected_keys.contains(key);
+           return optimizer_is_affected(key);
          }))output_blocks.insert(id);
     for(const auto& snapshot:cache->snapshots)
       if(current_ids.contains(snapshot.id)&&std::ranges::any_of(
           snapshot.vertices,[&](const auto& vertex){
-            return optimizer_affected_keys.contains(vertex.key);
+            return optimizer_is_affected(vertex.key);
           }))output_blocks.insert(snapshot.id);
     // A triangle can retain the same geometric one-ring while changing its
     // canonical owner block. Include changed hierarchy payloads for that
@@ -4115,9 +4128,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   result.metrics.rebuilt_surface_certificates=rebuilt_surface_certificates;
   result.metrics.optimizer_dependency_vertices=optimizer_keys.size();
   result.metrics.affected_optimizer_vertices=static_cast<std::size_t>(
-      std::ranges::count_if(optimizer_keys,[&](const auto& key){
-        return optimizer_affected_keys.contains(key);
-      }));
+      std::ranges::count(optimizer_affected,std::uint8_t{1U}));
   result.metrics.retained_optimizer_dependency_bytes=
       optimizer_incident_hashes.capacity()*sizeof(std::uint64_t)+
       optimizer_neighbor_offsets.capacity()*sizeof(std::uint32_t)+
