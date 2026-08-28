@@ -14407,6 +14407,45 @@ TEST_CASE("horizon-aware transmittance coordinates are invertible and bounded") 
   }
 }
 
+TEST_CASE("full sky coordinates round trip and concentrate samples at the horizon") {
+  const tetra::Vec3 up{0.2,0.95,-0.1};
+  const tetra::Vec3 sun{-0.7,0.3,0.6};
+  for(const double v:{0.01,0.1,0.25,0.5,0.75,0.9,0.99}){
+    for(const double u:{0.01,0.1,0.25,0.5,0.75,0.9,0.99}){
+      const tetra_viewer::AtmosphereLookupCoordinates uv{u,v};
+      const auto direction=tetra_viewer::atmosphere_full_sky_direction(
+          uv,up,sun);
+      const double magnitude=std::sqrt(direction.x*direction.x+
+          direction.y*direction.y+direction.z*direction.z);
+      CHECK(magnitude==doctest::Approx(1.0).epsilon(1.0e-12));
+      const auto round_trip=tetra_viewer::atmosphere_full_sky_uv(
+          direction,up,sun);
+      CHECK(round_trip.u==doctest::Approx(u).epsilon(2.0e-12).scale(1.0));
+      CHECK(round_trip.v==doctest::Approx(v).epsilon(2.0e-12).scale(1.0));
+    }
+  }
+
+  const auto horizon=tetra_viewer::atmosphere_full_sky_direction(
+      {0.37,0.5},up,sun);
+  const double up_length=std::sqrt(up.x*up.x+up.y*up.y+up.z*up.z);
+  CHECK(std::abs((horizon.x*up.x+horizon.y*up.y+horizon.z*up.z)/up_length)<
+        1.0e-12);
+  const double one_degree=std::numbers::pi/180.0;
+  const double mapped_offset=0.5*std::sqrt(one_degree/
+      (std::numbers::pi/2.0));
+  const double linear_offset=0.5*one_degree/(std::numbers::pi/2.0);
+  CHECK(mapped_offset>linear_offset*5.0);
+
+  // A zenith sun has no projected azimuth; the documented planet-fixed
+  // fallback must still be deterministic and invertible.
+  const auto zenith_direction=tetra_viewer::atmosphere_full_sky_direction(
+      {0.2,0.6},up,up);
+  const auto zenith_uv=tetra_viewer::atmosphere_full_sky_uv(
+      zenith_direction,up,up);
+  CHECK(zenith_uv.u==doctest::Approx(0.2).epsilon(2.0e-12));
+  CHECK(zenith_uv.v==doctest::Approx(0.6).epsilon(2.0e-12));
+}
+
 TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and local") {
   using tetra_viewer::AtmosphereSpectrum;
   const auto vacuum=tetra_viewer::atmosphere_multiple_scattering_closure(

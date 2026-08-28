@@ -1296,12 +1296,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
             {atmosphere_input.planet_centre_relative_world})}};
     const auto previous_revisions=atmosphere.transport==
         atmosphere_input.transport?atmosphere.lookup_revisions:std::nullopt;
-    // Until H4 changes the shader representation, both selectors intentionally
-    // render through the qualified frustum-space sky and therefore retain its
-    // orientation dependency.  This keeps the experimental option safe while
-    // H2/H3 are introduced behind it.
     const auto plan=atmosphere_dispatch_plan(previous_revisions,next_revisions,
-        AtmosphereTransport::qualified_baseline);
+        atmosphere_input.transport);
     if(plan.transmittance){
       dispatch(0U,(quality_settings_.transmittance_width+7U)/8U,
                (quality_settings_.transmittance_height+7U)/8U,1U);

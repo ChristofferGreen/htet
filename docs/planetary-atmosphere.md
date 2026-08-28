@@ -689,7 +689,7 @@ sun motion, translation, rotation, rebasing, shadow changes, and frame buffering
 
 #### H2: Implement shared horizon-aware lookup mappings
 
-- [ ] Specify one invertible Bruneton/Hillaire transmittance mapping and one
+- [x] Specify one invertible Bruneton/Hillaire transmittance mapping and one
       nonlinear horizon-concentrated sky mapping in shared CPU/shader math.
 - [ ] Replace linear lookup coordinates in every producer and consumer; add
       round-trip, boundary, grazing-ray, monotonicity, and CPU/GPU parity probes.
@@ -710,7 +710,7 @@ negative radiance, or regression in the frozen capture set.
 
 #### H4: Make the full-sky lookup independent of view rotation
 
-- [ ] Generate a local-up/sun-oriented full-sky table using the H2 mapping and
+- [x] Generate a local-up/sun-oriented full-sky table using the H2 mapping and
       sample it from arbitrary camera views, terrain lighting, and diagnostics.
 - [ ] Rebuild only when position changes the local frame materially or the sun or
       atmosphere changes; explicitly test yaw, pitch, roll, poles, and rebasing.

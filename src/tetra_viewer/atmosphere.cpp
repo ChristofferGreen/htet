@@ -25,6 +25,32 @@ double dot(tetra::Vec3 first, tetra::Vec3 second) {
   return first.x * second.x + first.y * second.y + first.z * second.z;
 }
 
+tetra::Vec3 cross(tetra::Vec3 first,tetra::Vec3 second) {
+  return {first.y*second.z-first.z*second.y,
+          first.z*second.x-first.x*second.z,
+          first.x*second.y-first.y*second.x};
+}
+
+struct SkyBasis {
+  tetra::Vec3 up;
+  tetra::Vec3 sun_tangent;
+  tetra::Vec3 longitude_tangent;
+};
+
+SkyBasis sky_basis(tetra::Vec3 local_up,tetra::Vec3 sun_direction) {
+  local_up=normalized(local_up);
+  if(length(local_up)==0.0)local_up={0.0,1.0,0.0};
+  sun_direction=normalized(sun_direction);
+  tetra::Vec3 tangent=sun_direction-local_up*dot(sun_direction,local_up);
+  if(length(tangent)<1.0e-12){
+    const tetra::Vec3 reference=std::abs(local_up.z)<0.9?
+        tetra::Vec3{0.0,0.0,1.0}:tetra::Vec3{1.0,0.0,0.0};
+    tangent=reference-local_up*dot(reference,local_up);
+  }
+  tangent=normalized(tangent);
+  return {local_up,tangent,normalized(cross(local_up,tangent))};
+}
+
 bool finite_spectrum(const AtmosphereSpectrum& value) {
   return std::ranges::all_of(value, [](double component) {
     return std::isfinite(component);
@@ -540,6 +566,41 @@ AtmosphereTransmittanceParameters atmosphere_transmittance_parameters(
   return {std::clamp(radius-ground,0.0,
                      parameters.atmosphere_height_metres),
           std::clamp(cosine,-1.0,1.0)};
+}
+
+AtmosphereLookupCoordinates atmosphere_full_sky_uv(
+    tetra::Vec3 direction,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  const auto basis=sky_basis(local_up,sun_direction);
+  direction=normalized(direction);
+  if(length(direction)==0.0)return {0.5,0.5};
+  const double latitude=std::asin(std::clamp(dot(direction,basis.up),-1.0,1.0));
+  const double longitude=std::atan2(
+      dot(direction,basis.longitude_tangent),
+      dot(direction,basis.sun_tangent));
+  const double normalized_latitude=latitude/(std::numbers::pi/2.0);
+  const double mapped_latitude=std::abs(normalized_latitude)<1.0e-14?0.0:
+      std::copysign(std::sqrt(std::abs(normalized_latitude)),
+                    normalized_latitude);
+  return {longitude/(2.0*std::numbers::pi)+0.5,
+          mapped_latitude*0.5+0.5};
+}
+
+tetra::Vec3 atmosphere_full_sky_direction(
+    AtmosphereLookupCoordinates uv,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  const auto basis=sky_basis(local_up,sun_direction);
+  uv.u=std::clamp(std::isfinite(uv.u)?uv.u:0.5,0.0,1.0);
+  uv.v=std::clamp(std::isfinite(uv.v)?uv.v:0.5,0.0,1.0);
+  const double longitude=(uv.u-0.5)*2.0*std::numbers::pi;
+  const double mapped_latitude=uv.v*2.0-1.0;
+  const double latitude=std::copysign(
+      mapped_latitude*mapped_latitude*(std::numbers::pi/2.0),
+      mapped_latitude);
+  const double horizontal=std::cos(latitude);
+  return normalized(basis.sun_tangent*(horizontal*std::cos(longitude))+
+      basis.longitude_tangent*(horizontal*std::sin(longitude))+
+      basis.up*std::sin(latitude));
 }
 
 AtmosphereSpectrum atmosphere_multiple_scattering_closure(

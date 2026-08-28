@@ -74,6 +74,46 @@ vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
               clamp(rho/max(horizon,1.0e-6),0.0,1.0));
 }
 
+vec2 atmosphere_full_sky_uv(vec3 direction) {
+  const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  vec3 sun_tangent=sun_direction-local_up*dot(sun_direction,local_up);
+  if(dot(sun_tangent,sun_tangent)<1.0e-10){
+    const vec3 reference=abs(local_up.z)<0.9?vec3(0.0,0.0,1.0):
+        vec3(1.0,0.0,0.0);
+    sun_tangent=reference-local_up*dot(reference,local_up);
+  }
+  sun_tangent=normalize(sun_tangent);
+  const vec3 longitude_tangent=normalize(cross(local_up,sun_tangent));
+  const float latitude=asin(clamp(dot(direction,local_up),-1.0,1.0));
+  const float normalized_latitude=latitude/(0.5*3.14159265358979323846);
+  const float mapped_latitude=abs(normalized_latitude)<1.0e-6?0.0:
+      sign(normalized_latitude)*sqrt(abs(normalized_latitude));
+  const float longitude=atan(dot(direction,longitude_tangent),
+                             dot(direction,sun_tangent));
+  return vec2(longitude/(2.0*3.14159265358979323846)+0.5,
+              mapped_latitude*0.5+0.5);
+}
+
+vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
+  if(atmosphere.reserved1.y<0.5)return texture(sky_view_lut,screen_uv).rgb;
+  const vec2 uv=atmosphere_full_sky_uv(direction);
+  const ivec2 size=textureSize(sky_view_lut,0);
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const int low_x=(low.x%size.x+size.x)%size.x;
+  const int high_x=(high.x%size.x+size.x)%size.x;
+  const int low_y=clamp(low.y,0,size.y-1);
+  const int high_y=clamp(high.y,0,size.y-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(texelFetch(sky_view_lut,ivec2(low_x,low_y),0).rgb,
+      texelFetch(sky_view_lut,ivec2(high_x,low_y),0).rgb,fraction.x);
+  const vec3 upper=mix(texelFetch(sky_view_lut,ivec2(low_x,high_y),0).rgb,
+      texelFetch(sky_view_lut,ivec2(high_x,high_y),0).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
 bool planet_blocks_view(vec3 direction) {
   const vec3 origin=atmosphere.camera_position_near.xyz;
   const float projection=dot(origin,direction);
@@ -141,8 +181,9 @@ vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
   // converge toward the horizon radiance instead of merely becoming dark.
   const float optical_opacity=1.0-dot(transmittance,
       vec3(0.2126,0.7152,0.0722));
-  const vec3 directional_airlight=texture(
-      sky_view_lut,texture_coordinate).rgb*max(optical_opacity,0.0);
+  const vec3 directional_airlight=sample_sky_view(
+      atmosphere_view_direction(texture_coordinate),texture_coordinate)*
+      max(optical_opacity,0.0);
   scattering=max(scattering,directional_airlight);
   return surface_radiance*transmittance+scattering;
 }
@@ -192,7 +233,7 @@ void main() {
             analytic_ground_radiance(view_direction,ground_distance),
             ground_distance);
       }else{
-        hdr=texture(sky_view_lut,texture_coordinate).rgb;
+        hdr=sample_sky_view(view_direction,texture_coordinate);
       }
       if(ground_distance<0.0&&
          dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
