@@ -1090,6 +1090,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             continue;
         }
 
+        // GLFW continues reporting a synthetic cursor position while disabled.
+        // Do not feed that position or any captured clicks to Dear ImGui: in
+        // first-person mode the mouse belongs exclusively to camera look.
+        // Keyboard navigation remains enabled so the documented hotkeys work.
+        auto& frame_input=ImGui::GetIO();
+        if(world_mode&&!tetra_viewer::world_ui_accepts_pointer(
+                world_pointer_captured))
+            frame_input.ConfigFlags|=ImGuiConfigFlags_NoMouse;
+        else
+            frame_input.ConfigFlags&=~ImGuiConfigFlags_NoMouse;
+
         // Start the Dear ImGui frame
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();

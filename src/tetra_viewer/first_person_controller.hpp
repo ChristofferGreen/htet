@@ -4,6 +4,14 @@
 
 namespace tetra_viewer {
 
+// A captured first-person pointer belongs exclusively to camera look. Dear
+// ImGui must ignore its synthetic disabled-cursor position and button state;
+// otherwise hidden cursor motion can hover or activate controls underneath it.
+[[nodiscard]] constexpr bool world_ui_accepts_pointer(
+    bool pointer_captured) noexcept {
+  return !pointer_captured;
+}
+
 struct FirstPersonInput {
   double forward{};
   double right{};

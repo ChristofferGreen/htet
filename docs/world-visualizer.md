@@ -908,6 +908,12 @@ Mouse motion updates yaw and pitch immediately on the main thread. Pitch is
 bounded before the view becomes singular. The camera is attached to the player
 eye and uses the player position as its high-precision origin.
 
+While the pointer is captured, camera look owns mouse position and buttons
+exclusively. Dear ImGui discards the disabled-cursor position and click state,
+so controls cannot hover or activate underneath the hidden cursor. Releasing
+the pointer restores UI mouse input; keyboard hotkeys remain available in both
+states.
+
 Geometry updates never gate mouse look. The latest complete blocks continue to
 render while the camera pose drives newer demand.
 

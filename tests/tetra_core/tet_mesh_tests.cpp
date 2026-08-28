@@ -1508,6 +1508,11 @@ TEST_CASE("first person mouse look uses the world application's expected axes") 
   CHECK(vertical.forward().y<initial.y);
 }
 
+TEST_CASE("captured world pointer is exclusively owned by camera look") {
+  CHECK(tetra_viewer::world_ui_accepts_pointer(false));
+  CHECK_FALSE(tetra_viewer::world_ui_accepts_pointer(true));
+}
+
 TEST_CASE("free fly retains the last gameplay camera for terrain LOD") {
   tetra::Camera locked;
   locked.position={1.0,2.0,3.0};
