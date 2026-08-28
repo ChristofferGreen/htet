@@ -14368,6 +14368,45 @@ TEST_CASE("atmosphere densities phases and transmittance obey analytic limits") 
   CHECK(long_path[2] < long_path[0]);
 }
 
+TEST_CASE("horizon-aware transmittance coordinates are invertible and bounded") {
+  using tetra_viewer::AtmosphereLookupCoordinates;
+  for(const auto preset:{tetra_viewer::AtmospherePreset::gameplay_planet,
+                         tetra_viewer::AtmospherePreset::earth,
+                         tetra_viewer::AtmospherePreset::mars_like}){
+    const auto parameters=tetra_viewer::atmosphere_preset(preset);
+    for(const double v:{0.0,0.01,0.1,0.5,0.9,0.999,1.0}){
+      for(const double u:{0.0,0.01,0.1,0.5,0.9,0.999,1.0}){
+        const AtmosphereLookupCoordinates uv{u,v};
+        const auto physical=tetra_viewer::atmosphere_transmittance_parameters(
+            uv,parameters);
+        CHECK(std::isfinite(physical.altitude_metres));
+        CHECK(std::isfinite(physical.zenith_cosine));
+        CHECK(physical.altitude_metres>=0.0);
+        CHECK(physical.altitude_metres<=parameters.atmosphere_height_metres);
+        CHECK(physical.zenith_cosine>=-1.0);
+        CHECK(physical.zenith_cosine<=1.0);
+        const auto round_trip=tetra_viewer::atmosphere_transmittance_uv(
+            physical.altitude_metres,physical.zenith_cosine,parameters);
+        CHECK(round_trip.u==doctest::Approx(u).epsilon(2.0e-9).scale(1.0));
+        CHECK(round_trip.v==doctest::Approx(v).epsilon(2.0e-9).scale(1.0));
+      }
+    }
+
+    const double altitude=std::min(1000.0,
+        parameters.atmosphere_height_metres*0.1);
+    const double radius=parameters.ground_radius_metres+altitude;
+    const double horizon_cosine=-std::sqrt(std::max(0.0,
+        (radius-parameters.ground_radius_metres)*
+        (radius+parameters.ground_radius_metres)/(radius*radius)));
+    const auto horizon=tetra_viewer::atmosphere_transmittance_uv(
+        altitude,horizon_cosine,parameters);
+    CHECK(horizon.u==doctest::Approx(1.0).epsilon(1.0e-10));
+    const auto below=tetra_viewer::atmosphere_transmittance_uv(
+        altitude,-1.0,parameters);
+    CHECK(below.u==doctest::Approx(1.0));
+  }
+}
+
 TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
   constexpr double maximum_distance=200'000.0;
   constexpr double default_depth_slices=16.0;

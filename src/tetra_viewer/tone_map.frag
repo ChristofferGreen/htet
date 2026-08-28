@@ -55,6 +55,25 @@ vec3 atmosphere_view_direction(vec2 texture_coordinate) {
           atmosphere.camera_down_tangent_y.w);
 }
 
+vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
+  const float bottom=atmosphere.rayleigh_ground_radius.w;
+  const float top=atmosphere.mie_scattering_top_radius.w;
+  if(atmosphere.reserved1.y<0.5)
+    return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
+                clamp(altitude/(top-bottom),0.0,1.0));
+  const float radius=bottom+clamp(altitude,0.0,top-bottom);
+  const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
+  const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
+  cosine_angle=clamp(cosine_angle,-1.0,1.0);
+  const float discriminant=max(0.0,
+      radius*radius*(cosine_angle*cosine_angle-1.0)+top*top);
+  const float distance=max(0.0,-radius*cosine_angle+sqrt(discriminant));
+  const float minimum=top-radius;
+  const float maximum=rho+horizon;
+  return vec2(clamp((distance-minimum)/max(maximum-minimum,1.0e-6),0.0,1.0),
+              clamp(rho/max(horizon,1.0e-6),0.0,1.0));
+}
+
 bool planet_blocks_view(vec3 direction) {
   const vec3 origin=atmosphere.camera_position_near.xyz;
   const float projection=dot(origin,direction);
@@ -89,14 +108,15 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   const float n_dot_l=max(sun_cosine,0.0);
   const float atmosphere_height=atmosphere.mie_scattering_top_radius.w-
       atmosphere.rayleigh_ground_radius.w;
-  const vec2 lighting_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
+  const vec2 scattering_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
       clamp(1.0/max(atmosphere_height,1.0),0.0,1.0));
+  const vec2 lighting_uv=atmosphere_transmittance_uv(1.0,sun_cosine);
   const vec3 solar_transmittance=texture(
       transmittance_lut,lighting_uv).rgb;
   const vec3 average_radiance=texture(
-      multiple_scattering_lut,lighting_uv).rgb;
+      multiple_scattering_lut,scattering_uv).rgb;
   const vec3 vertical_transmittance=texture(
-      transmittance_lut,vec2(1.0,lighting_uv.y)).rgb;
+      transmittance_lut,atmosphere_transmittance_uv(1.0,1.0)).rgb;
   const float daylight=smoothstep(-0.12,0.20,sun_cosine);
   const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
       (vec3(1.0)-vertical_transmittance)*daylight*0.60;
@@ -181,10 +201,8 @@ void main() {
             atmosphere.rayleigh_ground_radius.w;
         const float cosine_angle=dot(
             normalize(atmosphere.camera_position_near.xyz),view_direction);
-        const vec2 transmittance_uv=vec2(
-            clamp(cosine_angle*0.5+0.5,0.0,1.0),
-            clamp(altitude/(atmosphere.mie_scattering_top_radius.w-
-                atmosphere.rayleigh_ground_radius.w),0.0,1.0));
+        const vec2 transmittance_uv=atmosphere_transmittance_uv(
+            altitude,cosine_angle);
         hdr+=atmosphere.solar_absorption_peak.rgb*
             texture(transmittance_lut,transmittance_uv).rgb*24.0;
       }

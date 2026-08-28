@@ -87,6 +87,26 @@ float atmosphere_sun_visibility(float radial_distance,float sun_cosine) {
                     horizon_cosine+cosine_width,sun_cosine);
 }
 
+vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
+  if(atmosphere.reserved1.y<0.5)
+    return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
+                clamp(altitude/(atmosphere.mie_scattering_top_radius.w-
+                    atmosphere.rayleigh_ground_radius.w),0.0,1.0));
+  const float bottom=atmosphere.rayleigh_ground_radius.w;
+  const float top=atmosphere.mie_scattering_top_radius.w;
+  const float radius=bottom+clamp(altitude,0.0,top-bottom);
+  const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
+  const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
+  cosine_angle=clamp(cosine_angle,-1.0,1.0);
+  const float discriminant=max(0.0,
+      radius*radius*(cosine_angle*cosine_angle-1.0)+top*top);
+  const float distance=max(0.0,-radius*cosine_angle+sqrt(discriminant));
+  const float minimum=top-radius;
+  const float maximum=rho+horizon;
+  return vec2(clamp((distance-minimum)/max(maximum-minimum,1.0e-6),0.0,1.0),
+              clamp(rho/max(horizon,1.0e-6),0.0,1.0));
+}
+
 vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
                                  out vec3 direct_sun) {
   if(atmosphere.profile_and_mode.w<0.5){
@@ -106,27 +126,30 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
       atmosphere.rayleigh_ground_radius.w,0.0,atmosphere_height);
   const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
   const float sun_cosine=dot(local_up,sun_direction);
-  const vec2 lookup_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
+  const vec2 scattering_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
       clamp(altitude/max(atmosphere_height,1.0),0.0,1.0));
+  const vec2 transmittance_uv=atmosphere_transmittance_uv(
+      altitude,sun_cosine);
 
   // Turn the retained incident-sky spherical average into a cosine-weighted
   // diffuse approximation for this surface normal.
   const vec3 average_radiance=texture(
-      multiple_scattering_lut,lookup_uv).rgb;
+      multiple_scattering_lut,scattering_uv).rgb;
   const float upward=clamp(dot(surface_normal,local_up),-1.0,1.0);
   const float sky_hemisphere_weight=mix(0.35,2.0,upward*0.5+0.5);
   // The isotropic closure deliberately contains little first-order sky
   // energy. Recover a conservative coloured share of the vertical beam loss
   // so blue-hour terrain remains readable without a constant ambient floor.
   const vec3 vertical_transmittance=texture(transmittance_lut,
-      vec2(1.0,lookup_uv.y)).rgb;
+      atmosphere_transmittance_uv(altitude,1.0)).rgb;
   const float daylight=smoothstep(-0.12,0.20,sun_cosine);
   const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
       (vec3(1.0)-vertical_transmittance)*daylight*0.60;
   const vec3 sky_irradiance_over_pi=(average_radiance+
       single_scattered_fill)*sky_hemisphere_weight;
 
-  const vec3 solar_transmittance=texture(transmittance_lut,lookup_uv).rgb;
+  const vec3 solar_transmittance=texture(
+      transmittance_lut,transmittance_uv).rgb;
   const float planet_visibility=atmosphere_sun_visibility(
       radial_distance,sun_cosine);
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*

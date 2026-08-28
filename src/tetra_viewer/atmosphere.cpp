@@ -489,6 +489,59 @@ AtmosphereSpectrum atmosphere_transmittance(
   return result;
 }
 
+AtmosphereLookupCoordinates atmosphere_transmittance_uv(
+    double altitude, double zenith_cosine,
+    const AtmosphereParameters& parameters) noexcept {
+  const double ground=parameters.ground_radius_metres;
+  const double top=ground+parameters.atmosphere_height_metres;
+  if(!(ground>0.0)||!(top>ground)||!std::isfinite(altitude)||
+     !std::isfinite(zenith_cosine))return {};
+  altitude=std::clamp(altitude,0.0,parameters.atmosphere_height_metres);
+  zenith_cosine=std::clamp(zenith_cosine,-1.0,1.0);
+  const double radius=ground+altitude;
+  const double horizon=std::sqrt(
+      std::max(0.0,(top-ground)*(top+ground)));
+  const double rho=std::sqrt(
+      std::max(0.0,(radius-ground)*(radius+ground)));
+  const double discriminant=std::max(0.0,
+      radius*radius*(zenith_cosine*zenith_cosine-1.0)+top*top);
+  const double distance=std::max(
+      0.0,-radius*zenith_cosine+std::sqrt(discriminant));
+  const double minimum=top-radius;
+  const double maximum=rho+horizon;
+  const double range=std::max(maximum-minimum,
+                              std::numeric_limits<double>::min());
+  return {std::clamp((distance-minimum)/range,0.0,1.0),
+          std::clamp(rho/horizon,0.0,1.0)};
+}
+
+AtmosphereTransmittanceParameters atmosphere_transmittance_parameters(
+    AtmosphereLookupCoordinates uv,
+    const AtmosphereParameters& parameters) noexcept {
+  const double ground=parameters.ground_radius_metres;
+  const double top=ground+parameters.atmosphere_height_metres;
+  if(!(ground>0.0)||!(top>ground)||!std::isfinite(uv.u)||
+     !std::isfinite(uv.v))return {};
+  uv.u=std::clamp(uv.u,0.0,1.0);
+  uv.v=std::clamp(uv.v,0.0,1.0);
+  const double horizon=std::sqrt(
+      std::max(0.0,(top-ground)*(top+ground)));
+  const double rho=horizon*uv.v;
+  const double radius=std::sqrt(rho*rho+ground*ground);
+  const double minimum=top-radius;
+  const double maximum=rho+horizon;
+  const double distance=minimum+uv.u*(maximum-minimum);
+  double cosine=1.0;
+  if(distance>1.0e-12){
+    const double top_minus_radius_squared=(top-radius)*(top+radius);
+    cosine=(top_minus_radius_squared-distance*distance)/
+        (2.0*radius*distance);
+  }
+  return {std::clamp(radius-ground,0.0,
+                     parameters.atmosphere_height_metres),
+          std::clamp(cosine,-1.0,1.0)};
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||

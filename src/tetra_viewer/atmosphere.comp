@@ -126,9 +126,47 @@ vec4 checked_lut_value(vec3 value,float maximum_value) {
               in_range?1.0:0.0);
 }
 
-vec2 lookup_uv(float altitude,float cosine_angle) {
+bool faithful_transport(){return atmosphere.reserved1.y>0.5;}
+
+vec2 linear_lookup_uv(float altitude,float cosine_angle) {
   return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
               clamp(altitude/atmosphere_height(),0.0,1.0));
+}
+
+vec2 transmittance_uv(float altitude,float cosine_angle) {
+  const float bottom=ground_radius();
+  const float top=top_radius();
+  const float radius=bottom+clamp(altitude,0.0,atmosphere_height());
+  cosine_angle=clamp(cosine_angle,-1.0,1.0);
+  const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
+  const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
+  const float discriminant=max(0.0,
+      radius*radius*(cosine_angle*cosine_angle-1.0)+top*top);
+  const float distance=max(0.0,-radius*cosine_angle+sqrt(discriminant));
+  const float minimum=top-radius;
+  const float maximum=rho+horizon;
+  return vec2(clamp((distance-minimum)/max(maximum-minimum,1.0e-6),0.0,1.0),
+              clamp(rho/max(horizon,1.0e-6),0.0,1.0));
+}
+
+vec2 transmittance_parameters(vec2 uv) {
+  uv=clamp(uv,vec2(0.0),vec2(1.0));
+  const float bottom=ground_radius();
+  const float top=top_radius();
+  const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
+  const float rho=horizon*uv.y;
+  const float radius=sqrt(rho*rho+bottom*bottom);
+  const float minimum=top-radius;
+  const float maximum=rho+horizon;
+  const float distance=mix(minimum,maximum,uv.x);
+  float cosine_angle=1.0;
+  if(distance>1.0e-6){
+    const float top_minus_radius_squared=(top-radius)*(top+radius);
+    cosine_angle=(top_minus_radius_squared-distance*distance)/
+        (2.0*radius*distance);
+  }
+  return vec2(clamp(radius-bottom,0.0,atmosphere_height()),
+              clamp(cosine_angle,-1.0,1.0));
 }
 
 vec3 bilinear_transmittance_load(vec2 uv) {
@@ -147,7 +185,10 @@ vec3 bilinear_transmittance_load(vec2 uv) {
 vec3 lookup_transmittance(vec3 point,vec3 direction) {
   const float altitude=length(point)-ground_radius();
   const float cosine_angle=dot(normalize(point),direction);
-  return bilinear_transmittance_load(lookup_uv(altitude,cosine_angle))*
+  const vec2 uv=faithful_transport()?
+      transmittance_uv(altitude,cosine_angle):
+      linear_lookup_uv(altitude,cosine_angle);
+  return bilinear_transmittance_load(uv)*
       sunlight_visibility(point,direction);
 }
 
@@ -156,7 +197,7 @@ vec3 lookup_multiple_scattering(vec3 point,vec3 sun_direction) {
   const float cosine_angle=dot(normalize(point),sun_direction);
   const ivec2 size=imageSize(multiple_scattering_lut);
   const ivec2 coordinate=clamp(
-      ivec2(lookup_uv(altitude,cosine_angle)*vec2(size)),ivec2(0),size-1);
+      ivec2(linear_lookup_uv(altitude,cosine_angle)*vec2(size)),ivec2(0),size-1);
   const vec3 average_radiance=imageLoad(
       multiple_scattering_lut,coordinate).rgb;
   const vec3 density=densities(altitude);
@@ -283,8 +324,11 @@ void generate_transmittance(ivec2 coordinate) {
   const ivec2 size=imageSize(transmittance_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
   const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
-  const float altitude=mix(1.0,atmosphere_height()-1.0,uv.y);
-  const float cosine_angle=uv.x*2.0-1.0;
+  const vec2 parameters=faithful_transport()?
+      transmittance_parameters(uv):
+      vec2(mix(1.0,atmosphere_height()-1.0,uv.y),uv.x*2.0-1.0);
+  const float altitude=parameters.x;
+  const float cosine_angle=parameters.y;
   const vec3 origin=vec3(0.0,ground_radius()+altitude,0.0);
   const vec3 direction=normalize(vec3(sqrt(max(0.0,1.0-
       cosine_angle*cosine_angle)),cosine_angle,0.0));

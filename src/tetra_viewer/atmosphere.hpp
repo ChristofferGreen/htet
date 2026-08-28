@@ -173,6 +173,16 @@ struct AtmosphereOpticalDepth {
   double absorption{};
 };
 
+struct AtmosphereLookupCoordinates {
+  double u{};
+  double v{};
+};
+
+struct AtmosphereTransmittanceParameters {
+  double altitude_metres{};
+  double zenith_cosine{1.0};
+};
+
 [[nodiscard]] AtmosphereParameters atmosphere_preset(AtmospherePreset preset);
 [[nodiscard]] std::optional<AtmospherePreset> parse_atmosphere_preset(
     std::string_view name);
@@ -209,6 +219,13 @@ struct AtmosphereOpticalDepth {
     tetra::Vec3 end_from_planet_centre_metres,
     const AtmosphereParameters& parameters,
     std::size_t integration_steps = 128U);
+[[nodiscard]] AtmosphereLookupCoordinates atmosphere_transmittance_uv(
+    double altitude_metres, double zenith_cosine,
+    const AtmosphereParameters& parameters) noexcept;
+[[nodiscard]] AtmosphereTransmittanceParameters
+atmosphere_transmittance_parameters(
+    AtmosphereLookupCoordinates uv,
+    const AtmosphereParameters& parameters) noexcept;
 // Cubic aerial-volume depth distribution: resolves local paths without giving
 // up the finite ground-to-space extent or changing the physical atmosphere.
 [[nodiscard]] double aerial_lut_distance(double slice,
