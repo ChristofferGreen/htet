@@ -134,7 +134,9 @@ void main() {
     const float shadow=sun_visibility(fragment_position,n_dot_l);
     const vec3 linear_colour=ambient+
         (diffuse+specular)*n_dot_l*vec3(2.8,2.60,2.30)*shadow;
-    shaded_colour=pow(linear_colour/(linear_colour+vec3(1.0)),vec3(1.0/2.2));
+    // Keep scene radiance linear. The HDR composite owns exposure, tone
+    // mapping, and the single display transfer for every material.
+    shaded_colour=linear_colour;
   } else {
     // Cutaway faces are deliberately viewed from either side. One-sided
     // lighting makes intact back-facing tetrahedron faces look like holes.

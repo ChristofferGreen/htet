@@ -284,18 +284,18 @@ advance until each preceding gate passes in release mode.
 
 - [ ] Record fixed-exposure release captures and GPU timings for current
       terrain, sky, sun, shadows, UI, and disabled-wireframe defaults.
-- [ ] Add parameter snapshots, units, validation, presets, revisions, and
+- [x] Add parameter snapshots, units, validation, presets, revisions, and
       deterministic serialization.
-- [ ] Add CPU reference intersections, profiles, phase, optical depth, and
+- [x] Add CPU reference intersections, profiles, phase, optical depth, and
       transmittance plus unit, continuity, and origin-rebase tests.
 - [ ] Add `--atmosphere-check` and scriptable camera, sun, preset, and capture
       inputs so qualification never depends on manual UI interaction.
 
 ### Gate B: HDR scene and readable depth
 
-- [ ] Render opaque terrain into floating-point HDR scene colour.
-- [ ] Make infinite-far reversed-Z depth sampleable on Vulkan and MoltenVK.
-- [ ] Add one tone-map/output pass and render Dear ImGui afterward.
+- [x] Render opaque terrain into floating-point HDR scene colour.
+- [x] Make infinite-far reversed-Z depth sampleable on Vulkan and MoltenVK.
+- [x] Add one tone-map/output pass and render Dear ImGui afterward.
 - [ ] Retire the independent swapchain sun disc while keeping an atmosphere-off
       compatibility view.
 - [ ] Test depth reconstruction, resize, swapchain recreation, display transfer,

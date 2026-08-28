@@ -39,13 +39,19 @@ class SceneRenderer {
   VkDevice device_{VK_NULL_HANDLE};
   VkFormat colour_format_{VK_FORMAT_UNDEFINED};
   VkFormat depth_format_{VK_FORMAT_UNDEFINED};
+  VkFormat scene_colour_format_{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkDescriptorSetLayout descriptor_set_layout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout composite_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptor_pool_{VK_NULL_HANDLE};
   VkSampler shadow_sampler_{VK_NULL_HANDLE};
+  VkSampler scene_sampler_{VK_NULL_HANDLE};
+  VkSampler depth_sampler_{VK_NULL_HANDLE};
   VkPipelineLayout pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout shaded_pipeline_layout_{VK_NULL_HANDLE};
+  VkPipelineLayout composite_pipeline_layout_{VK_NULL_HANDLE};
   VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
   VkPipeline sky_pipeline_{VK_NULL_HANDLE};
+  VkPipeline composite_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
@@ -60,11 +66,14 @@ class SceneRenderer {
   VertexBuffer hierarchy_lines_;
   VertexBuffer editor_lines_;
   SurfaceDeviceUploadPlanner surface_upload_planner_;
-  struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; };
+  struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<DepthImage> depth_images_;
-  struct ShadowImage : DepthImage { bool initialized{}; };
+  struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
+  std::vector<SceneColourImage> scene_colour_images_;
+  struct ShadowImage : DepthImage {};
   std::vector<ShadowImage> shadow_images_;
   std::vector<VkDescriptorSet> descriptor_sets_;
+  std::vector<VkDescriptorSet> composite_descriptor_sets_;
 };
 
 }  // namespace tetra_viewer

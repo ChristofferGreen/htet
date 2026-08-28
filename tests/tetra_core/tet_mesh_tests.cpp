@@ -13,6 +13,7 @@
 #include "tetra_core/world_hierarchy.hpp"
 #include "tetra_core/world_cut_directory.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
+#include "tetra_viewer/atmosphere.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
@@ -13795,4 +13796,161 @@ TEST_CASE("headless viewer script rejects malformed and unknown commands") {
   errors.clear();
   CHECK(tetra_viewer::run_script("set-solid-volume=maybe", output, errors) == 2);
   CHECK(errors.str().find("solid volume must be on or off") != std::string::npos);
+}
+
+TEST_CASE("atmosphere presets are valid deterministic physical snapshots") {
+  using tetra_viewer::AtmospherePreset;
+  const std::array presets{
+      AtmospherePreset::earth, AtmospherePreset::mars_like,
+      AtmospherePreset::dense_haze, AtmospherePreset::nearly_airless};
+  std::set<std::uint64_t> hashes;
+  for (const auto preset : presets) {
+    const auto parameters = tetra_viewer::atmosphere_preset(preset);
+    CHECK_FALSE(tetra_viewer::validate_atmosphere(parameters).has_value());
+    CHECK(hashes.insert(
+        tetra_viewer::atmosphere_parameter_hash(parameters)).second);
+    CHECK(tetra_viewer::serialize_atmosphere_parameters(parameters) ==
+          tetra_viewer::serialize_atmosphere_parameters(parameters));
+    CHECK(tetra_viewer::parse_atmosphere_preset(
+              tetra_viewer::atmosphere_preset_name(preset)) == preset);
+  }
+  CHECK_FALSE(tetra_viewer::parse_atmosphere_preset("cloud-city"));
+}
+
+TEST_CASE("atmosphere validation rejects unphysical snapshots transactionally") {
+  auto parameters =
+      tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);
+  parameters.ground_radius_metres = 0.0;
+  CHECK(tetra_viewer::validate_atmosphere(parameters));
+  parameters = tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  parameters.mie_anisotropy = 1.0;
+  CHECK(tetra_viewer::validate_atmosphere(parameters));
+  parameters = tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  parameters.ground_albedo[1] = 1.01;
+  CHECK(tetra_viewer::validate_atmosphere(parameters));
+  parameters = tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::earth);
+  parameters.rayleigh_scattering_per_metre[0] =
+      std::numeric_limits<double>::quiet_NaN();
+  CHECK(tetra_viewer::validate_atmosphere(parameters));
+}
+
+TEST_CASE("atmosphere boundary rays remain stable from ground through space") {
+  const auto parameters =
+      tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);
+  const double ground = parameters.ground_radius_metres;
+  const double top = ground + parameters.atmosphere_height_metres;
+  const auto upward = tetra_viewer::atmosphere_ray_segment(
+      {0.0, ground, 0.0}, {0.0, 1.0, 0.0}, parameters);
+  REQUIRE(upward);
+  CHECK(upward->begin_metres == doctest::Approx(0.0));
+  CHECK(upward->end_metres ==
+        doctest::Approx(parameters.atmosphere_height_metres).epsilon(1.0e-11));
+
+  const auto downward_from_space = tetra_viewer::atmosphere_ray_segment(
+      {0.0, top + 20'000.0, 0.0}, {0.0, -1.0, 0.0}, parameters);
+  REQUIRE(downward_from_space);
+  CHECK(downward_from_space->begin_metres == doctest::Approx(20'000.0));
+  CHECK(downward_from_space->end_metres ==
+        doctest::Approx(120'000.0).epsilon(1.0e-11));
+  CHECK_FALSE(tetra_viewer::atmosphere_ray_segment(
+      {0.0, top + 1.0, 0.0}, {0.0, 1.0, 0.0}, parameters));
+
+  const auto tangent = tetra_viewer::atmosphere_ray_segment(
+      {top, 0.0, 0.0}, {0.0, 1.0, 0.0}, parameters);
+  CHECK_FALSE(tangent);  // A zero-length tangent contributes no medium.
+}
+
+TEST_CASE("atmosphere densities phases and transmittance obey analytic limits") {
+  const auto parameters =
+      tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);
+  CHECK(tetra_viewer::atmosphere_rayleigh_density(0.0, parameters) ==
+        doctest::Approx(1.0));
+  CHECK(tetra_viewer::atmosphere_mie_density(0.0, parameters) ==
+        doctest::Approx(1.0));
+  CHECK(tetra_viewer::atmosphere_rayleigh_density(
+            parameters.rayleigh_scale_height_metres, parameters) ==
+        doctest::Approx(std::exp(-1.0)));
+  CHECK(tetra_viewer::atmosphere_absorption_density(
+            parameters.absorption_peak_altitude_metres, parameters) ==
+        doctest::Approx(1.0));
+  CHECK(tetra_viewer::atmosphere_rayleigh_density(-1.0, parameters) == 0.0);
+  CHECK(tetra_viewer::rayleigh_phase(-0.4) ==
+        doctest::Approx(tetra_viewer::rayleigh_phase(0.4)));
+  CHECK(tetra_viewer::mie_henyey_greenstein_phase(1.0, 0.8) >
+        tetra_viewer::mie_henyey_greenstein_phase(-1.0, 0.8));
+
+  const tetra::Vec3 start{0.0, parameters.ground_radius_metres, 0.0};
+  const tetra::Vec3 middle{0.0, parameters.ground_radius_metres + 10'000.0,
+                           0.0};
+  const tetra::Vec3 end{0.0, parameters.ground_radius_metres + 100'000.0,
+                        0.0};
+  const auto short_path =
+      tetra_viewer::atmosphere_transmittance(start, middle, parameters, 256U);
+  const auto long_path =
+      tetra_viewer::atmosphere_transmittance(start, end, parameters, 256U);
+  const auto reverse =
+      tetra_viewer::atmosphere_transmittance(end, start, parameters, 256U);
+  for (std::size_t channel = 0; channel < 3U; ++channel) {
+    CHECK(long_path[channel] > 0.0);
+    CHECK(long_path[channel] <= short_path[channel]);
+    CHECK(long_path[channel] ==
+          doctest::Approx(reverse[channel]).epsilon(1.0e-12));
+  }
+  CHECK(long_path[2] < long_path[0]);
+}
+
+TEST_CASE("atmosphere LUT invalidation follows the documented dependency graph") {
+  const auto original =
+      tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);
+  CHECK_FALSE(tetra_viewer::atmosphere_invalidation(original, original)
+                  .transmittance);
+
+  auto exposure_independent = original;
+  exposure_independent.solar_irradiance[0] *= 1.1;
+  auto invalidation = tetra_viewer::atmosphere_invalidation(
+      original, exposure_independent);
+  CHECK_FALSE(invalidation.transmittance);
+  CHECK(invalidation.multiple_scattering);
+  CHECK(invalidation.sky_view);
+  CHECK(invalidation.aerial_perspective);
+
+  auto albedo = original;
+  albedo.ground_albedo[0] += 0.01;
+  invalidation = tetra_viewer::atmosphere_invalidation(original, albedo);
+  CHECK_FALSE(invalidation.transmittance);
+  CHECK(invalidation.multiple_scattering);
+
+  auto extinction = original;
+  extinction.rayleigh_scale_height_metres += 1.0;
+  invalidation = tetra_viewer::atmosphere_invalidation(original, extinction);
+  CHECK(invalidation.transmittance);
+  CHECK(invalidation.multiple_scattering);
+  CHECK(invalidation.sky_view);
+  CHECK(invalidation.aerial_perspective);
+}
+
+TEST_CASE("headless atmosphere check exposes deterministic camera sun and preset probes") {
+  std::ostringstream first;
+  std::ostringstream second;
+  std::ostringstream errors;
+  CHECK(tetra_viewer::run_atmosphere_check(
+            tetra_viewer::AtmospherePreset::earth, 1'000.0, 70.0, 85.0,
+            first, errors) == 0);
+  CHECK(tetra_viewer::run_atmosphere_check(
+            tetra_viewer::AtmospherePreset::earth, 1'000.0, 70.0, 85.0,
+            second, errors) == 0);
+  CHECK(first.str() == second.str());
+  CHECK(first.str().find("\"event\":\"atmosphere_check\"") !=
+        std::string::npos);
+  CHECK(first.str().find("\"transmittance\":[") != std::string::npos);
+
+  std::ostringstream invalid_output;
+  std::ostringstream invalid_errors;
+  CHECK(tetra_viewer::run_atmosphere_check(
+            tetra_viewer::AtmospherePreset::earth, -1.0, 0.0, 0.0,
+            invalid_output, invalid_errors) == 2);
+  CHECK(invalid_errors.str().find("nonnegative") != std::string::npos);
 }

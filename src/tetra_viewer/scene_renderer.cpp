@@ -70,6 +70,23 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow descriptor layout");
 
+  std::array<VkDescriptorSetLayoutBinding,2> composite_bindings{};
+  for(std::uint32_t binding=0;binding<composite_bindings.size();++binding){
+    composite_bindings[binding].binding=binding;
+    composite_bindings[binding].descriptorType=
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    composite_bindings[binding].descriptorCount=1;
+    composite_bindings[binding].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo composite_descriptor_layout{
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  composite_descriptor_layout.bindingCount=
+      static_cast<std::uint32_t>(composite_bindings.size());
+  composite_descriptor_layout.pBindings=composite_bindings.data();
+  if(vkCreateDescriptorSetLayout(device_,&composite_descriptor_layout,nullptr,
+                                 &composite_descriptor_set_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene composite descriptor layout");
+
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter=VK_FILTER_LINEAR;
   sampler.minFilter=VK_FILTER_LINEAR;
@@ -81,6 +98,16 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   sampler.maxLod=1.0F;
   if(vkCreateSampler(device_,&sampler,nullptr,&shadow_sampler_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow sampler");
+  sampler.addressModeU=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler.borderColor=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  if(vkCreateSampler(device_,&sampler,nullptr,&scene_sampler_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create HDR scene sampler");
+  sampler.magFilter=VK_FILTER_NEAREST;
+  sampler.minFilter=VK_FILTER_NEAREST;
+  if(vkCreateSampler(device_,&sampler,nullptr,&depth_sampler_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene depth sampler");
 
   VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float) * 28};
   VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -92,6 +119,13 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreatePipelineLayout(device_,&layout,nullptr,&shaded_pipeline_layout_)!=
      VK_SUCCESS)
     throw std::runtime_error("unable to create shaded scene pipeline layout");
+  VkPipelineLayoutCreateInfo composite_layout{
+      VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  composite_layout.setLayoutCount=1;
+  composite_layout.pSetLayouts=&composite_descriptor_set_layout_;
+  if(vkCreatePipelineLayout(device_,&composite_layout,nullptr,
+                            &composite_pipeline_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene composite pipeline layout");
 
   const auto vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.vert.spv");
   const auto fragment_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.frag.spv");
@@ -103,6 +137,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
       device_,TETRA_VIEWER_SHADER_DIR "/sky.vert.spv");
   const auto sky_fragment_shader=shader_module(
       device_,TETRA_VIEWER_SHADER_DIR "/sky.frag.spv");
+  const auto fullscreen_vertex_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/fullscreen.vert.spv");
+  const auto tone_map_fragment_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/tone_map.frag.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -122,7 +160,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; blend.attachmentCount = 1; blend.pAttachments = &blend_attachment;
   VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; dynamic.dynamicStateCount = 2; dynamic.pDynamicStates = dynamic_states;
-  VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO}; rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &colour_format_; rendering.depthAttachmentFormat = depth_format_;
+  VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO}; rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &scene_colour_format_; rendering.depthAttachmentFormat = depth_format_;
   const auto create_pipeline = [&](const VkPipelineShaderStageCreateInfo* pipeline_stages,
                                    VkPolygonMode polygon_mode, bool depth_test,
                                    bool depth_overlay,
@@ -187,6 +225,43 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   create_pipeline(sky_stages,VK_POLYGON_MODE_FILL,false,false,false,false,
                   pipeline_layout_,&sky_pipeline_);
 
+  VkPipelineShaderStageCreateInfo composite_stages[2]{
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
+       VK_SHADER_STAGE_VERTEX_BIT,fullscreen_vertex_shader,"main"},
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
+       VK_SHADER_STAGE_FRAGMENT_BIT,tone_map_fragment_shader,"main"}};
+  VkPipelineVertexInputStateCreateInfo empty_vertex_input{
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  VkPipelineInputAssemblyStateCreateInfo composite_assembly{
+      VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+  composite_assembly.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineRasterizationStateCreateInfo composite_raster{
+      VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+  composite_raster.polygonMode=VK_POLYGON_MODE_FILL;
+  composite_raster.cullMode=VK_CULL_MODE_NONE;
+  composite_raster.frontFace=VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  composite_raster.lineWidth=1.0F;
+  VkPipelineRenderingCreateInfo composite_rendering{
+      VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+  composite_rendering.colorAttachmentCount=1;
+  composite_rendering.pColorAttachmentFormats=&colour_format_;
+  VkGraphicsPipelineCreateInfo composite_pipeline{
+      VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+  composite_pipeline.pNext=&composite_rendering;
+  composite_pipeline.stageCount=2;
+  composite_pipeline.pStages=composite_stages;
+  composite_pipeline.pVertexInputState=&empty_vertex_input;
+  composite_pipeline.pInputAssemblyState=&composite_assembly;
+  composite_pipeline.pViewportState=&viewport;
+  composite_pipeline.pRasterizationState=&composite_raster;
+  composite_pipeline.pMultisampleState=&multisample;
+  composite_pipeline.pColorBlendState=&blend;
+  composite_pipeline.pDynamicState=&dynamic;
+  composite_pipeline.layout=composite_pipeline_layout_;
+  if(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&composite_pipeline,
+                               nullptr,&composite_pipeline_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create HDR scene composite pipeline");
+
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
       VK_SHADER_STAGE_VERTEX_BIT,shadow_vertex_shader,"main"};
@@ -235,10 +310,17 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_,shadow_vertex_shader,nullptr);
   vkDestroyShaderModule(device_,sky_vertex_shader,nullptr);
   vkDestroyShaderModule(device_,sky_fragment_shader,nullptr);
+  vkDestroyShaderModule(device_,fullscreen_vertex_shader,nullptr);
+  vkDestroyShaderModule(device_,tone_map_fragment_shader,nullptr);
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   for (auto& depth : depth_images_) { vkDestroyImageView(device_, depth.view, nullptr); vkDestroyImage(device_, depth.image, nullptr); vkFreeMemory(device_, depth.memory, nullptr); }
+  for(auto& colour:scene_colour_images_){
+    vkDestroyImageView(device_,colour.view,nullptr);
+    vkDestroyImage(device_,colour.image,nullptr);
+    vkFreeMemory(device_,colour.memory,nullptr);
+  }
   for(auto& shadow:shadow_images_){
     vkDestroyImageView(device_,shadow.view,nullptr);
     vkDestroyImage(device_,shadow.image,nullptr);
@@ -246,19 +328,60 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   }
   shadow_images_.clear();
   descriptor_sets_.clear();
+  composite_descriptor_sets_.clear();
   if(descriptor_pool_!=VK_NULL_HANDLE){
     vkDestroyDescriptorPool(device_,descriptor_pool_,nullptr);
     descriptor_pool_=VK_NULL_HANDLE;
   }
   depth_images_.assign(image_count, {});
   for (auto& depth : depth_images_) {
-    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    vkCreateImage(device_, &image, nullptr, &depth.image);
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if(vkCreateImage(device_, &image, nullptr, &depth.image)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create sampleable scene depth image");
     VkMemoryRequirements requirements{}; vkGetImageMemoryRequirements(device_, depth.image, &requirements);
     VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = memory_type(physical_device_, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(device_, &allocation, nullptr, &depth.memory); vkBindImageMemory(device_, depth.image, depth.memory, 0);
+    if(vkAllocateMemory(device_, &allocation, nullptr, &depth.memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate scene depth image");
+    if(vkBindImageMemory(device_, depth.image, depth.memory, 0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to bind scene depth image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO}; view.image = depth.image; view.viewType = VK_IMAGE_VIEW_TYPE_2D; view.format = depth_format_; view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT; view.subresourceRange.levelCount = 1; view.subresourceRange.layerCount = 1;
-    vkCreateImageView(device_, &view, nullptr, &depth.view);
+    if(vkCreateImageView(device_, &view, nullptr, &depth.view)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create scene depth view");
+  }
+
+  scene_colour_images_.assign(image_count,{});
+  for(auto& colour:scene_colour_images_){
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType=VK_IMAGE_TYPE_2D;
+    image.format=scene_colour_format_;
+    image.extent={extent.width,extent.height,1U};
+    image.mipLevels=1;
+    image.arrayLayers=1;
+    image.samples=VK_SAMPLE_COUNT_1_BIT;
+    image.tiling=VK_IMAGE_TILING_OPTIMAL;
+    image.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;
+    if(vkCreateImage(device_,&image,nullptr,&colour.image)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create HDR scene colour image");
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device_,colour.image,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&colour.memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate HDR scene colour image");
+    if(vkBindImageMemory(device_,colour.image,colour.memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to bind HDR scene colour image");
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image=colour.image;
+    view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+    view.format=scene_colour_format_;
+    view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount=1;
+    view.subresourceRange.layerCount=1;
+    if(vkCreateImageView(device_,&view,nullptr,&colour.view)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create HDR scene colour view");
   }
 
   constexpr std::uint32_t shadow_extent=2048U;
@@ -299,9 +422,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   }
 
   VkDescriptorPoolSize pool_size{
-      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,image_count};
+      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,image_count*3U};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets=image_count;
+  pool.maxSets=image_count*2U;
   pool.poolSizeCount=1;
   pool.pPoolSizes=&pool_size;
   if(vkCreateDescriptorPool(device_,&pool,nullptr,&descriptor_pool_)!=VK_SUCCESS)
@@ -315,6 +438,12 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
   allocate.pSetLayouts=layouts.data();
   if(vkAllocateDescriptorSets(device_,&allocate,descriptor_sets_.data())!=VK_SUCCESS)
     throw std::runtime_error("unable to allocate sun shadow descriptors");
+  composite_descriptor_sets_.resize(image_count);
+  layouts.assign(image_count,composite_descriptor_set_layout_);
+  allocate.pSetLayouts=layouts.data();
+  if(vkAllocateDescriptorSets(device_,&allocate,
+                              composite_descriptor_sets_.data())!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate scene composite descriptors");
   for(std::size_t index=0;index<descriptor_sets_.size();++index){
     VkDescriptorImageInfo image_info{
         shadow_sampler_,shadow_images_[index].view,
@@ -326,6 +455,25 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo=&image_info;
     vkUpdateDescriptorSets(device_,1,&write,0,nullptr);
+
+    const std::array<VkDescriptorImageInfo,2> composite_images{
+        VkDescriptorImageInfo{scene_sampler_,scene_colour_images_[index].view,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        VkDescriptorImageInfo{depth_sampler_,depth_images_[index].view,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    std::array<VkWriteDescriptorSet,2> composite_writes{};
+    for(std::uint32_t binding=0;binding<composite_writes.size();++binding){
+      composite_writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      composite_writes[binding].dstSet=composite_descriptor_sets_[index];
+      composite_writes[binding].dstBinding=binding;
+      composite_writes[binding].descriptorCount=1;
+      composite_writes[binding].descriptorType=
+          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      composite_writes[binding].pImageInfo=&composite_images[binding];
+    }
+    vkUpdateDescriptorSets(device_,
+        static_cast<std::uint32_t>(composite_writes.size()),
+        composite_writes.data(),0,nullptr);
   }
 }
 
@@ -581,13 +729,44 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&to_sample);
   shadow.initialized=true;
 
+  auto& scene_colour=scene_colour_images_.at(image_index);
+  auto& scene_depth=depth_images_.at(image_index);
+  std::array<VkImageMemoryBarrier,2> to_scene{};
+  to_scene[0].sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  to_scene[0].srcAccessMask=scene_colour.initialized?VK_ACCESS_SHADER_READ_BIT:0U;
+  to_scene[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  to_scene[0].oldLayout=scene_colour.initialized?
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+  to_scene[0].newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  to_scene[0].srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+  to_scene[0].dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+  to_scene[0].image=scene_colour.image;
+  to_scene[0].subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+  to_scene[0].subresourceRange.levelCount=1;
+  to_scene[0].subresourceRange.layerCount=1;
+  to_scene[1]=to_scene[0];
+  to_scene[1].srcAccessMask=scene_depth.initialized?VK_ACCESS_SHADER_READ_BIT:0U;
+  to_scene[1].dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  to_scene[1].oldLayout=scene_depth.initialized?
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+  to_scene[1].newLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_scene[1].image=scene_depth.image;
+  to_scene[1].subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+  vkCmdPipelineBarrier(command_buffer,
+      (scene_colour.initialized||scene_depth.initialized)?
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|
+          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+      0,0,nullptr,0,nullptr,static_cast<std::uint32_t>(to_scene.size()),
+      to_scene.data());
+
   VkClearValue colour{};
   colour.color=black_clear?VkClearColorValue{{0.0F,0.0F,0.0F,1.0F}}:
       VkClearColorValue{{0.06F,0.08F,0.11F,1.0F}};
   VkClearValue depth{};
   depth.depthStencil={depth_clear(main_scene_depth_convention),0U};
-  VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = colour_view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
-  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = depth_images_.at(image_index).view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; depth_attachment.clearValue = depth;
+  VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = scene_colour.view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
+  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = scene_depth.view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; depth_attachment.clearValue = depth;
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;
   begin_rendering(command_buffer, reinterpret_cast<const VkRenderingInfoKHR*>(&rendering));
   VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F}; VkRect2D scissor{{0, 0}, extent}; VkDeviceSize offset{};
@@ -615,11 +794,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // Opaque geometry establishes visibility first. The native line-mode pass
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
-  vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,sky_pipeline_);
-  vkCmdPushConstants(command_buffer,pipeline_layout_,
-      VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
-      sizeof(float)*28,push_data.data());
-  vkCmdDraw(command_buffer,6U,1U,0U,0U);
+  if(!black_clear){
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,sky_pipeline_);
+    vkCmdPushConstants(command_buffer,pipeline_layout_,
+        VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
+        sizeof(float)*28,push_data.data());
+    vkCmdDraw(command_buffer,6U,1U,0U,0U);
+  }
   draw(triangle_pipeline_,shaded_pipeline_layout_,triangles_,
        surface_upload_planner_.published_draws());
   draw(triangle_wire_pipeline_,pipeline_layout_,triangles_,
@@ -633,10 +814,64 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   draw(line_pipeline_,pipeline_layout_,hierarchy_lines_);
   draw(editor_line_pipeline_,pipeline_layout_,editor_lines_);
   end_rendering(command_buffer);
+
+  std::array<VkImageMemoryBarrier,2> to_composite{};
+  to_composite[0].sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  to_composite[0].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  to_composite[0].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+  to_composite[0].oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  to_composite[0].newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  to_composite[0].srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+  to_composite[0].dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+  to_composite[0].image=scene_colour.image;
+  to_composite[0].subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+  to_composite[0].subresourceRange.levelCount=1;
+  to_composite[0].subresourceRange.layerCount=1;
+  to_composite[1]=to_composite[0];
+  to_composite[1].srcAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  to_composite[1].oldLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_composite[1].image=scene_depth.image;
+  to_composite[1].subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+  vkCmdPipelineBarrier(command_buffer,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|
+          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|
+          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,
+      static_cast<std::uint32_t>(to_composite.size()),to_composite.data());
+  scene_colour.initialized=true;
+  scene_depth.initialized=true;
+
+  VkRenderingAttachmentInfo output_attachment{
+      VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  output_attachment.imageView=colour_view;
+  output_attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  output_attachment.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  output_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo output_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  output_rendering.renderArea.extent=extent;
+  output_rendering.layerCount=1;
+  output_rendering.colorAttachmentCount=1;
+  output_rendering.pColorAttachments=&output_attachment;
+  begin_rendering(command_buffer,
+      reinterpret_cast<const VkRenderingInfoKHR*>(&output_rendering));
+  vkCmdSetViewport(command_buffer,0,1,&viewport);
+  vkCmdSetScissor(command_buffer,0,1,&scissor);
+  vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    composite_pipeline_);
+  vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+      composite_pipeline_layout_,0,1,&composite_descriptor_sets_.at(image_index),
+      0,nullptr);
+  vkCmdDraw(command_buffer,3U,1U,0U,0U);
+  end_rendering(command_buffer);
 }
 
 void SceneRenderer::shutdown() {
   for (auto& depth : depth_images_) { vkDestroyImageView(device_, depth.view, nullptr); vkDestroyImage(device_, depth.image, nullptr); vkFreeMemory(device_, depth.memory, nullptr); }
+  for(auto& colour:scene_colour_images_){
+    vkDestroyImageView(device_,colour.view,nullptr);
+    vkDestroyImage(device_,colour.image,nullptr);
+    vkFreeMemory(device_,colour.memory,nullptr);
+  }
   for(auto& shadow:shadow_images_){
     vkDestroyImageView(device_,shadow.view,nullptr);
     vkDestroyImage(device_,shadow.image,nullptr);
@@ -646,14 +881,19 @@ void SceneRenderer::shutdown() {
   if(descriptor_pool_!=VK_NULL_HANDLE)
     vkDestroyDescriptorPool(device_,descriptor_pool_,nullptr);
   vkDestroySampler(device_,shadow_sampler_,nullptr);
+  vkDestroySampler(device_,scene_sampler_,nullptr);
+  vkDestroySampler(device_,depth_sampler_,nullptr);
   vkDestroyDescriptorSetLayout(device_,descriptor_set_layout_,nullptr);
+  vkDestroyDescriptorSetLayout(device_,composite_descriptor_set_layout_,nullptr);
   vkDestroyPipeline(device_,shadow_pipeline_,nullptr);
   vkDestroyPipeline(device_,sky_pipeline_,nullptr);
+  vkDestroyPipeline(device_,composite_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
   vkDestroyPipeline(device_, editor_line_pipeline_, nullptr);
   vkDestroyPipelineLayout(device_,shaded_pipeline_layout_,nullptr);
+  vkDestroyPipelineLayout(device_,composite_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
 }
 

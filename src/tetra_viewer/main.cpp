@@ -22,6 +22,7 @@
 #include "tetra_core/layer_storage.hpp"
 #include "scene_renderer.hpp"
 #include "tetra_viewer/application.hpp"
+#include "tetra_viewer/atmosphere.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
@@ -484,6 +485,33 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             return 2;
         }
         return tetra_viewer::run_world_runtime_benchmark(std::cout,std::cerr);
+    }
+    if(world_mode&&argc>=2&&strcmp(argv[1],"--atmosphere-check")==0){
+        if(argc<2||argc>6){
+            fprintf(stderr,"usage: tetra_world --atmosphere-check [preset] "
+                    "[camera-altitude-metres] [view-zenith-degrees] "
+                    "[sun-zenith-degrees]\n");
+            return 2;
+        }
+        const auto preset=argc>=3?
+            tetra_viewer::parse_atmosphere_preset(argv[2]):
+            std::optional{tetra_viewer::AtmospherePreset::earth};
+        if(!preset){
+            fprintf(stderr,"unknown atmosphere preset\n");
+            return 2;
+        }
+        std::array<double,3> values{0.0,0.0,45.0};
+        for(int index=3;index<argc;++index){
+            char* end=nullptr;
+            values[static_cast<std::size_t>(index-3)]=std::strtod(argv[index],&end);
+            if(end==argv[index]||*end!='\0'||
+               !std::isfinite(values[static_cast<std::size_t>(index-3)])){
+                fprintf(stderr,"atmosphere check values must be finite numbers\n");
+                return 2;
+            }
+        }
+        return tetra_viewer::run_atmosphere_check(
+            *preset,values[0],values[1],values[2],std::cout,std::cerr);
     }
     if(world_mode&&argc>=2&&strcmp(argv[1],"--capture")==0){
         if(argc!=3){
