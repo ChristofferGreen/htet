@@ -1088,6 +1088,28 @@ volume. Planetary views will require camera-anchored cascades or virtual shadow
 pages so shadow precision follows visible surface demand without allocating a
 planet-wide depth texture; lighting direction must never rotate with the view.
 
+The main camera now has one shared CPU/Vulkan projection contract. It uses a
+32-bit floating-point depth attachment, a fixed 0.001-unit near plane,
+infinite-far reversed Z, depth clear zero, `GREATER` for opaque geometry, and
+`GREATER_OR_EQUAL` for depth-tested overlays. Filled surface bias and explicit
+edge depth nudges use the reversed sign. This removes the arbitrary 100-unit
+far clip and retains approximately distance-relative depth precision from a
+ground view through Earth-scale orbit. CPU captures use the same matrix basis,
+near rule, depth mapping, interpolation, and comparison direction as Vulkan.
+
+Shadow maps deliberately do not inherit that convention. The present
+orthographic directional shadow pass remains standard finite depth with clear
+one, `LESS`, and conventional positive caster bias. Main-scene and shadow-map
+depth conventions are named independently so a later cascade implementation
+cannot accidentally reverse one along with the other.
+
+Projection does not decide terrain residency. Planetary horizon reach,
+far-side occlusion, guarded demand, the silhouette floor, and physics/edit
+pins remain hierarchy policy. Camera-relative positions are formed by
+subtracting snapped double-precision origins before conversion to GPU floats;
+block-local detail is therefore not lost merely because a block has
+planet-scale coordinates.
+
 The retained render front owns fixed-capacity GPU ranges for triangles and
 optional debug lines. A range records the world revision and address ranges it
 represents; it need not correspond one-to-one with a hierarchy block. Updates
@@ -1553,6 +1575,12 @@ todo chain are in
 
 - [x] Generate camera-relative positions from a snapped double-precision
       render origin.
+- [x] Share one tested CPU/Vulkan infinite-far reversed-Z camera projection;
+      migrate opaque, overlay, wireframe, bias, capture, and clear semantics
+      while keeping the finite standard-depth shadow pass explicit.
+- [x] Verify the millimetre near plane, positive-height Vulkan screen
+      orientation, Earth-radius/orbit depth precision, and absence of a far
+      projection clip.
 - [ ] Add a fixed-capacity retained render front whose chunks name address
       ranges and a world revision but are independent of hierarchy-block
       boundaries.

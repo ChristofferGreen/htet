@@ -47,6 +47,7 @@ add_library(tetra_viewer_script
   src/tetra_viewer/camera_manipulator.cpp
   src/tetra_viewer/first_person_controller.cpp
   src/tetra_viewer/mesh_update_worker.cpp
+  src/tetra_viewer/projection.cpp
   src/tetra_viewer/scene_preparation_worker.cpp
   src/tetra_viewer/terrain_runtime.cpp
   src/tetra_viewer/viewer_script.cpp

@@ -16,6 +16,7 @@
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/viewer_script.hpp"
@@ -755,6 +756,117 @@ TEST_CASE("tetrahedron quality metrics distinguish regular and degenerate elemen
   CHECK(inverted.signed_six_volume<0.0);
   CHECK(inverted.mean_ratio==0.0);
   CHECK(inverted.volume_surface_longest_edge==0.0);
+}
+
+TEST_CASE("infinite reversed projection maps near to one and has no far clip") {
+  const tetra::Vec3 camera_world{1.0e9+3.0,-2.0e9+4.0,3.0e9+5.0};
+  const tetra::Vec3 render_origin{1.0e9,-2.0e9,3.0e9};
+  const auto projection=tetra_viewer::make_infinite_reversed_projection(
+      camera_world,render_origin,{0.0,0.0,-1.0},{0.0,1.0,0.0},
+      std::acos(-1.0)/2.0,16.0/9.0);
+  CHECK(projection.depth_convention==
+        tetra_viewer::DepthConvention::reversed_infinite);
+  CHECK(projection.depth_at(projection.near_plane)==doctest::Approx(1.0));
+  CHECK(projection.depth_at(1.0)==doctest::Approx(0.001));
+  CHECK(projection.depth_at(1.0e12)>0.0);
+  CHECK(projection.depth_at(1.0e12)<projection.depth_at(1.0e6));
+
+  const auto point=projection.camera_relative+
+      projection.forward*1.0e12;
+  const auto projected=projection.project(point);
+  CHECK(projected.visible);
+  CHECK(projected.ndc_x==doctest::Approx(0.0).epsilon(1.0e-12));
+  CHECK(projected.ndc_y==doctest::Approx(0.0).epsilon(1.0e-12));
+  CHECK(projected.depth==doctest::Approx(1.0e-15).epsilon(1.0e-12));
+
+  const auto before_near=projection.project(
+      projection.camera_relative+projection.forward*(projection.near_plane*0.5));
+  CHECK_FALSE(before_near.visible);
+  CHECK(before_near.depth>1.0);
+}
+
+TEST_CASE("reversed projection matrix matches the shared CPU projection") {
+  const auto projection=tetra_viewer::make_infinite_reversed_projection(
+      {12.0,7.0,-3.0},{10.0,5.0,-5.0},{0.2,-0.1,-1.0},
+      {0.0,1.0,0.0},0.9,1.7);
+  const tetra::Vec3 point{2.25,1.8,-8.0};
+  const auto expected=projection.project(point);
+  const std::array<float,4> homogeneous{
+      static_cast<float>(point.x),static_cast<float>(point.y),
+      static_cast<float>(point.z),1.0F};
+  std::array<double,4> clip{};
+  for(std::size_t row=0;row<4U;++row)
+    for(std::size_t column=0;column<4U;++column)
+      clip[row]+=projection.matrix[column*4U+row]*homogeneous[column];
+  REQUIRE(clip[3]>0.0);
+  CHECK(clip[0]/clip[3]==doctest::Approx(expected.ndc_x).epsilon(1.0e-6));
+  CHECK(clip[1]/clip[3]==doctest::Approx(expected.ndc_y).epsilon(1.0e-6));
+  CHECK(clip[2]/clip[3]==doctest::Approx(expected.depth).epsilon(1.0e-6));
+}
+
+TEST_CASE("reversed projection preserves the positive-height Vulkan screen orientation") {
+  const auto projection=tetra_viewer::make_infinite_reversed_projection(
+      {},{},{0.0,0.0,-1.0},{0.0,1.0,0.0},std::acos(-1.0)/2.0,1.0);
+  const auto screen_right=projection.project({-0.25,0.0,-1.0});
+  const auto screen_down=projection.project({0.0,-0.25,-1.0});
+  REQUIRE(screen_right.visible);
+  REQUIRE(screen_down.visible);
+  CHECK(screen_right.ndc_x>0.0);
+  CHECK(screen_down.ndc_y>0.0);
+  CHECK(projection.right.x==doctest::Approx(-1.0));
+  CHECK(projection.up.y==doctest::Approx(-1.0));
+}
+
+TEST_CASE("planet visibility remains separate from infinite projection") {
+  constexpr double earth_radius=6371000.0;
+  CHECK(tetra_viewer::main_scene_depth_convention==
+        tetra_viewer::DepthConvention::reversed_infinite);
+  CHECK(tetra_viewer::shadow_map_depth_convention==
+        tetra_viewer::DepthConvention::standard_finite);
+  CHECK(tetra_viewer::planetary_horizon_distance(earth_radius,0.0)==0.0);
+  CHECK(tetra_viewer::planetary_horizon_distance(earth_radius,1000.0)==
+        doctest::Approx(std::sqrt(1000.0*(2.0*earth_radius+1000.0))));
+  CHECK(tetra_viewer::planetary_horizon_distance(earth_radius,1000.0,4000.0)==
+        doctest::Approx(
+            std::sqrt(1000.0*(2.0*earth_radius+1000.0))+
+            std::sqrt(4000.0*(2.0*earth_radius+4000.0))));
+  const tetra::Vec3 camera{0.0,0.0,earth_radius+1000.0};
+  CHECK(tetra_viewer::sphere_fully_occluded_by_planet(
+      camera,{},earth_radius,{0.0,0.0,-earth_radius-100.0},10.0));
+  CHECK_FALSE(tetra_viewer::sphere_fully_occluded_by_planet(
+      camera,{},earth_radius,{2.0*earth_radius,0.0,earth_radius+1000.0},10.0));
+  CHECK_FALSE(tetra_viewer::sphere_fully_occluded_by_planet(
+      camera,{},earth_radius,{0.0,0.0,earth_radius+500.0},10.0));
+}
+
+TEST_CASE("reversed depth retains useful precision from ground to Earth orbit") {
+  const auto projection=tetra_viewer::make_infinite_reversed_projection(
+      {},{},{0.0,0.0,-1.0},{0.0,1.0,0.0},1.0,16.0/9.0);
+  for(const double distance:{1.0,100000.0,6371000.0,42000000.0}){
+    const float depth=static_cast<float>(projection.depth_at(distance));
+    const float next=std::nextafter(depth,0.0F);
+    REQUIRE(depth>0.0F);
+    REQUIRE(next>0.0F);
+    const double next_distance=projection.near_plane/static_cast<double>(next);
+    CHECK(next_distance>distance);
+    CHECK((next_distance-distance)/distance<2.0e-7);
+  }
+}
+
+TEST_CASE("block-local camera-relative conversion preserves ground detail at planet coordinates") {
+  const tetra::Vec3 block_origin{6371000.0,-4213377.0,982451653.0};
+  const tetra::Vec3 render_origin{
+      block_origin.x+0.125,block_origin.y-0.25,block_origin.z+0.5};
+  const tetra::Vec3 local{0.001,0.002,0.003};
+  const auto relative=tetra_viewer::camera_relative_block_position(
+      block_origin,render_origin,local);
+  CHECK(relative.x==doctest::Approx(-0.124).epsilon(1.0e-9));
+  CHECK(relative.y==doctest::Approx(0.252).epsilon(1.0e-9));
+  CHECK(relative.z==doctest::Approx(-0.497).epsilon(1.0e-9));
+  const std::array<float,3> gpu{
+      static_cast<float>(relative.x),static_cast<float>(relative.y),
+      static_cast<float>(relative.z)};
+  CHECK(gpu[0]==doctest::Approx(-0.124F).epsilon(1.0e-6));
 }
 
 TEST_CASE("editor orbit camera rotates pans and dollies independently") {
@@ -13524,7 +13636,10 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
   };
   // Exact-on-surface hierarchy endpoints remain at the endpoint instead of
   // being walked to the opposite side of the edge by generic bisection.
-  constexpr std::uint64_t expected=13112683619183130989ULL;
+  // This baseline uses the same positive-height Vulkan screen basis as the
+  // interactive renderer; the previous CPU-only image was horizontally
+  // mirrored relative to Vulkan.
+  constexpr std::uint64_t expected=9289684079062712499ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(

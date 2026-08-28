@@ -1,4 +1,5 @@
 #include "scene_renderer.hpp"
+#include "projection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,16 @@
 
 namespace tetra_viewer {
 namespace {
+
+VkCompareOp depth_compare(DepthConvention convention,bool overlay=false) {
+  if(convention==DepthConvention::reversed_infinite)
+    return overlay?VK_COMPARE_OP_GREATER_OR_EQUAL:VK_COMPARE_OP_GREATER;
+  return overlay?VK_COMPARE_OP_LESS_OR_EQUAL:VK_COMPARE_OP_LESS;
+}
+
+float depth_clear(DepthConvention convention) {
+  return convention==DepthConvention::reversed_infinite?0.0F:1.0F;
+}
 
 std::vector<char> read_file(const char* path) {
   std::ifstream file(path, std::ios::ate | std::ios::binary);
@@ -126,12 +137,12 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     // native edges. It avoids coplanar fill/line fighting without making rear
     // edges visible through genuinely nearer geometry.
     raster.depthBiasEnable = offset_fill ? VK_TRUE : VK_FALSE;
-    raster.depthBiasConstantFactor = offset_fill ? 1.0F : 0.0F;
-    raster.depthBiasSlopeFactor = offset_fill ? 1.0F : 0.0F;
+    raster.depthBiasConstantFactor = offset_fill ? -1.0F : 0.0F;
+    raster.depthBiasSlopeFactor = offset_fill ? -1.0F : 0.0F;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = depth_test ? VK_TRUE : VK_FALSE;
     depth.depthWriteEnable = depth_overlay ? VK_FALSE : VK_TRUE;
-    depth.depthCompareOp = depth_overlay ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS;
+    depth.depthCompareOp=depth_compare(main_scene_depth_convention,depth_overlay);
     VkPipelineColorBlendAttachmentState pipeline_blend_attachment=blend_attachment;
     if(alpha_blend){
       pipeline_blend_attachment.blendEnable=VK_TRUE;
@@ -184,7 +195,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   shadow_depth.depthTestEnable=VK_TRUE;
   shadow_depth.depthWriteEnable=VK_TRUE;
-  shadow_depth.depthCompareOp=VK_COMPARE_OP_LESS;
+  shadow_depth.depthCompareOp=depth_compare(shadow_map_depth_convention);
   VkPipelineColorBlendStateCreateInfo shadow_blend{
       VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   VkPipelineRenderingCreateInfo shadow_rendering{
@@ -510,7 +521,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       &to_shadow);
 
   VkClearValue shadow_clear{};
-  shadow_clear.depthStencil={1.0F,0U};
+  shadow_clear.depthStencil={depth_clear(shadow_map_depth_convention),0U};
   VkRenderingAttachmentInfo shadow_attachment{
       VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   shadow_attachment.imageView=shadow.view;
@@ -558,7 +569,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkClearValue colour{};
   colour.color=black_clear?VkClearColorValue{{0.0F,0.0F,0.0F,1.0F}}:
       VkClearColorValue{{0.06F,0.08F,0.11F,1.0F}};
-  VkClearValue depth{}; depth.depthStencil = {1.0F, 0};
+  VkClearValue depth{};
+  depth.depthStencil={depth_clear(main_scene_depth_convention),0U};
   VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = colour_view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
   VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = depth_images_.at(image_index).view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; depth_attachment.clearValue = depth;
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;

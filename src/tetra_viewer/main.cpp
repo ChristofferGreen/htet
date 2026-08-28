@@ -25,6 +25,7 @@
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/world_script.hpp"
@@ -2576,30 +2577,18 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         // Derive the view direction from the orbit angles rather than
         // target-position subtraction. At distance zero both positions are
         // equal, but the camera must retain a well-defined orientation.
-        const tetra::Vec3 f=world_mode?world_controller.forward():orbit_camera.forward();
-        const tetra::Vec3 right_seed{f.z, 0.0, -f.x};
-        const double right_length = std::sqrt(right_seed.x * right_seed.x + right_seed.z * right_seed.z);
-        const tetra::Vec3 right{right_seed.x / right_length, 0.0, right_seed.z / right_length};
-        const tetra::Vec3 up{right.y * f.z - right.z * f.y, right.z * f.x - right.x * f.z, right.x * f.y - right.y * f.x};
-        const float tangent = static_cast<float>(std::tan(camera.vertical_fov_radians * 0.5));
         const float aspect = ImGui::GetIO().DisplaySize.x / std::max(1.0F, ImGui::GetIO().DisplaySize.y);
-        const float scale_x = 1.0F / (tangent * aspect);
-        const float scale_y = 1.0F / tangent;
-        constexpr float near_plane = 0.001F, far_plane = 100.0F;
-        const float depth_scale = far_plane / (far_plane - near_plane);
-        const float depth_bias = -far_plane * near_plane / (far_plane - near_plane);
-        const auto dot = [](const tetra::Vec3& first, const tetra::Vec3& second) { return first.x*second.x + first.y*second.y + first.z*second.z; };
-        const tetra::Vec3 camera_position{
-            view_camera_position-prepared_scene.render_origin};
-        const float tx = static_cast<float>(-dot(right, camera_position) * scale_x);
-        const float ty = static_cast<float>(-dot(up, camera_position) * scale_y);
-        const float tz = static_cast<float>(-dot(f, camera_position) * depth_scale + depth_bias);
-        const float tw = static_cast<float>(-dot(f, camera_position));
-        g_CameraData = {
-            static_cast<float>(right.x * scale_x), static_cast<float>(up.x * scale_y), static_cast<float>(f.x * depth_scale), static_cast<float>(f.x),
-            static_cast<float>(right.y * scale_x), static_cast<float>(up.y * scale_y), static_cast<float>(f.y * depth_scale), static_cast<float>(f.y),
-            static_cast<float>(right.z * scale_x), static_cast<float>(up.z * scale_y), static_cast<float>(f.z * depth_scale), static_cast<float>(f.z),
-            tx, ty, tz, tw,
+        const auto projection=tetra_viewer::make_infinite_reversed_projection(
+            view_camera_position,prepared_scene.render_origin,
+            world_mode?world_controller.forward():orbit_camera.forward(),
+            {0.0,1.0,0.0},camera.vertical_fov_radians,aspect);
+        const tetra::Vec3 f=projection.forward;
+        const tetra::Vec3 right=projection.right;
+        const tetra::Vec3 up=projection.up;
+        const tetra::Vec3 camera_position=projection.camera_relative;
+        std::copy(projection.matrix.begin(),projection.matrix.end(),
+                  g_CameraData.begin());
+        const std::array<float,12> render_parameters{
             static_cast<float>(-f.x), static_cast<float>(-f.y), static_cast<float>(-f.z), show_volume_edges ? 1.0F : 0.0F,
             static_cast<float>(shading_model), show_surface_edges ? 1.0F : 0.0F,
             show_faces ? 1.0F : 0.0F,
@@ -2608,6 +2597,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             static_cast<float>(camera_position.x),
             static_cast<float>(camera_position.y),
             static_cast<float>(camera_position.z),1.0F};
+        std::copy(render_parameters.begin(),render_parameters.end(),
+                  g_CameraData.begin()+16);
         if (upload_dirty||overlay_dirty) {
             // Editor overlays deliberately do not include mesh surface-edge
             // segments. The mesh wireframe has its own depth-tested native

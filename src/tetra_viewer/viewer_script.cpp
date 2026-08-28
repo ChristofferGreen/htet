@@ -2,6 +2,7 @@
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/projection.hpp"
 
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
@@ -882,7 +883,6 @@ bool render_image(const ScriptState& state, std::string_view path,
                   std::ostream& errors,const PreparedScene* scene_override=nullptr) {
   constexpr int width = 800;
   constexpr int height = 800;
-  constexpr double near_plane = 0.01;
   const auto scene = scene_override!=nullptr?*scene_override:prepare_scene(
       state.mesh, state.sphere, state.surface_method, state.material_rule,
       state.show_faces, false, state.show_surface_edges, false,
@@ -917,25 +917,25 @@ bool render_image(const ScriptState& state, std::string_view path,
     if(angle<45.0)return mix(red,magenta,(angle-20.0)/25.0);
     return mix(magenta,white,std::clamp((angle-45.0)/45.0,0.0,1.0));
   };
-  const tetra::Vec3 forward=normalize(state.camera.forward);
-  const tetra::Vec3 right=normalize(cross(forward,state.camera.up));
-  const tetra::Vec3 up = cross(right, forward);
-  const double tangent = std::tan(state.camera.vertical_fov_radians * 0.5);
+  const auto projection=make_infinite_reversed_projection(
+      state.camera.position,scene.render_origin,state.camera.forward,
+      state.camera.up,state.camera.vertical_fov_radians,1.0);
   const auto render_camera=state.camera.position-scene.render_origin;
 
-  struct Projected { double x{}; double y{}; double depth{}; };
+  struct Projected {
+    double x{};double y{};double depth{};double view_distance{};
+  };
   const auto project = [&](const SceneVertex& vertex) {
     const tetra::Vec3 point{vertex.position[0], vertex.position[1], vertex.position[2]};
-    const tetra::Vec3 offset = point-render_camera;
-    const double depth = dot(offset, forward);
+    const auto projected=projection.project(point);
     return Projected{
-        (dot(offset, right) / (depth * tangent) * 0.5 + 0.5) * (width - 1),
-        (0.5 - dot(offset, up) / (depth * tangent) * 0.5) * (height - 1),
-        depth};
+        (projected.ndc_x*0.5+0.5)*(width-1),
+        (projected.ndc_y*0.5+0.5)*(height-1),projected.depth,
+        projected.view_distance};
   };
   std::vector<std::array<std::uint8_t, 3>> pixels(
       static_cast<std::size_t>(width * height), {15, 20, 28});
-  std::vector<double> depths(static_cast<std::size_t>(width * height), std::numeric_limits<double>::infinity());
+  std::vector<double> depths(static_cast<std::size_t>(width*height),0.0);
   const auto edge = [](Projected a, Projected b, double x, double y) {
     return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
   };
@@ -944,7 +944,9 @@ bool render_image(const ScriptState& state, std::string_view path,
     const auto& vb = scene.triangle_vertices[triangle + 1];
     const auto& vc = scene.triangle_vertices[triangle + 2];
     const Projected a = project(va), b = project(vb), c = project(vc);
-    if (a.depth <= near_plane || b.depth <= near_plane || c.depth <= near_plane) continue;
+    if(a.view_distance<projection.near_plane||
+       b.view_distance<projection.near_plane||
+       c.view_distance<projection.near_plane)continue;
     const double area = edge(a, b, c.x, c.y);
     if (std::abs(area) < 1e-12) continue;
     const int minimum_x = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
@@ -1006,7 +1008,7 @@ bool render_image(const ScriptState& state, std::string_view path,
           wa*va.position[0]+wb*vb.position[0]+wc*vc.position[0];
       if(state.x_cutaway&&!volume_cut&&world_x>state.x_cut_position)continue;
       const std::size_t index = static_cast<std::size_t>(y * width + x);
-      if (depth >= depths[index]) continue;
+      if(depth<=depths[index])continue;
       depths[index] = depth;
       if(!wire_only_volume&&((connected_surface&&state.show_faces)||(volume_cut&&!connected_surface)||
          (!volume_cut&&state.show_faces))){
@@ -1047,7 +1049,8 @@ bool render_image(const ScriptState& state, std::string_view path,
       }
     }
     const Projected a = project(first), b = project(second);
-    if (a.depth <= near_plane || b.depth <= near_plane) continue;
+    if(a.view_distance<projection.near_plane||
+       b.view_distance<projection.near_plane)continue;
     const double delta_x = b.x - a.x, delta_y = b.y - a.y;
     const int steps = std::max(1, static_cast<int>(std::ceil(std::max(std::abs(delta_x), std::abs(delta_y)))));
     for (int step = 0; step <= steps; ++step) {
@@ -1057,8 +1060,8 @@ bool render_image(const ScriptState& state, std::string_view path,
       if (x < 0 || x >= width || y < 0 || y >= height) continue;
       const double depth = a.depth + amount * (b.depth - a.depth);
       const std::size_t index = static_cast<std::size_t>(y * width + x);
-      const double depth_tolerance=first.diagnostics[0]<-1.5F?1.0e-3:1.0e-5;
-      if (depth > depths[index]+depth_tolerance) continue;
+      const double depth_tolerance=first.diagnostics[0]<-1.5F?1.0e-5:1.0e-7;
+      if(depth+depth_tolerance<depths[index])continue;
       depths[index] = depth;
       for (std::size_t channel = 0; channel < 3; ++channel) {
         const double colour = first.colour[channel] + amount * (second.colour[channel] - first.colour[channel]);

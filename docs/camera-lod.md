@@ -194,6 +194,23 @@ projected_diameter_pixels <= pixel_target * zone_multiplier
 Cells intersecting or crossing the near plane must remain conservatively large
 rather than projecting vertices behind the camera.
 
+The render projection is now an infinite-far reversed-Z contract shared by
+Vulkan and deterministic CPU captures. With a 32-bit floating depth buffer its
+mapping is `depth = near / view_distance`: the 0.001-unit near plane maps to
+one, infinite distance tends toward zero, opaque depth comparison is
+`GREATER`, and no finite far-plane rejection exists. The positive-height
+Vulkan viewport basis is part of the contract so renderer, capture, editor
+orientation, and depth values cannot drift independently. Directional shadow
+maps remain an explicitly separate standard finite-depth convention.
+
+This projection change must not be mistaken for an LOD policy. Exact and guard
+frusta, recent/cold demand, conservative projected error, horizon reach,
+planet occlusion, and the orbital silhouette floor continue to determine what
+is resident. World/block origins are subtracted in double precision before
+local coordinates become GPU floats. Earth-radius and orbital-distance tests
+bound depth quantization, large-coordinate tests preserve millimetre local
+offsets, and CPU/matrix agreement tests cover the shared projection.
+
 For direction-independent near and cold zones, use the cell bounding radius
 and focal length without frustum rejection:
 

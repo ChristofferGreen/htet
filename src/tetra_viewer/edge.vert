@@ -28,7 +28,8 @@ void main() {
   const vec2 offset_ndc = perpendicular*ribbon_corner.y*
       (2.0*camera.viewport.z/camera.viewport.xy);
   selected_clip.xy += offset_ndc*selected_clip.w;
-  selected_clip.z-=5.0e-6*selected_clip.w;
+  // Main camera depth is reversed: larger values are closer.
+  selected_clip.z+=5.0e-6*selected_clip.w;
   gl_Position = selected_clip;
   colour = edge_colour;
   edge_distance = ribbon_corner.y*camera.viewport.z;

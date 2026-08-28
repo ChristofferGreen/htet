@@ -1,4 +1,5 @@
 #include "tetra_viewer/world_script.hpp"
+#include "tetra_viewer/projection.hpp"
 
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/world_profile.hpp"
@@ -737,28 +738,23 @@ int capture_world_runtime_view(std::string_view path,
   constexpr int width=768,height=480;
   using Pixel=std::array<unsigned char,3>;
   std::vector<Pixel> pixels(static_cast<std::size_t>(width*height),{15,20,28});
-  std::vector<double> depths(static_cast<std::size_t>(width*height),
-                             std::numeric_limits<double>::infinity());
-  const auto dot=[](tetra::Vec3 first,tetra::Vec3 second){return
-      first.x*second.x+first.y*second.y+first.z*second.z;};
-  const auto cross=[](tetra::Vec3 first,tetra::Vec3 second){return tetra::Vec3{
-      first.y*second.z-first.z*second.y,
-      first.z*second.x-first.x*second.z,
-      first.x*second.y-first.y*second.x};};
+  std::vector<double> depths(static_cast<std::size_t>(width*height),0.0);
   const auto normalize=[&](tetra::Vec3 value){
     const double size=magnitude(value);return size>1.0e-12?value/size:tetra::Vec3{};};
-  const auto right=normalize(cross(forward,camera.up));
-  const auto up=cross(right,forward);
-  const double tangent=std::tan(camera.vertical_fov_radians*0.5);
   const auto render_camera=camera.position-runtime->scene().render_origin;
-  struct Projected { double x{},y{},depth{}; };
+  const auto projection=make_infinite_reversed_projection(
+      camera.position,runtime->scene().render_origin,forward,camera.up,
+      camera.vertical_fov_radians,camera.aspect_ratio);
+  struct Projected {
+    double x{},y{},depth{},view_distance{};
+  };
   const auto project=[&](const SceneVertex& vertex){
     const tetra::Vec3 point{vertex.position[0],vertex.position[1],vertex.position[2]};
-    const auto offset=point-render_camera;
-    const double depth=dot(offset,forward);
+    const auto projected=projection.project(point);
     return Projected{
-        (dot(offset,right)/(depth*tangent*camera.aspect_ratio)*0.5+0.5)*(width-1),
-        (0.5-dot(offset,up)/(depth*tangent)*0.5)*(height-1),depth};
+        (projected.ndc_x*0.5+0.5)*(width-1),
+        (projected.ndc_y*0.5+0.5)*(height-1),projected.depth,
+        projected.view_distance};
   };
   const auto edge=[](Projected first,Projected second,double x,double y){
     return (x-first.x)*(second.y-first.y)-(y-first.y)*(second.x-first.x);};
@@ -768,7 +764,9 @@ int capture_world_runtime_view(std::string_view path,
     const auto& second=vertices[triangle+1U];
     const auto& third=vertices[triangle+2U];
     const auto a=project(first),b=project(second),c=project(third);
-    if(a.depth<=0.001||b.depth<=0.001||c.depth<=0.001)continue;
+    if(a.view_distance<projection.near_plane||
+       b.view_distance<projection.near_plane||
+       c.view_distance<projection.near_plane)continue;
     const double area=edge(a,b,c.x,c.y);
     if(std::abs(area)<1.0e-12)continue;
     const int minimum_x=std::max(0,static_cast<int>(std::floor(std::min({a.x,b.x,c.x}))));
@@ -785,9 +783,9 @@ int capture_world_runtime_view(std::string_view path,
       const double wb=edge(c,a,sample_x,sample_y)/area;
       const double wc=edge(a,b,sample_x,sample_y)/area;
       if(wa<0.0||wb<0.0||wc<0.0)continue;
-      const double depth=1.0/(wa/a.depth+wb/b.depth+wc/c.depth);
+      const double depth=wa*a.depth+wb*b.depth+wc*c.depth;
       const auto index=static_cast<std::size_t>(y*width+x);
-      if(depth>=depths[index])continue;
+      if(depth<=depths[index])continue;
       depths[index]=depth;
       for(std::size_t channel=0;channel<3U;++channel)
         pixels[index][channel]=static_cast<unsigned char>(
@@ -806,7 +804,8 @@ int capture_world_runtime_view(std::string_view path,
             std::array<std::size_t,2>{1U,2U},
             std::array<std::size_t,2>{2U,0U}}){
       const auto a=projected[edge_indices[0]],b=projected[edge_indices[1]];
-      if(a.depth<=0.001||b.depth<=0.001)continue;
+      if(a.view_distance<projection.near_plane||
+         b.view_distance<projection.near_plane)continue;
       const int steps=std::max(1,static_cast<int>(std::ceil(
           std::max(std::abs(b.x-a.x),std::abs(b.y-a.y)))));
       for(int step=0;step<=steps;++step){
@@ -814,9 +813,9 @@ int capture_world_runtime_view(std::string_view path,
         const int x=static_cast<int>(std::lround(a.x+(b.x-a.x)*amount));
         const int y=static_cast<int>(std::lround(a.y+(b.y-a.y)*amount));
         if(x<0||x>=width||y<0||y>=height)continue;
-        const double depth=1.0/((1.0-amount)/a.depth+amount/b.depth);
+        const double depth=(1.0-amount)*a.depth+amount*b.depth;
         const auto index=static_cast<std::size_t>(y*width+x);
-        if(depth>depths[index]+1.0e-3)continue;
+        if(depth+1.0e-6<depths[index])continue;
         pixels[index]={18,20,22};
       }
     }
