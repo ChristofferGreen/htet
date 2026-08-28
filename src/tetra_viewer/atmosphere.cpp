@@ -766,6 +766,90 @@ AtmosphereSpectrum atmosphere_sky_irradiance_reference(
   return result;
 }
 
+AtmosphereScatteringReference atmosphere_scattering_reference(
+    const AtmosphereParameters& parameters, tetra::Vec3 origin,
+    tetra::Vec3 view_direction, tetra::Vec3 sun_direction,
+    double maximum_distance, std::size_t view_steps,
+    std::size_t multiple_direction_count,
+    std::size_t multiple_ray_steps) {
+  AtmosphereScatteringReference result;
+  if(validate_atmosphere(parameters)||!(maximum_distance>0.0)||
+     !std::isfinite(maximum_distance))return result;
+  view_direction=normalized(view_direction);
+  sun_direction=normalized(sun_direction);
+  if(length(view_direction)==0.0||length(sun_direction)==0.0)return result;
+  const auto ray=atmosphere_ray_segment(origin,view_direction,parameters);
+  if(!ray||maximum_distance<=ray->begin_metres)return result;
+  const double begin=ray->begin_metres;
+  const double end=std::min(ray->end_metres,maximum_distance);
+  if(!(end>begin))return result;
+  view_steps=std::clamp<std::size_t>(view_steps,1U,4096U);
+  multiple_direction_count=std::clamp<std::size_t>(
+      multiple_direction_count,1U,256U);
+  multiple_ray_steps=std::clamp<std::size_t>(multiple_ray_steps,1U,256U);
+  const double phase_cosine=dot(view_direction,sun_direction);
+  const double rayleigh_phase_value=rayleigh_phase(phase_cosine);
+  const double mie_phase_value=mie_henyey_greenstein_phase(
+      phase_cosine,parameters.mie_anisotropy);
+  AtmosphereSpectrum path_transmittance{1.0,1.0,1.0};
+  const double segment_length=end-begin;
+  const AtmosphereSpectrum zero{};
+  const double view_step_count=static_cast<double>(view_steps);
+  const auto sunlight=[&](tetra::Vec3 point){
+    if(const auto ground=sphere_roots(point,sun_direction,
+                                      parameters.ground_radius_metres))
+      for(const double root:*ground)if(root>1.0e-5)return zero;
+    const auto segment=atmosphere_ray_segment(point,sun_direction,parameters);
+    if(!segment)return AtmosphereSpectrum{1.0,1.0,1.0};
+    return atmosphere_transmittance(
+        point+sun_direction*segment->begin_metres,
+        point+sun_direction*segment->end_metres,parameters,128U);
+  };
+  for(std::size_t step=0;step<view_steps;++step){
+    const double fraction_begin=static_cast<double>(step)/view_step_count;
+    const double fraction_end=static_cast<double>(step+1U)/view_step_count;
+    const double distance_begin=begin+
+        segment_length*fraction_begin*fraction_begin;
+    const double distance_end=begin+
+        segment_length*fraction_end*fraction_end;
+    const double step_length=distance_end-distance_begin;
+    const tetra::Vec3 point=origin+view_direction*
+        (0.5*(distance_begin+distance_end));
+    const double altitude=length(point)-parameters.ground_radius_metres;
+    const double rayleigh=atmosphere_rayleigh_density(altitude,parameters);
+    const double mie=atmosphere_mie_density(altitude,parameters);
+    const double absorption=atmosphere_absorption_density(altitude,parameters);
+    const auto solar_transmittance=sunlight(point);
+    const double sun_cosine=dot(normalized(point),sun_direction);
+    const auto multiple=atmosphere_multiple_scattering_reference(
+        parameters,altitude,sun_cosine,multiple_direction_count,
+        multiple_ray_steps).closed_contribution;
+    for(std::size_t channel=0;channel<3U;++channel){
+      const double rayleigh_scattering=
+          parameters.rayleigh_scattering_per_metre[channel]*rayleigh;
+      const double mie_scattering=
+          parameters.mie_scattering_per_metre[channel]*mie;
+      const double extinction=rayleigh_scattering+mie_scattering+
+          parameters.mie_absorption_per_metre[channel]*mie+
+          parameters.absorption_per_metre[channel]*absorption;
+      const double segment_transmittance=
+          std::exp(-std::max(0.0,extinction)*step_length);
+      const double integral=extinction>1.0e-15?
+          (1.0-segment_transmittance)/extinction:step_length;
+      const double direct=(rayleigh_scattering*rayleigh_phase_value+
+          mie_scattering*mie_phase_value)*solar_transmittance[channel]*
+          parameters.solar_irradiance[channel];
+      const double higher_order=(rayleigh_scattering+mie_scattering)*
+          multiple[channel]*parameters.solar_irradiance[channel];
+      result.radiance[channel]+=path_transmittance[channel]*
+          (direct+higher_order)*integral;
+      path_transmittance[channel]*=segment_transmittance;
+    }
+  }
+  result.transmittance=path_transmittance;
+  return result;
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||

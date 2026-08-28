@@ -200,6 +200,11 @@ struct AtmosphereMultipleScatteringReference {
   AtmosphereSpectrum closed_contribution{};
 };
 
+struct AtmosphereScatteringReference {
+  AtmosphereSpectrum radiance{};
+  AtmosphereSpectrum transmittance{1.0,1.0,1.0};
+};
+
 using AtmosphereSkyRadianceFunction=
     std::function<AtmosphereSpectrum(tetra::Vec3 direction)>;
 
@@ -260,6 +265,14 @@ atmosphere_multiple_scattering_reference(
     const AtmosphereParameters& parameters, double altitude_metres,
     double sun_zenith_cosine, std::size_t direction_count=64U,
     std::size_t ray_steps=20U);
+[[nodiscard]] AtmosphereScatteringReference atmosphere_scattering_reference(
+    const AtmosphereParameters& parameters,
+    tetra::Vec3 position_from_planet_centre_metres,
+    tetra::Vec3 view_direction, tetra::Vec3 sun_direction,
+    double maximum_distance_metres,
+    std::size_t view_steps=32U,
+    std::size_t multiple_direction_count=16U,
+    std::size_t multiple_ray_steps=8U);
 // Independent double-precision cosine convolution used to qualify the GPU
 // irradiance lookup. The returned value is E/pi, ready for Lambertian albedo.
 [[nodiscard]] AtmosphereSpectrum atmosphere_sky_irradiance_reference(

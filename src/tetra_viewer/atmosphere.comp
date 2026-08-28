@@ -7,6 +7,9 @@ layout(rgba16f,set=0,binding=2) uniform image2D sky_view_lut;
 layout(rgba16f,set=0,binding=3) uniform image3D aerial_scattering_lut;
 layout(rgba16f,set=0,binding=4) uniform image3D aerial_transmittance_lut;
 layout(rgba16f,set=0,binding=8) uniform image2D sky_irradiance_lut;
+layout(std430,set=0,binding=9) buffer AtmosphereProbe {
+  vec4 values[10];
+} atmosphere_probe;
 layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
 
 layout(std140,set=0,binding=5) uniform Atmosphere {
@@ -521,6 +524,61 @@ void generate_sky_irradiance(ivec2 coordinate) {
              checked_lut_value(irradiance_over_pi,65504.0));
 }
 
+vec3 irradiance_load(vec3 normal) {
+  const vec2 uv=full_sky_uv(normal);
+  const ivec2 size=imageSize(sky_irradiance_lut);
+  const ivec2 coordinate=clamp(ivec2(uv*vec2(size)),ivec2(0),size-1);
+  return imageLoad(sky_irradiance_lut,coordinate).rgb;
+}
+
+void generate_numeric_probe() {
+  if(any(notEqual(gl_GlobalInvocationID,uvec3(0))))return;
+  const float altitude=clamp(atmosphere_height()*0.05,1.0,
+                             atmosphere_height()-1.0);
+  const float cosine_angle=0.25;
+  const vec3 lookup_origin=vec3(0.0,ground_radius()+altitude,0.0);
+  const vec3 lookup_direction=normalize(vec3(
+      sqrt(max(0.0,1.0-cosine_angle*cosine_angle)),cosine_angle,0.0));
+  const vec2 lookup_uv=transmittance_uv(altitude,cosine_angle);
+  vec3 exact_transmittance=vec3(1.0);
+  float begin,end;
+  if(medium_segment(lookup_origin,lookup_direction,begin,end))
+    exact_transmittance=integrate_transmittance(
+        lookup_origin+lookup_direction*begin,lookup_direction,end-begin,32);
+  atmosphere_probe.values[0]=vec4(
+      bilinear_transmittance_load(lookup_uv),1.0);
+  atmosphere_probe.values[1]=vec4(exact_transmittance,1.0);
+  const ivec2 multiple_size=imageSize(multiple_scattering_lut);
+  const ivec2 multiple_coordinate=clamp(ivec2(
+      linear_lookup_uv(altitude,cosine_angle)*vec2(multiple_size)),
+      ivec2(0),multiple_size-1);
+  atmosphere_probe.values[2]=imageLoad(
+      multiple_scattering_lut,multiple_coordinate);
+  const vec3 camera_direction=normalize(
+      atmosphere.camera_forward_maximum_distance.xyz);
+  atmosphere_probe.values[3]=vec4(full_sky_load(camera_direction),1.0);
+  atmosphere_probe.values[4]=vec4(irradiance_load(
+      normalize(atmosphere.camera_position_near.xyz)),1.0);
+  const ivec3 aerial_size=imageSize(aerial_scattering_lut);
+  const float probe_distance=atmosphere.camera_forward_maximum_distance.w*0.5;
+  const float slice=pow(0.5,1.0/3.0);
+  const ivec3 aerial_coordinate=clamp(ivec3(
+      ivec2(aerial_size.xy/2),int(round(slice*float(aerial_size.z-1)))),
+      ivec3(0),aerial_size-1);
+  atmosphere_probe.values[5]=imageLoad(
+      aerial_scattering_lut,aerial_coordinate);
+  atmosphere_probe.values[6]=imageLoad(
+      aerial_transmittance_lut,aerial_coordinate);
+  vec3 exact_aerial_transmittance;
+  const vec3 exact_aerial=integrate_scattering(
+      atmosphere.camera_position_near.xyz,camera_direction,probe_distance,
+      exact_aerial_transmittance);
+  atmosphere_probe.values[7]=vec4(exact_aerial,1.0);
+  atmosphere_probe.values[8]=vec4(exact_aerial_transmittance,1.0);
+  const vec2 inverse_parameters=transmittance_parameters(lookup_uv);
+  atmosphere_probe.values[9]=vec4(lookup_uv,inverse_parameters);
+}
+
 void main() {
   if(dispatch_mode.mode==0U)generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==1U)
@@ -529,4 +587,5 @@ void main() {
   else if(dispatch_mode.mode==3U)generate_aerial(ivec3(gl_GlobalInvocationID));
   else if(dispatch_mode.mode==4U)
     generate_sky_irradiance(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==5U)generate_numeric_probe();
 }

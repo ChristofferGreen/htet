@@ -136,10 +136,11 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &composite_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,9> atmosphere_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,10> atmosphere_bindings{};
   for(std::uint32_t binding=0;binding<atmosphere_bindings.size();++binding){
     atmosphere_bindings[binding].binding=binding;
-    atmosphere_bindings[binding].descriptorType=(binding<5U||binding==8U)?
+    atmosphere_bindings[binding].descriptorType=binding==9U?
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:(binding<5U||binding==8U)?
         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
         (binding==6U?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -423,6 +424,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                              AtmosphereQuality quality) {
   quality_settings_=atmosphere_quality_settings(quality);
   atmosphere_dispatch_counts_={};
+  latest_atmosphere_probe_={};
   if(timing_query_pool_!=VK_NULL_HANDLE){
     vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
     timing_query_pool_=VK_NULL_HANDLE;
@@ -455,6 +457,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   for(auto& frame:atmosphere_frames_){
     vkDestroyBuffer(device_,frame.uniform_buffer,nullptr);
     vkFreeMemory(device_,frame.uniform_memory,nullptr);
+    vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
+    vkFreeMemory(device_,frame.probe_memory,nullptr);
   }
   atmosphere_frames_.clear();
   shadow_images_.clear();
@@ -624,6 +628,22 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     if(vkBindBufferMemory(device_,frame.uniform_buffer,frame.uniform_memory,0)!=
        VK_SUCCESS)
       throw std::runtime_error("unable to bind atmosphere uniform buffer");
+    VkBufferCreateInfo probe{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    probe.size=sizeof(float)*4U*atmosphere_gpu_probe_value_count;
+    probe.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if(vkCreateBuffer(device_,&probe,nullptr,&frame.probe_buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create atmosphere probe buffer");
+    vkGetBufferMemoryRequirements(device_,frame.probe_buffer,&requirements);
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&frame.probe_memory)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to allocate atmosphere probe buffer");
+    if(vkBindBufferMemory(device_,frame.probe_buffer,frame.probe_memory,0)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to bind atmosphere probe buffer");
   }
 
   const std::uint32_t shadow_extent=quality_settings_.shadow_resolution;
@@ -688,11 +708,12 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
       throw std::runtime_error("unable to bind shadow cascade uniforms");
   }
 
-  const std::array<VkDescriptorPoolSize,3> pool_sizes{
+  const std::array<VkDescriptorPoolSize,4> pool_sizes{
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            image_count*14U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*6U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U},
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets=image_count*3U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
@@ -824,7 +845,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         atmosphere.aerial_transmittance.view,
         atmosphere.sky_irradiance.view};
     std::array<VkDescriptorImageInfo,6> storage_images{};
-    std::array<VkWriteDescriptorSet,9> atmosphere_writes{};
+    std::array<VkWriteDescriptorSet,10> atmosphere_writes{};
     for(std::uint32_t binding=0;binding<5U;++binding){
       storage_images[binding].imageView=storage_views[binding];
       storage_images[binding].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
@@ -862,6 +883,14 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     atmosphere_writes[8].descriptorCount=1;
     atmosphere_writes[8].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     atmosphere_writes[8].pImageInfo=&storage_images[5];
+    VkDescriptorBufferInfo probe_info{frame.probe_buffer,0,
+        sizeof(float)*4U*atmosphere_gpu_probe_value_count};
+    atmosphere_writes[9].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[9].dstSet=frame.descriptor_set;
+    atmosphere_writes[9].dstBinding=9U;
+    atmosphere_writes[9].descriptorCount=1;
+    atmosphere_writes[9].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    atmosphere_writes[9].pBufferInfo=&probe_info;
     vkUpdateDescriptorSets(device_,
         static_cast<std::uint32_t>(atmosphere_writes.size()),
         atmosphere_writes.data(),0,nullptr);
@@ -1078,6 +1107,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
 
   auto& atmosphere_frame=atmosphere_frames_.at(image_index);
   auto& atmosphere=atmosphere_lookups_;
+  if(atmosphere_frame.probe_pending){
+    void* probe_mapped{};
+    if(vkMapMemory(device_,atmosphere_frame.probe_memory,0,
+          sizeof(float)*4U*atmosphere_gpu_probe_value_count,0,
+          &probe_mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map atmosphere probe buffer");
+    std::memcpy(latest_atmosphere_probe_.values.data(),probe_mapped,
+        sizeof(float)*4U*atmosphere_gpu_probe_value_count);
+    vkUnmapMemory(device_,atmosphere_frame.probe_memory);
+    latest_atmosphere_probe_.valid=true;
+    atmosphere_frame.probe_pending=false;
+  }
   const auto& parameters=atmosphere_input.parameters;
   const bool atmosphere_valid=!validate_atmosphere(parameters).has_value();
   const bool atmosphere_enabled=atmosphere_input.enabled&&atmosphere_valid&&
@@ -1372,6 +1413,22 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       dispatch(3U,(quality_settings_.aerial_width+7U)/8U,
                (quality_settings_.aerial_height+7U)/8U,
                quality_settings_.aerial_depth);
+    if(atmosphere_input.numeric_probe_requested&&
+       atmosphere_input.transport==AtmosphereTransport::faithful_hillaire){
+      compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+      dispatch(5U,1U,1U,1U);
+      VkBufferMemoryBarrier probe_barrier{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      probe_barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      probe_barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+      probe_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      probe_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      probe_barrier.buffer=atmosphere_frame.probe_buffer;
+      probe_barrier.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&probe_barrier,0,nullptr);
+      atmosphere_frame.probe_pending=true;
+    }
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     atmosphere.lookup_revisions=next_revisions;
     atmosphere.transport=atmosphere_input.transport;
@@ -1549,6 +1606,8 @@ void SceneRenderer::shutdown() {
   for(auto& frame:atmosphere_frames_){
     vkDestroyBuffer(device_,frame.uniform_buffer,nullptr);
     vkFreeMemory(device_,frame.uniform_memory,nullptr);
+    vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
+    vkFreeMemory(device_,frame.probe_memory,nullptr);
   }
   for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, editor_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
   if(descriptor_pool_!=VK_NULL_HANDLE)

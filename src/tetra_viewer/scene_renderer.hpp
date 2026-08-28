@@ -5,6 +5,7 @@
 #include "tetra_viewer/viewer_scene.hpp"
 
 #include <vulkan/vulkan.h>
+#include <array>
 
 #include <cstddef>
 #include <cstdint>
@@ -30,7 +31,14 @@ struct AtmosphereFrameInput {
   int debug_view{};
   AtmosphereQuality quality{AtmosphereQuality::standard};
   AtmosphereTransport transport{default_atmosphere_transport};
+  bool numeric_probe_requested{};
   bool enabled{};
+};
+
+inline constexpr std::size_t atmosphere_gpu_probe_value_count=10U;
+struct AtmosphereGpuProbe {
+  std::array<std::array<float,4>,atmosphere_gpu_probe_value_count> values{};
+  bool valid{};
 };
 
 struct SceneGpuTimings {
@@ -77,6 +85,8 @@ class SceneRenderer {
   [[nodiscard]] std::size_t scene_target_allocation_bytes() const noexcept {
     return scene_target_allocation_bytes_;
   }
+  [[nodiscard]] const AtmosphereGpuProbe& latest_atmosphere_probe()
+      const noexcept { return latest_atmosphere_probe_; }
   // camera_data is a column-major view-projection matrix followed by the
   // legacy diagnostic light, rendering parameters, and relative view point.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view,
@@ -115,6 +125,7 @@ class SceneRenderer {
   std::vector<bool> timing_queries_written_;
   SceneGpuTimings gpu_timings_{};
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
+  AtmosphereGpuProbe latest_atmosphere_probe_{};
   std::size_t atmosphere_allocation_bytes_{};
   std::size_t scene_target_allocation_bytes_{};
   std::uint64_t geometry_revision_{};
@@ -149,6 +160,9 @@ class SceneRenderer {
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
     VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
+    VkBuffer probe_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory probe_memory{VK_NULL_HANDLE};
+    bool probe_pending{};
   };
   struct AtmosphereLookupResources {
     AtmosphereImage transmittance;

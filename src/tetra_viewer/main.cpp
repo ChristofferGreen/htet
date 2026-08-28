@@ -1009,6 +1009,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         tetra_viewer::default_world_atmosphere_preset;
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
+    bool world_gpu_atmosphere_probe=false;
     bool world_gpu_atmosphere_resize_check=false;
     bool world_gpu_atmosphere_resize_requested=false;
     std::size_t world_gpu_pre_resize_scene_bytes{};
@@ -1058,6 +1059,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }else if(value=="--gpu-atmosphere-resize-check"){
                 world_gpu_atmosphere_benchmark=true;
                 world_gpu_atmosphere_resize_check=true;
+            }else if(value=="--gpu-atmosphere-probe"){
+                world_gpu_atmosphere_probe=true;
+                g_AtmosphereFrame.numeric_probe_requested=true;
             }else if(value=="--free-fly"){
                 world_free_fly=true;
             }else if(value.starts_with(camera_prefix)){
@@ -1153,6 +1157,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 {static_cast<std::uint32_t>(g_MainWindowData.Width),
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
                 g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
+        }
+        if(world_gpu_atmosphere_probe&&g_AtmosphereFrame.transport!=
+           tetra_viewer::AtmosphereTransport::faithful_hillaire){
+            fprintf(stderr,"--gpu-atmosphere-probe requires "
+                           "--atmosphere-transport=faithful-hillaire\n");
+            return 2;
         }
     }
     if(world_mode){
@@ -3445,6 +3455,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     world_gpu_atmosphere_benchmark=false;
                     glfwSetWindowShouldClose(window,GLFW_TRUE);
                 }
+            }
+            if(world_gpu_atmosphere_probe&&world_runtime&&
+               !world_runtime->diagnostics().busy&&
+               g_SceneRenderer.latest_atmosphere_probe().valid){
+                const auto& probe=g_SceneRenderer.latest_atmosphere_probe();
+                std::cout<<"{\"event\":\"gpu_atmosphere_probe\",\"values\":[";
+                for(std::size_t value=0;value<probe.values.size();++value){
+                    if(value!=0U)std::cout<<',';
+                    std::cout<<'[';
+                    for(std::size_t channel=0;channel<4U;++channel){
+                        if(channel!=0U)std::cout<<',';
+                        std::cout<<probe.values[value][channel];
+                    }
+                    std::cout<<']';
+                }
+                std::cout<<"]}\n";
+                world_gpu_atmosphere_probe=false;
+                glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
         }
         // Avoid spinning the event loop when present returns immediately.
