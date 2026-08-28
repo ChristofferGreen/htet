@@ -1,6 +1,6 @@
 # Dygd Research Paper Catalogue
 
-_Last updated: 25 August 2026_
+_Last updated: 28 August 2026_
 
 ## Purpose
 
@@ -1910,6 +1910,24 @@ Querying all 19 works above together produced 63 distinct citing records. Ninete
 | B | 2025 | S. Ma et al. — **[A Robust and Efficient Model for the Interaction of Fluids with Deformable Solids](https://doi.org/10.1007/s00371-024-03770-z)** *(public PDF unavailable)* | Couples smoothed-particle fluids to deformable solids using signed-distance fields. This is adjacent to terrain authoring but directly relevant once erosion must act on deforming tetrahedral material rather than a static field. |
 
 The remaining descendants are mostly hydrology and geology applications, duplicate preprints, ecosystem rendering, generic surveys, or papers already named in earlier rows. **Gradient Terrain Authoring** (2022), **Real-Time Terrain Enhancement with Controlled Procedural Patterns** (2023), and **Vector-Based Terrain Modelling** (2025) remain useful authoring references but do not add another volumetric update mechanism.
+
+## Planetary atmosphere and outdoor light transport
+
+These works define the planned `tetra_world` atmosphere rather than the
+tetrahedral hierarchy. The architecture, transfer limits, validation matrix,
+and implementation gates are in
+[`planetary-atmosphere.md`](planetary-atmosphere.md).
+
+| Priority | Year | Work | Project relevance |
+|:---:|---:|---|---|
+| A | 2020 | S. Hillaire — **[A Scalable and Production Ready Sky and Atmosphere Rendering Technique](https://doi.org/10.1111/cgf.14050)** ([MIT reference implementation](https://github.com/sebh/UnrealEngineSkyAtmosphere)) | Selected realtime architecture: compact transmittance, multiple-scattering, sky-view, and aerial-perspective tables with dynamic parameters and continuous ground-to-space viewing. |
+| A | 2008 | E. Bruneton, F. Neyret — **[Precomputed Atmospheric Scattering](https://doi.org/10.1111/j.1467-8659.2008.01245.x)** ([tested BSD implementation](https://ebruneton.github.io/precomputed_atmospheric_scattering/)) | Higher-cost correctness oracle for multiple scattering, aerial perspective, and terrain shadows visible as atmospheric light shafts. |
+| A | 2024 | M. Schneegans et al. — **[Physically Based Sky, Atmosphere and Cloud Rendering for Mars](https://doi.org/10.1111/cgf.15010)** | Establishes the limitation of generic Henyey-Greenstein aerosols for alien skies and motivates a later tabulated spectral Mie mode, especially for the Martian blue sunset. |
+| B | 2016 | E. Bruneton — **[A Qualitative and Quantitative Evaluation of 8 Clear Sky Models](https://arxiv.org/abs/1612.04336)** | Comparison framework for assumptions, dimensional consistency, performance, and numeric/visual validation rather than another production renderer. |
+| B | 2013 | E. Yusov — **[Outdoor Light Scattering](https://github.com/GameTechDev/OutdoorLightScattering)** | Practical reference for depth-aware outdoor scattering and terrain-shadowed haze; an implementation precedent rather than the selected atmosphere authority. |
+| B | current | Epic Games — **[Sky Atmosphere Component](https://dev.epicgames.com/documentation/en-us/unreal-engine/sky-atmosphere-component-in-unreal-engine)** | Production evidence for directional-light atmospheric shafts, orbital views, and per-pixel transmittance near the planetary terminator. |
+| B | current | **[CosmoScout VR](https://github.com/cosmoscout/cosmoscout-vr)** | Open planetary-visualization comparison for atmosphere scale, precision, and ground-to-space integration. |
+| Watch | 2026 | **[pl-sky](https://github.com/hoffstadt/pl-sky)** | Relevant Vulkan/macOS prototype, but too immature and insufficiently licensed to copy; use only as visual and architectural comparison. |
 
 ## Supporting and watchlist works
 

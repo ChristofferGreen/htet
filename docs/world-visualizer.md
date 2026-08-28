@@ -1639,8 +1639,15 @@ todo chain are in
       closure, stable triangle budgets, and no forced fine volume residency.
 - [ ] Add guarded, predicted, recent, and cold behavior at hierarchy-region
       and block-residency levels.
-- [ ] Add horizon fog/atmospheric perspective without using it to hide missing
-      geometry.
+- [ ] Implement the staged ground-to-space sky, aerial perspective, shadowed
+      haze, HDR composition, alien controls, and qualification plan in
+      [`planetary-atmosphere.md`](planetary-atmosphere.md); never use haze to
+      hide missing geometry or LOD defects.
+- [ ] Complete the atmosphere plan's HDR/readable-depth gate before composing
+      atmospheric scattering with terrain.
+- [ ] Keep planet-limb geometry and depth valid with atmosphere disabled, then
+      qualify continuous ground, ascent, orbit, and descent views at fixed
+      exposure.
 - [ ] Test slow travel, sprinting, rapid rotation, reversal, and teleportation
       across distance-ring and block-residency changes.
 - [ ] Measure topology, silhouette, screen-space displacement, and image
