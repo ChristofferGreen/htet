@@ -9,6 +9,7 @@ layout(set = 0,binding = 3) uniform sampler2D multiple_scattering_lut;
 layout(set = 0,binding = 4) uniform sampler2D sky_view_lut;
 layout(set = 0,binding = 5) uniform sampler3D aerial_scattering_lut;
 layout(set = 0,binding = 6) uniform sampler3D aerial_transmittance_lut;
+layout(set = 0,binding = 8) uniform sampler2DArray sun_shadow_map;
 
 layout(std140,set=0,binding=7) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -68,6 +69,35 @@ void main() {
   // depth is deliberately bound here as the contract for the following
   // depth-aware atmosphere composition gate.
   vec3 hdr=max(texture(hdr_scene,texture_coordinate).rgb,vec3(0.0));
+  const int debug_view=int(atmosphere.reserved1.x+0.5);
+  if(debug_view!=0){
+    vec3 diagnostic=vec3(0.0);
+    vec4 lookup=vec4(0.0,0.0,0.0,1.0);
+    if(debug_view==1)lookup=texture(transmittance_lut,texture_coordinate);
+    else if(debug_view==2){
+      lookup=texture(multiple_scattering_lut,texture_coordinate);
+      lookup.rgb*=12.0;
+    }else if(debug_view==3)lookup=texture(sky_view_lut,texture_coordinate);
+    else if(debug_view==4){
+      lookup=texture(aerial_scattering_lut,vec3(texture_coordinate,0.5));
+      lookup.rgb*=4.0;
+    }else if(debug_view==5)
+      lookup=texture(aerial_transmittance_lut,vec3(texture_coordinate,0.5));
+    if(debug_view>=1&&debug_view<=5){
+      diagnostic=lookup.a<0.99?vec3(8.0,0.0,8.0):lookup.rgb;
+    }
+    else if(debug_view==6){
+      const float depth=texture(scene_depth,texture_coordinate).r;
+      diagnostic=vec3(pow(clamp(depth,0.0,1.0),0.2));
+    }else if(debug_view>=7&&debug_view<=10){
+      const int cascade=debug_view-7;
+      const float depth=texture(sun_shadow_map,
+          vec3(texture_coordinate,float(cascade))).r;
+      diagnostic=vec3(depth);
+    }
+    out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);
+    return;
+  }
   if(atmosphere.profile_and_mode.w>0.5){
     const float depth=texture(scene_depth,texture_coordinate).r;
     if(depth<=1.0e-8){

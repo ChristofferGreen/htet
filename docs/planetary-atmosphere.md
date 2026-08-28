@@ -315,7 +315,7 @@ advance until each preceding gate passes in release mode.
       multiple-scattering LUTs with CPU probe comparisons.
 - [x] Implement the camera/sun-dependent sky-view LUT.
 - [x] Render physical sky and attenuated angular solar disc into HDR.
-- [ ] Add LUT debug views, finite/nonnegative checks, and Earth captures from
+- [x] Add LUT debug views, finite/nonnegative checks, and Earth captures from
       ground through space.
 - [ ] Verify barriers, descriptors, resize lifetimes, and revision rejection
       under Vulkan validation.
@@ -345,7 +345,7 @@ advance until each preceding gate passes in release mode.
 
 ### Gate F: Controls and alien worlds
 
-- [ ] Add a compact floating panel grouped into Physical, Quality, Art,
+- [x] Add a compact floating panel grouped into Physical, Quality, Art,
       Diagnostics, and Presets that ignores mouse input while captured.
 - [x] Add Earth, Mars-like, dense stylized, nearly airless, and Custom presets.
 - [ ] Follow the tested invalidation graph and keep controls responsive while

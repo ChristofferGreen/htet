@@ -1007,6 +1007,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view azimuth_prefix="--sun-azimuth-degrees=";
         constexpr std::string_view elevation_prefix="--sun-elevation-degrees=";
         constexpr std::string_view exposure_prefix="--exposure-ev=";
+        constexpr std::string_view debug_prefix="--atmosphere-debug=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1055,6 +1056,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     fprintf(stderr,"exposure must be finite\n");return 2;
                 }
                 world_exposure_ev=std::clamp(world_exposure_ev,-6.0,6.0);
+            }else if(value.starts_with(debug_prefix)){
+                const std::string debug(value.substr(debug_prefix.size()));
+                char* end=nullptr;
+                const long parsed=std::strtol(debug.c_str(),&end,10);
+                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>10){
+                    fprintf(stderr,"atmosphere debug view must be in [0,10]\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
             }
         }
     }
@@ -2503,6 +2513,31 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     &distance_minimum,&distance_maximum,"%.0f",
                     ImGuiSliderFlags_AlwaysClamp|
                     ImGuiSliderFlags_Logarithmic);
+            }
+            if(ImGui::CollapsingHeader("Atmosphere diagnostics")){
+                constexpr std::array<const char*,11> debug_names{
+                    "Final composition","Transmittance lookup",
+                    "Multiple scattering lookup","Sky-view lookup",
+                    "Aerial scattering slice","Aerial transmittance slice",
+                    "Reversed depth","Shadow cascade 0","Shadow cascade 1",
+                    "Shadow cascade 2","Shadow cascade 3"};
+                ImGui::SetNextItemWidth(190.0F);
+                ImGui::Combo("Debug view",&g_AtmosphereFrame.debug_view,
+                             debug_names.data(),
+                             static_cast<int>(debug_names.size()));
+                const auto& timings=g_SceneRenderer.gpu_timings();
+                if(timings.valid){
+                    ImGui::Text("GPU shadow %.2f ms  atmosphere %.2f ms",
+                                timings.shadows_milliseconds,
+                                timings.atmosphere_milliseconds);
+                    ImGui::Text("GPU terrain %.2f ms  composite %.2f ms",
+                                timings.terrain_milliseconds,
+                                timings.composite_milliseconds);
+                }else ImGui::TextDisabled("GPU timings pending");
+                ImGui::Text("Scene/atmosphere allocation %.1f MiB",
+                    static_cast<double>(
+                        g_SceneRenderer.atmosphere_allocation_bytes())/
+                        (1024.0*1024.0));
             }
             ImGui::SetNextItemWidth(190.0F);
             const double exposure_minimum=-6.0;

@@ -57,6 +57,9 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   device_ = device;
   colour_format_ = colour_format;
   depth_format_ = depth_format;
+  VkPhysicalDeviceProperties device_properties{};
+  vkGetPhysicalDeviceProperties(physical_device_,&device_properties);
+  timestamp_period_nanoseconds_=device_properties.limits.timestampPeriod;
 
   std::array<VkDescriptorSetLayoutBinding,2> shadow_bindings{};
   shadow_bindings[0].binding=0;
@@ -378,6 +381,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
+  if(timing_query_pool_!=VK_NULL_HANDLE){
+    vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
+    timing_query_pool_=VK_NULL_HANDLE;
+  }
   for (auto& depth : depth_images_) { vkDestroyImageView(device_, depth.view, nullptr); vkDestroyImage(device_, depth.image, nullptr); vkFreeMemory(device_, depth.memory, nullptr); }
   for(auto& colour:scene_colour_images_){
     vkDestroyImageView(device_,colour.view,nullptr);
@@ -411,6 +418,18 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     vkDestroyDescriptorPool(device_,descriptor_pool_,nullptr);
     descriptor_pool_=VK_NULL_HANDLE;
   }
+  VkQueryPoolCreateInfo timing_pool{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  timing_pool.queryType=VK_QUERY_TYPE_TIMESTAMP;
+  timing_pool.queryCount=image_count*5U;
+  if(vkCreateQueryPool(device_,&timing_pool,nullptr,&timing_query_pool_)!=
+     VK_SUCCESS)
+    throw std::runtime_error("unable to create scene timing query pool");
+  timing_queries_written_.assign(image_count,false);
+  gpu_timings_={};
+  atmosphere_allocation_bytes_=static_cast<std::size_t>(image_count)*(
+      static_cast<std::size_t>(extent.width)*extent.height*(8U+4U)+
+      256U*64U*8U+32U*32U*8U+192U*108U*8U+
+      2U*32U*32U*16U*8U+4U*2048U*2048U*4U);
   depth_images_.assign(image_count, {});
   for (auto& depth : depth_images_) {
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -918,6 +937,25 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   if (begin_rendering == nullptr || end_rendering == nullptr)
     throw std::runtime_error("dynamic rendering is unavailable");
 
+  constexpr std::uint32_t timing_count=5U;
+  const std::uint32_t timing_base=image_index*timing_count;
+  if(timing_queries_written_.at(image_index)){
+    std::array<std::uint64_t,timing_count> timestamps{};
+    if(vkGetQueryPoolResults(device_,timing_query_pool_,timing_base,timing_count,
+        sizeof(timestamps),timestamps.data(),sizeof(std::uint64_t),
+        VK_QUERY_RESULT_64_BIT)==VK_SUCCESS){
+      const auto elapsed=[&](std::size_t begin,std::size_t end){
+        return static_cast<double>(timestamps[end]-timestamps[begin])*
+            timestamp_period_nanoseconds_/1.0e6;
+      };
+      gpu_timings_={elapsed(0,1),elapsed(1,2),elapsed(2,3),elapsed(3,4),true};
+    }
+  }
+  vkCmdResetQueryPool(command_buffer,timing_query_pool_,timing_base,timing_count);
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base);
+  timing_queries_written_[image_index]=true;
+
   auto& atmosphere=atmosphere_frames_.at(image_index);
   const auto& parameters=atmosphere_input.parameters;
   const bool atmosphere_valid=!validate_atmosphere(parameters).has_value();
@@ -983,6 +1021,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[50]=static_cast<float>(
       atmosphere_input.camera_relative_world.z);
   atmosphere_uniform[51]=1.0F;
+  atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
   void* mapped{};
   if(vkMapMemory(device_,atmosphere.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)
@@ -1083,6 +1122,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       0,0,nullptr,0,nullptr,1,&to_sample);
   shadow.initialized=true;
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base+1U);
 
   const std::array<VkImage,5> atmosphere_images{
       atmosphere.transmittance.image,atmosphere.multiple_scattering.image,
@@ -1158,6 +1199,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     dispatch(3U,4U,4U,16U);
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
   }
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base+2U);
 
   auto& scene_colour=scene_colour_images_.at(image_index);
   auto& scene_depth=depth_images_.at(image_index);
@@ -1244,6 +1287,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   draw(line_pipeline_,pipeline_layout_,hierarchy_lines_);
   draw(editor_line_pipeline_,pipeline_layout_,editor_lines_);
   end_rendering(command_buffer);
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base+3U);
 
   std::array<VkImageMemoryBarrier,2> to_composite{};
   to_composite[0].sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1293,9 +1338,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       0,nullptr);
   vkCmdDraw(command_buffer,3U,1U,0U,0U);
   end_rendering(command_buffer);
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base+4U);
 }
 
 void SceneRenderer::shutdown() {
+  if(timing_query_pool_!=VK_NULL_HANDLE)
+    vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
   for (auto& depth : depth_images_) { vkDestroyImageView(device_, depth.view, nullptr); vkDestroyImage(device_, depth.image, nullptr); vkFreeMemory(device_, depth.memory, nullptr); }
   for(auto& colour:scene_colour_images_){
     vkDestroyImageView(device_,colour.view,nullptr);

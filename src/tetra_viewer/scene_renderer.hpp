@@ -25,7 +25,16 @@ struct AtmosphereFrameInput {
   double aspect_ratio{1.0};
   double maximum_aerial_distance_metres{1'000'000.0};
   float exposure{0.65F};
+  int debug_view{};
   bool enabled{};
+};
+
+struct SceneGpuTimings {
+  double shadows_milliseconds{};
+  double atmosphere_milliseconds{};
+  double terrain_milliseconds{};
+  double composite_milliseconds{};
+  bool valid{};
 };
 
 class SceneRenderer {
@@ -44,6 +53,12 @@ class SceneRenderer {
   void upload_editor_lines(std::span<const SceneVertex> editor_line_vertices);
   [[nodiscard]] const SurfaceDeviceUploadMetrics& surface_upload_metrics()
       const noexcept { return surface_upload_planner_.metrics(); }
+  [[nodiscard]] const SceneGpuTimings& gpu_timings() const noexcept {
+    return gpu_timings_;
+  }
+  [[nodiscard]] std::size_t atmosphere_allocation_bytes() const noexcept {
+    return atmosphere_allocation_bytes_;
+  }
   // camera_data is a column-major view-projection matrix followed by the
   // legacy diagnostic light, rendering parameters, and relative view point.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view,
@@ -77,6 +92,11 @@ class SceneRenderer {
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
   VkPipeline editor_line_pipeline_{VK_NULL_HANDLE};
+  VkQueryPool timing_query_pool_{VK_NULL_HANDLE};
+  float timestamp_period_nanoseconds_{};
+  std::vector<bool> timing_queries_written_;
+  SceneGpuTimings gpu_timings_{};
+  std::size_t atmosphere_allocation_bytes_{};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
