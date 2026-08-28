@@ -440,9 +440,10 @@ window, which is a 1920x1080 Retina framebuffer, fixed exposure -0.62 EV, the
 gameplay-planet preset, free-flight camera locking, eight timing warm-up frames,
 and 31 measured frames. Automated launches explicitly disable captured-mouse
 input; synthetic GLFW cursor movement must never perturb the requested pose.
-Each run writes RGB PPM, real-geometry depth PGM, exact launch values, image
-statistics, lookup revisions, allocation, dispatch counts, timing median/p95/
-maximum, and deterministic CPU or CPU/GPU probes.
+Each run writes RGB PPM plus real-geometry, clear-depth, three-pixel silhouette,
+and central-20-percent horizon PGM masks, exact launch values, image statistics,
+lookup revisions, allocation, dispatch counts, timing median/p95/maximum, and
+deterministic CPU or CPU/GPU probes.
 
 The baseline renderer provenance is the qualified-baseline transport frozen at
 commit `7cde143`; Gate H harness additions do not change that transport branch.
@@ -824,8 +825,9 @@ integration within tolerance without orientation-dependent horizon artifacts.
       harmonic or equivalent irradiance representation for the gameplay region.
 - [x] Feed terrain BRDF ambient illumination from this representation while
       retaining attenuated direct sun as a separate term.
-- [ ] Remove fitted environment-fill and ground-bounce constants and migrate
-      their shader-string tests to numeric irradiance and fixed-exposure images.
+- [x] Remove fitted environment-fill and ground-bounce constants from the
+      faithful path and migrate their shader-string tests to numeric irradiance
+      and fixed-exposure images; retain them only inside the frozen baseline.
 
 Exit: normal sweeps, noon, sunset, shadow, and preset captures remain finite and
 directional, and terrain lighting contains no undocumented compensation term.
@@ -863,7 +865,7 @@ out the atmosphere, and remain continuous through cascades and the H6 handoff.
 - [ ] Add deterministic fixed-exposure comparisons for the complete matrix in
       H0 against documented Bruneton and Wilkie reference outputs where their
       parameter domains overlap.
-- [ ] Remove assertions for exact step counts, quadratic expressions, and
+- [x] Remove assertions for exact step counts, quadratic expressions, and
       workaround source strings once equivalent behavioral coverage passes.
 
 Exit: deliberately perturbing each transport stage fails a numeric or image

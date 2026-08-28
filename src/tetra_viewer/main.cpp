@@ -3609,11 +3609,21 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                g_SceneRenderer.latest_capture().valid){
                 const auto& capture=g_SceneRenderer.latest_capture();
                 tetra_viewer::Rgb8Image image;
-                std::vector<std::uint8_t> depth_mask;
+                std::vector<std::uint8_t> depth_mask,clear_mask,
+                    silhouette_mask,horizon_mask;
                 std::string image_error;
                 auto depth_mask_path=std::filesystem::path(
                     world_gpu_atmosphere_capture_path);
                 depth_mask_path.replace_extension(".depth.pgm");
+                auto clear_mask_path=std::filesystem::path(
+                    world_gpu_atmosphere_capture_path);
+                clear_mask_path.replace_extension(".clear.pgm");
+                auto silhouette_mask_path=std::filesystem::path(
+                    world_gpu_atmosphere_capture_path);
+                silhouette_mask_path.replace_extension(".silhouette.pgm");
+                auto horizon_mask_path=std::filesystem::path(
+                    world_gpu_atmosphere_capture_path);
+                horizon_mask_path.replace_extension(".horizon.pgm");
                 if(!tetra_viewer::make_rgb8_image(
                        capture.pixels,capture.width,capture.height,
                        capture.bgra,false,image,image_error)||
@@ -3624,7 +3634,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                        depth_mask,image_error)||
                    !tetra_viewer::write_pgm(
                        depth_mask_path.string(),capture.width,capture.height,
-                       depth_mask,image_error)){
+                       depth_mask,image_error)||
+                   !tetra_viewer::make_complement_mask(
+                       depth_mask,clear_mask,image_error)||
+                   !tetra_viewer::write_pgm(
+                       clear_mask_path.string(),capture.width,capture.height,
+                       clear_mask,image_error)||
+                   !tetra_viewer::make_silhouette_band_mask(
+                       depth_mask,capture.width,capture.height,3U,
+                       silhouette_mask,image_error)||
+                   !tetra_viewer::write_pgm(
+                       silhouette_mask_path.string(),capture.width,
+                       capture.height,silhouette_mask,image_error)||
+                   !tetra_viewer::make_horizontal_band_mask(
+                       capture.width,capture.height,0.5,0.2,
+                       horizon_mask,image_error)||
+                   !tetra_viewer::write_pgm(
+                       horizon_mask_path.string(),capture.width,capture.height,
+                       horizon_mask,image_error)){
                     std::cerr<<"could not write GPU atmosphere capture: "
                              <<image_error<<'\n';
                     world_process_exit_code=2;
@@ -3644,6 +3671,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<world_gpu_atmosphere_capture_path
                              <<"\",\"depth_mask_path\":\""
                              <<depth_mask_path.string()
+                             <<"\",\"clear_mask_path\":\""
+                             <<clear_mask_path.string()
+                             <<"\",\"silhouette_mask_path\":\""
+                             <<silhouette_mask_path.string()
+                             <<"\",\"horizon_mask_path\":\""
+                             <<horizon_mask_path.string()
                              <<"\",\"width\":"<<capture.width
                              <<",\"height\":"<<capture.height
                              <<",\"rgb_hash\":"

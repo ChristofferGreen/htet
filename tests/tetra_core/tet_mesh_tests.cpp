@@ -13924,6 +13924,29 @@ TEST_CASE("RGB image oracle round trips PPM and supports masked comparisons") {
       std::array<float,4>{0.0F,1.0F,0.5F,1.0e-9F},2U,2U,
       depth_mask,error));
   CHECK(depth_mask==std::vector<std::uint8_t>{0,255,255,0});
+  std::vector<std::uint8_t> clear_mask;
+  REQUIRE(tetra_viewer::make_complement_mask(
+      depth_mask,clear_mask,error));
+  CHECK(clear_mask==std::vector<std::uint8_t>{255,0,0,255});
+  std::vector<std::uint8_t> isolated_geometry(25U,0U),silhouette;
+  isolated_geometry[12U]=255U;
+  REQUIRE(tetra_viewer::make_silhouette_band_mask(
+      isolated_geometry,5U,5U,1U,silhouette,error));
+  CHECK(std::ranges::count(silhouette,255U)==9U);
+  CHECK(silhouette[12U]==255U);
+  CHECK(silhouette.front()==0U);
+  std::vector<std::uint8_t> horizon;
+  REQUIRE(tetra_viewer::make_horizontal_band_mask(
+      5U,10U,0.5,0.2,horizon,error));
+  CHECK(std::ranges::count(horizon,255U)==10U);
+  CHECK(horizon[3U*5U]==0U);
+  CHECK(horizon[4U*5U]==255U);
+  CHECK(horizon[5U*5U]==255U);
+  CHECK(horizon[6U*5U]==0U);
+  CHECK_FALSE(tetra_viewer::make_silhouette_band_mask(
+      isolated_geometry,5U,5U,0U,silhouette,error));
+  CHECK_FALSE(tetra_viewer::make_horizontal_band_mask(
+      5U,10U,0.5,0.0,horizon,error));
   auto invalid_depth=std::array<float,4>{0.0F,1.0F,0.5F,2.0F};
   CHECK_FALSE(tetra_viewer::make_reversed_depth_mask(
       invalid_depth,2U,2U,depth_mask,error));
@@ -14528,29 +14551,6 @@ TEST_CASE("compact planet shaders preserve metre-scale horizon precision") {
   CHECK(std::abs(cancelled-exact)>100.0F);
 }
 
-TEST_CASE("planet atmosphere composites lit analytic ground through aerial perspective") {
-  const auto read_text=[](const std::filesystem::path& path){
-    std::ifstream stream(path);
-    REQUIRE(stream.good());
-    return std::string(std::istreambuf_iterator<char>(stream),{});
-  };
-  const auto atmosphere_shader=read_text("src/tetra_viewer/atmosphere.comp");
-  const auto compositor=read_text("src/tetra_viewer/tone_map.frag");
-  CHECK(compositor.find("if(depth<=1.0e-8)")!=std::string::npos);
-  CHECK(compositor.find("ground_disc_coverage")==std::string::npos);
-  CHECK(atmosphere_shader.find("ground_radiance(")==std::string::npos);
-  CHECK(compositor.find("ground_intersection_distance(")!=std::string::npos);
-  CHECK(compositor.find("analytic_ground_radiance(")!=std::string::npos);
-  CHECK(compositor.find("composite_aerial(")!=std::string::npos);
-  CHECK(compositor.find("analytic_ground_radiance(view_direction,ground_distance)")!=
-        std::string::npos);
-  CHECK(compositor.find("surface_radiance*transmittance+scattering")!=
-        std::string::npos);
-  CHECK(compositor.find(
-      "const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb")!=
-        std::string::npos);
-}
-
 TEST_CASE("atmosphere densities phases and transmittance obey analytic limits") {
   const auto parameters =
       tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);
@@ -15122,11 +15122,6 @@ TEST_CASE("atmospheric shadow cascades cover the gameplay horizon without a ligh
   CHECK(cascades.cascades.back().half_width==
         doctest::Approx(tetra_viewer::default_shadow_cascade_half_widths.back()));
   CHECK(cascades.cascades.back().texel_world_size<=1.0);
-
-  std::ifstream shader_stream("src/tetra_viewer/atmosphere.comp");
-  REQUIRE(shader_stream.good());
-  const std::string shader(std::istreambuf_iterator<char>(shader_stream),{});
-  CHECK(shader.find("atmosphere_sun_visibility(point)")!=std::string::npos);
 
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(4U,4U,1.0)==1.0);
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(0U,4U,1.0)==0.0);

@@ -173,23 +173,7 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   const vec2 transmittance_uv=atmosphere_transmittance_uv(
       altitude,sun_cosine);
 
-  // Turn the retained incident-sky spherical average into a cosine-weighted
-  // diffuse approximation for this surface normal.
-  const vec3 average_radiance=texture(
-      multiple_scattering_lut,scattering_uv).rgb;
   const float upward=clamp(dot(surface_normal,local_up),-1.0,1.0);
-  const float sky_hemisphere_weight=mix(0.35,2.0,upward*0.5+0.5);
-  // The isotropic closure deliberately contains little first-order sky
-  // energy. Recover a conservative coloured share of the vertical beam loss
-  // so blue-hour terrain remains readable without a constant ambient floor.
-  const vec3 vertical_transmittance=texture(transmittance_lut,
-      atmosphere_transmittance_uv(altitude,1.0)).rgb;
-  const float daylight=smoothstep(-0.12,0.20,sun_cosine);
-  const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
-      (vec3(1.0)-vertical_transmittance)*daylight*0.60;
-  const vec3 sky_irradiance_over_pi=(average_radiance+
-      single_scattered_fill)*sky_hemisphere_weight;
-
   const vec3 solar_transmittance=texture(
       transmittance_lut,transmittance_uv).rgb;
   const float planet_visibility=atmosphere_sun_visibility(
@@ -201,6 +185,21 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
 
   // The qualified baseline retains its fitted readability terms. The
   // faithful path above consumes the explicit cosine-convolved sky lookup.
+  // Turn the retained incident-sky spherical average into a cosine-weighted
+  // diffuse approximation for this surface normal.
+  const vec3 average_radiance=texture(
+      multiple_scattering_lut,scattering_uv).rgb;
+  const float sky_hemisphere_weight=mix(0.35,2.0,upward*0.5+0.5);
+  // The isotropic closure deliberately contains little first-order sky
+  // energy. Recover a conservative coloured share of the vertical beam loss
+  // so blue-hour terrain remains readable without a constant ambient floor.
+  const vec3 vertical_transmittance=texture(transmittance_lut,
+      atmosphere_transmittance_uv(altitude,1.0)).rgb;
+  const float daylight=smoothstep(-0.12,0.20,sun_cosine);
+  const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
+      (vec3(1.0)-vertical_transmittance)*daylight*0.60;
+  const vec3 sky_irradiance_over_pi=(average_radiance+
+      single_scattered_fill)*sky_hemisphere_weight;
   const float ground_facing=max(-upward,0.0);
   const vec3 ground_bounce=atmosphere.ground_albedo_mie_anisotropy.rgb*
       direct_sun*max(sun_cosine,0.0)*ground_facing*0.25;

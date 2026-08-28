@@ -65,6 +65,17 @@ struct ScalarSampleSummary {
     std::span<const float> reversed_depth,std::uint32_t width,
     std::uint32_t height,std::vector<std::uint8_t>& mask,
     std::string& error);
+[[nodiscard]] bool make_complement_mask(
+    std::span<const std::uint8_t> source,std::vector<std::uint8_t>& mask,
+    std::string& error);
+[[nodiscard]] bool make_silhouette_band_mask(
+    std::span<const std::uint8_t> geometry,std::uint32_t width,
+    std::uint32_t height,std::uint32_t radius,
+    std::vector<std::uint8_t>& mask,std::string& error);
+[[nodiscard]] bool make_horizontal_band_mask(
+    std::uint32_t width,std::uint32_t height,double centre,
+    double height_fraction,std::vector<std::uint8_t>& mask,
+    std::string& error);
 [[nodiscard]] bool write_pgm(std::string_view path,std::uint32_t width,
                              std::uint32_t height,
                              std::span<const std::uint8_t> values,

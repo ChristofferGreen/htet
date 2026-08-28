@@ -139,6 +139,72 @@ bool make_reversed_depth_mask(std::span<const float> reversed_depth,
   return true;
 }
 
+bool make_complement_mask(std::span<const std::uint8_t> source,
+                          std::vector<std::uint8_t>& mask,
+                          std::string& error) {
+  mask.clear();error.clear();
+  if(source.empty()){
+    error="mask source is empty";return false;
+  }
+  mask.reserve(source.size());
+  for(const auto value:source)mask.push_back(value==0U?255U:0U);
+  return true;
+}
+
+bool make_silhouette_band_mask(std::span<const std::uint8_t> geometry,
+                               std::uint32_t width,std::uint32_t height,
+                               std::uint32_t radius,
+                               std::vector<std::uint8_t>& mask,
+                               std::string& error) {
+  mask.clear();error.clear();
+  if(width==0U||height==0U||radius==0U||
+     geometry.size()!=static_cast<std::size_t>(width)*height){
+    error="silhouette mask dimensions or radius are invalid";return false;
+  }
+  mask.assign(geometry.size(),0U);
+  for(std::uint32_t y=0;y<height;++y)for(std::uint32_t x=0;x<width;++x){
+    const bool inside=geometry[static_cast<std::size_t>(y)*width+x]!=0U;
+    const auto minimum_x=x>radius?x-radius:0U;
+    const auto minimum_y=y>radius?y-radius:0U;
+    const auto maximum_x=static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        width-1U,static_cast<std::uint64_t>(x)+radius));
+    const auto maximum_y=static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        height-1U,static_cast<std::uint64_t>(y)+radius));
+    bool boundary=false;
+    for(std::uint32_t sample_y=minimum_y;
+        sample_y<=maximum_y&&!boundary;++sample_y)
+      for(std::uint32_t sample_x=minimum_x;sample_x<=maximum_x;++sample_x)
+        if((geometry[static_cast<std::size_t>(sample_y)*width+sample_x]!=0U)!=
+           inside){boundary=true;break;}
+    if(boundary)mask[static_cast<std::size_t>(y)*width+x]=255U;
+  }
+  return true;
+}
+
+bool make_horizontal_band_mask(std::uint32_t width,std::uint32_t height,
+                               double centre,double height_fraction,
+                               std::vector<std::uint8_t>& mask,
+                               std::string& error) {
+  mask.clear();error.clear();
+  if(width==0U||height==0U||!std::isfinite(centre)||
+     !std::isfinite(height_fraction)||centre<0.0||centre>1.0||
+     height_fraction<=0.0||height_fraction>1.0){
+    error="horizontal mask dimensions or fractions are invalid";return false;
+  }
+  const double half=height_fraction*0.5;
+  const auto first=static_cast<std::uint32_t>(std::floor(
+      std::clamp(centre-half,0.0,1.0)*height));
+  const auto last=static_cast<std::uint32_t>(std::ceil(
+      std::clamp(centre+half,0.0,1.0)*height));
+  mask.assign(static_cast<std::size_t>(width)*height,0U);
+  for(std::uint32_t y=first;y<std::min(last,height);++y){
+    const auto offset=static_cast<std::vector<std::uint8_t>::difference_type>(
+        static_cast<std::size_t>(y)*width);
+    std::fill_n(mask.begin()+offset,width,255U);
+  }
+  return true;
+}
+
 bool write_pgm(std::string_view path,std::uint32_t width,std::uint32_t height,
                std::span<const std::uint8_t> values,std::string& error) {
   error.clear();
