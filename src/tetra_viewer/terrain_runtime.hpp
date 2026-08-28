@@ -512,6 +512,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::size_t simulated_device_vertex_capacity_{};
   mutable bool flat_scene_current_{};
   bool demand_pending_{true};
+  bool camera_interactive_{};
   bool active_superseded_{};
   std::chrono::steady_clock::time_point superseded_at_{};
   std::uint64_t requested_generation_{};

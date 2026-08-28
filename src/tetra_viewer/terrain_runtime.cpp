@@ -1546,16 +1546,27 @@ void BlockedTerrainRuntime::submit() {
 
 void BlockedTerrainRuntime::set_camera(
     const tetra::Camera& camera,bool interactive) {
-  const bool changed=camera.position.x!=camera_.position.x||
-      camera.position.y!=camera_.position.y||
-      camera.position.z!=camera_.position.z;
   const auto delta=camera.position-last_requested_position_;
-  const bool moved=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>0.02*0.02;
+  const double distance_squared=
+      delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
+  const bool moved=distance_squared>0.02*0.02;
+  constexpr double settled_position_epsilon=1.0e-9;
+  const bool settled_pose_changed=
+      distance_squared>settled_position_epsilon*settled_position_epsilon;
   camera_=camera;
-  // The movement threshold controls settled cancellation, not whether the
-  // latest pose must eventually be built. Otherwise a sub-threshold tail of
-  // an interactive motion can be reported as converged at the wrong camera.
-  demand_pending_=demand_pending_||changed;
+  // Interactive physics supplies a new floating-point pose every simulation
+  // step. Treating every bit-level change as exact terrain demand can leave an
+  // idle player in an endless publication loop when contact resolution
+  // jitters. Accumulate movement from the last submitted pose and request an
+  // interactive front only after the existing spatial threshold is crossed.
+  // The first settled sample still requests a sub-threshold final tail. Once
+  // settled, subsequent contact samples use the ordinary spatial threshold;
+  // otherwise persistent sub-pixel ground wobble can restart the worker after
+  // every publication.
+  const bool interaction_ended=camera_interactive_&&!interactive;
+  camera_interactive_=interactive;
+  demand_pending_=demand_pending_||moved||
+      (interaction_ended&&settled_pose_changed);
   // Interactive camera input is an unbounded stream. Canceling the active
   // publication for every new pose can starve publication forever while the
   // player walks. Keep the complete in-flight front, coalesce all newer poses

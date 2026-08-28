@@ -2283,7 +2283,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 static_cast<double>(std::max(1.0F,input.DisplaySize.x))/
                     static_cast<double>(std::max(1.0F,input.DisplaySize.y)));
             world_runtime->set_camera(camera,
-                movement.forward!=0.0||movement.right!=0.0||!world_controller.state().grounded);
+                movement.forward!=0.0||movement.right!=0.0||
+                (!world_free_fly&&!world_controller.state().grounded));
             view_camera_position=world_controller.eye_position();
             if(world_show_capsule||world_show_contact_normal)overlay_dirty=true;
         }else{

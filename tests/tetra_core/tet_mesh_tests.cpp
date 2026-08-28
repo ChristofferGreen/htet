@@ -1882,16 +1882,39 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   };
   REQUIRE(settle());
   const auto submitted=runtime.diagnostics().submitted_builds;
+  const auto settled_generation=runtime.diagnostics().scene_generation;
+  const auto settled_position=runtime.diagnostics().published_camera_position;
+  for(std::size_t sample=0U;sample<32U;++sample){
+    camera.position=settled_position;
+    camera.position.x+=(sample%2U==0U?1.0:-1.0)*1.0e-10;
+    runtime.set_camera(camera,true);
+    CHECK_FALSE(runtime.update());
+  }
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==submitted);
+  CHECK(runtime.diagnostics().scene_generation==settled_generation);
   camera.position.x=runtime.diagnostics().published_camera_position.x+0.001;
   camera.position.y=runtime.diagnostics().published_camera_position.y;
   camera.position.z=runtime.diagnostics().published_camera_position.z;
-  runtime.set_camera(camera,true);
+  runtime.set_camera(camera,false);
   static_cast<void>(runtime.update());
   CHECK(runtime.diagnostics().submitted_builds==submitted+1U);
   REQUIRE(settle());
   CHECK(runtime.diagnostics().published_camera_position.x==camera.position.x);
   CHECK(runtime.diagnostics().published_camera_position.y==camera.position.y);
   CHECK(runtime.diagnostics().published_camera_position.z==camera.position.z);
+  const auto settled_submissions=runtime.diagnostics().submitted_builds;
+  const auto final_generation=runtime.diagnostics().scene_generation;
+  const auto final_position=runtime.diagnostics().published_camera_position;
+  for(std::size_t sample=0U;sample<32U;++sample){
+    camera.position=final_position;
+    camera.position.y+=(sample%2U==0U?1.0:-1.0)*1.0e-4;
+    runtime.set_camera(camera,false);
+    CHECK_FALSE(runtime.update());
+  }
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
+  CHECK(runtime.diagnostics().scene_generation==final_generation);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {

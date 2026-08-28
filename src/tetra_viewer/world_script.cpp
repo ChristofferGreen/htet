@@ -430,6 +430,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
       sample(moving->update());
       std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
+    // End the interactive stream explicitly so a final movement smaller than
+    // the spatial request threshold is still represented exactly. The real
+    // application sends the same settled sample after movement input stops.
+    moving->set_camera(camera,false);
     const auto stopped=std::chrono::steady_clock::now();
     const auto deadline=stopped+std::chrono::seconds(30);
     TerrainRuntimeDiagnostics diagnostics;
