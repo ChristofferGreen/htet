@@ -425,6 +425,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   quality_settings_=atmosphere_quality_settings(quality);
   atmosphere_dispatch_counts_={};
   latest_atmosphere_probe_={};
+  latest_capture_={};
   if(timing_query_pool_!=VK_NULL_HANDLE){
     vkDestroyQueryPool(device_,timing_query_pool_,nullptr);
     timing_query_pool_=VK_NULL_HANDLE;
@@ -460,7 +461,15 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
     vkFreeMemory(device_,frame.probe_memory,nullptr);
   }
+  for(auto& capture:capture_frames_){
+    vkDestroyImageView(device_,capture.view,nullptr);
+    vkDestroyImage(device_,capture.image,nullptr);
+    vkFreeMemory(device_,capture.image_memory,nullptr);
+    vkDestroyBuffer(device_,capture.buffer,nullptr);
+    vkFreeMemory(device_,capture.buffer_memory,nullptr);
+  }
   atmosphere_frames_.clear();
+  capture_frames_.clear();
   shadow_images_.clear();
   descriptor_sets_.clear();
   composite_descriptor_sets_.clear();
@@ -547,6 +556,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     if(vkCreateImageView(device_,&view,nullptr,&colour.view)!=VK_SUCCESS)
       throw std::runtime_error("unable to create HDR scene colour view");
   }
+
+  capture_frames_.resize(image_count);
 
   const auto make_atmosphere_image=[this](AtmosphereImage& destination,
                                            VkImageType image_type,
@@ -1074,6 +1085,60 @@ void SceneRenderer::upload_surface_ranges(
   ++geometry_revision_;
 }
 
+void SceneRenderer::ensure_capture_resources(CaptureFrameResources& capture,
+                                             VkExtent2D extent) {
+  if(capture.image!=VK_NULL_HANDLE)return;
+  VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  image.imageType=VK_IMAGE_TYPE_2D;
+  image.format=colour_format_;
+  image.extent={extent.width,extent.height,1U};
+  image.mipLevels=1;
+  image.arrayLayers=1;
+  image.samples=VK_SAMPLE_COUNT_1_BIT;
+  image.tiling=VK_IMAGE_TILING_OPTIMAL;
+  image.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  if(vkCreateImage(device_,&image,nullptr,&capture.image)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene capture image");
+  VkMemoryRequirements requirements{};
+  vkGetImageMemoryRequirements(device_,capture.image,&requirements);
+  VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  allocation.allocationSize=requirements.size;
+  allocation.memoryTypeIndex=memory_type(
+      physical_device_,requirements.memoryTypeBits,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if(vkAllocateMemory(device_,&allocation,nullptr,
+                      &capture.image_memory)!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate scene capture image");
+  if(vkBindImageMemory(device_,capture.image,capture.image_memory,0)!=VK_SUCCESS)
+    throw std::runtime_error("unable to bind scene capture image");
+  VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  view.image=capture.image;
+  view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+  view.format=colour_format_;
+  view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+  view.subresourceRange.levelCount=1;
+  view.subresourceRange.layerCount=1;
+  if(vkCreateImageView(device_,&view,nullptr,&capture.view)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene capture view");
+  VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  buffer.size=static_cast<VkDeviceSize>(extent.width)*extent.height*4U;
+  buffer.usage=VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if(vkCreateBuffer(device_,&buffer,nullptr,&capture.buffer)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create scene capture buffer");
+  vkGetBufferMemoryRequirements(device_,capture.buffer,&requirements);
+  allocation.allocationSize=requirements.size;
+  allocation.memoryTypeIndex=memory_type(
+      physical_device_,requirements.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if(vkAllocateMemory(device_,&allocation,nullptr,
+                      &capture.buffer_memory)!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate scene capture buffer");
+  if(vkBindBufferMemory(device_,capture.buffer,capture.buffer_memory,0)!=
+     VK_SUCCESS)
+    throw std::runtime_error("unable to bind scene capture buffer");
+}
+
 void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_view,
                            std::uint32_t image_index,VkExtent2D extent,
                            const float* camera_data,
@@ -1118,6 +1183,24 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     vkUnmapMemory(device_,atmosphere_frame.probe_memory);
     latest_atmosphere_probe_.valid=true;
     atmosphere_frame.probe_pending=false;
+  }
+  auto& capture_frame=capture_frames_.at(image_index);
+  if(capture_frame.pending){
+    const std::size_t byte_count=static_cast<std::size_t>(extent.width)*
+        extent.height*4U;
+    latest_capture_.pixels.resize(byte_count);
+    void* capture_mapped{};
+    if(vkMapMemory(device_,capture_frame.buffer_memory,0,byte_count,0,
+                   &capture_mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map scene capture buffer");
+    std::memcpy(latest_capture_.pixels.data(),capture_mapped,byte_count);
+    vkUnmapMemory(device_,capture_frame.buffer_memory);
+    latest_capture_.width=extent.width;
+    latest_capture_.height=extent.height;
+    latest_capture_.bgra=colour_format_==VK_FORMAT_B8G8R8A8_UNORM||
+                         colour_format_==VK_FORMAT_B8G8R8_UNORM;
+    latest_capture_.valid=true;
+    capture_frame.pending=false;
   }
   const auto& parameters=atmosphere_input.parameters;
   const bool atmosphere_valid=!validate_atmosphere(parameters).has_value();
@@ -1587,6 +1670,68 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   end_rendering(command_buffer);
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timing_query_pool_,timing_base+4U);
+  if(atmosphere_input.capture_requested){
+    ensure_capture_resources(capture_frame,extent);
+    VkImageMemoryBarrier to_capture{
+        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    to_capture.srcAccessMask=capture_frame.initialized?
+        VK_ACCESS_TRANSFER_READ_BIT:0U;
+    to_capture.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    to_capture.oldLayout=capture_frame.initialized?
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+    to_capture.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_capture.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    to_capture.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    to_capture.image=capture_frame.image;
+    to_capture.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+    to_capture.subresourceRange.levelCount=1;
+    to_capture.subresourceRange.layerCount=1;
+    vkCmdPipelineBarrier(command_buffer,
+        capture_frame.initialized?VK_PIPELINE_STAGE_TRANSFER_BIT:
+                                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,
+        1,&to_capture);
+
+    output_attachment.imageView=capture_frame.view;
+    begin_rendering(command_buffer,
+        reinterpret_cast<const VkRenderingInfoKHR*>(&output_rendering));
+    vkCmdSetViewport(command_buffer,0,1,&viewport);
+    vkCmdSetScissor(command_buffer,0,1,&scissor);
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      composite_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+        composite_pipeline_layout_,0,1,
+        &composite_descriptor_sets_.at(image_index),0,nullptr);
+    vkCmdDraw(command_buffer,3U,1U,0U,0U);
+    end_rendering(command_buffer);
+
+    VkImageMemoryBarrier to_readback=to_capture;
+    to_readback.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    to_readback.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+    to_readback.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_readback.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vkCmdPipelineBarrier(command_buffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&to_readback);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount=1;
+    copy.imageExtent={extent.width,extent.height,1U};
+    vkCmdCopyImageToBuffer(command_buffer,capture_frame.image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture_frame.buffer,1,&copy);
+    VkBufferMemoryBarrier host_read{
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    host_read.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+    host_read.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    host_read.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    host_read.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    host_read.buffer=capture_frame.buffer;
+    host_read.size=VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host_read,0,nullptr);
+    capture_frame.initialized=true;
+    capture_frame.pending=true;
+  }
 }
 
 void SceneRenderer::shutdown() {
@@ -1621,6 +1766,13 @@ void SceneRenderer::shutdown() {
     vkFreeMemory(device_,frame.uniform_memory,nullptr);
     vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
     vkFreeMemory(device_,frame.probe_memory,nullptr);
+  }
+  for(auto& capture:capture_frames_){
+    vkDestroyImageView(device_,capture.view,nullptr);
+    vkDestroyImage(device_,capture.image,nullptr);
+    vkFreeMemory(device_,capture.image_memory,nullptr);
+    vkDestroyBuffer(device_,capture.buffer,nullptr);
+    vkFreeMemory(device_,capture.buffer_memory,nullptr);
   }
   for (const VertexBuffer& buffer : {triangles_, hierarchy_lines_, editor_lines_}) { vkDestroyBuffer(device_, buffer.buffer, nullptr); vkFreeMemory(device_, buffer.memory, nullptr); }
   if(descriptor_pool_!=VK_NULL_HANDLE)

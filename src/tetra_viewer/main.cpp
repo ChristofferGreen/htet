@@ -1010,6 +1010,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
     bool world_gpu_atmosphere_probe=false;
+    std::string world_gpu_atmosphere_capture_path;
+    bool world_gpu_atmosphere_capture_submitted=false;
     bool world_gpu_atmosphere_resize_check=false;
     bool world_gpu_atmosphere_resize_requested=false;
     std::size_t world_gpu_pre_resize_scene_bytes{};
@@ -1024,6 +1026,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view debug_prefix="--atmosphere-debug=";
         constexpr std::string_view quality_prefix="--atmosphere-quality=";
         constexpr std::string_view transport_prefix="--atmosphere-transport=";
+        constexpr std::string_view capture_prefix="--gpu-atmosphere-capture=";
         constexpr std::string_view camera_prefix="--camera-feet=";
         constexpr std::string_view yaw_prefix="--camera-yaw-degrees=";
         constexpr std::string_view pitch_prefix="--camera-pitch-degrees=";
@@ -1063,6 +1066,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }else if(value=="--gpu-atmosphere-probe"){
                 world_gpu_atmosphere_probe=true;
                 g_AtmosphereFrame.numeric_probe_requested=true;
+            }else if(value.starts_with(capture_prefix)){
+                world_gpu_atmosphere_capture_path=
+                    std::string{value.substr(capture_prefix.size())};
+                if(world_gpu_atmosphere_capture_path.empty()){
+                    fprintf(stderr,"GPU atmosphere capture path is empty\n");
+                    return 2;
+                }
             }else if(value=="--free-fly"){
                 world_free_fly=true;
             }else if(value.starts_with(camera_prefix)){
@@ -3394,6 +3404,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized)
         {
+            g_AtmosphereFrame.capture_requested=
+                !world_gpu_atmosphere_capture_path.empty()&&
+                !world_gpu_atmosphere_capture_submitted&&world_runtime&&
+                !world_runtime->diagnostics().busy;
+            if(g_AtmosphereFrame.capture_requested)
+                world_gpu_atmosphere_capture_submitted=true;
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
             wd->ClearValue.color.float32[1] = clear_color.y * clear_color.w;
             wd->ClearValue.color.float32[2] = clear_color.z * clear_color.w;
@@ -3527,6 +3543,43 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 std::cout<<"]}\n";
                 world_process_exit_code=report.passed?0:3;
                 world_gpu_atmosphere_probe=false;
+                glfwSetWindowShouldClose(window,GLFW_TRUE);
+            }
+            if(world_gpu_atmosphere_capture_submitted&&
+               g_SceneRenderer.latest_capture().valid){
+                const auto& capture=g_SceneRenderer.latest_capture();
+                std::ofstream image(world_gpu_atmosphere_capture_path,
+                                    std::ios::binary);
+                if(!image){
+                    std::cerr<<"could not open GPU atmosphere capture path\n";
+                    world_process_exit_code=2;
+                }else{
+                    image<<"P6\n"<<capture.width<<' '<<capture.height<<"\n255\n";
+                    std::uint64_t hash=1469598103934665603ULL;
+                    for(std::size_t pixel=0;
+                        pixel<capture.pixels.size()/4U;++pixel){
+                        const std::size_t offset=pixel*4U;
+                        const std::array<std::uint8_t,3> rgb{
+                            capture.pixels[offset+(capture.bgra?2U:0U)],
+                            capture.pixels[offset+1U],
+                            capture.pixels[offset+(capture.bgra?0U:2U)]};
+                        image.write(reinterpret_cast<const char*>(rgb.data()),
+                                    static_cast<std::streamsize>(rgb.size()));
+                        for(const auto value:rgb){hash^=value;hash*=1099511628211ULL;}
+                    }
+                    if(!image){
+                        std::cerr<<"could not write GPU atmosphere capture\n";
+                        world_process_exit_code=2;
+                    }else{
+                        std::cout<<"{\"event\":\"gpu_atmosphere_capture\","
+                                 <<"\"path\":\""
+                                 <<world_gpu_atmosphere_capture_path
+                                 <<"\",\"width\":"<<capture.width
+                                 <<",\"height\":"<<capture.height
+                                 <<",\"rgb_hash\":"<<hash<<"}\n";
+                    }
+                }
+                world_gpu_atmosphere_capture_path.clear();
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
         }

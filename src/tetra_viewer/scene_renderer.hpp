@@ -32,11 +32,20 @@ struct AtmosphereFrameInput {
   AtmosphereQuality quality{AtmosphereQuality::standard};
   AtmosphereTransport transport{default_atmosphere_transport};
   bool numeric_probe_requested{};
+  bool capture_requested{};
   bool enabled{};
 };
 
 struct AtmosphereGpuProbe {
   std::array<std::array<float,4>,atmosphere_numeric_probe_value_count> values{};
+  bool valid{};
+};
+
+struct SceneCapture {
+  std::vector<std::uint8_t> pixels;
+  std::uint32_t width{};
+  std::uint32_t height{};
+  bool bgra{};
   bool valid{};
 };
 
@@ -86,6 +95,9 @@ class SceneRenderer {
   }
   [[nodiscard]] const AtmosphereGpuProbe& latest_atmosphere_probe()
       const noexcept { return latest_atmosphere_probe_; }
+  [[nodiscard]] const SceneCapture& latest_capture() const noexcept {
+    return latest_capture_;
+  }
   // camera_data is a column-major view-projection matrix followed by the
   // legacy diagnostic light, rendering parameters, and relative view point.
   void record(VkCommandBuffer command_buffer, VkImageView colour_view,
@@ -125,6 +137,7 @@ class SceneRenderer {
   SceneGpuTimings gpu_timings_{};
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
   AtmosphereGpuProbe latest_atmosphere_probe_{};
+  SceneCapture latest_capture_{};
   std::size_t atmosphere_allocation_bytes_{};
   std::size_t scene_target_allocation_bytes_{};
   std::uint64_t geometry_revision_{};
@@ -177,6 +190,18 @@ class SceneRenderer {
   };
   AtmosphereLookupResources atmosphere_lookups_;
   std::vector<AtmosphereFrameResources> atmosphere_frames_;
+  struct CaptureFrameResources {
+    VkImage image{VK_NULL_HANDLE};
+    VkDeviceMemory image_memory{VK_NULL_HANDLE};
+    VkImageView view{VK_NULL_HANDLE};
+    VkBuffer buffer{VK_NULL_HANDLE};
+    VkDeviceMemory buffer_memory{VK_NULL_HANDLE};
+    bool initialized{};
+    bool pending{};
+  };
+  void ensure_capture_resources(CaptureFrameResources& capture,
+                                VkExtent2D extent);
+  std::vector<CaptureFrameResources> capture_frames_;
   std::vector<VkDescriptorSet> descriptor_sets_;
   std::vector<VkDescriptorSet> composite_descriptor_sets_;
 };
