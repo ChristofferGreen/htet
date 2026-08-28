@@ -1141,6 +1141,64 @@ TEST_CASE("independent requested root cuts recombine to the monolithic target") 
       std::invalid_argument);
 }
 
+TEST_CASE("root-local target fronts retain complete directory root fallbacks") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  tetra::Camera camera;camera.position={0.5,0.72,0.78};
+  camera.forward={0.0,-0.2,-1.0};camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.6;
+  tetra_viewer::SparseWorldSurfaceCache surface_cache;
+  auto& cache=surface_cache.closure;
+  const auto initial=tetra_viewer::select_world_lod_cut(
+      profile,field,camera,&cache,{},nullptr,false);
+  auto checkpoint=tetra::make_complete_world_cut_checkpoint(
+      initial.owners,3U,1U,tetra::HierarchyResidencyTier::surface);
+  tetra::WorldCutDirectory directory(std::move(checkpoint));
+  auto initial_surface=tetra_viewer::build_sparse_world_derived_surface(
+      directory,profile.domain,field,true,{},&surface_cache,{},true,false);
+  directory.publish(directory.stage_owned_derived_surfaces(
+      std::move(initial_surface.snapshots),2U));
+  for(std::uint8_t step=0;step<24U;++step){
+    camera.position.z-=0.01;
+    const auto root=static_cast<std::uint8_t>(step%
+        tetra::bcc_root_tetrahedron_count);
+    const auto selected=tetra_viewer::select_world_requested_root_cuts(
+        profile,field,camera,static_cast<std::uint16_t>(1U<<root));
+    auto target=cache.requested_owners;
+    const auto first=std::ranges::lower_bound(
+        target,root,{},&tetra::WorldTetAddress::root_id);
+    const auto last=std::ranges::upper_bound(
+        target,root,{},&tetra::WorldTetAddress::root_id);
+    const auto offset=static_cast<std::size_t>(first-target.begin());
+    target.erase(first,last);
+    target.insert(target.begin()+static_cast<std::ptrdiff_t>(offset),
+                  selected.owners.begin(),selected.owners.end());
+    const auto front=tetra_viewer::advance_world_requested_frontier(
+        cache.requested_owners,target,profile.domain,camera,32U);
+    static_cast<void>(tetra::close_world_conforming_cut(
+        front,&cache,{},3U));
+    const std::array pins{tetra_viewer::WorldVolumePin{
+        camera.position,profile.near_volume_radius,
+        tetra_viewer::WorldVolumePinKind::player_collision}};
+    const auto residency=tetra_viewer::plan_world_residency(
+        cache.closed_owners,3U,profile.domain,pins,profile.maximum_volume_blocks);
+    CAPTURE(step);CAPTURE(root);CAPTURE(front.size());
+    const auto hierarchy_revision=3U+static_cast<std::uint64_t>(step)*2U;
+    const auto update=directory.replace_complete_cut(
+        cache.dependency_blocks,cache.last_changed_mask_owners,
+        residency.surface_blocks,residency.volume_blocks,hierarchy_revision);
+    CHECK(update.published_revision==hierarchy_revision);
+    surface_cache.closure_source_hierarchy_revision=directory.revision();
+    auto surface=tetra_viewer::build_sparse_world_derived_surface(
+        directory,profile.domain,field,true,{},&surface_cache,
+        residency.volume_blocks,true,false,update.changed_blocks,nullptr,false);
+    directory.publish(directory.stage_owned_derived_surfaces(
+        std::move(surface.snapshots),hierarchy_revision+1U));
+  }
+}
+
 TEST_CASE("first person fixed steps are deterministic across frame grouping") {
   tetra::Sphere field;
   field.kind=tetra::ImplicitShapeKind::perlin_terrain;

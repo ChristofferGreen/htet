@@ -190,7 +190,9 @@
         ahead of every complete publication. Parent-to-child geometry carrying
         and exact independently recombinable per-root selection are complete;
         next feed completed roots incrementally into the publication scheduler
-        or make full discovery cooperatively pauseable. Equal-priority overlap of the two
+        while retaining the complete twelve-root target manifest proven by the
+        root-local transaction regression, or make full discovery cooperatively
+        pauseable. Equal-priority overlap of the two
         complete stages was measured and rejected because it regressed latency.
         Retain the dense large-transition path for settled catch-up and prove
         sub-one-second convergence.

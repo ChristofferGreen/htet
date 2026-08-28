@@ -235,6 +235,16 @@ proofs was also measured and rejected; the 26 ms proof-validation stage did
 not move because retained-promotion reconstruction and warm-cut expansion,
 not locating invalid proof roots, dominate that interval.
 
+A first direct runtime use of one root per interactive publication was not
+retained: the continuous benchmark eventually rejected a candidate directory
+without all twelve BCC root fallbacks. A focused transaction regression now
+runs 24 root-local moving-camera fronts through global closure, residency,
+complete-directory replacement, sparse surface construction, and surface
+publication while checking the full root manifest. The isolated transaction is
+sound; asynchronous scheduler ownership/coalescing must be added without ever
+publishing or reusing a root-subset manifest as though it were the complete
+target.
+
 ## Technology choices
 
 - C++23 where supported.
