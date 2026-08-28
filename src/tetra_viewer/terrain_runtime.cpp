@@ -711,12 +711,13 @@ std::vector<tetra::WorldTetAddress> advance_world_requested_frontier(
   return {result.begin(),result.end()};
 }
 
-WorldLodCutSelection select_world_lod_cut(
+static WorldLodCutSelection select_world_lod_cut_impl(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
     tetra::WorldConformingClosureCache* closure_cache,
     std::stop_token cancellation,std::size_t* completed_work_units,
-    bool compute_quality_diagnostics,tetra::GeometryExecutor* executor) {
+    bool compute_quality_diagnostics,tetra::GeometryExecutor* executor,
+    std::uint16_t root_mask,bool apply_conforming_closure) {
   if(completed_work_units)*completed_work_units=0U;
   if(profile.background_red_depth>profile.near_red_depth||
      profile.near_red_depth>tetra::maximum_world_red_depth)
@@ -724,6 +725,10 @@ WorldLodCutSelection select_world_lod_cut(
   if(!(profile.view_distance>0.0)||!std::isfinite(profile.view_distance)||
      !(profile.pixel_threshold>0.0)||!std::isfinite(profile.pixel_threshold))
     throw std::invalid_argument("world LOD distances must be finite and positive");
+  constexpr std::uint16_t all_roots=
+      (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+  if(root_mask==0U||(root_mask&~all_roots)!=0U)
+    throw std::invalid_argument("world LOD root mask is empty or invalid");
   const auto started=std::chrono::steady_clock::now();
   const auto dot=[](tetra::Vec3 value){return
       value.x*value.x+value.y*value.y+value.z*value.z;};
@@ -840,13 +845,14 @@ WorldLodCutSelection select_world_lod_cut(
     auto group=executor->make_group(
         0U,tetra::GeometryTaskPriority::interactive);
     for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+      if((root_mask&(std::uint16_t{1U}<<root))!=0U)
       executor->submit(group,[&,root](std::stop_token stop){
         if(!stop.stop_requested()&&!cancellation.stop_requested())
           traverse_root(root);
       });
     executor->wait(group);
   }else for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
-    traverse_root(root);
+    if((root_mask&(std::uint16_t{1U}<<root))!=0U)traverse_root(root);
   if(cancellation.stop_requested())
     throw std::runtime_error("world LOD selection canceled");
   std::size_t owner_count{};
@@ -869,6 +875,12 @@ WorldLodCutSelection select_world_lod_cut(
   if(!std::ranges::is_sorted(result.owners))
     throw std::logic_error("recursive world target traversal is not canonical");
   result.metrics.logical_owners_before_closure=result.owners.size();
+  if(!apply_conforming_closure){
+    result.metrics.logical_owners_after_closure=result.owners.size();
+    result.metrics.selection_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-started).count();
+    return result;
+  }
   const auto closure_started=std::chrono::steady_clock::now();
   result.metrics.selection_milliseconds=std::chrono::duration<double,std::milli>(
       closure_started-started).count();
@@ -957,6 +969,28 @@ WorldLodCutSelection select_world_lod_cut(
         range.second-range.first);
   }
   return result;
+}
+
+WorldLodCutSelection select_world_lod_cut(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera,
+    tetra::WorldConformingClosureCache* closure_cache,
+    std::stop_token cancellation,std::size_t* completed_work_units,
+    bool compute_quality_diagnostics,tetra::GeometryExecutor* executor) {
+  constexpr std::uint16_t all_roots=
+      (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+  return select_world_lod_cut_impl(
+      profile,field,camera,closure_cache,cancellation,completed_work_units,
+      compute_quality_diagnostics,executor,all_roots,true);
+}
+
+WorldLodCutSelection select_world_requested_root_cuts(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera,std::uint16_t root_mask,
+    std::stop_token cancellation,tetra::GeometryExecutor* executor) {
+  return select_world_lod_cut_impl(
+      profile,field,camera,nullptr,cancellation,nullptr,false,executor,
+      root_mask,false);
 }
 
 BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)

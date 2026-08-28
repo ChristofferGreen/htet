@@ -225,6 +225,16 @@ Front sizing is also constrained by conformity: 16 and 24 raw operations make
 no closed-cut change, while 28--32 trigger the first useful family and already
 cost roughly 242--247 ms.
 
+The selector now exposes an exact canonical raw cut for any subset of the
+twelve BCC roots. Recombining all twelve per-root results is regression-tested
+against the monolithic requested cut before closure. This is the spatial
+handoff needed by the next scheduler: completed roots can be coalesced into a
+candidate requested cut while every published revision still passes global
+restricted-green closure atomically. A compact direct index of causal root
+proofs was also measured and rejected; the 26 ms proof-validation stage did
+not move because retained-promotion reconstruction and warm-cut expansion,
+not locating invalid proof roots, dominate that interval.
+
 ## Technology choices
 
 - C++23 where supported.

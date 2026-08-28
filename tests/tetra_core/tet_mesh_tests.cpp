@@ -1105,6 +1105,42 @@ TEST_CASE("batched camera frontier cuts retain exact conformity at every slice")
   CHECK(retained.green_masks==target_cache.green_masks);
 }
 
+TEST_CASE("independent requested root cuts recombine to the monolithic target") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  tetra::Camera camera;camera.position={0.73,0.72,0.54};
+  camera.forward={0.0,-0.2,-1.0};camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.6;
+  tetra::WorldConformingClosureCache complete_cache;
+  static_cast<void>(tetra_viewer::select_world_lod_cut(
+      profile,field,camera,&complete_cache,{},nullptr,false));
+  std::vector<tetra::WorldTetAddress> combined;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    const auto selected=tetra_viewer::select_world_requested_root_cuts(
+        profile,field,camera,static_cast<std::uint16_t>(1U<<root));
+    REQUIRE_FALSE(selected.owners.empty());
+    CHECK(std::ranges::all_of(selected.owners,[&](const auto owner){
+      return owner.root_id()==root;
+    }));
+    combined.insert(combined.end(),selected.owners.begin(),selected.owners.end());
+  }
+  CHECK(combined==complete_cache.requested_owners);
+  const auto paired=tetra_viewer::select_world_requested_root_cuts(
+      profile,field,camera,(1U<<2U)|(1U<<3U));
+  CHECK(std::ranges::all_of(paired.owners,[](const auto owner){
+    return owner.root_id()==2U||owner.root_id()==3U;
+  }));
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::select_world_requested_root_cuts(profile,field,camera,0U)),
+      std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::select_world_requested_root_cuts(
+          profile,field,camera,std::uint16_t{1U}<<12U)),
+      std::invalid_argument);
+}
+
 TEST_CASE("first person fixed steps are deterministic across frame grouping") {
   tetra::Sphere field;
   field.kind=tetra::ImplicitShapeKind::perlin_terrain;

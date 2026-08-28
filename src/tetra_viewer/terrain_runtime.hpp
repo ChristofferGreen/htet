@@ -211,6 +211,16 @@ struct WorldLodCutSelection {
   WorldLodCutMetrics metrics{};
 };
 
+// Selects an exact raw red cut for a subset of the twelve independent BCC
+// roots. Results are canonical and can be concatenated in root order before
+// conformity closure, allowing camera target discovery to publish spatial
+// progress without waiting for a complete global traversal.
+[[nodiscard]] WorldLodCutSelection select_world_requested_root_cuts(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera,std::uint16_t root_mask,
+    std::stop_token cancellation={},
+    tetra::GeometryExecutor* executor=nullptr);
+
 // Advances one complete raw red cut toward another without applying
 // conformity closure. Selected split/merge families are disjoint and ordered
 // by camera distance; callers can close and publish the returned cut as one

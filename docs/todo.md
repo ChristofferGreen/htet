@@ -188,8 +188,9 @@
   - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
         the now roughly 78--86 ms target-cut selection does not remain serially
         ahead of every complete publication. Parent-to-child geometry carrying
-        is complete; next expose completed spatial/root discovery incrementally
-        or make it cooperatively pauseable. Equal-priority overlap of the two
+        and exact independently recombinable per-root selection are complete;
+        next feed completed roots incrementally into the publication scheduler
+        or make full discovery cooperatively pauseable. Equal-priority overlap of the two
         complete stages was measured and rejected because it regressed latency.
         Retain the dense large-transition path for settled catch-up and prove
         sub-one-second convergence.
