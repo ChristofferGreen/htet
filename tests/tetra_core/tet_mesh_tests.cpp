@@ -13829,7 +13829,8 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
 TEST_CASE("atmosphere presets are valid deterministic physical snapshots") {
   using tetra_viewer::AtmospherePreset;
   const std::array presets{
-      AtmospherePreset::earth, AtmospherePreset::mars_like,
+      AtmospherePreset::gameplay_planet, AtmospherePreset::earth,
+      AtmospherePreset::mars_like,
       AtmospherePreset::dense_haze, AtmospherePreset::nearly_airless};
   std::set<std::uint64_t> hashes;
   for (const auto preset : presets) {
@@ -13843,6 +13844,41 @@ TEST_CASE("atmosphere presets are valid deterministic physical snapshots") {
               tetra_viewer::atmosphere_preset_name(preset)) == preset);
   }
   CHECK_FALSE(tetra_viewer::parse_atmosphere_preset("cloud-city"));
+}
+
+TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
+  using tetra_viewer::AtmospherePreset;
+  const auto earth=tetra_viewer::atmosphere_preset(AtmospherePreset::earth);
+  const auto game=tetra_viewer::atmosphere_preset(
+      AtmospherePreset::gameplay_planet);
+  CHECK(game.ground_radius_metres==doctest::Approx(200'000.0));
+  CHECK(game.atmosphere_height_metres==doctest::Approx(20'000.0));
+  CHECK(tetra_viewer::default_world_atmosphere_preset==
+        AtmospherePreset::gameplay_planet);
+  CHECK(tetra_viewer::default_world_aerial_distance_metres==
+        doctest::Approx(game.ground_radius_metres));
+  CHECK(tetra_viewer::planetary_horizon_distance(
+            game.ground_radius_metres,18.0)>2'000.0);
+  CHECK(tetra_viewer::planetary_horizon_distance(
+            game.ground_radius_metres,18.0)<3'000.0);
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(game.rayleigh_scattering_per_metre[channel]*
+              game.rayleigh_scale_height_metres==
+          doctest::Approx(earth.rayleigh_scattering_per_metre[channel]*
+              earth.rayleigh_scale_height_metres).epsilon(1.0e-12));
+    CHECK(game.mie_scattering_per_metre[channel]*
+              game.mie_scale_height_metres==
+          doctest::Approx(earth.mie_scattering_per_metre[channel]*
+              earth.mie_scale_height_metres).epsilon(1.0e-12));
+    CHECK(game.mie_absorption_per_metre[channel]*
+              game.mie_scale_height_metres==
+          doctest::Approx(earth.mie_absorption_per_metre[channel]*
+              earth.mie_scale_height_metres).epsilon(1.0e-12));
+    CHECK(game.absorption_per_metre[channel]*
+              game.absorption_half_width_metres==
+          doctest::Approx(earth.absorption_per_metre[channel]*
+              earth.absorption_half_width_metres).epsilon(1.0e-12));
+  }
 }
 
 TEST_CASE("atmosphere validation rejects unphysical snapshots transactionally") {
@@ -13998,6 +14034,13 @@ TEST_CASE("headless atmosphere check exposes deterministic camera sun and preset
   CHECK(first.str().find("\"event\":\"atmosphere_check\"") !=
         std::string::npos);
   CHECK(first.str().find("\"transmittance\":[") != std::string::npos);
+
+  std::ostringstream gameplay;
+  CHECK(tetra_viewer::run_atmosphere_check(
+            tetra_viewer::AtmospherePreset::gameplay_planet, 1.8, 89.0, 65.0,
+            gameplay, errors) == 0);
+  CHECK(gameplay.str().find("\"preset\":\"gameplay-planet\"") !=
+        std::string::npos);
 
   std::ostringstream invalid_output;
   std::ostringstream invalid_errors;

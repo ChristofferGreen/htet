@@ -149,11 +149,10 @@ void main() {
       const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
           atmosphere.rayleigh_ground_radius.w;
       const float ground_distance=ground_intersection_distance(view_direction);
-      // The exact terrain remains authoritative near the playable surface.
-      // The analytic sphere is only a far-field planet representation for
-      // flight and orbit, where the finite local terrain front cannot cover a
-      // planetary disc.
-      if(ground_distance>0.0&&camera_altitude>5000.0){
+      // Exact terrain remains authoritative nearby. The analytic sphere starts
+      // only beyond the generated terrain radius, filling its horizon and the
+      // orbital disc without concealing local cracks or missing triangles.
+      if(ground_distance>atmosphere.reserved0.w){
         const vec3 camera_normal=normalize(
             atmosphere.camera_position_near.xyz);
         const vec2 view_transmittance_uv=vec2(

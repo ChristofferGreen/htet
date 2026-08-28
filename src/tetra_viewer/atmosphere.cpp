@@ -89,6 +89,28 @@ bool extinction_changed(const AtmosphereParameters& first,
 AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
   AtmosphereParameters result;
   switch (preset) {
+    case AtmospherePreset::gameplay_planet:
+      // A deliberately compact world with Earth-like vertical optical depth.
+      // Shorter density profiles are paired with proportionally stronger
+      // coefficients; this keeps the light transport coherent without
+      // pretending that a 200 km natural body could retain Earth's air.
+      result.ground_radius_metres = 200'000.0;
+      result.atmosphere_height_metres = 20'000.0;
+      result.rayleigh_scale_height_metres = 3'000.0;
+      result.rayleigh_scattering_per_metre = {
+          15.472e-6, 36.1546666666667e-6, 88.2666666666667e-6};
+      result.mie_scale_height_metres = 700.0;
+      result.mie_scattering_per_metre = {
+          6.85028571428571e-6, 6.85028571428571e-6,
+          6.85028571428571e-6};
+      result.mie_absorption_per_metre = {
+          7.54285714285714e-6, 7.54285714285714e-6,
+          7.54285714285714e-6};
+      result.absorption_peak_altitude_metres = 8'000.0;
+      result.absorption_half_width_metres = 4'500.0;
+      result.absorption_per_metre = {
+          2.16666666666667e-6, 6.27e-6, 0.283333333333333e-6};
+      return result;
     case AtmospherePreset::earth:
     case AtmospherePreset::custom:
       return result;
@@ -137,6 +159,7 @@ AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
 }
 
 std::optional<AtmospherePreset> parse_atmosphere_preset(std::string_view name) {
+  if (name == "gameplay-planet") return AtmospherePreset::gameplay_planet;
   if (name == "earth") return AtmospherePreset::earth;
   if (name == "mars-like") return AtmospherePreset::mars_like;
   if (name == "dense-haze") return AtmospherePreset::dense_haze;
@@ -147,6 +170,7 @@ std::optional<AtmospherePreset> parse_atmosphere_preset(std::string_view name) {
 
 std::string_view atmosphere_preset_name(AtmospherePreset preset) {
   switch (preset) {
+    case AtmospherePreset::gameplay_planet: return "gameplay-planet";
     case AtmospherePreset::earth: return "earth";
     case AtmospherePreset::mars_like: return "mars-like";
     case AtmospherePreset::dense_haze: return "dense-haze";

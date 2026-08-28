@@ -24,6 +24,7 @@ struct AtmosphereFrameInput {
   double vertical_tangent{1.0};
   double aspect_ratio{1.0};
   double maximum_aerial_distance_metres{1'000'000.0};
+  double minimum_analytic_ground_distance_metres{5'000.0};
   float exposure{0.65F};
   int debug_view{};
   AtmosphereQuality quality{AtmosphereQuality::standard};

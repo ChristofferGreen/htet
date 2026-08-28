@@ -61,6 +61,15 @@ Transfer limits:
 
 ## 3. Coordinates, units, and invariants
 
+`tetra_world` defaults to an explicitly fictional but optically calibrated
+gameplay planet: 200 km ground radius and 20 km atmosphere height. Its 3 km
+Rayleigh and 0.7 km aerosol scale heights use proportionally increased
+coefficients so their vertical optical depths match the Earth reference. This
+keeps familiar scattering while making curvature and orbit reachable in a
+playable domain. The Earth preset remains available as the physical reference;
+the compact body's ability to retain such an atmosphere is not claimed to be
+geophysically realistic.
+
 Atmospheric math uses SI units internally: metres, inverse-metres for
 scattering and absorption, dimensionless relative density, radians, and one
 documented linear radiometric scale. UI angles may be degrees. The terrain
@@ -110,10 +119,10 @@ The UI keeps these groups distinct:
 - **Quality:** LUT sizes, sample counts, shadows, temporal filtering, debug.
 - **Art:** exposure and explicitly nonphysical colour/intensity adjustments.
 
-Versioned presets are Earth, Mars-like dusty, dense Venus/Titan-like stylized,
-nearly airless, and Custom. Non-Earth presets are useful starting points, not
-claims of scientific fidelity. Editing a preset selects Custom. Switching
-presets invalidates only dependent resources.
+Versioned presets are the 200 km gameplay planet, Earth, Mars-like dusty, dense
+Venus/Titan-like stylized, nearly airless, and Custom. Non-Earth presets are
+useful starting points, not claims of scientific fidelity. Editing a preset
+selects Custom. Switching presets invalidates only dependent resources.
 
 ## 5. Vulkan architecture
 
@@ -284,8 +293,9 @@ allocation. Shadow and terrain costs are reported separately.
 High-altitude and orbital views use an analytic spherical far-field ground.
 It evaluates Lambertian ground illumination through the transmittance table,
 adds compact multiple-scattered fill, and composes through sky-view scattering.
-It activates only above 5 km, so it cannot cover local terrain cracks or missing
-triangles. A derivative-filtered disc boundary preserves a smooth limb. Launch
+It activates only beyond 90 percent of the generated terrain view radius, so it
+fills the compact planet's nearer horizon without covering local terrain cracks
+or missing triangles. A derivative-filtered disc boundary preserves a smooth limb. Launch
 arguments `--free-fly`, `--camera-feet=x,y,z`,
 `--camera-yaw-degrees=n`, and `--camera-pitch-degrees=n` make altitude and orbit
 qualification reproducible.

@@ -463,7 +463,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     const bool world_mode=mode==ApplicationMode::world;
     g_AtmosphereFrame={};
     g_AtmosphereFrame.enabled=world_mode;
+    if(world_mode)
+        g_AtmosphereFrame.parameters=tetra_viewer::atmosphere_preset(
+            tetra_viewer::default_world_atmosphere_preset);
     g_AtmosphereFrame.parameters.metres_per_world_unit=10.0;
+    if(world_mode)g_AtmosphereFrame.maximum_aerial_distance_metres=
+        tetra_viewer::default_world_aerial_distance_metres;
     // The headless path intentionally returns before any platform Vulkan
     // loading, GLFW initialization, or window creation.
     if (argc >= 2 && strcmp(argv[1], "--script-help") == 0) {
@@ -1001,7 +1006,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     float world_sun_elevation=
         tetra_viewer::default_world_sun_elevation_radians;
     tetra_viewer::AtmospherePreset world_atmosphere_preset=
-        tetra_viewer::AtmospherePreset::earth;
+        tetra_viewer::default_world_atmosphere_preset;
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
     bool world_gpu_atmosphere_resize_check=false;
@@ -1143,6 +1148,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     }
     if(world_mode){
         const auto profile=tetra_viewer::production_world_profile();
+        g_AtmosphereFrame.minimum_analytic_ground_distance_metres=
+            profile.view_distance*
+            g_AtmosphereFrame.parameters.metres_per_world_unit*0.9;
         sphere.kind=profile.shape;sphere.terrain=profile.terrain;
         sphere.secondary=profile.octave_detail_amplitude;
         sphere.frequency=profile.octave_detail_frequency;
@@ -2475,6 +2483,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_atmosphere_preset);
             if(ImGui::BeginCombo("Preset",preset_name.data())){
                 constexpr std::array presets{
+                    tetra_viewer::AtmospherePreset::gameplay_planet,
                     tetra_viewer::AtmospherePreset::earth,
                     tetra_viewer::AtmospherePreset::mars_like,
                     tetra_viewer::AtmospherePreset::dense_haze,

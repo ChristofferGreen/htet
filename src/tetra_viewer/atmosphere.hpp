@@ -15,12 +15,17 @@ namespace tetra_viewer {
 using AtmosphereSpectrum = std::array<double, 3>;
 
 enum class AtmospherePreset {
+  gameplay_planet,
   earth,
   mars_like,
   dense_haze,
   nearly_airless,
   custom,
 };
+
+inline constexpr AtmospherePreset default_world_atmosphere_preset=
+    AtmospherePreset::gameplay_planet;
+inline constexpr double default_world_aerial_distance_metres=200'000.0;
 
 enum class AtmosphereQuality {
   low,

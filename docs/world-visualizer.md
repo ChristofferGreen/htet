@@ -28,6 +28,14 @@ that proves sparse hierarchy identity, invisible storage boundaries,
 background LOD, retained rendering, and simple player physics. Curved gravity
 and a spherical terrain field can follow without changing hierarchy identity.
 
+The first planetary-scale probe uses a 200 km-radius gameplay planet. The
+existing terrain remains a tangent local patch while the renderer supplies a
+distance-gated analytic far-field sphere and the atmosphere uses a compact,
+Earth-optical-depth preset. This is deliberately an integration probe, not the
+final terrain representation: the next geometry milestone must bend the sparse
+surface hierarchy onto the sphere and replace the visible local/far-field
+handoff with one watertight radial terrain field.
+
 ## 2. Initial scope
 
 The world visualizer carries over only the production defaults from the current

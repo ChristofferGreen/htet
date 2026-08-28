@@ -1046,7 +1046,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       atmosphere_input.camera_relative_world.y);
   atmosphere_uniform[50]=static_cast<float>(
       atmosphere_input.camera_relative_world.z);
-  atmosphere_uniform[51]=1.0F;
+  atmosphere_uniform[51]=static_cast<float>(
+      atmosphere_input.minimum_analytic_ground_distance_metres);
   atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
   void* mapped{};
   if(vkMapMemory(device_,atmosphere.uniform_memory,0,
