@@ -83,6 +83,106 @@ double smooth_min(double first,double second,double width){
 
 struct NoiseSample { double value{},dx{},dy{}; };
 
+double gradient_noise_3d(double x,double y,double z){
+  const int ix=static_cast<int>(std::floor(x));
+  const int iy=static_cast<int>(std::floor(y));
+  const int iz=static_cast<int>(std::floor(z));
+  const double fx=x-ix,fy=y-iy,fz=z-iz;
+  const auto fade=[](double value){
+    return value*value*value*(value*(value*6.0-15.0)+10.0);
+  };
+  const auto gradient=[](int gx,int gy,int gz){
+    std::uint32_t hash=static_cast<std::uint32_t>(gx)*0x8da6b343U^
+        static_cast<std::uint32_t>(gy)*0xd8163841U^
+        static_cast<std::uint32_t>(gz)*0xcb1ab31fU;
+    hash^=hash>>13U;hash*=0x85ebca6bU;hash^=hash>>16U;
+    constexpr double inverse_sqrt_two=0.7071067811865475244;
+    constexpr std::array<std::array<double,3>,12> gradients{{
+        {{inverse_sqrt_two,inverse_sqrt_two,0.0}},
+        {{-inverse_sqrt_two,inverse_sqrt_two,0.0}},
+        {{inverse_sqrt_two,-inverse_sqrt_two,0.0}},
+        {{-inverse_sqrt_two,-inverse_sqrt_two,0.0}},
+        {{inverse_sqrt_two,0.0,inverse_sqrt_two}},
+        {{-inverse_sqrt_two,0.0,inverse_sqrt_two}},
+        {{inverse_sqrt_two,0.0,-inverse_sqrt_two}},
+        {{-inverse_sqrt_two,0.0,-inverse_sqrt_two}},
+        {{0.0,inverse_sqrt_two,inverse_sqrt_two}},
+        {{0.0,-inverse_sqrt_two,inverse_sqrt_two}},
+        {{0.0,inverse_sqrt_two,-inverse_sqrt_two}},
+        {{0.0,-inverse_sqrt_two,-inverse_sqrt_two}}}};
+    return gradients[hash%gradients.size()];
+  };
+  const double u=fade(fx),v=fade(fy),w=fade(fz);
+  const auto value=[&](int dx,int dy,int dz){
+    const auto g=gradient(ix+dx,iy+dy,iz+dz);
+    return g[0]*(fx-dx)+g[1]*(fy-dy)+g[2]*(fz-dz);
+  };
+  const auto mix=[](double first,double second,double amount){
+    return first+(second-first)*amount;
+  };
+  const double x00=mix(value(0,0,0),value(1,0,0),u);
+  const double x10=mix(value(0,1,0),value(1,1,0),u);
+  const double x01=mix(value(0,0,1),value(1,0,1),u);
+  const double x11=mix(value(0,1,1),value(1,1,1),u);
+  return mix(mix(x00,x10,v),mix(x01,x11,v),w);
+}
+
+double planetary_terrain_displacement(const Sphere& surface,Vec3 direction){
+  const auto& parameters=surface.terrain;
+  const double radius=parameters.planet_radius;
+  const auto sample=[&](double frequency,double ox,double oy,double oz){
+    const double scale=radius*frequency;
+    return gradient_noise_3d(direction.x*scale+ox,
+        direction.y*scale+oy,direction.z*scale+oz);
+  };
+  double height=parameters.height_offset;
+  height+=parameters.landform_amplitude*sample(
+      parameters.landform_frequency,11.371,-7.219,3.117);
+  const double mountain_frequency_scale=
+      parameters.planetary_mountain_frequency_scale;
+  const double range=std::clamp((sample(
+      parameters.mountain_range_frequency*mountain_frequency_scale,
+      -20.077,30.861,7.193)-0.08)/0.30,
+      0.0,1.0);
+  const double ridge_noise=sample(
+      parameters.mountain_ridge_frequency*mountain_frequency_scale,
+      6.691,13.733,-4.337);
+  const double ridge=std::clamp((1.0-std::abs(ridge_noise)-0.30)/0.68,
+                                0.0,1.0);
+  double mountain_fade=1.0;
+  const double arc=std::acos(std::clamp(direction.y,-1.0,1.0))*radius;
+  if(parameters.planetary_mountain_fade_end>
+     parameters.planetary_mountain_fade_start){
+    const double t=std::clamp((arc-parameters.planetary_mountain_fade_start)/
+        (parameters.planetary_mountain_fade_end-
+         parameters.planetary_mountain_fade_start),0.0,1.0);
+    mountain_fade=t*t*(3.0-2.0*t);
+  }
+  height+=parameters.mountain_amplitude*
+      parameters.planetary_mountain_amplitude_scale*mountain_fade*
+      range*range*ridge*ridge;
+  height+=parameters.gameplay_hill_amplitude*sample(
+      parameters.gameplay_hill_frequency,4.117,7.731,-2.513);
+  const double region=std::clamp((sample(
+      parameters.gameplay_region_frequency,-2.719,5.303,8.117)+0.12)/0.30,
+      0.0,1.0);
+  height+=parameters.gameplay_feature_amplitude*region*sample(
+      parameters.gameplay_feature_frequency,-6.337,1.819,9.173);
+  height+=parameters.ground_roughness_amplitude*sample(
+      parameters.ground_roughness_frequency,13.117,-11.731,2.337);
+  double amplitude=surface.secondary,frequency=surface.frequency;
+  for(int octave=0;octave<terrain_octave_count;++octave){
+    height+=amplitude*sample(frequency,0.0,0.0,0.0);
+    amplitude*=terrain_octave_gain;frequency*=2.0;
+  }
+  if(parameters.spawn_blend_radius>parameters.spawn_flat_radius){
+    const double t=std::clamp((arc-parameters.spawn_flat_radius)/
+        (parameters.spawn_blend_radius-parameters.spawn_flat_radius),0.0,1.0);
+    height*=t*t*(3.0-2.0*t);
+  }
+  return height;
+}
+
 std::array<double,2> noise_gradient(int ix,int iy){
   std::uint32_t hash=static_cast<std::uint32_t>(ix)*0x8da6b343U^
                      static_cast<std::uint32_t>(iy)*0xd8163841U;
@@ -667,10 +767,14 @@ double terrain_height_slope_bound(const Sphere& terrain) {
     detail_height_factor+=relative_amplitude;
     relative_amplitude*=terrain_octave_gain;
   }
+  const double planetary_mountain_scale=parameters.planet_radius>0.0?
+      std::abs(parameters.planetary_mountain_amplitude_scale):1.0;
+  const double planetary_frequency_scale=parameters.planet_radius>0.0?
+      std::abs(parameters.planetary_mountain_frequency_scale):1.0;
   const double raw_height_bound=
       std::abs(parameters.height_offset)+
       noise_value_bound*std::abs(parameters.landform_amplitude)+
-      std::abs(parameters.mountain_amplitude)+
+      planetary_mountain_scale*std::abs(parameters.mountain_amplitude)+
       noise_value_bound*(std::abs(parameters.gameplay_hill_amplitude)+
           std::abs(parameters.gameplay_feature_amplitude)+
           std::abs(parameters.ground_roughness_amplitude))+
@@ -679,11 +783,17 @@ double terrain_height_slope_bound(const Sphere& terrain) {
   const double landform_slope=2.0*std::abs(
       parameters.landform_amplitude*parameters.landform_frequency);
   const double range_slope=15.0*std::abs(
-      parameters.mountain_range_frequency);
+      parameters.mountain_range_frequency)*planetary_frequency_scale;
   const double ridge_slope=(6.0/0.62)*std::abs(
-      parameters.mountain_ridge_frequency);
-  const double mountain_slope=std::abs(parameters.mountain_amplitude)*
-      (range_slope+ridge_slope);
+      parameters.mountain_ridge_frequency)*planetary_frequency_scale;
+  const double mountain_fade_width=
+      parameters.planetary_mountain_fade_end-
+      parameters.planetary_mountain_fade_start;
+  const double mountain_fade_slope=parameters.planet_radius>0.0&&
+      mountain_fade_width>0.0?1.5/mountain_fade_width:0.0;
+  const double mountain_slope=planetary_mountain_scale*
+      std::abs(parameters.mountain_amplitude)*
+      (range_slope+ridge_slope+mountain_fade_slope);
   const double warp_factor=1.0+4.0*std::abs(
       parameters.gameplay_warp_amplitude*parameters.gameplay_warp_frequency);
   const double corridor_noise_slope=2.0*warp_factor*std::abs(
@@ -914,6 +1024,18 @@ double Sphere::signed_distance(Vec3 point) const {
           std::sqrt(std::max(dx,0.0)*std::max(dx,0.0)+std::max(dy,0.0)*std::max(dy,0.0));
     }
     case ImplicitShapeKind::perlin_terrain:{
+      if(terrain.planet_radius>0.0){
+        const Vec3 planet_centre{
+            centre.x,centre.y-terrain.planet_radius,centre.z};
+        const Vec3 radial_offset=point-planet_centre;
+        const double radial_length=std::sqrt(
+            radial_offset.x*radial_offset.x+
+            radial_offset.y*radial_offset.y+
+            radial_offset.z*radial_offset.z);
+        if(!(radial_length>1.0e-15))return -terrain.planet_radius;
+        return radial_length-(terrain.planet_radius+
+            planetary_terrain_displacement(*this,radial_offset/radial_length));
+      }
       return point.y-terrain_height_sample(*this,point.x,point.z).height;
     }
     case ImplicitShapeKind::torus:{
@@ -1064,7 +1186,7 @@ Vec3 Sphere::normal(Vec3 point) const {
     return length>1.0e-15?offset/length:Vec3{0.0,1.0,0.0};
   }
   constexpr double epsilon=1.0e-5;
-  if(kind==ImplicitShapeKind::perlin_terrain){
+  if(kind==ImplicitShapeKind::perlin_terrain&&!(terrain.planet_radius>0.0)){
     const auto sample=terrain_height_sample(*this,point.x,point.z);
     Vec3 gradient{-sample.dx,1.0,-sample.dz};
     const double length=std::sqrt(gradient.x*gradient.x+gradient.y*gradient.y+
@@ -1114,7 +1236,7 @@ Vec3 Sphere::project_to_surface(Vec3 point) const {
     const double length=std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
     return length>1.0e-15?centre+offset*(radius/length):point;
   }
-  if(kind==ImplicitShapeKind::perlin_terrain){
+  if(kind==ImplicitShapeKind::perlin_terrain&&!(terrain.planet_radius>0.0)){
     // The terrain field is y-height(x,z), not a normalized Euclidean signed
     // distance. A normal-times-field Newton step can stall far from the
     // surface on steep mountains. Vertical projection is exact in one step

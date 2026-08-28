@@ -1,4 +1,5 @@
 #include "tetra_viewer/terrain_runtime.hpp"
+#include "tetra_viewer/projection.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -144,7 +145,9 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
     throw std::invalid_argument(
         "world hierarchy budget cannot hold the root complex");
   if(blocks.size()>configuration.maximum_blocks)
-    throw std::length_error("world hierarchy demand exceeds its block budget");
+    throw std::length_error("world hierarchy demand exceeds its block budget: blocks="+
+        std::to_string(blocks.size())+", maximum="+
+        std::to_string(configuration.maximum_blocks));
   if(configuration.player_radius<0.0||
      !std::isfinite(configuration.player_radius)||
      configuration.guard_frustum_scale<1.0||
@@ -793,6 +796,13 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       value.x*value.x+value.y*value.y+value.z*value.z;};
   const double lipschitz=tetra::implicit_field_lipschitz_bound(field);
   const auto projection=tetra::prepare_camera_projection(camera);
+  auto guard_camera=camera;
+  guard_camera.vertical_fov_radians=2.0*std::atan(
+      std::tan(camera.vertical_fov_radians*0.5)*
+      profile.hierarchy_guard_frustum_scale);
+  const auto guard_projection=tetra::prepare_camera_projection(guard_camera);
+  const tetra::Vec3 planet_centre{
+      field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
   struct Evaluation {
     bool may_cross{};
     tetra::Vec3 centre{};
@@ -824,7 +834,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       horizontal_radius=std::max(horizontal_radius,
           std::hypot(offset.x,offset.z));
     }
-    if(field.kind==tetra::ImplicitShapeKind::perlin_terrain){
+    if(field.kind==tetra::ImplicitShapeKind::perlin_terrain&&
+       !(field.terrain.planet_radius>0.0)){
       // A terrain is a height field, so bound its vertical range directly.
       // The generic 3-D field ball mixes vertical cell extent into the
       // horizontal height uncertainty and retains a much thicker shell.
@@ -841,13 +852,33 @@ static WorldLodCutSelection select_world_lod_cut_impl(
               lipschitz*result.radius;
     }
     const auto horizontal=result.centre-camera.position;
-    result.horizontal_distance=std::sqrt(
-        horizontal.x*horizontal.x+horizontal.z*horizontal.z);
+    result.horizontal_distance=field.terrain.planet_radius>0.0?
+        std::sqrt(dot(horizontal)):
+        std::sqrt(horizontal.x*horizontal.x+horizontal.z*horizontal.z);
     const double eye_distance=std::sqrt(dot(horizontal));
     result.projected_diameter=eye_distance<=result.radius?camera.viewport_height_pixels:
         2.0*projection.focal_length*result.radius/
             std::max(eye_distance-result.radius,1.0e-12);
     return result;
+  };
+  const auto in_guard_frustum=[&](const Evaluation& evaluation){
+    const auto offset=evaluation.centre-guard_projection.position;
+    const double depth=offset.x*guard_projection.forward.x+
+        offset.y*guard_projection.forward.y+offset.z*guard_projection.forward.z;
+    if(depth+evaluation.radius<=0.0)return false;
+    const double horizontal=std::abs(offset.x*guard_projection.right.x+
+        offset.y*guard_projection.right.y+offset.z*guard_projection.right.z);
+    const double vertical=std::abs(offset.x*guard_projection.up.x+
+        offset.y*guard_projection.up.y+offset.z*guard_projection.up.z);
+    const double positive_depth=std::max(depth,0.0);
+    const double horizontal_margin=evaluation.radius*std::sqrt(
+        1.0+guard_projection.horizontal_tangent*
+            guard_projection.horizontal_tangent);
+    const double vertical_margin=evaluation.radius*std::sqrt(
+        1.0+guard_projection.tangent*guard_projection.tangent);
+    return horizontal<=positive_depth*guard_projection.horizontal_tangent+
+               horizontal_margin&&
+        vertical<=positive_depth*guard_projection.tangent+vertical_margin;
   };
   const auto evaluate=[&](tetra::WorldTetAddress owner){
     return evaluate_geometry(tetra::world_tetrahedron_geometry(owner));
@@ -880,10 +911,27 @@ static WorldLodCutSelection select_world_lod_cut_impl(
         append(owner);return;
       }
       const bool background=depth<profile.background_red_depth;
-      const bool in_horizon=evaluation.horizontal_distance-evaluation.radius<=
-          profile.view_distance;
+      // A radial world's visible surface does not end at the local gameplay
+      // cache.  Continue the projected-error cut across the planet so orbital
+      // views receive real hierarchy geometry; view_distance remains the
+      // finite generated-patch boundary only for planar terrain.
+      const bool in_horizon=field.terrain.planet_radius>0.0||
+          evaluation.horizontal_distance-evaluation.radius<=
+              profile.view_distance;
+      const bool in_gameplay_neighborhood=
+          evaluation.horizontal_distance-evaluation.radius<=
+              profile.near_volume_radius;
+      const bool useful_planetary_projection=
+          !(field.terrain.planet_radius>0.0)||
+          (in_guard_frustum(evaluation)&&
+           !sphere_fully_occluded_by_planet(
+               camera.position,planet_centre,
+               field.terrain.planet_radius-8.0,evaluation.centre,
+               evaluation.radius));
       const bool projected=in_horizon&&
-          evaluation.projected_diameter>profile.pixel_threshold;
+          ((field.terrain.planet_radius>0.0&&in_gameplay_neighborhood)||
+           (useful_planetary_projection&&
+            evaluation.projected_diameter>profile.pixel_threshold));
       if(!background&&!projected){
         if(!in_horizon)++local.metrics.horizon_owners;
         local.metrics.maximum_retained_projected_diameter=std::max(
@@ -945,6 +993,18 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       closure_started-started).count();
   if(completed_work_units)
     *completed_work_units=result.metrics.visited_owners;
+  if(closure_cache&&field.terrain.planet_radius>0.0){
+    // The incremental proof graph is qualified for the compact planar front.
+    // Planetary view changes replace hundreds of thousands of leaves and can
+    // retain stale promotions near the guarded-frustum boundary. Keep the
+    // published cut exact until that large-delta proof path is independently
+    // qualified; the downstream field/surface/render caches remain retained.
+    const auto maximum_entries=closure_cache->maximum_entries;
+    const auto fingerprint_bits=closure_cache->dependency_fingerprint_bits;
+    *closure_cache={};
+    closure_cache->maximum_entries=maximum_entries;
+    closure_cache->dependency_fingerprint_bits=fingerprint_bits;
+  }
   result.owners=tetra::close_world_conforming_cut(
       result.owners,closure_cache,cancellation,3U,executor);
   if(closure_cache)capture_world_closure_metrics(result,*closure_cache);
@@ -1029,9 +1089,15 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   field_.secondary=profile_.octave_detail_amplitude;
   field_.frequency=profile_.octave_detail_frequency;
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
-  last_requested_position_=camera_.position;
+  last_requested_camera_=camera_;
   auto initial=build_publication(
       profile_,field_,camera_,1U,{}, {}, {}, {},executor_.get());
+  if(initial.residency_budget_exceeded)
+    throw std::length_error(
+        "initial world front exceeds its volume residency budget");
+  if(initial.hierarchy_budget_exceeded)
+    throw std::length_error(
+        "initial world front exceeds its hierarchy residency budget");
   const auto initial_host=host_staging_.estimate_world_render_blocks(
       initial.surface_cache.render_blocks);
   const auto initial_render_bytes=checked_resource_multiply(
@@ -1044,7 +1110,11 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
         initial.diagnostics.render_triangles,initial.diagnostics.work_units,
         initial_render_bytes});
   if(!initial_admission.admitted())
-    throw std::length_error("initial world front exceeds its resource budget");
+    throw std::length_error("initial world front exceeds its resource budget: cpu="+
+        std::to_string(initial_cpu_bytes)+", triangles="+
+        std::to_string(initial.diagnostics.render_triangles)+", work="+
+        std::to_string(initial.diagnostics.work_units)+", upload="+
+        std::to_string(initial_render_bytes));
   host_staging_.stage_world_render_blocks(initial.surface_cache.render_blocks);
   finalize_render_front_metrics(initial.diagnostics);
   directory_=std::move(initial.directory);
@@ -1143,7 +1213,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     residency=plan_world_residency(
         selection.owners,3U,profile.domain,volume_pins,
         profile.maximum_volume_blocks);
-  }catch(const std::length_error&){
+  }catch(const std::length_error& error){
+    if(std::string_view(error.what())!=
+       "world volume pins exceed the block residency budget")throw;
     Publication rejected;
     rejected.diagnostics.work_units=completed_work_units;
     rejected.surface_cache=std::move(surface_cache);
@@ -1157,10 +1229,29 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     previous_volume_blocks.insert(block->id);
   tetra::WorldDirectoryUpdate hierarchy_update;
   if(directory){
-    hierarchy_update=directory->replace_complete_cut(
-        surface_cache.closure.dependency_blocks,
-        surface_cache.closure.last_changed_mask_owners,
-        residency.surface_blocks,residency.volume_blocks,hierarchy_revision);
+    try{
+      hierarchy_update=directory->replace_complete_cut(
+          surface_cache.closure.dependency_blocks,
+          surface_cache.closure.last_changed_mask_owners,
+          residency.surface_blocks,residency.volume_blocks,hierarchy_revision);
+    }catch(const std::invalid_argument& error){
+      if(std::string_view(error.what())!=
+         "world block lacks a published parent fallback")throw;
+      // A teleport can replace every intermediate block in one publication.
+      // The delta manifest then has no retained parent fallback to certify.
+      // Rebuild the same exact closed cut privately and publish it atomically;
+      // ordinary camera motion keeps the substantially cheaper delta path.
+      auto checkpoint=tetra::make_complete_world_cut_checkpoint(
+          selection.owners,3U,hierarchy_revision,
+          tetra::HierarchyResidencyTier::surface);
+      apply_world_residency_plan(checkpoint,residency);
+      directory=std::make_unique<tetra::WorldCutDirectory>(
+          std::move(checkpoint));
+      hierarchy_update.published_revision=directory->revision();
+      hierarchy_update.metrics.requested_blocks=directory->metrics().blocks;
+      hierarchy_update.metrics.loaded_blocks=directory->metrics().blocks;
+      hierarchy_update.metrics.affected_blocks=directory->metrics().blocks;
+    }
   }else{
     auto checkpoint=tetra::make_complete_world_cut_checkpoint(
         selection.owners,3U,hierarchy_revision,
@@ -1189,9 +1280,20 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
          .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
          .maximum_blocks=profile.maximum_hierarchy_blocks},
         &hierarchy_demand);
-  }catch(const std::length_error&){
+  }catch(const std::length_error& error){
+    if(!std::string_view(error.what()).starts_with(
+       "world hierarchy demand exceeds its block budget:"))throw;
     Publication rejected;
     rejected.diagnostics.work_units=completed_work_units;
+    rejected.diagnostics.logical_cells=selection.owners.size();
+    rejected.diagnostics.hierarchy_blocks=directory->hierarchy_blocks().size();
+    rejected.diagnostics.visible_hierarchy_blocks=
+        directory->metrics().blocks;
+    rejected.diagnostics.guard_hierarchy_blocks=hierarchy_demand.records.size();
+    rejected.diagnostics.predicted_hierarchy_blocks=
+        hierarchy_demand.recent_history.size();
+    rejected.diagnostics.maximum_hierarchy_blocks=
+        profile.maximum_hierarchy_blocks;
     rejected.surface_cache=std::move(surface_cache);
     rejected.hierarchy_demand=std::move(hierarchy_demand);
     rejected.hierarchy_budget_exceeded=true;
@@ -1219,8 +1321,20 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface_cache,false);
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
-  directory->publish(directory->stage_owned_derived_surfaces(
-      std::move(surface.snapshots),hierarchy_revision+1U));
+  if(field.terrain.planet_radius>0.0){
+    // Planetary view changes currently rebuild the conformity proof graph
+    // from the requested cut (see select_world_lod_cut_impl). Retaining that
+    // graph here only consumes hundreds of megabytes: the next request clears
+    // it before use. The directory, conforming surface blocks, intersections,
+    // optimizer dependencies, and render blocks remain retained.
+    surface_cache.closure={};
+    surface_cache.closure_source_hierarchy_revision=0U;
+  }
+  // The production renderer retains derived snapshots in surface_cache and
+  // publishes their prepared render blocks atomically with this Publication.
+  // Mirroring them into the topology directory is redundant and can make a
+  // large camera teleport transiently revalidate an unrelated parent-fallback
+  // manifest. Research/editor callers still use the directory surface API.
   const auto surface_published=std::chrono::steady_clock::now();
 
   TerrainRuntimeDiagnostics diagnostics;
@@ -1229,6 +1343,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.scene_mesh_revision=directory->revision();
   diagnostics.scene_generation=generation;
   diagnostics.published_camera_position=camera.position;
+  diagnostics.published_camera_forward=camera.forward;
   diagnostics.hierarchy_hash=directory->canonical_cut_hash();
   diagnostics.connected_surface_hash=surface.canonical_surface_hash;
   diagnostics.logical_cells=directory->logical_owner_count();
@@ -1548,19 +1663,54 @@ void BlockedTerrainRuntime::submit() {
         hierarchy_demand,volume_pins,token,executor.get(),std::move(directory));
   });
   ++diagnostics_.submitted_builds;
-  last_requested_position_=camera.position;
+  last_requested_camera_=camera;
   demand_pending_=false;diagnostics_.converged=false;
 }
 
 void BlockedTerrainRuntime::set_camera(
     const tetra::Camera& camera,bool interactive) {
-  const auto delta=camera.position-last_requested_position_;
+  const auto delta=camera.position-last_requested_camera_.position;
   const double distance_squared=
       delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
-  const bool moved=distance_squared>0.02*0.02;
+  const auto normalized=[](tetra::Vec3 value){
+    const double squared=value.x*value.x+value.y*value.y+value.z*value.z;
+    return squared>1.0e-30?value/std::sqrt(squared):tetra::Vec3{};
+  };
+  const auto direction_delta_squared=[&](tetra::Vec3 first,
+                                          tetra::Vec3 second){
+    const auto difference=normalized(first)-normalized(second);
+    return difference.x*difference.x+difference.y*difference.y+
+        difference.z*difference.z;
+  };
+  const double forward_delta_squared=direction_delta_squared(
+      camera.forward,last_requested_camera_.forward);
+  const double up_delta_squared=direction_delta_squared(
+      camera.up,last_requested_camera_.up);
+  // Compare against the last submitted orientation, not the preceding mouse
+  // sample. Continuous rotation therefore crosses this half-degree threshold
+  // even when every individual frame is sub-pixel motion.
+  constexpr double interactive_orientation_chord=0.008726618569493142;
+  const bool orientation_moved=
+      forward_delta_squared>interactive_orientation_chord*
+          interactive_orientation_chord||
+      up_delta_squared>interactive_orientation_chord*
+          interactive_orientation_chord;
+  const bool projection_changed=
+      camera.vertical_fov_radians!=last_requested_camera_.vertical_fov_radians||
+      camera.viewport_height_pixels!=last_requested_camera_.viewport_height_pixels||
+      camera.aspect_ratio!=last_requested_camera_.aspect_ratio;
+  const bool directional_lod=profile_.terrain.planet_radius>0.0;
+  const bool demand_changed=distance_squared>0.02*0.02||
+      (directional_lod&&orientation_moved)||projection_changed;
   constexpr double settled_position_epsilon=1.0e-9;
+  constexpr double settled_orientation_epsilon=1.0e-12;
   const bool settled_pose_changed=
-      distance_squared>settled_position_epsilon*settled_position_epsilon;
+      distance_squared>settled_position_epsilon*settled_position_epsilon||
+      (directional_lod&&
+       (forward_delta_squared>settled_orientation_epsilon*
+            settled_orientation_epsilon||
+        up_delta_squared>settled_orientation_epsilon*
+            settled_orientation_epsilon))||projection_changed;
   camera_=camera;
   // Interactive physics supplies a new floating-point pose every simulation
   // step. Treating every bit-level change as exact terrain demand can leave an
@@ -1573,7 +1723,7 @@ void BlockedTerrainRuntime::set_camera(
   // every publication.
   const bool interaction_ended=camera_interactive_&&!interactive;
   camera_interactive_=interactive;
-  demand_pending_=demand_pending_||moved||
+  demand_pending_=demand_pending_||demand_changed||
       (interaction_ended&&settled_pose_changed);
   // Interactive camera input is an unbounded stream. Canceling the active
   // publication for every new pose can starve publication forever while the
@@ -1581,7 +1731,7 @@ void BlockedTerrainRuntime::set_camera(
   // in camera_, then submit the newest pose as soon as this front lands.
   // A settled request is different: there is no value in finishing a front
   // for a camera pose the user has explicitly left behind.
-  if(moved&&future_.valid()&&!interactive&&!active_superseded_){
+  if(demand_changed&&future_.valid()&&!interactive&&!active_superseded_){
     cancellation_.request_stop();active_superseded_=true;
     superseded_at_=std::chrono::steady_clock::now();
     ++diagnostics_.superseded_builds;
@@ -1618,6 +1768,16 @@ bool BlockedTerrainRuntime::update() {
       surface_cache_=std::move(publication.surface_cache);
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      diagnostics_.logical_cells=publication.diagnostics.logical_cells;
+      diagnostics_.hierarchy_blocks=publication.diagnostics.hierarchy_blocks;
+      diagnostics_.visible_hierarchy_blocks=
+          publication.diagnostics.visible_hierarchy_blocks;
+      diagnostics_.guard_hierarchy_blocks=
+          publication.diagnostics.guard_hierarchy_blocks;
+      diagnostics_.predicted_hierarchy_blocks=
+          publication.diagnostics.predicted_hierarchy_blocks;
+      diagnostics_.maximum_hierarchy_blocks=
+          publication.diagnostics.maximum_hierarchy_blocks;
       diagnostics_.budget_exceeded=true;
       active_superseded_=false;demand_pending_=false;
       diagnostics_.busy=false;

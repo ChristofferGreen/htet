@@ -718,7 +718,10 @@ int capture_world_runtime_view(std::string_view path,
     return 2;
   }
   forward=forward/forward_magnitude;
-  camera.forward=forward;camera.viewport_height_pixels=480.0;
+  camera.forward=forward;
+  if(std::abs(forward.y)>0.999)
+    camera.up={0.0,0.0,1.0};
+  camera.viewport_height_pixels=480.0;
   camera.aspect_ratio=1.6;
   runtime->set_camera(camera,false);
   const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);

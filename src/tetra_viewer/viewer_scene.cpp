@@ -3055,6 +3055,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       field.terrain.ground_roughness_amplitude,
       field.terrain.ground_roughness_frequency,
       field.terrain.spawn_flat_radius,field.terrain.spawn_blend_radius,
+      field.terrain.planet_radius,
       domain.world_origin.x,domain.world_origin.y,domain.world_origin.z,
       domain.world_extent})hash_field_value(value);
   const bool field_changed=cache&&cache->surface_field_signature!=0U&&
@@ -3190,7 +3191,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
           std::hypot(offset.x,offset.z));
     }
     bool may_cross=negative&&positive;
-    if(!may_cross&&field.kind==tetra::ImplicitShapeKind::perlin_terrain){
+    if(!may_cross&&field.kind==tetra::ImplicitShapeKind::perlin_terrain&&
+       !(field.terrain.planet_radius>0.0)){
       const double height=tetra::terrain_height_sample(
           field,centre.x,centre.z).height;
       ++surface_classification_samples;

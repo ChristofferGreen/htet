@@ -2421,7 +2421,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|
                 ImGuiWindowFlags_NoFocusOnAppearing);
             ImGui::TextUnformatted("WASD move  Shift sprint  Space jump");
-            ImGui::TextUnformatted("Ctrl super speed");
+            ImGui::TextUnformatted("Ctrl super speed  Ctrl+Shift 10x super speed");
             ImGui::TextUnformatted("Mouse look  Esc releases pointer  Click captures");
             ImGui::Separator();
             if(!world_runtime){
@@ -2682,8 +2682,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
             double cursor_x{},cursor_y{};
             glfwGetCursorPos(window,&cursor_x,&cursor_y);
+            bool world_camera_look_changed=false;
             if(world_pointer_captured){
-                world_controller.look(cursor_x-world_cursor_x,cursor_y-world_cursor_y);
+                const double delta_x=cursor_x-world_cursor_x;
+                const double delta_y=cursor_y-world_cursor_y;
+                world_camera_look_changed=delta_x!=0.0||delta_y!=0.0;
+                world_controller.look(delta_x,delta_y);
             }
             world_cursor_x=cursor_x;world_cursor_y=cursor_y;
             tetra_viewer::FirstPersonInput movement;
@@ -2708,8 +2712,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const double magnitude=std::sqrt(direction.x*direction.x+
                     direction.y*direction.y+direction.z*direction.z);
                 if(magnitude>1.0)direction=direction/magnitude;
-                const double speed=0.42*(movement.super_speed?12.0:
-                    (movement.sprint?2.0:1.0));
+                const tetra_viewer::FirstPersonConfiguration movement_configuration;
+                const double speed=movement_configuration.walk_speed*
+                    tetra_viewer::movement_speed_multiplier(
+                        movement,movement_configuration);
                 if(!world_paused||world_single_step)
                     world_controller.state().feet=world_controller.state().feet+
                         direction*speed*(world_single_step?1.0/120.0:elapsed);
@@ -2729,7 +2735,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 camera,world_free_fly,world_lod_camera);
             if(world_runtime)world_runtime->set_camera(lod_camera,
                 !world_free_fly&&(movement.forward!=0.0||movement.right!=0.0||
-                    !world_controller.state().grounded));
+                    !world_controller.state().grounded||
+                    world_camera_look_changed));
             view_camera_position=world_controller.eye_position();
             if(world_show_capsule||world_show_contact_normal)overlay_dirty=true;
         }else{

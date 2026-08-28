@@ -42,11 +42,31 @@ sun. Directional shadows must therefore be queryable by the aerial-perspective
 integration. Stable camera-relative cascades are the first source; a later
 horizon-scale occluder may cover mountains outside those cascades.
 
+Breyer and Zirr (2022) supply a complementary planetary-scale sampling rule:
+intersect a conservative cylinder fitted to the planet's shadow, integrate only
+the lit ray intervals, and distribute samples in optical-depth rather than
+distance space. This can improve terminator and below-horizon sun views without
+wasting steps inside the solid planet shadow. It cannot describe mountain
+silhouettes, so terrain-cascade visibility remains evaluated at each retained
+sample. The paper evaluates a stochastic path-tracing estimator and reports
+non-trivial per-sample overhead; only its analytic interval construction and
+optical-depth allocation are candidates for the deterministic realtime marcher.
+Eradiate (Leroy et al., 2026) is an offline scientific reference rather than a
+candidate runtime. Version 1.0 combines Monte Carlo transport, spherical or
+plane-parallel one-dimensional atmospheres, and complex three-dimensional
+surfaces. Fully three-dimensional atmospheric scattering remains on its roadmap.
+
 Rayleigh coefficients and a Henyey-Greenstein Mie phase function are a useful
 interactive alien-world baseline, but not universal physics. Schneegans et al.
 (2024) show that wavelength-dependent aerosol phase behaviour matters for
 effects such as the Martian blue sunset. A later advanced mode accepts tabulated
 spectral Mie data generated from particle distributions and refractive indices.
+Wilkie et al. (2021) provide a measured-data fitted oracle for terrestrial
+radiance, attenuation, and finite-distance in-scattering. Vevoda et al. (2022)
+extend that family outside the visible spectrum. Velinov and Mitchell (2023)
+offer a useful comparison for occluded whole-path collimated scattering, while
+Schneegans et al. (2025) defer eclipse-specific extended-source and refraction
+work until the world actually contains moons.
 
 Transfer limits:
 
@@ -63,12 +83,17 @@ Transfer limits:
 
 `tetra_world` defaults to an explicitly fictional but optically calibrated
 gameplay planet: 200 km ground radius and 20 km atmosphere height. Its 3 km
-Rayleigh and 0.7 km aerosol scale heights use proportionally increased
-coefficients so their vertical optical depths match the Earth reference. This
-keeps familiar scattering while making curvature and orbit reachable in a
-playable domain. The Earth preset remains available as the physical reference;
-the compact body's ability to retain such an atmosphere is not claimed to be
-geophysically realistic.
+Rayleigh profile preserves the Earth reference's vertical optical depth. Its
+30 m aerosol boundary layer also preserves integrated Earth-like aerosol
+optical depth while concentrating extinction and scattering into the few
+kilometres visible from this compact body's surface. This supplies readable
+gameplay-distance haze without making the upper atmosphere opaque. The Mie
+absorption coefficient is extinction minus scattering (0.404e-6 rather than
+4.4e-6 inverse metres in the Earth reference), retaining a predominantly
+scattering aerosol instead of incorrectly darkening distant geometry. The
+Earth preset remains available as the physical reference; the compact body's
+ability to retain such an atmosphere is not claimed to be geophysically
+realistic.
 
 Atmospheric math uses SI units internally: metres, inverse-metres for
 scattering and absorption, dimensionless relative density, radians, and one
@@ -126,8 +151,7 @@ selects Custom. Switching presets invalidates only dependent resources.
 
 ## 5. Vulkan architecture
 
-The current renderer writes directly to the swapchain and discards readable
-depth. Atmosphere composition first requires a conventional HDR scene:
+The renderer uses a conventional HDR scene with readable reversed-Z depth:
 
 ```text
 directional shadows
@@ -169,11 +193,12 @@ L_output = L_surface * T(camera, surface) + L_scatter(camera, surface)
 The aerial volume uses a cubic distance distribution. With Default's 16 depth
 slices and 200 km range, its first nonzero sample is about 59 m rather than the
 roughly 889 m produced by a quadratic distribution. This improves numerical
-resolution around gameplay-scale geometry without increasing aerosol density
-or manufacturing visible haze. Under the Earth preset, strong aerial
-perspective should emerge naturally across kilometre-scale views as world
-extent grows; it is expected to remain subtle over the current few hundred
-metres.
+resolution around gameplay-scale geometry. The compact preset's shallow
+aerosol layer makes that resolved range visibly useful: generated terrain and
+analytic ground both use the same volume lookup. A conservative directional
+airlight completion, bounded by traversed optical opacity and the full-path
+sky radiance, prevents coarse depth interpolation from turning distant
+silhouettes dark instead of converging toward the horizon colour.
 
 The solar disc comes from angular radius and atmospheric transmittance, not an
 unattenuated UI circle. Terrain depth occludes it. Dear ImGui renders after tone
@@ -192,7 +217,8 @@ transitions, fence-protected per-frame resources, and no routine
 | Ground albedo | keep | rebuild | rebuild | rebuild |
 | Solar spectrum/intensity | reuse optical data where valid | update documented dependent terms | rebuild | rebuild |
 | Sun direction | keep | keep | rebuild | rebuild |
-| Camera pose | keep | keep | rebuild/reproject | rebuild/reproject |
+| Camera position/altitude | keep | keep | rebuild when local frame changes | rebuild |
+| Camera orientation only | keep | keep | keep | keep/reproject only if the local froxel layout requires it |
 | Terrain/shadow revision | keep | keep | normally keep | rebuild affected/current volume |
 | Exposure/tone mapper | keep | keep | keep | keep |
 
@@ -200,9 +226,13 @@ Every LUT records parameter, sun, camera, shadow, and render-origin revisions.
 Only compatible generations compose. Slow parameter work may be asynchronous;
 the last complete compatible atmosphere remains visible meanwhile.
 
-The oracle path may rebuild camera-dependent LUTs each frame. Optimization then
-adds temporal reprojection and sliced updates. Camera cuts, boundary crossings,
-origin rebases, sun jumps, disocclusion, and incompatible depth reject history.
+The reference path may rebuild genuinely camera-position-dependent data each
+frame. Production first relies on correct resource lifetimes: optical tables
+are shared, the local-up/sun sky table survives pure view rotation, and only the
+local aerial representation follows the camera. Temporal reprojection and
+sliced updates are optional measured optimizations after this invalidation
+model qualifies. Camera cuts, boundary crossings, origin rebases, sun jumps,
+disocclusion, and incompatible depth reject any history that is later added.
 
 ## 7. Terrain-shadowed haze
 
@@ -228,10 +258,19 @@ motion, and the orbital terminator. Shafts remain attached to terrain and sun,
 not the camera. Filtering must neither leak through a ridge nor black out the
 entire atmosphere.
 
-Implemented baseline: four quality-scaled array layers cover 2, 8, 32, and 128
-world-unit half-widths. Their camera-relative light projections are
+Implemented baseline: four quality-scaled array layers cover 2, 8, 32, and 512
+world-unit half-widths. The deliberately coarse outer layer extends beyond the
+compact planet's player-height geometric horizon, retaining large mountain
+casters for atmospheric shafts while the inner layers preserve local shadow
+detail. Their camera-relative light projections are
 texel-snapped, overlap across the outer 15 percent of each distance band, and
 are sampled by both the terrain BRDF and direct aerial scattering. The compact
+ray marcher uses 32 quadratically near-weighted intervals and queries the
+selected cascade at every integration step. This concentrates work in the
+near-ground aerosol and mountain-shadow region while retaining broad upper-air
+coverage. A lit
+sample remains unit visibility while coverage fades to the unshadowed fallback;
+there is no brightness change merely from crossing a cascade edge. The compact
 multiple-scattering fill deliberately remains unshadowed. This is the local
 oracle; capture qualification and the optional hierarchy horizon occluder are
 still outstanding.
@@ -247,10 +286,12 @@ Automatic exposure is optional later. It uses a percentile-clipped log
 luminance histogram, asymmetric adaptation, and camera-cut resets. Fixed
 exposure remains available for every image test.
 
-The terrain BRDF consumes the atmosphere's solar irradiance and direction.
-Eventually its environment term comes from integrated sky irradiance. Until
-then, the fixed fill approximation is explicit and calibrated not to double
-count the sky.
+The terrain BRDF consumes the atmosphere's solar irradiance and direction. Its
+current environment term reconstructs an approximate coloured fill from the
+multiple-scattering table, vertical beam loss, surface orientation, and ground
+bounce. This is useful as a visual baseline but is not integrated sky
+irradiance. It must be replaced by irradiance derived from the complete sky
+radiance before the lighting path is treated as physically grounded.
 
 ## 9. Advanced alien aerosol mode
 
@@ -284,18 +325,25 @@ views show no objectionable banding, ghosting, or discontinuity.
 Implemented profiles use 128/256/512-wide transmittance, 16/32/64-wide
 multiple scattering, 192x108/384x216/768x432 sky view,
 16x16x8/32x32x16/64x64x32 aerial volumes, and 512/1024/2048 shadow maps.
-The larger sky-view tables are required for a clean orbital limb; the compact
-3D aerial volume is not used as an orbital ground representation. On the
+The larger sky-view tables are required for a clean orbital limb. The current
+composition still samples the same compact 3D aerial volume for analytic ground
+paths, including long flight and orbital paths; this is a known representation
+limit rather than the intended final orbital solution. On the
 qualification machine, the final scriptable release benchmark measured Default
-at 0.64 ms atmosphere, 0.33 ms composition, and 34.0 MiB buffered atmosphere
-allocation. Shadow and terrain costs are reported separately.
+at 1.23 ms atmosphere, 0.36 ms composition, and 34.0 MiB buffered atmosphere
+allocation after enabling the 32-interval shadowed ray march. Shadow-map and
+terrain passes measured 1.24 ms and 1.74 ms respectively. This remains inside
+the 2.0 ms steady-state atmosphere and 0.5 ms composition gates; the higher
+cost is retained because the former uniform march skipped gameplay-scale
+mountain-shadow intervals.
 
-High-altitude and orbital views use an analytic spherical far-field ground.
-It evaluates Lambertian ground illumination through the transmittance table,
-adds compact multiple-scattered fill, and composes through sky-view scattering.
-It activates only beyond 90 percent of the generated terrain view radius, so it
-fills the compact planet's nearer horizon without covering local terrain cracks
-or missing triangles. A derivative-filtered disc boundary preserves a smooth limb. Launch
+Depth-clear rays that hit the planet use an analytic spherical ground.
+Full-resolution composition evaluates the same neutral Lambertian terrain
+response, then samples aerial transmittance and in-scattering at the exact
+intersection distance. Rays that miss sample the sky-view lookup. Real terrain
+depth always wins, so the analytic continuation cannot cover local cracks or
+missing triangles, while ground, horizon, flight, and orbital views retain one
+composition rule. Launch
 arguments `--free-fly`, `--camera-feet=x,y,z`,
 `--camera-yaw-degrees=n`, and `--camera-pitch-degrees=n` make altitude and orbit
 qualification reproducible.
@@ -320,9 +368,12 @@ optical-depth, and transmittance limits; finite nonnegative radiance;
 transmittance reversal and monotonicity; unit and origin invariance; dependency
 invalidation; reversed-Z reconstruction; and preset validation/serialization.
 
-GPU and image tests compare selected samples with a double-precision CPU
-integrator and canonical Earth views with Bruneton within documented tolerances.
-Fixed-exposure captures cover sea level, mountains, upper atmosphere, low orbit,
+Gate H adds GPU numeric probes against a double-precision CPU integrator and
+fixed-exposure image comparisons of canonical Earth views against documented
+Bruneton and Wilkie references. The current suite already covers many CPU
+limits, resource contracts, deterministic launches, and shader integration,
+but its source-string assertions are not radiance validation. The completed
+capture matrix will cover sea level, mountains, upper atmosphere, low orbit,
 whole planet, noon, sunset, night side, terminator, cascade transitions, every
 preset, rapid movement, rebasing, and sun dragging. Tests combine numeric
 probes, depth/topology masks, and perceptual thresholds: a pleasant image does
@@ -333,10 +384,195 @@ and show a diagnostic. Invalid parameters never publish. Atmosphere-disabled
 mode reproduces the qualified terrain scene except for the intentional HDR and
 tone-mapping migration.
 
-## 12. Ordered TODO chain
+## 12. Post-implementation research reassessment
 
-Later gates may be prototyped behind disabled options, but Default cannot
-advance until each preceding gate passes in release mode.
+### 12.1 Decision
+
+Retain Hillaire (2020) as the realtime production architecture, but replace the
+current approximate realization with a faithful, independently testable
+transport core. Add Bruneton-derived irradiance and validation machinery, then
+add optional tabulated Mie aerosol data following Schneegans et al. (2024).
+
+This is preferable to replacing the runtime with Bruneton's complete 4D
+precomputed-scattering representation. Hillaire supports immediate atmosphere
+and sun changes, is substantially smaller, and behaves better for tiny,
+strongly curved planets such as the 200 km gameplay world. Bruneton remains the
+stronger correctness oracle and supplies parameterization and irradiance ideas
+that should be transferred without maintaining a second production renderer.
+
+The selected architecture is:
+
+```text
+atmosphere material and optional tabulated aerosol phase data
+                              |
+                              v
+             horizon-aware transmittance LUT
+                              |
+                              v
+        faithful Hillaire multiple-scattering closure
+                              |
+             +----------------+----------------+
+             |                                 |
+             v                                 v
+ local-up/sun-oriented full sky LUT    near/flight aerial froxels
+             |                                 |
+             v                                 |
+ diffuse sky irradiance or SH                  |
+             +----------------+----------------+
+                              |
+           HDR terrain + depth + terrain shadow visibility
+                              |
+          surface * transmittance + physical in-scattering
+                              |
+              orbital screen-space ray-march handoff
+                              |
+                         tone mapping
+```
+
+### 12.2 Paper-by-paper disposition
+
+| Work | Role in this renderer | Decision |
+|---|---|---|
+| Hillaire (2020) | Dynamic transmittance, multiple scattering, sky view, and aerial perspective from ground to space | Production backbone; implement its mappings and closure faithfully |
+| Bruneton and Neyret (2008), Bruneton (2016) | Horizon-aware coordinates, irradiance, multiple-order reference, dimensional checks, and comparison framework | Correctness oracle and source of narrowly transferred mechanisms, not a second default renderer |
+| Wilkie et al. (2021) | Measured-data fitted clear-sky radiance, attenuation, and finite-distance in-scattering | Terrestrial appearance and visibility oracle; do not ship its 600 MB or larger fitted dataset |
+| Breyer and Zirr (2022) | Planet-shadow interval construction and optical-depth sampling near the terminator | Later deterministic low-sun specialization; do not transfer the stochastic estimator wholesale |
+| Schneegans et al. (2024) | Wavelength-dependent phase, scattering, absorption, and density tables generated from particle data | Optional cached alien-aerosol mode after the RGB core qualifies |
+| Leroy et al. (2026), Eradiate | Scientific spherical-atmosphere radiance, irradiance, and three-dimensional surface comparisons | Offline oracle; version 1.0 does not yet provide spatially varying 3D atmosphere transport |
+| Vevoda et al. (2022) | Ultraviolet-to-infrared fitted sky transport | Future sensor and spectral validation, not the visible three-channel runtime |
+| Kolarova et al. (2024) | Measured advection-fog particle distributions and altitude-dependent visibility | Future local weather volume, separate from the global clear atmosphere |
+| Velinov and Mitchell (2023) | Occluded collimated scattering in homogeneous finite media | Possible local fog and shaft technique, not the spherical clear-air solver |
+| Satilmis and Bashford-Rogers (2025) | Dynamic image-space cloud illumination | Future cloud lighting layer after volumetric cloud geometry exists |
+| Schneegans et al. (2025) | Extended solar sources, refraction, umbra, and penumbra | Defer until moons and eclipses are gameplay requirements |
+| Maquignaz (2026) | Full-dynamic-range learned sky maps and image-based lighting | Lighting/exposure comparison only; it does not maintain physical ground-to-orbit transport |
+
+### 12.3 Gaps between the selected papers and the current shaders
+
+1. **Lookup coordinates are under-parameterized.**
+   `atmosphere.comp::lookup_uv` maps altitude and zenith cosine linearly.
+   Bruneton and Hillaire concentrate precision around grazing rays, the ground,
+   and the horizon and avoid interpolation across the horizon discontinuity.
+   Raising texture resolution cannot fully compensate for the wrong mapping.
+
+2. **The sky-view table is camera-frustum data rather than a sky table.**
+   `view_direction` derives every sky texel from the current camera basis.
+   Hillaire instead stores a local-up/sun-oriented latitude-longitude sky with
+   nonlinear horizon concentration. The current form wastes work on camera
+   rotation, cannot be reused as a whole-sky lighting source, and makes
+   interpolation artifacts depend on view orientation.
+
+3. **The multiple-scattering closure is not Hillaire's closure.**
+   The implementation samples eight directions with six steps and amplifies the
+   result by the fixed factor `1 / (1 - 0.35)`. Hillaire computes second-order
+   radiance and a local transfer factor `f_ms`, then closes the higher orders as
+   a geometric series `1 / (1 - f_ms)`. The fixed factor cannot respond
+   correctly to density, absorption, altitude, or a thick atmosphere.
+
+4. **Terrain sky light is heuristic.**
+   `scene.frag::atmosphere_terrain_lighting` uses fitted constants to turn the
+   multiple-scattering table and vertical beam loss into an environment term.
+   The multiple-scattering table is not itself cosine-weighted incident sky
+   irradiance. A complete sky integral or its low-order spherical-harmonic
+   projection should drive diffuse terrain lighting instead.
+
+5. **Aerial in-scattering contains a nonphysical lower clamp.**
+   `tone_map.frag::composite_aerial` raises computed scattering component-wise
+   to `sky_view * optical_opacity`. This hides under-resolved froxels but can
+   flatten contrast, brighten silhouettes, shift hue, and introduce a response
+   discontinuity. Correct sampling and a separate far-path solution should make
+   the clamp unnecessary.
+
+6. **One aerial volume spans incompatible scales.**
+   Sixteen default depth slices cover 200 km while the gameplay aerosol layer
+   has a 30 m scale height. Cubic distance resolves the first samples but cannot
+   simultaneously represent the boundary layer, kilometre-scale mountains, and
+   orbital paths. Use a bounded local/flight froxel range and switch smoothly to
+   a direct screen-space atmosphere march for orbital views, as Hillaire does.
+
+7. **Resource dependencies are broader than required.**
+   Sky-view and aerial tables are rebuilt every frame, including pure camera
+   rotation. Optical tables are duplicated for every buffered frame, and the
+   renderer uses the complete parameter hash rather than the documented
+   dependency graph. Static optical data should be shared; the sky table should
+   survive camera rotation; only genuinely camera-dependent work should be
+   refreshed.
+
+8. **Several tests preserve implementation strings rather than radiance.**
+   The suite has strong intersection, density, transmittance, depth, cascade,
+   and deterministic-launch checks, but some shader tests require the current
+   airlight clamp and exact source expressions. They prove that a workaround is
+   present, not that the resulting transport is correct. Numeric GPU probes and
+   fixed-exposure image comparisons must become the authority.
+
+### 12.4 Terrain lighting and shadow policy
+
+Generate a complete local sky radiance table before deriving terrain lighting.
+For the active gameplay region, project that table into low-order spherical
+harmonics or another compact cosine-convolution representation and evaluate it
+for each material normal. This supplies coloured, directional diffuse sky
+irradiance without a hand-authored ambient floor. Direct sunlight remains a
+separate attenuated directional source evaluated by the material BRDF.
+
+The current terrain-shadowed haze architecture is sound: direct atmospheric
+in-scattering queries the same stable directional shadow cascades as terrain,
+while compact multiple-scattered fill remains unshadowed. Continue that design.
+Tie outer coverage to visible terrain and guarded off-screen casters. Add a
+coarse hierarchy-derived horizon occluder only after mountains outside the
+outer cascade produce a measured gap; it must never delay exact terrain
+publication.
+
+For low solar elevations, the later Breyer-Zirr specialization should split the
+view path at conservative planet-shadow boundaries and distribute a fixed,
+deterministic sample budget across lit intervals using an optical-depth proxy.
+Terrain visibility is still tested at every retained sample. Enable the extra
+interval work only near the terminator and compare it against the ordinary
+march at equal time.
+
+### 12.5 Alien aerosols
+
+Keep Rayleigh plus Henyey-Greenstein as the fast Earth-like baseline. Add an
+optional one-dimensional tabulated aerosol phase texture with wavelength-
+dependent scattering and absorption generated offline from particle-size
+distribution, complex refractive index, and altitude density. Cache generated
+tables by content hash. The preprocessing may take seconds or minutes; runtime
+cost remains a small number of texture accesses.
+
+The first advanced target is a Mars-like atmosphere whose forward peak and blue
+solar halo agree with measured phase and chromaticity data. Hillaire's isotropic
+higher-order closure may be inaccurate for strongly forward-scattering dust, so
+the mode remains experimental until it passes comparisons against the
+Schneegans data and a higher-quality oracle. Dense Venus/Titan-like presets have
+the same qualification requirement.
+
+### 12.6 Validation and architecture quality
+
+The existing renderer has valuable foundations: linear HDR composition,
+infinite-far reversed Z, stable planetary intersections, per-sample terrain
+shadow visibility, fixed exposure, debug lookups, deterministic captures, and
+GPU timing. The main weakness is that physical intent, lookup lifetime, and
+tests are not separated cleanly. One compute shader implements four generators;
+reserved uniform slots carry loosely typed state; fixed RGB analytic profiles
+have no phase-resource interface; and visual compensation constants are mixed
+with transport.
+
+Refactor around immutable atmosphere material, optical lookup, lighting lookup,
+view lookup, and validation snapshots with explicit revisions. Keep shader
+passes independently dispatchable and independently testable. Compare CPU and
+GPU samples at exact physical coordinates, report absolute and relative error,
+and retain perceptual captures only as the final layer of evidence.
+
+The highest-priority architectural improvement is the faithful Hillaire
+transport core. It improves every current view, removes compensation code,
+reduces camera-rotation work, and establishes the interface required by later
+Mie, fog, cloud, and eclipse layers. Those later features must not precede it.
+
+## 13. Ordered TODO chain
+
+Gates A-G record the completed baseline that currently ships as Default. Gate H
+is its replacement chain: work remains behind an experimental path, and the
+qualified baseline stays available until H9 atomically promotes the new path.
+Within Gate H, later stages may be explored independently, but no stage is
+accepted until its dependencies and exit criteria pass in release mode.
 
 ### Gate A: Contracts and baseline
 
@@ -424,29 +660,184 @@ advance until each preceding gate passes in release mode.
 - [x] Enable Default only after every earlier gate passes and record evidence in
       `testcase_log.md`.
 
-## 13. Completion criteria
+### Gate H: Faithful transport and lighting
+
+#### H0: Freeze the baseline and reference contract
+
+- [ ] Capture the current qualified Default at fixed exposure for ground, limb,
+      flight, orbit, noon, sunset, terminator, and mountain-shadow views; record
+      per-pass time, memory, lookup revisions, and numeric CPU probes.
+- [ ] Define physical coordinates, expected values, absolute/relative error
+      tolerances, image masks, and reference provenance for every golden probe.
+- [ ] Add an experimental transport selector so the qualified baseline remains
+      usable and directly comparable throughout H1-H8.
+
+Exit: the same command reproduces baseline evidence, and no later stage can
+silently alter its renderer, parameters, exposure, or reference data.
+
+#### H1: Separate data ownership and invalidation
+
+- [ ] Introduce immutable atmosphere-material, optical-lookup, lighting-lookup,
+      view-lookup, and validation snapshots with explicit typed revisions.
+- [ ] Share static optical tables across buffered frames and dispatch only when
+      their actual material, sun, camera-position, or shadow dependencies change.
+- [ ] Add invalidation tests proving that pure camera rotation does not rebuild
+      optical or full-sky data and that incompatible generations never compose.
+
+Exit: recorded dispatch counts match the dependency table under parameter edits,
+sun motion, translation, rotation, rebasing, shadow changes, and frame buffering.
+
+#### H2: Implement shared horizon-aware lookup mappings
+
+- [ ] Specify one invertible Bruneton/Hillaire transmittance mapping and one
+      nonlinear horizon-concentrated sky mapping in shared CPU/shader math.
+- [ ] Replace linear lookup coordinates in every producer and consumer; add
+      round-trip, boundary, grazing-ray, monotonicity, and CPU/GPU parity probes.
+
+Exit: mappings are finite and continuous at ground and atmosphere boundaries,
+round-trip within tolerance, and show no interpolation seam across the horizon.
+
+#### H3: Implement faithful Hillaire multiple-scattering closure
+
+- [ ] Compute local second-order radiance and transfer factor `f_ms`, then close
+      higher orders with an energy-bounded geometric series rather than the
+      fixed `1 / (1 - 0.35)` amplification.
+- [ ] Validate vacuum, absorption-only, conservative-scattering, altitude, thick-
+      atmosphere, and preset probes against the CPU oracle and physical limits.
+
+Exit: all probes pass without a fitted global amplification constant, divergence,
+negative radiance, or regression in the frozen capture set.
+
+#### H4: Make the full-sky lookup independent of view rotation
+
+- [ ] Generate a local-up/sun-oriented full-sky table using the H2 mapping and
+      sample it from arbitrary camera views, terrain lighting, and diagnostics.
+- [ ] Rebuild only when position changes the local frame materially or the sun or
+      atmosphere changes; explicitly test yaw, pitch, roll, poles, and rebasing.
+
+Exit: pure camera rotation produces zero sky dispatches and agrees with direct
+integration within tolerance without orientation-dependent horizon artifacts.
+
+#### H5: Derive physical diffuse terrain irradiance
+
+- [ ] Cosine-convolve complete sky radiance into a tested low-order spherical-
+      harmonic or equivalent irradiance representation for the gameplay region.
+- [ ] Feed terrain BRDF ambient illumination from this representation while
+      retaining attenuated direct sun as a separate term.
+- [ ] Remove fitted environment-fill and ground-bounce constants and migrate
+      their shader-string tests to numeric irradiance and fixed-exposure images.
+
+Exit: normal sweeps, noon, sunset, shadow, and preset captures remain finite and
+directional, and terrain lighting contains no undocumented compensation term.
+
+#### H6: Separate local aerial perspective from orbital transport
+
+- [ ] Bound local/flight froxels using visible distance, altitude, density scale,
+      and a documented precision target rather than one fixed 200 km volume.
+- [ ] Add a deterministic screen-space atmosphere march for long and orbital
+      paths, with an explicit overlap band and continuous regime selection.
+- [ ] Remove `max(scattering, directional_airlight)` and replace its source-
+      string assertion with distance, silhouette, chromaticity, and continuity
+      probes that fail on under-resolved haze.
+
+Exit: near-ground aerosol structure and orbital paths both meet their oracle;
+crossing the handoff produces no luminance, colour, depth, or temporal seam.
+
+#### H7: Reintegrate terrain shadows
+
+- [ ] Apply the shared cascaded visibility only to direct solar in-scattering in
+      both local froxels and the long-path march, preserving unshadowed higher-
+      order fill and generation compatibility.
+- [ ] Test ridges inside, across, and beyond cascades at noon and low sun; measure
+      bias, filtering, cascade blending, off-screen caster guards, and motion.
+
+Exit: mountain shadows remain attached to terrain and sun, do not leak or black
+out the atmosphere, and remain continuous through cascades and the H6 handoff.
+
+#### H8: Replace implementation-string tests with transport oracles
+
+- [ ] Add numeric GPU readback probes for mappings, transmittance, multiple
+      scattering, sky radiance, irradiance, and aerial transport at exact SI
+      coordinates, compared with the independent double-precision CPU path.
+- [ ] Add deterministic fixed-exposure comparisons for the complete matrix in
+      H0 against documented Bruneton and Wilkie reference outputs where their
+      parameter domains overlap.
+- [ ] Remove assertions for exact step counts, quadratic expressions, and
+      workaround source strings once equivalent behavioral coverage passes.
+
+Exit: deliberately perturbing each transport stage fails a numeric or image
+oracle, while harmless shader refactoring does not invalidate the suite.
+
+#### H9: Benchmark, qualify, and promote atomically
+
+- [ ] Requalify Low, Default, and High on MoltenVK for pass time, memory, refresh
+      frequency, responsiveness, Vulkan validation, and the full test suite.
+- [ ] Visually inspect ground travel, mountain sunset, altitude, orbit, limb,
+      terminator, every preset, rapid motion, rebasing, and sun dragging.
+- [ ] Promote the faithful path to Default only when all H0-H8 exit criteria and
+      existing budgets pass; otherwise retain the frozen baseline and record the
+      failing evidence without mixing parts of the two paths.
+
+Exit: Default changes in one reviewable switch, has no compensation hacks or
+visible horizon/cascade/regime seams, and the former baseline remains available
+until the replacement has passed release qualification.
+
+#### Qualified follow-ons after H9
+
+- [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval
+      sampler behind an experimental option; retain it only if equal-time
+      terminator captures improve without daylight regression.
+- [ ] Add content-addressed tabulated-Mie preprocessing and a runtime phase
+      interface behind an experimental alien-aerosol option; qualify Mars-like
+      forward scattering before considering any preset-default change.
+
+## 14. Completion criteria
 
 The goal is complete only when the application stays interactive during async
-preparation; one physical model produces haze, sky, and sun from ground to
-space; no boundary, horizon, origin, cascade, or generation seam is visible;
-mountains cast stable atmospheric shadows; all presets are finite and editable;
-atmosphere-off correctness remains inspectable; release budgets qualify; and
-focused tests, the full release suite, command-line captures, Vulkan validation,
-and final manual visual inspection all pass.
+preparation; faithful Hillaire mappings and multiple-scattering closure produce
+haze, sky, and sun from ground to space; full-sky irradiance physically lights
+terrain; and local aerial froxels hand off continuously to orbital transport.
+No boundary, horizon, origin, cascade, generation, or transport-regime seam may
+be visible. Mountains cast stable atmospheric shadows; undocumented lighting
+floors, fixed scattering amplification, and directional-airlight clamps are
+removed; all presets remain finite and editable; atmosphere-off correctness is
+inspectable; release budgets qualify; and numeric CPU/GPU probes, reference
+images, the full release suite, command-line captures, Vulkan validation, and
+final manual visual inspection all pass.
 
-## 14. References
+## 15. References
 
 - S. Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering
-  Technique* (2020): <https://doi.org/10.1111/cgf.14050>
+  Technique* (2020): [local PDF](../papers/atmosphere/2020-Scalable%20Production%20Ready%20Sky%20and%20Atmosphere%20Rendering.pdf), [DOI](https://doi.org/10.1111/cgf.14050)
 - Hillaire reference implementation: <https://github.com/sebh/UnrealEngineSkyAtmosphere>
 - E. Bruneton and F. Neyret, *Precomputed Atmospheric Scattering* (2008):
-  <https://doi.org/10.1111/j.1467-8659.2008.01245.x>
+  [local PDF](../papers/atmosphere/2008-Precomputed%20Atmospheric%20Scattering.pdf), [DOI](https://doi.org/10.1111/j.1467-8659.2008.01245.x)
 - Bruneton tested BSD implementation:
   <https://ebruneton.github.io/precomputed_atmospheric_scattering/>
-- E. Bruneton, *A Qualitative and Quantitative Evaluation of 8 Clear Sky
-  Models* (2016): <https://arxiv.org/abs/1612.04336>
-- M. Schneegans et al., *Physically Based Sky, Atmosphere and Cloud Rendering
-  for Mars* (2024): <https://doi.org/10.1111/cgf.15010>
+- E. Bruneton, *A Qualitative and Quantitative Evaluation of Eight Clear Sky
+  Models* (2016): [local PDF](../papers/atmosphere/2016-Qualitative%20and%20Quantitative%20Evaluation%20of%20Eight%20Clear%20Sky%20Models.pdf), [arXiv](https://arxiv.org/abs/1612.04336)
+- A. Wilkie et al., *A Fitted Radiance and Attenuation Model for Realistic
+  Atmospheres* (2021): [local PDF](../papers/atmosphere/2021-Fitted%20Radiance%20and%20Attenuation%20Model%20for%20Realistic%20Atmospheres.pdf), [DOI](https://doi.org/10.1145/3450626.3459758)
+- Z. Velinov and K. Mitchell, *Collimated Whole Volume Light Scattering in
+  Homogeneous Finite Media* (2023): [local PDF](../papers/atmosphere/2023-Collimated%20Whole%20Volume%20Light%20Scattering%20in%20Homogeneous%20Finite%20Media.pdf), [DOI](https://doi.org/10.1109/TVCG.2021.3135764)
+- P. Vevoda et al., *A Wide Spectral Range Sky Radiance Model* (2022):
+  [local PDF](../papers/atmosphere/2022-Wide%20Spectral%20Range%20Sky%20Radiance%20Model.pdf), [DOI](https://doi.org/10.1111/cgf.14677)
+- S. Schneegans et al., *Physically Based Real-Time Rendering of Atmospheres
+  using Mie Theory* (2024): [local PDF](../papers/atmosphere/2024-Physically%20Based%20Real-Time%20Rendering%20of%20Atmospheres%20Using%20Mie%20Theory.pdf), [DOI](https://doi.org/10.1111/cgf.15010)
+- S. Schneegans et al., *Physically Based Real-Time Rendering of Eclipses*
+  (2025): [local PDF](../papers/atmosphere/2025-Physically%20Based%20Real-Time%20Rendering%20of%20Eclipses.pdf), [DOI](https://doi.org/10.1111/cgf.70017)
+- C. Breyer and T. Zirr, *Planetary Shadow-Aware Distance Sampling* (2022):
+  [local PDF](../papers/atmosphere/2022-Planetary%20Shadow-Aware%20Distance%20Sampling.pdf), [DOI](https://doi.org/10.2312/sr.20221152)
+- M. Kolarova, L. Lachiver, and A. Wilkie, *An Empirically Derived Adjustable
+  Model for Particle Size Distributions in Advection Fog* (2024):
+  [local PDF](../papers/atmosphere/2024-Adjustable%20Particle%20Size%20Distributions%20in%20Advection%20Fog.pdf), [DOI](https://doi.org/10.1111/cgf.15008)
+- P. Satilmis and T. Bashford-Rogers, *A Multi-Timescale Image-Space Model for
+  Dynamic Cloud Illumination* (2025): [local PDF](../papers/atmosphere/2025-Multi-Timescale%20Image%20Space%20Model%20for%20Dynamic%20Cloud%20Illumination.pdf), [DOI](https://doi.org/10.1016/j.cag.2024.104124)
+- V. Leroy et al., *Eradiate: An Accurate and Flexible Radiative Transfer Model
+  for Earth Observation and Atmospheric Science* (2026):
+  [local PDF](../papers/atmosphere/2026-Eradiate%20Accurate%20and%20Flexible%20Radiative%20Transfer.pdf), [DOI](https://doi.org/10.5194/gmd-19-4289-2026)
+- I. J. Maquignaz, *Full Dynamic Range Sky-Modelling for Image-Based Lighting*
+  (2026): [local PDF](../papers/atmosphere/2026-Full%20Dynamic%20Range%20Sky%20Modelling%20for%20Image%20Based%20Lighting.pdf), [arXiv](https://arxiv.org/abs/2603.05758)
 - Intel/Yusov outdoor scattering: <https://github.com/GameTechDev/OutdoorLightScattering>
 - Unreal production documentation:
   <https://dev.epicgames.com/documentation/en-us/unreal-engine/sky-atmosphere-component-in-unreal-engine>

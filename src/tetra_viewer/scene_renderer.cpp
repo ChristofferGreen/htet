@@ -61,7 +61,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkGetPhysicalDeviceProperties(physical_device_,&device_properties);
   timestamp_period_nanoseconds_=device_properties.limits.timestampPeriod;
 
-  std::array<VkDescriptorSetLayoutBinding,2> shadow_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,5> shadow_bindings{};
   shadow_bindings[0].binding=0;
   shadow_bindings[0].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   shadow_bindings[0].descriptorCount=1;
@@ -70,6 +70,17 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   shadow_bindings[1].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   shadow_bindings[1].descriptorCount=1;
   shadow_bindings[1].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+  for(std::uint32_t binding=2;binding<4U;++binding){
+    shadow_bindings[binding].binding=binding;
+    shadow_bindings[binding].descriptorType=
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadow_bindings[binding].descriptorCount=1;
+    shadow_bindings[binding].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+  }
+  shadow_bindings[4].binding=4;
+  shadow_bindings[4].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  shadow_bindings[4].descriptorCount=1;
+  shadow_bindings[4].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
   VkDescriptorSetLayoutCreateInfo descriptor_layout{
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   descriptor_layout.bindingCount=static_cast<std::uint32_t>(
@@ -638,9 +649,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
 
   const std::array<VkDescriptorPoolSize,3> pool_sizes{
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           image_count*10U},
+                           image_count*12U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*5U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*4U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*5U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets=image_count*3U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
@@ -676,7 +687,15 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     VkDescriptorBufferInfo shadow_uniform_info{
         shadow_images_[index].uniform_buffer,0,
         sizeof(float)*(16U*shadow_cascade_count+4U)};
-    std::array<VkWriteDescriptorSet,2> shadow_writes{};
+    auto& atmosphere=atmosphere_frames_[index];
+    const std::array<VkDescriptorImageInfo,2> lighting_images{
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.transmittance.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,atmosphere.multiple_scattering.view,
+                              VK_IMAGE_LAYOUT_GENERAL}};
+    VkDescriptorBufferInfo atmosphere_uniform_info{
+        atmosphere.uniform_buffer,0,sizeof(float)*64U};
+    std::array<VkWriteDescriptorSet,5> shadow_writes{};
     shadow_writes[0].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     shadow_writes[0].dstSet=descriptor_sets_[index];
     shadow_writes[0].dstBinding=0;
@@ -689,10 +708,24 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     shadow_writes[1].descriptorCount=1;
     shadow_writes[1].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     shadow_writes[1].pBufferInfo=&shadow_uniform_info;
+    for(std::uint32_t binding=2;binding<4U;++binding){
+      shadow_writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      shadow_writes[binding].dstSet=descriptor_sets_[index];
+      shadow_writes[binding].dstBinding=binding;
+      shadow_writes[binding].descriptorCount=1;
+      shadow_writes[binding].descriptorType=
+          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      shadow_writes[binding].pImageInfo=&lighting_images[binding-2U];
+    }
+    shadow_writes[4].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    shadow_writes[4].dstSet=descriptor_sets_[index];
+    shadow_writes[4].dstBinding=4;
+    shadow_writes[4].descriptorCount=1;
+    shadow_writes[4].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    shadow_writes[4].pBufferInfo=&atmosphere_uniform_info;
     vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(shadow_writes.size()),
                            shadow_writes.data(),0,nullptr);
 
-    auto& atmosphere=atmosphere_frames_[index];
     const std::array<VkDescriptorImageInfo,8> composite_images{
         VkDescriptorImageInfo{scene_sampler_,scene_colour_images_[index].view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},

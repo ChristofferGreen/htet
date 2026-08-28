@@ -63,7 +63,10 @@ struct AtmosphereParameters {
   double rayleigh_scale_height_metres{8'000.0};
   AtmosphereSpectrum mie_scattering_per_metre{3.996e-6, 3.996e-6,
                                                3.996e-6};
-  AtmosphereSpectrum mie_absorption_per_metre{4.40e-6, 4.40e-6, 4.40e-6};
+  // Bruneton/Hillaire's commonly quoted 4.4e-6 value is Mie extinction.
+  // Absorption is extinction minus the 3.996e-6 scattering coefficient.
+  AtmosphereSpectrum mie_absorption_per_metre{0.404e-6, 0.404e-6,
+                                               0.404e-6};
   double mie_scale_height_metres{1'200.0};
   double mie_anisotropy{0.8};
   AtmosphereSpectrum absorption_per_metre{0.650e-6, 1.881e-6, 0.085e-6};

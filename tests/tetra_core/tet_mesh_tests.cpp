@@ -33,6 +33,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <numbers>
 #include <ranges>
 #include <set>
 #include <sstream>
@@ -921,34 +922,74 @@ TEST_CASE("production world profile pins the playable rendering contract") {
         doctest::Approx(-0.56685212800775142));
   CHECK(profile.terrain.landform_amplitude==doctest::Approx(1.5));
   CHECK(profile.terrain.mountain_amplitude==doctest::Approx(6.0));
+  CHECK(profile.terrain.planetary_mountain_amplitude_scale==
+        doctest::Approx(24.0));
+  CHECK(profile.terrain.planetary_mountain_frequency_scale==
+        doctest::Approx(0.0625));
+  CHECK(profile.terrain.planetary_mountain_fade_start==doctest::Approx(24.0));
+  CHECK(profile.terrain.planetary_mountain_fade_end==doctest::Approx(96.0));
   CHECK(profile.terrain.gameplay_hill_amplitude==doctest::Approx(0.7));
   CHECK(profile.terrain.gameplay_feature_amplitude==doctest::Approx(0.18));
   CHECK(profile.terrain.gameplay_corridor_depth==doctest::Approx(0.1));
   CHECK(profile.terrain.ground_roughness_amplitude==doctest::Approx(0.025));
   CHECK(profile.terrain.spawn_flat_radius==doctest::Approx(0.8));
   CHECK(profile.terrain.spawn_blend_radius==doctest::Approx(3.0));
+  CHECK(profile.terrain.planet_radius==doctest::Approx(20'000.0));
   CHECK(profile.octave_detail_amplitude==doctest::Approx(0.0));
   CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
-  CHECK(profile.domain.world_extent==doctest::Approx(128.0));
-  CHECK(profile.background_red_depth==5U);
-  CHECK(profile.near_red_depth==11U);
+  CHECK(profile.domain.world_extent==doctest::Approx(65'536.0));
+  CHECK(profile.background_red_depth==3U);
+  CHECK(profile.near_red_depth==20U);
   CHECK(profile.near_volume_radius==doctest::Approx(0.6));
   CHECK(profile.maximum_volume_blocks==4096U);
   CHECK(profile.maximum_hierarchy_blocks==65536U);
   CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
-  CHECK(profile.view_distance==doctest::Approx(48.0));
+  CHECK(profile.view_distance==doctest::Approx(5.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
-  CHECK(profile.maximum_depth==16U);
+  CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
-  CHECK(profile.budgets.maximum_work_units==10000000U);
+  CHECK(profile.budgets.maximum_work_units==20000000U);
   CHECK(profile.budgets.maximum_upload_bytes==32U*1024U*1024U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);
   CHECK_FALSE(profile.show_hierarchy_edges);
   CHECK_FALSE(profile.x_cutaway);
+}
+
+TEST_CASE("production terrain is a closed radial field inside one sparse root") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;
+  field.kind=profile.shape;
+  field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  const double radius=field.terrain.planet_radius;
+  const tetra::Vec3 centre{
+      field.centre.x,field.centre.y-radius,field.centre.z};
+  CHECK(field.signed_distance(field.centre)==doctest::Approx(0.0).epsilon(1e-9));
+  CHECK(field.signed_distance(centre)<-radius*0.99);
+  CHECK(field.signed_distance(centre+tetra::Vec3{0.0,radius+20.0,0.0})>0.0);
+  const auto north_normal=field.normal(field.centre);
+  CHECK(std::abs(north_normal.x)<1e-5);
+  CHECK(north_normal.y>0.99999);
+  CHECK(std::abs(north_normal.z)<1e-5);
+  const auto projected=field.project_to_surface(
+      centre+tetra::Vec3{radius*0.8,radius*0.7,-radius*0.2});
+  CHECK(std::abs(field.signed_distance(projected))<1e-7);
+  const auto maximum=profile.domain.world_origin+
+      tetra::Vec3{profile.domain.world_extent,profile.domain.world_extent,
+                  profile.domain.world_extent};
+  for(std::size_t axis=0;axis<3U;++axis){
+    const double coordinate=axis==0U?centre.x:(axis==1U?centre.y:centre.z);
+    const double minimum=axis==0U?profile.domain.world_origin.x:
+        (axis==1U?profile.domain.world_origin.y:profile.domain.world_origin.z);
+    const double upper=axis==0U?maximum.x:(axis==1U?maximum.y:maximum.z);
+    CHECK(coordinate-radius>minimum);
+    CHECK(coordinate+radius<upper);
+  }
 }
 
 TEST_CASE("world resource budgets independently gate every publication cost") {
@@ -1157,7 +1198,7 @@ TEST_CASE("world hierarchy demand is revisioned predictive recent and bounded") 
       std::invalid_argument);
 }
 
-TEST_CASE("projected world cut spans forty eight units with graded bounded detail") {
+TEST_CASE("projected radial world cut covers the globe with graded bounded detail") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
   field.secondary=profile.octave_detail_amplitude;
@@ -1175,12 +1216,111 @@ TEST_CASE("projected world cut spans forty eight units with graded bounded detai
   REQUIRE_FALSE(selection.owners.empty());
   CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
-  CHECK(selection.metrics.logical_owners_after_closure<800000U);
-  CHECK(selection.metrics.horizon_owners>0U);
+  CHECK(selection.metrics.logical_owners_after_closure<1'100'000U);
+  CHECK(selection.metrics.horizon_owners==0U);
+}
+
+TEST_CASE("production radial world resolves the surface around the player") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  const auto selection=tetra_viewer::select_world_lod_cut(profile,field,camera);
+  double maximum_near_edge{};
+  unsigned int minimum_near_depth=profile.near_red_depth;
+  std::size_t near_crossing_owners{};
+  std::size_t far_crossing_owners{};
+  for(const auto owner:selection.owners){
+    const auto normalized=tetra::world_tetrahedron_geometry(owner);
+    std::array<tetra::Vec3,4> points{};
+    bool negative{},positive{};
+    tetra::Vec3 centre{};
+    for(std::size_t corner=0;corner<points.size();++corner){
+      points[corner]=profile.domain.to_world(normalized[corner]);
+      centre=centre+points[corner];
+      const double distance=field.signed_distance(points[corner]);
+      negative|=distance<0.0;positive|=distance>=0.0;
+    }
+    centre=centre/4.0;
+    const auto offset=centre-camera.position;
+    const double camera_distance=std::sqrt(
+        offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+    if(negative&&positive&&camera_distance>10'000.0)
+      ++far_crossing_owners;
+    if(!(negative&&positive)||camera_distance>0.4)continue;
+    ++near_crossing_owners;
+    minimum_near_depth=std::min(minimum_near_depth,owner.red_depth());
+    for(std::size_t first=0;first<points.size();++first)
+      for(std::size_t second=first+1U;second<points.size();++second){
+        const auto edge=points[first]-points[second];
+        maximum_near_edge=std::max(maximum_near_edge,std::sqrt(
+            edge.x*edge.x+edge.y*edge.y+edge.z*edge.z));
+      }
+  }
+  CAPTURE(near_crossing_owners);
+  CAPTURE(minimum_near_depth);
+  CAPTURE(maximum_near_edge);
+  REQUIRE(near_crossing_owners>0U);
+  CHECK(far_crossing_owners>0U);
+  CHECK(minimum_near_depth==profile.near_red_depth);
+  CHECK(maximum_near_edge<=0.09);
+}
+
+TEST_CASE("production planet keeps local relief and tall distant landmarks") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  field.secondary=profile.octave_detail_amplitude;
+  field.frequency=profile.octave_detail_frequency;
+  const double radius=field.terrain.planet_radius;
+  const tetra::Vec3 centre{
+      field.centre.x,field.centre.y-radius,field.centre.z};
+  const auto height=[&](double arc,double azimuth){
+    const double angle=arc/radius;
+    const tetra::Vec3 direction{
+        std::sin(angle)*std::cos(azimuth),std::cos(angle),
+        std::sin(angle)*std::sin(azimuth)};
+    return -field.signed_distance(centre+direction*radius);
+  };
+  double local_minimum=std::numeric_limits<double>::infinity();
+  double local_maximum=-std::numeric_limits<double>::infinity();
+  double distant_minimum=std::numeric_limits<double>::infinity();
+  double distant_maximum=-std::numeric_limits<double>::infinity();
+  double tallest_arc{},tallest_azimuth{};
+  for(std::size_t direction=0U;direction<128U;++direction){
+    const double azimuth=2.0*std::numbers::pi*
+        static_cast<double>(direction)/128.0;
+    for(double arc=3.0;arc<=18.0;arc+=0.5){
+      const double sample=height(arc,azimuth);
+      local_minimum=std::min(local_minimum,sample);
+      local_maximum=std::max(local_maximum,sample);
+    }
+    for(double arc=96.0;arc<=768.0;arc+=4.0){
+      const double sample=height(arc,azimuth);
+      distant_minimum=std::min(distant_minimum,sample);
+      if(sample>distant_maximum){
+        distant_maximum=sample;tallest_arc=arc;tallest_azimuth=azimuth;
+      }
+    }
+  }
+  CAPTURE(local_minimum);CAPTURE(local_maximum);
+  CAPTURE(distant_minimum);CAPTURE(distant_maximum);
+  CAPTURE(tallest_arc);CAPTURE(tallest_azimuth);
+  CHECK(local_maximum-local_minimum>0.25);
+  CHECK(local_maximum<5.0);
+  CHECK(distant_maximum>40.0);
+  CHECK(distant_maximum-distant_minimum>60.0);
 }
 
 TEST_CASE("batched camera frontier cuts retain exact conformity at every slice") {
-  const auto profile=tetra_viewer::production_world_profile();
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-63.5,-63.5,-63.5},.world_extent=128.0};
+  profile.background_red_depth=5U;
+  profile.near_red_depth=11U;
+  profile.view_distance=48.0;
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
   field.secondary=profile.octave_detail_amplitude;
   field.frequency=profile.octave_detail_frequency;
@@ -1342,27 +1482,30 @@ TEST_CASE("first person fixed steps are deterministic across frame grouping") {
   CHECK(first.grounded==second.grounded);
 }
 
-TEST_CASE("first person control boost is substantially faster than sprint") {
+TEST_CASE("first person modifiers select sprint control and combined speeds") {
   tetra::Sphere field;
   field.kind=tetra::ImplicitShapeKind::perlin_terrain;
   tetra_viewer::FirstPersonConfiguration configuration;
-  configuration.ground_acceleration=100.0;
-  configuration.air_acceleration=100.0;
+  configuration.ground_acceleration=100'000.0;
+  configuration.air_acceleration=100'000.0;
   tetra_viewer::FirstPersonController walking{configuration},
-      sprinting{configuration},boosted{configuration};
+      sprinting{configuration},boosted{configuration},combined{configuration};
   for(int step=0;step<360;++step){
     walking.advance(1.0/120.0,{},field);
     sprinting.advance(1.0/120.0,{},field);
     boosted.advance(1.0/120.0,{},field);
+    combined.advance(1.0/120.0,{},field);
   }
   const auto origin=walking.state().feet;
   tetra_viewer::FirstPersonInput walk;walk.forward=1.0;
   auto sprint=walk;sprint.sprint=true;
   auto boost=walk;boost.super_speed=true;
+  auto control_shift=boost;control_shift.sprint=true;
   for(int step=0;step<12;++step){
     walking.advance(1.0/120.0,walk,field);
     sprinting.advance(1.0/120.0,sprint,field);
     boosted.advance(1.0/120.0,boost,field);
+    combined.advance(1.0/120.0,control_shift,field);
   }
   const auto travelled=[origin](const tetra_viewer::FirstPersonController& controller){
     const auto delta=controller.state().feet-origin;
@@ -1370,6 +1513,10 @@ TEST_CASE("first person control boost is substantially faster than sprint") {
   };
   CHECK(travelled(sprinting)>travelled(walking));
   CHECK(travelled(boosted)>travelled(sprinting)*4.0);
+  CHECK(travelled(combined)/travelled(boosted)==doctest::Approx(10.0));
+  CHECK(tetra_viewer::movement_speed_multiplier(control_shift,configuration)==
+        doctest::Approx(
+            10.0*tetra_viewer::movement_speed_multiplier(boost,configuration)));
 }
 
 TEST_CASE("first person collision and jump use the procedural field") {
@@ -1650,8 +1797,15 @@ TEST_CASE("monolithic terrain runtime publishes only complete background slices"
 }
 
 TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies in background") {
-  tetra_viewer::BlockedTerrainRuntime runtime(
-      tetra_viewer::production_world_profile());
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-63.5,-63.5,-63.5},.world_extent=128.0};
+  profile.background_red_depth=5U;
+  profile.near_red_depth=11U;
+  profile.view_distance=48.0;
+  profile.maximum_depth=16U;
+  profile.budgets.maximum_work_units=10'000'000U;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
   const auto initial=runtime.diagnostics();
   REQUIRE(initial.converged);
   REQUIRE(initial.scene_generation>0U);
@@ -1844,7 +1998,7 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   REQUIRE(wait_for(std::chrono::seconds(10)));
   CHECK(runtime.diagnostics().logical_cells<boundary_cells);
   const auto final=runtime.diagnostics();
-  const auto budgets=tetra_viewer::production_world_profile().budgets;
+  const auto budgets=profile.budgets;
   CHECK(final.resident_bytes<=budgets.maximum_cpu_bytes);
   CHECK(final.cpu_high_water_bytes<=budgets.maximum_cpu_bytes);
   CHECK(final.triangle_high_water<=budgets.maximum_triangles);
@@ -2134,6 +2288,81 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   CHECK_FALSE(runtime.diagnostics().busy);
   CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
   CHECK(runtime.diagnostics().scene_generation==final_generation);
+}
+
+TEST_CASE("blocked world schedules accumulated camera rotation without translation") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.6;
+  constexpr double vertical=-0.19611613513818404;
+  constexpr double horizontal=0.9805806756909202;
+  for(std::size_t sample=1U;sample<=100U;++sample){
+    const double angle=0.001*static_cast<double>(sample);
+    camera.forward={horizontal*std::sin(angle),vertical,
+                    -horizontal*std::cos(angle)};
+    runtime.set_camera(camera,true);
+  }
+  CHECK_FALSE(runtime.update());
+  REQUIRE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==initial.submitted_builds+1U);
+
+  runtime.set_camera(camera,false);
+  const auto deadline=std::chrono::steady_clock::now()+
+      std::chrono::seconds(60);
+  while(std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto rotated=runtime.diagnostics();
+  CAPTURE(rotated.busy);
+  CAPTURE(rotated.budget_exceeded);
+  CAPTURE(rotated.submitted_builds);
+  CAPTURE(rotated.canceled_builds);
+  CAPTURE(rotated.scene_generation);
+  CAPTURE(rotated.logical_cells);
+  CAPTURE(rotated.hierarchy_blocks);
+  CAPTURE(rotated.maximum_hierarchy_blocks);
+  CAPTURE(rotated.visible_hierarchy_blocks);
+  CAPTURE(rotated.guard_hierarchy_blocks);
+  CAPTURE(rotated.predicted_hierarchy_blocks);
+  CAPTURE(rotated.cpu_high_water_bytes);
+  CAPTURE(profile.budgets.maximum_cpu_bytes);
+  CAPTURE(rotated.triangle_high_water);
+  CAPTURE(profile.budgets.maximum_triangles);
+  CAPTURE(rotated.work_high_water);
+  CAPTURE(profile.budgets.maximum_work_units);
+  CAPTURE(rotated.upload_high_water_bytes);
+  CAPTURE(profile.budgets.maximum_upload_bytes);
+  REQUIRE(rotated.converged);
+  CHECK_FALSE(rotated.busy);
+  CHECK(rotated.scene_generation>initial.scene_generation);
+  CHECK(rotated.hierarchy_hash!=initial.hierarchy_hash);
+  CHECK(rotated.published_camera_position.x==camera.position.x);
+  CHECK(rotated.published_camera_position.y==camera.position.y);
+  CHECK(rotated.published_camera_position.z==camera.position.z);
+  CHECK(rotated.published_camera_forward.x==camera.forward.x);
+  CHECK(rotated.published_camera_forward.y==camera.forward.y);
+  CHECK(rotated.published_camera_forward.z==camera.forward.z);
+  CHECK(rotated.positive_volumes);
+  CHECK(rotated.conforming_faces);
+
+  const auto settled_submissions=rotated.submitted_builds;
+  const auto settled_generation=rotated.scene_generation;
+  for(std::size_t sample=0U;sample<32U;++sample){
+    const double noise=(sample%2U==0U?1.0:-1.0)*1.0e-8;
+    camera.forward={horizontal*std::sin(0.1+noise),vertical,
+                    -horizontal*std::cos(0.1+noise)};
+    runtime.set_camera(camera,false);
+    CHECK_FALSE(runtime.update());
+  }
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
+  CHECK(runtime.diagnostics().scene_generation==settled_generation);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
@@ -13861,6 +14090,8 @@ TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
             game.ground_radius_metres,18.0)>2'000.0);
   CHECK(tetra_viewer::planetary_horizon_distance(
             game.ground_radius_metres,18.0)<3'000.0);
+  CHECK(game.mie_scale_height_metres==doctest::Approx(30.0));
+  CHECK(game.ground_albedo[0]==doctest::Approx(0.32));
   for(std::size_t channel=0;channel<3U;++channel){
     CHECK(game.rayleigh_scattering_per_metre[channel]*
               game.rayleigh_scale_height_metres==
@@ -13878,6 +14109,12 @@ TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
               game.absorption_half_width_metres==
           doctest::Approx(earth.absorption_per_metre[channel]*
               earth.absorption_half_width_metres).epsilon(1.0e-12));
+    const double earth_mie_extinction=earth.mie_scattering_per_metre[channel]+
+        earth.mie_absorption_per_metre[channel];
+    CHECK(earth_mie_extinction==doctest::Approx(4.4e-6).epsilon(1.0e-12));
+    CHECK(game.mie_scattering_per_metre[channel]/
+              (game.mie_scattering_per_metre[channel]+
+               game.mie_absorption_per_metre[channel])>0.90);
   }
 }
 
@@ -13925,6 +14162,56 @@ TEST_CASE("atmosphere boundary rays remain stable from ground through space") {
   const auto tangent = tetra_viewer::atmosphere_ray_segment(
       {top, 0.0, 0.0}, {0.0, 1.0, 0.0}, parameters);
   CHECK_FALSE(tangent);  // A zero-length tangent contributes no medium.
+}
+
+TEST_CASE("compact planet shaders preserve metre-scale horizon precision") {
+  constexpr float radius=200'000.0F;
+  constexpr float altitude=1.0F;
+  const float radial_distance=radius+altitude;
+  const float exact=altitude*(2.0F*radius+altitude);
+  const float stable=(radial_distance-radius)*(radial_distance+radius);
+  const float cancelled=radial_distance*radial_distance-radius*radius;
+  CHECK(stable==doctest::Approx(exact).epsilon(1.0e-6));
+  CHECK(std::abs(cancelled-exact)>100.0F);
+
+  const auto read_shader=[](const std::filesystem::path& path){
+    std::ifstream stream(path);
+    REQUIRE(stream.good());
+    return std::string(std::istreambuf_iterator<char>(stream),{});
+  };
+  for(const auto& path:{std::filesystem::path("src/tetra_viewer/atmosphere.comp"),
+                        std::filesystem::path("src/tetra_viewer/tone_map.frag")}){
+    const auto shader=read_shader(path);
+    CHECK(shader.find("dot(origin,origin)-radius*radius")==std::string::npos);
+    CHECK(shader.find("(radial_distance-radius)*(radial_distance+radius)")!=
+          std::string::npos);
+  }
+}
+
+TEST_CASE("planet atmosphere composites lit analytic ground through aerial perspective") {
+  const auto read_text=[](const std::filesystem::path& path){
+    std::ifstream stream(path);
+    REQUIRE(stream.good());
+    return std::string(std::istreambuf_iterator<char>(stream),{});
+  };
+  const auto atmosphere_shader=read_text("src/tetra_viewer/atmosphere.comp");
+  const auto compositor=read_text("src/tetra_viewer/tone_map.frag");
+  CHECK(compositor.find("if(depth<=1.0e-8)")!=std::string::npos);
+  CHECK(compositor.find("ground_disc_coverage")==std::string::npos);
+  CHECK(atmosphere_shader.find("ground_radiance(")==std::string::npos);
+  CHECK(compositor.find("ground_intersection_distance(")!=std::string::npos);
+  CHECK(compositor.find("analytic_ground_radiance(")!=std::string::npos);
+  CHECK(compositor.find("composite_aerial(")!=std::string::npos);
+  CHECK(compositor.find("analytic_ground_radiance(view_direction,ground_distance)")!=
+        std::string::npos);
+  CHECK(compositor.find("surface_radiance*transmittance+scattering")!=
+        std::string::npos);
+  CHECK(compositor.find("directional_airlight")!=std::string::npos);
+  CHECK(compositor.find("scattering=max(scattering,directional_airlight)")!=
+        std::string::npos);
+  CHECK(compositor.find(
+      "const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb")!=
+        std::string::npos);
 }
 
 TEST_CASE("atmosphere densities phases and transmittance obey analytic limits") {
@@ -14070,6 +14357,32 @@ TEST_CASE("stable shadow cascades are nested snapped and centred in clip space")
     CHECK(right_edge.x==doctest::Approx(1.0).epsilon(1.0e-5));
     previous_split=cascade.split_distance;
   }
+}
+
+TEST_CASE("atmospheric shadow cascades cover the gameplay horizon without a light jump") {
+  const auto game=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  constexpr double eye_height_metres=18.0;
+  constexpr double metres_per_world_unit=10.0;
+  const double horizon_world=tetra_viewer::planetary_horizon_distance(
+      game.ground_radius_metres,eye_height_metres)/metres_per_world_unit;
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,2.3,0.5},{0.0,0.0,-1.0},{-0.2,0.3,-0.9},1024U);
+  CHECK(cascades.cascades.back().split_distance>horizon_world);
+  CHECK(cascades.cascades.back().half_width==
+        doctest::Approx(tetra_viewer::default_shadow_cascade_half_widths.back()));
+  CHECK(cascades.cascades.back().texel_world_size<=1.0);
+
+  std::ifstream shader_stream("src/tetra_viewer/atmosphere.comp");
+  REQUIRE(shader_stream.good());
+  const std::string shader(std::istreambuf_iterator<char>(shader_stream),{});
+  CHECK(shader.find("return mix(1.0,visibility,footprint_fade)")!=
+        std::string::npos);
+  CHECK(shader.find("visibility*0.25")==std::string::npos);
+  CHECK(shader.find("atmosphere_sun_visibility(point)")!=std::string::npos);
+  CHECK(shader.find("const int steps=32")!=std::string::npos);
+  CHECK(shader.find("segment_length*interval_begin*interval_begin")!=
+        std::string::npos);
 }
 
 TEST_CASE("shadow cascade motion is quantized to texels and deterministic") {

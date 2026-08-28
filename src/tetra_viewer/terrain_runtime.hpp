@@ -24,6 +24,7 @@ struct TerrainRuntimeDiagnostics {
   std::uint64_t render_hash{};
   std::uint64_t field_sample_hash{};
   tetra::Vec3 published_camera_position{};
+  tetra::Vec3 published_camera_forward{};
   std::size_t logical_cells{};
   std::size_t active_tetrahedra{};
   std::size_t resident_bytes{};
@@ -501,7 +502,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   WorldProfile profile_;
   tetra::Sphere field_;
   tetra::Camera camera_;
-  tetra::Vec3 last_requested_position_{};
+  tetra::Camera last_requested_camera_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;

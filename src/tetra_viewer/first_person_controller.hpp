@@ -25,6 +25,7 @@ struct FirstPersonConfiguration {
   double walk_speed{0.42};
   double sprint_multiplier{2.0};
   double super_speed_multiplier{12.0};
+  double super_sprint_multiplier{120.0};
   double jump_speed{0.72};
   double gravity{1.8};
   double capsule_radius{0.025};
@@ -38,6 +39,15 @@ struct FirstPersonConfiguration {
   double maximum_penetration_recovery{0.04};
   double ground_snap_distance{0.03};
 };
+
+[[nodiscard]] constexpr double movement_speed_multiplier(
+    const FirstPersonInput& input,
+    const FirstPersonConfiguration& configuration={}) noexcept {
+  if(input.super_speed&&input.sprint)
+    return configuration.super_sprint_multiplier;
+  if(input.super_speed)return configuration.super_speed_multiplier;
+  return input.sprint?configuration.sprint_multiplier:1.0;
+}
 
 struct FirstPersonState {
   tetra::Vec3 feet{0.5,0.72,0.78};

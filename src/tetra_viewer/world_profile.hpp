@@ -7,7 +7,7 @@ namespace tetra_viewer {
 struct WorldResourceBudgets {
   std::size_t maximum_cpu_bytes{512U*1024U*1024U};
   std::size_t maximum_triangles{500000U};
-  std::size_t maximum_work_units{10000000U};
+  std::size_t maximum_work_units{20000000U};
   std::size_t maximum_upload_bytes{32U*1024U*1024U};
 };
 
@@ -55,6 +55,10 @@ struct WorldProfile {
       .landform_amplitude=1.5,.landform_frequency=1.0/32.0,
       .mountain_amplitude=6.0,.mountain_ridge_frequency=1.0/18.0,
       .mountain_range_frequency=1.0/64.0,
+      .planetary_mountain_amplitude_scale=24.0,
+      .planetary_mountain_frequency_scale=0.0625,
+      .planetary_mountain_fade_start=24.0,
+      .planetary_mountain_fade_end=96.0,
       .gameplay_hill_amplitude=0.7,.gameplay_hill_frequency=1.0/8.0,
       .gameplay_feature_amplitude=0.18,.gameplay_feature_frequency=1.0/2.5,
       .gameplay_region_frequency=1.0/18.0,
@@ -62,7 +66,8 @@ struct WorldProfile {
       .gameplay_warp_amplitude=1.2,.gameplay_warp_frequency=1.0/16.0,
       .ground_roughness_amplitude=0.025,
       .ground_roughness_frequency=1.0/0.6,
-      .spawn_flat_radius=0.8,.spawn_blend_radius=3.0};
+      .spawn_flat_radius=0.8,.spawn_blend_radius=3.0,
+      .planet_radius=20'000.0};
   double octave_detail_amplitude{};
   double octave_detail_frequency{3.0};
   SurfaceDrawChunkStrategy draw_chunks{default_surface_draw_chunk_strategy};
@@ -70,9 +75,10 @@ struct WorldProfile {
   // cube. The spawn remains at the old 0.5-centred coordinate while the same
   // normalized root identity now covers a long-range streaming domain.
   tetra::WorldStreamingDemand::Domain domain{
-      .world_origin={-63.5,-63.5,-63.5},.world_extent=128.0};
-  unsigned int background_red_depth{5U};
-  unsigned int near_red_depth{11U};
+      .world_origin={-32'767.5,-52'767.5,-32'767.5},
+      .world_extent=65'536.0};
+  unsigned int background_red_depth{3U};
+  unsigned int near_red_depth{20U};
   // Full conforming cells are a near-player/interaction cache. Ordinary
   // visible blocks keep their hierarchy and derived surface without retaining
   // the substantially larger tetrahedral volume arrays.
@@ -82,9 +88,9 @@ struct WorldProfile {
   double hierarchy_guard_frustum_scale{1.35};
   double hierarchy_prediction_factor{1.0};
   std::uint32_t hierarchy_recent_retention_epochs{8U};
-  double view_distance{48.0};
+  double view_distance{5.0};
   double pixel_threshold{128.0};
-  unsigned int maximum_depth{16U};
+  unsigned int maximum_depth{20U};
   WorldResourceBudgets budgets{};
   bool show_faces{true};
   bool show_surface_edges{true};

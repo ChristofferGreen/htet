@@ -9,6 +9,8 @@ namespace tetra_viewer {
 
 inline constexpr std::size_t shadow_cascade_count=4U;
 inline constexpr std::uint32_t shadow_map_resolution=1024U;
+inline constexpr std::array<double,shadow_cascade_count>
+    default_shadow_cascade_half_widths{2.0,8.0,32.0,512.0};
 
 struct ShadowCascade {
   std::array<float,16> matrix{};
@@ -30,7 +32,8 @@ struct ShadowCascadeSet {
     tetra::Vec3 camera_relative_position,tetra::Vec3 camera_forward,
     tetra::Vec3 sun_direction,
     std::uint32_t map_resolution=shadow_map_resolution,
-    std::array<double,shadow_cascade_count> half_widths={2.0,8.0,32.0,128.0});
+    std::array<double,shadow_cascade_count> half_widths=
+        default_shadow_cascade_half_widths);
 
 [[nodiscard]] tetra::Vec3 transform_shadow_point(
     const std::array<float,16>& matrix,tetra::Vec3 point) noexcept;

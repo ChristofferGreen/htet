@@ -26,15 +26,25 @@ The first compelling result is not a complete planet simulation. It is an
 endless-feeling terrain walker inside one deliberately oversized root domain
 that proves sparse hierarchy identity, invisible storage boundaries,
 background LOD, retained rendering, and simple player physics. Curved gravity
-and a spherical terrain field can follow without changing hierarchy identity.
+remains a separate next conversion; the terrain field itself is now radial.
 
 The first planetary-scale probe uses a 200 km-radius gameplay planet. The
-existing terrain remains a tangent local patch while the renderer supplies a
-distance-gated analytic far-field sphere and the atmosphere uses a compact,
-Earth-optical-depth preset. This is deliberately an integration probe, not the
-final terrain representation: the next geometry milestone must bend the sparse
-surface hierarchy onto the sphere and replace the visible local/far-field
-handoff with one watertight radial terrain field.
+production sparse hierarchy now evaluates one closed radial terrain field: the
+old north-pole spawn remains at `(0.5, 0.5, 0.5)`, its planet centre is 20,000
+world units below it, and the one 65,536-unit root cube encloses the complete
+solid. Deterministic seamless 3D noise supplies radial landforms. The active
+cut forces full local depth around the player, retains a coarse closed global
+shell, and applies projected-error refinement only in the guarded view while
+rejecting safely occluded far-side detail. Exact hierarchy terrain remains
+authoritative wherever it writes depth. For depth-clear pixels, full-resolution
+composition intersects the analytic planet, shades it with the same neutral
+terrain response, and applies distance-indexed aerial transmittance plus
+in-scattering. Rays that miss the planet sample the sky-view lookup. This
+removes the black lower-hemisphere shortcut and keeps both generated and
+analytic terrain on one haze path without drawing over real terrain. Planetary publications currently rebuild the
+conformity proof graph from the requested cut because the old compact-front
+warm proof path is not exact across these large view-boundary changes; field,
+surface, and render caches remain retained.
 
 ## 2. Initial scope
 
@@ -1087,9 +1097,10 @@ Moving the LOD origin requests cooperative cancellation through cut selection,
 conforming closure, and sparse surface reconstruction. A raced stale result is
 never published, the newest pose remains pending, and the last complete front
 continues to render. Canceled candidate caches are discarded so repeated
-supersession cannot accumulate unpublished memory. Rotation alone does not
-rebuild this runtime because its present LOD demand is omnidirectional and
-position based.
+supersession cannot accumulate unpublished memory. Camera rotation accumulates
+against the last submitted orientation and crosses a half-degree interactive
+threshold; it then retargets visible and guarded-frustum demand while recent
+retention prevents the newly hidden side from collapsing at once.
 
 ## 13. Rendering
 
@@ -1098,8 +1109,12 @@ triangles and optional depth-tested surface edges. Smooth analytic terrain
 normals are an explicit `M` diagnostic toggle; they affect only terrain and
 connected surface material, never volume faces or topology, and flat shading
 remains the default. Neutral stone uses a movable world-space directional sun,
-a rough dielectric realtime BRDF, stable sky/ground environment light, and a
-filtered directional shadow map. Azimuth and elevation controls drive the
+a rough dielectric realtime BRDF, atmosphere-derived indirect sky irradiance,
+atmospherically attenuated direct sunlight, ground bounce, and a filtered
+directional shadow map. The retained multiple-scattering table stores incident
+radiance rather than a half-float-precision scattering source; the terrain
+shader combines it with wavelength-dependent vertical beam loss instead of
+adding a fixed ambient colour. Azimuth and elevation controls drive the
 lighting direction, shadow projection, and a large procedural sun disc through
 one shared normalized direction. The disc is rendered behind opaque terrain so
 the horizon occludes it correctly. The current 128-unit prototype fits one
@@ -1397,10 +1412,12 @@ represent a unit cell.
 
 #### Deterministic mountain and player-scale landforms
 
-The production terrain field separates distant and gameplay scales. Broad
-32-unit landforms and sparse 64-unit range masks carrying smooth 18-unit
-ridges leave extensive plains while placing a major six-unit-high range inside
-the 48-unit horizon, around `(-28, -32)`. Domain-warped eight-unit rolling
+The production terrain field separates distant and gameplay scales. On the
+planet, sparse 1,024-unit range masks carry smooth 288-unit ridges up to 144
+world units (roughly 1.4 km) high, producing landmark silhouettes rather than
+repeating local bumps. This monumental band fades in from 24 to 96 world units
+away from spawn, preserving the initial play area while allowing peaks beyond
+the ordinary ground horizon to remain visible. Domain-warped eight-unit rolling
 hills provide the principal near-player relief. Regionally masked 2.5-unit
 features and shallow corridor bands create local ridges, hollows, routes, and
 play spaces without covering the world in uniform noise. A final 0.6-unit,
@@ -1638,7 +1655,7 @@ todo chain are in
 - [x] Verify mixed-depth neighbours use the existing global BCC transition
       grammar independent of their storage-block placement.
 - [ ] Add distance-ring budgets that target stable visible triangle counts.
-- [ ] Add an altitude-aware planet-silhouette LOD floor based on conservative
+- [x] Add an altitude-aware planet-silhouette LOD floor based on conservative
       radial error and projected limb deviation; retain a spherical closed
       shell from ground level through orbital and distant whole-planet views
       without materializing fine far-side volume.
@@ -1662,6 +1679,8 @@ todo chain are in
       differences at every LOD replacement; test scalar-footprint filtering if
       the unfiltered Perlin field exceeds the agreed temporal thresholds.
 - [ ] Verify no parent/child holes, overlaps, cracks, or duplicate draws.
+- [ ] Re-qualify incremental conformity-proof reuse for large planetary cut
+      deltas against the cold closed-cut oracle before enabling it by default.
 
 ### Gate 7: Playability and release qualification
 

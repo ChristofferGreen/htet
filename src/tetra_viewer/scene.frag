@@ -14,6 +14,26 @@ layout(std140,set=0,binding=1) uniform ShadowCascades {
   mat4 shadow_matrices[4];
   vec4 shadow_splits;
 } shadow_cascades;
+layout(set=0,binding=2) uniform sampler2D transmittance_lut;
+layout(set=0,binding=3) uniform sampler2D multiple_scattering_lut;
+layout(std140,set=0,binding=4) uniform Atmosphere {
+  vec4 rayleigh_ground_radius;
+  vec4 mie_scattering_top_radius;
+  vec4 mie_absorption_rayleigh_scale;
+  vec4 absorption_mie_scale;
+  vec4 ground_albedo_mie_anisotropy;
+  vec4 solar_absorption_peak;
+  vec4 profile_and_mode;
+  vec4 camera_position_near;
+  vec4 camera_right_tangent_x;
+  vec4 camera_down_tangent_y;
+  vec4 camera_forward_maximum_distance;
+  vec4 sun_direction_exposure;
+  vec4 reserved0;
+  vec4 reserved1;
+  vec4 reserved2;
+  vec4 reserved3;
+} atmosphere;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
@@ -54,6 +74,67 @@ float sun_visibility(vec3 position,float n_dot_l) {
   const float blend_start=mix(previous,split,0.85);
   const float blend=smoothstep(blend_start,split,distance_from_camera);
   return mix(current,cascade_visibility(position,n_dot_l,cascade+1),blend);
+}
+
+float atmosphere_sun_visibility(float radial_distance,float sun_cosine) {
+  const float radius=atmosphere.rayleigh_ground_radius.w;
+  const float altitude=max(radial_distance-radius,0.0);
+  const float horizon_sine_squared=max(0.0,
+      altitude*(radial_distance+radius)/(radial_distance*radial_distance));
+  const float horizon_cosine=-sqrt(horizon_sine_squared);
+  const float cosine_width=max(sin(atmosphere.profile_and_mode.z),1.0e-5);
+  return smoothstep(horizon_cosine-cosine_width,
+                    horizon_cosine+cosine_width,sun_cosine);
+}
+
+vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
+                                 out vec3 direct_sun) {
+  if(atmosphere.profile_and_mode.w<0.5){
+    const float sky_mix=clamp(surface_normal.y*0.5+0.5,0.0,1.0);
+    direct_sun=vec3(2.8,2.60,2.30);
+    return mix(vec3(0.08,0.075,0.07),vec3(0.24,0.28,0.34),sky_mix);
+  }
+  const float metres=atmosphere.profile_and_mode.y;
+  const vec3 relative_metres=(position-camera.view_position.xyz)*metres;
+  const vec3 planet_position=atmosphere.camera_position_near.xyz+
+      relative_metres;
+  const float radial_distance=max(length(planet_position),1.0);
+  const vec3 local_up=planet_position/radial_distance;
+  const float atmosphere_height=atmosphere.mie_scattering_top_radius.w-
+      atmosphere.rayleigh_ground_radius.w;
+  const float altitude=clamp(radial_distance-
+      atmosphere.rayleigh_ground_radius.w,0.0,atmosphere_height);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float sun_cosine=dot(local_up,sun_direction);
+  const vec2 lookup_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
+      clamp(altitude/max(atmosphere_height,1.0),0.0,1.0));
+
+  // Turn the retained incident-sky spherical average into a cosine-weighted
+  // diffuse approximation for this surface normal.
+  const vec3 average_radiance=texture(
+      multiple_scattering_lut,lookup_uv).rgb;
+  const float upward=clamp(dot(surface_normal,local_up),-1.0,1.0);
+  const float sky_hemisphere_weight=mix(0.35,2.0,upward*0.5+0.5);
+  // The isotropic closure deliberately contains little first-order sky
+  // energy. Recover a conservative coloured share of the vertical beam loss
+  // so blue-hour terrain remains readable without a constant ambient floor.
+  const vec3 vertical_transmittance=texture(transmittance_lut,
+      vec2(1.0,lookup_uv.y)).rgb;
+  const float daylight=smoothstep(-0.12,0.20,sun_cosine);
+  const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
+      (vec3(1.0)-vertical_transmittance)*daylight*0.60;
+  const vec3 sky_irradiance_over_pi=(average_radiance+
+      single_scattered_fill)*sky_hemisphere_weight;
+
+  const vec3 solar_transmittance=texture(transmittance_lut,lookup_uv).rgb;
+  const float planet_visibility=atmosphere_sun_visibility(
+      radial_distance,sun_cosine);
+  direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
+      planet_visibility*2.8;
+  const float ground_facing=max(-upward,0.0);
+  const vec3 ground_bounce=atmosphere.ground_albedo_mie_anisotropy.rgb*
+      direct_sun*max(sun_cosine,0.0)*ground_facing*0.25;
+  return sky_irradiance_over_pi+ground_bounce;
 }
 
 vec3 angle_colour(float angle_degrees) {
@@ -118,9 +199,9 @@ void main() {
     const float stripe = smoothstep(0.18, 0.82, wave);
     shaded_colour = mix(vec3(0.025,0.055,0.10),vec3(0.88,0.96,1.0),stripe);
   } else if (shading_model == 4 && (!volume_cut || connected_surface)) {
-    // Conventional realtime dielectric BRDF: fixed world-space sun,
+    // Conventional realtime dielectric BRDF: world-space sun,
     // per-fragment view direction, GGX distribution, Smith masking, Schlick
-    // Fresnel, and a stable diffuse environment term.
+    // Fresnel, and atmosphere-derived indirect illumination.
     const vec3 albedo=vec3(0.32,0.33,0.34);
     const float roughness=0.82;
     const float metallic=0.0;
@@ -146,13 +227,13 @@ void main() {
     const vec3 specular=distribution*geometry_v*geometry_l*fresnel/
         max(4.0*n_dot_v*n_dot_l,1.0e-5);
     const vec3 diffuse=(1.0-fresnel)*(1.0-metallic)*albedo/3.14159265359;
-    const float sky_mix=clamp(unit_normal.y*0.5+0.5,0.0,1.0);
-    const vec3 environment=mix(vec3(0.08,0.075,0.07),
-        vec3(0.24,0.28,0.34),sky_mix);
-    const vec3 ambient=albedo*environment;
+    vec3 direct_sun;
+    const vec3 environment=atmosphere_terrain_lighting(
+        fragment_position,unit_normal,direct_sun);
+    const vec3 ambient=(1.0-f0)*(1.0-metallic)*albedo*environment;
     const float shadow=sun_visibility(fragment_position,n_dot_l);
     const vec3 linear_colour=ambient+
-        (diffuse+specular)*n_dot_l*vec3(2.8,2.60,2.30)*shadow;
+        (diffuse+specular)*n_dot_l*direct_sun*shadow;
     // Keep scene radiance linear. The HDR composite owns exposure, tone
     // mapping, and the single display transfer for every material.
     shaded_colour=linear_colour;

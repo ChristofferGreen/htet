@@ -59,8 +59,9 @@ bool planet_blocks_view(vec3 direction) {
   const vec3 origin=atmosphere.camera_position_near.xyz;
   const float projection=dot(origin,direction);
   const float radius=atmosphere.rayleigh_ground_radius.w;
+  const float radial_distance=length(origin);
   const float discriminant=projection*projection-
-      (dot(origin,origin)-radius*radius);
+      (radial_distance-radius)*(radial_distance+radius);
   return projection<0.0&&discriminant>=0.0;
 }
 
@@ -68,42 +69,62 @@ float ground_intersection_distance(vec3 direction) {
   const vec3 origin=atmosphere.camera_position_near.xyz;
   const float projection=dot(origin,direction);
   const float radius=atmosphere.rayleigh_ground_radius.w;
+  const float radial_distance=length(origin);
   const float discriminant=projection*projection-
-      (dot(origin,origin)-radius*radius);
+      (radial_distance-radius)*(radial_distance+radius);
   if(discriminant<0.0)return -1.0;
   const float root=sqrt(max(discriminant,0.0));
   const float near_distance=-projection-root;
   const float far_distance=-projection+root;
-  return near_distance>0.0?near_distance:(far_distance>0.0?far_distance:-1.0);
+  return near_distance>0.01?near_distance:
+      (far_distance>0.01?far_distance:-1.0);
 }
 
-float ground_disc_coverage(vec3 direction) {
-  const vec3 origin=atmosphere.camera_position_near.xyz;
-  const float projection=dot(origin,direction);
-  const float radius=atmosphere.rayleigh_ground_radius.w;
-  const float discriminant=projection*projection-
-      (dot(origin,origin)-radius*radius);
-  const float filter_width=max(fwidth(discriminant),1.0);
-  return projection<0.0?
-      smoothstep(-filter_width,filter_width,discriminant):0.0;
-}
-
-vec3 orbital_ground_radiance(vec3 direction,float distance_metres) {
+vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   const vec3 point=atmosphere.camera_position_near.xyz+
       direction*distance_metres;
   const vec3 normal=normalize(point);
   const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
-  const float n_dot_l=max(dot(normal,sun_direction),0.0);
-  const vec2 solar_uv=vec2(dot(normal,sun_direction)*0.5+0.5,0.0);
-  const vec3 solar_transmittance=texture(transmittance_lut,solar_uv).rgb;
-  const vec3 direct=atmosphere.ground_albedo_mie_anisotropy.rgb*
-      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l/
-      3.14159265359*2.8;
-  // Compact multiple-scattering ground fill prevents the night side from
-  // becoming numerically discontinuous while remaining visibly dark.
-  const vec3 fill=atmosphere.ground_albedo_mie_anisotropy.rgb*
-      texture(multiple_scattering_lut,vec2(solar_uv.x,0.0)).rgb*0.35;
-  return direct+fill;
+  const float sun_cosine=dot(normal,sun_direction);
+  const float n_dot_l=max(sun_cosine,0.0);
+  const float atmosphere_height=atmosphere.mie_scattering_top_radius.w-
+      atmosphere.rayleigh_ground_radius.w;
+  const vec2 lighting_uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
+      clamp(1.0/max(atmosphere_height,1.0),0.0,1.0));
+  const vec3 solar_transmittance=texture(
+      transmittance_lut,lighting_uv).rgb;
+  const vec3 average_radiance=texture(
+      multiple_scattering_lut,lighting_uv).rgb;
+  const vec3 vertical_transmittance=texture(
+      transmittance_lut,vec2(1.0,lighting_uv.y)).rgb;
+  const float daylight=smoothstep(-0.12,0.20,sun_cosine);
+  const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
+      (vec3(1.0)-vertical_transmittance)*daylight*0.60;
+  const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb;
+  const vec3 environment=(average_radiance+single_scattered_fill)*2.0;
+  const vec3 ambient=0.96*albedo*environment;
+  const vec3 direct=0.96*albedo/3.14159265359*
+      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
+  return ambient+direct;
+}
+
+vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
+  const float slice=pow(clamp(distance_metres/
+      atmosphere.camera_forward_maximum_distance.w,0.0,1.0),1.0/3.0);
+  const vec3 lookup=vec3(texture_coordinate,slice);
+  vec3 scattering=texture(aerial_scattering_lut,lookup).rgb;
+  const vec3 transmittance=texture(aerial_transmittance_lut,lookup).rgb;
+  // The compact 16-slice volume can under-resolve the rapidly changing
+  // eye-level aerosol layer near the horizon. The full-path sky lookup is a
+  // conservative directional airlight reference; scale it by the traversed
+  // optical opacity so nearby geometry is unchanged while distant silhouettes
+  // converge toward the horizon radiance instead of merely becoming dark.
+  const float optical_opacity=1.0-dot(transmittance,
+      vec3(0.2126,0.7152,0.0722));
+  const vec3 directional_airlight=texture(
+      sky_view_lut,texture_coordinate).rgb*max(optical_opacity,0.0);
+  scattering=max(scattering,directional_airlight);
+  return surface_radiance*transmittance+scattering;
 }
 
 void main() {
@@ -143,29 +164,18 @@ void main() {
   if(atmosphere.profile_and_mode.w>0.5){
     const float depth=texture(scene_depth,texture_coordinate).r;
     if(depth<=1.0e-8){
-      hdr=texture(sky_view_lut,texture_coordinate).rgb;
       const vec3 view_direction=atmosphere_view_direction(texture_coordinate);
       const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
-      const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
-          atmosphere.rayleigh_ground_radius.w;
       const float ground_distance=ground_intersection_distance(view_direction);
-      // Exact terrain remains authoritative nearby. The analytic sphere starts
-      // only beyond the generated terrain radius, filling its horizon and the
-      // orbital disc without concealing local cracks or missing triangles.
-      if(ground_distance>atmosphere.reserved0.w){
-        const vec3 camera_normal=normalize(
-            atmosphere.camera_position_near.xyz);
-        const vec2 view_transmittance_uv=vec2(
-            dot(camera_normal,view_direction)*0.5+0.5,
-            clamp(camera_altitude/(atmosphere.mie_scattering_top_radius.w-
-                atmosphere.rayleigh_ground_radius.w),0.0,1.0));
-        const vec3 ground_hdr=orbital_ground_radiance(
-            view_direction,ground_distance)*
-            texture(transmittance_lut,view_transmittance_uv).rgb+
-            texture(sky_view_lut,texture_coordinate).rgb;
-        hdr=mix(hdr,ground_hdr,ground_disc_coverage(view_direction));
+      if(ground_distance>0.0){
+        hdr=composite_aerial(
+            analytic_ground_radiance(view_direction,ground_distance),
+            ground_distance);
+      }else{
+        hdr=texture(sky_view_lut,texture_coordinate).rgb;
       }
-      if(dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
+      if(ground_distance<0.0&&
+         dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
          !planet_blocks_view(view_direction)){
         const float altitude=length(atmosphere.camera_position_near.xyz)-
             atmosphere.rayleigh_ground_radius.w;
@@ -180,12 +190,7 @@ void main() {
       }
     }else{
       const float distance_metres=atmosphere.camera_position_near.w/depth;
-      const float slice=pow(clamp(distance_metres/
-          atmosphere.camera_forward_maximum_distance.w,0.0,1.0),1.0/3.0);
-      const vec3 lookup=vec3(texture_coordinate,slice);
-      const vec3 scattering=texture(aerial_scattering_lut,lookup).rgb;
-      const vec3 transmittance=texture(aerial_transmittance_lut,lookup).rgb;
-      hdr=hdr*transmittance+scattering;
+      hdr=composite_aerial(hdr,distance_metres);
     }
   }
   out_colour=vec4(linear_to_srgb(aces_fitted(

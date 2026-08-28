@@ -59,6 +59,12 @@ struct TerrainParameters {
   double mountain_amplitude{};
   double mountain_ridge_frequency{1.0/18.0};
   double mountain_range_frequency{1.0/64.0};
+  // A radial world can broaden and amplify the same deterministic range
+  // grammar without changing the local heightfield used by research tests.
+  double planetary_mountain_amplitude_scale{1.0};
+  double planetary_mountain_frequency_scale{1.0};
+  double planetary_mountain_fade_start{};
+  double planetary_mountain_fade_end{};
   double gameplay_hill_amplitude{};
   double gameplay_hill_frequency{1.0/8.0};
   double gameplay_feature_amplitude{};
@@ -71,6 +77,9 @@ struct TerrainParameters {
   double ground_roughness_frequency{1.0/0.6};
   double spawn_flat_radius{};
   double spawn_blend_radius{};
+  // Zero keeps the research heightfield. A positive value wraps the terrain
+  // around a closed planet whose north-pole surface is Sphere::centre.
+  double planet_radius{};
   auto operator<=>(const TerrainParameters&) const = default;
 };
 

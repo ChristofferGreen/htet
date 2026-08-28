@@ -53,7 +53,9 @@ std::optional<std::array<double, 2>> sphere_roots(tetra::Vec3 origin,
                                                   tetra::Vec3 direction,
                                                   double radius) {
   const double b = dot(origin, direction);
-  const double c = dot(origin, origin) - radius * radius;
+  const double radial_distance = length(origin);
+  const double c = (radial_distance - radius) *
+                   (radial_distance + radius);
   double discriminant = b * b - c;
   const double tolerance = 32.0 * std::numeric_limits<double>::epsilon() *
                            std::max(b * b, std::abs(c));
@@ -99,17 +101,24 @@ AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
       result.rayleigh_scale_height_metres = 3'000.0;
       result.rayleigh_scattering_per_metre = {
           15.472e-6, 36.1546666666667e-6, 88.2666666666667e-6};
-      result.mie_scale_height_metres = 700.0;
+      // Preserve Earth's integrated aerosol optical depth, but concentrate it
+      // into a shallow gameplay-scale boundary layer. On a 200 km planet the
+      // eye-level geometric horizon is only a few kilometres away; scaling
+      // the aerosol layer with the whole atmosphere made that entire useful
+      // range look crystal clear.
+      result.mie_scale_height_metres = 30.0;
       result.mie_scattering_per_metre = {
-          6.85028571428571e-6, 6.85028571428571e-6,
-          6.85028571428571e-6};
+          159.84e-6, 159.84e-6, 159.84e-6};
       result.mie_absorption_per_metre = {
-          7.54285714285714e-6, 7.54285714285714e-6,
-          7.54285714285714e-6};
+          16.16e-6, 16.16e-6, 16.16e-6};
       result.absorption_peak_altitude_metres = 8'000.0;
       result.absorption_half_width_metres = 4'500.0;
       result.absorption_per_metre = {
           2.16666666666667e-6, 6.27e-6, 0.283333333333333e-6};
+      // The analytic continuation uses the same neutral stone reflectance as
+      // the generated terrain, avoiding a dark lower-hemisphere seam where
+      // the finite active mesh hands off to the planet surface.
+      result.ground_albedo = {0.32, 0.33, 0.34};
       return result;
     case AtmospherePreset::earth:
     case AtmospherePreset::custom:
