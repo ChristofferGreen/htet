@@ -64,6 +64,48 @@ bool planet_blocks_view(vec3 direction) {
   return projection<0.0&&discriminant>=0.0;
 }
 
+float ground_intersection_distance(vec3 direction) {
+  const vec3 origin=atmosphere.camera_position_near.xyz;
+  const float projection=dot(origin,direction);
+  const float radius=atmosphere.rayleigh_ground_radius.w;
+  const float discriminant=projection*projection-
+      (dot(origin,origin)-radius*radius);
+  if(discriminant<0.0)return -1.0;
+  const float root=sqrt(max(discriminant,0.0));
+  const float near_distance=-projection-root;
+  const float far_distance=-projection+root;
+  return near_distance>0.0?near_distance:(far_distance>0.0?far_distance:-1.0);
+}
+
+float ground_disc_coverage(vec3 direction) {
+  const vec3 origin=atmosphere.camera_position_near.xyz;
+  const float projection=dot(origin,direction);
+  const float radius=atmosphere.rayleigh_ground_radius.w;
+  const float discriminant=projection*projection-
+      (dot(origin,origin)-radius*radius);
+  const float filter_width=max(fwidth(discriminant),1.0);
+  return projection<0.0?
+      smoothstep(-filter_width,filter_width,discriminant):0.0;
+}
+
+vec3 orbital_ground_radiance(vec3 direction,float distance_metres) {
+  const vec3 point=atmosphere.camera_position_near.xyz+
+      direction*distance_metres;
+  const vec3 normal=normalize(point);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float n_dot_l=max(dot(normal,sun_direction),0.0);
+  const vec2 solar_uv=vec2(dot(normal,sun_direction)*0.5+0.5,0.0);
+  const vec3 solar_transmittance=texture(transmittance_lut,solar_uv).rgb;
+  const vec3 direct=atmosphere.ground_albedo_mie_anisotropy.rgb*
+      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l/
+      3.14159265359*2.8;
+  // Compact multiple-scattering ground fill prevents the night side from
+  // becoming numerically discontinuous while remaining visibly dark.
+  const vec3 fill=atmosphere.ground_albedo_mie_anisotropy.rgb*
+      texture(multiple_scattering_lut,vec2(solar_uv.x,0.0)).rgb*0.35;
+  return direct+fill;
+}
+
 void main() {
   // Manual fixed exposure is the deterministic qualification default. Scene
   // depth is deliberately bound here as the contract for the following
@@ -104,6 +146,26 @@ void main() {
       hdr=texture(sky_view_lut,texture_coordinate).rgb;
       const vec3 view_direction=atmosphere_view_direction(texture_coordinate);
       const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+      const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
+          atmosphere.rayleigh_ground_radius.w;
+      const float ground_distance=ground_intersection_distance(view_direction);
+      // The exact terrain remains authoritative near the playable surface.
+      // The analytic sphere is only a far-field planet representation for
+      // flight and orbit, where the finite local terrain front cannot cover a
+      // planetary disc.
+      if(ground_distance>0.0&&camera_altitude>5000.0){
+        const vec3 camera_normal=normalize(
+            atmosphere.camera_position_near.xyz);
+        const vec2 view_transmittance_uv=vec2(
+            dot(camera_normal,view_direction)*0.5+0.5,
+            clamp(camera_altitude/(atmosphere.mie_scattering_top_radius.w-
+                atmosphere.rayleigh_ground_radius.w),0.0,1.0));
+        const vec3 ground_hdr=orbital_ground_radiance(
+            view_direction,ground_distance)*
+            texture(transmittance_lut,view_transmittance_uv).rgb+
+            texture(sky_view_lut,texture_coordinate).rgb;
+        hdr=mix(hdr,ground_hdr,ground_disc_coverage(view_direction));
+      }
       if(dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
          !planet_blocks_view(view_direction)){
         const float altitude=length(atmosphere.camera_position_near.xyz)-

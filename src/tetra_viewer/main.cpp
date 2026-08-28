@@ -1004,6 +1004,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         tetra_viewer::AtmospherePreset::earth;
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
+    bool world_gpu_atmosphere_resize_check=false;
+    bool world_gpu_atmosphere_resize_requested=false;
+    std::size_t world_gpu_pre_resize_scene_bytes{};
     double world_cursor_x{},world_cursor_y{};
     auto previous_world_frame=std::chrono::steady_clock::now();
     if(world_mode){
@@ -1013,6 +1016,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view exposure_prefix="--exposure-ev=";
         constexpr std::string_view debug_prefix="--atmosphere-debug=";
         constexpr std::string_view quality_prefix="--atmosphere-quality=";
+        constexpr std::string_view camera_prefix="--camera-feet=";
+        constexpr std::string_view yaw_prefix="--camera-yaw-degrees=";
+        constexpr std::string_view pitch_prefix="--camera-pitch-degrees=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1022,12 +1028,50 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             destination=parsed;
             return true;
         };
+        const auto parse_camera_position=[&](std::string_view text){
+            std::array<double,3> values{};
+            for(std::size_t axis=0;axis<values.size();++axis){
+                const auto separator=text.find(',');
+                const auto component=separator==std::string_view::npos?
+                    text:text.substr(0,separator);
+                if(!parse_argument_double(component,values[axis]))return false;
+                if(axis+1U<values.size()){
+                    if(separator==std::string_view::npos)return false;
+                    text.remove_prefix(separator+1U);
+                }else if(separator!=std::string_view::npos)return false;
+            }
+            world_controller.state().feet={values[0],values[1],values[2]};
+            return true;
+        };
         for(int argument=1;argument<argc;++argument){
             const std::string_view value=argv[argument];
             if(value=="--atmosphere-off"){
                 g_AtmosphereFrame.enabled=false;
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
+            }else if(value=="--gpu-atmosphere-resize-check"){
+                world_gpu_atmosphere_benchmark=true;
+                world_gpu_atmosphere_resize_check=true;
+            }else if(value=="--free-fly"){
+                world_free_fly=true;
+            }else if(value.starts_with(camera_prefix)){
+                if(!parse_camera_position(value.substr(camera_prefix.size()))){
+                    fprintf(stderr,"camera feet must be finite x,y,z values\n");
+                    return 2;
+                }
+            }else if(value.starts_with(yaw_prefix)){
+                double degrees{};
+                if(!parse_argument_double(value.substr(yaw_prefix.size()),degrees)){
+                    fprintf(stderr,"camera yaw must be finite\n");return 2;
+                }
+                world_controller.state().yaw=degrees*std::numbers::pi/180.0;
+            }else if(value.starts_with(pitch_prefix)){
+                double degrees{};
+                if(!parse_argument_double(value.substr(pitch_prefix.size()),degrees)){
+                    fprintf(stderr,"camera pitch must be finite\n");return 2;
+                }
+                world_controller.state().pitch=std::clamp(
+                    degrees*std::numbers::pi/180.0,-1.55,1.55);
             }else if(value.starts_with(preset_prefix)){
                 const auto preset=tetra_viewer::parse_atmosphere_preset(
                     value.substr(preset_prefix.size()));
@@ -3310,6 +3354,18 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                !world_runtime->diagnostics().busy){
                 const auto& timing=g_SceneRenderer.gpu_timings();
                 if(timing.valid){
+                    if(world_gpu_atmosphere_resize_check&&
+                       !world_gpu_atmosphere_resize_requested){
+                        world_gpu_pre_resize_scene_bytes=
+                            g_SceneRenderer.scene_target_allocation_bytes();
+                        world_gpu_atmosphere_resize_requested=true;
+                        glfwSetWindowSize(window,900,600);
+                        continue;
+                    }
+                    if(world_gpu_atmosphere_resize_check&&
+                       g_SceneRenderer.scene_target_allocation_bytes()==
+                           world_gpu_pre_resize_scene_bytes)
+                        continue;
                     std::cout<<"{\"event\":\"gpu_atmosphere_benchmark\","
                         <<"\"shadows_ms\":"<<timing.shadows_milliseconds<<','
                         <<"\"atmosphere_ms\":"<<timing.atmosphere_milliseconds<<','
@@ -3318,7 +3374,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<"\"atmosphere_bytes\":"
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
-                        <<g_SceneRenderer.scene_target_allocation_bytes()<<"}\n";
+                        <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<"\"resize_checked\":"
+                        <<(world_gpu_atmosphere_resize_check?"true":"false")
+                        <<"}\n";
                     world_gpu_atmosphere_benchmark=false;
                     glfwSetWindowShouldClose(window,GLFW_TRUE);
                 }

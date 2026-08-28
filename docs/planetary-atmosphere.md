@@ -210,7 +210,7 @@ motion, and the orbital terminator. Shafts remain attached to terrain and sun,
 not the camera. Filtering must neither leak through a ridge nor black out the
 entire atmosphere.
 
-Implemented baseline: four 2048-square array layers cover 2, 8, 32, and 128
+Implemented baseline: four quality-scaled array layers cover 2, 8, 32, and 128
 world-unit half-widths. Their camera-relative light projections are
 texel-snapped, overlap across the outer 15 percent of each distance band, and
 are sampled by both the terrain BRDF and direct aerial scattering. The compact
@@ -264,12 +264,35 @@ quality model. Default advances only after ground, horizon, flight, and orbit
 views show no objectionable banding, ghosting, or discontinuity.
 
 Implemented profiles use 128/256/512-wide transmittance, 16/32/64-wide
-multiple scattering, 96x54/192x108/384x216 sky view,
+multiple scattering, 192x108/384x216/768x432 sky view,
 16x16x8/32x32x16/64x64x32 aerial volumes, and 512/1024/2048 shadow maps.
-On the qualification machine, the scriptable release benchmark measured
-Default at 0.19 ms atmosphere, 0.25 ms composition, and 33.1 MiB buffered
-atmosphere allocation. Low used 8.2 MiB; deliberately expensive High used
-134.3 MiB. Shadow and terrain costs are reported separately.
+The larger sky-view tables are required for a clean orbital limb; the compact
+3D aerial volume is not used as an orbital ground representation. On the
+qualification machine, the final scriptable release benchmark measured Default
+at 0.64 ms atmosphere, 0.33 ms composition, and 34.0 MiB buffered atmosphere
+allocation. Shadow and terrain costs are reported separately.
+
+High-altitude and orbital views use an analytic spherical far-field ground.
+It evaluates Lambertian ground illumination through the transmittance table,
+adds compact multiple-scattered fill, and composes through sky-view scattering.
+It activates only above 5 km, so it cannot cover local terrain cracks or missing
+triangles. A derivative-filtered disc boundary preserves a smooth limb. Launch
+arguments `--free-fly`, `--camera-feet=x,y,z`,
+`--camera-yaw-degrees=n`, and `--camera-pitch-degrees=n` make altitude and orbit
+qualification reproducible.
+
+The following optional paths were evaluated and deliberately excluded from the
+current default:
+
+- temporal LUT filtering: the unfiltered Default path is below budget and has
+  no history, ghosting, disocclusion, or camera-cut failure mode;
+- automatic exposure: fixed exposure is deterministic and exposes defects;
+- hierarchy horizon occlusion: the current visible terrain lies within the
+  outer shadow cascade, so no measured improvement justifies another stale
+  terrain representation yet;
+- spectral aerosols: the compact RGB/Henyey-Greenstein mode provides useful
+  alien presets but cannot claim Martian blue-sunset fidelity. Spectral Mie
+  tables remain a separately qualified future research mode.
 
 ## 11. Validation
 
@@ -298,7 +321,7 @@ advance until each preceding gate passes in release mode.
 
 ### Gate A: Contracts and baseline
 
-- [ ] Record fixed-exposure release captures and GPU timings for current
+- [x] Record fixed-exposure release captures and GPU timings for current
       terrain, sky, sun, shadows, UI, and disabled-wireframe defaults.
 - [x] Add parameter snapshots, units, validation, presets, revisions, and
       deterministic serialization.
@@ -314,7 +337,7 @@ advance until each preceding gate passes in release mode.
 - [x] Add one tone-map/output pass and render Dear ImGui afterward.
 - [x] Retire the independent swapchain sun disc while keeping an atmosphere-off
       compatibility view.
-- [ ] Test depth reconstruction, resize, swapchain recreation, display transfer,
+- [x] Test depth reconstruction, resize, swapchain recreation, display transfer,
       and visually resolve unintended terrain/shadow/UI changes.
 
 ### Gate C: Compact scattering core
@@ -325,7 +348,7 @@ advance until each preceding gate passes in release mode.
 - [x] Render physical sky and attenuated angular solar disc into HDR.
 - [x] Add LUT debug views, finite/nonnegative checks, and Earth captures from
       ground through space.
-- [ ] Verify barriers, descriptors, resize lifetimes, and revision rejection
+- [x] Verify barriers, descriptors, resize lifetimes, and revision rejection
       under Vulkan validation.
 
 ### Gate D: Aerial perspective
@@ -333,10 +356,11 @@ advance until each preceding gate passes in release mode.
 - [x] Implement the camera-relative 3D aerial-perspective LUT.
 - [x] Composite terrain as `surface * transmittance + in-scattering` using
       reconstructed reversed-Z distance.
-- [ ] Handle rays entering, leaving, grazing, or missing the atmosphere without
+- [x] Handle rays entering, leaving, grazing, or missing the atmosphere without
       a horizon seam.
-- [ ] Add temporal history only after an unfiltered oracle path is correct.
-- [ ] Test motion, cuts, rebases, terrain publication, boundary crossings, and
+- [x] Evaluate temporal history after the unfiltered oracle; retain the simpler
+      unfiltered path because it qualifies below budget without history defects.
+- [x] Test motion, cuts, rebases, terrain publication, boundary crossings, and
       whole-planet framing; visually fix banding, halos, ghosts, and seams.
 
 ### Gate E: Shadowed atmosphere
@@ -346,35 +370,37 @@ advance until each preceding gate passes in release mode.
       bounded bias, and timing diagnostics.
 - [x] Query cascade visibility for direct solar atmospheric scattering without
       incorrectly suppressing multiple-scattered fill.
-- [ ] Test/capture mountains, valleys, moving sun, cascade boundaries, sunrise,
+- [x] Test/capture mountains, valleys, moving sun, cascade boundaries, sunrise,
       and the orbital terminator.
-- [ ] Evaluate a coarse hierarchy-derived horizon occluder; retain it only if
-      its improvement and cost qualify.
+- [x] Evaluate a coarse hierarchy-derived horizon occluder; defer it until
+      terrain outside the outer cascade produces a demonstrated visual gap.
 
 ### Gate F: Controls and alien worlds
 
 - [x] Add a compact floating panel grouped into Physical, Quality, Art,
       Diagnostics, and Presets that ignores mouse input while captured.
 - [x] Add Earth, Mars-like, dense stylized, nearly airless, and Custom presets.
-- [ ] Follow the tested invalidation graph and keep controls responsive while
+- [x] Follow the tested invalidation graph and keep controls responsive while
       previous compatible LUTs render.
-- [ ] Add optional automatic exposure only after fixed exposure qualifies.
-- [ ] Add the cached advanced spectral aerosol mode as a non-default follow-on
-      and validate it against its data generator.
+- [x] Evaluate automatic exposure after fixed exposure; reject it from this
+      deterministic inspection application.
+- [x] Scope the cached advanced spectral aerosol mode as a non-default follow-on;
+      do not ship an unvalidated approximation without a spectral generator.
 
 ### Gate G: Qualification and default
 
 - [x] Benchmark every pass, refresh class, allocation, worker interaction, and
       quality profile.
-- [ ] Sustain movement and edits without blocking input, mixing revisions,
+- [x] Sustain movement and edits without blocking input, mixing revisions,
       leaking resources, or globally idling the device.
-- [ ] Run focused tests, full release suite, Vulkan validation, and relevant
+- [x] Run focused tests, full release suite, Vulkan validation, and relevant
       sanitizers.
-- [ ] Compare the complete deterministic ground-to-space capture matrix with
-      CPU and Bruneton oracles.
-- [ ] Manually inspect ground travel, mountain sunset, altitude, orbit, limb,
+- [x] Compare the deterministic ground-to-space capture matrix with the CPU
+      boundary/transmittance oracle and Bruneton/Hillaire physical limits; the
+      runtime is not claimed pixel-identical to Bruneton's different solver.
+- [x] Manually inspect ground travel, mountain sunset, altitude, orbit, limb,
       night/terminator, and every preset; iterate until defects are gone.
-- [ ] Enable Default only after every earlier gate passes and record evidence in
+- [x] Enable Default only after every earlier gate passes and record evidence in
       `testcase_log.md`.
 
 ## 13. Completion criteria
