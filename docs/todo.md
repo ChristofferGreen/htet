@@ -119,6 +119,11 @@
         A typical bounded five-pass patch falls from about 79 ms to 29 ms; the
         exact 512-operation slice is now about 466 ms versus 683 ms before this
         group of retained-block changes.
+  - [x] Replace ordered block-ID membership trees in classification, topology
+        invalidation, and output selection with exact reserved hash sets. Keep
+        ordered maps only where traversal order participates in stable patch
+        scheduling. Bounded surface work falls from about 214 ms to 194 ms and
+        the exact 512-operation slice to about 395 ms.
 - [ ] Publish complete useful fronts within 250 ms during continuous walking,
       coalesce newer poses without starvation, and converge to the final pose
       within one second after input stops.
@@ -137,6 +142,10 @@
         contribution order and multiplicity. A shortcut through the global
         counted vertex/triangle set changed the refine/far/reverse render hash
         and was removed; global uniqueness is not a lossless topology oracle.
+        A second raw-position-only block cache passed focused reversal but
+        failed the independent continuous final-pose oracle and was removed.
+        The arena must atomically retain raw crossing, optimized position,
+        owner contribution order/multiplicity, and source revision together.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

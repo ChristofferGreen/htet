@@ -2939,8 +2939,18 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     for(const auto resident:block.resident_records)add(&resident,sizeof(resident));
     return hash;
   };
-  std::set<tetra::HierarchyBlockId> topology_current_blocks,
-      hierarchy_payload_changed_blocks;
+  const auto block_hash=[](const tetra::HierarchyBlockId& id){
+    std::uint64_t hash=id.prefix.high*0x9e3779b97f4a7c15ULL;
+    hash^=id.prefix.low+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
+    hash^=id.block_generations+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
+    return static_cast<std::size_t>(hash);
+  };
+  std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
+      topology_current_blocks(0U,block_hash),
+      hierarchy_payload_changed_blocks(0U,block_hash);
+  topology_current_blocks.reserve(directory.hierarchy_blocks().size());
+  hierarchy_payload_changed_blocks.reserve(
+      changed_hierarchy_blocks.size()+1U);
   std::vector<SparseWorldSurfaceCache::HierarchySignature> hierarchy;
   hierarchy.reserve(directory.hierarchy_blocks().size());
   for(const auto& block:directory.hierarchy_blocks()){
@@ -2959,10 +2969,12 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
        previous->id!=block->id||previous->hash!=payload_hash)
       hierarchy_payload_changed_blocks.insert(block->id);
   }
-  std::set<tetra::HierarchyBlockId> active_owner_blocks;
+  std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
+      active_owner_blocks(0U,block_hash);
   if(!cache)for(const auto& block:directory.hierarchy_blocks())
     if(!block->logical_owners.empty())active_owner_blocks.insert(block->id);
-  std::set<tetra::HierarchyBlockId> surface_candidate_blocks;
+  std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
+      surface_candidate_blocks(0U,block_hash);
   struct CandidateOwner {
     std::shared_ptr<SparseWorldSurfaceCache::SurfaceCertificateBlock> block;
     std::size_t certificate{};
@@ -2972,7 +2984,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       SparseWorldSurfaceCache::SurfaceCertificateBlock>> certificate_blocks;
   std::size_t surface_candidate_owners{},surface_classification_samples{};
   std::size_t reused_surface_certificates{},rebuilt_surface_certificates{};
-  std::set<tetra::HierarchyBlockId> certificate_changed_blocks;
+  std::unordered_set<tetra::HierarchyBlockId,decltype(block_hash)>
+      certificate_changed_blocks(0U,block_hash);
   const double field_lipschitz=tetra::implicit_field_lipschitz_bound(field);
   if(cache){
   const auto classify=[&](tetra::WorldTetAddress owner,std::uint8_t green_mask){
@@ -3098,7 +3111,8 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     dependency_begin=dependency_end;
   }
   }else{
-    surface_candidate_blocks=active_owner_blocks;
+    surface_candidate_blocks.insert(active_owner_blocks.begin(),
+                                    active_owner_blocks.end());
     surface_candidate_owners=directory.logical_owner_count();
   }
   const auto classified=std::chrono::steady_clock::now();
@@ -3174,8 +3188,11 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   const auto volume_reconstructed=std::chrono::steady_clock::now();
   const std::uint64_t conforming_volume_hash=volume.canonical_hash;
   auto topology_changed_blocks=hierarchy_payload_changed_blocks;
-  if(!cache||field_changed)
-    topology_changed_blocks=topology_current_blocks;
+  if(!cache||field_changed){
+    topology_changed_blocks.clear();
+    topology_changed_blocks.insert(topology_current_blocks.begin(),
+                                   topology_current_blocks.end());
+  }
   else if(closure_changes_unconsumed)
     topology_changed_blocks.insert(
         cache->closure.last_changed_mask_blocks.begin(),
@@ -3322,12 +3339,6 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     }
   }
   const auto topology_built=std::chrono::steady_clock::now();
-  const auto block_hash=[](const tetra::HierarchyBlockId& id){
-    std::uint64_t hash=id.prefix.high*0x9e3779b97f4a7c15ULL;
-    hash^=id.prefix.low+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
-    hash^=id.block_generations+0x9e3779b97f4a7c15ULL+(hash<<6U)+(hash>>2U);
-    return static_cast<std::size_t>(hash);
-  };
   const auto vertex_hash=[](const tetra::WorldVertexKey& key){
     std::uint64_t hash=static_cast<std::uint64_t>(key.x)*0x9e3779b97f4a7c15ULL;
     hash^=static_cast<std::uint64_t>(key.y)+(hash<<6U)+(hash>>2U);
