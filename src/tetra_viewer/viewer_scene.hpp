@@ -903,7 +903,8 @@ struct BlockedDerivedSurfaceBuild {
     bool restrict_retained_volume=false,
     bool compute_complete_volume_oracle=true,
     std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks={},
-    tetra::GeometryExecutor* executor=nullptr);
+    tetra::GeometryExecutor* executor=nullptr,
+    bool assemble_flat_output=true);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
 // Converts a published or freshly assembled blocked snapshot into the same

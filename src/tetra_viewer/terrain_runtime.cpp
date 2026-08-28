@@ -1141,14 +1141,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,field,true,cancellation,&surface_cache,
       residency.volume_blocks,true,false,hierarchy_update.changed_blocks,
-      executor);
+      executor,false);
   const auto surface_built=std::chrono::steady_clock::now();
   // Production no longer expands the complete volume merely to render its
   // boundary. Admission counts the surface classification, direct template
   // expansion, new crossings, and final triangles that were actually built.
   completed_work_units+=surface.metrics.surface_classification_samples+
       surface.metrics.green_cells_enumerated+
-      surface.metrics.computed_intersections+surface.triangles.size();
+      surface.metrics.computed_intersections+surface.metrics.source_triangles;
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
@@ -1172,7 +1172,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.connected_surface_hash=surface.canonical_surface_hash;
   diagnostics.logical_cells=directory->logical_owner_count();
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
-  diagnostics.render_triangles=surface.triangles.size();
+  diagnostics.render_triangles=surface.metrics.source_triangles;
   diagnostics.work_units=completed_work_units;
   std::size_t retained_certificate_bytes=
       surface_cache.surface_certificate_blocks.capacity()*
@@ -1194,8 +1194,11 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge)+
       surface_cache.closure.requested_split_ancestors.capacity()*
           sizeof(tetra::WorldConformingSplitAncestor)+
+      surface_cache.closure.split_edges.capacity()*
+          sizeof(tetra::WorldConformingSplitEdge)+
       surface_cache.closure.proof_nodes.capacity()*
           sizeof(tetra::WorldClosureProofNode)+
+      surface_cache.closure.edge_proof_slots.capacity()*sizeof(std::uint32_t)+
       surface_cache.closure.promotion_proofs.capacity()*
           sizeof(tetra::WorldClosurePromotionProof)+
       surface_cache.closure.proof_dependent_offsets.capacity()*

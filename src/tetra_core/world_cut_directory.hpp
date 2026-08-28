@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <optional>
+#include <stdexcept>
 #include <stop_token>
 
 namespace tetra {
@@ -175,6 +176,26 @@ struct WorldConformingSplitAncestor {
   auto operator<=>(const WorldConformingSplitAncestor&) const = default;
 };
 
+// Compact independent causal support for an ancestry edge. The proof index
+// supplies the exact edge key, while ancestor_supports records the union of
+// all active split ancestors even when a green or promotion proof currently
+// represents the same midpoint.
+struct WorldConformingSplitEdge {
+  static constexpr std::uint32_t proof_bits=24U;
+  static constexpr std::uint32_t proof_mask=(1U<<proof_bits)-1U;
+  std::uint32_t packed{};
+  [[nodiscard]] std::uint32_t proof() const {return packed&proof_mask;}
+  [[nodiscard]] std::uint32_t ancestor_supports() const {
+    return packed>>proof_bits;
+  }
+  void set(std::uint32_t proof_index,std::uint32_t supports) {
+    if(proof_index>proof_mask||supports>255U)
+      throw std::overflow_error("world split edge directory exceeds packed range");
+    packed=proof_index|(supports<<proof_bits);
+  }
+  auto operator<=>(const WorldConformingSplitEdge&) const = default;
+};
+
 struct WorldClosureVertexDepth {
   WorldVertexKey key{};
   std::uint8_t depth{};
@@ -224,11 +245,17 @@ struct WorldConformingClosureCache {
   // updates this sparse entity set from its address difference instead of
   // replaying every unchanged root path.
   std::vector<WorldConformingSplitAncestor> requested_split_ancestors;
+  std::vector<WorldConformingSplitEdge> split_edges;
+  bool split_edges_complete{};
   std::vector<WorldClosureVertexDepth> vertex_depths;
   std::vector<WorldTetAddress> closed_owners;
   std::vector<std::uint8_t> green_masks;
   std::vector<WorldClosureProofNode> proof_nodes;
   std::vector<WorldClosurePromotionProof> promotion_proofs;
+  // Open-addressed exact edge-to-proof directory. Empty and tombstone slots
+  // are encoded internally; live slots are remapped with proof compaction.
+  std::vector<std::uint32_t> edge_proof_slots;
+  bool edge_proof_slots_complete{};
   // Flat reverse DAG for bounded invalidation from changed causal roots.
   std::vector<std::uint32_t> proof_dependent_offsets;
   std::vector<std::uint32_t> proof_dependents;

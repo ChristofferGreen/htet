@@ -174,6 +174,21 @@
         arena allocations remain shared. The exact 512-operation slice is about
         344 ms; a 64-operation slice is about 285 ms, with the remaining gap to
         250 ms matching the roughly 34 ms global ancestry seed.
+  - [x] Retain split-ancestry support independently from the proof selected for
+        each deduplicated midpoint. Compact four-byte support records survive
+        alternating refinement/coarsening, while large transitions explicitly
+        prune the geometry memo to preserve the 512 MiB ceiling. A retained
+        open-addressed proof table is used only for sparse interactive fronts;
+        dense reversal and teleport keep the faster standard hash table.
+  - [x] Remove the production-only duplicate flat surface expansion and replace
+        per-patch tree insertion with sorted bulk vertex lists. The canonical
+        hash is computed directly from compact counted directories. An exact
+        32-operation front now measures about 247 ms for closure, directory,
+        optimized surface, and cache publication, with unchanged hashes.
+  - [ ] Pipeline camera target discovery with 32-operation geometry fronts so
+        the roughly 110 ms target-cut selection does not remain serially ahead
+        of every complete publication; retain the dense large-transition path
+        for settled catch-up and prove sub-one-second convergence.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 

@@ -3144,6 +3144,19 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   CHECK_FALSE(cache.requested_split_ancestors.empty());
   CHECK(std::ranges::is_sorted(cache.requested_split_ancestors,{},
       &tetra::WorldConformingSplitAncestor::address));
+  CHECK(cache.split_edges_complete);
+  CHECK_FALSE(cache.split_edges.empty());
+  for(std::size_t edge=0;edge<cache.split_edges.size();++edge){
+    const auto& entry=cache.split_edges[edge];
+    CHECK(entry.ancestor_supports()>0U);
+    REQUIRE(entry.proof()<cache.proof_nodes.size());
+    const auto& proof=cache.proof_nodes[entry.proof()];
+    CHECK((proof.kind==tetra::WorldClosureProofKind::split_ancestor_edge||
+           proof.kind==tetra::WorldClosureProofKind::green_edge||
+           proof.kind==tetra::WorldClosureProofKind::promotion_edge));
+    if(edge>0U)CHECK(cache.proof_nodes[cache.split_edges[edge-1U].proof()].edge<
+                     proof.edge);
+  }
   CHECK_FALSE(cache.dependency_blocks.empty());
   CHECK(std::ranges::is_sorted(cache.dependency_blocks,{},
       [](const auto& block){return block->id;}));
@@ -3174,6 +3187,7 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
   std::stop_source canceled;canceled.request_stop();
   const auto cached_owners=cache.closed_owners;
   const auto cached_ancestors=cache.requested_split_ancestors;
+  const auto cached_split_edges=cache.split_edges;
   const auto cached_proofs=cache.proof_nodes;
   const auto cached_promotions=cache.promotion_proofs;
   const auto cached_dependency_blocks=cache.dependency_blocks;
@@ -3185,6 +3199,7 @@ TEST_CASE("retained conformity geometry cache is exact reusable and bounded") {
       raw,&cache,canceled.get_token())),std::runtime_error);
   CHECK(cache.closed_owners==cached_owners);
   CHECK(cache.requested_split_ancestors==cached_ancestors);
+  CHECK(cache.split_edges==cached_split_edges);
   CHECK(cache.proof_nodes==cached_proofs);
   CHECK(cache.promotion_proofs==cached_promotions);
   CHECK(cache.dependency_blocks==cached_dependency_blocks);

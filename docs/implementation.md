@@ -197,6 +197,18 @@ surface, and render hashes to match the coalesced movement history. Current
 continuous results are exact but still measure roughly 1.56 s to first
 publication and 2.25 s settled convergence.
 
+Split ancestry now has an independent compact support directory rather than
+borrowing the lifetime of whichever split, green, or promotion proof happened
+to win midpoint deduplication. Sparse interactive closure also retains a flat
+open-addressed edge-to-proof table; large reversal and teleport deliberately
+use the standard hash representation because measurement showed the flat table
+was slower for those dense fallbacks. Removing production's unused duplicate
+flat surface and bulk-sorting patch vertices brings an exact 32-operation
+closure, directory replacement, optimized surface, and cache publication to
+about 247 ms. Camera target-cut discovery still costs about 110 ms ahead of
+that pipeline, so the next step is to overlap retained-target discovery with
+these bounded geometry fronts and use the dense path for settled catch-up.
+
 ## Technology choices
 
 - C++23 where supported.

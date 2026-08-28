@@ -513,7 +513,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
         profile,field,target_camera,&target_cache,{},nullptr,false,&executor));
     const auto batch=advance_world_requested_frontier(
         cache.closure.requested_owners,target_cache.requested_owners,
-        profile.domain,target_camera,512U);
+        profile.domain,target_camera,32U);
     const auto started=std::chrono::steady_clock::now();
     const auto closure_started=std::chrono::steady_clock::now();
     const auto closed=tetra::close_world_conforming_cut(
@@ -539,7 +539,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     const auto milliseconds=[](auto begin,auto end){return
         std::chrono::duration<double,std::milli>(end-begin).count();};
     output<<"{\"event\":\"world_bounded_frontier_slice\""
-          <<",\"operations\":512"
+          <<",\"operations\":32"
           <<",\"target_reached\":"
           <<(batch==target_cache.requested_owners?"true":"false")
           <<",\"requested_owners\":"<<batch.size()

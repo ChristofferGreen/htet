@@ -1914,7 +1914,8 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
     const SparseWorldSurfaceCache& cache,
     const ChangedBlocks& changed,
     std::vector<SparseWorldSurfaceCache::CountedSurfaceVertex>& next_vertices,
-    std::vector<SparseWorldSurfaceCache::CountedSurfaceTriangle>& next_triangles) {
+    std::vector<SparseWorldSurfaceCache::CountedSurfaceTriangle>& next_triangles,
+    bool assemble_flat_output) {
   std::ranges::sort(snapshots,{},&tetra::WorldDerivedSurfaceSnapshot::id);
   struct VertexDelta {
     tetra::WorldSurfaceVertex vertex;
@@ -2098,15 +2099,17 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
   }
 
   BlockedDerivedSurfaceBuild result;result.snapshots=std::move(snapshots);
-  result.vertices.reserve(next_vertices.size());
-  for(const auto& vertex:next_vertices)result.vertices.push_back(vertex.vertex);
-  result.triangles.reserve(next_triangles.size());
-  for(const auto& triangle:next_triangles){
-    tetra::WorldSurfaceTriangle expanded;expanded.owner=triangle.owner;
-    for(std::size_t corner=0;corner<3U;++corner)
-      expanded.vertices[corner]=
-          next_vertices[triangle.vertices[corner]].vertex.key;
-    result.triangles.push_back(expanded);
+  if(assemble_flat_output){
+    result.vertices.reserve(next_vertices.size());
+    for(const auto& vertex:next_vertices)result.vertices.push_back(vertex.vertex);
+    result.triangles.reserve(next_triangles.size());
+    for(const auto& triangle:next_triangles){
+      tetra::WorldSurfaceTriangle expanded;expanded.owner=triangle.owner;
+      for(std::size_t corner=0;corner<3U;++corner)
+        expanded.vertices[corner]=
+            next_vertices[triangle.vertices[corner]].vertex.key;
+      result.triangles.push_back(expanded);
+    }
   }
   constexpr std::uint64_t offset=1469598103934665603ULL;
   constexpr std::uint64_t prime=1099511628211ULL;
@@ -2121,13 +2124,17 @@ BlockedDerivedSurfaceBuild assemble_blocked_snapshots_incremental(
       append(key.basis[index].denominator_exponent);
     }
   };
-  for(const auto& vertex:result.vertices){
+  for(const auto& counted:next_vertices){
+    const auto& vertex=counted.vertex;
     append_key(vertex.key);append(std::bit_cast<std::uint64_t>(vertex.position.x));
     append(std::bit_cast<std::uint64_t>(vertex.position.y));
     append(std::bit_cast<std::uint64_t>(vertex.position.z));
   }
-  for(const auto& triangle:result.triangles){
-    auto keys=triangle.vertices;std::ranges::sort(keys);
+  for(const auto& triangle:next_triangles){
+    std::array<tetra::WorldDerivedVertexKey,3> keys;
+    for(std::size_t corner=0;corner<3U;++corner)
+      keys[corner]=next_vertices[triangle.vertices[corner]].vertex.key;
+    std::ranges::sort(keys);
     for(const auto& key:keys)append_key(key);
   }
   result.canonical_surface_hash=hash;return result;
@@ -2809,11 +2816,11 @@ RetainedPreparedSceneBuild prepare_retained_blocked_scene(
   RetainedPreparedSceneBuild result;
   result.scene.render_origin=render_origin;
   result.scene.connected_surface_hash=surface.canonical_surface_hash;
-  result.scene.optimized_surface_vertices=surface.vertices.size();
+  result.scene.optimized_surface_vertices=surface.metrics.source_vertices;
   std::vector<SparseWorldSurfaceCache::RenderBlock> next;
   next.reserve(surface.snapshots.size());
   if(assemble_flat_scene)
-    result.scene.triangle_vertices.reserve(surface.triangles.size()*3U);
+    result.scene.triangle_vertices.reserve(surface.metrics.source_triangles*3U);
   for(const auto& snapshot:surface.snapshots){
     const auto signature=payload_hash(snapshot);
     const auto found=std::ranges::lower_bound(cache.render_blocks,snapshot.id,{},
@@ -2865,7 +2872,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     std::span<const tetra::HierarchyBlockId> retained_volume_blocks,
     bool restrict_retained_volume,bool compute_complete_volume_oracle,
     std::span<const tetra::HierarchyBlockId> changed_hierarchy_blocks,
-    tetra::GeometryExecutor* executor) {
+    tetra::GeometryExecutor* executor,bool assemble_flat_output) {
   const auto started=std::chrono::steady_clock::now();
   if(!(domain.world_extent>0.0)||!std::isfinite(domain.world_extent))
     throw std::invalid_argument("sparse world surface requires a finite domain");
@@ -3891,14 +3898,6 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
           if(!in_patch)continue;
         }
         triangles.push_back(triangle);
-        for(const auto& key:triangle.vertices){
-          const auto found=std::ranges::lower_bound(
-              next_intersections,key,{},&tetra::WorldSurfaceVertex::key);
-          if(found==next_intersections.end()||found->key!=key)
-            throw std::logic_error(
-                "direct sparse surface triangle has no crossing");
-          vertices.emplace(found->key,found->position);
-        }
       }
     }
   }else{
@@ -3973,15 +3972,38 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   const auto extracted=std::chrono::steady_clock::now();
 
   OptimizedSurface surface;
-  surface.positions.reserve(vertices.size());surface.global_keys.reserve(vertices.size());
+  if(cache){
+    surface.global_keys.reserve(triangles.size()*3U);
+    for(const auto& triangle:triangles)
+      surface.global_keys.insert(surface.global_keys.end(),
+                                 triangle.vertices.begin(),
+                                 triangle.vertices.end());
+    std::ranges::sort(surface.global_keys);
+    surface.global_keys.erase(
+        std::unique(surface.global_keys.begin(),surface.global_keys.end()),
+        surface.global_keys.end());
+    surface.positions.reserve(surface.global_keys.size());
+    for(const auto& key:surface.global_keys){
+      const auto found=std::ranges::lower_bound(
+          next_intersections,key,{},&tetra::WorldSurfaceVertex::key);
+      if(found==next_intersections.end()||found->key!=key)
+        throw std::logic_error(
+            "direct sparse surface triangle has no crossing");
+      surface.positions.push_back(found->position);
+    }
+  }else{
+    surface.positions.reserve(vertices.size());
+    surface.global_keys.reserve(vertices.size());
+    for(const auto& [key,position]:vertices){
+      surface.global_keys.push_back(key);surface.positions.push_back(position);
+    }
+  }
   std::unordered_map<tetra::WorldDerivedVertexKey,std::size_t,
                      decltype(derived_vertex_hash)>
       patch_index(0U,derived_vertex_hash);
-  patch_index.reserve(vertices.size());
-  for(const auto& [key,position]:vertices){
-    patch_index.emplace(key,surface.global_keys.size());
-    surface.global_keys.push_back(key);surface.positions.push_back(position);
-  }
+  patch_index.reserve(surface.global_keys.size());
+  for(std::size_t index=0;index<surface.global_keys.size();++index)
+    patch_index.emplace(surface.global_keys[index],index);
   surface.triangles.reserve(triangles.size());
   for(const auto& triangle:triangles){
     std::array<std::size_t,3> indices{};
@@ -4012,7 +4034,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
 
   struct BlockOutput {
     tetra::WorldDerivedSurfaceSnapshot snapshot;
-    std::set<tetra::WorldDerivedVertexKey> vertices;
+    std::vector<tetra::WorldDerivedVertexKey> vertices;
   };
   std::map<tetra::HierarchyBlockId,BlockOutput> blocks;
   for(std::size_t index=0;index<triangles.size();++index){
@@ -4027,13 +4049,18 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
         optimize?surface_optimizer_dependency_halo_rings:0U;
     output.snapshot.triangles.push_back(
         {triangles[index].vertices,triangles[index].owner});
-    output.vertices.insert(triangles[index].vertices.begin(),
+    output.vertices.insert(output.vertices.end(),
+                           triangles[index].vertices.begin(),
                            triangles[index].vertices.end());
   }
   std::vector<tetra::WorldDerivedSurfaceSnapshot> snapshots;
   snapshots=std::move(reused_snapshots);
   snapshots.reserve(snapshots.size()+blocks.size());
   for(auto& [id,output]:blocks){
+    std::ranges::sort(output.vertices);
+    output.vertices.erase(
+        std::unique(output.vertices.begin(),output.vertices.end()),
+        output.vertices.end());
     for(const auto& key:output.vertices){
       const auto found=patch_index.find(key);
       if(found==patch_index.end())
@@ -4061,10 +4088,13 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       next_assembled_triangles;
   auto result=cache?assemble_blocked_snapshots_incremental(
       std::move(snapshots),*cache,output_blocks,next_assembled_vertices,
-      next_assembled_triangles):assemble_blocked_snapshots(std::move(snapshots));
+      next_assembled_triangles,assemble_flat_output):
+      assemble_blocked_snapshots(std::move(snapshots));
   result.metrics.block_generations=directory.block_generations();
-  result.metrics.source_vertices=result.vertices.size();
-  result.metrics.source_triangles=result.triangles.size();
+  result.metrics.source_vertices=cache?next_assembled_vertices.size():
+      result.vertices.size();
+  result.metrics.source_triangles=cache?next_assembled_triangles.size():
+      result.triangles.size();
   result.metrics.conforming_cells=volume.cells;
   result.metrics.transition_cells=volume.transition_cells;
   result.metrics.conforming_volume_hash=conforming_volume_hash;
@@ -4099,9 +4129,9 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       next_optimizer_reverse_edges.capacity()*
           sizeof(SparseWorldSurfaceCache::CountedOptimizerEdge);
   result.metrics.surface_blocks=result.snapshots.size();
-  result.metrics.total_core_vertices=result.vertices.size();
-  result.metrics.total_patch_vertices=result.vertices.size();
-  result.metrics.total_patch_triangles=result.triangles.size();
+  result.metrics.total_core_vertices=result.metrics.source_vertices;
+  result.metrics.total_patch_vertices=result.metrics.source_vertices;
+  result.metrics.total_patch_triangles=result.metrics.source_triangles;
   const auto snapshots_assembled=std::chrono::steady_clock::now();
   if(cache){
     if(optimize){
