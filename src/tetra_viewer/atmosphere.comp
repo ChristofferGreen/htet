@@ -229,7 +229,9 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade) {
   // Preserve unit visibility for an unoccluded sample on both sides of the
   // cascade boundary. Scaling all in-cascade light to 0.25 made the uncovered
   // region four times brighter and produced a yellow halo behind mountains.
-  return mix(1.0,visibility,footprint_fade);
+  const float filtered_visibility=faithful_transport()?
+      visibility*0.25:visibility;
+  return mix(1.0,filtered_visibility,footprint_fade);
 }
 
 float atmosphere_sun_visibility(vec3 point_metres) {

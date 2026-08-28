@@ -118,10 +118,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,10> composite_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,11> composite_bindings{};
   for(std::uint32_t binding=0;binding<composite_bindings.size();++binding){
     composite_bindings[binding].binding=binding;
-    composite_bindings[binding].descriptorType=binding==7U?
+    composite_bindings[binding].descriptorType=(binding==7U||binding==10U)?
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     composite_bindings[binding].descriptorCount=1;
@@ -692,7 +692,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            image_count*14U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*6U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*5U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets=image_count*3U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
@@ -797,19 +797,16 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                               VK_IMAGE_LAYOUT_GENERAL}};
     VkDescriptorBufferInfo uniform_info{frame.uniform_buffer,0,
                                         sizeof(float)*64U};
-    std::array<VkWriteDescriptorSet,10> composite_writes{};
-    for(std::uint32_t write_index=0;write_index<composite_writes.size();
-        ++write_index){
-      const std::uint32_t binding=write_index<7U?write_index:
-          (write_index==7U?8U:(write_index==8U?9U:7U));
-      auto& descriptor=composite_writes[write_index];
+    std::array<VkWriteDescriptorSet,11> composite_writes{};
+    for(std::uint32_t binding=0;binding<composite_writes.size();++binding){
+      auto& descriptor=composite_writes[binding];
       descriptor.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       descriptor.dstSet=composite_descriptor_sets_[index];
       descriptor.dstBinding=binding;
       descriptor.descriptorCount=1;
-      if(binding==7U){
+      if(binding==7U||binding==10U){
         descriptor.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptor.pBufferInfo=&uniform_info;
+        descriptor.pBufferInfo=binding==7U?&uniform_info:&shadow_uniform_info;
       }else{
         const std::size_t image_index=binding<7U?binding:
             (binding==8U?7U:8U);

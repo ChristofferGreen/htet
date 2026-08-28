@@ -745,7 +745,7 @@ crossing the handoff produces no luminance, colour, depth, or temporal seam.
 
 #### H7: Reintegrate terrain shadows
 
-- [ ] Apply the shared cascaded visibility only to direct solar in-scattering in
+- [x] Apply the shared cascaded visibility only to direct solar in-scattering in
       both local froxels and the long-path march, preserving unshadowed higher-
       order fill and generation compatibility.
 - [ ] Test ridges inside, across, and beyond cascades at noon and low sun; measure

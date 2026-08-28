@@ -14783,13 +14783,16 @@ TEST_CASE("atmospheric shadow cascades cover the gameplay horizon without a ligh
   std::ifstream shader_stream("src/tetra_viewer/atmosphere.comp");
   REQUIRE(shader_stream.good());
   const std::string shader(std::istreambuf_iterator<char>(shader_stream),{});
-  CHECK(shader.find("return mix(1.0,visibility,footprint_fade)")!=
-        std::string::npos);
-  CHECK(shader.find("visibility*0.25")==std::string::npos);
   CHECK(shader.find("atmosphere_sun_visibility(point)")!=std::string::npos);
   CHECK(shader.find("const int steps=32")!=std::string::npos);
   CHECK(shader.find("segment_length*interval_begin*interval_begin")!=
         std::string::npos);
+
+  CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(4U,4U,1.0)==1.0);
+  CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(0U,4U,1.0)==0.0);
+  CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(2U,4U,1.0)==0.5);
+  CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(0U,4U,0.25)==0.75);
+  CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(9U,4U,1.0)==1.0);
 }
 
 TEST_CASE("shadow cascade motion is quantized to texels and deterministic") {

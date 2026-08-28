@@ -275,6 +275,9 @@ atmosphere_multiple_scattering_reference(
 [[nodiscard]] double atmosphere_local_aerial_distance(
     const AtmosphereParameters& parameters, double camera_altitude_metres,
     double visible_distance_metres) noexcept;
+[[nodiscard]] double atmosphere_shadow_filter_visibility(
+    std::size_t lit_samples, std::size_t sample_count,
+    double footprint_fade) noexcept;
 
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude_metres,
                          double view_zenith_degrees,

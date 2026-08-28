@@ -806,6 +806,16 @@ double atmosphere_local_aerial_distance(
   return std::min(visible_distance_metres,physical_extent);
 }
 
+double atmosphere_shadow_filter_visibility(
+    std::size_t lit_samples, std::size_t sample_count,
+    double footprint_fade) noexcept {
+  if(sample_count==0U)return 1.0;
+  const double filtered=static_cast<double>(std::min(lit_samples,sample_count))/
+      static_cast<double>(sample_count);
+  footprint_fade=std::clamp(footprint_fade,0.0,1.0);
+  return 1.0+(filtered-1.0)*footprint_fade;
+}
+
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude,
                          double view_zenith_degrees,
                          double sun_zenith_degrees, std::ostream& output,

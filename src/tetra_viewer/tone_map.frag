@@ -11,6 +11,10 @@ layout(set = 0,binding = 5) uniform sampler3D aerial_scattering_lut;
 layout(set = 0,binding = 6) uniform sampler3D aerial_transmittance_lut;
 layout(set = 0,binding = 8) uniform sampler2DArray sun_shadow_map;
 layout(set = 0,binding = 9) uniform sampler2D sky_irradiance_lut;
+layout(std140,set=0,binding=10) uniform ShadowCascades {
+  mat4 shadow_matrices[4];
+  vec4 shadow_splits;
+} shadow_cascades;
 
 layout(std140,set=0,binding=7) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -206,6 +210,49 @@ float atmosphere_sun_visibility(vec3 point,vec3 sun_direction) {
                     dot(point/radial_distance,sun_direction));
 }
 
+float atmosphere_cascade_visibility(vec3 point_world,int cascade) {
+  const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
+      vec4(point_world,1.0)).xyz;
+  if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
+     projected.z<0.0||projected.z>1.0)return 1.0;
+  const vec2 uv=projected.xy*0.5+0.5;
+  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
+  const float bias=0.00045*(1.0+float(cascade)*0.45);
+  float visibility=0.0;
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+    const vec2 offset=(vec2(x,y)-0.5)*texel;
+    const float blocker=texture(sun_shadow_map,
+        vec3(uv+offset,float(cascade))).r;
+    visibility+=projected.z-bias<=blocker?1.0:0.0;
+  }
+  const float footprint=max(abs(projected.x),abs(projected.y));
+  const float footprint_fade=1.0-smoothstep(0.88,0.98,footprint);
+  return mix(1.0,visibility*0.25,footprint_fade);
+}
+
+float atmosphere_terrain_shadow_visibility(vec3 point_metres) {
+  const float metres_per_world=atmosphere.profile_and_mode.y;
+  const vec3 point_world=atmosphere.reserved0.xyz+
+      (point_metres-atmosphere.camera_position_near.xyz)/metres_per_world;
+  const float distance_world=length(point_world-atmosphere.reserved0.xyz);
+  int cascade=3;
+  if(distance_world<shadow_cascades.shadow_splits.x)cascade=0;
+  else if(distance_world<shadow_cascades.shadow_splits.y)cascade=1;
+  else if(distance_world<shadow_cascades.shadow_splits.z)cascade=2;
+  const float current=atmosphere_cascade_visibility(point_world,cascade);
+  if(cascade==3){
+    const float outer_fade=smoothstep(shadow_cascades.shadow_splits.w*0.80,
+        shadow_cascades.shadow_splits.w,distance_world);
+    return mix(current,1.0,outer_fade);
+  }
+  const float split=shadow_cascades.shadow_splits[cascade];
+  const float previous=cascade==0?0.0:
+      shadow_cascades.shadow_splits[cascade-1];
+  const float blend=smoothstep(mix(previous,split,0.85),split,distance_world);
+  return mix(current,atmosphere_cascade_visibility(point_world,cascade+1),
+             blend);
+}
+
 vec3 atmosphere_multiple_source(vec3 point,vec3 sun_direction) {
   const float altitude=length(point)-atmosphere.rayleigh_ground_radius.w;
   const float sun_cosine=dot(normalize(point),sun_direction);
@@ -253,7 +300,8 @@ vec3 integrate_long_aerial(vec3 direction,float maximum_distance,
         atmosphere.rayleigh_ground_radius.rgb*density.x*rayleigh_phase+
         atmosphere.mie_scattering_top_radius.rgb*density.y*mie_phase)*
         solar_transmittance*atmosphere.solar_absorption_peak.rgb*
-        atmosphere_sun_visibility(point,sun_direction);
+        atmosphere_sun_visibility(point,sun_direction)*
+        atmosphere_terrain_shadow_visibility(point);
     const vec3 source=direct_source+
         atmosphere_multiple_source(point,sun_direction);
     const vec3 integral=(vec3(1.0)-segment_transmittance)/
