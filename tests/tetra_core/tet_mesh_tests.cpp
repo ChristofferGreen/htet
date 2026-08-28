@@ -14544,6 +14544,57 @@ TEST_CASE("double precision multiple scattering oracle covers physical regimes")
   }
 }
 
+TEST_CASE("double precision sky irradiance oracle preserves Lambertian energy") {
+  using tetra_viewer::AtmosphereSpectrum;
+  const tetra::Vec3 up{0.0,1.0,0.0};
+  const AtmosphereSpectrum constant{0.25,1.0,4.0};
+  const auto constant_sky=[&](tetra::Vec3){return constant;};
+  const auto zenith=tetra_viewer::atmosphere_sky_irradiance_reference(
+      up,up,constant_sky,65'536U);
+  const auto horizon=tetra_viewer::atmosphere_sky_irradiance_reference(
+      {1.0,0.0,0.0},up,constant_sky,65'536U);
+  const auto nadir=tetra_viewer::atmosphere_sky_irradiance_reference(
+      {0.0,-1.0,0.0},up,constant_sky,65'536U);
+  for(std::size_t channel=0;channel<3U;++channel){
+    CHECK(zenith[channel]==doctest::Approx(constant[channel]).epsilon(2.0e-4));
+    CHECK(horizon[channel]==doctest::Approx(constant[channel]*0.5)
+        .epsilon(8.0e-4));
+    CHECK(nadir[channel]==doctest::Approx(0.0).epsilon(1.0e-12));
+  }
+}
+
+TEST_CASE("sky irradiance oracle responds to surface normal at noon and sunset") {
+  using tetra_viewer::AtmosphereSpectrum;
+  const tetra::Vec3 up{0.0,1.0,0.0};
+  const auto directional_sky=[](tetra::Vec3 sun){
+    return [sun](tetra::Vec3 direction){
+      const double cosine=direction.x*sun.x+direction.y*sun.y+
+          direction.z*sun.z;
+      const double lobe=std::pow(std::max(0.0,cosine),16.0);
+      return AtmosphereSpectrum{0.02+lobe,0.03+0.8*lobe,0.05+0.5*lobe};
+    };
+  };
+  const auto noon_sky=directional_sky(up);
+  const auto noon_up=tetra_viewer::atmosphere_sky_irradiance_reference(
+      up,up,noon_sky,32'768U);
+  const auto noon_side=tetra_viewer::atmosphere_sky_irradiance_reference(
+      {1.0,0.0,0.0},up,noon_sky,32'768U);
+  CHECK(noon_up[0]>noon_side[0]*1.5);
+
+  const tetra::Vec3 sunset_direction{1.0,0.0,0.0};
+  const auto sunset_sky=directional_sky(sunset_direction);
+  const auto toward_sun=tetra_viewer::atmosphere_sky_irradiance_reference(
+      sunset_direction,up,sunset_sky,32'768U);
+  const auto away_from_sun=tetra_viewer::atmosphere_sky_irradiance_reference(
+      {-1.0,0.0,0.0},up,sunset_sky,32'768U);
+  CHECK(toward_sun[0]>away_from_sun[0]*4.0);
+  for(const auto& irradiance:{noon_up,noon_side,toward_sun,away_from_sun})
+    for(const double channel:irradiance){
+      CHECK(std::isfinite(channel));
+      CHECK(channel>=0.0);
+    }
+}
+
 TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
   constexpr double maximum_distance=200'000.0;
   constexpr double default_depth_slices=16.0;

@@ -710,6 +710,36 @@ atmosphere_multiple_scattering_reference(
   return result;
 }
 
+AtmosphereSpectrum atmosphere_sky_irradiance_reference(
+    tetra::Vec3 surface_normal, tetra::Vec3 local_up,
+    const AtmosphereSkyRadianceFunction& sky_radiance,
+    std::size_t direction_count) {
+  AtmosphereSpectrum result{};
+  surface_normal=normalized(surface_normal);
+  local_up=normalized(local_up);
+  if(length(surface_normal)==0.0||length(local_up)==0.0||!sky_radiance||
+     direction_count==0U)return result;
+
+  constexpr double golden_angle=2.3999632297286533222;
+  for(std::size_t index=0;index<direction_count;++index){
+    const double y=1.0-2.0*(static_cast<double>(index)+0.5)/
+        static_cast<double>(direction_count);
+    const double radial=std::sqrt(std::max(0.0,1.0-y*y));
+    const double angle=static_cast<double>(index)*golden_angle;
+    const tetra::Vec3 direction{radial*std::cos(angle),y,
+                                radial*std::sin(angle)};
+    const double weight=std::max(0.0,dot(surface_normal,direction));
+    if(weight==0.0||dot(local_up,direction)<=0.0)continue;
+    const auto radiance=sky_radiance(direction);
+    for(std::size_t channel=0;channel<result.size();++channel)
+      if(std::isfinite(radiance[channel])&&radiance[channel]>0.0)
+        result[channel]+=radiance[channel]*weight;
+  }
+  const double normalization=4.0/static_cast<double>(direction_count);
+  for(auto& channel:result)channel*=normalization;
+  return result;
+}
+
 double aerial_lut_distance(double slice,
                            double maximum_distance_metres) noexcept {
   if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||

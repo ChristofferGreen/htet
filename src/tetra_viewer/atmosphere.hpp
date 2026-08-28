@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <optional>
 #include <string>
@@ -192,6 +193,9 @@ struct AtmosphereMultipleScatteringReference {
   AtmosphereSpectrum closed_contribution{};
 };
 
+using AtmosphereSkyRadianceFunction=
+    std::function<AtmosphereSpectrum(tetra::Vec3 direction)>;
+
 [[nodiscard]] AtmosphereParameters atmosphere_preset(AtmospherePreset preset);
 [[nodiscard]] std::optional<AtmospherePreset> parse_atmosphere_preset(
     std::string_view name);
@@ -249,6 +253,12 @@ atmosphere_multiple_scattering_reference(
     const AtmosphereParameters& parameters, double altitude_metres,
     double sun_zenith_cosine, std::size_t direction_count=64U,
     std::size_t ray_steps=20U);
+// Independent double-precision cosine convolution used to qualify the GPU
+// irradiance lookup. The returned value is E/pi, ready for Lambertian albedo.
+[[nodiscard]] AtmosphereSpectrum atmosphere_sky_irradiance_reference(
+    tetra::Vec3 surface_normal, tetra::Vec3 local_up,
+    const AtmosphereSkyRadianceFunction& sky_radiance,
+    std::size_t direction_count=4096U);
 // Cubic aerial-volume depth distribution: resolves local paths without giving
 // up the finite ground-to-space extent or changing the physical atmosphere.
 [[nodiscard]] double aerial_lut_distance(double slice,

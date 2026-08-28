@@ -10,6 +10,7 @@ layout(set = 0,binding = 4) uniform sampler2D sky_view_lut;
 layout(set = 0,binding = 5) uniform sampler3D aerial_scattering_lut;
 layout(set = 0,binding = 6) uniform sampler3D aerial_transmittance_lut;
 layout(set = 0,binding = 8) uniform sampler2DArray sun_shadow_map;
+layout(set = 0,binding = 9) uniform sampler2D sky_irradiance_lut;
 
 layout(std140,set=0,binding=7) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -114,6 +115,26 @@ vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   return mix(lower,upper,fraction.y);
 }
 
+vec3 sample_sky_irradiance(vec3 normal) {
+  const vec2 uv=atmosphere_full_sky_uv(normal);
+  const ivec2 size=textureSize(sky_irradiance_lut,0);
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const int low_x=(low.x%size.x+size.x)%size.x;
+  const int high_x=(high.x%size.x+size.x)%size.x;
+  const int low_y=clamp(low.y,0,size.y-1);
+  const int high_y=clamp(high.y,0,size.y-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(
+      texelFetch(sky_irradiance_lut,ivec2(low_x,low_y),0).rgb,
+      texelFetch(sky_irradiance_lut,ivec2(high_x,low_y),0).rgb,fraction.x);
+  const vec3 upper=mix(
+      texelFetch(sky_irradiance_lut,ivec2(low_x,high_y),0).rgb,
+      texelFetch(sky_irradiance_lut,ivec2(high_x,high_y),0).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
 bool planet_blocks_view(vec3 direction) {
   const vec3 origin=atmosphere.camera_position_near.xyz;
   const float projection=dot(origin,direction);
@@ -161,6 +182,14 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   const vec3 single_scattered_fill=atmosphere.solar_absorption_peak.rgb*
       (vec3(1.0)-vertical_transmittance)*daylight*0.60;
   const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb;
+  if(atmosphere.reserved1.y>0.5){
+    const vec3 ambient=albedo*sample_sky_irradiance(normal);
+    const vec3 direct=albedo/3.14159265359*
+        atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
+    return ambient+direct;
+  }
+
+  // Keep the fitted ground model as the qualified baseline only.
   const vec3 environment=(average_radiance+single_scattered_fill)*2.0;
   const vec3 ambient=0.96*albedo*environment;
   const vec3 direct=0.96*albedo/3.14159265359*

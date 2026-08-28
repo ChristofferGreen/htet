@@ -720,9 +720,9 @@ integration within tolerance without orientation-dependent horizon artifacts.
 
 #### H5: Derive physical diffuse terrain irradiance
 
-- [ ] Cosine-convolve complete sky radiance into a tested low-order spherical-
+- [x] Cosine-convolve complete sky radiance into a tested low-order spherical-
       harmonic or equivalent irradiance representation for the gameplay region.
-- [ ] Feed terrain BRDF ambient illumination from this representation while
+- [x] Feed terrain BRDF ambient illumination from this representation while
       retaining attenuated direct sun as a separate term.
 - [ ] Remove fitted environment-fill and ground-bounce constants and migrate
       their shader-string tests to numeric irradiance and fixed-exposure images.

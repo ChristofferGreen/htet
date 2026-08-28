@@ -34,6 +34,7 @@ layout(std140,set=0,binding=4) uniform Atmosphere {
   vec4 reserved2;
   vec4 reserved3;
 } atmosphere;
+layout(set=0,binding=5) uniform sampler2D sky_irradiance_lut;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
@@ -107,6 +108,47 @@ vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
               clamp(rho/max(horizon,1.0e-6),0.0,1.0));
 }
 
+vec2 atmosphere_full_sky_uv(vec3 direction) {
+  const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  vec3 sun_tangent=sun_direction-local_up*dot(sun_direction,local_up);
+  if(dot(sun_tangent,sun_tangent)<1.0e-10){
+    const vec3 reference=abs(local_up.z)<0.9?vec3(0.0,0.0,1.0):
+        vec3(1.0,0.0,0.0);
+    sun_tangent=reference-local_up*dot(reference,local_up);
+  }
+  sun_tangent=normalize(sun_tangent);
+  const vec3 longitude_tangent=normalize(cross(local_up,sun_tangent));
+  const float latitude=asin(clamp(dot(direction,local_up),-1.0,1.0));
+  const float normalized_latitude=latitude/(0.5*3.14159265358979323846);
+  const float mapped_latitude=abs(normalized_latitude)<1.0e-6?0.0:
+      sign(normalized_latitude)*sqrt(abs(normalized_latitude));
+  const float longitude=atan(dot(direction,longitude_tangent),
+                             dot(direction,sun_tangent));
+  return vec2(longitude/(2.0*3.14159265358979323846)+0.5,
+              mapped_latitude*0.5+0.5);
+}
+
+vec3 sample_sky_irradiance(vec3 normal) {
+  const vec2 uv=atmosphere_full_sky_uv(normal);
+  const ivec2 size=textureSize(sky_irradiance_lut,0);
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const int low_x=(low.x%size.x+size.x)%size.x;
+  const int high_x=(high.x%size.x+size.x)%size.x;
+  const int low_y=clamp(low.y,0,size.y-1);
+  const int high_y=clamp(high.y,0,size.y-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(
+      texelFetch(sky_irradiance_lut,ivec2(low_x,low_y),0).rgb,
+      texelFetch(sky_irradiance_lut,ivec2(high_x,low_y),0).rgb,fraction.x);
+  const vec3 upper=mix(
+      texelFetch(sky_irradiance_lut,ivec2(low_x,high_y),0).rgb,
+      texelFetch(sky_irradiance_lut,ivec2(high_x,high_y),0).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
 vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
                                  out vec3 direct_sun) {
   if(atmosphere.profile_and_mode.w<0.5){
@@ -154,6 +196,11 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
       radial_distance,sun_cosine);
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*2.8;
+  if(atmosphere.reserved1.y>0.5)
+    return sample_sky_irradiance(surface_normal);
+
+  // The qualified baseline retains its fitted readability terms. The
+  // faithful path above consumes the explicit cosine-convolved sky lookup.
   const float ground_facing=max(-upward,0.0);
   const vec3 ground_bounce=atmosphere.ground_albedo_mie_anisotropy.rgb*
       direct_sun*max(sun_cosine,0.0)*ground_facing*0.25;
