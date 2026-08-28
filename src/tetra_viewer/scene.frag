@@ -9,7 +9,11 @@ layout(location = 5) flat in float in_edge_flags;
 layout(location = 6) in vec3 fragment_position;
 layout(location = 7) in vec3 smooth_normal;
 layout(location = 0) out vec4 out_colour;
-layout(set = 0, binding = 0) uniform sampler2D sun_shadow_map;
+layout(set = 0, binding = 0) uniform sampler2DArray sun_shadow_map;
+layout(std140,set=0,binding=1) uniform ShadowCascades {
+  mat4 shadow_matrices[4];
+  vec4 shadow_splits;
+} shadow_cascades;
 
 layout(push_constant) uniform Camera {
   mat4 view_projection;
@@ -18,23 +22,38 @@ layout(push_constant) uniform Camera {
   vec4 view_position;
 } camera;
 
-float sun_visibility(vec3 position,float n_dot_l) {
-  const vec3 sun_direction=normalize(camera.light_direction.xyz);
-  const vec3 sun_right=normalize(cross(vec3(0.0,1.0,0.0),sun_direction));
-  const vec3 sun_up=cross(sun_direction,sun_right);
-  const float radius=64.0;
-  const vec2 projected=vec2(dot(position,sun_right),dot(position,sun_up))/radius;
-  if(any(greaterThan(abs(projected),vec2(1.0))))return 1.0;
-  const vec2 uv=projected*0.5+0.5;
-  const float receiver_depth=(radius-dot(position,sun_direction))/(2.0*radius);
-  const float bias=mix(0.00035,0.0018,1.0-n_dot_l);
-  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0));
+float cascade_visibility(vec3 position,float n_dot_l,int cascade) {
+  const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
+      vec4(position,1.0)).xyz;
+  if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
+     projected.z<0.0||projected.z>1.0)return 1.0;
+  const vec2 uv=projected.xy*0.5+0.5;
+  const float bias=mix(0.00018,0.0012,1.0-n_dot_l)*
+      (1.0+float(cascade)*0.45);
+  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
   float visibility=0.0;
   for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
-    const float blocker=texture(sun_shadow_map,uv+vec2(x,y)*texel).r;
-    visibility+=receiver_depth-bias<=blocker?1.0:0.0;
+    const float blocker=texture(sun_shadow_map,
+        vec3(uv+vec2(x,y)*texel,float(cascade))).r;
+    visibility+=projected.z-bias<=blocker?1.0:0.0;
   }
   return visibility/9.0;
+}
+
+float sun_visibility(vec3 position,float n_dot_l) {
+  const float distance_from_camera=length(position-camera.view_position.xyz);
+  int cascade=3;
+  if(distance_from_camera<shadow_cascades.shadow_splits.x)cascade=0;
+  else if(distance_from_camera<shadow_cascades.shadow_splits.y)cascade=1;
+  else if(distance_from_camera<shadow_cascades.shadow_splits.z)cascade=2;
+  const float current=cascade_visibility(position,n_dot_l,cascade);
+  if(cascade==3)return current;
+  const float split=shadow_cascades.shadow_splits[cascade];
+  const float previous=cascade==0?0.0:
+      shadow_cascades.shadow_splits[cascade-1];
+  const float blend_start=mix(previous,split,0.85);
+  const float blend=smoothstep(blend_start,split,distance_from_camera);
+  return mix(current,cascade_visibility(position,n_dot_l,cascade+1),blend);
 }
 
 vec3 angle_colour(float angle_degrees) {

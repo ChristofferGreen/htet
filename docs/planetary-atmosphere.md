@@ -210,6 +210,14 @@ motion, and the orbital terminator. Shafts remain attached to terrain and sun,
 not the camera. Filtering must neither leak through a ridge nor black out the
 entire atmosphere.
 
+Implemented baseline: four 2048-square array layers cover 2, 8, 32, and 128
+world-unit half-widths. Their camera-relative light projections are
+texel-snapped, overlap across the outer 15 percent of each distance band, and
+are sampled by both the terrain BRDF and direct aerial scattering. The compact
+multiple-scattering fill deliberately remains unshadowed. This is the local
+oracle; capture qualification and the optional hierarchy horizon occluder are
+still outstanding.
+
 ## 8. HDR, exposure, and sun integration
 
 Terrain lighting, sky, sun, and aerial perspective combine in linear HDR before
@@ -288,7 +296,7 @@ advance until each preceding gate passes in release mode.
       deterministic serialization.
 - [x] Add CPU reference intersections, profiles, phase, optical depth, and
       transmittance plus unit, continuity, and origin-rebase tests.
-- [ ] Add `--atmosphere-check` and scriptable camera, sun, preset, and capture
+- [x] Add `--atmosphere-check` and scriptable camera, sun, preset, and capture
       inputs so qualification never depends on manual UI interaction.
 
 ### Gate B: HDR scene and readable depth
@@ -303,7 +311,7 @@ advance until each preceding gate passes in release mode.
 
 ### Gate C: Compact scattering core
 
-- [ ] Implement dimensionally checked transmittance and Hillaire-style
+- [x] Implement dimensionally checked transmittance and Hillaire-style
       multiple-scattering LUTs with CPU probe comparisons.
 - [x] Implement the camera/sun-dependent sky-view LUT.
 - [x] Render physical sky and attenuated angular solar disc into HDR.
@@ -325,10 +333,10 @@ advance until each preceding gate passes in release mode.
 
 ### Gate E: Shadowed atmosphere
 
-- [ ] Implement stable camera-relative directional cascades shared by terrain
+- [x] Implement stable camera-relative directional cascades shared by terrain
       and atmosphere, including off-screen casters, texel snapping, blending,
       bounded bias, and timing diagnostics.
-- [ ] Query cascade visibility for direct solar atmospheric scattering without
+- [x] Query cascade visibility for direct solar atmospheric scattering without
       incorrectly suppressing multiple-scattered fill.
 - [ ] Test/capture mountains, valleys, moving sun, cascade boundaries, sunrise,
       and the orbital terminator.

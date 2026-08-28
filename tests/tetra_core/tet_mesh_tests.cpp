@@ -19,6 +19,7 @@
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
+#include "tetra_viewer/shadow_cascades.hpp"
 #include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/viewer_script.hpp"
 #include "tetra_viewer/world_script.hpp"
@@ -13961,4 +13962,59 @@ TEST_CASE("headless atmosphere check exposes deterministic camera sun and preset
             tetra_viewer::AtmospherePreset::earth, -1.0, 0.0, 0.0,
             invalid_output, invalid_errors) == 2);
   CHECK(invalid_errors.str().find("nonnegative") != std::string::npos);
+}
+
+TEST_CASE("stable shadow cascades are nested snapped and centred in clip space") {
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,0.78,0.5},{0.0,0.0,-1.0},{-0.2,0.3,-0.9},2048U);
+  double previous_split{};
+  for(const auto& cascade:cascades.cascades){
+    CHECK(cascade.split_distance>previous_split);
+    CHECK(cascade.depth_half_range>=cascade.half_width);
+    CHECK(cascade.texel_world_size==
+          doctest::Approx(2.0*cascade.half_width/2048.0));
+    const auto centre=tetra_viewer::transform_shadow_point(
+        cascade.matrix,cascade.snapped_centre);
+    CHECK(centre.x==doctest::Approx(0.0).epsilon(1.0e-5));
+    CHECK(centre.y==doctest::Approx(0.0).epsilon(1.0e-5));
+    CHECK(centre.z==doctest::Approx(0.5).epsilon(1.0e-5));
+    const auto right_edge=tetra_viewer::transform_shadow_point(
+        cascade.matrix,cascade.snapped_centre+
+            cascades.light_right*cascade.half_width);
+    CHECK(right_edge.x==doctest::Approx(1.0).epsilon(1.0e-5));
+    previous_split=cascade.split_distance;
+  }
+}
+
+TEST_CASE("shadow cascade motion is quantized to texels and deterministic") {
+  const tetra::Vec3 camera{17.25,2.5,-9.75};
+  const tetra::Vec3 forward{0.2,-0.1,-0.9};
+  const tetra::Vec3 sun{-0.7,0.4,0.3};
+  const auto first=tetra_viewer::make_stable_shadow_cascades(
+      camera,forward,sun,1024U);
+  const auto repeated=tetra_viewer::make_stable_shadow_cascades(
+      camera,forward,sun,1024U);
+  const auto moved=tetra_viewer::make_stable_shadow_cascades(
+      camera+tetra::Vec3{0.001,0.0,0.0},forward,sun,1024U);
+  for(std::size_t index=0;index<tetra_viewer::shadow_cascade_count;++index){
+    CHECK(first.cascades[index].matrix==repeated.cascades[index].matrix);
+    const auto delta=moved.cascades[index].snapped_centre-
+        first.cascades[index].snapped_centre;
+    for(const auto axis:{first.light_right,first.light_up,first.sun_direction}){
+      const double projected=delta.x*axis.x+delta.y*axis.y+delta.z*axis.z;
+      const double texel=first.cascades[index].texel_world_size;
+      CHECK(projected/texel==
+            doctest::Approx(std::round(projected/texel)).epsilon(1.0e-8));
+    }
+  }
+  CHECK_THROWS_AS(([&]{
+    const auto unused=tetra_viewer::make_stable_shadow_cascades(
+        camera,forward,sun,0U);
+    static_cast<void>(unused);
+  }()),std::invalid_argument);
+  CHECK_THROWS_AS(([&]{
+    const auto unused=tetra_viewer::make_stable_shadow_cascades(
+        camera,forward,sun,1024U,{2.0,2.0,8.0,32.0});
+    static_cast<void>(unused);
+  }()),std::invalid_argument);
 }

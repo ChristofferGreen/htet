@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_viewer/atmosphere.hpp"
+#include "tetra_viewer/shadow_cascades.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 
 #include <vulkan/vulkan.h>
@@ -90,7 +91,11 @@ class SceneRenderer {
   std::vector<DepthImage> depth_images_;
   struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<SceneColourImage> scene_colour_images_;
-  struct ShadowImage : DepthImage {};
+  struct ShadowImage : DepthImage {
+    std::array<VkImageView,shadow_cascade_count> layer_views{};
+    VkBuffer uniform_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
+  };
   std::vector<ShadowImage> shadow_images_;
   struct AtmosphereImage {
     VkImage image{VK_NULL_HANDLE};

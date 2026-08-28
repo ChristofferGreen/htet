@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace tetra_viewer {
@@ -57,15 +58,20 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   colour_format_ = colour_format;
   depth_format_ = depth_format;
 
-  VkDescriptorSetLayoutBinding shadow_binding{};
-  shadow_binding.binding=0;
-  shadow_binding.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  shadow_binding.descriptorCount=1;
-  shadow_binding.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+  std::array<VkDescriptorSetLayoutBinding,2> shadow_bindings{};
+  shadow_bindings[0].binding=0;
+  shadow_bindings[0].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  shadow_bindings[0].descriptorCount=1;
+  shadow_bindings[0].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+  shadow_bindings[1].binding=1;
+  shadow_bindings[1].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  shadow_bindings[1].descriptorCount=1;
+  shadow_bindings[1].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
   VkDescriptorSetLayoutCreateInfo descriptor_layout{
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  descriptor_layout.bindingCount=1;
-  descriptor_layout.pBindings=&shadow_binding;
+  descriptor_layout.bindingCount=static_cast<std::uint32_t>(
+      shadow_bindings.size());
+  descriptor_layout.pBindings=shadow_bindings.data();
   if(vkCreateDescriptorSetLayout(device_,&descriptor_layout,nullptr,
                                  &descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow descriptor layout");
@@ -88,11 +94,13 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &composite_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,6> atmosphere_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,8> atmosphere_bindings{};
   for(std::uint32_t binding=0;binding<atmosphere_bindings.size();++binding){
     atmosphere_bindings[binding].binding=binding;
-    atmosphere_bindings[binding].descriptorType=binding==5U?
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    atmosphere_bindings[binding].descriptorType=binding<5U?
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+        (binding==6U?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     atmosphere_bindings[binding].descriptorCount=1;
     atmosphere_bindings[binding].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
   }
@@ -230,7 +238,17 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     pipeline_blend.pAttachments=&pipeline_blend_attachment;
     VkGraphicsPipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pipeline.pNext = &rendering; pipeline.stageCount = 2; pipeline.pStages = pipeline_stages; pipeline.pVertexInputState = &vertex_input; pipeline.pInputAssemblyState = &assembly; pipeline.pViewportState = &viewport; pipeline.pRasterizationState = &raster; pipeline.pMultisampleState = &multisample; pipeline.pDepthStencilState = &depth; pipeline.pColorBlendState = &pipeline_blend; pipeline.pDynamicState = &dynamic; pipeline.layout = pipeline_layout;
-    if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline, nullptr, target) != VK_SUCCESS) throw std::runtime_error("unable to create scene pipeline");
+    const auto result=vkCreateGraphicsPipelines(
+        device_,VK_NULL_HANDLE,1,&pipeline,nullptr,target);
+    if(result!=VK_SUCCESS){
+      const char* name=target==&triangle_pipeline_?"triangles":
+          (target==&triangle_wire_pipeline_?"triangle wire":
+           (target==&line_pipeline_?"hierarchy lines":
+            (target==&editor_line_pipeline_?"editor lines":"sky")));
+      throw std::runtime_error(std::string{"unable to create scene pipeline: "}+
+                               name+" (VkResult "+
+                               std::to_string(static_cast<int>(result))+')');
+    }
   };
   create_pipeline(stages, VK_POLYGON_MODE_FILL, true, false, false, true,
                   shaded_pipeline_layout_,&triangle_pipeline_);
@@ -367,9 +385,12 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     vkFreeMemory(device_,colour.memory,nullptr);
   }
   for(auto& shadow:shadow_images_){
+    for(auto view:shadow.layer_views)vkDestroyImageView(device_,view,nullptr);
     vkDestroyImageView(device_,shadow.view,nullptr);
     vkDestroyImage(device_,shadow.image,nullptr);
     vkFreeMemory(device_,shadow.memory,nullptr);
+    vkDestroyBuffer(device_,shadow.uniform_buffer,nullptr);
+    vkFreeMemory(device_,shadow.uniform_memory,nullptr);
   }
   for(auto& frame:atmosphere_frames_){
     for(auto* image:{&frame.transmittance,&frame.multiple_scattering,
@@ -432,7 +453,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
       throw std::runtime_error("unable to bind HDR scene colour image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image=colour.image;
-    view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType=VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     view.format=scene_colour_format_;
     view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
     view.subresourceRange.levelCount=1;
@@ -516,7 +537,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     image.format=depth_format_;
     image.extent={shadow_extent,shadow_extent,1U};
     image.mipLevels=1;
-    image.arrayLayers=1;
+    image.arrayLayers=static_cast<std::uint32_t>(shadow_cascade_count);
     image.samples=VK_SAMPLE_COUNT_1_BIT;
     image.tiling=VK_IMAGE_TILING_OPTIMAL;
     image.usage=VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|
@@ -536,20 +557,45 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
       throw std::runtime_error("unable to bind sun shadow image");
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image=shadow.image;
-    view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType=VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     view.format=depth_format_;
     view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
     view.subresourceRange.levelCount=1;
-    view.subresourceRange.layerCount=1;
+    view.subresourceRange.layerCount=static_cast<std::uint32_t>(
+        shadow_cascade_count);
     if(vkCreateImageView(device_,&view,nullptr,&shadow.view)!=VK_SUCCESS)
       throw std::runtime_error("unable to create sun shadow view");
+    for(std::uint32_t layer=0;layer<shadow_cascade_count;++layer){
+      view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+      view.subresourceRange.baseArrayLayer=layer;
+      view.subresourceRange.layerCount=1;
+      if(vkCreateImageView(device_,&view,nullptr,
+                           &shadow.layer_views[layer])!=VK_SUCCESS)
+        throw std::runtime_error("unable to create sun shadow cascade view");
+    }
+    VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size=sizeof(float)*(16U*shadow_cascade_count+4U);
+    buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if(vkCreateBuffer(device_,&buffer,nullptr,&shadow.uniform_buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create shadow cascade uniform buffer");
+    vkGetBufferMemoryRequirements(device_,shadow.uniform_buffer,&requirements);
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&shadow.uniform_memory)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to allocate shadow cascade uniforms");
+    if(vkBindBufferMemory(device_,shadow.uniform_buffer,shadow.uniform_memory,0)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to bind shadow cascade uniforms");
   }
 
   const std::array<VkDescriptorPoolSize,3> pool_sizes{
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           image_count*9U},
+                           image_count*10U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*5U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*2U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*4U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets=image_count*3U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
@@ -582,13 +628,24 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     VkDescriptorImageInfo image_info{
         shadow_sampler_,shadow_images_[index].view,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet=descriptor_sets_[index];
-    write.dstBinding=0;
-    write.descriptorCount=1;
-    write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo=&image_info;
-    vkUpdateDescriptorSets(device_,1,&write,0,nullptr);
+    VkDescriptorBufferInfo shadow_uniform_info{
+        shadow_images_[index].uniform_buffer,0,
+        sizeof(float)*(16U*shadow_cascade_count+4U)};
+    std::array<VkWriteDescriptorSet,2> shadow_writes{};
+    shadow_writes[0].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    shadow_writes[0].dstSet=descriptor_sets_[index];
+    shadow_writes[0].dstBinding=0;
+    shadow_writes[0].descriptorCount=1;
+    shadow_writes[0].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    shadow_writes[0].pImageInfo=&image_info;
+    shadow_writes[1].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    shadow_writes[1].dstSet=descriptor_sets_[index];
+    shadow_writes[1].dstBinding=1;
+    shadow_writes[1].descriptorCount=1;
+    shadow_writes[1].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    shadow_writes[1].pBufferInfo=&shadow_uniform_info;
+    vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(shadow_writes.size()),
+                           shadow_writes.data(),0,nullptr);
 
     auto& atmosphere=atmosphere_frames_[index];
     const std::array<VkDescriptorImageInfo,8> composite_images{
@@ -638,7 +695,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
         atmosphere.sky_view.view,atmosphere.aerial_scattering.view,
         atmosphere.aerial_transmittance.view};
     std::array<VkDescriptorImageInfo,5> storage_images{};
-    std::array<VkWriteDescriptorSet,6> atmosphere_writes{};
+    std::array<VkWriteDescriptorSet,8> atmosphere_writes{};
     for(std::uint32_t binding=0;binding<storage_images.size();++binding){
       storage_images[binding].imageView=storage_views[binding];
       storage_images[binding].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
@@ -655,6 +712,19 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count) {
     atmosphere_writes[5].descriptorCount=1;
     atmosphere_writes[5].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     atmosphere_writes[5].pBufferInfo=&uniform_info;
+    atmosphere_writes[6].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[6].dstSet=atmosphere.descriptor_set;
+    atmosphere_writes[6].dstBinding=6U;
+    atmosphere_writes[6].descriptorCount=1;
+    atmosphere_writes[6].descriptorType=
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    atmosphere_writes[6].pImageInfo=&image_info;
+    atmosphere_writes[7].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[7].dstSet=atmosphere.descriptor_set;
+    atmosphere_writes[7].dstBinding=7U;
+    atmosphere_writes[7].descriptorCount=1;
+    atmosphere_writes[7].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    atmosphere_writes[7].pBufferInfo=&shadow_uniform_info;
     vkUpdateDescriptorSets(device_,
         static_cast<std::uint32_t>(atmosphere_writes.size()),
         atmosphere_writes.data(),0,nullptr);
@@ -906,6 +976,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[45]=static_cast<float>(atmosphere_input.sun_direction.y);
   atmosphere_uniform[46]=static_cast<float>(atmosphere_input.sun_direction.z);
   atmosphere_uniform[47]=atmosphere_input.exposure;
+  atmosphere_uniform[48]=static_cast<float>(
+      atmosphere_input.camera_relative_world.x);
+  atmosphere_uniform[49]=static_cast<float>(
+      atmosphere_input.camera_relative_world.y);
+  atmosphere_uniform[50]=static_cast<float>(
+      atmosphere_input.camera_relative_world.z);
+  atmosphere_uniform[51]=1.0F;
   void* mapped{};
   if(vkMapMemory(device_,atmosphere.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)
@@ -914,6 +991,22 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkUnmapMemory(device_,atmosphere.uniform_memory);
 
   auto& shadow=shadow_images_.at(image_index);
+  const auto cascades=make_stable_shadow_cascades(
+      atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
+      atmosphere_input.sun_direction,2048U);
+  std::array<float,16U*shadow_cascade_count+4U> shadow_uniform{};
+  for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
+    std::copy(cascades.cascades[cascade].matrix.begin(),
+              cascades.cascades[cascade].matrix.end(),
+              shadow_uniform.begin()+cascade*16U);
+    shadow_uniform[16U*shadow_cascade_count+cascade]=static_cast<float>(
+        cascades.cascades[cascade].split_distance);
+  }
+  if(vkMapMemory(device_,shadow.uniform_memory,0,sizeof(shadow_uniform),0,
+                 &mapped)!=VK_SUCCESS)
+    throw std::runtime_error("unable to map shadow cascade uniforms");
+  std::memcpy(mapped,shadow_uniform.data(),sizeof(shadow_uniform));
+  vkUnmapMemory(device_,shadow.uniform_memory);
   VkImageMemoryBarrier to_shadow{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   to_shadow.srcAccessMask=shadow.initialized?VK_ACCESS_SHADER_READ_BIT:0U;
   to_shadow.dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -925,47 +1018,57 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_shadow.image=shadow.image;
   to_shadow.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
   to_shadow.subresourceRange.levelCount=1;
-  to_shadow.subresourceRange.layerCount=1;
+  to_shadow.subresourceRange.layerCount=static_cast<std::uint32_t>(
+      shadow_cascade_count);
   vkCmdPipelineBarrier(command_buffer,
-      shadow.initialized?VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:
+      shadow.initialized?(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,0,0,nullptr,0,nullptr,1,
       &to_shadow);
 
   VkClearValue shadow_clear{};
   shadow_clear.depthStencil={depth_clear(shadow_map_depth_convention),0U};
-  VkRenderingAttachmentInfo shadow_attachment{
-      VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  shadow_attachment.imageView=shadow.view;
-  shadow_attachment.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  shadow_attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;
-  shadow_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
-  shadow_attachment.clearValue=shadow_clear;
-  VkRenderingInfo shadow_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  shadow_rendering.renderArea.extent={2048U,2048U};
-  shadow_rendering.layerCount=1;
-  shadow_rendering.pDepthAttachment=&shadow_attachment;
-  begin_rendering(command_buffer,
-      reinterpret_cast<const VkRenderingInfoKHR*>(&shadow_rendering));
   VkViewport shadow_viewport{0.0F,0.0F,2048.0F,2048.0F,0.0F,1.0F};
   VkRect2D shadow_scissor{{0,0},{2048U,2048U}};
-  vkCmdSetViewport(command_buffer,0,1,&shadow_viewport);
-  vkCmdSetScissor(command_buffer,0,1,&shadow_scissor);
-  if(triangles_.count!=0U){
-    VkDeviceSize shadow_offset{};
-    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      shadow_pipeline_);
-    vkCmdPushConstants(command_buffer,pipeline_layout_,VK_SHADER_STAGE_VERTEX_BIT,
-                       0,sizeof(float)*28,camera_data);
-    vkCmdBindVertexBuffers(command_buffer,0,1,&triangles_.buffer,&shadow_offset);
-    const auto ranges=surface_upload_planner_.published_draws();
-    if(ranges.empty())
-      vkCmdDraw(command_buffer,static_cast<std::uint32_t>(triangles_.count),1,0,0);
-    else for(const auto range:ranges)
-      vkCmdDraw(command_buffer,static_cast<std::uint32_t>(range.vertex_count),1,
-                static_cast<std::uint32_t>(range.first_vertex),0);
+  for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
+    VkRenderingAttachmentInfo shadow_attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    shadow_attachment.imageView=shadow.layer_views[cascade];
+    shadow_attachment.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    shadow_attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;
+    shadow_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    shadow_attachment.clearValue=shadow_clear;
+    VkRenderingInfo shadow_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    shadow_rendering.renderArea.extent={2048U,2048U};
+    shadow_rendering.layerCount=1;
+    shadow_rendering.pDepthAttachment=&shadow_attachment;
+    begin_rendering(command_buffer,
+        reinterpret_cast<const VkRenderingInfoKHR*>(&shadow_rendering));
+    vkCmdSetViewport(command_buffer,0,1,&shadow_viewport);
+    vkCmdSetScissor(command_buffer,0,1,&shadow_scissor);
+    if(triangles_.count!=0U){
+      VkDeviceSize shadow_offset{};
+      vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        shadow_pipeline_);
+      std::array<float,28> shadow_push{};
+      std::copy(cascades.cascades[cascade].matrix.begin(),
+                cascades.cascades[cascade].matrix.end(),shadow_push.begin());
+      vkCmdPushConstants(command_buffer,pipeline_layout_,
+                         VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*28,
+                         shadow_push.data());
+      vkCmdBindVertexBuffers(command_buffer,0,1,&triangles_.buffer,
+                             &shadow_offset);
+      const auto ranges=surface_upload_planner_.published_draws();
+      if(ranges.empty())
+        vkCmdDraw(command_buffer,static_cast<std::uint32_t>(triangles_.count),1,
+                  0,0);
+      else for(const auto range:ranges)
+        vkCmdDraw(command_buffer,static_cast<std::uint32_t>(range.vertex_count),
+                  1,static_cast<std::uint32_t>(range.first_vertex),0);
+    }
+    end_rendering(command_buffer);
   }
-  end_rendering(command_buffer);
 
   VkImageMemoryBarrier to_sample{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   to_sample.srcAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -977,7 +1080,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_sample.image=shadow.image;
   to_sample.subresourceRange=to_shadow.subresourceRange;
   vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&to_sample);
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,0,nullptr,0,nullptr,1,&to_sample);
   shadow.initialized=true;
 
   const std::array<VkImage,5> atmosphere_images{
@@ -1199,9 +1303,12 @@ void SceneRenderer::shutdown() {
     vkFreeMemory(device_,colour.memory,nullptr);
   }
   for(auto& shadow:shadow_images_){
+    for(auto view:shadow.layer_views)vkDestroyImageView(device_,view,nullptr);
     vkDestroyImageView(device_,shadow.view,nullptr);
     vkDestroyImage(device_,shadow.image,nullptr);
     vkFreeMemory(device_,shadow.memory,nullptr);
+    vkDestroyBuffer(device_,shadow.uniform_buffer,nullptr);
+    vkFreeMemory(device_,shadow.uniform_memory,nullptr);
   }
   for(auto& frame:atmosphere_frames_){
     for(auto* image:{&frame.transmittance,&frame.multiple_scattering,
