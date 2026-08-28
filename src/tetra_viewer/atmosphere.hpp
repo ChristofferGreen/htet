@@ -123,6 +123,12 @@ struct AtmosphereOpticalDepth {
     tetra::Vec3 end_from_planet_centre_metres,
     const AtmosphereParameters& parameters,
     std::size_t integration_steps = 128U);
+// Cubic aerial-volume depth distribution: resolves local paths without giving
+// up the finite ground-to-space extent or changing the physical atmosphere.
+[[nodiscard]] double aerial_lut_distance(double slice,
+                                         double maximum_distance_metres) noexcept;
+[[nodiscard]] double aerial_lut_slice(double distance_metres,
+                                      double maximum_distance_metres) noexcept;
 
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude_metres,
                          double view_zenith_degrees,

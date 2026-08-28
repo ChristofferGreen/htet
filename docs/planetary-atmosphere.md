@@ -157,6 +157,15 @@ the view ray and opaque distance. Clear depth evaluates sky; terrain evaluates:
 L_output = L_surface * T(camera, surface) + L_scatter(camera, surface)
 ```
 
+The aerial volume uses a cubic distance distribution. With Default's 16 depth
+slices and 200 km range, its first nonzero sample is about 59 m rather than the
+roughly 889 m produced by a quadratic distribution. This improves numerical
+resolution around gameplay-scale geometry without increasing aerosol density
+or manufacturing visible haze. Under the Earth preset, strong aerial
+perspective should emerge naturally across kilometre-scale views as world
+extent grows; it is expected to remain subtle over the current few hundred
+metres.
+
 The solar disc comes from angular radius and atmospheric transmittance, not an
 unattenuated UI circle. Terrain depth occludes it. Dear ImGui renders after tone
 mapping and remains display referred.
@@ -356,6 +365,8 @@ advance until each preceding gate passes in release mode.
 - [x] Implement the camera-relative 3D aerial-perspective LUT.
 - [x] Composite terrain as `surface * transmittance + in-scattering` using
       reconstructed reversed-Z distance.
+- [x] Distribute aerial-volume depth cubically so local through orbital paths
+      share one physical atmosphere without forcing short-range haze.
 - [x] Handle rays entering, leaving, grazing, or missing the atmosphere without
       a horizon seam.
 - [x] Evaluate temporal history after the unfiltered oracle; retain the simpler

@@ -13930,6 +13930,22 @@ TEST_CASE("atmosphere densities phases and transmittance obey analytic limits") 
   CHECK(long_path[2] < long_path[0]);
 }
 
+TEST_CASE("aerial LUT cubic depth resolves gameplay range through orbit") {
+  constexpr double maximum_distance=200'000.0;
+  constexpr double default_depth_slices=16.0;
+  const double first_sample=tetra_viewer::aerial_lut_distance(
+      1.0/(default_depth_slices-1.0),maximum_distance);
+  CHECK(first_sample<100.0);
+  CHECK(first_sample>50.0);
+  for(const double distance:std::array{0.0,50.0,500.0,10'000.0,
+                                       maximum_distance}){
+    const double slice=tetra_viewer::aerial_lut_slice(
+        distance,maximum_distance);
+    CHECK(tetra_viewer::aerial_lut_distance(slice,maximum_distance)==
+          doctest::Approx(distance).epsilon(1.0e-12));
+  }
+}
+
 TEST_CASE("atmosphere LUT invalidation follows the documented dependency graph") {
   const auto original =
       tetra_viewer::atmosphere_preset(tetra_viewer::AtmospherePreset::earth);

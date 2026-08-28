@@ -181,8 +181,8 @@ void main() {
       }
     }else{
       const float distance_metres=atmosphere.camera_position_near.w/depth;
-      const float slice=sqrt(clamp(distance_metres/
-          atmosphere.camera_forward_maximum_distance.w,0.0,1.0));
+      const float slice=pow(clamp(distance_metres/
+          atmosphere.camera_forward_maximum_distance.w,0.0,1.0),1.0/3.0);
       const vec3 lookup=vec3(texture_coordinate,slice);
       const vec3 scattering=texture(aerial_scattering_lut,lookup).rgb;
       const vec3 transmittance=texture(aerial_transmittance_lut,lookup).rgb;

@@ -380,6 +380,24 @@ AtmosphereSpectrum atmosphere_transmittance(
   return result;
 }
 
+double aerial_lut_distance(double slice,
+                           double maximum_distance_metres) noexcept {
+  if (!(maximum_distance_metres > 0.0) || !std::isfinite(slice) ||
+      !std::isfinite(maximum_distance_metres))
+    return 0.0;
+  slice = std::clamp(slice, 0.0, 1.0);
+  return slice * slice * slice * maximum_distance_metres;
+}
+
+double aerial_lut_slice(double distance_metres,
+                        double maximum_distance_metres) noexcept {
+  if (!(maximum_distance_metres > 0.0) || !std::isfinite(distance_metres) ||
+      !std::isfinite(maximum_distance_metres))
+    return 0.0;
+  return std::cbrt(std::clamp(distance_metres / maximum_distance_metres,
+                              0.0, 1.0));
+}
+
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude,
                          double view_zenith_degrees,
                          double sun_zenith_degrees, std::ostream& output,
