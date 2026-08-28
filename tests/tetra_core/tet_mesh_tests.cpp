@@ -14074,7 +14074,8 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   using namespace tetra_viewer;
   AtmosphereLookupRevisions state{
       .optical={1}, .scattering={2}, .sun={3}, .camera_position={4},
-      .camera_orientation={5}, .shadow={6}, .render_origin={7}};
+      .sky_position={8}, .camera_orientation={5}, .shadow={6},
+      .render_origin={7}};
   auto plan=atmosphere_dispatch_plan(std::nullopt,state,
       AtmosphereTransport::qualified_baseline);
   CHECK(plan.transmittance);
@@ -14111,9 +14112,17 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
       AtmosphereTransport::faithful_hillaire);
   CHECK_FALSE(plan.transmittance);
   CHECK_FALSE(plan.multiple_scattering);
+  CHECK_FALSE(plan.sky_view);
+  CHECK_FALSE(plan.sky_irradiance);
+  CHECK(plan.aerial_perspective);
+
+  auto sky_moved=state;
+  sky_moved.sky_position.value++;
+  plan=atmosphere_dispatch_plan(state,sky_moved,
+      AtmosphereTransport::faithful_hillaire);
   CHECK(plan.sky_view);
   CHECK(plan.sky_irradiance);
-  CHECK(plan.aerial_perspective);
+  CHECK_FALSE(plan.aerial_perspective);
 
   auto relit=state;
   relit.sun.value++;
@@ -14150,6 +14159,23 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.multiple_scattering);
   CHECK(plan.sky_view);
   CHECK(plan.aerial_perspective);
+}
+
+TEST_CASE("faithful full sky ignores sub-resolution camera motion") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const double radius=parameters.ground_radius_metres+1.8;
+  const tetra::Vec3 origin{0.0,radius,0.0};
+  const auto baseline=tetra_viewer::atmosphere_sky_position_revision(
+      origin,parameters);
+  CHECK(tetra_viewer::atmosphere_sky_position_revision(
+            {0.05,radius+0.05,0.0},parameters)==baseline);
+  CHECK(tetra_viewer::atmosphere_sky_position_revision(
+            {1.0,radius,0.0},parameters)==baseline);
+  CHECK(tetra_viewer::atmosphere_sky_position_revision(
+            {0.0,radius+2.0,0.0},parameters)!=baseline);
+  CHECK(tetra_viewer::atmosphere_sky_position_revision(
+            {100.0,radius,0.0},parameters)!=baseline);
 }
 
 TEST_CASE("atmosphere optical and scattering hashes separate dependencies") {

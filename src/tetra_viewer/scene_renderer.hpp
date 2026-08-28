@@ -146,19 +146,22 @@ class SceneRenderer {
     VkImageView view{VK_NULL_HANDLE};
   };
   struct AtmosphereFrameResources {
+    VkBuffer uniform_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
+    VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
+  };
+  struct AtmosphereLookupResources {
     AtmosphereImage transmittance;
     AtmosphereImage multiple_scattering;
     AtmosphereImage sky_view;
     AtmosphereImage sky_irradiance;
     AtmosphereImage aerial_scattering;
     AtmosphereImage aerial_transmittance;
-    VkBuffer uniform_buffer{VK_NULL_HANDLE};
-    VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
-    VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
     std::optional<AtmosphereLookupRevisions> lookup_revisions;
     AtmosphereTransport transport{default_atmosphere_transport};
     bool images_initialized{};
   };
+  AtmosphereLookupResources atmosphere_lookups_;
   std::vector<AtmosphereFrameResources> atmosphere_frames_;
   std::vector<VkDescriptorSet> descriptor_sets_;
   std::vector<VkDescriptorSet> composite_descriptor_sets_;

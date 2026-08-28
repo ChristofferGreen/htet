@@ -146,6 +146,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
   const bool scattering=previous->scattering!=next.scattering;
   const bool sun=previous->sun!=next.sun;
   const bool position=previous->camera_position!=next.camera_position;
+  const bool sky_position=previous->sky_position!=next.sky_position;
   const bool orientation=
       previous->camera_orientation!=next.camera_orientation;
   const bool shadow=previous->shadow!=next.shadow;
@@ -154,9 +155,9 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
   return {
       .transmittance=optical,
       .multiple_scattering=optical||scattering,
-      .sky_view=optical||scattering||sun||position||origin||
+      .sky_view=optical||scattering||sun||sky_position||origin||
           (baseline&&orientation),
-      .sky_irradiance=optical||scattering||sun||position||origin,
+      .sky_irradiance=optical||scattering||sun||sky_position||origin,
       .aerial_perspective=
           optical||scattering||sun||position||orientation||shadow||origin,
   };
@@ -189,6 +190,31 @@ std::uint64_t atmosphere_scattering_hash(
   for(double value:parameters.solar_irradiance)hash_double(hash,value);
   hash_double(hash,parameters.solar_angular_radius_radians);
   return hash;
+}
+
+AtmosphereSkyPositionRevision atmosphere_sky_position_revision(
+    tetra::Vec3 position, const AtmosphereParameters& parameters) noexcept {
+  const double radial_distance=length(position);
+  if(!(radial_distance>0.0)||!std::isfinite(radial_distance))return {};
+  const tetra::Vec3 up=position/radial_distance;
+  // Full-sky radiance changes materially with altitude through the narrowest
+  // density profile, while horizontal motion changes only its local frame.
+  // Quantize below both effects' lookup resolution so centimetre-scale player
+  // motion cannot regenerate a planet-scale lighting table every frame.
+  const double altitude_step=std::max(0.25,
+      std::min(parameters.rayleigh_scale_height_metres,
+               parameters.mie_scale_height_metres)/64.0);
+  constexpr double up_step=1.0e-4;
+  const auto quantize=[](double value,double step){
+    return std::nearbyint(value/step)*step;
+  };
+  std::uint64_t hash=1469598103934665603ULL;
+  hash_double(hash,quantize(radial_distance-parameters.ground_radius_metres,
+                            altitude_step));
+  hash_double(hash,quantize(up.x,up_step));
+  hash_double(hash,quantize(up.y,up_step));
+  hash_double(hash,quantize(up.z,up_step));
+  return {hash};
 }
 
 AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {

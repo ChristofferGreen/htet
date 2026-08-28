@@ -62,6 +62,7 @@ struct AtmosphereOpticalRevisionTag;
 struct AtmosphereScatteringRevisionTag;
 struct AtmosphereSunRevisionTag;
 struct AtmosphereCameraPositionRevisionTag;
+struct AtmosphereSkyPositionRevisionTag;
 struct AtmosphereCameraOrientationRevisionTag;
 struct AtmosphereShadowRevisionTag;
 struct AtmosphereRenderOriginRevisionTag;
@@ -73,6 +74,8 @@ using AtmosphereScatteringRevision=
 using AtmosphereSunRevision=AtmosphereRevision<AtmosphereSunRevisionTag>;
 using AtmosphereCameraPositionRevision=
     AtmosphereRevision<AtmosphereCameraPositionRevisionTag>;
+using AtmosphereSkyPositionRevision=
+    AtmosphereRevision<AtmosphereSkyPositionRevisionTag>;
 using AtmosphereCameraOrientationRevision=
     AtmosphereRevision<AtmosphereCameraOrientationRevisionTag>;
 using AtmosphereShadowRevision=AtmosphereRevision<AtmosphereShadowRevisionTag>;
@@ -84,6 +87,7 @@ struct AtmosphereLookupRevisions {
   AtmosphereScatteringRevision scattering{};
   AtmosphereSunRevision sun{};
   AtmosphereCameraPositionRevision camera_position{};
+  AtmosphereSkyPositionRevision sky_position{};
   AtmosphereCameraOrientationRevision camera_orientation{};
   AtmosphereShadowRevision shadow{};
   AtmosphereRenderOriginRevision render_origin{};
@@ -112,6 +116,9 @@ struct AtmosphereDispatchPlan {
     const AtmosphereParameters& parameters);
 [[nodiscard]] std::uint64_t atmosphere_scattering_hash(
     const AtmosphereParameters& parameters);
+[[nodiscard]] AtmosphereSkyPositionRevision atmosphere_sky_position_revision(
+    tetra::Vec3 position_from_planet_centre_metres,
+    const AtmosphereParameters& parameters) noexcept;
 
 struct AtmosphereQualitySettings {
   unsigned transmittance_width{};
