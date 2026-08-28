@@ -3,6 +3,7 @@
 #include "tetra_core/world_hierarchy.hpp"
 
 #include <functional>
+#include <optional>
 #include <stop_token>
 
 namespace tetra {
@@ -394,6 +395,8 @@ class WorldCutDirectory final : public ReadOnlyHierarchyAccess {
   [[nodiscard]] bool shadowed_by_child(WorldTetAddress owner,
       HierarchyBlockId containing_block) const;
   void validate_and_refresh();
+  void refresh_metrics(
+      std::optional<std::size_t> effective_logical_owners=std::nullopt);
 
   std::uint64_t revision_{};
   std::uint8_t block_generations_{3U};

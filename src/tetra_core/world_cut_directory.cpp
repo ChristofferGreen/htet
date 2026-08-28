@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -941,6 +942,11 @@ void WorldCutDirectory::validate_and_refresh() {
        !std::ranges::is_sorted(surface.dependency_blocks))
       throw std::invalid_argument("derived surface arrays are not canonical");
   }
+  refresh_metrics();
+}
+
+void WorldCutDirectory::refresh_metrics(
+    std::optional<std::size_t> effective_logical_owners) {
   metrics_={};metrics_.blocks=blocks_.size();
   metrics_.derived_surface_blocks=surfaces_.size();
   std::size_t owner_sum{};
@@ -962,10 +968,11 @@ void WorldCutDirectory::validate_and_refresh() {
   }
   metrics_.mean_block_owners=blocks_.empty()?0.0:
       static_cast<double>(owner_sum)/static_cast<double>(blocks_.size());
-  // validate_and_refresh is the one place that pays for resolving parent
-  // fallback leaves. Public count queries use this retained exact value.
-  for_each_logical_owner(
-      [&](WorldTetAddress){++metrics_.effective_logical_owners;});
+  if(effective_logical_owners)
+    metrics_.effective_logical_owners=*effective_logical_owners;
+  else
+    for_each_logical_owner(
+        [&](WorldTetAddress){++metrics_.effective_logical_owners;});
   metrics_.maximum_fallback_levels=maximum_world_red_depth/block_generations_;
   metrics_.maximum_lookup_comparisons=(metrics_.maximum_fallback_levels+1U)*
       (static_cast<unsigned int>(std::bit_width(blocks_.size()))+
@@ -1201,6 +1208,9 @@ WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
     if(!block||block->id.block_generations!=block_generations_||
        !canonical(std::span<const WorldTetAddress>(block->owners)))
       throw std::invalid_argument("replacement owner blocks are not canonical");
+  std::size_t replacement_logical_owner_count{};
+  for(const auto& block:owner_blocks)
+    replacement_logical_owner_count+=block->owners.size();
   for(const auto id:volume_blocks)
     if(!std::ranges::binary_search(surface_blocks,id))
       throw std::invalid_argument("replacement volume block lacks surface authority");
@@ -1297,7 +1307,7 @@ WorldDirectoryUpdate WorldCutDirectory::replace_complete_cut(
   auto previous_blocks=blocks_;auto previous_surfaces=surfaces_;
   const auto previous_revision=revision_;
   blocks_=std::move(next);surfaces_.clear();revision_=new_revision;
-  try{validate_and_refresh();}
+  try{refresh_metrics(replacement_logical_owner_count);}
   catch(...){blocks_=std::move(previous_blocks);
     surfaces_=std::move(previous_surfaces);revision_=previous_revision;
     validate_and_refresh();throw;}
@@ -2306,6 +2316,14 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           count+=delta->descendants;
         return count>0;
       };
+      std::unordered_set<WorldTetAddress,WorldAddressHash>
+          removed_requested_set(removed_requested_owners.begin(),
+                                removed_requested_owners.end()),
+          inactive_split_ancestors;
+      inactive_split_ancestors.reserve(ancestor_deltas.size());
+      for(const auto& delta:ancestor_deltas)
+        if(!split_ancestor_active(delta.address))
+          inactive_split_ancestors.insert(delta.address);
       retained_node_valid.assign(cache->proof_nodes.size(),
                                  retained_reverse_valid?1U:0U);
       if(retained_reverse_valid){
@@ -2322,10 +2340,9 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
         for(std::size_t proof=0;proof<cache->proof_nodes.size();++proof){
           const auto& node=cache->proof_nodes[proof];
           if((node.kind==WorldClosureProofKind::owner_existence&&
-              node.input_count==0U&&std::ranges::binary_search(
-                  removed_requested_owners,node.address))||
+              node.input_count==0U&&removed_requested_set.contains(node.address))||
              (node.kind==WorldClosureProofKind::split_ancestor_edge&&
-              !split_ancestor_active(node.address)))
+              inactive_split_ancestors.contains(node.address)))
             invalidate(static_cast<std::uint32_t>(proof));
         }
         while(!invalid.empty()){
@@ -2350,14 +2367,14 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           valid=retained_node_valid[node.inputs[input]]!=0U;
         if(valid)switch(node.kind){
           case WorldClosureProofKind::owner_existence:
-            valid=node.input_count!=0U||!std::ranges::binary_search(
-                removed_requested_owners,node.address);break;
+            valid=node.input_count!=0U||
+                !removed_requested_set.contains(node.address);break;
           case WorldClosureProofKind::green_edge:
           case WorldClosureProofKind::vertex_promotion:
           case WorldClosureProofKind::mask_promotion:
           case WorldClosureProofKind::promotion_edge:break;
           case WorldClosureProofKind::split_ancestor_edge:
-            valid=split_ancestor_active(node.address);break;
+            valid=!inactive_split_ancestors.contains(node.address);break;
         }
         retained_node_valid[proof]=valid?1U:0U;
         if(!valid&&(node.kind==WorldClosureProofKind::split_ancestor_edge||
@@ -2480,15 +2497,38 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
 
   const auto load_vertex_keys=[&](std::span<const WorldTetAddress> requested){
     std::vector<std::array<WorldVertexKey,4>> result(requested.size());
+    const auto derive=[&](std::span<const std::size_t> indices){
+      const auto work=[&](std::size_t begin,std::size_t end,
+                          std::stop_token stop){
+        for(std::size_t item=begin;item<end;++item){
+          if(stop.stop_requested()||cancellation.stop_requested())return;
+          const auto index=indices[item];
+          result[index]=world_tetrahedron_vertex_keys(requested[index]);
+        }
+      };
+      if(executor&&executor->worker_count()>1U&&indices.size()>=1024U){
+        auto group=executor->make_group(
+            0U,GeometryTaskPriority::publication_critical);
+        const auto tasks=std::max<std::size_t>(
+            1U,executor->worker_count()*
+                executor->configuration().blocks_per_worker);
+        const auto grain=std::max<std::size_t>(
+            1U,(indices.size()+tasks-1U)/tasks);
+        executor->parallel_for(group,0U,indices.size(),grain,work);
+        executor->wait_and_help(group);
+        if(group.stop_requested()||cancellation.stop_requested())cancel();
+      }else work(0U,indices.size(),{});
+    };
     if(cache==nullptr){
-      for(std::size_t index=0;index<requested.size();++index)
-        result[index]=world_tetrahedron_vertex_keys(requested[index]);
+      std::vector<std::size_t> indices(requested.size());
+      std::iota(indices.begin(),indices.end(),0U);
+      derive(indices);
       return result;
     }
     if(!std::ranges::is_sorted(cache->geometry,{},
           &WorldConformingClosureCacheEntry::address))
       throw std::invalid_argument("world closure geometry cache is not sorted");
-    std::vector<WorldConformingClosureCacheEntry> missing;
+    std::vector<std::size_t> missing_indices;
     std::size_t cached_index{};
     for(std::size_t index=0;index<requested.size();++index){
       while(cached_index<cache->geometry.size()&&
@@ -2498,10 +2538,14 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
          cache->geometry[cached_index].address==requested[index]){
         result[index]=cache->geometry[cached_index].vertices;
       }else{
-        result[index]=world_tetrahedron_vertex_keys(requested[index]);
-        missing.push_back({requested[index],result[index]});
+        missing_indices.push_back(index);
       }
     }
+    derive(missing_indices);
+    std::vector<WorldConformingClosureCacheEntry> missing;
+    missing.reserve(missing_indices.size());
+    for(const auto index:missing_indices)
+      missing.push_back({requested[index],result[index]});
     if(!missing.empty()){
       std::vector<WorldConformingClosureCacheEntry> merged;
       merged.reserve(cache->geometry.size()+missing.size());

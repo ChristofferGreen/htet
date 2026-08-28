@@ -80,6 +80,18 @@
           are regenerated. Exact bounded dependency publication falls from
           about 58 ms to 4 ms and the 512-operation slice from about 683 ms to
           622 ms, with unchanged surface and continuous final-pose hashes.
+    - [x] Replace per-proof binary searches with exact transient removed-owner
+          and inactive-ancestor sets, and derive missing ancestor vertex keys
+          in parallel on the persistent geometry executor. Keep the compact
+          4096-entry geometry spill: retaining 100,000 entries saved only about
+          6 ms while adding roughly 13 MB. Closure falls from about 213 ms to
+          184 ms without changing retained memory or final hashes.
+    - [x] Separate full imported-directory validation from the trusted complete-
+          cut replacement's metrics refresh. The replacement is constructed
+          from canonical closure blocks and previously validated immutable
+          blocks; it carries the exact effective owner count instead of
+          rewalking the complete fallback hierarchy. Directory replacement
+          falls from about 39 ms to 11 ms.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.
@@ -121,6 +133,10 @@
         shortcut changed the continuous final hashes and was removed; rebuilding
         a complete root index merely moved about 10 ms from validation into
         finalization and added about 5 MB, so it was also removed.
+  - [ ] Retain one authoritative per-block raw topology arena, including exact
+        contribution order and multiplicity. A shortcut through the global
+        counted vertex/triangle set changed the refine/far/reverse render hash
+        and was removed; global uniqueness is not a lossless topology oracle.
 - [ ] Qualify bounded camera lag, watertightness, rollback, resource budgets,
       exact settled hashes, release-script latency, and a visual capture.
 
