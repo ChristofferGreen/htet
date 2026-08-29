@@ -1363,6 +1363,8 @@ TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebui
   const auto first_generation=runtime.atmosphere_shadow_front()->generation;
   request.sun_direction={-0.6,0.25,-0.5};
   runtime.set_atmosphere_shadow_request(request);
+  static_cast<void>(runtime.update());
+  CHECK(runtime.diagnostics().busy);
   request.sun_direction={-0.45,0.3,-0.7};
   runtime.set_atmosphere_shadow_request(request);
   settle();
@@ -1375,6 +1377,31 @@ TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebui
   CHECK(runtime.atmosphere_shadow_front()->request.sun_direction.z==
         doctest::Approx(request.sun_direction.z));
   CHECK(runtime.diagnostics().scene_generation==terrain_generation);
+
+  tetra::Camera moved_camera;
+  moved_camera.position={1.5,0.72,0.78};
+  moved_camera.forward={0.0,-0.2,-1.0};
+  moved_camera.up={0.0,1.0,0.0};
+  moved_camera.vertical_fov_radians=1.0;
+  moved_camera.viewport_height_pixels=1080.0;
+  moved_camera.aspect_ratio=16.0/9.0;
+  runtime.set_camera(moved_camera,false);
+  const auto terrain_deadline=std::chrono::steady_clock::now()+
+      std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<terrain_deadline){
+    static_cast<void>(runtime.update());
+    if(!runtime.diagnostics().busy&&
+       runtime.diagnostics().scene_generation>terrain_generation&&
+       runtime.atmosphere_shadow_front()&&
+       runtime.atmosphere_shadow_front()->terrain_revision==
+           runtime.diagnostics().world_revision)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(runtime.diagnostics().scene_generation>terrain_generation);
+  REQUIRE(runtime.atmosphere_shadow_front());
+  CHECK(runtime.atmosphere_shadow_front()->terrain_revision==
+        runtime.diagnostics().world_revision);
+  CHECK(runtime.atmosphere_shadow_front()->complete());
 }
 
 TEST_CASE("projected radial world cut covers the globe with graded bounded detail") {

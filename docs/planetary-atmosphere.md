@@ -1074,7 +1074,7 @@ not a blanket multiplier that produces black shafts.
 - [x] I2: Define the immutable `AtmosphereShadowFront` snapshot and add
       `atmosphere_shadow` surface-only demand by intersecting hierarchy bounds
       with the sun-extruded receiver volume.
-- [ ] I3: Implement the receiver-fitted atmosphere depth map, local-cascade
+- [x] I3: Implement the receiver-fitted atmosphere depth map, local-cascade
       handoff, completeness mask, revision checks, diagnostics, and incremental
       update path.
 - [ ] I4: Test visible and off-screen mountains, valleys, camera translation
@@ -1124,6 +1124,19 @@ and coalesces texel-equivalent requests. The renderer retains its previous
 complete fitted matrix, receiver reach, and depth image until the new complete
 front arrives; the default release benchmark exercised four fitted-depth
 refreshes without an incomplete publication.
+
+I3 evidence (2026-08-29): Low/Default/High use a fifth receiver-fitted depth
+layer at 256/512/1024 effective resolution. The guarded frustum and its sun
+extrusion determine texel-quantized light-space bounds; retained surface draw
+ranges outside that volume are rejected, and local cascades blend into the
+fitted map at footprint and outer-split boundaries. Shadow-only camera or sun
+changes now use an independent cancellable background publication and leave
+the terrain scene generation unchanged. Rapid changes coalesce to the newest
+request while the previous complete matrix, reach, and depth image remain in
+use. A new depth generation is published only after the relevant swapchain
+fence proves its raster pass complete. The post-change Default release run
+reported complete generation 2, 0.304 ms median / 0.383 ms p95 composition,
+and 1.275 ms median combined shadow rendering.
 
 #### Qualified follow-ons after H9
 
