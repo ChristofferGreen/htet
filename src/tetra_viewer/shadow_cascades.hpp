@@ -10,6 +10,7 @@ namespace tetra_viewer {
 
 inline constexpr std::size_t shadow_cascade_count=4U;
 inline constexpr std::uint32_t shadow_map_resolution=1024U;
+inline constexpr std::size_t atmosphere_shadow_projection_probe_count=24U;
 inline constexpr std::array<double,shadow_cascade_count>
     default_shadow_cascade_half_widths{2.0,8.0,32.0,512.0};
 
@@ -50,6 +51,13 @@ struct AtmosphereShadowProjection {
   }
 };
 
+struct AtmosphereShadowProjectionProbeCase {
+  tetra::Vec3 point{};
+  tetra::Vec3 expected_clip{};
+  std::uint32_t cascade{};
+  bool expected_sampleable{};
+};
+
 [[nodiscard]] ShadowCascadeSet make_stable_shadow_cascades(
     tetra::Vec3 camera_relative_position,tetra::Vec3 camera_forward,
     tetra::Vec3 sun_direction,
@@ -79,5 +87,10 @@ struct AtmosphereShadowProjection {
 [[nodiscard]] double atmosphere_shadow_filtered_visibility(
     const AtmosphereShadowProjection& projection,
     const std::array<double,4>& blocker_depths,double bias) noexcept;
+
+[[nodiscard]] std::array<AtmosphereShadowProjectionProbeCase,
+                         atmosphere_shadow_projection_probe_count>
+make_atmosphere_shadow_projection_probe_cases(
+    const ShadowCascadeSet& cascades) noexcept;
 
 }  // namespace tetra_viewer

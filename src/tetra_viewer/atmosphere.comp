@@ -860,6 +860,24 @@ void generate_numeric_probe() {
   generate_boundary_probe(6,atmosphere_height(),1.0);
 }
 
+void generate_shadow_projection_probe() {
+  if(any(notEqual(gl_GlobalInvocationID,uvec3(0))))return;
+  // The host seeds values[0..23] with CPU-generated world points and a
+  // cascade index in w. Transforming those exact points here qualifies the
+  // std140 matrix upload and GLSL convention, rather than testing a shader
+  // against points reconstructed by the same shader.
+  for(int index=0;index<24;++index){
+    const vec4 request=atmosphere_probe.values[index];
+    const int cascade=clamp(int(round(request.w)),0,3);
+    const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
+        vec4(request.xyz,1.0)).xyz;
+    const bool sampleable=all(lessThanEqual(abs(projected.xy),vec2(1.0)))&&
+        projected.z>=0.0&&projected.z<=1.0;
+    atmosphere_probe.values[index]=vec4(
+        projected,sampleable?1.0:0.0);
+  }
+}
+
 void main() {
   if(dispatch_mode.mode==0U)generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==1U)
@@ -873,4 +891,5 @@ void main() {
   else if(dispatch_mode.mode==6U)
     generate_long_shadow(ivec2(gl_GlobalInvocationID.xy));
 #endif
+  else if(dispatch_mode.mode==7U)generate_shadow_projection_probe();
 }

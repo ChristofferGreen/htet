@@ -170,4 +170,34 @@ double atmosphere_shadow_filtered_visibility(
       projection.clip.x,projection.clip.y);
 }
 
+std::array<AtmosphereShadowProjectionProbeCase,
+           atmosphere_shadow_projection_probe_count>
+make_atmosphere_shadow_projection_probe_cases(
+    const ShadowCascadeSet& cascades) noexcept {
+  constexpr std::array<tetra::Vec3,6> clip_targets{{
+      {0.0,0.0,0.5},{0.88,0.0,0.5},{0.98,0.0,0.5},
+      {1.001,0.0,0.5},{0.0,0.0,-0.001},{0.0,0.0,1.001}}};
+  std::array<AtmosphereShadowProjectionProbeCase,
+             atmosphere_shadow_projection_probe_count> result{};
+  std::size_t output{};
+  for(std::size_t cascade_index=0;
+      cascade_index<shadow_cascade_count;++cascade_index){
+    const auto& cascade=cascades.cascades[cascade_index];
+    for(const auto target:clip_targets){
+      // Analytic inverse of make_stable_shadow_cascades' affine matrix.
+      const auto point=cascade.snapped_centre+
+          cascades.light_right*(target.x*cascade.half_width)+
+          cascades.light_up*(target.y*cascade.half_width)-
+          cascades.sun_direction*((target.z-0.5)*
+                                  2.0*cascade.depth_half_range);
+      result[output++]={
+          .point=point,.expected_clip=target,
+          .cascade=static_cast<std::uint32_t>(cascade_index),
+          .expected_sampleable=std::abs(target.x)<=1.0&&
+              std::abs(target.y)<=1.0&&target.z>=0.0&&target.z<=1.0};
+    }
+  }
+  return result;
+}
+
 }  // namespace tetra_viewer

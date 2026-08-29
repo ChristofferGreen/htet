@@ -1025,6 +1025,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
     bool world_gpu_atmosphere_probe=false;
+    bool world_gpu_shadow_projection_probe=false;
     std::string world_gpu_atmosphere_capture_path;
     bool world_gpu_atmosphere_capture_submitted=false;
     bool world_gpu_atmosphere_resize_check=false;
@@ -1085,6 +1086,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }else if(value=="--gpu-atmosphere-probe"){
                 world_gpu_atmosphere_probe=true;
                 g_AtmosphereFrame.numeric_probe_requested=true;
+            }else if(value=="--gpu-shadow-projection-probe"){
+                world_gpu_shadow_projection_probe=true;
+                g_AtmosphereFrame.shadow_projection_probe_requested=true;
             }else if(value.starts_with(capture_prefix)){
                 world_gpu_atmosphere_capture_path=
                     std::string{value.substr(capture_prefix.size())};
@@ -1183,6 +1187,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         }
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
             world_gpu_atmosphere_probe||
+            world_gpu_shadow_projection_probe||
             !world_gpu_atmosphere_capture_path.empty();
         if(g_AtmosphereFrame.quality!=
            tetra_viewer::AtmosphereQuality::standard){
@@ -1195,6 +1200,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
            tetra_viewer::AtmosphereTransport::faithful_hillaire){
             fprintf(stderr,"--gpu-atmosphere-probe requires "
                            "--atmosphere-transport=faithful-hillaire\n");
+            return 2;
+        }
+        if(world_gpu_atmosphere_probe&&world_gpu_shadow_projection_probe){
+            fprintf(stderr,"GPU atmosphere probes are mutually exclusive\n");
             return 2;
         }
     }
@@ -3611,6 +3620,57 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_process_exit_code=report.passed?0:3;
                 world_gpu_atmosphere_probe=false;
             }
+            if(world_gpu_shadow_projection_probe&&world_runtime&&
+               !world_runtime->diagnostics().busy&&
+               g_SceneRenderer.latest_atmosphere_probe().valid){
+                const auto& actual=
+                    g_SceneRenderer.latest_atmosphere_probe().values;
+                const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+                    g_AtmosphereFrame.camera_relative_world,
+                    g_AtmosphereFrame.camera_forward,
+                    g_AtmosphereFrame.sun_direction,
+                    tetra_viewer::atmosphere_quality_settings(
+                        g_AtmosphereFrame.quality).shadow_resolution);
+                const auto cases=
+                    tetra_viewer::make_atmosphere_shadow_projection_probe_cases(
+                        cascades);
+                bool passed=true;
+                double maximum_error{};
+                std::cout<<"{\"event\":\"gpu_shadow_projection_probe\","
+                         <<"\"cases\":[";
+                for(std::size_t index=0;index<cases.size();++index){
+                    double case_error{};
+                    const std::array<double,3> expected{
+                        cases[index].expected_clip.x,
+                        cases[index].expected_clip.y,
+                        cases[index].expected_clip.z};
+                    for(std::size_t axis=0;axis<3U;++axis)
+                        case_error=std::max(case_error,
+                            std::abs(static_cast<double>(actual[index][axis])-
+                                     expected[axis]));
+                    const bool actual_sampleable=actual[index][3]>0.5F;
+                    const bool case_passed=case_error<=2.0e-5&&
+                        actual_sampleable==cases[index].expected_sampleable;
+                    maximum_error=std::max(maximum_error,case_error);
+                    passed=passed&&case_passed;
+                    if(index!=0U)std::cout<<',';
+                    std::cout<<"{\"cascade\":"<<cases[index].cascade
+                             <<",\"pass\":"
+                             <<(case_passed?"true":"false")
+                             <<",\"actual\":["<<actual[index][0]<<','
+                             <<actual[index][1]<<','<<actual[index][2]
+                             <<"],\"expected\":["<<expected[0]<<','
+                             <<expected[1]<<','<<expected[2]
+                             <<"],\"sampleable\":"
+                             <<(actual_sampleable?"true":"false")<<'}';
+                }
+                std::cout<<"],\"maximum_error\":"<<maximum_error
+                         <<",\"status\":\""<<(passed?"pass":"fail")
+                         <<"\"}\n";
+                world_process_exit_code=passed?0:3;
+                world_gpu_shadow_projection_probe=false;
+                g_AtmosphereFrame.shadow_projection_probe_requested=false;
+            }
             if(world_gpu_atmosphere_capture_submitted&&
                g_SceneRenderer.latest_capture().valid){
                 const auto& capture=g_SceneRenderer.latest_capture();
@@ -3781,6 +3841,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             if(world_gpu_automation_requested&&
                !world_gpu_atmosphere_benchmark&&
                !world_gpu_atmosphere_probe&&
+               !world_gpu_shadow_projection_probe&&
                world_gpu_atmosphere_capture_path.empty()){
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }

@@ -1068,7 +1068,7 @@ not a blanket multiplier that produces black shafts.
       occultation, cascade coverage, direct-loss, multiple-scattering, and
       final-composite diagnostics; assert that changing resolution cannot turn
       zero coverage into valid coverage.
-- [ ] I1: Add CPU/GPU projection oracles for atmospheric receiver points across
+- [x] I1: Add CPU/GPU projection oracles for atmospheric receiver points across
       every cascade footprint/depth boundary and fix any coordinate, depth,
       bias, or caster-render defect they expose.
 - [ ] I2: Define the immutable `AtmosphereShadowFront` snapshot and add
@@ -1111,9 +1111,14 @@ a canonical, separately revisioned value snapshot from a conservative
 receiver-to-sun extrusion. It selects guarded off-screen hierarchy blocks,
 requests summary blocks at surface residency only, reports incomplete surface
 coverage explicitly, and cannot be consumed before a matching complete depth
-generation is published. I1 remains open until selected receiver samples are
-read back from the GPU; I2 remains open until this demand is fed by the live
-world runtime rather than only the deterministic planner.
+generation is published. The release `--gpu-shadow-projection-probe` seeds the
+storage buffer with CPU-generated receiver points and transforms them with the
+actual uploaded GLSL matrices. All 24 centre, footprint-fade, footprint-exit,
+near-depth-exit, and far-depth-exit cases across four cascades agree, with
+worst clip-space error `1.02e-7`. This rules out matrix layout, depth direction,
+and boundary comparison as causes of the broad diagnostic split. I2 remains
+open until its demand is fed by the live world runtime rather than only the
+deterministic planner.
 
 #### Qualified follow-ons after H9
 

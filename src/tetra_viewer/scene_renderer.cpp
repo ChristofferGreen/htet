@@ -1391,6 +1391,26 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   const auto cascades=make_stable_shadow_cascades(
       atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
       atmosphere_input.sun_direction,quality_settings_.shadow_resolution);
+  if(atmosphere_input.numeric_probe_requested&&
+     atmosphere_input.shadow_projection_probe_requested)
+    throw std::invalid_argument("atmosphere probe modes are mutually exclusive");
+  if(atmosphere_input.shadow_projection_probe_requested){
+    std::array<std::array<float,4>,atmosphere_numeric_probe_value_count>
+        probe_seed{};
+    const auto cases=make_atmosphere_shadow_projection_probe_cases(cascades);
+    for(std::size_t index=0;index<cases.size();++index){
+      probe_seed[index]={static_cast<float>(cases[index].point.x),
+                         static_cast<float>(cases[index].point.y),
+                         static_cast<float>(cases[index].point.z),
+                         static_cast<float>(cases[index].cascade)};
+    }
+    void* probe_mapped{};
+    if(vkMapMemory(device_,atmosphere_frame.probe_memory,0,
+          sizeof(probe_seed),0,&probe_mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to seed shadow projection probe");
+    std::memcpy(probe_mapped,probe_seed.data(),sizeof(probe_seed));
+    vkUnmapMemory(device_,atmosphere_frame.probe_memory);
+  }
   std::array<float,16U*shadow_cascade_count+4U> shadow_uniform{};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     std::copy(cascades.cascades[cascade].matrix.begin(),
@@ -1620,6 +1640,31 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       probe_barrier.size=VK_WHOLE_SIZE;
       vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&probe_barrier,0,nullptr);
+      atmosphere_frame.probe_pending=true;
+    }
+    if(atmosphere_input.shadow_projection_probe_requested){
+      VkBufferMemoryBarrier upload_barrier{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      upload_barrier.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;
+      upload_barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      upload_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      upload_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      upload_barrier.buffer=atmosphere_frame.probe_buffer;
+      upload_barrier.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&upload_barrier,
+          0,nullptr);
+      dispatch(7U,1U,1U,1U);
+      VkBufferMemoryBarrier readback_barrier{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      readback_barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      readback_barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+      readback_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      readback_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      readback_barrier.buffer=atmosphere_frame.probe_buffer;
+      readback_barrier.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&readback_barrier,0,nullptr);
       atmosphere_frame.probe_pending=true;
     }
     compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);

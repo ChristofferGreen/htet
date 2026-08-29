@@ -15347,6 +15347,21 @@ TEST_CASE("atmospheric receiver projection mirrors shader clip and depth policy"
     CHECK(toward_sun.clip.z==doctest::Approx(0.0).epsilon(1.0e-5));
     CHECK(away_from_sun.clip.z==doctest::Approx(1.0).epsilon(1.0e-5));
   }
+  const auto probe_cases=
+      tetra_viewer::make_atmosphere_shadow_projection_probe_cases(cascades);
+  CHECK(probe_cases.size()==
+        tetra_viewer::atmosphere_shadow_projection_probe_count);
+  for(const auto& probe:probe_cases){
+    const auto projected=tetra_viewer::project_atmosphere_shadow_point(
+        cascades.cascades[probe.cascade],probe.point);
+    CHECK(projected.clip.x==
+          doctest::Approx(probe.expected_clip.x).epsilon(2.0e-5));
+    CHECK(projected.clip.y==
+          doctest::Approx(probe.expected_clip.y).epsilon(2.0e-5));
+    CHECK(projected.clip.z==
+          doctest::Approx(probe.expected_clip.z).epsilon(2.0e-5));
+    CHECK(projected.sampleable()==probe.expected_sampleable);
+  }
 }
 
 TEST_CASE("atmospheric receiver depth oracle preserves lit borders and partial filtering") {

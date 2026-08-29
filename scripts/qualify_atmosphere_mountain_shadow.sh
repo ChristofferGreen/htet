@@ -12,6 +12,20 @@ if [[ ! -x "${binary}" ]]; then
 fi
 mkdir -p "${output_dir}"
 
+common_arguments=(
+  --window-size="${window_size}"
+  --free-fly
+  --atmosphere-preset=gameplay-planet
+  --atmosphere-quality=default
+  --atmosphere-transport=faithful-hillaire
+  --exposure-ev=-0.62
+  --camera-feet=0.5,0.72,0.78
+  --camera-yaw-degrees=180
+  --camera-pitch-degrees=0
+  --sun-azimuth-degrees=-60
+  --sun-elevation-degrees=3
+)
+
 # This pose puts the centre of the three-degree solar disc behind the left
 # mountain in the deterministic production terrain.  The capture metadata
 # verifies the occultation instead of relying on apparent screen proximity.
@@ -20,20 +34,17 @@ capture() {
   local image="${output_dir}/${name}.ppm"
   local evidence="${output_dir}/${name}.jsonl"
   "${binary}" \
-    --window-size="${window_size}" \
-    --free-fly \
-    --atmosphere-preset=gameplay-planet \
-    --atmosphere-quality=default \
-    --atmosphere-transport=faithful-hillaire \
+    "${common_arguments[@]}" \
     --atmosphere-debug="${debug}" \
-    --exposure-ev=-0.62 \
-    --camera-feet=0.5,0.72,0.78 \
-    --camera-yaw-degrees=180 \
-    --camera-pitch-degrees=0 \
-    --sun-azimuth-degrees=-60 \
-    --sun-elevation-degrees=3 \
     --gpu-atmosphere-capture="${image}" >"${evidence}"
 }
+
+"${binary}" "${common_arguments[@]}" \
+  --gpu-shadow-projection-probe >"${output_dir}/projection-probe.jsonl"
+jq -e 'select(.event == "gpu_shadow_projection_probe") |
+       .status == "pass" and .maximum_error < 0.00002 and
+       ([.cases[].pass] | all)' \
+  "${output_dir}/projection-probe.jsonl" >/dev/null
 
 capture final 0
 capture multiple-scattering 2
@@ -67,4 +78,6 @@ if [[ "${unshadowed_hash}" == "${shadowed_hash}" ]]; then
 fi
 
 printf '%s\n' \
+  "$(grep '"event":"gpu_shadow_projection_probe"' \
+      "${output_dir}/projection-probe.jsonl")" \
   "${final}" "${coverage}" "${loss}" "${unshadowed}" "${shadowed}"

@@ -32,6 +32,7 @@ struct AtmosphereFrameInput {
   AtmosphereQuality quality{AtmosphereQuality::standard};
   AtmosphereTransport transport{default_atmosphere_transport};
   bool numeric_probe_requested{};
+  bool shadow_projection_probe_requested{};
   bool capture_requested{};
   bool enabled{};
 };
