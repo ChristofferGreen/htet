@@ -1312,6 +1312,23 @@ TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and su
   const auto moved_fit=tetra_viewer::fit_atmosphere_shadow_map(
       moved_request,1024U);
   CHECK(moved_fit.matrix==fit.matrix);
+  const tetra::Vec3 rebase{4096.0,-2048.0,8192.0};
+  const auto rebased_request=tetra_viewer::make_atmosphere_shadow_front_request(
+      tetra::Vec3{10.0,2.0,-4.0}+rebase,{0.0,0.0,-1.0},
+      {1.0,0.0,0.0},{0.0,1.0,0.0},0.5,1.6,100.0,1.2,
+      {-0.8,0.1,-0.3},80.0,tetra::Vec3{8.0,0.0,-8.0}+rebase,11U);
+  const auto rebased_fit=tetra_viewer::fit_atmosphere_shadow_map(
+      rebased_request,1024U);
+  CHECK(rebased_fit.matrix==fit.matrix);
+  const auto turned_request=tetra_viewer::make_atmosphere_shadow_front_request(
+      {10.0,2.0,-4.0},{0.15,0.0,-0.98},{1.0,0.0,0.15},
+      {0.0,1.0,0.0},0.5,1.6,100.0,1.2,{-0.8,0.1,-0.3},80.0,
+      {8.0,0.0,-8.0},12U);
+  CHECK(tetra_viewer::fit_atmosphere_shadow_map(turned_request,1024U).matrix!=
+        fit.matrix);
+  auto moved_sun=request;moved_sun.sun_direction={-0.7,0.2,-0.4};
+  CHECK(tetra_viewer::fit_atmosphere_shadow_map(moved_sun,1024U).matrix!=
+        fit.matrix);
   CHECK_THROWS_AS(static_cast<void>(
       tetra_viewer::fit_atmosphere_shadow_map(request,0U)),
       std::invalid_argument);

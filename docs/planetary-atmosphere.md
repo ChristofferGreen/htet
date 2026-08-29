@@ -1071,7 +1071,7 @@ not a blanket multiplier that produces black shafts.
 - [x] I1: Add CPU/GPU projection oracles for atmospheric receiver points across
       every cascade footprint/depth boundary and fix any coordinate, depth,
       bias, or caster-render defect they expose.
-- [ ] I2: Define the immutable `AtmosphereShadowFront` snapshot and add
+- [x] I2: Define the immutable `AtmosphereShadowFront` snapshot and add
       `atmosphere_shadow` surface-only demand by intersecting hierarchy bounds
       with the sun-extruded receiver volume.
 - [ ] I3: Implement the receiver-fitted atmosphere depth map, local-cascade
@@ -1100,7 +1100,7 @@ three-dimensional shadow cone. I1 must qualify the individual receiver
 samples, while I3's fitted map must preserve their spatial visibility rather
 than reuse that maximum as a screen-space mask.
 
-I1/I2 foundation (2026-08-29): the graphics-free receiver oracle now mirrors
+I1/I2 evidence (2026-08-29): the graphics-free receiver oracle now mirrors
 the production float matrix, standard finite depth comparison, per-cascade
 bias, two-by-two visibility filtering, footprint fade, split blending, and
 outer fade at exact boundary samples. The first tests corrected two false test
@@ -1116,9 +1116,14 @@ storage buffer with CPU-generated receiver points and transforms them with the
 actual uploaded GLSL matrices. All 24 centre, footprint-fade, footprint-exit,
 near-depth-exit, and far-depth-exit cases across four cascades agree, with
 worst clip-space error `1.02e-7`. This rules out matrix layout, depth direction,
-and boundary comparison as causes of the broad diagnostic split. I2 remains
-open until its demand is fed by the live world runtime rather than only the
-deterministic planner.
+and boundary comparison as causes of the broad diagnostic split. The live
+blocked world runtime now builds this front in its private background
+publication, feeds its caster IDs into `atmosphere_shadow` surface-only
+hierarchy demand, promotes that candidate atomically with its terrain surface,
+and coalesces texel-equivalent requests. The renderer retains its previous
+complete fitted matrix, receiver reach, and depth image until the new complete
+front arrives; the default release benchmark exercised four fitted-depth
+refreshes without an incomplete publication.
 
 #### Qualified follow-ons after H9
 
