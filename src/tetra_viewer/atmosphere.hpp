@@ -362,6 +362,12 @@ atmosphere_transmittance_parameters(
 [[nodiscard]] tetra::Vec3 atmosphere_full_sky_direction(
     AtmosphereLookupCoordinates uv, tetra::Vec3 local_up,
     tetra::Vec3 sun_direction) noexcept;
+[[nodiscard]] AtmosphereLookupCoordinates atmosphere_sun_focused_sky_uv(
+    tetra::Vec3 direction, tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept;
+[[nodiscard]] tetra::Vec3 atmosphere_sun_focused_sky_direction(
+    AtmosphereLookupCoordinates uv, tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept;
 [[nodiscard]] AtmosphereSpectrum atmosphere_multiple_scattering_closure(
     const AtmosphereSpectrum& second_order,
     const AtmosphereSpectrum& transfer_factor) noexcept;

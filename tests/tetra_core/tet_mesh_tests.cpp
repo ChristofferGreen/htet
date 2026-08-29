@@ -15008,6 +15008,48 @@ TEST_CASE("full sky coordinates round trip and concentrate samples at the horizo
   }
 }
 
+TEST_CASE("sun focused sky coordinates concentrate shadow samples near the sun") {
+  const tetra::Vec3 up{0.2,0.95,-0.1};
+  const tetra::Vec3 sun{-0.7,0.3,0.6};
+  for(const double v:{0.01,0.1,0.5,0.9,0.99}){
+    for(const double u:{0.01,0.1,0.25,0.5,0.75,0.9,0.99}){
+      const tetra_viewer::AtmosphereLookupCoordinates uv{u,v};
+      const auto direction=
+          tetra_viewer::atmosphere_sun_focused_sky_direction(uv,up,sun);
+      const auto round_trip=tetra_viewer::atmosphere_sun_focused_sky_uv(
+          direction,up,sun);
+      CHECK(round_trip.u==doctest::Approx(u).epsilon(2.0e-8).scale(1.0));
+      CHECK(round_trip.v==doctest::Approx(v).epsilon(3.0e-12).scale(1.0));
+    }
+  }
+
+  const auto sun_horizon=tetra_viewer::atmosphere_full_sky_direction(
+      {0.5,0.5},up,sun);
+  const auto centre=tetra_viewer::atmosphere_sun_focused_sky_uv(
+      sun_horizon,up,sun);
+  CHECK(centre.u==doctest::Approx(0.5).epsilon(1.0e-12));
+  CHECK(centre.v==doctest::Approx(0.5).epsilon(1.0e-12));
+
+  // A direction one eighth of the diamond perimeter from the solar
+  // azimuth receives four times as much horizontal atlas space.  This is the
+  // region containing low-sun terrain silhouettes and crepuscular rays.
+  const auto near_sun=tetra_viewer::atmosphere_full_sky_direction(
+      {0.5+1.0/32.0,0.5},up,sun);
+  const auto linear=tetra_viewer::atmosphere_full_sky_uv(near_sun,up,sun);
+  const auto focused=tetra_viewer::atmosphere_sun_focused_sky_uv(
+      near_sun,up,sun);
+  CHECK(focused.u-0.5==(doctest::Approx((linear.u-0.5)*4.0)
+      .epsilon(2.0e-12)));
+
+  for(const double v:{0.0,1.0}){
+    const auto pole=tetra_viewer::atmosphere_sun_focused_sky_direction(
+        {0.5,v},up,sun);
+    CHECK(std::isfinite(pole.x));
+    CHECK(std::isfinite(pole.y));
+    CHECK(std::isfinite(pole.z));
+  }
+}
+
 TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and local") {
   using tetra_viewer::AtmosphereSpectrum;
   const auto vacuum=tetra_viewer::atmosphere_multiple_scattering_closure(

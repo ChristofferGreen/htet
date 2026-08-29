@@ -1183,6 +1183,23 @@ raw depth. The screenshot-like capture is visually continuous, both mountain
 qualification scenes retain silhouette-attached occlusion, all 377 tests pass,
 and Default composition remains below budget at 0.279 ms median.
 
+Solar-focused directional qualification (2026-08-29): rotation-stable
+full-sky storage removed shimmer but exposed the uniform longitude atlas's
+angular resolution in crepuscular-ray boundaries. Faithful aerial perspective
+and long-shadow loss now use a separate, exactly invertible signed-square-root
+longitude mapping centred on the solar azimuth. Sky-view and irradiance tables
+retain the uniform wrapped mapping. This redistributes the existing Default
+384-wide long-shadow and 192-wide aerial tables instead of increasing memory
+or marching work: an angular interval one eighth of the diamond perimeter from
+the sun receives four times its former horizontal atlas span. The anti-solar
+region is correspondingly compressed and the longitude seam remains wrapped
+behind the solar region. CPU tests cover round trips, the solar centre, density
+gain, and poles. At 1920x1080 the exact-ridge direct-loss staircase fell from
+roughly 25--30 output pixels to 6--8 pixels; both fixed-exposure ridge and
+production-mountain qualifications still pass. The native 2644x1744
+production capture is finite and unclipped. Default retains 48,721,920 bytes
+of atmosphere storage and measured 0.425 ms median composition.
+
 Rotation-stability follow-up (2026-08-29): paired captures exposed two moving
 grids rather than one. The long-shadow loss was still camera-screen aligned,
 and the reported terrain fronts differed from revision 1/689,596 cells to

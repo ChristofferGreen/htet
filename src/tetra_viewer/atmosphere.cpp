@@ -750,6 +750,28 @@ tetra::Vec3 atmosphere_full_sky_direction(
   return normalized(tangent*horizontal+basis.up*vertical);
 }
 
+AtmosphereLookupCoordinates atmosphere_sun_focused_sky_uv(
+    tetra::Vec3 direction,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  auto uv=atmosphere_full_sky_uv(direction,local_up,sun_direction);
+  const double perimeter=(uv.u-0.5)*4.0;
+  const double focused=std::copysign(
+      std::sqrt(std::abs(perimeter)*0.5),perimeter);
+  uv.u=focused*0.5+0.5;
+  return uv;
+}
+
+tetra::Vec3 atmosphere_sun_focused_sky_direction(
+    AtmosphereLookupCoordinates uv,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  uv.u=std::clamp(std::isfinite(uv.u)?uv.u:0.5,0.0,1.0);
+  const double focused=uv.u*2.0-1.0;
+  const double perimeter=std::copysign(
+      2.0*focused*focused,focused);
+  uv.u=perimeter*0.25+0.5;
+  return atmosphere_full_sky_direction(uv,local_up,sun_direction);
+}
+
 AtmosphereSpectrum atmosphere_multiple_scattering_closure(
     const AtmosphereSpectrum& second_order,
     const AtmosphereSpectrum& transfer_factor) noexcept {

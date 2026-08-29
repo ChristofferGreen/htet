@@ -460,6 +460,12 @@ vec2 full_sky_uv(vec3 direction) {
   return vec2(perimeter*0.25+0.5,mapped_latitude*0.5+0.5);
 }
 
+vec3 sun_focused_sky_direction(vec2 uv) {
+  const float focused=uv.x*2.0-1.0;
+  const float perimeter=sign(focused)*2.0*focused*focused;
+  return full_sky_direction(vec2(perimeter*0.25+0.5,uv.y));
+}
+
 vec3 full_sky_load(vec3 direction) {
   const vec2 uv=full_sky_uv(direction);
   const ivec2 size=imageSize(sky_view_lut);
@@ -742,7 +748,7 @@ void generate_aerial(ivec3 coordinate) {
   const float distance=slice*slice*slice*
       atmosphere.camera_forward_maximum_distance.w;
   const vec3 direction=faithful_transport()?
-      full_sky_direction(uv):view_direction(uv);
+      sun_focused_sky_direction(uv):view_direction(uv);
   vec3 transmittance;
   const vec3 radiance=integrate_scattering(
       atmosphere.camera_position_near.xyz,direction,distance,
@@ -761,7 +767,7 @@ void generate_long_shadow(ivec2 coordinate) {
   // Store loss by planet/sun-relative direction rather than framebuffer
   // direction. Camera rotation can then reuse exactly the same texels instead
   // of regenerating and resampling a coarse screen-aligned field.
-  const vec3 direction=full_sky_direction(uv);
+  const vec3 direction=sun_focused_sky_direction(uv);
   // Cascaded terrain visibility is exactly one beyond the outer split.  March
   // only the interval where a terrain shadow can exist; distributing the same
   // 32 samples over the complete atmosphere skipped metre-to-kilometre ridge
