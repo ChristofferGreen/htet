@@ -488,6 +488,26 @@ silhouette-band luminance mean error up to 3/255; no mask may hide non-finite,
 black, clipped, or discontinuous output. Bruneton and Wilkie provenance and
 their domain-overlap tolerances remain the separate H8 acceptance criterion.
 
+The 2026-08-29 faithful MoltenVK matrix completed all 24 Low/Default/High by
+eight-view launches. Every GPU transport probe passed, every launch produced
+RGB plus all four masks, and contact-sheet inspection found no profile-specific
+seam, band, invalid output, or topology change. Atmosphere allocations were
+9,120,768 / 34,623,488 / 139,542,528 bytes. The worst median composition times
+were 0.993 / 1.000 / 0.911 ms respectively, at orbital or terminator views;
+therefore this is qualification evidence, not H9 acceptance. Ground views
+remain around 0.26--0.35 ms. Two derived-lookup experiments were also rejected:
+a precomposed analytic planet did not accelerate the real-terrain pixels that
+cover most of the orbital disc, while a cubemap and a screen-space sky resolve
+both increased MoltenVK sampling stalls. Neither experiment remains in source.
+
+H7 still has a dependency problem that the canonical matrix cannot prove away.
+The faithful full-sky lighting table samples camera-frustum shadow cascades,
+but H4 intentionally does not rebuild that table on pure camera rotation even
+though the cascade matrices move. The long-path shadow representation must be
+split from the rotation-independent full-sky lighting data, or supplied by an
+orientation-independent terrain occlusion structure, before cascade motion can
+be qualified and faithful transport can be promoted.
+
 ### 11.3 External reference provenance
 
 `scripts/prepare_atmosphere_references.sh` acquires the external H8 inputs
