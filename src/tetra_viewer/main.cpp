@@ -3099,6 +3099,38 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             0.5,0.5-planet_radius_world,0.5};
         g_AtmosphereFrame.planet_centre_relative_world=
             planet_centre_world-prepared_scene.render_origin;
+        g_AtmosphereFrame.shadow_front=nullptr;
+        if(world_runtime&&g_AtmosphereFrame.enabled){
+            const double metres=
+                g_AtmosphereFrame.parameters.metres_per_world_unit;
+            const auto camera_from_centre=
+                (g_AtmosphereFrame.camera_relative_world-
+                 g_AtmosphereFrame.planet_centre_relative_world)*metres;
+            const double altitude=std::sqrt(
+                camera_from_centre.x*camera_from_centre.x+
+                camera_from_centre.y*camera_from_centre.y+
+                camera_from_centre.z*camera_from_centre.z)-
+                g_AtmosphereFrame.parameters.ground_radius_metres;
+            const double aerial=tetra_viewer::atmosphere_local_aerial_distance(
+                g_AtmosphereFrame.parameters,altitude,
+                g_AtmosphereFrame.maximum_aerial_distance_metres);
+            const auto quality=tetra_viewer::atmosphere_quality_settings(
+                g_AtmosphereFrame.quality);
+            const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+                camera_position,projection.forward,sun,quality.shadow_resolution);
+            const double receiver_distance=std::clamp(
+                aerial/std::max(metres,1.0e-12),
+                cascades.cascades.back().split_distance,2048.0);
+            auto request=tetra_viewer::make_atmosphere_shadow_front_request(
+                view_camera_position,projection.forward,projection.right,
+                projection.up,projection.tangent,projection.aspect_ratio,
+                receiver_distance,1.15,sun,receiver_distance,
+                prepared_scene.render_origin,1U);
+            request.map_resolution=quality.atmosphere_shadow_resolution;
+            world_runtime->set_atmosphere_shadow_request(std::move(request));
+            const auto& front=world_runtime->atmosphere_shadow_front();
+            if(front)g_AtmosphereFrame.shadow_front=&*front;
+        }
         const tetra::Vec3 light=shading_model==tetra_viewer::ShadingModel::stone_pbr?
             sun:tetra::Vec3{-f.x,-f.y,-f.z};
         const std::array<float,12> render_parameters{

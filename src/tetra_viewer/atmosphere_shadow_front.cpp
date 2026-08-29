@@ -151,6 +151,7 @@ AtmosphereShadowMapFit fit_atmosphere_shadow_map(
   double right_max=-right_min,up_min=right_min,up_max=-right_min;
   double sun_min=right_min,sun_max=-right_min;
   const auto include=[&](tetra::Vec3 point){
+        point=point-request.render_origin;
         const double right=dot(fit.light_right,point);
         const double up=dot(fit.light_up,point);
         const double sun=dot(fit.sun_direction,point);
@@ -225,6 +226,7 @@ AtmosphereShadowFront plan_atmosphere_shadow_front(
   AtmosphereShadowFront result;
   result.terrain_revision=checkpoint.revision;
   result.generation=request.generation;
+  result.request=request;
   // The planned front is not consumable until the matching depth image has
   // been rendered and published as one complete generation.
   result.depth_generation=0U;

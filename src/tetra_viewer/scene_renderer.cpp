@@ -1416,15 +1416,28 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   const double receiver_distance_world=std::clamp(
       local_aerial_distance/std::max(metres,1.0e-12),
       cascades.cascades.back().split_distance,2048.0);
-  const auto atmosphere_shadow_request=make_atmosphere_shadow_front_request(
+  const auto live_atmosphere_shadow_request=make_atmosphere_shadow_front_request(
       atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
       atmosphere_input.camera_right,atmosphere_input.camera_down,
       atmosphere_input.vertical_tangent,atmosphere_input.aspect_ratio,
       receiver_distance_world,1.15,atmosphere_input.sun_direction,
       receiver_distance_world,{},1U);
-  const auto atmosphere_shadow_fit=fit_atmosphere_shadow_map(
+  const bool planned_front_complete=atmosphere_input.shadow_front&&
+      atmosphere_input.shadow_front->complete();
+  const auto& atmosphere_shadow_request=planned_front_complete?
+      atmosphere_input.shadow_front->request:live_atmosphere_shadow_request;
+  auto atmosphere_shadow_fit=fit_atmosphere_shadow_map(
       atmosphere_shadow_request,
       quality_settings_.atmosphere_shadow_resolution);
+  double fitted_receiver_distance=receiver_distance_world;
+  // A replacement request is not consumable until its complete terrain front
+  // arrives. Keep both the matrix and reach belonging to the previous depth
+  // image; mixing a new matrix with old depth is worse than retaining an old
+  // but internally coherent shadow generation.
+  if(!planned_front_complete&&shadow.atmosphere_shadow_initialized){
+    atmosphere_shadow_fit.matrix=shadow.atmosphere_shadow_matrix;
+    fitted_receiver_distance=shadow.atmosphere_shadow_receiver_distance;
+  }
   std::array<float,16U*shadow_map_layer_count+8U> shadow_uniform{};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     std::copy(cascades.cascades[cascade].matrix.begin(),
@@ -1436,9 +1449,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   std::copy(atmosphere_shadow_fit.matrix.begin(),
             atmosphere_shadow_fit.matrix.end(),
             shadow_uniform.begin()+16U*shadow_cascade_count);
+  const std::uint64_t planned_front_generation=planned_front_complete?
+      atmosphere_input.shadow_front->generation:0U;
   shadow_uniform[16U*shadow_map_layer_count+4U]=1.0F;
   shadow_uniform[16U*shadow_map_layer_count+5U]=
-      static_cast<float>(receiver_distance_world);
+      static_cast<float>(fitted_receiver_distance);
   shadow_uniform[16U*shadow_map_layer_count+6U]=0.00065F;
   shadow_uniform[16U*shadow_map_layer_count+7U]=
       static_cast<float>(quality_settings_.atmosphere_shadow_resolution)/
@@ -1479,9 +1494,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   for(std::size_t cascade=0;cascade<shadow_map_layer_count;++cascade){
     const bool fitted_layer=cascade==shadow_cascade_count;
     const bool update_fitted=!shadow.atmosphere_shadow_initialized||
-        shadow.atmosphere_shadow_matrix!=atmosphere_shadow_fit.matrix||
-        shadow.atmosphere_surface_generation!=
-            surface_upload_planner_.published_generation();
+        (planned_front_complete&&(
+         shadow.atmosphere_shadow_matrix!=atmosphere_shadow_fit.matrix||
+         shadow.atmosphere_shadow_front_generation!=planned_front_generation||
+         shadow.atmosphere_surface_generation!=
+             surface_upload_planner_.published_generation()));
     if(fitted_layer&&!update_fitted)continue;
     const std::uint32_t layer_resolution=cascade<shadow_cascade_count?
         quality_settings_.shadow_resolution:
@@ -1560,10 +1577,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       shadow.atmosphere_shadow_matrix=atmosphere_shadow_fit.matrix;
       shadow.atmosphere_surface_generation=
           surface_upload_planner_.published_generation();
+      shadow.atmosphere_shadow_front_generation=planned_front_generation;
+      shadow.atmosphere_shadow_receiver_distance=receiver_distance_world;
       shadow.atmosphere_shadow_initialized=true;
       ++atmosphere_shadow_map_status_.revision;
       ++atmosphere_shadow_map_status_.refreshes;
-      atmosphere_shadow_map_status_.complete=true;
+      atmosphere_shadow_map_status_.complete=planned_front_complete||
+          planned_front_generation==0U;
     }
   }
 

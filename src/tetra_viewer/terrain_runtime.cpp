@@ -1217,9 +1217,8 @@ void BlockedTerrainRuntime::set_atmosphere_shadow_request(
     // Shadow demand is stable within one fitted-map texel. The request's
     // generation is deliberately excluded: the runtime assigns the atomic
     // terrain publication generation itself.
-    constexpr std::uint32_t comparison_resolution=512U;
-    const auto left_fit=fit_atmosphere_shadow_map(*left,comparison_resolution);
-    const auto right_fit=fit_atmosphere_shadow_map(*right,comparison_resolution);
+    const auto left_fit=fit_atmosphere_shadow_map(*left,left->map_resolution);
+    const auto right_fit=fit_atmosphere_shadow_map(*right,right->map_resolution);
     return left_fit.matrix==right_fit.matrix;
   };
   if(equivalent(request,atmosphere_shadow_request_))return;
@@ -1354,6 +1353,20 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     rejected.hierarchy_demand=std::move(hierarchy_demand);
     rejected.hierarchy_budget_exceeded=true;
     return rejected;
+  }
+  if(atmosphere_shadow_request){
+    // The demand plan is the private candidate's residency transaction. Model
+    // those surface-only promotions in the immutable front before publishing;
+    // the visible directory remains untouched until this entire Publication
+    // is adopted on the presentation thread.
+    auto promoted_checkpoint=directory->checkpoint();
+    for(auto& block:promoted_checkpoint.blocks)
+      if(std::binary_search(atmosphere_shadow_blocks.begin(),
+                            atmosphere_shadow_blocks.end(),block.id)&&
+         block.residency==tetra::HierarchyResidencyTier::summary)
+        block.residency=tetra::HierarchyResidencyTier::surface;
+    atmosphere_shadow_front=plan_atmosphere_shadow_front(
+        promoted_checkpoint,profile.domain,*atmosphere_shadow_request);
   }
   const auto hierarchy_demand_finished=std::chrono::steady_clock::now();
   const auto directory_finished=std::chrono::steady_clock::now();

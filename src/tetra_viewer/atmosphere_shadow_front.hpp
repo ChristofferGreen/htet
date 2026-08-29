@@ -21,6 +21,7 @@ struct AtmosphereShadowFrontRequest {
   double caster_reach{};
   tetra::Vec3 render_origin{};
   std::uint64_t generation{};
+  std::uint32_t map_resolution{512U};
 };
 
 struct AtmosphereShadowMapFit {
@@ -42,6 +43,7 @@ struct AtmosphereShadowFront {
   std::uint64_t terrain_revision{};
   std::uint64_t generation{};
   std::uint64_t depth_generation{};
+  AtmosphereShadowFrontRequest request{};
   AtmosphereShadowAabb receiver_bounds{};
   AtmosphereShadowAabb caster_bounds{};
   tetra::Vec3 render_origin{};

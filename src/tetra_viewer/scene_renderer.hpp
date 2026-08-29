@@ -32,6 +32,7 @@ struct AtmosphereFrameInput {
   int debug_view{};
   AtmosphereQuality quality{AtmosphereQuality::standard};
   AtmosphereTransport transport{default_atmosphere_transport};
+  const AtmosphereShadowFront* shadow_front{};
   bool numeric_probe_requested{};
   bool shadow_projection_probe_requested{};
   bool capture_requested{};
@@ -183,6 +184,8 @@ class SceneRenderer {
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
     std::array<float,16> atmosphere_shadow_matrix{};
     std::uint64_t atmosphere_surface_generation{};
+    std::uint64_t atmosphere_shadow_front_generation{};
+    double atmosphere_shadow_receiver_distance{};
     bool atmosphere_shadow_initialized{};
   };
   std::vector<ShadowImage> shadow_images_;

@@ -1290,7 +1290,7 @@ TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and su
   REQUIRE(request.receiver_point_count>0U);
   for(std::uint32_t index=0;index<request.receiver_point_count;++index)
     for(const double extrusion:{0.0,request.caster_reach}){
-        const auto point=request.receiver_points[index]+
+        const auto point=request.receiver_points[index]-request.render_origin+
             fit.sun_direction*extrusion;
         const auto projected=tetra_viewer::transform_shadow_point(
             fit.matrix,point);
