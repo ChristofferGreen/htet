@@ -521,7 +521,9 @@ vec3 integrate_scattering_unshadowed(vec3 origin,vec3 direction,
 }
 
 vec3 integrate_direct_shadow_loss(vec3 origin,vec3 direction,
-                                  float maximum_distance) {
+                                  float maximum_distance,
+                                  out float maximum_shadow_loss) {
+  maximum_shadow_loss=0.0;
   float begin,end;
   if(!medium_segment(origin,direction,begin,end)||maximum_distance<=begin)
     return vec3(0.0);
@@ -553,6 +555,7 @@ vec3 integrate_direct_shadow_loss(vec3 origin,vec3 direction,
         lookup_transmittance(point,sun_direction)*
         atmosphere.solar_absorption_peak.rgb;
     const float shadow_loss=1.0-atmosphere_sun_visibility(point);
+    maximum_shadow_loss=max(maximum_shadow_loss,shadow_loss);
     const vec3 integral=(vec3(1.0)-segment_transmittance)/
         max(local_extinction,vec3(1.0e-9));
     loss+=transmittance*direct_source*shadow_loss*integral;
@@ -700,9 +703,20 @@ void generate_long_shadow(ivec2 coordinate) {
   const ivec2 size=imageSize(long_shadow_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
   const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  // Cascaded terrain visibility is exactly one beyond the outer split.  March
+  // only the interval where a terrain shadow can exist; distributing the same
+  // 32 samples over the complete atmosphere skipped metre-to-kilometre ridge
+  // shadows on long horizon rays.
+  const float shadow_reach_metres=shadow_cascades.shadow_splits.w*
+      atmosphere.profile_and_mode.y;
+  float maximum_shadow_loss;
   const vec3 loss=integrate_direct_shadow_loss(
-      atmosphere.camera_position_near.xyz,view_direction(uv),1.0e9);
-  imageStore(long_shadow_lut,coordinate,checked_lut_value(loss,65504.0));
+      atmosphere.camera_position_near.xyz,view_direction(uv),
+      shadow_reach_metres,
+      maximum_shadow_loss);
+  const vec4 checked=checked_lut_value(loss,65504.0);
+  imageStore(long_shadow_lut,coordinate,
+      vec4(checked.rgb,checked.a*maximum_shadow_loss));
 }
 #endif
 

@@ -82,3 +82,43 @@ for quality in "${qualities[@]}"; do
     run_case "${transport}" "${quality}" terminator "0.5,25000.5,0.5" 180 -88 90 0
   done
 done
+
+# H7 uses a deterministic ridge-facing view.  At five degrees the sun lies
+# behind the left ridge and the diagnostic must contain both occluded and lit
+# rays.  At noon no above-ground atmospheric sample should be terrain-shadowed.
+# These are deliberately separate from the older presentation-oriented
+# mountain view, whose sun sits beside rather than behind the ridge.
+if [[ " ${transports_text} " == *" faithful-hillaire "* &&
+      " ${qualities_text} " == *" default "* ]]; then
+  run_shadow_oracle() {
+    local name="$1" elevation="$2" expectation="$3"
+    local image="${output_dir}/faithful-hillaire-default-${name}.ppm"
+    local evidence="${output_dir}/faithful-hillaire-default-${name}.jsonl"
+    "${binary}" \
+      --window-size="${window_size}" \
+      --free-fly \
+      --atmosphere-preset=gameplay-planet \
+      --atmosphere-quality=default \
+      --atmosphere-transport=faithful-hillaire \
+      --atmosphere-debug=11 \
+      --exposure-ev=-0.62 \
+      --camera-feet=0.5,0.72,0.78 \
+      --camera-yaw-degrees=180 \
+      --camera-pitch-degrees=-6 \
+      --sun-azimuth-degrees=-45 \
+      --sun-elevation-degrees="${elevation}" \
+      --gpu-atmosphere-capture="${image}" | tee "${evidence}"
+    local capture
+    capture="$(grep '"event":"gpu_atmosphere_capture"' "${evidence}")"
+    if [[ "${expectation}" == "mixed" ]]; then
+      jq -e '.analysis.maximum[0] > 0 and
+             .analysis.black_fraction > 0.05 and
+             .analysis.black_fraction < 0.95' <<<"${capture}" >/dev/null
+    else
+      jq -e '.analysis.maximum == [0,0,0] and
+             .analysis.black_fraction == 1' <<<"${capture}" >/dev/null
+    fi
+  }
+  run_shadow_oracle ridge-shadow-coverage 5 mixed
+  run_shadow_oracle ridge-noon-guard 60 clear
+fi

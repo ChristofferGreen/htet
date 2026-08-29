@@ -328,10 +328,11 @@ multiple scattering, 384x216/384x216/768x432 sky view,
 The horizon-concentrated 384x216 table is the minimum that keeps the Low
 profile's limb probe inside the transport error contract; lower-resolution
 Low resources remain useful for the other lookups. Larger sky-view tables are
-required for a clean orbital limb. Faithful
-long-path composition now reuses that camera-position-dependent, shadowed
-full-sky integration and derives camera-to-surface transmittance from the
-endpoint/top ratio. Repeating a 32-step march in every full-resolution far
+required for a clean orbital limb. Faithful long-path composition now reuses
+the camera-position-dependent, rotation-independent unshadowed full-sky
+integration, subtracts a separate view-dependent direct-solar terrain-shadow
+loss, and derives camera-to-surface transmittance from the endpoint/top ratio.
+Repeating a 32-step march in every full-resolution far
 fragment was rejected: at 1920x1080 it cost about 3.9 ms in orbit even though
 the same integral was already present in the full-sky lookup. Lookup reuse
 reduced faithful orbit composition to roughly 1.0 ms without a visible limb
@@ -511,19 +512,32 @@ a precomposed analytic planet did not accelerate the real-terrain pixels that
 cover most of the orbital disc, while a cubemap and a screen-space sky resolve
 both increased MoltenVK sampling stalls. Neither experiment remains in source.
 
-H7 still has a dependency problem that the canonical matrix cannot prove away.
-The faithful full-sky lighting table samples camera-frustum shadow cascades,
-but H4 intentionally does not rebuild that table on pure camera rotation even
-though the cascade matrices move. The long-path shadow representation must be
-split from the rotation-independent full-sky lighting data, or supplied by an
-orientation-independent terrain occlusion structure, before cascade motion can
-be qualified and faithful transport can be promoted.
+H7 resolves the former rotation dependency by keeping full-sky radiance and
+sky irradiance unshadowed and rotation-independent, while a separate
+view-dependent 96x54 Default lookup stores only lost direct-solar scattering.
+Local froxels continue to query the cascades directly and higher-order fill
+remains unshadowed. The shadow-loss march is bounded to the outer cascade split
+(3.84 km for the gameplay preset): distributing its 32 samples over the full
+atmospheric segment skipped ridge-scale intervals on horizon rays.
+
+The deterministic ridge oracle places the five-degree sun behind the left
+mountain at azimuth -45 degrees. Its shadow-coverage diagnostic contains both
+lit and occluded rays (`black_fraction=0.599938`, maximum 232 at 960x540), while
+the same view at 60-degree elevation is exactly clear. Numeric policy tests
+cover every cascade interior, the outer 15-percent blend bands, the fade to
+unit visibility beyond the last split, footprint fading, and bounded bias.
+All eight faithful GPU probes pass; a full-resolution ridge render measures
+0.302 ms median composition and 34,664,960 atmosphere bytes. Visual inspection
+shows an attached low-sun ridge shadow without leakage, a cascade line, or a
+local/long-path discontinuity. The frozen baseline shader hashes and reference
+capture remain unchanged.
 
 ### 11.3 External reference provenance
 
 `scripts/prepare_atmosphere_references.sh` acquires the external H8 inputs
 without adding their datasets to Git. Bruneton's tested BSD implementation is
-pinned to commit `34f14e745cff948f4ca3157d1b62a445ffa7286f`; its published
+pinned to commit `34f14e745cff948f4ca3157d1b62a445ffa7286f`; the script builds
+its double-precision CPU reference solver and checks its published
 640x360 double-precision CPU noon and sunset radiance/luminance images are
 downloaded from the accompanying test report and checked against four recorded
 SHA-256 values. These images use Bruneton's documented sphere-and-ground test
@@ -540,8 +554,27 @@ and solar elevations 60 and 1 degrees. Their current hashes are respectively
 `707395df2ec17f3c7fa0e68c9958a8283014f1f6a346287877b8f1586056afea`
 and `c07fb96c0242f9ebbfd0f533080078af502a80e7fc12b068434f41e6b8749001`.
 The large dataset and generated images stay in the ignored build/output cache.
-H8 remains open until matched-domain renderer outputs are compared in linear
-radiance/chromaticity space and the resulting thresholds are recorded.
+`scripts/compare_atmosphere_references.sh` performs the matched-domain H8
+comparison. It probes the faithful GPU table, Bruneton's four-order
+double-precision solver with the same RGB Earth coefficients, and Prague's
+independent 55-channel measured model at six exact physical directions: toward
+the sun, cross-sun, and zenith at noon and sunset. All values are normalized in
+linear RGB before comparison, so exposure and the models' different absolute
+solar calibration cannot hide a transport error. Bruneton must remain within
+0.015 per channel and 0.03 L1; Prague must remain within 0.16 per channel and
+0.32 L1, reflecting the known three-band versus measured-spectrum difference.
+Both references and the renderer must independently preserve blue noon/zenith
+and warm low-sun channel ordering. The 2026-08-29 run passes: Bruneton maximum
+errors are 0.00155--0.01378 and Prague maximum errors are 0.02066--0.15446.
+Exact results are stored in `atmosphere-reference-comparison.tsv`.
+
+The published Bruneton and generated Prague images retain exact source hashes
+and provide fixed-exposure perceptual anchors, but they use different cameras,
+geometry, projection, and solar calibration from the H0 gameplay matrix. They
+are therefore not falsely treated as pixel-aligned goldens. The complete H0
+matrix remains guarded by exact same-driver hashes and geometry/clear/
+silhouette/horizon masks; the six overlapping Earth sky domains use the direct
+linear external-solver comparison above.
 
 ## 12. Post-implementation research reassessment
 
@@ -909,7 +942,7 @@ crossing the handoff produces no luminance, colour, depth, or temporal seam.
 - [x] Apply the shared cascaded visibility only to direct solar in-scattering in
       both local froxels and the long-path lookup, preserving unshadowed higher-
       order fill and generation compatibility.
-- [ ] Test ridges inside, across, and beyond cascades at noon and low sun; measure
+- [x] Test ridges inside, across, and beyond cascades at noon and low sun; measure
       bias, filtering, cascade blending, off-screen caster guards, and motion.
 
 Exit: mountain shadows remain attached to terrain and sun, do not leak or black
@@ -920,7 +953,7 @@ out the atmosphere, and remain continuous through cascades and the H6 handoff.
 - [x] Add numeric GPU readback probes for mappings, transmittance, multiple
       scattering, sky radiance, irradiance, and aerial transport at exact SI
       coordinates, compared with the independent double-precision CPU path.
-- [ ] Add deterministic fixed-exposure comparisons for the complete matrix in
+- [x] Add deterministic fixed-exposure comparisons for the complete matrix in
       H0 against documented Bruneton and Wilkie reference outputs where their
       parameter domains overlap.
 - [x] Remove assertions for exact step counts, quadratic expressions, and

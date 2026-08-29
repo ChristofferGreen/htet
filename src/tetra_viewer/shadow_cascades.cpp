@@ -99,4 +99,41 @@ tetra::Vec3 transform_shadow_point(const std::array<float,16>& matrix,
           static_cast<double>(matrix[10])*point.z+matrix[14]};
 }
 
+AtmosphereShadowCascadeBlend atmosphere_shadow_cascade_blend(
+    double distance_world,const ShadowCascadeSet& cascades) noexcept {
+  distance_world=std::max(0.0,std::isfinite(distance_world)?distance_world:0.0);
+  std::size_t primary=shadow_cascade_count-1U;
+  for(std::size_t index=0;index+1U<shadow_cascade_count;++index){
+    if(distance_world<cascades.cascades[index].split_distance){
+      primary=index;
+      break;
+    }
+  }
+  const double split=cascades.cascades[primary].split_distance;
+  const double previous=primary==0U?0.0:
+      cascades.cascades[primary-1U].split_distance;
+  const double blend_begin=primary+1U==shadow_cascade_count?
+      split*0.80:previous+(split-previous)*0.85;
+  const double linear=std::clamp(
+      (distance_world-blend_begin)/std::max(split-blend_begin,1.0e-12),
+      0.0,1.0);
+  const double smooth=linear*linear*(3.0-2.0*linear);
+  return {.primary=primary,
+          .secondary=primary+1U<shadow_cascade_count?
+              std::optional<std::size_t>{primary+1U}:std::nullopt,
+          .secondary_weight=smooth};
+}
+
+double atmosphere_shadow_depth_bias(std::size_t cascade) noexcept {
+  cascade=std::min(cascade,shadow_cascade_count-1U);
+  return 0.00045*(1.0+static_cast<double>(cascade)*0.45);
+}
+
+double atmosphere_shadow_footprint_fade(
+    double projected_x,double projected_y) noexcept {
+  const double footprint=std::max(std::abs(projected_x),std::abs(projected_y));
+  const double linear=std::clamp((footprint-0.88)/(0.98-0.88),0.0,1.0);
+  return 1.0-linear*linear*(3.0-2.0*linear);
+}
+
 }  // namespace tetra_viewer

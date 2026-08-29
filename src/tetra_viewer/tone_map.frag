@@ -301,7 +301,10 @@ void main() {
 #ifdef FAITHFUL_SHADOW_SPLIT
     }else if(debug_view==11){
       lookup=texture(long_shadow_lut,texture_coordinate);
-      diagnostic=lookup.a<0.99?vec3(8.0,0.0,8.0):lookup.rgb*1024.0;
+      // Alpha is the strongest cascade occlusion encountered by this ray.
+      // Displaying it separates missed cascade samples from a valid but
+      // radiometrically small direct-scattering loss.
+      diagnostic=vec3(lookup.a);
 #endif
     }
     out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);

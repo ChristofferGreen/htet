@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 
 namespace tetra_viewer {
 
@@ -28,6 +29,12 @@ struct ShadowCascadeSet {
   tetra::Vec3 sun_direction{};
 };
 
+struct AtmosphereShadowCascadeBlend {
+  std::size_t primary{};
+  std::optional<std::size_t> secondary;
+  double secondary_weight{};
+};
+
 [[nodiscard]] ShadowCascadeSet make_stable_shadow_cascades(
     tetra::Vec3 camera_relative_position,tetra::Vec3 camera_forward,
     tetra::Vec3 sun_direction,
@@ -37,5 +44,15 @@ struct ShadowCascadeSet {
 
 [[nodiscard]] tetra::Vec3 transform_shadow_point(
     const std::array<float,16>& matrix,tetra::Vec3 point) noexcept;
+
+[[nodiscard]] AtmosphereShadowCascadeBlend atmosphere_shadow_cascade_blend(
+    double distance_world,
+    const ShadowCascadeSet& cascades) noexcept;
+
+[[nodiscard]] double atmosphere_shadow_depth_bias(
+    std::size_t cascade) noexcept;
+
+[[nodiscard]] double atmosphere_shadow_footprint_fade(
+    double projected_x,double projected_y) noexcept;
 
 }  // namespace tetra_viewer

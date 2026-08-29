@@ -76,6 +76,35 @@ cxx="${CXX:-c++}"
   "${prague_source}/src/PragueSkyModelTestCli.cpp" \
   "${reference_build}/miniz.o" \
   -o "${reference_build}/PragueSkyModelCli"
+"${cxx}" -std=c++17 -O2 \
+  -I"${prague_source}/src" \
+  -I"${prague_source}/thirdparty" \
+  -I"${prague_source}/thirdparty/miniz" \
+  "${repo_root}/scripts/prague_atmosphere_probe.cpp" \
+  "${prague_source}/src/PragueSkyModel.cpp" \
+  "${reference_build}/miniz.o" \
+  -o "${reference_build}/prague_atmosphere_probe"
+
+bruneton_source="${cache_dir}/bruneton"
+bruneton_commit="34f14e745cff948f4ca3157d1b62a445ffa7286f"
+if [[ ! -d "${bruneton_source}/.git" ]]; then
+  git clone --quiet https://github.com/ebruneton/precomputed_atmospheric_scattering.git \
+    "${bruneton_source}"
+fi
+git -C "${bruneton_source}" fetch --quiet origin "${bruneton_commit}"
+git -C "${bruneton_source}" checkout --quiet --detach "${bruneton_commit}"
+git -C "${bruneton_source}" submodule update --init --recursive --quiet
+mkdir -p "${cache_dir}/bruneton-probe-cache"
+"${cxx}" -std=c++11 -O3 -DNDEBUG \
+  -I"${bruneton_source}" \
+  -I"${bruneton_source}/external" \
+  -I"${bruneton_source}/external/dimensional_types" \
+  -I"${bruneton_source}/external/progress_bar" \
+  "${repo_root}/scripts/bruneton_atmosphere_probe.cpp" \
+  "${bruneton_source}/atmosphere/reference/model.cc" \
+  "${bruneton_source}/atmosphere/reference/functions.cc" \
+  "${bruneton_source}/external/progress_bar/util/progress_bar.cc" \
+  -pthread -o "${cache_dir}/bruneton_atmosphere_probe"
 
 render_prague() {
   local name="$1" elevation="$2"
@@ -88,7 +117,7 @@ render_prague noon 60
 render_prague sunset 1
 
 printf 'source\tidentity\n'
-printf 'bruneton\t%s\n' '34f14e745cff948f4ca3157d1b62a445ffa7286f'
+printf 'bruneton\t%s\n' "${bruneton_commit}"
 printf 'prague\t%s\n' "${prague_commit}"
 printf 'prague-dataset-sha256\t%s\n' "${prague_dataset_sha}"
 printf 'prague-noon-exr-sha256\t%s\n' \

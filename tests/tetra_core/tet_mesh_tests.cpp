@@ -15189,3 +15189,58 @@ TEST_CASE("shadow cascade motion is quantized to texels and deterministic") {
     static_cast<void>(unused);
   }()),std::invalid_argument);
 }
+
+TEST_CASE("atmospheric shadow cascade policy blends continuously to unshadowed space") {
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,2.3,0.5},{0.0,0.0,-1.0},{-0.2,0.3,-0.9},1024U);
+  for(std::size_t index=0;index<tetra_viewer::shadow_cascade_count;++index){
+    const double split=cascades.cascades[index].split_distance;
+    const double previous=index==0U?0.0:
+        cascades.cascades[index-1U].split_distance;
+    const double begin=index+1U==tetra_viewer::shadow_cascade_count?
+        split*0.80:previous+(split-previous)*0.85;
+    const auto inside=tetra_viewer::atmosphere_shadow_cascade_blend(
+        std::nextafter(begin,0.0),cascades);
+    const auto middle=tetra_viewer::atmosphere_shadow_cascade_blend(
+        0.5*(begin+split),cascades);
+    const auto boundary=tetra_viewer::atmosphere_shadow_cascade_blend(
+        std::nextafter(split,0.0),cascades);
+    CHECK(inside.primary==index);
+    CHECK(inside.secondary_weight==doctest::Approx(0.0).epsilon(1.0e-10));
+    CHECK(middle.secondary_weight==doctest::Approx(0.5).epsilon(1.0e-10));
+    CHECK(boundary.secondary_weight==doctest::Approx(1.0).epsilon(1.0e-10));
+    if(index+1U<tetra_viewer::shadow_cascade_count){
+      REQUIRE(middle.secondary);
+      CHECK(*middle.secondary==index+1U);
+      const auto outside=tetra_viewer::atmosphere_shadow_cascade_blend(
+          std::nextafter(split,std::numeric_limits<double>::infinity()),
+          cascades);
+      CHECK(outside.primary==index+1U);
+      CHECK(outside.secondary_weight==doctest::Approx(0.0).epsilon(1.0e-10));
+    }else{
+      CHECK_FALSE(middle.secondary);
+      const auto beyond=tetra_viewer::atmosphere_shadow_cascade_blend(
+          split*1.01,cascades);
+      CHECK(beyond.primary==index);
+      CHECK_FALSE(beyond.secondary);
+      CHECK(beyond.secondary_weight==doctest::Approx(1.0));
+    }
+  }
+}
+
+TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") {
+  double previous_bias{};
+  for(std::size_t cascade=0;cascade<tetra_viewer::shadow_cascade_count;
+      ++cascade){
+    const double bias=tetra_viewer::atmosphere_shadow_depth_bias(cascade);
+    CHECK(bias>previous_bias);
+    CHECK(bias<0.0011);
+    previous_bias=bias;
+  }
+  CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.0,0.0)==1.0);
+  CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.88,0.5)==1.0);
+  CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.93,0.5)==
+        doctest::Approx(0.5));
+  CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.98,0.5)==0.0);
+  CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(1.2,0.5)==0.0);
+}
