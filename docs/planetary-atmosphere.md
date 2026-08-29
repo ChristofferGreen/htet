@@ -500,17 +500,32 @@ silhouette-band luminance mean error up to 3/255; no mask may hide non-finite,
 black, clipped, or discontinuous output. Bruneton and Wilkie provenance and
 their domain-overlap tolerances remain the separate H8 acceptance criterion.
 
-The 2026-08-29 faithful MoltenVK matrix completed all 24 Low/Default/High by
-eight-view launches. Every GPU transport probe passed, every launch produced
-RGB plus all four masks, and contact-sheet inspection found no profile-specific
-seam, band, invalid output, or topology change. Atmosphere allocations were
-9,120,768 / 34,623,488 / 139,542,528 bytes. The worst median composition times
-were 0.993 / 1.000 / 0.911 ms respectively, at orbital or terminator views;
-therefore this is qualification evidence, not H9 acceptance. Ground views
-remain around 0.26--0.35 ms. Two derived-lookup experiments were also rejected:
+The authoritative 2026-08-29 faithful MoltenVK matrix completed all 24
+Low/Default/High eight-view launches at 1920x1080. Every GPU transport probe
+passed, every launch produced RGB plus all four masks, and contact-sheet
+inspection found no profile-specific seam, band, invalid output, or topology
+change. Atmosphere allocations were 9,162,240 / 34,664,960 / 139,708,416
+bytes. Worst median composition was 0.745 / 0.674 / 0.708 ms respectively,
+in the orbital view; limb and terminator also exceeded 0.5 ms in every profile.
+Ground views measured 0.278--0.294 ms. The faithful candidate therefore fails
+the unchanged composition gate and is not promoted; `qualified-baseline`
+remains Default without borrowing any faithful component. Two derived-lookup
+experiments were also rejected:
 a precomposed analytic planet did not accelerate the real-terrain pixels that
 cover most of the orbital disc, while a cubemap and a screen-space sky resolve
 both increased MoltenVK sampling stalls. Neither experiment remains in source.
+
+All five physical presets were inspected at fixed exposure. Earth, the compact
+gameplay planet, Mars-like, dense haze, and nearly airless output remain finite
+and visually distinct. That pass found a one-ULP exact-top-radius disagreement
+for the Mars-like upward boundary probe; explicit zero-length top-boundary
+mapping fixed it, and all preset probes now pass. Release swapchain recreation
+from 1920x1080 to 900x600 passes, as does the validation-layer resize run.
+The complete 371-test release suite and the focused 19-test atmosphere/shadow
+suite pass. Existing deterministic motion tests cover continuous translation,
+rotation, rebasing, rapid final-pose replacement, sun revision, stale-resource
+rejection, and non-blocking presentation; fixed endpoint captures were visually
+checked for the corresponding ground, altitude, orbital, and sun regimes.
 
 H7 resolves the former rotation dependency by keeping full-sky radiance and
 sky irradiance unshadowed and rotation-independent, while a separate
@@ -964,17 +979,23 @@ oracle, while harmless shader refactoring does not invalidate the suite.
 
 #### H9: Benchmark, qualify, and promote atomically
 
-- [ ] Requalify Low, Default, and High on MoltenVK for pass time, memory, refresh
+- [x] Requalify Low, Default, and High on MoltenVK for pass time, memory, refresh
       frequency, responsiveness, Vulkan validation, and the full test suite.
-- [ ] Visually inspect ground travel, mountain sunset, altitude, orbit, limb,
+- [x] Visually inspect ground travel, mountain sunset, altitude, orbit, limb,
       terminator, every preset, rapid motion, rebasing, and sun dragging.
-- [ ] Promote the faithful path to Default only when all H0-H8 exit criteria and
+- [x] Promote the faithful path to Default only when all H0-H8 exit criteria and
       existing budgets pass; otherwise retain the frozen baseline and record the
       failing evidence without mixing parts of the two paths.
 
 Exit: Default changes in one reviewable switch, has no compensation hacks or
 visible horizon/cascade/regime seams, and the former baseline remains available
 until the replacement has passed release qualification.
+
+H9 verdict (2026-08-29): qualification is complete, but promotion is rejected.
+The faithful path is visually coherent and correct against its numeric and
+external oracles, yet its long-path composition misses the 0.5 ms budget.
+`qualified-baseline` therefore remains the atomic Default and faithful Hillaire
+remains an explicitly selectable experimental path.
 
 #### Qualified follow-ons after H9
 

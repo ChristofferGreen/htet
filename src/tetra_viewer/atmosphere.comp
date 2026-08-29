@@ -200,8 +200,24 @@ vec2 linear_lookup_uv(float altitude,float cosine_angle) {
 vec2 transmittance_uv(float altitude,float cosine_angle) {
   const float bottom=ground_radius();
   const float top=top_radius();
+#ifdef FAITHFUL_SHADOW_SPLIT
+  // Interpolate between the stored endpoints so an exact atmosphere-top
+  // query reconstructs the exact stored top radius.  Adding the separately
+  // rounded bottom and height can land one ULP below top on large planets,
+  // turning an outward zero-length ray into a tangent ray in the inverse map.
+  const float radius=mix(bottom,top,clamp(
+      altitude/max(atmosphere_height(),1.0e-6),0.0,1.0));
+#else
   const float radius=bottom+clamp(altitude,0.0,atmosphere_height());
+#endif
   cosine_angle=clamp(cosine_angle,-1.0,1.0);
+#ifdef FAITHFUL_SHADOW_SPLIT
+  // Every outward direction at the exact top boundary has a zero-length
+  // atmospheric segment.  State that endpoint explicitly: sqrt(top*top) can
+  // round above top and otherwise manufacture a tiny nonzero distance.
+  if(altitude>=atmosphere_height()&&cosine_angle>=0.0)
+    return vec2(0.0,1.0);
+#endif
   const float horizon=atmosphere.reserved3.w;
   const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
   const float discriminant=max(0.0,

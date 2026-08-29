@@ -83,6 +83,25 @@ for quality in "${qualities[@]}"; do
   done
 done
 
+# The presentation matrix uses the compact gameplay planet, but transport
+# endpoint behavior also depends on each preset's radius and atmosphere height.
+# Probe every other shipped physical preset so large-radius float boundary
+# regressions cannot hide behind the gameplay scale.
+if [[ " ${transports_text} " == *" faithful-hillaire "* &&
+      " ${qualities_text} " == *" default "* ]]; then
+  for preset in earth mars-like dense-haze nearly-airless; do
+    "${binary}" \
+      --window-size="${window_size}" \
+      --free-fly \
+      --atmosphere-preset="${preset}" \
+      --atmosphere-quality=default \
+      --atmosphere-transport=faithful-hillaire \
+      --camera-feet=0.5,0.72,0.78 \
+      --gpu-atmosphere-probe |
+      tee "${output_dir}/faithful-hillaire-default-preset-${preset}.jsonl"
+  done
+fi
+
 # H7 uses a deterministic ridge-facing view.  At five degrees the sun lies
 # behind the left ridge and the diagnostic must contain both occluded and lit
 # rays.  At noon no above-ground atmospheric sample should be terrain-shadowed.
