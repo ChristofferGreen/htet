@@ -138,7 +138,7 @@ struct AtmosphereQualitySettings {
 [[nodiscard]] constexpr AtmosphereQualitySettings atmosphere_quality_settings(
     AtmosphereQuality quality) noexcept {
   if(quality==AtmosphereQuality::low)
-    return {128U,32U,16U,192U,108U,16U,16U,8U,16U,8U,512U};
+    return {128U,32U,16U,384U,216U,16U,16U,8U,16U,8U,512U};
   if(quality==AtmosphereQuality::high)
     return {512U,128U,64U,768U,432U,64U,64U,32U,64U,32U,2048U};
   return {256U,64U,32U,384U,216U,32U,32U,16U,32U,16U,1024U};

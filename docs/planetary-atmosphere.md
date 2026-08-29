@@ -323,9 +323,12 @@ quality model. Default advances only after ground, horizon, flight, and orbit
 views show no objectionable banding, ghosting, or discontinuity.
 
 Implemented profiles use 128/256/512-wide transmittance, 16/32/64-wide
-multiple scattering, 192x108/384x216/768x432 sky view,
+multiple scattering, 384x216/384x216/768x432 sky view,
 16x16x8/32x32x16/64x64x32 aerial volumes, and 512/1024/2048 shadow maps.
-The larger sky-view tables are required for a clean orbital limb. Faithful
+The horizon-concentrated 384x216 table is the minimum that keeps the Low
+profile's limb probe inside the transport error contract; lower-resolution
+Low resources remain useful for the other lookups. Larger sky-view tables are
+required for a clean orbital limb. Faithful
 long-path composition now reuses that camera-position-dependent, shadowed
 full-sky integration and derives camera-to-surface transmittance from the
 endpoint/top ratio. Repeating a 32-step march in every full-resolution far

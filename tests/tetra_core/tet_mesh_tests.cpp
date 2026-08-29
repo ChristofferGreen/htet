@@ -14167,6 +14167,9 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(standard.transmittance_width<high.transmittance_width);
   CHECK(low.aerial_depth<standard.aerial_depth);
   CHECK(standard.aerial_depth<high.aerial_depth);
+  CHECK(low.sky_width==standard.sky_width);
+  CHECK(low.sky_height==standard.sky_height);
+  CHECK(standard.sky_width<high.sky_width);
   CHECK(low.shadow_resolution<standard.shadow_resolution);
   CHECK(standard.shadow_resolution<high.shadow_resolution);
   constexpr std::size_t buffered_frames=3U;
