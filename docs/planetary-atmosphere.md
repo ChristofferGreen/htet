@@ -1077,10 +1077,10 @@ not a blanket multiplier that produces black shafts.
 - [x] I3: Implement the receiver-fitted atmosphere depth map, local-cascade
       handoff, completeness mask, revision checks, diagnostics, and incremental
       update path.
-- [ ] I4: Test visible and off-screen mountains, valleys, camera translation
+- [x] I4: Test visible and off-screen mountains, valleys, camera translation
       and rotation, low/high sun, terrain edits, LOD replacement, origin
       rebasing, footprint edges, cancellation, and stale-generation rejection.
-- [ ] I5: Qualify fixed-exposure image masks against an analytic ridge shadow
+- [x] I5: Qualify fixed-exposure image masks against an analytic ridge shadow
       cone and Bruneton-style terrain shafts; require stable penumbra-free
       directional shadows without light leaks, detached shafts, or black fill.
 - [ ] I6: Benchmark map construction, update amortization, lookup composition,
@@ -1137,6 +1137,26 @@ use. A new depth generation is published only after the relevant swapchain
 fence proves its raster pass complete. The post-change Default release run
 reported complete generation 2, 0.304 ms median / 0.383 ms p95 composition,
 and 1.275 ms median combined shadow rendering.
+
+I4 evidence (2026-08-29): focused tests cover visible and guarded off-screen
+caster selection, summary-only completeness failure, receiver altitude
+extremes, footprint/depth exits, sub-texel translation stability, larger
+camera rotation, changed sun basis, origin rebasing, and revision mismatch.
+The blocked-runtime regression starts a shadow publication, supersedes it with
+a newer sun request, proves only the newest generation lands, then performs a
+terrain LOD replacement and requires the replacement shadow front's terrain
+revision to match the new world revision. Shadow-only updates are also required
+to leave the terrain scene generation unchanged.
+
+I5 evidence (2026-08-29): `scripts/qualify_atmosphere_analytic_ridge.sh`
+enables an exact triangular planetary ridge fixture and captures final,
+direct-loss, unshadowed, and shadowed full-sky images at fixed exposure. The
+solar centre is proven geometrically occulted. The clear-air direct-loss mask
+contains three resolved ridge components and the oracle requires every
+meaningful component to touch the extracted silhouette; detached or excessive
+fragmentation fails. Final output additionally rejects black fill and clipping,
+and shadowed/unshadowed full-sky hashes must differ. Manual inspection confirms
+continuous silhouette-attached loss without floating shafts or light leaks.
 
 #### Qualified follow-ons after H9
 

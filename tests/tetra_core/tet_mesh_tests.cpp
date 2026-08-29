@@ -1404,6 +1404,34 @@ TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebui
   CHECK(runtime.atmosphere_shadow_front()->complete());
 }
 
+TEST_CASE("analytic atmosphere ridge is an exact triangular planetary fixture") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field.terrain.planet_radius=20'000.0;
+  field.terrain.analytic_ridge=true;
+  field.terrain.analytic_ridge_centre_z=-4.0;
+  field.terrain.analytic_ridge_height=4.0;
+  field.terrain.analytic_ridge_half_width=4.0;
+  const double planet_centre_y=field.centre.y-field.terrain.planet_radius;
+  const auto surface_y=[&](double z,double displacement){
+    const double tangent_z=z-field.centre.z;
+    const double radius=field.terrain.planet_radius+displacement;
+    return planet_centre_y+std::sqrt(radius*radius-tangent_z*tangent_z);
+  };
+  const double crest_z=field.centre.z-4.0;
+  CHECK(field.signed_distance(
+      {field.centre.x,surface_y(crest_z,4.0),crest_z})==
+      doctest::Approx(0.0).epsilon(1.0e-10));
+  const double shoulder_z=field.centre.z-2.0;
+  CHECK(field.signed_distance(
+      {field.centre.x,surface_y(shoulder_z,2.0),shoulder_z})==
+      doctest::Approx(0.0).epsilon(1.0e-10));
+  CHECK(field.signed_distance(
+      {field.centre.x,surface_y(field.centre.z,0.0),field.centre.z})==
+      doctest::Approx(0.0).epsilon(1.0e-10));
+  CHECK(tetra::terrain_height_slope_bound(field)==doctest::Approx(1.0));
+}
+
 TEST_CASE("projected radial world cut covers the globe with graded bounded detail") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;

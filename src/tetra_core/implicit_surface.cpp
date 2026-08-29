@@ -761,6 +761,9 @@ TerrainHeightSample terrain_height_sample(
 
 double terrain_height_slope_bound(const Sphere& terrain) {
   const auto& parameters=terrain.terrain;
+  if(parameters.analytic_ridge)
+    return std::abs(parameters.analytic_ridge_height)/std::max(
+        parameters.analytic_ridge_half_width,1.0e-12);
   constexpr double noise_value_bound=1.4142135623730950488;
   double detail_height_factor{},relative_amplitude=1.0;
   for(int octave=0;octave<terrain_octave_count;++octave){
@@ -825,6 +828,9 @@ double terrain_height_slope_bound(
     const Sphere& terrain,double world_x,double world_z,
     double horizontal_radius) {
   const auto& parameters=terrain.terrain;
+  if(parameters.analytic_ridge)
+    return std::abs(parameters.analytic_ridge_height)/std::max(
+        parameters.analytic_ridge_half_width,1.0e-12);
   const double x=world_x-terrain.centre.x,z=world_z-terrain.centre.z;
   const bool spawn_blend_enabled=
       parameters.spawn_blend_radius>parameters.spawn_flat_radius;
@@ -1033,8 +1039,16 @@ double Sphere::signed_distance(Vec3 point) const {
             radial_offset.y*radial_offset.y+
             radial_offset.z*radial_offset.z);
         if(!(radial_length>1.0e-15))return -terrain.planet_radius;
-        return radial_length-(terrain.planet_radius+
-            planetary_terrain_displacement(*this,radial_offset/radial_length));
+        double displacement=planetary_terrain_displacement(
+            *this,radial_offset/radial_length);
+        if(terrain.analytic_ridge){
+          const double distance=std::abs(
+              (point.z-centre.z)-terrain.analytic_ridge_centre_z);
+          displacement=terrain.analytic_ridge_height*std::max(
+              0.0,1.0-distance/std::max(
+                  terrain.analytic_ridge_half_width,1.0e-12));
+        }
+        return radial_length-(terrain.planet_radius+displacement);
       }
       return point.y-terrain_height_sample(*this,point.x,point.z).height;
     }

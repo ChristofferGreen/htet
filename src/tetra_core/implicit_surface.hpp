@@ -80,6 +80,12 @@ struct TerrainParameters {
   // Zero keeps the research heightfield. A positive value wraps the terrain
   // around a closed planet whose north-pole surface is Sphere::centre.
   double planet_radius{};
+  // Deterministic qualification fixture: a triangular ridge extruded along X
+  // on the local north-pole patch. Production terrain leaves this disabled.
+  bool analytic_ridge{};
+  double analytic_ridge_centre_z{-4.0};
+  double analytic_ridge_height{4.0};
+  double analytic_ridge_half_width{4.0};
   auto operator<=>(const TerrainParameters&) const = default;
 };
 

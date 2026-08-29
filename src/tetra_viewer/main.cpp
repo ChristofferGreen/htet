@@ -1029,6 +1029,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::string world_gpu_atmosphere_capture_path;
     bool world_gpu_atmosphere_capture_submitted=false;
     bool world_gpu_atmosphere_resize_check=false;
+    bool world_analytic_ridge=false;
     bool world_gpu_atmosphere_resize_requested=false;
     bool world_gpu_automation_requested=false;
     std::size_t world_gpu_benchmark_warmup_frames{};
@@ -1078,6 +1079,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const std::string_view value=argv[argument];
             if(value=="--atmosphere-off"){
                 g_AtmosphereFrame.enabled=false;
+            }else if(value=="--analytic-ridge"){
+                world_analytic_ridge=true;
+            }else if(value=="--surface-edges-off"){
+                show_surface_edges=false;
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
@@ -1208,7 +1213,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         }
     }
     if(world_mode){
-        const auto profile=tetra_viewer::production_world_profile();
+        auto profile=tetra_viewer::production_world_profile();
+        profile.terrain.analytic_ridge=world_analytic_ridge;
+        if(world_analytic_ridge){
+            profile.view_distance=12.0;
+            profile.pixel_threshold=48.0;
+            profile.budgets.maximum_cpu_bytes=768U*1024U*1024U;
+            profile.budgets.maximum_upload_bytes=64U*1024U*1024U;
+        }
         g_AtmosphereFrame.minimum_analytic_ground_distance_metres=
             profile.view_distance*
             g_AtmosphereFrame.parameters.metres_per_world_unit*0.9;
