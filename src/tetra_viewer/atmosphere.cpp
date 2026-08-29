@@ -161,7 +161,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
           (baseline&&orientation),
       .sky_irradiance=optical||scattering||sun||sky_position,
       .aerial_perspective=
-          optical||scattering||sun||position||orientation||shadow||origin,
+          optical||scattering||sun||position||(baseline&&orientation)||shadow||origin,
       .long_shadow=!baseline&&
           (optical||scattering||sun||position||shadow||origin),
   };
@@ -286,7 +286,8 @@ AtmosphereValidationSnapshot atmosphere_validation_snapshot(
           lookups.view->scattering!=frame.scattering||
           lookups.view->sun!=frame.sun||
           lookups.view->camera_position!=frame.camera_position||
-          lookups.view->camera_orientation!=frame.camera_orientation||
+          (material.transport==AtmosphereTransport::qualified_baseline&&
+           lookups.view->camera_orientation!=frame.camera_orientation)||
           lookups.view->shadow!=frame.shadow||
           lookups.view->render_origin!=frame.render_origin)
     reject("view lookup generation is incompatible");

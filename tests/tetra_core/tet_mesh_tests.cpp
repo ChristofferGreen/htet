@@ -14453,6 +14453,10 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(standard.transmittance_width<high.transmittance_width);
   CHECK(low.aerial_depth<standard.aerial_depth);
   CHECK(standard.aerial_depth<high.aerial_depth);
+  CHECK(low.aerial_width<standard.aerial_width);
+  CHECK(standard.aerial_width<high.aerial_width);
+  CHECK(low.aerial_height<standard.aerial_height);
+  CHECK(standard.aerial_height<high.aerial_height);
   CHECK(low.sky_width==standard.sky_width);
   CHECK(low.sky_height==standard.sky_height);
   CHECK(standard.sky_width<high.sky_width);
@@ -14527,7 +14531,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(faithful_rotation.multiple_scattering);
   CHECK_FALSE(faithful_rotation.sky_view);
   CHECK_FALSE(faithful_rotation.sky_irradiance);
-  CHECK(faithful_rotation.aerial_perspective);
+  CHECK_FALSE(faithful_rotation.aerial_perspective);
   CHECK_FALSE(faithful_rotation.long_shadow);
 
   auto moved=state;
@@ -14627,7 +14631,7 @@ TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
   const auto rotation_plan=atmosphere_dispatch_plan(
       frame,rotated,material.transport);
   CHECK_FALSE(rotation_plan.sky_view);
-  CHECK(rotation_plan.aerial_perspective);
+  CHECK_FALSE(rotation_plan.aerial_perspective);
   CHECK_FALSE(rotation_plan.long_shadow);
   const auto after_rotation=advance_atmosphere_lookup_snapshots(
       initial,material,rotated,rotation_plan);
@@ -14639,7 +14643,7 @@ TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
   REQUIRE(after_rotation.view);
   CHECK(after_rotation.lighting->camera_orientation==
         initial.lighting->camera_orientation);
-  CHECK(after_rotation.view->camera_orientation==rotated.camera_orientation);
+  CHECK(after_rotation.view->camera_orientation==frame.camera_orientation);
   CHECK(initial.view->camera_orientation==frame.camera_orientation);
 
   auto relit=rotated;

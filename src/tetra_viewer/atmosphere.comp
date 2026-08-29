@@ -741,9 +741,11 @@ void generate_aerial(ivec3 coordinate) {
   const float slice=float(coordinate.z)/float(max(size.z-1,1));
   const float distance=slice*slice*slice*
       atmosphere.camera_forward_maximum_distance.w;
+  const vec3 direction=faithful_transport()?
+      full_sky_direction(uv):view_direction(uv);
   vec3 transmittance;
   const vec3 radiance=integrate_scattering(
-      atmosphere.camera_position_near.xyz,view_direction(uv),distance,
+      atmosphere.camera_position_near.xyz,direction,distance,
       transmittance);
   imageStore(aerial_scattering_lut,coordinate,
              checked_lut_value(radiance,65504.0));

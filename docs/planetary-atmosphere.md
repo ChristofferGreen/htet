@@ -1198,6 +1198,17 @@ qualification scenes, rotation dependency tests, and the release benchmark
 pass; Default measured 0.335 ms median composition and 3.81 ms worst lookup
 refresh in the sampled run.
 
+The first rotation follow-up did not cover the local path: near aerial
+perspective was still a 32x32x16 camera-aligned froxel volume, so pitch changed
+its world-direction sampling even while the long-shadow atlas stayed stable.
+The faithful path now stores both aerial radiance and transmittance in a
+planet/sun-relative directional volume. Low/Default/High use 96x54x8,
+192x108x16, and 384x216x32 respectively, and pure rotation invalidates none of
+the faithful atmosphere lookups. Default uses 48,721,920 buffered atmosphere
+bytes; its sampled refresh maximum is 9.07 ms and median composition is
+0.373 ms. Native-resolution paired-pitch inspection is smooth, and both
+mountain occlusion qualifications still pass.
+
 #### Qualified follow-ons after H9
 
 - [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval

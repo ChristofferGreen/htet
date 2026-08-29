@@ -115,6 +115,11 @@ vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   return texture(sky_view_lut,atmosphere_full_sky_uv(direction)).rgb;
 }
 
+vec2 aerial_direction_uv(vec3 direction,vec2 screen_uv) {
+  return atmosphere.reserved1.y>0.5?
+      atmosphere_full_sky_uv(direction):screen_uv;
+}
+
 #ifdef FAITHFUL_SHADOW_SPLIT
 vec4 sample_long_shadow(vec3 direction) {
   if(atmosphere.reserved1.y<0.5)return vec4(0.0);
@@ -138,6 +143,7 @@ vec4 sample_long_shadow(vec3 direction) {
 vec3 sample_long_shadow_loss(vec3 direction) {
   return sample_long_shadow(direction).rgb;
 }
+
 #endif
 
 vec3 sample_sky_irradiance(vec3 normal) {
@@ -257,11 +263,13 @@ vec3 composite_long_aerial(vec3 surface_radiance,float distance_metres) {
 vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
   const float local_distance=atmosphere.camera_forward_maximum_distance.w;
   const bool faithful=atmosphere.reserved1.y>0.5;
+  const vec3 direction=atmosphere_view_direction(texture_coordinate);
   if(faithful&&distance_metres>=local_distance)
     return composite_long_aerial(surface_radiance,distance_metres);
   const float slice=pow(clamp(distance_metres/local_distance,0.0,1.0),
       1.0/3.0);
-  const vec3 lookup=vec3(texture_coordinate,slice);
+  const vec3 lookup=vec3(aerial_direction_uv(direction,texture_coordinate),
+                         slice);
   vec3 scattering=texture(aerial_scattering_lut,lookup).rgb;
   const vec3 transmittance=texture(aerial_transmittance_lut,lookup).rgb;
   const vec3 local_result=surface_radiance*transmittance+scattering;
@@ -302,10 +310,14 @@ void main() {
       lookup.rgb*=12.0;
     }else if(debug_view==3)lookup=texture(sky_view_lut,texture_coordinate);
     else if(debug_view==4){
-      lookup=texture(aerial_scattering_lut,vec3(texture_coordinate,0.5));
+      lookup=texture(aerial_scattering_lut,vec3(aerial_direction_uv(
+          atmosphere_view_direction(texture_coordinate),texture_coordinate),
+          0.5));
       lookup.rgb*=4.0;
     }else if(debug_view==5)
-      lookup=texture(aerial_transmittance_lut,vec3(texture_coordinate,0.5));
+      lookup=texture(aerial_transmittance_lut,vec3(aerial_direction_uv(
+          atmosphere_view_direction(texture_coordinate),texture_coordinate),
+          0.5));
     if(debug_view>=1&&debug_view<=5){
       diagnostic=lookup.a<0.99?vec3(8.0,0.0,8.0):lookup.rgb;
     }
