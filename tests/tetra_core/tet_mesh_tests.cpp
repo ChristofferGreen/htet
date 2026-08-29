@@ -14179,10 +14179,10 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(default_shadow_bytes<64U*1024U*1024U);
 }
 
-TEST_CASE("atmosphere transport keeps the qualified baseline explicit") {
+TEST_CASE("atmosphere transport defaults to faithful with baseline available") {
   using tetra_viewer::AtmosphereTransport;
   CHECK(tetra_viewer::default_atmosphere_transport==
-        AtmosphereTransport::qualified_baseline);
+        AtmosphereTransport::faithful_hillaire);
   CHECK(tetra_viewer::parse_atmosphere_transport("qualified-baseline")==
         AtmosphereTransport::qualified_baseline);
   CHECK(tetra_viewer::parse_atmosphere_transport("faithful-hillaire")==

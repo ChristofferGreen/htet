@@ -997,6 +997,97 @@ external oracles, yet its long-path composition misses the 0.5 ms budget.
 `qualified-baseline` therefore remains the atomic Default and faithful Hillaire
 remains an explicitly selectable experimental path.
 
+Later operator decision (2026-08-29): fixed-exposure low-sun inspection showed
+that the baseline's unshadowed directional-airlight completion makes large
+mountains appear transparent. Visual correctness is more valuable for the
+current research application than the 0.174 ms Default-budget miss, so
+`faithful-hillaire` is now the application default by explicit user choice.
+`qualified-baseline` remains selectable as the frozen performance/reference
+fallback. This does not rewrite the H9 result or relax the 0.5 ms target.
+
+#### Gate I: Receiver-driven terrain shadows for atmosphere
+
+The large-mountain low-sun case demonstrates the gap that Gate E deliberately
+deferred. An approximate scripted reproduction at the reported position and
+sun pose found an all-zero long-shadow diagnostic even though the outer cascade
+depth diagnostic contained the terrain silhouette. Raising shadow-map
+resolution cannot repair a visibility signal that is absent. The immediate
+uncertainty is whether the
+reported sun is geometrically occulted by the ridge, whether the relevant
+atmospheric receiver samples project outside valid cascade depth/footprints, or
+whether the current visible-only caster front omits the required light-space
+path. Diagnostics must distinguish these cases before quality tuning.
+
+The production design should separate two different shadow products:
+
+1. The existing four cascades remain the high-resolution surface-lighting map
+   for nearby terrain.
+2. A low-frequency **atmosphere shadow front** covers only the sun-space
+   footprint of the visible dense-atmosphere receiver volume. It uses coarse
+   surface-only terrain blocks, including guarded off-screen casters, and does
+   not request volumetric tetrahedra.
+
+For a directional sun, opaque terrain visibility from any atmospheric sample
+is a comparison against the nearest terrain depth along one sun ray. The first
+implementation therefore uses a receiver-fitted orthographic depth map, not a
+camera horizon map: a camera horizon cannot describe the three-dimensional
+shadow cone behind a mountain. Project the guarded view frustum clipped to the
+dense atmosphere into sun space, extrude it toward the sun through conservative
+terrain bounds, and request every hierarchy block intersecting that caster
+volume through a new `atmosphere_shadow` surface-residency demand. Rasterize its
+published coarse surface snapshots into a separately revisioned map. The
+96x54 long-shadow integration then queries this map outside the local cascades
+and continues to use cascades where their precision is superior.
+
+This receiver-driven map is intentionally not planet-wide. At ground level its
+footprint follows the visible haze and guarded camera motion. At flight/orbit,
+analytic planet occlusion remains responsible for the planetary shadow and the
+terrain map is limited to relief that can resolve in the atmosphere lookup.
+If a single fitted map becomes too coarse, promote it to sparse sun-space
+clipmap pages keyed by hierarchy address; do not allocate one enormous texture.
+Depth-min/max mip levels provide conservative coarse tests and let empty rays
+skip detailed pages.
+
+Ownership follows the existing publication model. An immutable shadow-front
+snapshot contains terrain revision, caster block IDs, sun basis, receiver
+bounds, render origin, page/depth generation, and completeness. Atmosphere LUTs
+may consume only a complete compatible generation. Camera/sun movement is
+texel-quantized, terrain edits invalidate intersecting pages, superseded builds
+cancel cooperatively, and the previous complete map remains visible while the
+replacement is prepared. Missing or summary-only casters are reported in a
+diagnostic coverage mask; they must never silently mean fully lit.
+
+Do not shadow all higher-order scattering by the binary terrain result.
+Single-scattered direct sunlight receives exact visibility; the existing
+multiple-scattering term remains unshadowed until a direct/multiple
+decomposition capture proves it is the remaining excessive glow. If it is,
+introduce a separately qualified low-frequency first-bounce visibility model,
+not a blanket multiplier that produces black shafts.
+
+- [ ] I0: Add a deterministic large-mountain backlight launch/capture with sun
+      occultation, cascade coverage, direct-loss, multiple-scattering, and
+      final-composite diagnostics; assert that changing resolution cannot turn
+      zero coverage into valid coverage.
+- [ ] I1: Add CPU/GPU projection oracles for atmospheric receiver points across
+      every cascade footprint/depth boundary and fix any coordinate, depth,
+      bias, or caster-render defect they expose.
+- [ ] I2: Define the immutable `AtmosphereShadowFront` snapshot and add
+      `atmosphere_shadow` surface-only demand by intersecting hierarchy bounds
+      with the sun-extruded receiver volume.
+- [ ] I3: Implement the receiver-fitted atmosphere depth map, local-cascade
+      handoff, completeness mask, revision checks, diagnostics, and incremental
+      update path.
+- [ ] I4: Test visible and off-screen mountains, valleys, camera translation
+      and rotation, low/high sun, terrain edits, LOD replacement, origin
+      rebasing, footprint edges, cancellation, and stale-generation rejection.
+- [ ] I5: Qualify fixed-exposure image masks against an analytic ridge shadow
+      cone and Bruneton-style terrain shafts; require stable penumbra-free
+      directional shadows without light leaks, detached shafts, or black fill.
+- [ ] I6: Benchmark map construction, update amortization, lookup composition,
+      memory, and terrain-worker impact at Low/Default/High. Keep the existing
+      0.5 ms composition target and select fitted map versus sparse clipmap from
+      measured evidence.
+
 #### Qualified follow-ons after H9
 
 - [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval

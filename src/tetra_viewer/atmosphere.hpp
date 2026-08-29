@@ -45,7 +45,7 @@ enum class AtmosphereTransport {
 };
 
 inline constexpr AtmosphereTransport default_atmosphere_transport=
-    AtmosphereTransport::qualified_baseline;
+    AtmosphereTransport::faithful_hillaire;
 
 [[nodiscard]] std::optional<AtmosphereTransport> parse_atmosphere_transport(
     std::string_view name);
