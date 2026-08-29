@@ -689,15 +689,26 @@ AtmosphereLookupCoordinates atmosphere_full_sky_uv(
   const auto basis=sky_basis(local_up,sun_direction);
   direction=normalized(direction);
   if(length(direction)==0.0)return {0.5,0.5};
-  const double latitude=std::asin(std::clamp(dot(direction,basis.up),-1.0,1.0));
-  const double longitude=std::atan2(
-      dot(direction,basis.longitude_tangent),
-      dot(direction,basis.sun_tangent));
-  const double normalized_latitude=latitude/(std::numbers::pi/2.0);
-  const double mapped_latitude=std::abs(normalized_latitude)<1.0e-14?0.0:
-      std::copysign(std::sqrt(std::abs(normalized_latitude)),
-                    normalized_latitude);
-  return {longitude/(2.0*std::numbers::pi)+0.5,
+  const double tangent_x=dot(direction,basis.sun_tangent);
+  const double tangent_y=dot(direction,basis.longitude_tangent);
+  double perimeter=0.0;
+  if(tangent_x>=0.0){
+    const double denominator=std::abs(tangent_x)+std::abs(tangent_y);
+    perimeter=denominator>0.0?tangent_y/denominator:0.0;
+  }else if(tangent_y>=0.0){
+    const double denominator=-tangent_x+tangent_y;
+    perimeter=2.0-tangent_y/denominator;
+  }else{
+    const double denominator=-tangent_x-tangent_y;
+    perimeter=-1.0+tangent_x/denominator;
+  }
+  const double vertical=std::clamp(dot(direction,basis.up),-1.0,1.0);
+  constexpr double latitude_shape=std::numbers::pi/4.0-1.0;
+  const double root=std::sqrt(std::max(0.0,1.0-std::abs(vertical)));
+  const double latitude_proxy=(1.0-root)/(1.0+latitude_shape*root);
+  const double mapped_latitude=std::abs(vertical)<1.0e-14?0.0:
+      std::copysign(std::sqrt(latitude_proxy),vertical);
+  return {perimeter*0.25+0.5,
           mapped_latitude*0.5+0.5};
 }
 
@@ -707,15 +718,32 @@ tetra::Vec3 atmosphere_full_sky_direction(
   const auto basis=sky_basis(local_up,sun_direction);
   uv.u=std::clamp(std::isfinite(uv.u)?uv.u:0.5,0.0,1.0);
   uv.v=std::clamp(std::isfinite(uv.v)?uv.v:0.5,0.0,1.0);
-  const double longitude=(uv.u-0.5)*2.0*std::numbers::pi;
+  const double perimeter=(uv.u-0.5)*4.0;
+  tetra::Vec3 tangent;
+  if(perimeter>=0.0&&perimeter<=1.0)
+    tangent=basis.sun_tangent*(1.0-perimeter)+
+        basis.longitude_tangent*perimeter;
+  else if(perimeter>1.0){
+    const double offset=perimeter-1.0;
+    tangent=basis.sun_tangent*(-offset)+
+        basis.longitude_tangent*(1.0-offset);
+  }else if(perimeter>=-1.0)
+    tangent=basis.sun_tangent*(1.0+perimeter)+
+        basis.longitude_tangent*perimeter;
+  else{
+    const double offset=-perimeter-1.0;
+    tangent=basis.sun_tangent*(-offset)+
+        basis.longitude_tangent*(-1.0+offset);
+  }
+  tangent=normalized(tangent);
   const double mapped_latitude=uv.v*2.0-1.0;
-  const double latitude=std::copysign(
-      mapped_latitude*mapped_latitude*(std::numbers::pi/2.0),
-      mapped_latitude);
-  const double horizontal=std::cos(latitude);
-  return normalized(basis.sun_tangent*(horizontal*std::cos(longitude))+
-      basis.longitude_tangent*(horizontal*std::sin(longitude))+
-      basis.up*std::sin(latitude));
+  constexpr double latitude_shape=std::numbers::pi/4.0-1.0;
+  const double latitude_proxy=mapped_latitude*mapped_latitude;
+  const double root=(1.0-latitude_proxy)/
+      (1.0+latitude_shape*latitude_proxy);
+  const double vertical=std::copysign(1.0-root*root,mapped_latitude);
+  const double horizontal=std::sqrt(std::max(0.0,1.0-vertical*vertical));
+  return normalized(tangent*horizontal+basis.up*vertical);
 }
 
 AtmosphereSpectrum atmosphere_multiple_scattering_closure(

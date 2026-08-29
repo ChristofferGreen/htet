@@ -1298,6 +1298,54 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[53]=static_cast<float>(atmosphere_input.transport==
       AtmosphereTransport::faithful_hillaire?1:0);
   atmosphere_uniform[54]=atmosphere_input.numeric_probe_requested?1.0F:0.0F;
+  const double camera_radius=std::sqrt(
+      camera_from_centre.x*camera_from_centre.x+
+      camera_from_centre.y*camera_from_centre.y+
+      camera_from_centre.z*camera_from_centre.z);
+  const double inverse_camera_radius=1.0/std::max(camera_radius,1.0e-12);
+  const tetra::Vec3 local_up{
+      camera_from_centre.x*inverse_camera_radius,
+      camera_from_centre.y*inverse_camera_radius,
+      camera_from_centre.z*inverse_camera_radius};
+  const double sun_projection=
+      atmosphere_input.sun_direction.x*local_up.x+
+      atmosphere_input.sun_direction.y*local_up.y+
+      atmosphere_input.sun_direction.z*local_up.z;
+  tetra::Vec3 sun_tangent{
+      atmosphere_input.sun_direction.x-local_up.x*sun_projection,
+      atmosphere_input.sun_direction.y-local_up.y*sun_projection,
+      atmosphere_input.sun_direction.z-local_up.z*sun_projection};
+  double tangent_length=std::sqrt(
+      sun_tangent.x*sun_tangent.x+sun_tangent.y*sun_tangent.y+
+      sun_tangent.z*sun_tangent.z);
+  if(tangent_length<1.0e-5){
+    const tetra::Vec3 reference=std::abs(local_up.z)<0.9?
+        tetra::Vec3{0.0,0.0,1.0}:tetra::Vec3{1.0,0.0,0.0};
+    const double projection=reference.x*local_up.x+
+        reference.y*local_up.y+reference.z*local_up.z;
+    sun_tangent={reference.x-local_up.x*projection,
+                 reference.y-local_up.y*projection,
+                 reference.z-local_up.z*projection};
+    tangent_length=std::sqrt(
+        sun_tangent.x*sun_tangent.x+sun_tangent.y*sun_tangent.y+
+        sun_tangent.z*sun_tangent.z);
+  }
+  const double inverse_tangent_length=1.0/std::max(tangent_length,1.0e-12);
+  atmosphere_uniform[56]=static_cast<float>(local_up.x);
+  atmosphere_uniform[57]=static_cast<float>(local_up.y);
+  atmosphere_uniform[58]=static_cast<float>(local_up.z);
+  atmosphere_uniform[59]=static_cast<float>(camera_radius-
+      parameters.ground_radius_metres);
+  atmosphere_uniform[60]=static_cast<float>(
+      sun_tangent.x*inverse_tangent_length);
+  atmosphere_uniform[61]=static_cast<float>(
+      sun_tangent.y*inverse_tangent_length);
+  atmosphere_uniform[62]=static_cast<float>(
+      sun_tangent.z*inverse_tangent_length);
+  atmosphere_uniform[63]=static_cast<float>(std::sqrt(
+      parameters.atmosphere_height_metres*
+      (2.0*parameters.ground_radius_metres+
+       parameters.atmosphere_height_metres)));
   void* mapped{};
   if(vkMapMemory(device_,atmosphere_frame.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)

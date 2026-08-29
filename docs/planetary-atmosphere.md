@@ -341,6 +341,17 @@ measurements supersede the
 earlier one-frame 0.36 ms figure; Default must not be promoted until repeated
 steady-state orbital composition meets budget.
 
+The full-sky consumers subsequently replaced per-fragment inverse
+trigonometry with an exactly invertible diamond-longitude and
+square-root/rational latitude map. The latitude map retains angular-like
+sample spacing at the poles as well as horizon concentration; directly mapping
+the vertical cosine collapsed an 88-degree nadir probe into the first texel and
+was rejected by the numeric oracle. The corrected Default eight-view matrix
+passed every transport probe and measured 0.29--0.30 ms composition on ground
+and flight views, 0.65 ms at the limb, 0.73 ms in orbit, and 0.72 ms at the
+terminator. This is a material improvement, but the three long-path views
+still exceed the unchanged 0.5 ms promotion gate.
+
 Depth-clear rays that hit the planet use an analytic spherical ground.
 Full-resolution composition evaluates the same neutral Lambertian terrain
 response, then samples aerial transmittance and in-scattering at the exact

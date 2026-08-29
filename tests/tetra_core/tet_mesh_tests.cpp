@@ -14656,10 +14656,23 @@ TEST_CASE("full sky coordinates round trip and concentrate samples at the horizo
   CHECK(std::abs((horizon.x*up.x+horizon.y*up.y+horizon.z*up.z)/up_length)<
         1.0e-12);
   const double one_degree=std::numbers::pi/180.0;
-  const double mapped_offset=0.5*std::sqrt(one_degree/
-      (std::numbers::pi/2.0));
+  constexpr double latitude_shape=std::numbers::pi/4.0-1.0;
+  const double one_degree_vertical=std::sin(one_degree);
+  const double one_degree_root=std::sqrt(1.0-one_degree_vertical);
+  const double mapped_offset=0.5*std::sqrt(
+      (1.0-one_degree_root)/(1.0+latitude_shape*one_degree_root));
   const double linear_offset=0.5*one_degree/(std::numbers::pi/2.0);
   CHECK(mapped_offset>linear_offset*5.0);
+
+  // Near-nadir orbital rays must not collapse into the pole texel.  At the
+  // Default 216-row resolution this retains several samples across the last
+  // two degrees, matching the former angular mapping closely enough for the
+  // full-sky transport oracle.
+  const tetra::Vec3 near_nadir=up*std::cos(one_degree*2.0)*-1.0+
+      sun*std::sin(one_degree*2.0);
+  const auto near_nadir_uv=tetra_viewer::atmosphere_full_sky_uv(
+      near_nadir,up,sun);
+  CHECK(near_nadir_uv.v>1.0/216.0);
 
   // A zenith sun has no projected azimuth; the documented planet-fixed
   // fallback must still be deterministic and invertible.

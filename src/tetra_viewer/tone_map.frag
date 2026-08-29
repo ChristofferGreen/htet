@@ -67,7 +67,7 @@ vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
     return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
                 clamp(altitude/(top-bottom),0.0,1.0));
   const float radius=bottom+clamp(altitude,0.0,top-bottom);
-  const float horizon=sqrt(max(0.0,(top-bottom)*(top+bottom)));
+  const float horizon=atmosphere.reserved3.w;
   const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
   cosine_angle=clamp(cosine_angle,-1.0,1.0);
   const float discriminant=max(0.0,
@@ -80,23 +80,29 @@ vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
 }
 
 vec2 atmosphere_full_sky_uv(vec3 direction) {
-  const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
-  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
-  vec3 sun_tangent=sun_direction-local_up*dot(sun_direction,local_up);
-  if(dot(sun_tangent,sun_tangent)<1.0e-10){
-    const vec3 reference=abs(local_up.z)<0.9?vec3(0.0,0.0,1.0):
-        vec3(1.0,0.0,0.0);
-    sun_tangent=reference-local_up*dot(reference,local_up);
+  const vec3 local_up=atmosphere.reserved2.xyz;
+  const vec3 sun_tangent=atmosphere.reserved3.xyz;
+  const vec3 longitude_tangent=cross(local_up,sun_tangent);
+  const float tangent_x=dot(direction,sun_tangent);
+  const float tangent_y=dot(direction,longitude_tangent);
+  float perimeter=0.0;
+  if(tangent_x>=0.0){
+    const float denominator=abs(tangent_x)+abs(tangent_y);
+    perimeter=denominator>0.0?tangent_y/denominator:0.0;
+  }else if(tangent_y>=0.0){
+    const float denominator=-tangent_x+tangent_y;
+    perimeter=2.0-tangent_y/denominator;
+  }else{
+    const float denominator=-tangent_x-tangent_y;
+    perimeter=-1.0+tangent_x/denominator;
   }
-  sun_tangent=normalize(sun_tangent);
-  const vec3 longitude_tangent=normalize(cross(local_up,sun_tangent));
-  const float latitude=asin(clamp(dot(direction,local_up),-1.0,1.0));
-  const float normalized_latitude=latitude/(0.5*3.14159265358979323846);
-  const float mapped_latitude=abs(normalized_latitude)<1.0e-6?0.0:
-      sign(normalized_latitude)*sqrt(abs(normalized_latitude));
-  const float longitude=atan(dot(direction,longitude_tangent),
-                             dot(direction,sun_tangent));
-  return vec2(longitude/(2.0*3.14159265358979323846)+0.5,
+  const float vertical=clamp(dot(direction,local_up),-1.0,1.0);
+  const float latitude_shape=0.7853981633974483-1.0;
+  const float root=sqrt(max(0.0,1.0-abs(vertical)));
+  const float latitude_proxy=(1.0-root)/(1.0+latitude_shape*root);
+  const float mapped_latitude=abs(vertical)<1.0e-6?0.0:
+      sign(vertical)*sqrt(latitude_proxy);
+  return vec2(perimeter*0.25+0.5,
               mapped_latitude*0.5+0.5);
 }
 
@@ -199,15 +205,13 @@ vec3 composite_long_aerial(vec3 surface_radiance,float distance_metres) {
   const vec3 reverse_direction=-direction;
   const float endpoint_altitude=length(endpoint)-
       atmosphere.rayleigh_ground_radius.w;
-  const float camera_altitude=length(atmosphere.camera_position_near.xyz)-
-      atmosphere.rayleigh_ground_radius.w;
+  const float camera_altitude=atmosphere.reserved2.w;
   const vec3 endpoint_to_top=texture(transmittance_lut,
       atmosphere_transmittance_uv(endpoint_altitude,
           dot(normalize(endpoint),reverse_direction))).rgb;
   const vec3 camera_to_top=texture(transmittance_lut,
       atmosphere_transmittance_uv(camera_altitude,
-          dot(normalize(atmosphere.camera_position_near.xyz),
-              reverse_direction))).rgb;
+          dot(atmosphere.reserved2.xyz,reverse_direction))).rgb;
   const vec3 long_transmittance=clamp(endpoint_to_top/
       max(camera_to_top,vec3(1.0e-6)),vec3(0.0),vec3(1.0));
   const vec3 long_scattering=sample_sky_view(direction,texture_coordinate);
