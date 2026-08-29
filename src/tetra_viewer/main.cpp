@@ -1151,8 +1151,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const std::string debug(value.substr(debug_prefix.size()));
                 char* end=nullptr;
                 const long parsed=std::strtol(debug.c_str(),&end,10);
-                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>10){
-                    fprintf(stderr,"atmosphere debug view must be in [0,10]\n");
+                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>11){
+                    fprintf(stderr,"atmosphere debug view must be in [0,11]\n");
                     return 2;
                 }
                 g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
@@ -2687,12 +2687,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGuiSliderFlags_Logarithmic);
             }
             if(ImGui::CollapsingHeader("Atmosphere diagnostics")){
-                constexpr std::array<const char*,11> debug_names{
+                constexpr std::array<const char*,12> debug_names{
                     "Final composition","Transmittance lookup",
                     "Multiple scattering lookup","Sky-view lookup",
                     "Aerial scattering slice","Aerial transmittance slice",
                     "Reversed depth","Shadow cascade 0","Shadow cascade 1",
-                    "Shadow cascade 2","Shadow cascade 3"};
+                    "Shadow cascade 2","Shadow cascade 3",
+                    "Long-path shadow loss"};
                 ImGui::SetNextItemWidth(190.0F);
                 ImGui::Combo("Debug view",&g_AtmosphereFrame.debug_view,
                              debug_names.data(),
@@ -2716,14 +2717,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         (1024.0*1024.0));
                 const auto& dispatches=
                     g_SceneRenderer.atmosphere_dispatch_counts();
-                ImGui::Text("LUT dispatch T %llu M %llu S %llu I %llu A %llu",
+                ImGui::Text("LUT dispatch T %llu M %llu S %llu I %llu A %llu L %llu",
                     static_cast<unsigned long long>(dispatches.transmittance),
                     static_cast<unsigned long long>(
                         dispatches.multiple_scattering),
                     static_cast<unsigned long long>(dispatches.sky_view),
                     static_cast<unsigned long long>(dispatches.sky_irradiance),
                     static_cast<unsigned long long>(
-                        dispatches.aerial_perspective));
+                        dispatches.aerial_perspective),
+                    static_cast<unsigned long long>(dispatches.long_shadow));
             }
             ImGui::SetNextItemWidth(190.0F);
             const double exposure_minimum=-6.0;
@@ -3527,6 +3529,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_dispatch_counts().sky_irradiance
                         <<",\"aerial_perspective\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().aerial_perspective
+                        <<",\"long_shadow\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().long_shadow
                         <<"},"
                         <<"\"resize_checked\":"
                         <<(world_gpu_atmosphere_resize_check?"true":"false")

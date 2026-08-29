@@ -14207,6 +14207,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.sky_view);
   CHECK(plan.sky_irradiance);
   CHECK(plan.aerial_perspective);
+  CHECK_FALSE(plan.long_shadow);
 
   plan=atmosphere_dispatch_plan(state,state,
       AtmosphereTransport::qualified_baseline);
@@ -14215,6 +14216,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.sky_view);
   CHECK_FALSE(plan.sky_irradiance);
   CHECK_FALSE(plan.aerial_perspective);
+  CHECK_FALSE(plan.long_shadow);
 
   auto rotated=state;
   rotated.camera_orientation.value++;
@@ -14229,6 +14231,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(faithful_rotation.sky_view);
   CHECK_FALSE(faithful_rotation.sky_irradiance);
   CHECK(faithful_rotation.aerial_perspective);
+  CHECK(faithful_rotation.long_shadow);
 
   auto moved=state;
   moved.camera_position.value++;
@@ -14239,6 +14242,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.sky_view);
   CHECK_FALSE(plan.sky_irradiance);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 
   auto sky_moved=state;
   sky_moved.sky_position.value++;
@@ -14247,6 +14251,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.sky_view);
   CHECK(plan.sky_irradiance);
   CHECK_FALSE(plan.aerial_perspective);
+  CHECK_FALSE(plan.long_shadow);
 
   auto relit=state;
   relit.sun.value++;
@@ -14256,6 +14261,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.multiple_scattering);
   CHECK(plan.sky_view);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 
   auto reshaded=state;
   reshaded.shadow.value++;
@@ -14265,6 +14271,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.multiple_scattering);
   CHECK_FALSE(plan.sky_view);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 
   auto rebased=state;
   rebased.render_origin.value++;
@@ -14275,6 +14282,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.sky_view);
   CHECK_FALSE(plan.sky_irradiance);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 
   auto material=state;
   material.optical.value++;
@@ -14284,6 +14292,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.multiple_scattering);
   CHECK(plan.sky_view);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 
   auto scattering=state;
   scattering.scattering.value++;
@@ -14293,6 +14302,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK(plan.multiple_scattering);
   CHECK(plan.sky_view);
   CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
 }
 
 TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
@@ -14321,6 +14331,7 @@ TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
       frame,rotated,material.transport);
   CHECK_FALSE(rotation_plan.sky_view);
   CHECK(rotation_plan.aerial_perspective);
+  CHECK(rotation_plan.long_shadow);
   const auto after_rotation=advance_atmosphere_lookup_snapshots(
       initial,material,rotated,rotation_plan);
   CHECK(atmosphere_validation_snapshot(

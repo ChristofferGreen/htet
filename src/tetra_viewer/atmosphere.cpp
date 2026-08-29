@@ -141,7 +141,8 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
     AtmosphereTransport transport) noexcept {
   if (!previous)
     return {.transmittance=true, .multiple_scattering=true, .sky_view=true,
-            .sky_irradiance=true, .aerial_perspective=true};
+            .sky_irradiance=true, .aerial_perspective=true,
+            .long_shadow=transport==AtmosphereTransport::faithful_hillaire};
 
   const bool optical=previous->optical!=next.optical;
   const bool scattering=previous->scattering!=next.scattering;
@@ -161,6 +162,8 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
       .sky_irradiance=optical||scattering||sun||sky_position,
       .aerial_perspective=
           optical||scattering||sun||position||orientation||shadow||origin,
+      .long_shadow=!baseline&&
+          (optical||scattering||sun||position||orientation||shadow||origin),
   };
 }
 
@@ -240,7 +243,7 @@ AtmosphereLookupSnapshotSet advance_atmosphere_lookup_snapshots(
     result.lighting=AtmosphereLightingLookupSnapshot{
         next.optical,next.scattering,next.sun,next.sky_position,
         next.camera_orientation,material.transport};
-  if(dispatch.aerial_perspective)
+  if(dispatch.aerial_perspective||dispatch.long_shadow)
     result.view=AtmosphereViewLookupSnapshot{
         next.optical,next.scattering,next.sun,next.camera_position,
         next.camera_orientation,next.shadow,next.render_origin,

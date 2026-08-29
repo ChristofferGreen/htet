@@ -64,6 +64,7 @@ struct AtmosphereDispatchCounts {
   std::uint64_t sky_view{};
   std::uint64_t sky_irradiance{};
   std::uint64_t aerial_perspective{};
+  std::uint64_t long_shadow{};
 };
 
 class SceneRenderer {
@@ -131,7 +132,9 @@ class SceneRenderer {
   VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
   VkPipeline sky_pipeline_{VK_NULL_HANDLE};
   VkPipeline composite_pipeline_{VK_NULL_HANDLE};
+  VkPipeline faithful_composite_pipeline_{VK_NULL_HANDLE};
   VkPipeline atmosphere_pipeline_{VK_NULL_HANDLE};
+  VkPipeline faithful_atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
@@ -188,6 +191,7 @@ class SceneRenderer {
     AtmosphereImage sky_irradiance;
     AtmosphereImage aerial_scattering;
     AtmosphereImage aerial_transmittance;
+    AtmosphereImage long_shadow;
     std::optional<AtmosphereLookupRevisions> lookup_revisions;
     std::optional<AtmosphereLookupSnapshotSet> lookup_snapshots;
     AtmosphereTransport transport{default_atmosphere_transport};

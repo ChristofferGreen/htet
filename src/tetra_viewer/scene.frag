@@ -96,7 +96,8 @@ vec2 atmosphere_transmittance_uv(float altitude,float cosine_angle) {
   const float bottom=atmosphere.rayleigh_ground_radius.w;
   const float top=atmosphere.mie_scattering_top_radius.w;
   const float radius=bottom+clamp(altitude,0.0,top-bottom);
-  const float horizon=atmosphere.reserved3.w;
+  const float horizon=atmosphere.reserved1.y>0.5?atmosphere.reserved3.w:
+      sqrt(max(0.0,(top-bottom)*(top+bottom)));
   const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
   cosine_angle=clamp(cosine_angle,-1.0,1.0);
   const float discriminant=max(0.0,

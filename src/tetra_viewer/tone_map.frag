@@ -15,6 +15,9 @@ layout(std140,set=0,binding=10) uniform ShadowCascades {
   mat4 shadow_matrices[4];
   vec4 shadow_splits;
 } shadow_cascades;
+#ifdef FAITHFUL_SHADOW_SPLIT
+layout(set = 0,binding = 11) uniform sampler2D long_shadow_lut;
+#endif
 
 layout(std140,set=0,binding=7) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -110,6 +113,13 @@ vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   if(atmosphere.reserved1.y<0.5)return texture(sky_view_lut,screen_uv).rgb;
   return texture(sky_view_lut,atmosphere_full_sky_uv(direction)).rgb;
 }
+
+#ifdef FAITHFUL_SHADOW_SPLIT
+vec3 sample_long_shadow_loss(vec2 screen_uv) {
+  if(atmosphere.reserved1.y<0.5)return vec3(0.0);
+  return max(texture(long_shadow_lut,screen_uv).rgb,vec3(0.0));
+}
+#endif
 
 vec3 sample_sky_irradiance(vec3 normal) {
   const vec2 uv=atmosphere_full_sky_uv(normal);
@@ -214,7 +224,14 @@ vec3 composite_long_aerial(vec3 surface_radiance,float distance_metres) {
           dot(atmosphere.reserved2.xyz,reverse_direction))).rgb;
   const vec3 long_transmittance=clamp(endpoint_to_top/
       max(camera_to_top,vec3(1.0e-6)),vec3(0.0),vec3(1.0));
-  const vec3 long_scattering=sample_sky_view(direction,texture_coordinate);
+  const vec3 long_scattering=
+#ifdef FAITHFUL_SHADOW_SPLIT
+      max(
+      sample_sky_view(direction,texture_coordinate)-
+      sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+#else
+      sample_sky_view(direction,texture_coordinate);
+#endif
   return surface_radiance*long_transmittance+long_scattering;
 }
 
@@ -281,6 +298,11 @@ void main() {
       const float depth=texture(sun_shadow_map,
           vec3(texture_coordinate,float(cascade))).r;
       diagnostic=vec3(depth);
+#ifdef FAITHFUL_SHADOW_SPLIT
+    }else if(debug_view==11){
+      lookup=texture(long_shadow_lut,texture_coordinate);
+      diagnostic=lookup.a<0.99?vec3(8.0,0.0,8.0):lookup.rgb*1024.0;
+#endif
     }
     out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);
     return;
@@ -297,6 +319,10 @@ void main() {
             ground_distance);
       }else{
         hdr=sample_sky_view(view_direction,texture_coordinate);
+#ifdef FAITHFUL_SHADOW_SPLIT
+        if(atmosphere.reserved1.y>0.5)
+          hdr=max(hdr-sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+#endif
       }
       if(ground_distance<0.0&&
          dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&

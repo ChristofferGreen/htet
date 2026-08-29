@@ -40,7 +40,9 @@ add_custom_command(
          ${TETRA_SHADER_DIR}/sky.vert.spv ${TETRA_SHADER_DIR}/sky.frag.spv
          ${TETRA_SHADER_DIR}/fullscreen.vert.spv
          ${TETRA_SHADER_DIR}/tone_map.frag.spv
+         ${TETRA_SHADER_DIR}/tone_map_faithful.frag.spv
          ${TETRA_SHADER_DIR}/atmosphere.comp.spv
+         ${TETRA_SHADER_DIR}/atmosphere_faithful.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.vert -o ${TETRA_SHADER_DIR}/scene.vert.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.frag -o ${TETRA_SHADER_DIR}/scene.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/wire.frag -o ${TETRA_SHADER_DIR}/wire.frag.spv
@@ -51,7 +53,9 @@ add_custom_command(
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/sky.frag -o ${TETRA_SHADER_DIR}/sky.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/fullscreen.vert -o ${TETRA_SHADER_DIR}/fullscreen.vert.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/tone_map.frag -o ${TETRA_SHADER_DIR}/tone_map.frag.spv
+  COMMAND ${GLSLC} -DFAITHFUL_SHADOW_SPLIT=1 ${CMAKE_CURRENT_SOURCE_DIR}/tone_map.frag -o ${TETRA_SHADER_DIR}/tone_map_faithful.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/atmosphere.comp -o ${TETRA_SHADER_DIR}/atmosphere.comp.spv
+  COMMAND ${GLSLC} -DFAITHFUL_SHADOW_SPLIT=1 ${CMAKE_CURRENT_SOURCE_DIR}/atmosphere.comp -o ${TETRA_SHADER_DIR}/atmosphere_faithful.comp.spv
   DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp)
 add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
@@ -59,7 +63,9 @@ add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/shadow.vert.spv
   ${TETRA_SHADER_DIR}/sky.vert.spv ${TETRA_SHADER_DIR}/sky.frag.spv
   ${TETRA_SHADER_DIR}/fullscreen.vert.spv ${TETRA_SHADER_DIR}/tone_map.frag.spv
-  ${TETRA_SHADER_DIR}/atmosphere.comp.spv)
+  ${TETRA_SHADER_DIR}/tone_map_faithful.frag.spv
+  ${TETRA_SHADER_DIR}/atmosphere.comp.spv
+  ${TETRA_SHADER_DIR}/atmosphere_faithful.comp.spv)
 add_dependencies(tetra_viewer tetra_viewer_shaders)
 add_dependencies(tetra_world tetra_viewer_shaders)
 target_compile_definitions(tetra_viewer_application PRIVATE TETRA_VIEWER_SHADER_DIR="${TETRA_SHADER_DIR}")
