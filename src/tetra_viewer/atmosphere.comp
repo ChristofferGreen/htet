@@ -466,6 +466,15 @@ vec3 sun_focused_sky_direction(vec2 uv) {
   return full_sky_direction(vec2(perimeter*0.25+0.5,uv.y));
 }
 
+vec3 sun_shadow_sky_direction(vec2 uv) {
+  const float focused=uv.x-0.5;
+  const float magnitude=abs(focused);
+  const float perimeter=magnitude<=0.25?magnitude:
+      0.25+(magnitude-0.25)*7.0;
+  const float full_sky_u=sign(focused)*perimeter*0.25+0.5;
+  return full_sky_direction(vec2(full_sky_u,uv.y));
+}
+
 vec3 full_sky_load(vec3 direction) {
   const vec2 uv=full_sky_uv(direction);
   const ivec2 size=imageSize(sky_view_lut);
@@ -767,7 +776,7 @@ void generate_long_shadow(ivec2 coordinate) {
   // Store loss by planet/sun-relative direction rather than framebuffer
   // direction. Camera rotation can then reuse exactly the same texels instead
   // of regenerating and resampling a coarse screen-aligned field.
-  const vec3 direction=sun_focused_sky_direction(uv);
+  const vec3 direction=sun_shadow_sky_direction(uv);
   // Cascaded terrain visibility is exactly one beyond the outer split.  March
   // only the interval where a terrain shadow can exist; distributing the same
   // 32 samples over the complete atmosphere skipped metre-to-kilometre ridge

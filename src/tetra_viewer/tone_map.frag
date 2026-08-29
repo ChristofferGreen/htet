@@ -118,6 +118,16 @@ vec2 atmosphere_sun_focused_sky_uv(vec3 direction) {
   return uv;
 }
 
+vec2 atmosphere_sun_shadow_sky_uv(vec3 direction) {
+  vec2 uv=atmosphere_full_sky_uv(direction);
+  const float perimeter=(uv.x-0.5)*4.0;
+  const float magnitude=abs(perimeter);
+  const float focused=magnitude<=0.25?magnitude:
+      0.25+(magnitude-0.25)/7.0;
+  uv.x=0.5+sign(perimeter)*focused;
+  return uv;
+}
+
 vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   if(atmosphere.reserved1.y<0.5)return texture(sky_view_lut,screen_uv).rgb;
   return texture(sky_view_lut,atmosphere_full_sky_uv(direction)).rgb;
@@ -131,7 +141,7 @@ vec2 aerial_direction_uv(vec3 direction,vec2 screen_uv) {
 #ifdef FAITHFUL_SHADOW_SPLIT
 vec4 sample_long_shadow(vec3 direction) {
   if(atmosphere.reserved1.y<0.5)return vec4(0.0);
-  const vec2 uv=atmosphere_sun_focused_sky_uv(direction);
+  const vec2 uv=atmosphere_sun_shadow_sky_uv(direction);
   const ivec2 size=textureSize(long_shadow_lut,0);
   const vec2 texel=uv*vec2(size)-0.5;
   const ivec2 low=ivec2(floor(texel));

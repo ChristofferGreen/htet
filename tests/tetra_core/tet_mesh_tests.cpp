@@ -15050,6 +15050,41 @@ TEST_CASE("sun focused sky coordinates concentrate shadow samples near the sun")
   }
 }
 
+TEST_CASE("sun shadow coordinates reserve half the atlas for the solar region") {
+  const tetra::Vec3 up{0.2,0.95,-0.1};
+  const tetra::Vec3 sun{-0.7,0.3,0.6};
+  for(const double v:{0.01,0.1,0.5,0.9,0.99}){
+    for(const double u:{0.01,0.1,0.25,0.5,0.75,0.9,0.99}){
+      const tetra_viewer::AtmosphereLookupCoordinates uv{u,v};
+      const auto direction=tetra_viewer::atmosphere_sun_shadow_sky_direction(
+          uv,up,sun);
+      const auto round_trip=tetra_viewer::atmosphere_sun_shadow_sky_uv(
+          direction,up,sun);
+      CHECK(round_trip.u==doctest::Approx(u).epsilon(3.0e-12).scale(1.0));
+      CHECK(round_trip.v==doctest::Approx(v).epsilon(3.0e-12).scale(1.0));
+    }
+  }
+
+  const auto positive_boundary=tetra_viewer::atmosphere_full_sky_direction(
+      {0.5+0.25/4.0,0.5},up,sun);
+  const auto negative_boundary=tetra_viewer::atmosphere_full_sky_direction(
+      {0.5-0.25/4.0,0.5},up,sun);
+  const auto positive=tetra_viewer::atmosphere_sun_shadow_sky_uv(
+      positive_boundary,up,sun);
+  const auto negative=tetra_viewer::atmosphere_sun_shadow_sky_uv(
+      negative_boundary,up,sun);
+  CHECK(positive.u==doctest::Approx(0.75).epsilon(2.0e-12));
+  CHECK(negative.u==doctest::Approx(0.25).epsilon(2.0e-12));
+
+  const auto seam_low=tetra_viewer::atmosphere_sun_shadow_sky_direction(
+      {0.0,0.5},up,sun);
+  const auto seam_high=tetra_viewer::atmosphere_sun_shadow_sky_direction(
+      {1.0,0.5},up,sun);
+  CHECK(seam_low.x==doctest::Approx(seam_high.x).epsilon(2.0e-12));
+  CHECK(seam_low.y==doctest::Approx(seam_high.y).epsilon(2.0e-12));
+  CHECK(seam_low.z==doctest::Approx(seam_high.z).epsilon(2.0e-12));
+}
+
 TEST_CASE("Hillaire multiple scattering closure is finite energy bounded and local") {
   using tetra_viewer::AtmosphereSpectrum;
   const auto vacuum=tetra_viewer::atmosphere_multiple_scattering_closure(

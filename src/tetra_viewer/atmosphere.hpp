@@ -144,8 +144,8 @@ struct AtmosphereQualitySettings {
   if(quality==AtmosphereQuality::low)
     return {128U,32U,16U,384U,216U,96U,54U,8U,16U,8U,192U,108U,512U,256U};
   if(quality==AtmosphereQuality::high)
-    return {512U,128U,64U,768U,432U,384U,216U,32U,64U,32U,768U,432U,2048U,1024U};
-  return {256U,64U,32U,384U,216U,192U,108U,16U,32U,16U,384U,216U,1024U,512U};
+    return {512U,128U,64U,768U,432U,384U,216U,32U,64U,32U,1024U,576U,2048U,1024U};
+  return {256U,64U,32U,384U,216U,192U,108U,16U,32U,16U,768U,432U,1024U,512U};
 }
 
 struct AtmosphereParameters {
@@ -366,6 +366,12 @@ atmosphere_transmittance_parameters(
     tetra::Vec3 direction, tetra::Vec3 local_up,
     tetra::Vec3 sun_direction) noexcept;
 [[nodiscard]] tetra::Vec3 atmosphere_sun_focused_sky_direction(
+    AtmosphereLookupCoordinates uv, tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept;
+[[nodiscard]] AtmosphereLookupCoordinates atmosphere_sun_shadow_sky_uv(
+    tetra::Vec3 direction, tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept;
+[[nodiscard]] tetra::Vec3 atmosphere_sun_shadow_sky_direction(
     AtmosphereLookupCoordinates uv, tetra::Vec3 local_up,
     tetra::Vec3 sun_direction) noexcept;
 [[nodiscard]] AtmosphereSpectrum atmosphere_multiple_scattering_closure(

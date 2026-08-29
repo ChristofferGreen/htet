@@ -772,6 +772,37 @@ tetra::Vec3 atmosphere_sun_focused_sky_direction(
   return atmosphere_full_sky_direction(uv,local_up,sun_direction);
 }
 
+AtmosphereLookupCoordinates atmosphere_sun_shadow_sky_uv(
+    tetra::Vec3 direction,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  auto uv=atmosphere_full_sky_uv(direction,local_up,sun_direction);
+  const double perimeter=(uv.u-0.5)*4.0;
+  constexpr double focus_limit=0.25;
+  constexpr double focused_span=0.25;
+  constexpr double outer_scale=focused_span/(2.0-focus_limit);
+  const double magnitude=std::abs(perimeter);
+  const double focused=magnitude<=focus_limit?magnitude:
+      focused_span+(magnitude-focus_limit)*outer_scale;
+  uv.u=0.5+std::copysign(focused,perimeter);
+  return uv;
+}
+
+tetra::Vec3 atmosphere_sun_shadow_sky_direction(
+    AtmosphereLookupCoordinates uv,tetra::Vec3 local_up,
+    tetra::Vec3 sun_direction) noexcept {
+  uv.u=std::clamp(std::isfinite(uv.u)?uv.u:0.5,0.0,1.0);
+  constexpr double focus_limit=0.25;
+  constexpr double focused_span=0.25;
+  constexpr double outer_inverse_scale=
+      (2.0-focus_limit)/focused_span;
+  const double focused=uv.u-0.5;
+  const double magnitude=std::abs(focused);
+  const double perimeter=magnitude<=focused_span?magnitude:
+      focus_limit+(magnitude-focused_span)*outer_inverse_scale;
+  uv.u=std::copysign(perimeter,focused)*0.25+0.5;
+  return atmosphere_full_sky_direction(uv,local_up,sun_direction);
+}
+
 AtmosphereSpectrum atmosphere_multiple_scattering_closure(
     const AtmosphereSpectrum& second_order,
     const AtmosphereSpectrum& transfer_factor) noexcept {

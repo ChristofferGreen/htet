@@ -1200,6 +1200,20 @@ production-mountain qualifications still pass. The native 2644x1744
 production capture is finite and unclipped. Default retains 48,721,920 bytes
 of atmosphere storage and measured 0.425 ms median composition.
 
+Final solar-window refinement (2026-08-29): the remaining 6--8-pixel steps
+were isolated to long-shadow loss by comparing Default and High direct-loss
+captures; increasing unrelated aerial tables is unnecessary. Default
+long-shadow storage is now 768x432 and High is 1024x576. A dedicated piecewise
+longitude map assigns half the table to the diamond-perimeter interval
+`[-0.25, 0.25]`, approximately the 36-degree region centred on the sun, while
+remaining continuous, invertible, and wrapped across the anti-solar seam.
+Faithful aerial perspective keeps its earlier signed-square-root mapping.
+The exact screenshot-scale pose at 2644x1744 shows a smooth diagonal ray
+boundary without softening the terrain silhouette. The analytic-ridge and
+production-mountain qualifications pass, as do all 23 focused atmosphere and
+shadow tests. Default storage is 50,712,576 bytes, median composition is
+0.340 ms, and the maximum measured lookup refresh is 5.01 ms.
+
 Rotation-stability follow-up (2026-08-29): paired captures exposed two moving
 grids rather than one. The long-shadow loss was still camera-screen aligned,
 and the reported terrain fronts differed from revision 1/689,596 cells to
