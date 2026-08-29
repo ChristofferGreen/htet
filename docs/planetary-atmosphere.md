@@ -1183,6 +1183,21 @@ raw depth. The screenshot-like capture is visually continuous, both mountain
 qualification scenes retain silhouette-attached occlusion, all 377 tests pass,
 and Default composition remains below budget at 0.279 ms median.
 
+Rotation-stability follow-up (2026-08-29): paired captures exposed two moving
+grids rather than one. The long-shadow loss was still camera-screen aligned,
+and the reported terrain fronts differed from revision 1/689,596 cells to
+revision 43/941,547 cells while both were updating. Loss is now stored in the
+same wrapped planet/sun-relative full-sky parameterization as sky transport;
+Default uses 384x216 and High 768x432. Pure camera rotation no longer invalidates
+that lookup. The receiver-fitted depth request retains its guarded projection
+while the unguarded view remains covered, including 15 percent light-depth
+headroom, and interactive terrain orientation demand is accumulated in
+two-degree buckets before replacing geometry and normals. Larger turns and the
+settled final pose still request exact LOD. Paired pitch captures, both mountain
+qualification scenes, rotation dependency tests, and the release benchmark
+pass; Default measured 0.335 ms median composition and 3.81 ms worst lookup
+refresh in the sampled run.
+
 #### Qualified follow-ons after H9
 
 - [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval

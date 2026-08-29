@@ -163,7 +163,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
       .aerial_perspective=
           optical||scattering||sun||position||orientation||shadow||origin,
       .long_shadow=!baseline&&
-          (optical||scattering||sun||position||orientation||shadow||origin),
+          (optical||scattering||sun||position||shadow||origin),
   };
 }
 

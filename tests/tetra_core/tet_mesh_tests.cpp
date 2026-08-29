@@ -1326,6 +1326,41 @@ TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and su
       {8.0,0.0,-8.0},12U);
   CHECK(tetra_viewer::fit_atmosphere_shadow_map(turned_request,1024U).matrix!=
         fit.matrix);
+  auto retained=request;
+  retained.map_resolution=1024U;
+  auto small_turn=tetra_viewer::make_atmosphere_shadow_front_request(
+      {10.0,2.0,-4.0},{0.035,0.0,-0.999},{0.999,0.0,0.035},
+      {0.0,1.0,0.0},0.5,1.6,100.0,1.0,{-0.8,0.1,-0.3},80.0,
+      {8.0,0.0,-8.0},13U);
+  small_turn.map_resolution=1024U;
+  const auto retained_fit=tetra_viewer::fit_atmosphere_shadow_map(
+      retained,retained.map_resolution);
+  for(std::uint32_t index=1;index<small_turn.receiver_point_count;++index){
+    const auto projected=tetra_viewer::transform_shadow_point(
+        retained_fit.matrix,
+        small_turn.receiver_points[index]-retained.render_origin);
+    CAPTURE(index);
+    CAPTURE(projected.x);
+    CAPTURE(projected.y);
+    CAPTURE(projected.z);
+    CHECK(std::abs(projected.x)<=0.985);
+    CHECK(std::abs(projected.y)<=0.985);
+    CHECK(projected.z>=0.0);
+    CHECK(projected.z<=1.0);
+  }
+  CHECK(tetra_viewer::atmosphere_shadow_request_covers_rotation(
+      retained,small_turn));
+  auto large_turn=tetra_viewer::make_atmosphere_shadow_front_request(
+      {10.0,2.0,-4.0},{0.707,0.0,-0.707},{0.707,0.0,0.707},
+      {0.0,1.0,0.0},0.5,1.6,100.0,1.0,{-0.8,0.1,-0.3},80.0,
+      {8.0,0.0,-8.0},14U);
+  large_turn.map_resolution=1024U;
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_request_covers_rotation(
+      retained,large_turn));
+  auto moved_view=small_turn;
+  moved_view.receiver_points[0].x+=0.01;
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_request_covers_rotation(
+      retained,moved_view));
   auto moved_sun=request;moved_sun.sun_direction={-0.7,0.2,-0.4};
   CHECK(tetra_viewer::fit_atmosphere_shadow_map(moved_sun,1024U).matrix!=
         fit.matrix);
@@ -14493,7 +14528,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(faithful_rotation.sky_view);
   CHECK_FALSE(faithful_rotation.sky_irradiance);
   CHECK(faithful_rotation.aerial_perspective);
-  CHECK(faithful_rotation.long_shadow);
+  CHECK_FALSE(faithful_rotation.long_shadow);
 
   auto moved=state;
   moved.camera_position.value++;
@@ -14593,7 +14628,7 @@ TEST_CASE("atmosphere lookup snapshots reject incompatible generations") {
       frame,rotated,material.transport);
   CHECK_FALSE(rotation_plan.sky_view);
   CHECK(rotation_plan.aerial_perspective);
-  CHECK(rotation_plan.long_shadow);
+  CHECK_FALSE(rotation_plan.long_shadow);
   const auto after_rotation=advance_atmosphere_lookup_snapshots(
       initial,material,rotated,rotation_plan);
   CHECK(atmosphere_validation_snapshot(

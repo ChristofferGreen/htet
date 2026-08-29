@@ -116,9 +116,27 @@ vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
 }
 
 #ifdef FAITHFUL_SHADOW_SPLIT
-vec3 sample_long_shadow_loss(vec2 screen_uv) {
-  if(atmosphere.reserved1.y<0.5)return vec3(0.0);
-  return max(texture(long_shadow_lut,screen_uv).rgb,vec3(0.0));
+vec4 sample_long_shadow(vec3 direction) {
+  if(atmosphere.reserved1.y<0.5)return vec4(0.0);
+  const vec2 uv=atmosphere_full_sky_uv(direction);
+  const ivec2 size=textureSize(long_shadow_lut,0);
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const int low_x=(low.x%size.x+size.x)%size.x;
+  const int high_x=(high.x%size.x+size.x)%size.x;
+  const int low_y=clamp(low.y,0,size.y-1);
+  const int high_y=clamp(high.y,0,size.y-1);
+  const vec2 fraction=fract(texel);
+  const vec4 lower=mix(texelFetch(long_shadow_lut,ivec2(low_x,low_y),0),
+      texelFetch(long_shadow_lut,ivec2(high_x,low_y),0),fraction.x);
+  const vec4 upper=mix(texelFetch(long_shadow_lut,ivec2(low_x,high_y),0),
+      texelFetch(long_shadow_lut,ivec2(high_x,high_y),0),fraction.x);
+  return max(mix(lower,upper,fraction.y),vec4(0.0));
+}
+
+vec3 sample_long_shadow_loss(vec3 direction) {
+  return sample_long_shadow(direction).rgb;
 }
 #endif
 
@@ -229,7 +247,7 @@ vec3 composite_long_aerial(vec3 surface_radiance,float distance_metres) {
 #ifdef FAITHFUL_SHADOW_SPLIT
       max(
       sample_sky_view(direction,texture_coordinate)-
-      sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+      sample_long_shadow_loss(direction),vec3(0.0));
 #else
       sample_sky_view(direction,texture_coordinate);
 #endif
@@ -301,20 +319,23 @@ void main() {
       diagnostic=vec3(depth);
 #ifdef FAITHFUL_SHADOW_SPLIT
     }else if(debug_view==11){
-      lookup=texture(long_shadow_lut,texture_coordinate);
+      lookup=sample_long_shadow(
+          atmosphere_view_direction(texture_coordinate));
       // Alpha is the strongest cascade occlusion encountered by this ray.
       // Displaying it separates missed cascade samples from a valid but
       // radiometrically small direct-scattering loss.
       diagnostic=vec3(lookup.a);
     }else if(debug_view==12){
-      diagnostic=sample_long_shadow_loss(texture_coordinate)*8.0;
+      diagnostic=sample_long_shadow_loss(
+          atmosphere_view_direction(texture_coordinate))*8.0;
     }else if(debug_view==13){
       diagnostic=sample_sky_view(
           atmosphere_view_direction(texture_coordinate),texture_coordinate);
     }else if(debug_view==14){
       diagnostic=max(sample_sky_view(
           atmosphere_view_direction(texture_coordinate),texture_coordinate)-
-          sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+          sample_long_shadow_loss(
+              atmosphere_view_direction(texture_coordinate)),vec3(0.0));
     }else if(debug_view==15){
       diagnostic=vec3(texture(sun_shadow_map,
           vec3(texture_coordinate*
@@ -338,7 +359,7 @@ void main() {
         hdr=sample_sky_view(view_direction,texture_coordinate);
 #ifdef FAITHFUL_SHADOW_SPLIT
         if(atmosphere.reserved1.y>0.5)
-          hdr=max(hdr-sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+          hdr=max(hdr-sample_long_shadow_loss(view_direction),vec3(0.0));
 #endif
       }
       if(ground_distance<0.0&&

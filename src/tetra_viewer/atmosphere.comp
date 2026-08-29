@@ -756,6 +756,10 @@ void generate_long_shadow(ivec2 coordinate) {
   const ivec2 size=imageSize(long_shadow_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
   const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  // Store loss by planet/sun-relative direction rather than framebuffer
+  // direction. Camera rotation can then reuse exactly the same texels instead
+  // of regenerating and resampling a coarse screen-aligned field.
+  const vec3 direction=full_sky_direction(uv);
   // Cascaded terrain visibility is exactly one beyond the outer split.  March
   // only the interval where a terrain shadow can exist; distributing the same
   // 32 samples over the complete atmosphere skipped metre-to-kilometre ridge
@@ -765,7 +769,7 @@ void generate_long_shadow(ivec2 coordinate) {
       atmosphere.profile_and_mode.y;
   float maximum_shadow_loss;
   const vec3 loss=integrate_direct_shadow_loss(
-      atmosphere.camera_position_near.xyz,view_direction(uv),
+      atmosphere.camera_position_near.xyz,direction,
       shadow_reach_metres,
       maximum_shadow_loss);
   const vec4 checked=checked_lut_value(loss,65504.0);

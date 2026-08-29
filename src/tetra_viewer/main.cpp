@@ -1030,6 +1030,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_gpu_atmosphere_capture_submitted=false;
     bool world_gpu_atmosphere_resize_check=false;
     bool world_analytic_ridge=false;
+    std::optional<tetra_viewer::AtmosphereShadowFrontRequest>
+        world_retained_atmosphere_shadow_request;
     bool world_gpu_atmosphere_resize_requested=false;
     bool world_gpu_automation_requested=false;
     std::size_t world_gpu_benchmark_warmup_frames{};
@@ -3134,13 +3136,26 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const double receiver_distance=std::clamp(
                 aerial/std::max(metres,1.0e-12),
                 cascades.cascades.back().split_distance,2048.0);
-            auto request=tetra_viewer::make_atmosphere_shadow_front_request(
+            auto current_view=tetra_viewer::make_atmosphere_shadow_front_request(
                 view_camera_position,projection.forward,projection.right,
                 projection.up,projection.tangent,projection.aspect_ratio,
-                receiver_distance,1.15,sun,receiver_distance,
+                receiver_distance,1.0,sun,receiver_distance,
                 prepared_scene.render_origin,1U);
-            request.map_resolution=quality.atmosphere_shadow_resolution;
-            world_runtime->set_atmosphere_shadow_request(std::move(request));
+            current_view.map_resolution=quality.atmosphere_shadow_resolution;
+            if(!world_retained_atmosphere_shadow_request||
+               !tetra_viewer::atmosphere_shadow_request_covers_rotation(
+                   *world_retained_atmosphere_shadow_request,current_view)){
+                world_retained_atmosphere_shadow_request=
+                    tetra_viewer::make_atmosphere_shadow_front_request(
+                        view_camera_position,projection.forward,projection.right,
+                        projection.up,projection.tangent,projection.aspect_ratio,
+                        receiver_distance,1.15,sun,receiver_distance,
+                        prepared_scene.render_origin,1U);
+                world_retained_atmosphere_shadow_request->map_resolution=
+                    quality.atmosphere_shadow_resolution;
+            }
+            world_runtime->set_atmosphere_shadow_request(
+                world_retained_atmosphere_shadow_request);
             const auto& front=world_runtime->atmosphere_shadow_front();
             if(front)g_AtmosphereFrame.shadow_front=&*front;
         }

@@ -1,4 +1,5 @@
 #include "tetra_viewer/atmosphere_shadow_front.hpp"
+#include "tetra_viewer/shadow_cascades.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -194,7 +195,10 @@ AtmosphereShadowMapFit fit_atmosphere_shadow_map(
       static_cast<double>(std::max(resolution-2U,1U));
   const double sun_centre=std::round(
       (sun_min+sun_max)*0.5/sun_texel)*sun_texel;
-  const double sun_span=raw_sun_span+2.0*sun_texel;
+  // Retain depth headroom as the guarded view rotates inside the same fitted
+  // footprint. A one-texel-only depth guard made tiny pitch/yaw changes force
+  // a complete depth generation even when the receiver stayed inside XY.
+  const double sun_span=raw_sun_span*1.15+2.0*sun_texel;
   sun_min=sun_centre-sun_span*0.5;
   sun_max=sun_centre+sun_span*0.5;
   fit.texel_world_size_x=right_span/static_cast<double>(resolution);
@@ -214,6 +218,35 @@ AtmosphereShadowMapFit fit_atmosphere_shadow_map(
       static_cast<float>(-(up_max+up_min)/up_span),
       static_cast<float>(sun_max/sun_span),1.0F};
   return fit;
+}
+
+bool atmosphere_shadow_request_covers_rotation(
+    const AtmosphereShadowFrontRequest& retained,
+    const AtmosphereShadowFrontRequest& current_view) noexcept {
+  const auto same=[](tetra::Vec3 left,tetra::Vec3 right){
+    return left.x==right.x&&left.y==right.y&&left.z==right.z;
+  };
+  if(retained.receiver_point_count==0U||
+     current_view.receiver_point_count==0U||
+     current_view.receiver_point_count>current_view.receiver_points.size()||
+     !same(retained.receiver_points[0],current_view.receiver_points[0])||
+     !same(retained.sun_direction,current_view.sun_direction)||
+     !same(retained.render_origin,current_view.render_origin)||
+     retained.caster_reach!=current_view.caster_reach||
+     retained.map_resolution!=current_view.map_resolution)return false;
+  try{
+    const auto fit=fit_atmosphere_shadow_map(retained,retained.map_resolution);
+    // Point zero is the camera apex and can legitimately sit on a fitted-map
+    // edge; local cascades own that near field. The guarded far footprint is
+    // what must remain reusable while the view rotates.
+    for(std::uint32_t index=1;index<current_view.receiver_point_count;++index){
+      const auto projected=transform_shadow_point(
+          fit.matrix,current_view.receiver_points[index]-retained.render_origin);
+      if(std::abs(projected.x)>0.985||std::abs(projected.y)>0.985||
+         projected.z<0.0||projected.z>1.0)return false;
+    }
+  }catch(...){return false;}
+  return true;
 }
 
 AtmosphereShadowFront plan_atmosphere_shadow_front(

@@ -73,6 +73,10 @@ struct AtmosphereShadowFront {
 [[nodiscard]] AtmosphereShadowMapFit fit_atmosphere_shadow_map(
     const AtmosphereShadowFrontRequest& request,std::uint32_t resolution);
 
+[[nodiscard]] bool atmosphere_shadow_request_covers_rotation(
+    const AtmosphereShadowFrontRequest& retained,
+    const AtmosphereShadowFrontRequest& current_view) noexcept;
+
 [[nodiscard]] AtmosphereShadowFront plan_atmosphere_shadow_front(
     const tetra::WorldCutCheckpoint& checkpoint,
     const tetra::WorldStreamingDemand::Domain& domain,

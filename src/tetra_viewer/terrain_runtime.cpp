@@ -1820,9 +1820,10 @@ void BlockedTerrainRuntime::set_camera(
   const double up_delta_squared=direction_delta_squared(
       camera.up,last_requested_camera_.up);
   // Compare against the last submitted orientation, not the preceding mouse
-  // sample. Continuous rotation therefore crosses this half-degree threshold
-  // even when every individual frame is sub-pixel motion.
-  constexpr double interactive_orientation_chord=0.008726618569493142;
+  // sample. A two-degree bucket is still responsive during a turn but avoids
+  // replacing geometry and interpolated normals for every tiny look motion;
+  // that publication churn appeared as view-dependent terrain shimmer.
+  constexpr double interactive_orientation_chord=0.03490481287456702;
   const bool orientation_moved=
       forward_delta_squared>interactive_orientation_chord*
           interactive_orientation_chord||
