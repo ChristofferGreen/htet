@@ -294,6 +294,28 @@ vec3 lookup_multiple_scattering(vec3 point,vec3 sun_direction) {
   return scattering*average_radiance/(1.0-0.35);
 }
 
+float bilinear_shadow_visibility(vec2 uv,float layer,float receiver_depth,
+                                 float bias) {
+  const ivec2 size=textureSize(sun_shadow_map,0).xy;
+  const vec2 texel_position=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel_position));
+  const ivec2 high=low+1;
+  const vec2 fraction=fract(texel_position);
+  const ivec2 maximum=size-1;
+  const float lower_left=receiver_depth-bias<=texelFetch(
+      sun_shadow_map,ivec3(clamp(low,ivec2(0),maximum),int(layer)),0).r?1.0:0.0;
+  const float lower_right=receiver_depth-bias<=texelFetch(
+      sun_shadow_map,ivec3(clamp(ivec2(high.x,low.y),ivec2(0),maximum),
+                           int(layer)),0).r?1.0:0.0;
+  const float upper_left=receiver_depth-bias<=texelFetch(
+      sun_shadow_map,ivec3(clamp(ivec2(low.x,high.y),ivec2(0),maximum),
+                           int(layer)),0).r?1.0:0.0;
+  const float upper_right=receiver_depth-bias<=texelFetch(
+      sun_shadow_map,ivec3(clamp(high,ivec2(0),maximum),int(layer)),0).r?1.0:0.0;
+  return mix(mix(lower_left,lower_right,fraction.x),
+             mix(upper_left,upper_right,fraction.x),fraction.y);
+}
+
 float atmosphere_fitted_visibility(vec3 point_world) {
   const vec3 projected=(shadow_cascades.shadow_matrices[4]*
       vec4(point_world,1.0)).xyz;
@@ -302,17 +324,12 @@ float atmosphere_fitted_visibility(vec3 point_world) {
      shadow_cascades.atmosphere_shadow_metadata.x<0.999)return 1.0;
   const float fitted_scale=shadow_cascades.atmosphere_shadow_metadata.w;
   const vec2 uv=(projected.xy*0.5+0.5)*fitted_scale;
-  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
   const float bias=shadow_cascades.atmosphere_shadow_metadata.z;
-  float visibility=0.0;
-  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
-    const vec2 offset=(vec2(x,y)-0.5)*texel;
-    const float blocker=texture(sun_shadow_map,vec3(uv+offset,4.0)).r;
-    visibility+=projected.z-bias<=blocker?1.0:0.0;
-  }
+  const float visibility=bilinear_shadow_visibility(
+      uv,4.0,projected.z,bias);
   const float coverage=1.0-smoothstep(
       0.94,0.995,max(abs(projected.x),abs(projected.y)));
-  return mix(1.0,visibility*0.25,coverage);
+  return mix(1.0,visibility,coverage);
 }
 
 float atmosphere_cascade_visibility(vec3 point_world,int cascade,
@@ -322,22 +339,16 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade,
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
      projected.z<0.0||projected.z>1.0)return fallback_visibility;
   const vec2 uv=projected.xy*0.5+0.5;
-  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
   const float bias=0.00045*(1.0+float(cascade)*0.45);
-  float visibility=0.0;
-  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
-    const vec2 offset=(vec2(x,y)-0.5)*texel;
-    const float blocker=texture(sun_shadow_map,
-        vec3(uv+offset,float(cascade))).r;
-    visibility+=projected.z-bias<=blocker?1.0:0.0;
-  }
+  const float visibility=bilinear_shadow_visibility(
+      uv,float(cascade),projected.z,bias);
   const float footprint=max(abs(projected.x),abs(projected.y));
   const float footprint_fade=1.0-smoothstep(0.88,0.98,footprint);
   // Preserve unit visibility for an unoccluded sample on both sides of the
   // cascade boundary. Scaling all in-cascade light to 0.25 made the uncovered
   // region four times brighter and produced a yellow halo behind mountains.
   const float filtered_visibility=faithful_transport()?
-      visibility*0.25:visibility;
+      visibility:visibility*4.0;
   return mix(fallback_visibility,filtered_visibility,footprint_fade);
 }
 

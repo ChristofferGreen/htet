@@ -1173,6 +1173,16 @@ is not justified by current footprint, latency, or memory evidence and remains
 the documented fallback if future planet-scale receiver coverage exceeds the
 single fitted map.
 
+Post-gate resolution qualification (2026-08-29): a native 2644x1744 low-sun
+capture exposed screen-sized steps in the shadowed haze. Isolated
+Low/Default/High captures showed that the dominant footprint was the
+96x54 long-shadow loss target, compounded by comparing against bilinearly
+interpolated depth. Default and High now use 192x108 and 384x216 loss targets;
+the atmosphere march performs a four-texel bilinear percentage comparison on
+raw depth. The screenshot-like capture is visually continuous, both mountain
+qualification scenes retain silhouette-attached occlusion, all 377 tests pass,
+and Default composition remains below budget at 0.279 ms median.
+
 #### Qualified follow-ons after H9
 
 - [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval

@@ -12,6 +12,15 @@ namespace tetra_viewer {
   return !pointer_captured;
 }
 
+// Scripted captures must remain immune to the physical pointer even when the
+// launch happens while a mouse button is held outside the controls panel.
+[[nodiscard]] constexpr bool world_pointer_capture_on_click(
+    bool automation_requested,bool pointer_captured,bool left_button_pressed,
+    bool controls_hovered) noexcept {
+  return !automation_requested&&!pointer_captured&&left_button_pressed&&
+      !controls_hovered;
+}
+
 struct FirstPersonInput {
   double forward{};
   double right{};

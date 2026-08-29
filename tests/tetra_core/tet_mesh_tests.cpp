@@ -1897,6 +1897,11 @@ TEST_CASE("first person mouse look uses the world application's expected axes") 
 TEST_CASE("captured world pointer is exclusively owned by camera look") {
   CHECK(tetra_viewer::world_ui_accepts_pointer(false));
   CHECK_FALSE(tetra_viewer::world_ui_accepts_pointer(true));
+  CHECK(tetra_viewer::world_pointer_capture_on_click(false,false,true,false));
+  CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(true,false,true,false));
+  CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,true,true,false));
+  CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,false,false,false));
+  CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,false,true,true));
 }
 
 TEST_CASE("free fly retains the last gameplay camera for terrain LOD") {
@@ -14416,6 +14421,12 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(low.sky_width==standard.sky_width);
   CHECK(low.sky_height==standard.sky_height);
   CHECK(standard.sky_width<high.sky_width);
+  CHECK(low.long_shadow_width<standard.long_shadow_width);
+  CHECK(standard.long_shadow_width<high.long_shadow_width);
+  CHECK(low.long_shadow_height<standard.long_shadow_height);
+  CHECK(standard.long_shadow_height<high.long_shadow_height);
+  CHECK(standard.long_shadow_width>=192U);
+  CHECK(standard.long_shadow_height>=108U);
   CHECK(low.shadow_resolution<standard.shadow_resolution);
   CHECK(standard.shadow_resolution<high.shadow_resolution);
   CHECK(low.atmosphere_shadow_resolution<
