@@ -1270,6 +1270,53 @@ TEST_CASE("atmosphere shadow front selects guarded offscreen casters surface onl
       std::invalid_argument);
 }
 
+TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and sun extrusion") {
+  const auto request=tetra_viewer::make_atmosphere_shadow_front_request(
+      {10.0,2.0,-4.0},{0.0,0.0,-1.0},{1.0,0.0,0.0},{0.0,1.0,0.0},
+      0.5,1.6,100.0,1.2,{-0.8,0.1,-0.3},80.0,{8.0,0.0,-8.0},9U);
+  CHECK(request.receiver_bounds.minimum.x<10.0);
+  CHECK(request.receiver_bounds.maximum.x>10.0);
+  CHECK(request.receiver_bounds.minimum.y<2.0);
+  CHECK(request.receiver_bounds.maximum.y>2.0);
+  CHECK(request.receiver_bounds.minimum.z<=-104.0);
+  const auto caster=tetra_viewer::atmosphere_shadow_caster_bounds(request);
+  CHECK(caster.minimum.x<request.receiver_bounds.minimum.x);
+  CHECK(caster.maximum.y>request.receiver_bounds.maximum.y);
+  CHECK(caster.minimum.z<request.receiver_bounds.minimum.z);
+  const auto fit=tetra_viewer::fit_atmosphere_shadow_map(request,1024U);
+  CHECK(fit.texel_world_size_x>0.0);
+  CHECK(fit.texel_world_size_y>0.0);
+  CHECK(fit.depth_world_span>0.0);
+  REQUIRE(request.receiver_point_count>0U);
+  for(std::uint32_t index=0;index<request.receiver_point_count;++index)
+    for(const double extrusion:{0.0,request.caster_reach}){
+        const auto point=request.receiver_points[index]+
+            fit.sun_direction*extrusion;
+        const auto projected=tetra_viewer::transform_shadow_point(
+            fit.matrix,point);
+        CHECK(std::abs(projected.x)<=1.00001);
+        CHECK(std::abs(projected.y)<=1.00001);
+        CHECK(projected.z>=-1.0e-5);
+        CHECK(projected.z<=1.00001);
+    }
+  const auto centre=(caster.minimum+caster.maximum)/2.0;
+  const auto toward_sun=tetra_viewer::transform_shadow_point(
+      fit.matrix,centre+fit.sun_direction);
+  const auto away_from_sun=tetra_viewer::transform_shadow_point(
+      fit.matrix,centre-fit.sun_direction);
+  CHECK(toward_sun.z<away_from_sun.z);
+  const auto moved_request=tetra_viewer::make_atmosphere_shadow_front_request(
+      {10.000001,2.000001,-3.999999},{0.0,0.0,-1.0},
+      {1.0,0.0,0.0},{0.0,1.0,0.0},0.5,1.6,100.0,1.2,
+      {-0.8,0.1,-0.3},80.0,{8.0,0.0,-8.0},10U);
+  const auto moved_fit=tetra_viewer::fit_atmosphere_shadow_map(
+      moved_request,1024U);
+  CHECK(moved_fit.matrix==fit.matrix);
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::fit_atmosphere_shadow_map(request,0U)),
+      std::invalid_argument);
+}
+
 TEST_CASE("projected radial world cut covers the globe with graded bounded detail") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
@@ -10232,6 +10279,16 @@ TEST_CASE("retained host staging atomically publishes solid and wire ranges") {
   CHECK(device_planner.published_generation()==
         staging.metrics().publication_generation);
   CHECK(device_planner.published_draws().size()==staging.ranges().size());
+  for(const auto& draw:device_planner.published_draws())
+    for(std::size_t vertex=0;vertex<draw.vertex_count;++vertex){
+      const auto& position=device_arena[draw.first_vertex+vertex].position;
+      CHECK(static_cast<double>(position[0])>=draw.minimum.x);
+      CHECK(static_cast<double>(position[0])<=draw.maximum.x);
+      CHECK(static_cast<double>(position[1])>=draw.minimum.y);
+      CHECK(static_cast<double>(position[1])<=draw.maximum.y);
+      CHECK(static_cast<double>(position[2])>=draw.minimum.z);
+      CHECK(static_cast<double>(position[2])<=draw.maximum.z);
+    }
   CHECK(byte_equal(tetra_viewer::assemble_surface_device_publication(
                        device_planner,device_arena),valid_assembled));
 
@@ -14243,9 +14300,14 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(standard.sky_width<high.sky_width);
   CHECK(low.shadow_resolution<standard.shadow_resolution);
   CHECK(standard.shadow_resolution<high.shadow_resolution);
+  CHECK(low.atmosphere_shadow_resolution<
+        standard.atmosphere_shadow_resolution);
+  CHECK(standard.atmosphere_shadow_resolution<
+        high.atmosphere_shadow_resolution);
+  CHECK(standard.atmosphere_shadow_resolution<standard.shadow_resolution);
   constexpr std::size_t buffered_frames=3U;
   const std::size_t default_shadow_bytes=buffered_frames*
-      tetra_viewer::shadow_cascade_count*standard.shadow_resolution*
+      tetra_viewer::shadow_map_layer_count*standard.shadow_resolution*
       standard.shadow_resolution*sizeof(float);
   CHECK(default_shadow_bytes<64U*1024U*1024U);
 }

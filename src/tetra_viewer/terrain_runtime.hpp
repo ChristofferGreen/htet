@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_viewer/mesh_update_worker.hpp"
+#include "tetra_viewer/atmosphere_shadow_front.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/world_profile.hpp"
 
@@ -391,6 +392,8 @@ class TerrainRuntime {
  public:
   virtual ~TerrainRuntime()=default;
   virtual void set_camera(const tetra::Camera& camera,bool interactive)=0;
+  virtual void set_atmosphere_shadow_request(
+      std::optional<AtmosphereShadowFrontRequest>) {}
   // Non-blocking publication/scheduling pump, called once per presentation frame.
   virtual bool update()=0;
   [[nodiscard]] virtual const tetra::Sphere& field() const noexcept=0;
@@ -398,6 +401,11 @@ class TerrainRuntime {
   [[nodiscard]] virtual const WorldProfile& profile() const noexcept=0;
   [[nodiscard]] virtual const SurfaceHostStagingStorage* retained_surface()
       const noexcept { return nullptr; }
+  [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
+  atmosphere_shadow_front() const noexcept {
+    static const std::optional<AtmosphereShadowFront> none;
+    return none;
+  }
   [[nodiscard]] virtual tetra::Vec3 render_origin() const noexcept {
     return scene().render_origin;
   }
@@ -462,6 +470,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   void set_resource_budgets(WorldResourceBudgets budgets);
   void set_hierarchy_block_budget(std::size_t maximum_blocks);
   void set_volume_pins(std::vector<WorldVolumePin> pins);
+  void set_atmosphere_shadow_request(
+      std::optional<AtmosphereShadowFrontRequest> request) override;
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
   [[nodiscard]] const PreparedScene& scene() const override;
@@ -470,6 +480,10 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       const noexcept override { return &host_staging_; }
   [[nodiscard]] tetra::Vec3 render_origin() const noexcept override {
     return scene_.render_origin;
+  }
+  [[nodiscard]] const std::optional<AtmosphereShadowFront>&
+  atmosphere_shadow_front() const noexcept override {
+    return atmosphere_shadow_front_;
   }
   [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override {
     auto result=diagnostics_;result.busy=future_.valid();return result;
@@ -487,6 +501,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
     WorldHierarchyDemandState hierarchy_demand;
+    std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     bool canceled{};
     bool residency_budget_exceeded{};
     bool hierarchy_budget_exceeded{};
@@ -496,6 +511,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       const tetra::Camera& camera,std::uint64_t generation,
       SparseWorldSurfaceCache surface_cache={},
       WorldHierarchyDemandState hierarchy_demand={},
+      std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request={},
       std::vector<WorldVolumePin> volume_pins={},
       std::stop_token cancellation={},
       tetra::GeometryExecutor* executor=nullptr,
@@ -515,6 +531,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::stop_source cancellation_;
   SparseWorldSurfaceCache surface_cache_;
   WorldHierarchyDemandState hierarchy_demand_;
+  std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request_;
+  std::optional<AtmosphereShadowFront> atmosphere_shadow_front_;
   std::vector<WorldVolumePin> volume_pins_;
   // World render blocks are deliberately fine grained.  A small slot keeps
   // retained staging proportional to their contents instead of paying the

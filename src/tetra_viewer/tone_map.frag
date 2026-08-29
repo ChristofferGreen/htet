@@ -12,8 +12,9 @@ layout(set = 0,binding = 6) uniform sampler3D aerial_transmittance_lut;
 layout(set = 0,binding = 8) uniform sampler2DArray sun_shadow_map;
 layout(set = 0,binding = 9) uniform sampler2D sky_irradiance_lut;
 layout(std140,set=0,binding=10) uniform ShadowCascades {
-  mat4 shadow_matrices[4];
+  mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 atmosphere_shadow_metadata;
 } shadow_cascades;
 #ifdef FAITHFUL_SHADOW_SPLIT
 layout(set = 0,binding = 11) uniform sampler2D long_shadow_lut;
@@ -314,6 +315,10 @@ void main() {
       diagnostic=max(sample_sky_view(
           atmosphere_view_direction(texture_coordinate),texture_coordinate)-
           sample_long_shadow_loss(texture_coordinate),vec3(0.0));
+    }else if(debug_view==15){
+      diagnostic=vec3(texture(sun_shadow_map,
+          vec3(texture_coordinate*
+              shadow_cascades.atmosphere_shadow_metadata.w,4.0)).r);
 #endif
     }
     out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);

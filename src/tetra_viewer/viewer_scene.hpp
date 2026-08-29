@@ -1345,7 +1345,14 @@ struct SurfaceDeviceUploadRange {
 struct SurfaceDeviceDrawRange {
   std::size_t first_vertex{};
   std::size_t vertex_count{};
-  bool operator==(const SurfaceDeviceDrawRange&) const = default;
+  tetra::Vec3 minimum{};
+  tetra::Vec3 maximum{};
+  bool operator==(const SurfaceDeviceDrawRange& other) const noexcept {
+    return first_vertex==other.first_vertex&&vertex_count==other.vertex_count&&
+        minimum.x==other.minimum.x&&minimum.y==other.minimum.y&&
+        minimum.z==other.minimum.z&&maximum.x==other.maximum.x&&
+        maximum.y==other.maximum.y&&maximum.z==other.maximum.z;
+  }
 };
 
 struct SurfaceDeviceUploadMetrics {

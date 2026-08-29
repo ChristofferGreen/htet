@@ -35,8 +35,9 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
 } atmosphere;
 
 layout(std140,set=0,binding=7) uniform ShadowCascades {
-  mat4 shadow_matrices[4];
+  mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 atmosphere_shadow_metadata;
 } shadow_cascades;
 
 layout(push_constant) uniform DispatchMode {
@@ -293,11 +294,33 @@ vec3 lookup_multiple_scattering(vec3 point,vec3 sun_direction) {
   return scattering*average_radiance/(1.0-0.35);
 }
 
-float atmosphere_cascade_visibility(vec3 point_world,int cascade) {
+float atmosphere_fitted_visibility(vec3 point_world) {
+  const vec3 projected=(shadow_cascades.shadow_matrices[4]*
+      vec4(point_world,1.0)).xyz;
+  if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
+     projected.z<0.0||projected.z>1.0||
+     shadow_cascades.atmosphere_shadow_metadata.x<0.999)return 1.0;
+  const float fitted_scale=shadow_cascades.atmosphere_shadow_metadata.w;
+  const vec2 uv=(projected.xy*0.5+0.5)*fitted_scale;
+  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
+  const float bias=shadow_cascades.atmosphere_shadow_metadata.z;
+  float visibility=0.0;
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+    const vec2 offset=(vec2(x,y)-0.5)*texel;
+    const float blocker=texture(sun_shadow_map,vec3(uv+offset,4.0)).r;
+    visibility+=projected.z-bias<=blocker?1.0:0.0;
+  }
+  const float coverage=1.0-smoothstep(
+      0.94,0.995,max(abs(projected.x),abs(projected.y)));
+  return mix(1.0,visibility*0.25,coverage);
+}
+
+float atmosphere_cascade_visibility(vec3 point_world,int cascade,
+                                    float fallback_visibility) {
   const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
       vec4(point_world,1.0)).xyz;
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
-     projected.z<0.0||projected.z>1.0)return 1.0;
+     projected.z<0.0||projected.z>1.0)return fallback_visibility;
   const vec2 uv=projected.xy*0.5+0.5;
   const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
   const float bias=0.00045*(1.0+float(cascade)*0.45);
@@ -315,7 +338,7 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade) {
   // region four times brighter and produced a yellow halo behind mountains.
   const float filtered_visibility=faithful_transport()?
       visibility*0.25:visibility;
-  return mix(1.0,filtered_visibility,footprint_fade);
+  return mix(fallback_visibility,filtered_visibility,footprint_fade);
 }
 
 float atmosphere_sun_visibility(vec3 point_metres) {
@@ -327,22 +350,25 @@ float atmosphere_sun_visibility(vec3 point_metres) {
   const vec3 point_world=atmosphere.reserved0.xyz+
       (point_metres-atmosphere.camera_position_near.xyz)/metres_per_world;
   const float distance_world=length(point_world-atmosphere.reserved0.xyz);
+  const float fitted=atmosphere_fitted_visibility(point_world);
   int cascade=3;
   if(distance_world<shadow_cascades.shadow_splits.x)cascade=0;
   else if(distance_world<shadow_cascades.shadow_splits.y)cascade=1;
   else if(distance_world<shadow_cascades.shadow_splits.z)cascade=2;
-  const float current=atmosphere_cascade_visibility(point_world,cascade);
+  const float current=atmosphere_cascade_visibility(
+      point_world,cascade,fitted);
   if(cascade==3){
     const float outer_fade=smoothstep(
         shadow_cascades.shadow_splits.w*0.80,
         shadow_cascades.shadow_splits.w,distance_world);
-    return mix(current,1.0,outer_fade);
+    return mix(current,fitted,outer_fade);
   }
   const float split=shadow_cascades.shadow_splits[cascade];
   const float previous=cascade==0?0.0:
       shadow_cascades.shadow_splits[cascade-1];
   const float blend=smoothstep(mix(previous,split,0.85),split,distance_world);
-  return mix(current,atmosphere_cascade_visibility(point_world,cascade+1),blend);
+  return mix(current,atmosphere_cascade_visibility(
+      point_world,cascade+1,fitted),blend);
 }
 
 float rayleigh_phase(float cosine_angle) {
@@ -723,7 +749,8 @@ void generate_long_shadow(ivec2 coordinate) {
   // only the interval where a terrain shadow can exist; distributing the same
   // 32 samples over the complete atmosphere skipped metre-to-kilometre ridge
   // shadows on long horizon rays.
-  const float shadow_reach_metres=shadow_cascades.shadow_splits.w*
+  const float shadow_reach_metres=
+      shadow_cascades.atmosphere_shadow_metadata.y*
       atmosphere.profile_and_mode.y;
   float maximum_shadow_loss;
   const vec3 loss=integrate_direct_shadow_loss(

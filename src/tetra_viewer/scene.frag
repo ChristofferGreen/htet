@@ -11,8 +11,9 @@ layout(location = 7) in vec3 smooth_normal;
 layout(location = 0) out vec4 out_colour;
 layout(set = 0, binding = 0) uniform sampler2DArray sun_shadow_map;
 layout(std140,set=0,binding=1) uniform ShadowCascades {
-  mat4 shadow_matrices[4];
+  mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 atmosphere_shadow_metadata;
 } shadow_cascades;
 layout(set=0,binding=2) uniform sampler2D transmittance_lut;
 layout(set=0,binding=3) uniform sampler2D multiple_scattering_lut;

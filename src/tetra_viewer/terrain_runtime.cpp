@@ -1109,7 +1109,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_camera_=camera_;
   auto initial=build_publication(
-      profile_,field_,camera_,1U,{}, {}, {}, {},executor_.get());
+      profile_,field_,camera_,1U,{}, {}, {}, {}, {},executor_.get());
   if(initial.residency_budget_exceeded)
     throw std::length_error(
         "initial world front exceeds its volume residency budget");
@@ -1139,6 +1139,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
   surface_cache_=std::move(initial.surface_cache);
   hierarchy_demand_=std::move(initial.hierarchy_demand);
+  atmosphere_shadow_front_=std::move(initial.atmosphere_shadow_front);
   flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
   diagnostics_.submitted_builds=1U;
@@ -1206,11 +1207,40 @@ void BlockedTerrainRuntime::set_volume_pins(std::vector<WorldVolumePin> pins){
   }
 }
 
+void BlockedTerrainRuntime::set_atmosphere_shadow_request(
+    std::optional<AtmosphereShadowFrontRequest> request) {
+  const auto equivalent=[](
+      const std::optional<AtmosphereShadowFrontRequest>& left,
+      const std::optional<AtmosphereShadowFrontRequest>& right){
+    if(left.has_value()!=right.has_value())return false;
+    if(!left)return true;
+    // Shadow demand is stable within one fitted-map texel. The request's
+    // generation is deliberately excluded: the runtime assigns the atomic
+    // terrain publication generation itself.
+    constexpr std::uint32_t comparison_resolution=512U;
+    const auto left_fit=fit_atmosphere_shadow_map(*left,comparison_resolution);
+    const auto right_fit=fit_atmosphere_shadow_map(*right,comparison_resolution);
+    return left_fit.matrix==right_fit.matrix;
+  };
+  if(equivalent(request,atmosphere_shadow_request_))return;
+  atmosphere_shadow_request_=std::move(request);
+  demand_pending_=true;
+  // This is a settled renderer request (camera/sun state), not an unbounded
+  // physics stream. Reject the now stale private candidate and coalesce any
+  // further changes into the single request stored above.
+  if(future_.valid()&&!active_superseded_){
+    cancellation_.request_stop();active_superseded_=true;
+    superseded_at_=std::chrono::steady_clock::now();
+    ++diagnostics_.superseded_builds;
+  }
+}
+
 BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint64_t generation,
     SparseWorldSurfaceCache surface_cache,
     WorldHierarchyDemandState hierarchy_demand,
+    std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request,
     std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation,
     tetra::GeometryExecutor* executor,
     std::unique_ptr<tetra::WorldCutDirectory> directory) {
@@ -1288,6 +1318,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   // private cache's exact closed cut. Certify that association so surface
   // construction need not enumerate and sort the same complete cut again.
   surface_cache.closure_source_hierarchy_revision=directory->revision();
+  std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
+  std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks;
+  if(atmosphere_shadow_request){
+    atmosphere_shadow_request->generation=generation;
+    atmosphere_shadow_front=plan_atmosphere_shadow_front(
+        directory->checkpoint(),profile.domain,*atmosphere_shadow_request);
+    atmosphere_shadow_blocks=atmosphere_shadow_front->caster_blocks;
+  }
   WorldHierarchyDemandPlan hierarchy_plan;
   try{
     hierarchy_plan=plan_world_hierarchy_demand(
@@ -1297,7 +1335,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
          .prediction_factor=profile.hierarchy_prediction_factor,
          .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
          .maximum_blocks=profile.maximum_hierarchy_blocks},
-        &hierarchy_demand);
+        &hierarchy_demand,atmosphere_shadow_blocks);
   }catch(const std::length_error& error){
     if(!std::string_view(error.what()).starts_with(
        "world hierarchy demand exceeds its block budget:"))throw;
@@ -1624,7 +1662,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   return {std::move(directory),std::move(hierarchy_update),std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
-          false,false,false};
+          std::move(atmosphere_shadow_front),false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
@@ -1667,6 +1705,7 @@ void BlockedTerrainRuntime::submit() {
   const auto profile=profile_;const auto field=field_;const auto camera=camera_;
   const auto volume_pins=volume_pins_;
   const auto hierarchy_demand=hierarchy_demand_;
+  const auto atmosphere_shadow_request=atmosphere_shadow_request_;
   const auto generation=++requested_generation_;
   auto surface_cache=std::move(surface_cache_);
   cancellation_=std::stop_source{};
@@ -1675,12 +1714,14 @@ void BlockedTerrainRuntime::submit() {
   auto directory=std::make_unique<tetra::WorldCutDirectory>(*directory_);
   future_=std::async(std::launch::async,
       [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
+       atmosphere_shadow_request,
        executor,
        surface_cache=std::move(surface_cache),
        directory=std::move(directory)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),
-        hierarchy_demand,volume_pins,token,executor.get(),std::move(directory));
+        hierarchy_demand,atmosphere_shadow_request,volume_pins,token,
+        executor.get(),std::move(directory));
   });
   ++diagnostics_.submitted_builds;
   last_requested_camera_=camera;
@@ -1849,6 +1890,7 @@ bool BlockedTerrainRuntime::update() {
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
     hierarchy_demand_=std::move(publication.hierarchy_demand);
+    atmosphere_shadow_front_=std::move(publication.atmosphere_shadow_front);
     diagnostics_=publication.diagnostics;
     diagnostics_.submitted_builds=cumulative.submitted_builds;
     diagnostics_.superseded_builds=cumulative.superseded_builds;

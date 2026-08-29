@@ -3,6 +3,7 @@
 #include "tetra_core/world_cut_directory.hpp"
 
 #include <cstdint>
+#include <array>
 #include <vector>
 
 namespace tetra_viewer {
@@ -14,10 +15,24 @@ struct AtmosphereShadowAabb {
 
 struct AtmosphereShadowFrontRequest {
   AtmosphereShadowAabb receiver_bounds{};
+  std::array<tetra::Vec3,8> receiver_points{};
+  std::uint32_t receiver_point_count{};
   tetra::Vec3 sun_direction{};  // receiver-to-sun
   double caster_reach{};
   tetra::Vec3 render_origin{};
   std::uint64_t generation{};
+};
+
+struct AtmosphereShadowMapFit {
+  std::array<float,16> matrix{};
+  AtmosphereShadowAabb receiver_bounds{};
+  AtmosphereShadowAabb caster_bounds{};
+  tetra::Vec3 sun_direction{};
+  tetra::Vec3 light_right{};
+  tetra::Vec3 light_up{};
+  double texel_world_size_x{};
+  double texel_world_size_y{};
+  double depth_world_span{};
 };
 
 // Complete value snapshot consumed atomically by terrain residency and the
@@ -45,6 +60,16 @@ struct AtmosphereShadowFront {
 
 [[nodiscard]] AtmosphereShadowAabb atmosphere_shadow_caster_bounds(
     const AtmosphereShadowFrontRequest& request);
+
+[[nodiscard]] AtmosphereShadowFrontRequest make_atmosphere_shadow_front_request(
+    tetra::Vec3 camera_position,tetra::Vec3 camera_forward,
+    tetra::Vec3 camera_right,tetra::Vec3 camera_up,double vertical_tangent,
+    double aspect_ratio,double receiver_distance,double guard_scale,
+    tetra::Vec3 sun_direction,double caster_reach,tetra::Vec3 render_origin,
+    std::uint64_t generation);
+
+[[nodiscard]] AtmosphereShadowMapFit fit_atmosphere_shadow_map(
+    const AtmosphereShadowFrontRequest& request,std::uint32_t resolution);
 
 [[nodiscard]] AtmosphereShadowFront plan_atmosphere_shadow_front(
     const tetra::WorldCutCheckpoint& checkpoint,

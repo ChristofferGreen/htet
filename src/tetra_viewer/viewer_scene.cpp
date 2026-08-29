@@ -6149,8 +6149,23 @@ void SurfaceDeviceUploadPlanner::prepare(
           range.triangle_vertex_count*sizeof(SceneVertex);
     }else ++metrics_.reused_ranges;
     slot_scratch_[range.host_slot]=key;
+    tetra::Vec3 minimum{},maximum{};
+    if(range.triangle_vertex_count!=0U){
+      const auto& first=host.arena()[range.triangle_vertex_begin].position;
+      minimum=maximum={first[0],first[1],first[2]};
+      for(std::size_t vertex=0;vertex<range.triangle_vertex_count;++vertex){
+        const auto& position=
+            host.arena()[range.triangle_vertex_begin+vertex].position;
+        minimum.x=std::min(minimum.x,static_cast<double>(position[0]));
+        minimum.y=std::min(minimum.y,static_cast<double>(position[1]));
+        minimum.z=std::min(minimum.z,static_cast<double>(position[2]));
+        maximum.x=std::max(maximum.x,static_cast<double>(position[0]));
+        maximum.y=std::max(maximum.y,static_cast<double>(position[1]));
+        maximum.z=std::max(maximum.z,static_cast<double>(position[2]));
+      }
+    }
     draw_scratch_.push_back({range.triangle_vertex_begin,
-                             range.triangle_vertex_count});
+                             range.triangle_vertex_count,minimum,maximum});
   }
   for(std::size_t slot=0;slot<slot_scratch_.size();++slot)
     if(!active_slots[slot])slot_scratch_[slot]={};

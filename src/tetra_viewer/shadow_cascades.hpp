@@ -9,6 +9,7 @@
 namespace tetra_viewer {
 
 inline constexpr std::size_t shadow_cascade_count=4U;
+inline constexpr std::size_t shadow_map_layer_count=shadow_cascade_count+1U;
 inline constexpr std::uint32_t shadow_map_resolution=1024U;
 inline constexpr std::size_t atmosphere_shadow_projection_probe_count=24U;
 inline constexpr std::array<double,shadow_cascade_count>

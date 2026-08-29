@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_viewer/atmosphere.hpp"
+#include "tetra_viewer/atmosphere_shadow_front.hpp"
 #include "tetra_viewer/shadow_cascades.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 
@@ -68,6 +69,13 @@ struct AtmosphereDispatchCounts {
   std::uint64_t long_shadow{};
 };
 
+struct AtmosphereShadowMapStatus {
+  std::uint64_t revision{};
+  std::uint64_t refreshes{};
+  std::size_t caster_draws{};
+  bool complete{};
+};
+
 class SceneRenderer {
  public:
   void initialize(VkPhysicalDevice physical_device, VkDevice device, VkFormat colour_format, VkFormat depth_format);
@@ -90,6 +98,8 @@ class SceneRenderer {
   }
   [[nodiscard]] const AtmosphereDispatchCounts& atmosphere_dispatch_counts()
       const noexcept { return atmosphere_dispatch_counts_; }
+  [[nodiscard]] const AtmosphereShadowMapStatus& atmosphere_shadow_map_status()
+      const noexcept { return atmosphere_shadow_map_status_; }
   [[nodiscard]] std::size_t atmosphere_allocation_bytes() const noexcept {
     return atmosphere_allocation_bytes_;
   }
@@ -146,6 +156,7 @@ class SceneRenderer {
   SceneGpuTimings gpu_timings_{};
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
   AtmosphereGpuProbe latest_atmosphere_probe_{};
+  AtmosphereShadowMapStatus atmosphere_shadow_map_status_{};
   SceneCapture latest_capture_{};
   std::size_t atmosphere_allocation_bytes_{};
   std::size_t scene_target_allocation_bytes_{};
@@ -167,9 +178,12 @@ class SceneRenderer {
   struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<SceneColourImage> scene_colour_images_;
   struct ShadowImage : DepthImage {
-    std::array<VkImageView,shadow_cascade_count> layer_views{};
+    std::array<VkImageView,shadow_map_layer_count> layer_views{};
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
+    std::array<float,16> atmosphere_shadow_matrix{};
+    std::uint64_t atmosphere_surface_generation{};
+    bool atmosphere_shadow_initialized{};
   };
   std::vector<ShadowImage> shadow_images_;
   struct AtmosphereImage {

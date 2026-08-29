@@ -1155,8 +1155,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const std::string debug(value.substr(debug_prefix.size()));
                 char* end=nullptr;
                 const long parsed=std::strtol(debug.c_str(),&end,10);
-                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>14){
-                    fprintf(stderr,"atmosphere debug view must be in [0,14]\n");
+                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>15){
+                    fprintf(stderr,"atmosphere debug view must be in [0,15]\n");
                     return 2;
                 }
                 g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
@@ -2696,7 +2696,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGuiSliderFlags_Logarithmic);
             }
             if(ImGui::CollapsingHeader("Atmosphere diagnostics")){
-                constexpr std::array<const char*,15> debug_names{
+                constexpr std::array<const char*,16> debug_names{
                     "Final composition","Transmittance lookup",
                     "Multiple scattering lookup","Sky-view lookup",
                     "Aerial scattering slice","Aerial transmittance slice",
@@ -2704,7 +2704,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     "Shadow cascade 2","Shadow cascade 3",
                     "Long-path shadow coverage","Long-path direct loss",
                     "Full-sky before terrain shadow",
-                    "Full-sky after terrain shadow"};
+                    "Full-sky after terrain shadow",
+                    "Receiver-fitted atmosphere shadow"};
                 ImGui::SetNextItemWidth(190.0F);
                 ImGui::Combo("Debug view",&g_AtmosphereFrame.debug_view,
                              debug_names.data(),
@@ -3528,7 +3529,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<"\"atmosphere_bytes\":"
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
-                        <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<g_SceneRenderer.scene_target_allocation_bytes()<<',';
+                    const auto& fitted_shadow=
+                        g_SceneRenderer.atmosphere_shadow_map_status();
+                    std::cout<<"\"atmosphere_shadow\":{\"revision\":"
+                        <<fitted_shadow.revision<<",\"refreshes\":"
+                        <<fitted_shadow.refreshes<<",\"caster_draws\":"
+                        <<fitted_shadow.caster_draws<<",\"complete\":"
+                        <<(fitted_shadow.complete?"true":"false")<<"},"
                         <<"\"dispatches\":{"
                         <<"\"transmittance\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().transmittance

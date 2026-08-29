@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -505,6 +506,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     throw std::runtime_error("unable to create scene timing query pool");
   timing_queries_written_.assign(image_count,false);
   gpu_timings_={};
+  atmosphere_shadow_map_status_={};
   const auto frames=static_cast<std::size_t>(image_count);
   scene_target_allocation_bytes_=frames*
       static_cast<std::size_t>(extent.width)*extent.height*(8U+4U);
@@ -520,7 +522,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
           quality_settings_.long_shadow_height*8U+
       2U*quality_settings_.aerial_width*quality_settings_.aerial_height*
           quality_settings_.aerial_depth*8U;
-  const std::size_t shadow_bytes=shadow_cascade_count*
+  const std::size_t shadow_bytes=shadow_map_layer_count*
       quality_settings_.shadow_resolution*
       quality_settings_.shadow_resolution*4U;
   atmosphere_allocation_bytes_=lookup_bytes+frames*shadow_bytes;
@@ -691,7 +693,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     image.format=depth_format_;
     image.extent={shadow_extent,shadow_extent,1U};
     image.mipLevels=1;
-    image.arrayLayers=static_cast<std::uint32_t>(shadow_cascade_count);
+    image.arrayLayers=static_cast<std::uint32_t>(shadow_map_layer_count);
     image.samples=VK_SAMPLE_COUNT_1_BIT;
     image.tiling=VK_IMAGE_TILING_OPTIMAL;
     image.usage=VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|
@@ -716,10 +718,10 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
     view.subresourceRange.levelCount=1;
     view.subresourceRange.layerCount=static_cast<std::uint32_t>(
-        shadow_cascade_count);
+        shadow_map_layer_count);
     if(vkCreateImageView(device_,&view,nullptr,&shadow.view)!=VK_SUCCESS)
       throw std::runtime_error("unable to create sun shadow view");
-    for(std::uint32_t layer=0;layer<shadow_cascade_count;++layer){
+    for(std::uint32_t layer=0;layer<shadow_map_layer_count;++layer){
       view.viewType=VK_IMAGE_VIEW_TYPE_2D;
       view.subresourceRange.baseArrayLayer=layer;
       view.subresourceRange.layerCount=1;
@@ -728,7 +730,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         throw std::runtime_error("unable to create sun shadow cascade view");
     }
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    buffer.size=sizeof(float)*(16U*shadow_cascade_count+4U);
+    buffer.size=sizeof(float)*(16U*shadow_map_layer_count+8U);
     buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if(vkCreateBuffer(device_,&buffer,nullptr,&shadow.uniform_buffer)!=VK_SUCCESS)
       throw std::runtime_error("unable to create shadow cascade uniform buffer");
@@ -785,7 +787,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo shadow_uniform_info{
         shadow_images_[index].uniform_buffer,0,
-        sizeof(float)*(16U*shadow_cascade_count+4U)};
+        sizeof(float)*(16U*shadow_map_layer_count+8U)};
     auto& frame=atmosphere_frames_[index];
     auto& atmosphere=atmosphere_lookups_;
     const std::array<VkDescriptorImageInfo,3> lighting_images{
@@ -1411,14 +1413,36 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     std::memcpy(probe_mapped,probe_seed.data(),sizeof(probe_seed));
     vkUnmapMemory(device_,atmosphere_frame.probe_memory);
   }
-  std::array<float,16U*shadow_cascade_count+4U> shadow_uniform{};
+  const double receiver_distance_world=std::clamp(
+      local_aerial_distance/std::max(metres,1.0e-12),
+      cascades.cascades.back().split_distance,2048.0);
+  const auto atmosphere_shadow_request=make_atmosphere_shadow_front_request(
+      atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
+      atmosphere_input.camera_right,atmosphere_input.camera_down,
+      atmosphere_input.vertical_tangent,atmosphere_input.aspect_ratio,
+      receiver_distance_world,1.15,atmosphere_input.sun_direction,
+      receiver_distance_world,{},1U);
+  const auto atmosphere_shadow_fit=fit_atmosphere_shadow_map(
+      atmosphere_shadow_request,
+      quality_settings_.atmosphere_shadow_resolution);
+  std::array<float,16U*shadow_map_layer_count+8U> shadow_uniform{};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     std::copy(cascades.cascades[cascade].matrix.begin(),
               cascades.cascades[cascade].matrix.end(),
               shadow_uniform.begin()+cascade*16U);
-    shadow_uniform[16U*shadow_cascade_count+cascade]=static_cast<float>(
+    shadow_uniform[16U*shadow_map_layer_count+cascade]=static_cast<float>(
         cascades.cascades[cascade].split_distance);
   }
+  std::copy(atmosphere_shadow_fit.matrix.begin(),
+            atmosphere_shadow_fit.matrix.end(),
+            shadow_uniform.begin()+16U*shadow_cascade_count);
+  shadow_uniform[16U*shadow_map_layer_count+4U]=1.0F;
+  shadow_uniform[16U*shadow_map_layer_count+5U]=
+      static_cast<float>(receiver_distance_world);
+  shadow_uniform[16U*shadow_map_layer_count+6U]=0.00065F;
+  shadow_uniform[16U*shadow_map_layer_count+7U]=
+      static_cast<float>(quality_settings_.atmosphere_shadow_resolution)/
+      static_cast<float>(quality_settings_.shadow_resolution);
   if(vkMapMemory(device_,shadow.uniform_memory,0,sizeof(shadow_uniform),0,
                  &mapped)!=VK_SUCCESS)
     throw std::runtime_error("unable to map shadow cascade uniforms");
@@ -1436,7 +1460,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_shadow.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
   to_shadow.subresourceRange.levelCount=1;
   to_shadow.subresourceRange.layerCount=static_cast<std::uint32_t>(
-      shadow_cascade_count);
+      shadow_map_layer_count);
   vkCmdPipelineBarrier(command_buffer,
       shadow.initialized?(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|
                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT):
@@ -1452,7 +1476,19 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkRect2D shadow_scissor{{0,0},
       {quality_settings_.shadow_resolution,
        quality_settings_.shadow_resolution}};
-  for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
+  for(std::size_t cascade=0;cascade<shadow_map_layer_count;++cascade){
+    const bool fitted_layer=cascade==shadow_cascade_count;
+    const bool update_fitted=!shadow.atmosphere_shadow_initialized||
+        shadow.atmosphere_shadow_matrix!=atmosphere_shadow_fit.matrix||
+        shadow.atmosphere_surface_generation!=
+            surface_upload_planner_.published_generation();
+    if(fitted_layer&&!update_fitted)continue;
+    const std::uint32_t layer_resolution=cascade<shadow_cascade_count?
+        quality_settings_.shadow_resolution:
+        quality_settings_.atmosphere_shadow_resolution;
+    shadow_viewport.width=static_cast<float>(layer_resolution);
+    shadow_viewport.height=static_cast<float>(layer_resolution);
+    shadow_scissor.extent={layer_resolution,layer_resolution};
     VkRenderingAttachmentInfo shadow_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     shadow_attachment.imageView=shadow.layer_views[cascade];
@@ -1461,35 +1497,74 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     shadow_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
     shadow_attachment.clearValue=shadow_clear;
     VkRenderingInfo shadow_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    shadow_rendering.renderArea.extent={quality_settings_.shadow_resolution,
-                                       quality_settings_.shadow_resolution};
+    shadow_rendering.renderArea.extent={layer_resolution,layer_resolution};
     shadow_rendering.layerCount=1;
     shadow_rendering.pDepthAttachment=&shadow_attachment;
     begin_rendering(command_buffer,
         reinterpret_cast<const VkRenderingInfoKHR*>(&shadow_rendering));
     vkCmdSetViewport(command_buffer,0,1,&shadow_viewport);
     vkCmdSetScissor(command_buffer,0,1,&shadow_scissor);
+    if(fitted_layer)atmosphere_shadow_map_status_.caster_draws=0U;
     if(triangles_.count!=0U){
       VkDeviceSize shadow_offset{};
       vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                         shadow_pipeline_);
       std::array<float,28> shadow_push{};
-      std::copy(cascades.cascades[cascade].matrix.begin(),
-                cascades.cascades[cascade].matrix.end(),shadow_push.begin());
+      const auto& shadow_matrix=cascade<shadow_cascade_count?
+          cascades.cascades[cascade].matrix:atmosphere_shadow_fit.matrix;
+      std::copy(shadow_matrix.begin(),shadow_matrix.end(),shadow_push.begin());
       vkCmdPushConstants(command_buffer,pipeline_layout_,
                          VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*28,
                          shadow_push.data());
       vkCmdBindVertexBuffers(command_buffer,0,1,&triangles_.buffer,
                              &shadow_offset);
       const auto ranges=surface_upload_planner_.published_draws();
-      if(ranges.empty())
+      std::size_t fitted_draws{};
+      if(ranges.empty()){
         vkCmdDraw(command_buffer,static_cast<std::uint32_t>(triangles_.count),1,
                   0,0);
-      else for(const auto range:ranges)
+        fitted_draws=triangles_.count!=0U?1U:0U;
+      }else for(const auto range:ranges){
+        if(cascade==shadow_cascade_count){
+          tetra::Vec3 projected_min{
+              std::numeric_limits<double>::infinity(),
+              std::numeric_limits<double>::infinity(),
+              std::numeric_limits<double>::infinity()};
+          tetra::Vec3 projected_max{
+              -projected_min.x,-projected_min.y,-projected_min.z};
+          for(const double x:{range.minimum.x,range.maximum.x})
+            for(const double y:{range.minimum.y,range.maximum.y})
+              for(const double z:{range.minimum.z,range.maximum.z}){
+                const auto projected=transform_shadow_point(
+                    atmosphere_shadow_fit.matrix,{x,y,z});
+                projected_min.x=std::min(projected_min.x,projected.x);
+                projected_min.y=std::min(projected_min.y,projected.y);
+                projected_min.z=std::min(projected_min.z,projected.z);
+                projected_max.x=std::max(projected_max.x,projected.x);
+                projected_max.y=std::max(projected_max.y,projected.y);
+                projected_max.z=std::max(projected_max.z,projected.z);
+              }
+          if(projected_min.x>1.0||projected_max.x<-1.0||
+             projected_min.y>1.0||projected_max.y<-1.0||
+             projected_min.z>1.0||projected_max.z<0.0)
+            continue;
+        }
         vkCmdDraw(command_buffer,static_cast<std::uint32_t>(range.vertex_count),
                   1,static_cast<std::uint32_t>(range.first_vertex),0);
+        ++fitted_draws;
+      }
+      if(fitted_layer)atmosphere_shadow_map_status_.caster_draws=fitted_draws;
     }
     end_rendering(command_buffer);
+    if(fitted_layer){
+      shadow.atmosphere_shadow_matrix=atmosphere_shadow_fit.matrix;
+      shadow.atmosphere_surface_generation=
+          surface_upload_planner_.published_generation();
+      shadow.atmosphere_shadow_initialized=true;
+      ++atmosphere_shadow_map_status_.revision;
+      ++atmosphere_shadow_map_status_.refreshes;
+      atmosphere_shadow_map_status_.complete=true;
+    }
   }
 
   VkImageMemoryBarrier to_sample{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};

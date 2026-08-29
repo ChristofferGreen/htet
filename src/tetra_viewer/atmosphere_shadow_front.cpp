@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace tetra_viewer {
@@ -70,8 +71,12 @@ AtmosphereShadowAabb atmosphere_shadow_caster_bounds(
     const AtmosphereShadowFrontRequest& request) {
   if(!valid(request.receiver_bounds)||!finite(request.sun_direction)||
      !finite(request.render_origin)||!(request.caster_reach>=0.0)||
-     !std::isfinite(request.caster_reach)||request.generation==0U)
+     !std::isfinite(request.caster_reach)||request.generation==0U||
+     request.receiver_point_count>request.receiver_points.size())
     throw std::invalid_argument("atmosphere shadow front request is invalid");
+  for(std::uint32_t index=0;index<request.receiver_point_count;++index)
+    if(!finite(request.receiver_points[index]))
+      throw std::invalid_argument("atmosphere shadow receiver point is invalid");
   const auto sun=normalized(request.sun_direction,{0.0,1.0,0.0});
   const auto extrusion=sun*request.caster_reach;
   AtmosphereShadowAabb bounds=request.receiver_bounds;
@@ -82,6 +87,132 @@ AtmosphereShadowAabb atmosphere_shadow_caster_bounds(
   bounds.maximum.y+=std::max(0.0,extrusion.y);
   bounds.maximum.z+=std::max(0.0,extrusion.z);
   return bounds;
+}
+
+AtmosphereShadowFrontRequest make_atmosphere_shadow_front_request(
+    tetra::Vec3 camera_position,tetra::Vec3 camera_forward,
+    tetra::Vec3 camera_right,tetra::Vec3 camera_up,double vertical_tangent,
+    double aspect_ratio,double receiver_distance,double guard_scale,
+    tetra::Vec3 sun_direction,double caster_reach,tetra::Vec3 render_origin,
+    std::uint64_t generation) {
+  if(!finite(camera_position)||!finite(camera_forward)||!finite(camera_right)||
+     !finite(camera_up)||!(vertical_tangent>0.0)||
+     !std::isfinite(vertical_tangent)||!(aspect_ratio>0.0)||
+     !std::isfinite(aspect_ratio)||!(receiver_distance>0.0)||
+     !std::isfinite(receiver_distance)||!(guard_scale>=1.0)||
+     !std::isfinite(guard_scale))
+    throw std::invalid_argument("atmosphere shadow receiver frustum is invalid");
+  camera_forward=normalized(camera_forward,{0.0,0.0,-1.0});
+  camera_right=normalized(camera_right,{1.0,0.0,0.0});
+  camera_up=normalized(camera_up,{0.0,1.0,0.0});
+  const double vertical=receiver_distance*vertical_tangent*guard_scale;
+  const double horizontal=vertical*aspect_ratio;
+  AtmosphereShadowAabb receiver{camera_position,camera_position};
+  const auto include=[&](tetra::Vec3 point){
+    receiver.minimum.x=std::min(receiver.minimum.x,point.x);
+    receiver.minimum.y=std::min(receiver.minimum.y,point.y);
+    receiver.minimum.z=std::min(receiver.minimum.z,point.z);
+    receiver.maximum.x=std::max(receiver.maximum.x,point.x);
+    receiver.maximum.y=std::max(receiver.maximum.y,point.y);
+    receiver.maximum.z=std::max(receiver.maximum.z,point.z);
+  };
+  const auto far_centre=camera_position+camera_forward*receiver_distance;
+  std::array<tetra::Vec3,8> receiver_points{};
+  receiver_points[0]=camera_position;
+  std::uint32_t receiver_point_count=1U;
+  for(const double x:{-1.0,1.0})for(const double y:{-1.0,1.0})
+  {
+    const auto point=far_centre+camera_right*(x*horizontal)+
+        camera_up*(y*vertical);
+    include(point);
+    receiver_points[receiver_point_count++]=point;
+  }
+  return {.receiver_bounds=receiver,.receiver_points=receiver_points,
+          .receiver_point_count=receiver_point_count,
+          .sun_direction=sun_direction,
+          .caster_reach=caster_reach,.render_origin=render_origin,
+          .generation=generation};
+}
+
+AtmosphereShadowMapFit fit_atmosphere_shadow_map(
+    const AtmosphereShadowFrontRequest& request,std::uint32_t resolution) {
+  if(resolution==0U)
+    throw std::invalid_argument("atmosphere shadow map resolution is zero");
+  AtmosphereShadowMapFit fit;
+  fit.receiver_bounds=request.receiver_bounds;
+  fit.caster_bounds=atmosphere_shadow_caster_bounds(request);
+  fit.sun_direction=normalized(request.sun_direction,{0.0,1.0,0.0});
+  const tetra::Vec3 seed=std::abs(fit.sun_direction.y)<0.98?
+      tetra::Vec3{0.0,1.0,0.0}:tetra::Vec3{1.0,0.0,0.0};
+  fit.light_right=normalized(cross(seed,fit.sun_direction),{1.0,0.0,0.0});
+  fit.light_up=normalized(
+      cross(fit.sun_direction,fit.light_right),{0.0,0.0,1.0});
+  double right_min=std::numeric_limits<double>::infinity();
+  double right_max=-right_min,up_min=right_min,up_max=-right_min;
+  double sun_min=right_min,sun_max=-right_min;
+  const auto include=[&](tetra::Vec3 point){
+        const double right=dot(fit.light_right,point);
+        const double up=dot(fit.light_up,point);
+        const double sun=dot(fit.sun_direction,point);
+        right_min=std::min(right_min,right);right_max=std::max(right_max,right);
+        up_min=std::min(up_min,up);up_max=std::max(up_max,up);
+        sun_min=std::min(sun_min,sun);sun_max=std::max(sun_max,sun);
+  };
+  if(request.receiver_point_count>0U&&
+     request.receiver_point_count<=request.receiver_points.size()){
+    for(std::uint32_t index=0;index<request.receiver_point_count;++index){
+      include(request.receiver_points[index]);
+      include(request.receiver_points[index]+
+              fit.sun_direction*request.caster_reach);
+    }
+  }else{
+    for(const double x:{fit.caster_bounds.minimum.x,fit.caster_bounds.maximum.x})
+      for(const double y:{fit.caster_bounds.minimum.y,fit.caster_bounds.maximum.y})
+        for(const double z:{fit.caster_bounds.minimum.z,fit.caster_bounds.maximum.z})
+          include({x,y,z});
+  }
+  const double minimum_span=1.0e-3;
+  const double raw_right_span=std::max(right_max-right_min,minimum_span);
+  const double raw_up_span=std::max(up_max-up_min,minimum_span);
+  const double right_texel=raw_right_span/
+      static_cast<double>(std::max(resolution-2U,1U));
+  const double up_texel=raw_up_span/
+      static_cast<double>(std::max(resolution-2U,1U));
+  const double right_centre=std::round(
+      (right_min+right_max)*0.5/right_texel)*right_texel;
+  const double up_centre=std::round(
+      (up_min+up_max)*0.5/up_texel)*up_texel;
+  const double right_span=raw_right_span+2.0*right_texel;
+  const double up_span=raw_up_span+2.0*up_texel;
+  right_min=right_centre-right_span*0.5;
+  right_max=right_centre+right_span*0.5;
+  up_min=up_centre-up_span*0.5;
+  up_max=up_centre+up_span*0.5;
+  const double raw_sun_span=std::max(sun_max-sun_min,minimum_span);
+  const double sun_texel=raw_sun_span/
+      static_cast<double>(std::max(resolution-2U,1U));
+  const double sun_centre=std::round(
+      (sun_min+sun_max)*0.5/sun_texel)*sun_texel;
+  const double sun_span=raw_sun_span+2.0*sun_texel;
+  sun_min=sun_centre-sun_span*0.5;
+  sun_max=sun_centre+sun_span*0.5;
+  fit.texel_world_size_x=right_span/static_cast<double>(resolution);
+  fit.texel_world_size_y=up_span/static_cast<double>(resolution);
+  fit.depth_world_span=sun_span;
+  fit.matrix={
+      static_cast<float>(2.0*fit.light_right.x/right_span),
+      static_cast<float>(2.0*fit.light_up.x/up_span),
+      static_cast<float>(-fit.sun_direction.x/sun_span),0.0F,
+      static_cast<float>(2.0*fit.light_right.y/right_span),
+      static_cast<float>(2.0*fit.light_up.y/up_span),
+      static_cast<float>(-fit.sun_direction.y/sun_span),0.0F,
+      static_cast<float>(2.0*fit.light_right.z/right_span),
+      static_cast<float>(2.0*fit.light_up.z/up_span),
+      static_cast<float>(-fit.sun_direction.z/sun_span),0.0F,
+      static_cast<float>(-(right_max+right_min)/right_span),
+      static_cast<float>(-(up_max+up_min)/up_span),
+      static_cast<float>(sun_max/sun_span),1.0F};
+  return fit;
 }
 
 AtmosphereShadowFront plan_atmosphere_shadow_front(
