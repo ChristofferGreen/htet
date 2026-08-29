@@ -1402,6 +1402,9 @@ TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebui
   CHECK(runtime.atmosphere_shadow_front()->terrain_revision==
         runtime.diagnostics().world_revision);
   CHECK(runtime.atmosphere_shadow_front()->complete());
+  CHECK(runtime.diagnostics().atmosphere_shadow_publications>=2U);
+  CHECK(runtime.diagnostics().atmosphere_shadow_cancellations>=1U);
+  CHECK(runtime.diagnostics().atmosphere_shadow_planning_milliseconds>0.0);
 }
 
 TEST_CASE("analytic atmosphere ridge is an exact triangular planetary fixture") {

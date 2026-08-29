@@ -97,6 +97,9 @@ struct TerrainRuntimeDiagnostics {
   std::size_t edit_hierarchy_blocks{};
   std::size_t physics_hierarchy_blocks{};
   std::size_t atmosphere_shadow_hierarchy_blocks{};
+  std::uint64_t atmosphere_shadow_publications{};
+  std::uint64_t atmosphere_shadow_cancellations{};
+  double atmosphere_shadow_planning_milliseconds{};
   std::size_t loaded_hierarchy_demand_blocks{};
   std::size_t evicted_hierarchy_demand_blocks{};
   std::size_t promoted_hierarchy_demand_blocks{};
@@ -511,6 +514,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     AtmosphereShadowFront front;
     WorldHierarchyDemandState hierarchy_demand;
     bool canceled{};
+    double planning_milliseconds{};
   };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,

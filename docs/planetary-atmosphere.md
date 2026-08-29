@@ -1083,7 +1083,7 @@ not a blanket multiplier that produces black shafts.
 - [x] I5: Qualify fixed-exposure image masks against an analytic ridge shadow
       cone and Bruneton-style terrain shafts; require stable penumbra-free
       directional shadows without light leaks, detached shafts, or black fill.
-- [ ] I6: Benchmark map construction, update amortization, lookup composition,
+- [x] I6: Benchmark map construction, update amortization, lookup composition,
       memory, and terrain-worker impact at Low/Default/High. Keep the existing
       0.5 ms composition target and select fitted map versus sparse clipmap from
       measured evidence.
@@ -1157,6 +1157,21 @@ meaningful component to touch the extracted silhouette; detached or excessive
 fragmentation fails. Final output additionally rejects black fill and clipping,
 and shadowed/unshadowed full-sky hashes must differ. Manual inspection confirms
 continuous silhouette-attached loss without floating shafts or light leaks.
+
+I6 evidence (2026-08-29): static free-fly 1920x1080 release runs isolate
+steady-state work from player contact settling. Low/Default/High respectively
+measured 0.293/0.281/0.281 ms median composition, 1.450/1.296/2.066 ms combined
+local-plus-fitted shadow rendering, and 11.3/43.1/173.3 MB atmosphere storage.
+All profiles published one complete shadow front in 43.7--44.4 ms, performed
+four initial per-swapchain fitted-depth refreshes, and issued exactly one
+aerial/long-shadow lookup dispatch across the unchanged benchmark. Default
+therefore retains the 0.5 ms composition and 64 MB memory gates. Shadow-only
+updates do not advance terrain scene generation, so sustained terrain-worker
+throughput cost after publication is zero; cancellation/LOD regressions cover
+the transient overlap. The receiver-fitted map is retained. A sparse clipmap
+is not justified by current footprint, latency, or memory evidence and remains
+the documented fallback if future planet-scale receiver coverage exceeds the
+single fitted map.
 
 #### Qualified follow-ons after H9
 

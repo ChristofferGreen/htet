@@ -3576,11 +3576,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.scene_target_allocation_bytes()<<',';
                     const auto& fitted_shadow=
                         g_SceneRenderer.atmosphere_shadow_map_status();
+                    const auto runtime_shadow=world_runtime->diagnostics();
                     std::cout<<"\"atmosphere_shadow\":{\"revision\":"
                         <<fitted_shadow.revision<<",\"refreshes\":"
                         <<fitted_shadow.refreshes<<",\"caster_draws\":"
                         <<fitted_shadow.caster_draws<<",\"complete\":"
-                        <<(fitted_shadow.complete?"true":"false")<<"},"
+                        <<(fitted_shadow.complete?"true":"false")
+                        <<",\"front_publications\":"
+                        <<runtime_shadow.atmosphere_shadow_publications
+                        <<",\"front_cancellations\":"
+                        <<runtime_shadow.atmosphere_shadow_cancellations
+                        <<",\"front_planning_ms\":"
+                        <<runtime_shadow.atmosphere_shadow_planning_milliseconds
+                        <<"},"
                         <<"\"dispatches\":{"
                         <<"\"transmittance\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().transmittance
