@@ -186,6 +186,9 @@ class SceneRenderer {
     std::uint64_t atmosphere_surface_generation{};
     std::uint64_t atmosphere_shadow_front_generation{};
     double atmosphere_shadow_receiver_distance{};
+    std::uint64_t atmosphere_shadow_pending_generation{};
+    bool atmosphere_shadow_pending_completion{};
+    bool atmosphere_shadow_pending_complete{};
     bool atmosphere_shadow_initialized{};
   };
   std::vector<ShadowImage> shadow_images_;

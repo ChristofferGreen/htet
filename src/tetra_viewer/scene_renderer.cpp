@@ -1390,6 +1390,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkUnmapMemory(device_,atmosphere_frame.uniform_memory);
 
   auto& shadow=shadow_images_.at(image_index);
+  // FrameRender waits this swapchain image's fence before record() is called,
+  // so a pending raster generation recorded on its previous use is now known
+  // complete. Publish only at this fence-backed point, never while merely
+  // recording the depth pass.
+  if(shadow.atmosphere_shadow_pending_completion){
+    atmosphere_shadow_map_status_.revision=std::max(
+        atmosphere_shadow_map_status_.revision,
+        shadow.atmosphere_shadow_pending_generation);
+    atmosphere_shadow_map_status_.complete=
+        shadow.atmosphere_shadow_pending_complete;
+    shadow.atmosphere_shadow_pending_completion=false;
+  }
   const auto cascades=make_stable_shadow_cascades(
       atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
       atmosphere_input.sun_direction,quality_settings_.shadow_resolution);
@@ -1580,10 +1592,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       shadow.atmosphere_shadow_front_generation=planned_front_generation;
       shadow.atmosphere_shadow_receiver_distance=receiver_distance_world;
       shadow.atmosphere_shadow_initialized=true;
-      ++atmosphere_shadow_map_status_.revision;
       ++atmosphere_shadow_map_status_.refreshes;
-      atmosphere_shadow_map_status_.complete=planned_front_complete||
+      shadow.atmosphere_shadow_pending_generation=planned_front_generation;
+      shadow.atmosphere_shadow_pending_complete=planned_front_complete||
           planned_front_generation==0U;
+      shadow.atmosphere_shadow_pending_completion=true;
     }
   }
 
