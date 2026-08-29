@@ -2517,10 +2517,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 ImGui::Text("Blocks %zu   surface blocks %zu",
                             status.hierarchy_blocks,status.surface_blocks);
             }
+            const auto& world_camera=world_controller.state();
             ImGui::Text("Position %.3f  %.3f  %.3f",
-                        world_controller.state().feet.x,
-                        world_controller.state().feet.y,
-                        world_controller.state().feet.z);
+                        world_camera.feet.x,world_camera.feet.y,
+                        world_camera.feet.z);
+            ImGui::Text("Rotation yaw %.1f deg   pitch %.1f deg",
+                        std::remainder(world_camera.yaw*180.0/
+                                           std::numbers::pi,360.0),
+                        world_camera.pitch*180.0/std::numbers::pi);
             ImGui::Separator();
             CheckboxWithHotkey("Pause simulation","P",ImGuiKey_P,&world_paused);
             ImGui::SameLine();
