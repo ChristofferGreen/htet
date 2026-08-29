@@ -305,6 +305,15 @@ void main() {
       // Displaying it separates missed cascade samples from a valid but
       // radiometrically small direct-scattering loss.
       diagnostic=vec3(lookup.a);
+    }else if(debug_view==12){
+      diagnostic=sample_long_shadow_loss(texture_coordinate)*8.0;
+    }else if(debug_view==13){
+      diagnostic=sample_sky_view(
+          atmosphere_view_direction(texture_coordinate),texture_coordinate);
+    }else if(debug_view==14){
+      diagnostic=max(sample_sky_view(
+          atmosphere_view_direction(texture_coordinate),texture_coordinate)-
+          sample_long_shadow_loss(texture_coordinate),vec3(0.0));
 #endif
     }
     out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);

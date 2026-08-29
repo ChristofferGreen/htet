@@ -1151,8 +1151,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const std::string debug(value.substr(debug_prefix.size()));
                 char* end=nullptr;
                 const long parsed=std::strtol(debug.c_str(),&end,10);
-                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>11){
-                    fprintf(stderr,"atmosphere debug view must be in [0,11]\n");
+                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>14){
+                    fprintf(stderr,"atmosphere debug view must be in [0,14]\n");
                     return 2;
                 }
                 g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
@@ -2687,13 +2687,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGuiSliderFlags_Logarithmic);
             }
             if(ImGui::CollapsingHeader("Atmosphere diagnostics")){
-                constexpr std::array<const char*,12> debug_names{
+                constexpr std::array<const char*,15> debug_names{
                     "Final composition","Transmittance lookup",
                     "Multiple scattering lookup","Sky-view lookup",
                     "Aerial scattering slice","Aerial transmittance slice",
                     "Reversed depth","Shadow cascade 0","Shadow cascade 1",
                     "Shadow cascade 2","Shadow cascade 3",
-                    "Long-path shadow loss"};
+                    "Long-path shadow coverage","Long-path direct loss",
+                    "Full-sky before terrain shadow",
+                    "Full-sky after terrain shadow"};
                 ImGui::SetNextItemWidth(190.0F);
                 ImGui::Combo("Debug view",&g_AtmosphereFrame.debug_view,
                              debug_names.data(),
@@ -3661,6 +3663,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     world_process_exit_code=2;
                 }else{
                     const auto analysis=tetra_viewer::analyse_rgb8_image(image);
+                    const auto projected_sun=projection.project(
+                        projection.camera_relative+sun);
+                    std::uint32_t sun_pixel_x{},sun_pixel_y{};
+                    bool sun_centre_geometry_occluded=false;
+                    if(projected_sun.visible){
+                        sun_pixel_x=static_cast<std::uint32_t>(std::clamp(
+                            std::llround((projected_sun.ndc_x*0.5+0.5)*
+                                         static_cast<double>(capture.width-1U)),
+                            0LL,static_cast<long long>(capture.width-1U)));
+                        sun_pixel_y=static_cast<std::uint32_t>(std::clamp(
+                            std::llround((projected_sun.ndc_y*0.5+0.5)*
+                                         static_cast<double>(capture.height-1U)),
+                            0LL,static_cast<long long>(capture.height-1U)));
+                        sun_centre_geometry_occluded=depth_mask[
+                            static_cast<std::size_t>(sun_pixel_y)*capture.width+
+                            sun_pixel_x]!=0U;
+                    }
                     const auto quality_name=[&]{
                         switch(g_AtmosphereFrame.quality){
                         case tetra_viewer::AtmosphereQuality::low:return "low";
@@ -3709,6 +3728,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<",\"sun_elevation_degrees\":"
                              <<world_sun_elevation*180.0F/
                                    static_cast<float>(std::numbers::pi)
+                             <<",\"sun_screen_visible\":"
+                             <<(projected_sun.visible?"true":"false")
+                             <<",\"sun_pixel\":["<<sun_pixel_x<<','
+                             <<sun_pixel_y<<']'
+                             <<",\"sun_centre_geometry_occluded\":"
+                             <<(sun_centre_geometry_occluded?"true":"false")
                              <<",\"analysis\":{\"minimum\":["
                              <<static_cast<unsigned>(analysis.minimum[0])<<','
                              <<static_cast<unsigned>(analysis.minimum[1])<<','

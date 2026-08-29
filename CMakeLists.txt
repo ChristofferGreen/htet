@@ -45,6 +45,7 @@ target_compile_options(tetra_core PRIVATE
 # even when the viewer itself cannot be built or launched.
 add_library(tetra_viewer_script
   src/tetra_viewer/atmosphere.cpp
+  src/tetra_viewer/atmosphere_shadow_front.cpp
   src/tetra_viewer/camera_manipulator.cpp
   src/tetra_viewer/first_person_controller.cpp
   src/tetra_viewer/image_oracle.cpp

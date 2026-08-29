@@ -14,6 +14,7 @@
 #include "tetra_core/world_cut_directory.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/atmosphere.hpp"
+#include "tetra_viewer/atmosphere_shadow_front.hpp"
 #include "tetra_viewer/camera_manipulator.hpp"
 #include "tetra_viewer/first_person_controller.hpp"
 #include "tetra_viewer/image_oracle.hpp"
@@ -1196,6 +1197,76 @@ TEST_CASE("world hierarchy demand is revisioned predictive recent and bounded") 
   CHECK_THROWS_AS(static_cast<void>(
       tetra_viewer::plan_world_hierarchy_demand(
           checkpoint,invalid_domain,camera,pins,configuration,&turned.state)),
+      std::invalid_argument);
+}
+
+TEST_CASE("atmosphere shadow front selects guarded offscreen casters surface only") {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int pass=0;pass<6U;++pass)mesh.refine_all_binary();
+  auto checkpoint=tetra::make_world_cut_checkpoint(mesh,3U,31U);
+  const tetra::WorldStreamingDemand::Domain domain{};
+  tetra_viewer::AtmosphereShadowFrontRequest local{
+      .receiver_bounds={{0.05,0.35,0.35},{0.15,0.65,0.65}},
+      .sun_direction={1.0,0.0,0.0},.caster_reach=0.0,
+      .render_origin={0.5,0.5,0.5},.generation=7U};
+  const auto local_front=tetra_viewer::plan_atmosphere_shadow_front(
+      checkpoint,domain,local);
+  local.caster_reach=0.8;
+  const auto guarded=tetra_viewer::plan_atmosphere_shadow_front(
+      checkpoint,domain,local);
+  CHECK(guarded.caster_bounds.minimum.x==doctest::Approx(0.05));
+  CHECK(guarded.caster_bounds.maximum.x==doctest::Approx(0.95));
+  CHECK(guarded.caster_blocks.size()>local_front.caster_blocks.size());
+  CHECK(guarded.complete());
+  CHECK(std::ranges::is_sorted(guarded.caster_blocks));
+  tetra::Camera demand_camera;
+  demand_camera.position={0.1,0.5,0.5};
+  demand_camera.forward={-1.0,0.0,0.0};
+  demand_camera.up={0.0,1.0,0.0};
+  demand_camera.vertical_fov_radians=0.4;
+  tetra_viewer::WorldHierarchyDemandConfiguration demand_configuration;
+  demand_configuration.maximum_blocks=checkpoint.blocks.size();
+  const auto demand=tetra_viewer::plan_world_hierarchy_demand(
+      checkpoint,domain,demand_camera,{},demand_configuration,nullptr,
+      guarded.caster_blocks);
+  CHECK(demand.metrics.blocks_by_kind[8]==guarded.caster_blocks.size());
+  std::size_t offscreen_casters{};
+  for(const auto& record:demand.state.records)
+    if(tetra_viewer::has_world_hierarchy_demand(
+           record,tetra_viewer::WorldHierarchyDemandKind::atmosphere_shadow)){
+      CHECK(record.residency!=tetra::HierarchyResidencyTier::summary);
+      offscreen_casters+=!tetra_viewer::has_world_hierarchy_demand(
+          record,tetra_viewer::WorldHierarchyDemandKind::visible)?1U:0U;
+    }
+  CHECK(offscreen_casters>0U);
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_compatible(
+      guarded,checkpoint.revision,7U));
+  const auto published=tetra_viewer::publish_atmosphere_shadow_depth(guarded,7U);
+  CHECK(tetra_viewer::atmosphere_shadow_front_compatible(
+      published,checkpoint.revision,7U));
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_compatible(
+      published,checkpoint.revision+1U,7U));
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_compatible(
+      published,checkpoint.revision,8U));
+
+  REQUIRE_FALSE(guarded.caster_blocks.empty());
+  const auto selected=guarded.caster_blocks.front();
+  const auto found=std::ranges::lower_bound(
+      checkpoint.blocks,selected,{},&tetra::HierarchyBlockSnapshot::id);
+  REQUIRE(found!=checkpoint.blocks.end());
+  found->residency=tetra::HierarchyResidencyTier::summary;
+  const auto incomplete=tetra_viewer::plan_atmosphere_shadow_front(
+      checkpoint,domain,local);
+  CHECK_FALSE(incomplete.complete());
+  CHECK(incomplete.missing_surface_blocks==
+        std::vector<tetra::HierarchyBlockId>{selected});
+  CHECK(incomplete.completeness<1.0);
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::publish_atmosphere_shadow_depth(incomplete,7U)),
+      std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::publish_atmosphere_shadow_depth(guarded,6U)),
       std::invalid_argument);
 }
 
@@ -15243,4 +15314,60 @@ TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") 
         doctest::Approx(0.5));
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.98,0.5)==0.0);
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(1.2,0.5)==0.0);
+}
+
+TEST_CASE("atmospheric receiver projection mirrors shader clip and depth policy") {
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,0.72,0.78},{0.0,0.0,1.0},{-0.864838,0.052336,-0.499315},1024U);
+  for(std::size_t index=0;index<tetra_viewer::shadow_cascade_count;++index){
+    const auto& cascade=cascades.cascades[index];
+    const auto centre=tetra_viewer::project_atmosphere_shadow_point(
+        cascade,cascade.snapped_centre);
+    CHECK(centre.sampleable());
+    CHECK(centre.u==doctest::Approx(0.5).epsilon(1.0e-6));
+    CHECK(centre.v==doctest::Approx(0.5).epsilon(1.0e-6));
+    CHECK(centre.clip.z==doctest::Approx(0.5).epsilon(1.0e-6));
+
+    const auto footprint_edge=tetra_viewer::project_atmosphere_shadow_point(
+        cascade,cascade.snapped_centre+
+            cascades.light_right*cascade.half_width);
+    CHECK(footprint_edge.sampleable());
+    CHECK(footprint_edge.u==doctest::Approx(1.0).epsilon(1.0e-6));
+    const auto footprint_outside=tetra_viewer::project_atmosphere_shadow_point(
+        cascade,cascade.snapped_centre+
+            cascades.light_right*(cascade.half_width*1.001));
+    CHECK_FALSE(footprint_outside.inside_footprint);
+
+    const auto toward_sun=tetra_viewer::project_atmosphere_shadow_point(
+        cascade,cascade.snapped_centre+
+            cascades.sun_direction*cascade.depth_half_range);
+    const auto away_from_sun=tetra_viewer::project_atmosphere_shadow_point(
+        cascade,cascade.snapped_centre-
+            cascades.sun_direction*cascade.depth_half_range);
+    CHECK(toward_sun.clip.z==doctest::Approx(0.0).epsilon(1.0e-5));
+    CHECK(away_from_sun.clip.z==doctest::Approx(1.0).epsilon(1.0e-5));
+  }
+}
+
+TEST_CASE("atmospheric receiver depth oracle preserves lit borders and partial filtering") {
+  tetra_viewer::AtmosphereShadowProjection projection{
+      .clip={0.0,0.0,0.6},.u=0.5,.v=0.5,
+      .inside_footprint=true,.inside_depth=true};
+  CHECK(tetra_viewer::atmosphere_shadow_depth_visibility(0.6,0.7,0.001)==1.0);
+  CHECK(tetra_viewer::atmosphere_shadow_depth_visibility(0.6,0.5,0.001)==0.0);
+  CHECK(tetra_viewer::atmosphere_shadow_filtered_visibility(
+      projection,{0.5,0.5,0.7,0.7},0.001)==doctest::Approx(0.5));
+  projection.clip.x=0.93;
+  CHECK(tetra_viewer::atmosphere_shadow_filtered_visibility(
+      projection,{0.5,0.5,0.5,0.5},0.001)==doctest::Approx(0.5));
+  projection.clip.x=1.01;
+  projection.inside_footprint=false;
+  CHECK(tetra_viewer::atmosphere_shadow_filtered_visibility(
+      projection,{0.0,0.0,0.0,0.0},0.001)==1.0);
+  projection.clip.x=0.0;
+  projection.inside_footprint=true;
+  projection.clip.z=1.01;
+  projection.inside_depth=false;
+  CHECK(tetra_viewer::atmosphere_shadow_filtered_visibility(
+      projection,{0.0,0.0,0.0,0.0},0.001)==1.0);
 }

@@ -95,6 +95,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t player_hierarchy_blocks{};
   std::size_t edit_hierarchy_blocks{};
   std::size_t physics_hierarchy_blocks{};
+  std::size_t atmosphere_shadow_hierarchy_blocks{};
   std::size_t loaded_hierarchy_demand_blocks{};
   std::size_t evicted_hierarchy_demand_blocks{};
   std::size_t promoted_hierarchy_demand_blocks{};
@@ -276,6 +277,7 @@ enum class WorldHierarchyDemandKind : std::uint16_t {
   terrain_edit=1U<<5U,
   physics=1U<<6U,
   cold=1U<<7U,
+  atmosphere_shadow=1U<<8U,
 };
 
 struct WorldHierarchyDemandRecord {
@@ -314,7 +316,7 @@ struct WorldHierarchyDemandConfiguration {
 };
 
 struct WorldHierarchyDemandMetrics {
-  std::array<std::size_t,8> blocks_by_kind{};
+  std::array<std::size_t,9> blocks_by_kind{};
   std::size_t loaded_blocks{};
   std::size_t evicted_blocks{};
   std::size_t promoted_blocks{};
@@ -348,13 +350,15 @@ struct WorldHierarchyDemandPlan {
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
-    const WorldHierarchyDemandState* previous=nullptr);
+    const WorldHierarchyDemandState* previous=nullptr,
+    std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks={});
 [[nodiscard]] WorldHierarchyDemandPlan plan_world_hierarchy_demand(
     const tetra::WorldCutDirectory& directory,
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
-    const WorldHierarchyDemandState* previous=nullptr);
+    const WorldHierarchyDemandState* previous=nullptr,
+    std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks={});
 
 // Selects full-volume cache blocks independently from the global logical cut.
 // Every active owner block remains at least surface-resident; intersection

@@ -1064,7 +1064,7 @@ decomposition capture proves it is the remaining excessive glow. If it is,
 introduce a separately qualified low-frequency first-bounce visibility model,
 not a blanket multiplier that produces black shafts.
 
-- [ ] I0: Add a deterministic large-mountain backlight launch/capture with sun
+- [x] I0: Add a deterministic large-mountain backlight launch/capture with sun
       occultation, cascade coverage, direct-loss, multiple-scattering, and
       final-composite diagnostics; assert that changing resolution cannot turn
       zero coverage into valid coverage.
@@ -1087,6 +1087,33 @@ not a blanket multiplier that produces black shafts.
       memory, and terrain-worker impact at Low/Default/High. Keep the existing
       0.5 ms composition target and select fitted map versus sparse clipmap from
       measured evidence.
+
+I0 evidence (2026-08-29): `scripts/qualify_atmosphere_mountain_shadow.sh`
+uses camera feet `(0.5, 0.72, 0.78)`, yaw `180` degrees, pitch `0`, sun
+azimuth `-60` degrees, and sun elevation `3` degrees. Capture metadata projects
+the solar centre to the framebuffer and proves that geometry occludes that
+pixel. The six-way decomposition has mixed nonzero cascade coverage, nonzero
+direct loss, and distinct unshadowed/shadowed full-sky hashes. It also exposes
+that alpha is the *maximum* binary loss anywhere on a camera ray: its broad
+horizontal division is a diagnostic projection, not a renderable model of the
+three-dimensional shadow cone. I1 must qualify the individual receiver
+samples, while I3's fitted map must preserve their spatial visibility rather
+than reuse that maximum as a screen-space mask.
+
+I1/I2 foundation (2026-08-29): the graphics-free receiver oracle now mirrors
+the production float matrix, standard finite depth comparison, per-cascade
+bias, two-by-two visibility filtering, footprint fade, split blending, and
+outer fade at exact boundary samples. The first tests corrected two false test
+assumptions—`depth_half_range` maps to depth 0/1, and sub-float world-space
+steps are not observable through the GPU matrix—without finding a production
+sign or depth-convention defect. `AtmosphereShadowFront` planning now produces
+a canonical, separately revisioned value snapshot from a conservative
+receiver-to-sun extrusion. It selects guarded off-screen hierarchy blocks,
+requests summary blocks at surface residency only, reports incomplete surface
+coverage explicitly, and cannot be consumed before a matching complete depth
+generation is published. I1 remains open until selected receiver samples are
+read back from the GPU; I2 remains open until this demand is fed by the live
+world runtime rather than only the deterministic planner.
 
 #### Qualified follow-ons after H9
 

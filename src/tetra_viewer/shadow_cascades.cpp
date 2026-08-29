@@ -136,4 +136,38 @@ double atmosphere_shadow_footprint_fade(
   return 1.0-linear*linear*(3.0-2.0*linear);
 }
 
+AtmosphereShadowProjection project_atmosphere_shadow_point(
+    const ShadowCascade& cascade,tetra::Vec3 point) noexcept {
+  AtmosphereShadowProjection result;
+  result.clip=transform_shadow_point(cascade.matrix,point);
+  result.u=result.clip.x*0.5+0.5;
+  result.v=result.clip.y*0.5+0.5;
+  result.inside_footprint=std::isfinite(result.clip.x)&&
+      std::isfinite(result.clip.y)&&std::abs(result.clip.x)<=1.0&&
+      std::abs(result.clip.y)<=1.0;
+  result.inside_depth=std::isfinite(result.clip.z)&&result.clip.z>=0.0&&
+      result.clip.z<=1.0;
+  return result;
+}
+
+double atmosphere_shadow_depth_visibility(
+    double receiver_depth,double blocker_depth,double bias) noexcept {
+  if(!std::isfinite(receiver_depth)||!std::isfinite(blocker_depth)||
+     !std::isfinite(bias))return 1.0;
+  return receiver_depth-bias<=blocker_depth?1.0:0.0;
+}
+
+double atmosphere_shadow_filtered_visibility(
+    const AtmosphereShadowProjection& projection,
+    const std::array<double,4>& blocker_depths,double bias) noexcept {
+  if(!projection.sampleable())return 1.0;
+  double visibility{};
+  for(const double blocker:blocker_depths)
+    visibility+=atmosphere_shadow_depth_visibility(
+        projection.clip.z,blocker,bias);
+  visibility*=0.25;
+  return 1.0-(1.0-visibility)*atmosphere_shadow_footprint_fade(
+      projection.clip.x,projection.clip.y);
+}
+
 }  // namespace tetra_viewer

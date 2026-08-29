@@ -35,6 +35,21 @@ struct AtmosphereShadowCascadeBlend {
   double secondary_weight{};
 };
 
+// CPU mirror of the projection and depth policy used by atmosphere.comp.
+// Keeping this graphics-free gives deterministic boundary oracles without
+// inferring failures from a tone-mapped diagnostic image.
+struct AtmosphereShadowProjection {
+  tetra::Vec3 clip{};
+  double u{};
+  double v{};
+  bool inside_footprint{};
+  bool inside_depth{};
+
+  [[nodiscard]] bool sampleable() const noexcept {
+    return inside_footprint&&inside_depth;
+  }
+};
+
 [[nodiscard]] ShadowCascadeSet make_stable_shadow_cascades(
     tetra::Vec3 camera_relative_position,tetra::Vec3 camera_forward,
     tetra::Vec3 sun_direction,
@@ -54,5 +69,15 @@ struct AtmosphereShadowCascadeBlend {
 
 [[nodiscard]] double atmosphere_shadow_footprint_fade(
     double projected_x,double projected_y) noexcept;
+
+[[nodiscard]] AtmosphereShadowProjection project_atmosphere_shadow_point(
+    const ShadowCascade& cascade,tetra::Vec3 point) noexcept;
+
+[[nodiscard]] double atmosphere_shadow_depth_visibility(
+    double receiver_depth,double blocker_depth,double bias) noexcept;
+
+[[nodiscard]] double atmosphere_shadow_filtered_visibility(
+    const AtmosphereShadowProjection& projection,
+    const std::array<double,4>& blocker_depths,double bias) noexcept;
 
 }  // namespace tetra_viewer

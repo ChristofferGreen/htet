@@ -140,7 +140,8 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
-    const WorldHierarchyDemandState* previous) {
+    const WorldHierarchyDemandState* previous,
+    std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks) {
   if(configuration.maximum_blocks<tetra::bcc_root_tetrahedron_count)
     throw std::invalid_argument(
         "world hierarchy budget cannot hold the root complex");
@@ -182,6 +183,11 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
        !std::isfinite(pin.world_position.y)||
        !std::isfinite(pin.world_position.z))
       throw std::invalid_argument("world hierarchy pin is invalid");
+  if(!std::ranges::is_sorted(atmosphere_shadow_blocks)||
+     std::ranges::adjacent_find(atmosphere_shadow_blocks)!=
+         atmosphere_shadow_blocks.end())
+    throw std::invalid_argument(
+        "atmosphere shadow hierarchy demand must be canonical");
 
   const auto camera_equal=[](const tetra::Camera& left,
                              const tetra::Camera& right){
@@ -316,6 +322,14 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
     record.residency=block.residency;
     const bool surface_authority=
         block.residency!=tetra::HierarchyResidencyTier::summary;
+    const bool atmosphere_shadow=std::ranges::binary_search(
+        atmosphere_shadow_blocks,block.id);
+    if(atmosphere_shadow){
+      record.kinds|=world_hierarchy_demand_mask(
+          WorldHierarchyDemandKind::atmosphere_shadow);
+      if(record.residency==tetra::HierarchyResidencyTier::summary)
+        record.residency=tetra::HierarchyResidencyTier::surface;
+    }
     if(surface_authority&&in_frustum(block_bounds,prepared)){
       record.kinds|=world_hierarchy_demand_mask(
           WorldHierarchyDemandKind::visible);
@@ -360,9 +374,11 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand_impl(
         has_world_hierarchy_demand(record,WorldHierarchyDemandKind::terrain_edit)||
         has_world_hierarchy_demand(record,WorldHierarchyDemandKind::physics)?0U:
         has_world_hierarchy_demand(record,WorldHierarchyDemandKind::visible)?1U:
-        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::guard)?2U:
-        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::predicted)?3U:
-        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::recent)?4U:5U;
+        has_world_hierarchy_demand(
+            record,WorldHierarchyDemandKind::atmosphere_shadow)?2U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::guard)?3U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::predicted)?4U:
+        has_world_hierarchy_demand(record,WorldHierarchyDemandKind::recent)?5U:6U;
     for(std::size_t kind=0;kind<result.metrics.blocks_by_kind.size();++kind)
       if((record.kinds&(1U<<kind))!=0U)
         ++result.metrics.blocks_by_kind[kind];
@@ -425,11 +441,12 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand(
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
-    const WorldHierarchyDemandState* previous) {
+    const WorldHierarchyDemandState* previous,
+    std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks) {
   return plan_world_hierarchy_demand_impl(
       checkpoint.blocks,checkpoint.revision,[](const auto& block)->const auto&{
         return block;
-      },domain,camera,pins,configuration,previous);
+      },domain,camera,pins,configuration,previous,atmosphere_shadow_blocks);
 }
 
 WorldHierarchyDemandPlan plan_world_hierarchy_demand(
@@ -437,11 +454,12 @@ WorldHierarchyDemandPlan plan_world_hierarchy_demand(
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::span<const WorldVolumePin> pins,
     WorldHierarchyDemandConfiguration configuration,
-    const WorldHierarchyDemandState* previous) {
+    const WorldHierarchyDemandState* previous,
+    std::span<const tetra::HierarchyBlockId> atmosphere_shadow_blocks) {
   return plan_world_hierarchy_demand_impl(
       directory.hierarchy_blocks(),directory.revision(),
       [](const auto& block)->const auto&{return *block;},
-      domain,camera,pins,configuration,previous);
+      domain,camera,pins,configuration,previous,atmosphere_shadow_blocks);
 }
 
 MonolithicTerrainRuntime::MonolithicTerrainRuntime(
@@ -1491,6 +1509,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.edit_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[5];
   diagnostics.physics_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[6];
   diagnostics.cold_hierarchy_blocks=hierarchy_plan.metrics.blocks_by_kind[7];
+  diagnostics.atmosphere_shadow_hierarchy_blocks=
+      hierarchy_plan.metrics.blocks_by_kind[8];
   diagnostics.loaded_hierarchy_demand_blocks=hierarchy_plan.metrics.loaded_blocks;
   diagnostics.evicted_hierarchy_demand_blocks=hierarchy_plan.metrics.evicted_blocks;
   diagnostics.promoted_hierarchy_demand_blocks=
