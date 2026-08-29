@@ -1151,7 +1151,9 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
 
 BlockedTerrainRuntime::~BlockedTerrainRuntime(){
   cancellation_.request_stop();
+  atmosphere_shadow_cancellation_.request_stop();
   if(future_.valid())future_.wait();
+  if(atmosphere_shadow_future_.valid())atmosphere_shadow_future_.wait();
 }
 
 void BlockedTerrainRuntime::set_resource_budgets(WorldResourceBudgets budgets){
@@ -1223,15 +1225,66 @@ void BlockedTerrainRuntime::set_atmosphere_shadow_request(
   };
   if(equivalent(request,atmosphere_shadow_request_))return;
   atmosphere_shadow_request_=std::move(request);
-  demand_pending_=true;
+  atmosphere_shadow_pending_=true;
   // This is a settled renderer request (camera/sun state), not an unbounded
   // physics stream. Reject the now stale private candidate and coalesce any
   // further changes into the single request stored above.
-  if(future_.valid()&&!active_superseded_){
-    cancellation_.request_stop();active_superseded_=true;
-    superseded_at_=std::chrono::steady_clock::now();
-    ++diagnostics_.superseded_builds;
+  if(atmosphere_shadow_future_.valid()&&!atmosphere_shadow_superseded_){
+    atmosphere_shadow_cancellation_.request_stop();
+    atmosphere_shadow_superseded_=true;
   }
+}
+
+BlockedTerrainRuntime::AtmosphereShadowPublication
+BlockedTerrainRuntime::build_atmosphere_shadow_publication(
+    const WorldProfile& profile,const tetra::Camera& camera,
+    AtmosphereShadowFrontRequest request,std::uint64_t generation,
+    WorldHierarchyDemandState hierarchy_demand,
+    std::vector<WorldVolumePin> volume_pins,
+    tetra::WorldCutCheckpoint checkpoint,std::stop_token cancellation) {
+  AtmosphereShadowPublication result;
+  if(cancellation.stop_requested()){result.canceled=true;return result;}
+  request.generation=generation;
+  const auto preliminary=plan_atmosphere_shadow_front(
+      checkpoint,profile.domain,request);
+  if(cancellation.stop_requested()){result.canceled=true;return result;}
+  const auto demand=plan_world_hierarchy_demand(
+      checkpoint,profile.domain,camera,volume_pins,
+      {.player_radius=profile.near_volume_radius,
+       .guard_frustum_scale=profile.hierarchy_guard_frustum_scale,
+       .prediction_factor=profile.hierarchy_prediction_factor,
+       .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
+       .maximum_blocks=profile.maximum_hierarchy_blocks},
+      &hierarchy_demand,preliminary.caster_blocks);
+  if(cancellation.stop_requested()){result.canceled=true;return result;}
+  for(auto& block:checkpoint.blocks)
+    if(std::binary_search(preliminary.caster_blocks.begin(),
+                          preliminary.caster_blocks.end(),block.id)&&
+       block.residency==tetra::HierarchyResidencyTier::summary)
+      block.residency=tetra::HierarchyResidencyTier::surface;
+  result.front=plan_atmosphere_shadow_front(checkpoint,profile.domain,request);
+  result.hierarchy_demand=demand.state;
+  return result;
+}
+
+void BlockedTerrainRuntime::submit_atmosphere_shadow() {
+  if(!atmosphere_shadow_request_||atmosphere_shadow_future_.valid())return;
+  auto request=*atmosphere_shadow_request_;
+  const auto profile=profile_;const auto camera=camera_;
+  const auto generation=++atmosphere_shadow_requested_generation_;
+  const auto hierarchy_demand=hierarchy_demand_;
+  const auto volume_pins=volume_pins_;
+  auto checkpoint=directory_->checkpoint();
+  atmosphere_shadow_cancellation_=std::stop_source{};
+  const auto token=atmosphere_shadow_cancellation_.get_token();
+  atmosphere_shadow_future_=std::async(std::launch::async,
+      [profile,camera,request,generation,hierarchy_demand,volume_pins,
+       checkpoint=std::move(checkpoint),token]() mutable {
+    return build_atmosphere_shadow_publication(
+        profile,camera,request,generation,hierarchy_demand,volume_pins,
+        std::move(checkpoint),token);
+  });
+  atmosphere_shadow_pending_=false;
 }
 
 BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
@@ -1814,6 +1867,19 @@ void BlockedTerrainRuntime::set_camera(
 
 bool BlockedTerrainRuntime::update() {
   bool published=false;
+  if(atmosphere_shadow_future_.valid()&&
+     atmosphere_shadow_future_.wait_for(std::chrono::seconds(0))==
+         std::future_status::ready){
+    auto shadow=atmosphere_shadow_future_.get();
+    const bool stale=shadow.canceled||atmosphere_shadow_superseded_||
+        shadow.front.terrain_revision!=directory_->revision()||
+        shadow.front.generation!=atmosphere_shadow_requested_generation_;
+    atmosphere_shadow_superseded_=false;
+    if(!stale){
+      atmosphere_shadow_front_=std::move(shadow.front);
+      hierarchy_demand_=std::move(shadow.hierarchy_demand);
+    }
+  }
   if(future_.valid()&&future_.wait_for(std::chrono::seconds(0))==
                          std::future_status::ready){
     auto publication=future_.get();
@@ -1904,6 +1970,7 @@ bool BlockedTerrainRuntime::update() {
     surface_cache_=std::move(publication.surface_cache);
     hierarchy_demand_=std::move(publication.hierarchy_demand);
     atmosphere_shadow_front_=std::move(publication.atmosphere_shadow_front);
+    if(atmosphere_shadow_request_)atmosphere_shadow_pending_=true;
     diagnostics_=publication.diagnostics;
     diagnostics_.submitted_builds=cumulative.submitted_builds;
     diagnostics_.superseded_builds=cumulative.superseded_builds;
@@ -1930,7 +1997,9 @@ bool BlockedTerrainRuntime::update() {
     published=true;
   }
   if(!future_.valid()&&demand_pending_)submit();
-  diagnostics_.busy=future_.valid();
+  if(!atmosphere_shadow_future_.valid()&&atmosphere_shadow_pending_)
+    submit_atmosphere_shadow();
+  diagnostics_.busy=future_.valid()||atmosphere_shadow_future_.valid();
   return published;
 }
 

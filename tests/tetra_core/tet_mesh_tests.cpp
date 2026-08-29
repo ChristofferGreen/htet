@@ -1334,6 +1334,49 @@ TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and su
       std::invalid_argument);
 }
 
+TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebuilding terrain") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-15.5,-15.5,-15.5},.world_extent=32.0};
+  profile.background_red_depth=3U;profile.near_red_depth=7U;
+  profile.maximum_depth=10U;profile.view_distance=8.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto terrain_generation=runtime.diagnostics().scene_generation;
+  auto request=tetra_viewer::make_atmosphere_shadow_front_request(
+      {0.5,0.72,0.78},{0.0,-0.2,-1.0},{1.0,0.0,0.0},{0.0,1.0,0.0},
+      0.6,1.6,12.0,1.15,{-0.7,0.2,-0.4},12.0,{},1U);
+  runtime.set_atmosphere_shadow_request(request);
+  const auto settle=[&]{
+    const auto deadline=std::chrono::steady_clock::now()+
+        std::chrono::seconds(10);
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      if(!runtime.diagnostics().busy&&runtime.atmosphere_shadow_front())return;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    FAIL("atmosphere shadow publication did not settle");
+  };
+  settle();
+  REQUIRE(runtime.atmosphere_shadow_front());
+  CHECK(runtime.atmosphere_shadow_front()->complete());
+  CHECK(runtime.diagnostics().scene_generation==terrain_generation);
+  const auto first_generation=runtime.atmosphere_shadow_front()->generation;
+  request.sun_direction={-0.6,0.25,-0.5};
+  runtime.set_atmosphere_shadow_request(request);
+  request.sun_direction={-0.45,0.3,-0.7};
+  runtime.set_atmosphere_shadow_request(request);
+  settle();
+  REQUIRE(runtime.atmosphere_shadow_front());
+  CHECK(runtime.atmosphere_shadow_front()->generation>first_generation);
+  CHECK(runtime.atmosphere_shadow_front()->request.sun_direction.x==
+        doctest::Approx(request.sun_direction.x));
+  CHECK(runtime.atmosphere_shadow_front()->request.sun_direction.y==
+        doctest::Approx(request.sun_direction.y));
+  CHECK(runtime.atmosphere_shadow_front()->request.sun_direction.z==
+        doctest::Approx(request.sun_direction.z));
+  CHECK(runtime.diagnostics().scene_generation==terrain_generation);
+}
+
 TEST_CASE("projected radial world cut covers the globe with graded bounded detail") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;

@@ -486,7 +486,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     return atmosphere_shadow_front_;
   }
   [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override {
-    auto result=diagnostics_;result.busy=future_.valid();return result;
+    auto result=diagnostics_;result.busy=future_.valid()||
+        atmosphere_shadow_future_.valid();return result;
   }
   [[nodiscard]] double signed_distance(tetra::Vec3 point) const override {
     return field_.signed_distance(point);
@@ -506,6 +507,11 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     bool residency_budget_exceeded{};
     bool hierarchy_budget_exceeded{};
   };
+  struct AtmosphereShadowPublication {
+    AtmosphereShadowFront front;
+    WorldHierarchyDemandState hierarchy_demand;
+    bool canceled{};
+  };
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
       const tetra::Camera& camera,std::uint64_t generation,
@@ -517,6 +523,14 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       tetra::GeometryExecutor* executor=nullptr,
       std::unique_ptr<tetra::WorldCutDirectory> directory={});
   void submit();
+  void submit_atmosphere_shadow();
+  [[nodiscard]] static AtmosphereShadowPublication
+  build_atmosphere_shadow_publication(
+      const WorldProfile& profile,const tetra::Camera& camera,
+      AtmosphereShadowFrontRequest request,std::uint64_t generation,
+      WorldHierarchyDemandState hierarchy_demand,
+      std::vector<WorldVolumePin> volume_pins,
+      tetra::WorldCutCheckpoint checkpoint,std::stop_token cancellation);
   void finalize_render_front_metrics(TerrainRuntimeDiagnostics& diagnostics);
 
   WorldProfile profile_;
@@ -529,6 +543,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::shared_ptr<tetra::GeometryExecutor> executor_;
   std::future<Publication> future_;
   std::stop_source cancellation_;
+  std::future<AtmosphereShadowPublication> atmosphere_shadow_future_;
+  std::stop_source atmosphere_shadow_cancellation_;
   SparseWorldSurfaceCache surface_cache_;
   WorldHierarchyDemandState hierarchy_demand_;
   std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request_;
@@ -544,8 +560,11 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   bool demand_pending_{true};
   bool camera_interactive_{};
   bool active_superseded_{};
+  bool atmosphere_shadow_pending_{};
+  bool atmosphere_shadow_superseded_{};
   std::chrono::steady_clock::time_point superseded_at_{};
   std::uint64_t requested_generation_{};
+  std::uint64_t atmosphere_shadow_requested_generation_{};
 };
 
 [[nodiscard]] std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
