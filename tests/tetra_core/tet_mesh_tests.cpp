@@ -2263,6 +2263,57 @@ TEST_CASE("terrain sector overlap schedules handoff before coverage ends") {
       working_set,field,camera));
 }
 
+TEST_CASE("terrain sectors retain slow fast and elevated continuous rotations") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  tetra::Camera camera;
+  camera.position={field.centre.x,field.centre.y+0.1,field.centre.z};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  const auto sweep=[&](tetra_viewer::TerrainDetailWorkingSet& working_set,
+                       double step_degrees,std::uint64_t& generation){
+    for(double degrees=0.0;degrees<360.0;degrees+=step_degrees){
+      const double angle=degrees*std::numbers::pi/180.0;
+      camera.forward={std::sin(angle),0.0,-std::cos(angle)};
+      const bool covered=tetra_viewer::terrain_detail_working_set_covers_camera(
+          working_set,field,camera);
+      tetra_viewer::update_terrain_detail_working_set(
+          working_set,profile,field,camera,covered?
+              std::vector<tetra::WorldTetAddress>{}:coarse,++generation);
+    }
+  };
+
+  tetra_viewer::TerrainDetailWorkingSet slow;
+  std::uint64_t slow_generation{};
+  sweep(slow,1.0,slow_generation);
+  const auto slow_additions=slow.sector_additions;
+  REQUIRE(slow_additions>1U);
+  sweep(slow,1.0,slow_generation);
+  CHECK(slow.sector_additions==slow_additions);
+  CHECK(slow.sector_hits>=360U);
+
+  tetra_viewer::TerrainDetailWorkingSet fast;
+  std::uint64_t fast_generation{};
+  sweep(fast,12.0,fast_generation);
+  const auto fast_additions=fast.sector_additions;
+  REQUIRE(fast_additions>1U);
+  CHECK(fast_additions<slow_additions);
+  sweep(fast,12.0,fast_generation);
+  CHECK(fast.sector_additions==fast_additions);
+  CHECK(fast.sector_hits>=30U);
+
+  tetra_viewer::TerrainDetailWorkingSet elevated;
+  std::uint64_t elevated_generation{};
+  camera.position.y=field.centre.y+1000.0;
+  sweep(elevated,1.0,elevated_generation);
+  CHECK(elevated.sector_additions<slow_additions);
+  const auto elevated_additions=elevated.sector_additions;
+  sweep(elevated,1.0,elevated_generation);
+  CHECK(elevated.sector_additions==elevated_additions);
+}
+
 TEST_CASE("root-local target fronts retain complete directory root fallbacks") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
