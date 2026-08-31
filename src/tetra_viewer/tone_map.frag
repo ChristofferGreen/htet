@@ -112,6 +112,26 @@ vec2 atmosphere_full_sky_uv(vec3 direction) {
     perimeter=-1.0+tangent_x/denominator;
   }
   const float vertical=clamp(dot(direction,local_up),-1.0,1.0);
+  if(atmosphere.reserved1.y>=9.5){
+    const float bottom=atmosphere.rayleigh_ground_radius.w;
+    const float view_height=bottom+max(atmosphere.reserved2.w,0.0);
+    const float horizon_cosine=sqrt(max(0.0,
+        (view_height-bottom)*(view_height+bottom)))/
+        max(view_height,1.0e-6);
+    const float beta=acos(clamp(horizon_cosine,0.0,1.0));
+    const float zenith_horizon=3.14159265358979323846-beta;
+    const float angle=acos(vertical);
+    float vertical_uv;
+    if(angle<=zenith_horizon){
+      float coordinate=1.0-angle/max(zenith_horizon,1.0e-6);
+      coordinate=1.0-sqrt(max(coordinate,0.0));
+      vertical_uv=coordinate*0.5;
+    }else{
+      float coordinate=(angle-zenith_horizon)/max(beta,1.0e-6);
+      vertical_uv=0.5+0.5*sqrt(max(coordinate,0.0));
+    }
+    return vec2(perimeter*0.25+0.5,clamp(vertical_uv,0.0,1.0));
+  }
   const float latitude_shape=0.7853981633974483-1.0;
   const float root=sqrt(max(0.0,1.0-abs(vertical)));
   const float latitude_proxy=(1.0-root)/(1.0+latitude_shape*root);
@@ -141,7 +161,12 @@ vec2 atmosphere_sun_shadow_sky_uv(vec3 direction) {
 
 vec3 sample_sky_view(vec3 direction,vec2 screen_uv) {
   if(atmosphere.reserved1.y<0.5)return texture(sky_view_lut,screen_uv).rgb;
-  return texture(sky_view_lut,atmosphere_full_sky_uv(direction)).rgb;
+  vec2 uv=atmosphere_full_sky_uv(direction);
+  if(atmosphere.reserved1.y>=9.5){
+    const vec2 resolution=vec2(textureSize(sky_view_lut,0));
+    uv=(uv+0.5/resolution)*(resolution/(resolution+1.0));
+  }
+  return texture(sky_view_lut,uv).rgb;
 }
 
 vec2 aerial_direction_uv(vec3 direction,vec2 screen_uv) {
@@ -454,7 +479,9 @@ void shadowed_froxel_atmosphere(float distance_metres,
                                 out vec3 transmittance) {
   const float maximum=max(
       atmosphere.camera_forward_maximum_distance.w,1.0e-6);
-  const float slice=pow(clamp(distance_metres/maximum,0.0,1.0),1.0/3.0);
+  const float normalized_distance=clamp(distance_metres/maximum,0.0,1.0);
+  const float slice=reference_hillaire_transport()?
+      sqrt(normalized_distance):pow(normalized_distance,1.0/3.0);
   const vec3 coordinate=vec3(texture_coordinate,slice);
   scattering=texture(froxel_scattering,coordinate).rgb;
   transmittance=texture(froxel_transmittance,coordinate).rgb;
@@ -670,13 +697,6 @@ void reconstructed_atmosphere(float native_depth,
   // A mixed 2x2 block can leave a native silhouette pixel with no compatible
   // low-resolution tap. Evaluate that rare pixel directly instead of leaking
   // lit sky through terrain or smearing foreground depth into the sky.
-  if(reference_hillaire_transport()){
-    const ivec2 coordinate=clamp(
-        ivec2(texture_coordinate*vec2(size)),ivec2(0),size-1);
-    radiance=texelFetch(screen_scattering,coordinate,0).rgb;
-    transmittance=texelFetch(screen_transmittance,coordinate,0).rgb;
-    return;
-  }
   const vec3 direction=atmosphere_view_direction(texture_coordinate);
   radiance=orbital_primary_scattering(direction,
       opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);
@@ -907,7 +927,9 @@ void main() {
 #ifdef FAITHFUL_SHADOW_SPLIT
           cached_shadow_visibility=sample_long_shadow_visibility(view_direction);
 #endif
-          if(deterministic_shadowed_froxels())
+          if(reference_hillaire_transport())
+            hdr=sample_sky_view(view_direction,texture_coordinate);
+          else if(deterministic_shadowed_froxels())
             shadowed_froxel_atmosphere(
                 atmosphere.camera_forward_maximum_distance.w,
                 hdr,primary_transmittance);
@@ -919,29 +941,6 @@ void main() {
                 cached_shadow_visibility,primary_transmittance);
         }else
           hdr=sample_sky_view(view_direction,texture_coordinate);
-      }
-      // At eye level the procedural terrain rim and the mathematical planet
-      // tangent do not coincide. Continue the tangent-path in-scattering over
-      // that unresolved interval; this changes only atmospheric radiance and
-      // never adds a lighting floor to the terrain material.
-      const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
-      const float horizon_cosine=dot(view_direction,local_up);
-      const float horizon_blend=1.0-smoothstep(
-          sin(radians(1.0)),sin(radians(3.0)),abs(horizon_cosine));
-      const float seam_darkness=1.0-smoothstep(0.0,0.002,
-          dot(hdr,vec3(0.2126,0.7152,0.0722)));
-      const float seam_weight=horizon_blend*seam_darkness;
-      if(reference_hillaire_transport()&&seam_weight>0.0){
-        const vec3 tangent=view_direction-local_up*horizon_cosine;
-        if(dot(tangent,tangent)>1.0e-8){
-          const vec3 clear_horizon_direction=normalize(
-              normalize(tangent)+local_up*sin(radians(1.0)));
-          vec3 clear_horizon_transmittance;
-          const vec3 clear_horizon=orbital_primary_scattering(
-              clear_horizon_direction,1.0e9,0.0,vec3(1.0),
-              clear_horizon_transmittance);
-          hdr=max(hdr,clear_horizon*seam_weight);
-        }
       }
       if(ground_distance<0.0&&
          dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&

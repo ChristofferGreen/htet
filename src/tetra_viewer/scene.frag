@@ -181,6 +181,26 @@ vec2 atmosphere_full_sky_uv(vec3 direction) {
     perimeter=-1.0+tangent_x/denominator;
   }
   const float vertical=clamp(dot(direction,local_up),-1.0,1.0);
+  if(atmosphere.reserved1.y>=9.5){
+    const float bottom=atmosphere.rayleigh_ground_radius.w;
+    const float view_height=bottom+max(atmosphere.reserved2.w,0.0);
+    const float horizon_cosine=sqrt(max(0.0,
+        (view_height-bottom)*(view_height+bottom)))/
+        max(view_height,1.0e-6);
+    const float beta=acos(clamp(horizon_cosine,0.0,1.0));
+    const float zenith_horizon=3.14159265358979323846-beta;
+    const float angle=acos(vertical);
+    float vertical_uv;
+    if(angle<=zenith_horizon){
+      float coordinate=1.0-angle/max(zenith_horizon,1.0e-6);
+      coordinate=1.0-sqrt(max(coordinate,0.0));
+      vertical_uv=coordinate*0.5;
+    }else{
+      float coordinate=(angle-zenith_horizon)/max(beta,1.0e-6);
+      vertical_uv=0.5+0.5*sqrt(max(coordinate,0.0));
+    }
+    return vec2(perimeter*0.25+0.5,clamp(vertical_uv,0.0,1.0));
+  }
   const float latitude_shape=0.7853981633974483-1.0;
   const float root=sqrt(max(0.0,1.0-abs(vertical)));
   const float latitude_proxy=(1.0-root)/(1.0+latitude_shape*root);
@@ -242,17 +262,8 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*2.8;
   const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
-  if(atmosphere.reserved1.y>0.5&&!dynamic_sun){
-    const vec3 sky_irradiance=sample_sky_irradiance(surface_normal);
-    const bool reference_transport=atmosphere.reserved1.y>=9.5;
-    // Preserve the directional, sun-dependent sky lookup rather than adding
-    // a constant terrain floor. The compact low-sun lobe otherwise lands
-    // below the filmic toe after diffuse reflection, making the physically
-    // nonzero reference irradiance appear black on shadowed ground.
-    const float low_sun_gain=reference_transport?
-        mix(4.0,1.0,smoothstep(0.05,0.35,sun_cosine)):1.0;
-    return sky_irradiance*low_sun_gain;
-  }
+  if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
+    return sample_sky_irradiance(surface_normal);
 
   // The qualified baseline retains its fitted readability terms. The
   // faithful path above consumes the explicit cosine-convolved sky lookup.
@@ -373,10 +384,11 @@ void main() {
     const vec3 ambient=(1.0-f0)*(1.0-metallic)*albedo*environment;
     const float shadow=sun_visibility(fragment_position,unit_normal,n_dot_l);
     const vec3 direct=(diffuse+specular)*n_dot_l*direct_sun*shadow;
-    vec3 linear_colour=ambient+direct;
+    const vec3 indirect=ambient;
+    vec3 linear_colour=indirect+direct;
     const int atmosphere_debug=int(atmosphere.reserved1.x+0.5);
     if(atmosphere_debug==25)linear_colour=vec3(shadow);
-    else if(atmosphere_debug==26)linear_colour=ambient;
+    else if(atmosphere_debug==26)linear_colour=indirect;
     else if(atmosphere_debug==27)linear_colour=direct;
     // Keep scene radiance linear. The HDR composite owns exposure, tone
     // mapping, and the single display transfer for every material.

@@ -1502,12 +1502,21 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // Clamp the transport observer, not the rendered camera or terrain.
   const auto camera_from_centre=clamp_atmosphere_camera_to_medium(
       physical_camera_from_centre,parameters);
-  const double local_aerial_distance=atmosphere_local_aerial_distance(
-      parameters,std::sqrt(camera_from_centre.x*camera_from_centre.x+
-          camera_from_centre.y*camera_from_centre.y+
-          camera_from_centre.z*camera_from_centre.z)-
-          parameters.ground_radius_metres,
-      atmosphere_input.maximum_aerial_distance_metres);
+  const double camera_radius=std::sqrt(
+      camera_from_centre.x*camera_from_centre.x+
+      camera_from_centre.y*camera_from_centre.y+
+      camera_from_centre.z*camera_from_centre.z);
+  // The reference Hillaire camera volume must contain the complete grazing
+  // atmosphere path.  The production local-volume cap is only 64 km, shorter
+  // than this compact planet's roughly 130 km tangent path, so using it makes
+  // far opaque pixels converge to a truncated integral while adjacent clear
+  // pixels use the full sky integral.
+  const double local_aerial_distance=
+      atmosphere_input.transport==AtmosphereTransport::reference_hillaire_2020?
+      atmosphere_input.maximum_aerial_distance_metres:
+      atmosphere_local_aerial_distance(parameters,
+          camera_radius-parameters.ground_radius_metres,
+          atmosphere_input.maximum_aerial_distance_metres);
   std::array<float,96> atmosphere_uniform{};
   const auto spectrum=[&](std::size_t offset,
                           const AtmosphereSpectrum& value,float fourth){
@@ -1570,11 +1579,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       AtmosphereTransport::qualified_baseline?0.0F:
       (atmosphere_input.transport==
            AtmosphereTransport::reference_hillaire_2020?10.0F:0.0F)+
-      1.0F+static_cast<float>(
-          atmosphere_input.transport==
-              AtmosphereTransport::reference_hillaire_2020?
-          AtmosphereRenderingMethod::temporal_half_resolution:
-          atmosphere_input.rendering_method);
+      1.0F+static_cast<float>(atmosphere_input.rendering_method);
   const int shadow_filter=atmosphere_input.shadow_filter==
       AtmosphereShadowFilter::unfiltered?0:
       atmosphere_input.shadow_filter==AtmosphereShadowFilter::fixed_tent?1:2;
@@ -1598,10 +1603,6 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[55]=static_cast<float>(
       atmosphere_shadow_integrator_shader_index(
           atmosphere_input.shadow_integrator));
-  const double camera_radius=std::sqrt(
-      camera_from_centre.x*camera_from_centre.x+
-      camera_from_centre.y*camera_from_centre.y+
-      camera_from_centre.z*camera_from_centre.z);
   const double inverse_camera_radius=1.0/std::max(camera_radius,1.0e-12);
   const tetra::Vec3 local_up{
       camera_from_centre.x*inverse_camera_radius,
@@ -2310,9 +2311,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       compute_barrier(std::span<const VkImage>{atmosphere_images.data(),2U},
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
-    if(plan.sky_view)
+    if(plan.sky_view){
+      if(atmosphere_input.transport==
+         AtmosphereTransport::reference_hillaire_2020)
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                          reference_hillaire_atmosphere_pipeline_);
       dispatch(2U,(quality_settings_.sky_width+7U)/8U,
                (quality_settings_.sky_height+7U)/8U,1U);
+      if(atmosphere_input.transport==
+         AtmosphereTransport::reference_hillaire_2020)
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                          faithful_atmosphere_pipeline_);
+    }
     if(plan.sky_irradiance&&atmosphere_input.transport!=
        AtmosphereTransport::qualified_baseline){
       if(plan.sky_view)
@@ -2563,8 +2573,9 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   scene_colour.initialized=true;
   scene_depth.initialized=true;
 
-  if(atmosphere_enabled&&atmosphere_input.transport==
-         AtmosphereTransport::faithful_hillaire&&
+  if(atmosphere_enabled&&
+     (atmosphere_input.transport==AtmosphereTransport::faithful_hillaire||
+      atmosphere_input.transport==AtmosphereTransport::reference_hillaire_2020)&&
      atmosphere_input.rendering_method==
          AtmosphereRenderingMethod::deterministic_shadowed_froxels){
     vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -2596,7 +2607,9 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         static_cast<std::uint32_t>(froxel_barriers.size()),
         froxel_barriers.data());
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
-                      faithful_atmosphere_pipeline_);
+        atmosphere_input.transport==AtmosphereTransport::reference_hillaire_2020?
+            reference_hillaire_atmosphere_pipeline_:
+            faithful_atmosphere_pipeline_);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
         nullptr);

@@ -1069,6 +1069,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_sun_orbit_phase=world_sun_elevation;
     tetra_viewer::AtmospherePreset world_atmosphere_preset=
         tetra_viewer::default_world_atmosphere_preset;
+    bool world_atmosphere_rendering_method_explicit=false;
     double world_exposure_ev=-0.62;
     bool world_gpu_atmosphere_benchmark=false;
     bool world_gpu_atmosphere_probe=false;
@@ -1353,6 +1354,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 g_AtmosphereFrame.rendering_method=*method;
+                world_atmosphere_rendering_method_explicit=true;
             }else if(value.starts_with(screen_resolution_prefix)){
                 const std::string divisor_text(
                     value.substr(screen_resolution_prefix.size()));
@@ -1435,10 +1437,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
         }
         if(g_AtmosphereFrame.transport==
-           tetra_viewer::AtmosphereTransport::reference_hillaire_2020)
+               tetra_viewer::AtmosphereTransport::reference_hillaire_2020&&
+           !world_atmosphere_rendering_method_explicit)
             g_AtmosphereFrame.rendering_method=
                 tetra_viewer::AtmosphereRenderingMethod::
-                    temporal_half_resolution;
+                    deterministic_shadowed_froxels;
         world_sun_orbit_azimuth=world_sun_azimuth;
         world_sun_orbit_phase=world_sun_elevation;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
@@ -2892,7 +2895,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                           reference_hillaire_2020)
                             g_AtmosphereFrame.rendering_method=
                                 tetra_viewer::AtmosphereRenderingMethod::
-                                    temporal_half_resolution;
+                                    deterministic_shadowed_froxels;
                     }
                     if(selected)ImGui::SetItemDefaultFocus();
                 }
