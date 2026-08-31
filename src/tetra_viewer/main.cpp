@@ -1141,7 +1141,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_paused=false;
     bool world_single_step=false;
     bool world_free_fly=world_mode;
-    bool world_lock_lod_camera=true;
+    bool world_lock_lod_camera=false;
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
     bool world_smooth_normals=world_mode;
