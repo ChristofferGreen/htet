@@ -244,6 +244,21 @@ vec3 view_direction(vec2 uv) {
           atmosphere.camera_down_tangent_y.w);
 }
 
+float analytic_ground_distance(vec3 direction) {
+  const vec2 roots=sphere_roots(
+      atmosphere.camera_position_near.xyz,direction,ground_radius());
+  if(roots.x>0.01)return roots.x;
+  if(roots.y>0.01)return roots.y;
+  return -1.0;
+}
+
+float surface_endpoint_distance(ivec2 source,ivec2 depth_size) {
+  const float depth=texelFetch(scene_depth,source,0).r;
+  if(depth>1.0e-8)return atmosphere.camera_position_near.w/depth;
+  const vec2 uv=(vec2(source)+0.5)/vec2(depth_size);
+  return analytic_ground_distance(view_direction(uv));
+}
+
 vec4 checked_value(vec3 value,float maximum_value) {
   const bool finite=!(any(isnan(value))||any(isinf(value)));
   const bool valid=finite&&all(greaterThanEqual(value,vec3(0.0)))&&
@@ -324,26 +339,25 @@ void generate_endpoint(ivec2 coordinate) {
   const ivec2 depth_size=textureSize(scene_depth,0);
   const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
   const ivec2 base=coordinate*divisor;
-  float nearest_depth=0.0;
-  int opaque_count=0;
-  float farthest_opaque_depth=1.0;
+  float nearest_distance=1.0e30;
+  float farthest_distance=0.0;
+  int surface_count=0;
   for(int y=0;y<4;++y)for(int x=0;x<4;++x){
     if(x>=divisor||y>=divisor)continue;
-    const float depth=texelFetch(scene_depth,
-        min(base+ivec2(x,y),depth_size-1),0).r;
-    nearest_depth=max(nearest_depth,depth);
-    if(depth>1.0e-8){
-      ++opaque_count;
-      farthest_opaque_depth=min(farthest_opaque_depth,depth);
+    const float distance=surface_endpoint_distance(
+        min(base+ivec2(x,y),depth_size-1),depth_size);
+    if(distance>0.0){
+      ++surface_count;
+      nearest_distance=min(nearest_distance,distance);
+      farthest_distance=max(farthest_distance,distance);
     }
   }
-  const bool opaque=nearest_depth>1.0e-8;
-  const float linear_depth=opaque?
-      atmosphere.camera_position_near.w/nearest_depth:0.0;
-  const float depth_spread=opaque_count>1?
-      1.0-farthest_opaque_depth/max(nearest_depth,1.0e-8):0.0;
-  const float class_confidence=(opaque_count==0||
-      opaque_count==divisor*divisor)?1.0:0.0;
+  const bool opaque=surface_count>0;
+  const float linear_depth=opaque?nearest_distance:0.0;
+  const float depth_spread=surface_count>1?
+      1.0-nearest_distance/max(farthest_distance,1.0e-8):0.0;
+  const float class_confidence=(surface_count==0||
+      surface_count==divisor*divisor)?1.0:0.0;
   imageStore(screen_endpoint,coordinate,
       vec4(linear_depth,opaque?1.0:0.0,
            class_confidence*(1.0-clamp(depth_spread/0.05,0.0,1.0)),
@@ -360,12 +374,15 @@ void generate_scattering(ivec2 coordinate) {
   const bool opaque=endpoint.y>0.5;
   ivec2 representative=min(base,depth_size-1);
   if(opaque){
-    float nearest_depth=0.0;
+    float nearest_distance=1.0e30;
     for(int y=0;y<4;++y)for(int x=0;x<4;++x){
       if(x>=divisor||y>=divisor)continue;
       const ivec2 source=min(base+ivec2(x,y),depth_size-1);
-      const float depth=texelFetch(scene_depth,source,0).r;
-      if(depth>nearest_depth){nearest_depth=depth;representative=source;}
+      const float distance=surface_endpoint_distance(source,depth_size);
+      if(distance>0.0&&distance<nearest_distance){
+        nearest_distance=distance;
+        representative=source;
+      }
     }
   }
   const vec2 uv=opaque?

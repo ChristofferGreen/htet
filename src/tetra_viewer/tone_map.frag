@@ -920,10 +920,10 @@ void main() {
         }else
           hdr=sample_sky_view(view_direction,texture_coordinate);
       }
-      // The procedural terrain can end a few pixels away from the
-      // mathematical planet rim. Both sides of the exact tangent are
-      // depthless there, so continue a clear ray from just above the horizon
-      // across that unresolved seam instead of inventing ambient terrain.
+      // At eye level the procedural terrain rim and the mathematical planet
+      // tangent do not coincide. Continue the tangent-path in-scattering over
+      // that unresolved interval; this changes only atmospheric radiance and
+      // never adds a lighting floor to the terrain material.
       const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
       const float horizon_cosine=dot(view_direction,local_up);
       const float horizon_blend=1.0-smoothstep(
