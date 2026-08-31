@@ -4646,8 +4646,6 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
         }
-        // Avoid spinning the event loop when present returns immediately.
-        ImGui_ImplGlfw_Sleep(16);
     }
 
     // Cleanup
