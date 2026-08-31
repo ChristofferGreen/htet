@@ -427,17 +427,26 @@ vec3 orbital_extinction(vec3 density) {
       atmosphere.absorption_mie_scale.rgb*density.z;
 }
 
+int atmosphere_rendering_method() {
+  const int encoded=int(atmosphere.reserved1.y+0.5);
+  return encoded>=10?encoded-10:encoded;
+}
+
+bool reference_hillaire_transport() {
+  return int(atmosphere.reserved1.y+0.5)>=10;
+}
+
 bool exact_screen_visibility() {
-  return int(atmosphere.reserved1.y+0.5)>=2;
+  return atmosphere_rendering_method()>=2;
 }
 
 bool deterministic_half_resolution() {
-  const int method=int(atmosphere.reserved1.y+0.5);
+  const int method=atmosphere_rendering_method();
   return method==3||method==4;
 }
 
 bool deterministic_shadowed_froxels() {
-  return int(atmosphere.reserved1.y+0.5)==5;
+  return atmosphere_rendering_method()==5;
 }
 
 void shadowed_froxel_atmosphere(float distance_metres,
@@ -617,7 +626,7 @@ void reconstructed_atmosphere(float native_depth,
       textureOffset(scene_depth,texture_coordinate,ivec2(0,3)).r>1.0e-8;
   const float target_depth=opaque?
       atmosphere.camera_position_near.w/native_depth:0.0;
-  if(native_class_boundary){
+  if(native_class_boundary&&!reference_hillaire_transport()){
     radiance=orbital_primary_scattering(native_direction,
         opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);
     return;
@@ -652,7 +661,8 @@ void reconstructed_atmosphere(float native_depth,
     transmittance+=texelFetch(screen_transmittance,coordinate,0).rgb*weight;
     weight_sum+=weight;
   }
-  if(weight_sum>0.0&&!(saw_opaque&&saw_sky)){
+  if(weight_sum>0.0&&
+     (reference_hillaire_transport()||!(saw_opaque&&saw_sky))){
     radiance/=weight_sum;
     transmittance/=weight_sum;
     return;
@@ -660,6 +670,13 @@ void reconstructed_atmosphere(float native_depth,
   // A mixed 2x2 block can leave a native silhouette pixel with no compatible
   // low-resolution tap. Evaluate that rare pixel directly instead of leaking
   // lit sky through terrain or smearing foreground depth into the sky.
+  if(reference_hillaire_transport()){
+    const ivec2 coordinate=clamp(
+        ivec2(texture_coordinate*vec2(size)),ivec2(0),size-1);
+    radiance=texelFetch(screen_scattering,coordinate,0).rgb;
+    transmittance=texelFetch(screen_transmittance,coordinate,0).rgb;
+    return;
+  }
   const vec3 direction=atmosphere_view_direction(texture_coordinate);
   radiance=orbital_primary_scattering(direction,
       opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);

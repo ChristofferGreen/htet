@@ -121,6 +121,8 @@ std::optional<AtmosphereTransport> parse_atmosphere_transport(
     return AtmosphereTransport::qualified_baseline;
   if (name == "faithful-hillaire")
     return AtmosphereTransport::faithful_hillaire;
+  if (name == "reference-hillaire-2020")
+    return AtmosphereTransport::reference_hillaire_2020;
   return std::nullopt;
 }
 
@@ -131,6 +133,8 @@ std::string_view atmosphere_transport_name(
       return "qualified-baseline";
     case AtmosphereTransport::faithful_hillaire:
       return "faithful-hillaire";
+    case AtmosphereTransport::reference_hillaire_2020:
+      return "reference-hillaire-2020";
   }
   return "qualified-baseline";
 }
@@ -756,7 +760,7 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
       .aerial_perspective=
           optical||scattering||sun||position||(baseline&&orientation)||
           integrator||shadow||origin,
-      .long_shadow=!baseline&&
+      .long_shadow=transport==AtmosphereTransport::faithful_hillaire&&
           (optical||scattering||sun||position||integrator||shadow||origin),
   };
 }

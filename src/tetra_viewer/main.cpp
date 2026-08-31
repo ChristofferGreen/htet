@@ -1076,6 +1076,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::string world_gpu_atmosphere_capture_path;
     bool world_gpu_atmosphere_capture_submitted=false;
     std::size_t world_gpu_capture_ready_frames{};
+    std::size_t world_gpu_capture_frame_target{};
+    std::size_t world_gpu_rendered_frames{};
     std::size_t world_gpu_capture_after_motion_frames{};
     std::size_t world_gpu_capture_motion_frame_count{};
     bool world_gpu_atmosphere_resize_check=false;
@@ -1129,6 +1131,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view capture_prefix="--gpu-atmosphere-capture=";
         constexpr std::string_view capture_after_motion_prefix=
             "--gpu-atmosphere-capture-after-motion-frames=";
+        constexpr std::string_view capture_frame_prefix=
+            "--gpu-atmosphere-capture-frame=";
         constexpr std::string_view camera_prefix="--camera-feet=";
         constexpr std::string_view yaw_prefix="--camera-yaw-degrees=";
         constexpr std::string_view pitch_prefix="--camera-pitch-degrees=";
@@ -1198,6 +1202,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 world_gpu_capture_after_motion_frames=parsed;
+            }else if(value.starts_with(capture_frame_prefix)){
+                const auto text=value.substr(capture_frame_prefix.size());
+                std::size_t parsed{};
+                const auto [end,error]=std::from_chars(
+                    text.data(),text.data()+text.size(),parsed);
+                if(error!=std::errc{}||end!=text.data()+text.size()||
+                   parsed==0U||parsed>10000U){
+                    fprintf(stderr,"capture frame must be in [1,10000]\n");
+                    return 2;
+                }
+                world_gpu_capture_frame_target=parsed;
             }else if(value=="--free-fly"){
                 world_free_fly=true;
             }else if(value=="--terrain-lod-follow"){
@@ -1419,6 +1434,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     atmosphere_shadow_comparison_bias_world_override=parsed;
             }
         }
+        if(g_AtmosphereFrame.transport==
+           tetra_viewer::AtmosphereTransport::reference_hillaire_2020)
+            g_AtmosphereFrame.rendering_method=
+                tetra_viewer::AtmosphereRenderingMethod::
+                    temporal_half_resolution;
         world_sun_orbit_azimuth=world_sun_azimuth;
         world_sun_orbit_phase=world_sun_elevation;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
@@ -2860,13 +2880,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             if(ImGui::BeginCombo("Transport",transport_name.data())){
                 constexpr std::array transports{
                     tetra_viewer::AtmosphereTransport::qualified_baseline,
-                    tetra_viewer::AtmosphereTransport::faithful_hillaire};
+                    tetra_viewer::AtmosphereTransport::faithful_hillaire,
+                    tetra_viewer::AtmosphereTransport::reference_hillaire_2020};
                 for(const auto transport:transports){
                     const auto name=
                         tetra_viewer::atmosphere_transport_name(transport);
                     const bool selected=g_AtmosphereFrame.transport==transport;
-                    if(ImGui::Selectable(name.data(),selected))
+                    if(ImGui::Selectable(name.data(),selected)){
                         g_AtmosphereFrame.transport=transport;
+                        if(transport==tetra_viewer::AtmosphereTransport::
+                                          reference_hillaire_2020)
+                            g_AtmosphereFrame.rendering_method=
+                                tetra_viewer::AtmosphereRenderingMethod::
+                                    temporal_half_resolution;
+                    }
                     if(selected)ImGui::SetItemDefaultFocus();
                 }
                 ImGui::EndCombo();
@@ -3992,28 +4019,40 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized)
         {
+            ++world_gpu_rendered_frames;
             const bool capture_front_ready=world_runtime&&
                 tetra_viewer::world_capture_front_ready(
                     world_runtime->diagnostics());
             world_gpu_capture_ready_frames=capture_front_ready?
                 world_gpu_capture_ready_frames+1U:0U;
             const std::size_t capture_warmup_frames=
-                g_AtmosphereFrame.rendering_method==
+                g_AtmosphereFrame.transport==
+                        tetra_viewer::AtmosphereTransport::
+                        reference_hillaire_2020||
+                    g_AtmosphereFrame.rendering_method==
                         tetra_viewer::AtmosphereRenderingMethod::
                         temporal_half_resolution?64U:1U;
+            const bool requested_frame_ready=
+                world_gpu_capture_frame_target!=0U&&
+                world_gpu_rendered_frames>=world_gpu_capture_frame_target;
+            const bool static_capture=
+                world_gpu_walk_steps==0U&&world_gpu_look_x==0.0&&
+                world_gpu_look_y==0.0;
+            const bool motion_capture=world_gpu_motion_applied&&
+                ((world_gpu_capture_after_motion_frames!=0U&&
+                  world_gpu_capture_motion_frame_count>=
+                      world_gpu_capture_after_motion_frames)||
+                 (world_gpu_capture_after_motion_frames==0U&&
+                  world_gpu_motion_saw_busy&&
+                  world_gpu_walk_steps_remaining==0U));
+            const bool settled_capture_ready=
+                world_gpu_capture_frame_target==0U&&
+                world_gpu_capture_ready_frames>=capture_warmup_frames&&
+                (static_capture||motion_capture);
             g_AtmosphereFrame.capture_requested=
                 !world_gpu_atmosphere_capture_path.empty()&&
                 !world_gpu_atmosphere_capture_submitted&&world_runtime&&
-                world_gpu_capture_ready_frames>=capture_warmup_frames&&(
-                ((world_gpu_walk_steps==0U&&world_gpu_look_x==0.0&&
-                  world_gpu_look_y==0.0))||
-                (world_gpu_motion_applied&&
-                 ((world_gpu_capture_after_motion_frames!=0U&&
-                   world_gpu_capture_motion_frame_count>=
-                       world_gpu_capture_after_motion_frames)||
-                  (world_gpu_capture_after_motion_frames==0U&&
-                   world_gpu_motion_saw_busy&&
-                   world_gpu_walk_steps_remaining==0U))));
+                (requested_frame_ready||settled_capture_ready);
             if(g_AtmosphereFrame.capture_requested)
                 world_gpu_atmosphere_capture_submitted=true;
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
@@ -4454,6 +4493,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<horizon_mask_path.string()
                              <<"\",\"width\":"<<capture.width
                              <<",\"height\":"<<capture.height
+                             <<",\"rendered_frame\":"
+                             <<world_gpu_rendered_frames
                              <<",\"rgb_hash\":"
                              <<tetra_viewer::rgb8_hash(image)
                              <<",\"transport\":\""

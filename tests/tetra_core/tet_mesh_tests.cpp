@@ -14807,19 +14807,43 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(default_shadow_bytes<64U*1024U*1024U);
 }
 
-TEST_CASE("atmosphere transport defaults to faithful with baseline available") {
+TEST_CASE("atmosphere transport defaults to reference with older paths available") {
   using tetra_viewer::AtmosphereTransport;
   CHECK(tetra_viewer::default_atmosphere_transport==
-        AtmosphereTransport::faithful_hillaire);
+        AtmosphereTransport::reference_hillaire_2020);
   CHECK(tetra_viewer::parse_atmosphere_transport("qualified-baseline")==
         AtmosphereTransport::qualified_baseline);
   CHECK(tetra_viewer::parse_atmosphere_transport("faithful-hillaire")==
         AtmosphereTransport::faithful_hillaire);
+  CHECK(tetra_viewer::parse_atmosphere_transport("reference-hillaire-2020")==
+        AtmosphereTransport::reference_hillaire_2020);
   CHECK_FALSE(tetra_viewer::parse_atmosphere_transport("approximately-blue"));
   CHECK(tetra_viewer::atmosphere_transport_name(
             AtmosphereTransport::qualified_baseline)=="qualified-baseline");
   CHECK(tetra_viewer::atmosphere_transport_name(
             AtmosphereTransport::faithful_hillaire)=="faithful-hillaire");
+  CHECK(tetra_viewer::atmosphere_transport_name(
+            AtmosphereTransport::reference_hillaire_2020)==
+        "reference-hillaire-2020");
+}
+
+TEST_CASE("reference Hillaire transport never schedules legacy long shadows") {
+  using namespace tetra_viewer;
+  AtmosphereLookupRevisions state{
+      .optical={1},.scattering={2},.sun={3},.camera_position={4},
+      .sky_position={5},.camera_orientation={6},.shadow={7},
+      .render_origin={8}};
+  const auto initial=atmosphere_dispatch_plan(
+      std::nullopt,state,AtmosphereTransport::reference_hillaire_2020);
+  CHECK(initial.transmittance);
+  CHECK(initial.multiple_scattering);
+  CHECK_FALSE(initial.long_shadow);
+  auto relit=state;
+  ++relit.shadow.value;
+  const auto updated=atmosphere_dispatch_plan(
+      state,relit,AtmosphereTransport::reference_hillaire_2020);
+  CHECK(updated.aerial_perspective);
+  CHECK_FALSE(updated.long_shadow);
 }
 
 TEST_CASE("native atmosphere oracle is selectable without changing the default") {

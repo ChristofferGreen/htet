@@ -1,0 +1,387 @@
+#version 450
+
+// Clean Vulkan/GLSL adaptation of the screen ray march in
+// sebh/UnrealEngineSkyAtmosphere, pinned at 183ead5bdacc701b3b626347a680a2f3cd3d4fbd.
+// The upstream implementation is MIT licensed; see
+// third_party/UnrealEngineSkyAtmosphere-LICENSE.txt.
+//
+// This path intentionally contains no fitted atmosphere shadow map, long-shadow
+// cache, temporal visibility packing, froxel history, or epipolar hierarchy.
+// Terrain visibility is sampled at each positive single-scattering quadrature
+// point, exactly where the reference implementation applies getShadow().
+
+layout(local_size_x=8,local_size_y=8,local_size_z=1) in;
+
+layout(rgba16f,set=0,binding=0) uniform readonly image2D transmittance_lut;
+layout(rgba16f,set=0,binding=1) uniform readonly image2D multiple_scattering_lut;
+layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
+layout(set=0,binding=12) uniform sampler2D scene_depth;
+layout(rgba16f,set=0,binding=13) uniform writeonly image2D screen_scattering;
+layout(rgba16f,set=0,binding=14) uniform writeonly image2D screen_transmittance;
+layout(rgba32f,set=0,binding=15) uniform image2D screen_endpoint;
+
+layout(std140,set=0,binding=5) uniform Atmosphere {
+  vec4 rayleigh_ground_radius;
+  vec4 mie_scattering_top_radius;
+  vec4 mie_absorption_rayleigh_scale;
+  vec4 absorption_mie_scale;
+  vec4 ground_albedo_mie_anisotropy;
+  vec4 solar_absorption_peak;
+  vec4 profile_and_mode;
+  vec4 camera_position_near;
+  vec4 camera_right_tangent_x;
+  vec4 camera_down_tangent_y;
+  vec4 camera_forward_maximum_distance;
+  vec4 sun_direction_exposure;
+  vec4 world_camera_and_ground_limit;
+  vec4 reserved1;
+  vec4 local_up;
+  vec4 sun_tangent_and_horizon;
+  vec4 previous_camera_position_near;
+  vec4 previous_camera_right_tangent_x;
+  vec4 previous_camera_down_tangent_y;
+  vec4 previous_camera_forward;
+  vec4 temporal_control;
+} atmosphere;
+
+layout(std140,set=0,binding=7) uniform ShadowCascades {
+  mat4 shadow_matrices[5];
+  vec4 shadow_splits;
+  vec4 atmosphere_shadow_metadata;
+  vec4 epipolar_metadata;
+} shadow_cascades;
+
+layout(push_constant) uniform DispatchMode {
+  uint mode;
+  uint reserved0;
+  uint reserved1;
+  uint reserved2;
+} dispatch_mode;
+
+const float PI=3.14159265358979323846;
+const int SAMPLE_COUNT=32;
+
+float ground_radius(){return atmosphere.rayleigh_ground_radius.w;}
+float top_radius(){return atmosphere.mie_scattering_top_radius.w;}
+float atmosphere_height(){return top_radius()-ground_radius();}
+
+vec2 sphere_roots(vec3 origin,vec3 direction,float radius) {
+  const float b=dot(origin,direction);
+  const float radial_distance=length(origin);
+  const float c=(radial_distance-radius)*(radial_distance+radius);
+  const float discriminant=b*b-c;
+  if(discriminant<0.0)return vec2(1.0,-1.0);
+  const float root=sqrt(max(discriminant,0.0));
+  return vec2(-b-root,-b+root);
+}
+
+bool atmosphere_segment(vec3 origin,vec3 direction,
+                        out float begin,out float end) {
+  const vec2 outer=sphere_roots(origin,direction,top_radius());
+  if(outer.y<0.0)return false;
+  begin=max(outer.x,0.0);
+  end=outer.y;
+  const vec2 ground=sphere_roots(origin,direction,ground_radius());
+  if(ground.x>begin)end=min(end,ground.x);
+  return end>begin;
+}
+
+vec3 density_profile(float altitude) {
+  if(altitude<0.0||altitude>atmosphere_height())return vec3(0.0);
+  const float rayleigh=exp(-altitude/
+      atmosphere.mie_absorption_rayleigh_scale.w);
+  const float mie=exp(-altitude/atmosphere.absorption_mie_scale.w);
+  const float absorption=max(0.0,1.0-
+      abs(altitude-atmosphere.solar_absorption_peak.w)/
+          atmosphere.profile_and_mode.x);
+  return vec3(rayleigh,mie,absorption);
+}
+
+vec3 extinction(vec3 density) {
+  return atmosphere.rayleigh_ground_radius.rgb*density.x+
+      (atmosphere.mie_scattering_top_radius.rgb+
+       atmosphere.mie_absorption_rayleigh_scale.rgb)*density.y+
+      atmosphere.absorption_mie_scale.rgb*density.z;
+}
+
+vec2 transmittance_uv(float altitude,float cosine_angle) {
+  const float bottom=ground_radius();
+  const float top=top_radius();
+  const float radius=mix(bottom,top,clamp(
+      altitude/max(atmosphere_height(),1.0e-6),0.0,1.0));
+  cosine_angle=clamp(cosine_angle,-1.0,1.0);
+  if(altitude>=atmosphere_height()&&cosine_angle>=0.0)
+    return vec2(0.0,1.0);
+  const float horizon=atmosphere.sun_tangent_and_horizon.w;
+  const float rho=sqrt(max(0.0,(radius-bottom)*(radius+bottom)));
+  const float discriminant=max(0.0,
+      radius*radius*(cosine_angle*cosine_angle-1.0)+top*top);
+  const float distance=max(0.0,-radius*cosine_angle+sqrt(discriminant));
+  const float minimum=top-radius;
+  const float maximum=rho+horizon;
+  return vec2(clamp((distance-minimum)/max(maximum-minimum,1.0e-6),0.0,1.0),
+              clamp(rho/max(horizon,1.0e-6),0.0,1.0));
+}
+
+vec3 bilinear_transmittance_load(vec2 uv) {
+  const ivec2 size=imageSize(transmittance_lut);
+  const vec2 texel=clamp(uv,vec2(0.0),vec2(1.0))*vec2(size-1);
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=min(low+1,size-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(imageLoad(transmittance_lut,low).rgb,
+      imageLoad(transmittance_lut,ivec2(high.x,low.y)).rgb,fraction.x);
+  const vec3 upper=mix(imageLoad(transmittance_lut,ivec2(low.x,high.y)).rgb,
+      imageLoad(transmittance_lut,high).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
+vec3 bilinear_multiple_scattering_load(vec2 uv) {
+  const ivec2 size=imageSize(multiple_scattering_lut);
+  const vec2 texel=clamp(uv,vec2(0.0),vec2(1.0))*vec2(size-1);
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=min(low+1,size-1);
+  const vec2 fraction=fract(texel);
+  const vec3 lower=mix(imageLoad(multiple_scattering_lut,low).rgb,
+      imageLoad(multiple_scattering_lut,ivec2(high.x,low.y)).rgb,fraction.x);
+  const vec3 upper=mix(
+      imageLoad(multiple_scattering_lut,ivec2(low.x,high.y)).rgb,
+      imageLoad(multiple_scattering_lut,high).rgb,fraction.x);
+  return mix(lower,upper,fraction.y);
+}
+
+vec3 transmittance_to_sun(vec3 point,vec3 sun_direction) {
+  const float altitude=length(point)-ground_radius();
+  return bilinear_transmittance_load(
+      transmittance_uv(altitude,dot(normalize(point),sun_direction)));
+}
+
+vec3 multiple_scattering_source(vec3 point,vec3 sun_direction,
+                                vec3 density) {
+  const float altitude=length(point)-ground_radius();
+  const float sun_cosine=dot(normalize(point),sun_direction);
+  const vec2 uv=vec2(clamp(sun_cosine*0.5+0.5,0.0,1.0),
+      clamp(altitude/max(atmosphere_height(),1.0),0.0,1.0));
+  const vec3 average_radiance=bilinear_multiple_scattering_load(uv);
+  const vec3 scattering=atmosphere.rayleigh_ground_radius.rgb*density.x+
+      atmosphere.mie_scattering_top_radius.rgb*density.y;
+  return scattering*average_radiance*atmosphere.solar_absorption_peak.rgb;
+}
+
+float planet_visibility(vec3 point,vec3 sun_direction) {
+  const float radial_distance=length(point);
+  if(radial_distance<=ground_radius())return 0.0;
+  const float cosine_angle=dot(point/radial_distance,sun_direction);
+  const float altitude=radial_distance-ground_radius();
+  const float horizon_sine_squared=max(0.0,
+      altitude*(radial_distance+ground_radius())/
+          (radial_distance*radial_distance));
+  const float horizon_cosine=-sqrt(horizon_sine_squared);
+  const float cosine_width=max(
+      sin(atmosphere.profile_and_mode.z),1.0e-5);
+  return smoothstep(horizon_cosine-cosine_width,
+                    horizon_cosine+cosine_width,cosine_angle);
+}
+
+float shadow_compare_bilinear(vec2 uv,int layer,float receiver_depth,
+                              float bias) {
+  const ivec2 size=textureSize(sun_shadow_map,0).xy;
+  const vec2 texel=uv*vec2(size)-0.5;
+  const ivec2 low=ivec2(floor(texel));
+  const ivec2 high=low+1;
+  const ivec2 maximum=size-1;
+  const vec2 fraction=fract(texel);
+  float values[4];
+  values[0]=receiver_depth-bias<=texelFetch(sun_shadow_map,
+      ivec3(clamp(low,ivec2(0),maximum),layer),0).r?1.0:0.0;
+  values[1]=receiver_depth-bias<=texelFetch(sun_shadow_map,
+      ivec3(clamp(ivec2(high.x,low.y),ivec2(0),maximum),layer),0).r?1.0:0.0;
+  values[2]=receiver_depth-bias<=texelFetch(sun_shadow_map,
+      ivec3(clamp(ivec2(low.x,high.y),ivec2(0),maximum),layer),0).r?1.0:0.0;
+  values[3]=receiver_depth-bias<=texelFetch(sun_shadow_map,
+      ivec3(clamp(high,ivec2(0),maximum),layer),0).r?1.0:0.0;
+  return mix(mix(values[0],values[1],fraction.x),
+             mix(values[2],values[3],fraction.x),fraction.y);
+}
+
+float terrain_visibility(vec3 point_metres) {
+  const float metres_per_world=atmosphere.profile_and_mode.y;
+  const vec3 point_world=atmosphere.world_camera_and_ground_limit.xyz+
+      (point_metres-atmosphere.camera_position_near.xyz)/metres_per_world;
+  const float distance_world=length(
+      point_world-atmosphere.world_camera_and_ground_limit.xyz);
+  int layer=3;
+  if(distance_world<shadow_cascades.shadow_splits.x)layer=0;
+  else if(distance_world<shadow_cascades.shadow_splits.y)layer=1;
+  else if(distance_world<shadow_cascades.shadow_splits.z)layer=2;
+  const vec3 projected=(shadow_cascades.shadow_matrices[layer]*
+      vec4(point_world,1.0)).xyz;
+  if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
+     projected.z<0.0||projected.z>1.0)return 1.0;
+  const float depth_span=max(
+      shadow_cascades.shadow_splits[layer]*(16.0/3.0),1.0e-6);
+  const float bias=max(shadow_cascades.epipolar_metadata.z,0.0)/depth_span;
+  return shadow_compare_bilinear(
+      projected.xy*0.5+0.5,layer,projected.z,bias);
+}
+
+float rayleigh_phase(float cosine_angle) {
+  return 3.0*(1.0+cosine_angle*cosine_angle)/(16.0*PI);
+}
+
+float mie_phase(float cosine_angle) {
+  const float g=atmosphere.ground_albedo_mie_anisotropy.w;
+  const float denominator=max(1.0+g*g-2.0*g*cosine_angle,1.0e-4);
+  return (1.0-g*g)/(4.0*PI*denominator*sqrt(denominator));
+}
+
+vec3 view_direction(vec2 uv) {
+  const vec2 ndc=uv*2.0-1.0;
+  return normalize(atmosphere.camera_forward_maximum_distance.xyz+
+      atmosphere.camera_right_tangent_x.xyz*ndc.x*
+          atmosphere.camera_right_tangent_x.w+
+      atmosphere.camera_down_tangent_y.xyz*ndc.y*
+          atmosphere.camera_down_tangent_y.w);
+}
+
+vec4 checked_value(vec3 value,float maximum_value) {
+  const bool finite=!(any(isnan(value))||any(isinf(value)));
+  const bool valid=finite&&all(greaterThanEqual(value,vec3(0.0)))&&
+      all(lessThanEqual(value,vec3(maximum_value)));
+  return vec4(clamp(finite?value:vec3(0.0),vec3(0.0),vec3(maximum_value)),
+              valid?1.0:0.0);
+}
+
+float sample_jitter(ivec2 coordinate) {
+  uint value=uint(coordinate.x)*0x8da6b343U^
+      uint(coordinate.y)*0xd8163841U^
+      (dispatch_mode.reserved2&31U)*0xcb1ab31fU;
+  value^=value>>16U;
+  value*=0x7feb352dU;
+  value^=value>>15U;
+  value*=0x846ca68bU;
+  value^=value>>16U;
+  return (float(value)+0.5)/4294967296.0;
+}
+
+vec3 integrate_scattered_luminance(vec3 origin,vec3 direction,
+                                   float maximum_distance,
+                                   out vec3 path_transmittance) {
+  float begin,end;
+  path_transmittance=vec3(1.0);
+  if(!atmosphere_segment(origin,direction,begin,end)||maximum_distance<=begin)
+    return vec3(0.0);
+  end=min(end,maximum_distance);
+  const float span=end-begin;
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float phase_cosine=dot(direction,sun_direction);
+  const float phase_rayleigh=rayleigh_phase(phase_cosine);
+  const float phase_mie=mie_phase(phase_cosine);
+  const float visibility_jitter=sample_jitter(
+      ivec2(gl_GlobalInvocationID.xy));
+  vec3 radiance=vec3(0.0);
+  vec3 throughput=vec3(1.0);
+  for(int index=0;index<SAMPLE_COUNT;++index){
+    const float fraction0=float(index)/float(SAMPLE_COUNT);
+    const float fraction1=float(index+1)/float(SAMPLE_COUNT);
+    const float distance0=begin+span*fraction0*fraction0;
+    const float distance1=begin+span*fraction1*fraction1;
+    const float step_length=distance1-distance0;
+    const float sample_distance=mix(distance0,distance1,0.3);
+    const vec3 point=origin+direction*sample_distance;
+    const vec3 density=density_profile(length(point)-ground_radius());
+    const vec3 local_extinction=extinction(density);
+    const vec3 segment_transmittance=exp(-local_extinction*step_length);
+    const vec3 phase_times_scattering=
+        atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
+        atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie;
+    float terrain_visibility_average=0.0;
+    for(int visibility_sample=0;visibility_sample<4;++visibility_sample){
+      const float fraction=(float(visibility_sample)+visibility_jitter)*0.25;
+      terrain_visibility_average+=terrain_visibility(
+          origin+direction*mix(distance0,distance1,fraction));
+    }
+    terrain_visibility_average*=0.25;
+    const float visibility=planet_visibility(point,sun_direction)*
+        terrain_visibility_average;
+    const vec3 direct_source=atmosphere.solar_absorption_peak.rgb*
+        visibility*transmittance_to_sun(point,sun_direction)*
+        phase_times_scattering;
+    const vec3 source=direct_source+
+        multiple_scattering_source(point,sun_direction,density);
+    const vec3 integral=(vec3(1.0)-segment_transmittance)/
+        max(local_extinction,vec3(1.0e-9));
+    radiance+=throughput*source*integral;
+    throughput*=segment_transmittance;
+  }
+  path_transmittance=throughput;
+  return radiance;
+}
+
+void generate_endpoint(ivec2 coordinate) {
+  const ivec2 output_size=imageSize(screen_endpoint);
+  if(any(greaterThanEqual(coordinate,output_size)))return;
+  const ivec2 depth_size=textureSize(scene_depth,0);
+  const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
+  const ivec2 base=coordinate*divisor;
+  float nearest_depth=0.0;
+  int opaque_count=0;
+  float farthest_opaque_depth=1.0;
+  for(int y=0;y<4;++y)for(int x=0;x<4;++x){
+    if(x>=divisor||y>=divisor)continue;
+    const float depth=texelFetch(scene_depth,
+        min(base+ivec2(x,y),depth_size-1),0).r;
+    nearest_depth=max(nearest_depth,depth);
+    if(depth>1.0e-8){
+      ++opaque_count;
+      farthest_opaque_depth=min(farthest_opaque_depth,depth);
+    }
+  }
+  const bool opaque=nearest_depth>1.0e-8;
+  const float linear_depth=opaque?
+      atmosphere.camera_position_near.w/nearest_depth:0.0;
+  const float depth_spread=opaque_count>1?
+      1.0-farthest_opaque_depth/max(nearest_depth,1.0e-8):0.0;
+  const float class_confidence=(opaque_count==0||
+      opaque_count==divisor*divisor)?1.0:0.0;
+  imageStore(screen_endpoint,coordinate,
+      vec4(linear_depth,opaque?1.0:0.0,
+           class_confidence*(1.0-clamp(depth_spread/0.05,0.0,1.0)),
+           uintBitsToFloat(dispatch_mode.reserved0)));
+}
+
+void generate_scattering(ivec2 coordinate) {
+  const ivec2 output_size=imageSize(screen_scattering);
+  if(any(greaterThanEqual(coordinate,output_size)))return;
+  const ivec2 depth_size=textureSize(scene_depth,0);
+  const int divisor=clamp(int(dispatch_mode.reserved0),2,4);
+  const ivec2 base=coordinate*divisor;
+  const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
+  const bool opaque=endpoint.y>0.5;
+  ivec2 representative=min(base,depth_size-1);
+  if(opaque){
+    float nearest_depth=0.0;
+    for(int y=0;y<4;++y)for(int x=0;x<4;++x){
+      if(x>=divisor||y>=divisor)continue;
+      const ivec2 source=min(base+ivec2(x,y),depth_size-1);
+      const float depth=texelFetch(scene_depth,source,0).r;
+      if(depth>nearest_depth){nearest_depth=depth;representative=source;}
+    }
+  }
+  const vec2 uv=opaque?
+      (vec2(representative)+0.5)/vec2(depth_size):
+      (vec2(base)+vec2(float(divisor)*0.5))/vec2(depth_size);
+  vec3 transmittance;
+  const vec3 radiance=integrate_scattered_luminance(
+      atmosphere.camera_position_near.xyz,view_direction(uv),
+      opaque?endpoint.x:1.0e30,transmittance);
+  imageStore(screen_scattering,coordinate,checked_value(radiance,65504.0));
+  imageStore(screen_transmittance,coordinate,checked_value(transmittance,1.0));
+}
+
+void main() {
+  if(dispatch_mode.mode==12U)
+    generate_endpoint(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==13U)
+    generate_scattering(ivec2(gl_GlobalInvocationID.xy));
+}

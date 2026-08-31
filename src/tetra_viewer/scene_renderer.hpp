@@ -189,6 +189,7 @@ class SceneRenderer {
   VkPipeline faithful_composite_pipeline_{VK_NULL_HANDLE};
   VkPipeline atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline faithful_atmosphere_pipeline_{VK_NULL_HANDLE};
+  VkPipeline reference_hillaire_atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};

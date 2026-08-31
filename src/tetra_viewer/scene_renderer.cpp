@@ -240,6 +240,9 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
       device_,TETRA_VIEWER_SHADER_DIR "/atmosphere.comp.spv");
   const auto faithful_atmosphere_compute_shader=shader_module(
       device_,TETRA_VIEWER_SHADER_DIR "/atmosphere_faithful.comp.spv");
+  const auto reference_hillaire_atmosphere_compute_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR
+          "/atmosphere_reference_hillaire.comp.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -393,6 +396,13 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                               nullptr,&faithful_atmosphere_pipeline_)!=VK_SUCCESS)
     throw std::runtime_error(
         "unable to create faithful atmosphere compute pipeline");
+  atmosphere_pipeline.stage.module=reference_hillaire_atmosphere_compute_shader;
+  if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
+                              nullptr,
+                              &reference_hillaire_atmosphere_pipeline_)!=
+     VK_SUCCESS)
+    throw std::runtime_error(
+        "unable to create reference Hillaire atmosphere compute pipeline");
 
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
@@ -453,6 +463,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_,faithful_tone_map_fragment_shader,nullptr);
   vkDestroyShaderModule(device_,atmosphere_compute_shader,nullptr);
   vkDestroyShaderModule(device_,faithful_atmosphere_compute_shader,nullptr);
+  vkDestroyShaderModule(
+      device_,reference_hillaire_atmosphere_compute_shader,nullptr);
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
@@ -1555,8 +1567,14 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       atmosphere_input.minimum_analytic_ground_distance_metres);
   atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
   atmosphere_uniform[53]=atmosphere_input.transport==
-      AtmosphereTransport::faithful_hillaire?
-      1.0F+static_cast<float>(atmosphere_input.rendering_method):0.0F;
+      AtmosphereTransport::qualified_baseline?0.0F:
+      (atmosphere_input.transport==
+           AtmosphereTransport::reference_hillaire_2020?10.0F:0.0F)+
+      1.0F+static_cast<float>(
+          atmosphere_input.transport==
+              AtmosphereTransport::reference_hillaire_2020?
+          AtmosphereRenderingMethod::temporal_half_resolution:
+          atmosphere_input.rendering_method);
   const int shadow_filter=atmosphere_input.shadow_filter==
       AtmosphereShadowFilter::unfiltered?0:
       atmosphere_input.shadow_filter==AtmosphereShadowFilter::fixed_tent?1:2;
@@ -2051,13 +2069,15 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   }
   if(atmosphere_enabled){
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
-        atmosphere_input.transport==AtmosphereTransport::faithful_hillaire?
-            faithful_atmosphere_pipeline_:atmosphere_pipeline_);
+        atmosphere_input.transport==AtmosphereTransport::qualified_baseline?
+            atmosphere_pipeline_:faithful_atmosphere_pipeline_);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
         nullptr);
-    const bool temporal=atmosphere_input.rendering_method==
-        AtmosphereRenderingMethod::temporal_half_resolution;
+    const bool temporal=atmosphere_input.transport==
+        AtmosphereTransport::reference_hillaire_2020||
+        atmosphere_input.rendering_method==
+            AtmosphereRenderingMethod::temporal_half_resolution;
     if(temporal){
       const std::array<VkImage,8> history_images{
           atmosphere_frame.history_scattering[0].image,
@@ -2293,8 +2313,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     if(plan.sky_view)
       dispatch(2U,(quality_settings_.sky_width+7U)/8U,
                (quality_settings_.sky_height+7U)/8U,1U);
-    if(plan.sky_irradiance&&
-       atmosphere_input.transport==AtmosphereTransport::faithful_hillaire){
+    if(plan.sky_irradiance&&atmosphere_input.transport!=
+       AtmosphereTransport::qualified_baseline){
       if(plan.sky_view)
         compute_barrier(
             std::span<const VkImage>{atmosphere_images.data()+2U,1U},
@@ -2598,14 +2618,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
                         timing_query_pool_,timing_base+5U);
     vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         timing_query_pool_,timing_base+6U);
-  }else if(atmosphere_enabled&&atmosphere_input.transport==
-         AtmosphereTransport::faithful_hillaire&&
-     (atmosphere_input.rendering_method==
-          AtmosphereRenderingMethod::deterministic_half_resolution||
-      atmosphere_input.rendering_method==
-          AtmosphereRenderingMethod::temporal_half_resolution)){
-    const bool temporal=atmosphere_input.rendering_method==
-        AtmosphereRenderingMethod::temporal_half_resolution;
+  }else if(atmosphere_enabled&&(
+      atmosphere_input.transport==AtmosphereTransport::reference_hillaire_2020||
+      (atmosphere_input.transport==AtmosphereTransport::faithful_hillaire&&
+       (atmosphere_input.rendering_method==
+            AtmosphereRenderingMethod::deterministic_half_resolution||
+        atmosphere_input.rendering_method==
+            AtmosphereRenderingMethod::temporal_half_resolution)))){
+    const bool reference_hillaire=atmosphere_input.transport==
+        AtmosphereTransport::reference_hillaire_2020;
+    const bool temporal=reference_hillaire||
+        atmosphere_input.rendering_method==
+            AtmosphereRenderingMethod::temporal_half_resolution;
     const std::array<VkImage,3> reconstructed_images{
         atmosphere_frame.screen_scattering.image,
         atmosphere_frame.screen_transmittance.image,
@@ -2633,7 +2657,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
         static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
-                      faithful_atmosphere_pipeline_);
+        reference_hillaire?reference_hillaire_atmosphere_pipeline_:
+                            faithful_atmosphere_pipeline_);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
         nullptr);
@@ -2720,6 +2745,9 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         0,0,nullptr,0,nullptr,
         static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
     if(temporal){
+      if(reference_hillaire)
+        vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                          faithful_atmosphere_pipeline_);
       const std::array<VkImage,8> history_images{
           atmosphere_frame.history_scattering[0].image,
           atmosphere_frame.history_transmittance[0].image,
@@ -2848,8 +2876,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkCmdSetViewport(command_buffer,0,1,&viewport);
   vkCmdSetScissor(command_buffer,0,1,&scissor);
   const VkPipeline selected_composite_pipeline=
-      atmosphere_input.transport==AtmosphereTransport::faithful_hillaire?
-          faithful_composite_pipeline_:composite_pipeline_;
+      atmosphere_input.transport==AtmosphereTransport::qualified_baseline?
+          composite_pipeline_:faithful_composite_pipeline_;
   vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                     selected_composite_pipeline);
   vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3032,6 +3060,7 @@ void SceneRenderer::shutdown() {
   vkDestroyPipeline(device_,faithful_composite_pipeline_,nullptr);
   vkDestroyPipeline(device_,atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_,faithful_atmosphere_pipeline_,nullptr);
+  vkDestroyPipeline(device_,reference_hillaire_atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);

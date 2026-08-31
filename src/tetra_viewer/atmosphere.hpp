@@ -37,12 +37,12 @@ enum class AtmosphereQuality {
   high
 };
 
-// Keep the already-qualified renderer selectable until the faithful path has
-// passed every Gate H oracle and performance gate.  The default changes only
-// at the atomic H9 promotion.
+// Keep earlier transports selectable so reference-path regressions can be
+// compared directly without reverting renderer work.
 enum class AtmosphereTransport {
   qualified_baseline,
   faithful_hillaire,
+  reference_hillaire_2020,
 };
 
 enum class AtmosphereRenderingMethod {
@@ -248,7 +248,7 @@ struct AtmosphereEpipolarLayout {
     double angle_radians,std::size_t angular_rows) noexcept;
 
 inline constexpr AtmosphereTransport default_atmosphere_transport=
-    AtmosphereTransport::faithful_hillaire;
+    AtmosphereTransport::reference_hillaire_2020;
 
 [[nodiscard]] std::optional<AtmosphereTransport> parse_atmosphere_transport(
     std::string_view name);
