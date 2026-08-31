@@ -1484,9 +1484,17 @@ void generate_aerial(ivec3 coordinate) {
   const vec3 direction=faithful_transport()?
       sun_focused_sky_direction(uv):view_direction(uv);
   vec3 transmittance;
+#ifdef FAITHFUL_SHADOW_SPLIT
+  // Terrain visibility is carried by the dedicated long-shadow field and
+  // composed at the final ray. Keeping the aerial volume unshadowed avoids
+  // duplicating the same expensive visibility integration in two caches.
+  const vec3 radiance=integrate_scattering_unshadowed(
+      atmosphere.camera_position_near.xyz,direction,distance,transmittance);
+#else
   const vec3 radiance=integrate_scattering(
       atmosphere.camera_position_near.xyz,direction,distance,
       transmittance);
+#endif
   imageStore(aerial_scattering_lut,coordinate,
              checked_lut_value(radiance,65504.0));
   imageStore(aerial_transmittance_lut,coordinate,
@@ -1874,12 +1882,13 @@ void publish_reconstructed_history(ivec2 coordinate) {
 void generate_long_shadow(ivec2 coordinate) {
   const ivec2 size=imageSize(long_shadow_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
-  const int update_phase=dynamic_sun_shadow_phase();
-  // Match the 8x8 dispatch group so three quarters of groups can terminate
-  // coherently. Per-texel checkerboarding still executes every branch on a
-  // SIMD group and is slower than a complete update on this GPU.
-  const int texel_phase=((coordinate.x/8)&1)|(((coordinate.y/8)&1)<<1);
-  if(dynamic_sun()&&update_phase>=0&&texel_phase!=update_phase)return;
+  // Refresh one coherent 8x8 workgroup class per frame. Sixteen phases keep
+  // the expensive terrain-visibility integration below a 120 Hz frame budget
+  // without reducing the lookup's spatial resolution.
+  const uint update_phase=dispatch_mode.reserved0;
+  const uint texel_phase=(uint(coordinate.x/8)&3U)|
+      ((uint(coordinate.y/8)&3U)<<2U);
+  if(update_phase!=0xffffffffU&&texel_phase!=update_phase)return;
   reset_epipolar_invocation_counters();
   const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
   // Store loss by planet/sun-relative direction rather than framebuffer

@@ -668,6 +668,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   atmosphere_dispatch_counts_={};
   dynamic_sun_shadow_phase_=0U;
   dynamic_sun_was_active_=false;
+  long_shadow_update_phase_=long_shadow_update_phase_count;
+  long_shadow_update_restart_needed_=false;
   latest_atmosphere_probe_={};
   latest_capture_={};
   if(timing_query_pool_!=VK_NULL_HANDLE){
@@ -2559,6 +2561,23 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         atmosphere_input.transport);
     if(atmosphere_input.dynamic_sun&&previous_revisions)
       plan.aerial_perspective=false;
+    if(atmosphere_input.transport!=AtmosphereTransport::faithful_hillaire){
+      long_shadow_update_phase_=long_shadow_update_phase_count;
+      long_shadow_update_restart_needed_=false;
+    }
+    const bool initial_long_shadow=plan.long_shadow&&!previous_revisions;
+    const bool phased_long_shadow_request=
+        previous_revisions&&
+        (plan.long_shadow||atmosphere_input.dynamic_sun)&&
+        atmosphere_input.transport==AtmosphereTransport::faithful_hillaire;
+    if(phased_long_shadow_request){
+      if(long_shadow_update_phase_>=long_shadow_update_phase_count){
+        long_shadow_update_phase_=0U;
+        long_shadow_update_restart_needed_=false;
+      }else long_shadow_update_restart_needed_=true;
+    }
+    plan.long_shadow=initial_long_shadow||
+        long_shadow_update_phase_<long_shadow_update_phase_count;
     if(plan.transmittance){
       dispatch(0U,(quality_settings_.transmittance_width+7U)/8U,
                (quality_settings_.transmittance_height+7U)/8U,1U);
@@ -2614,9 +2633,24 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&reset_barrier,
           0,nullptr);
     }
-    if(plan.long_shadow)
-      dispatch(6U,(quality_settings_.long_shadow_width+7U)/8U,
-               (quality_settings_.long_shadow_height+7U)/8U,1U);
+    if(plan.long_shadow){
+      const std::array<std::uint32_t,4> push{
+          6U,initial_long_shadow?0xffffffffU:long_shadow_update_phase_,0U,0U};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
+      vkCmdDispatch(command_buffer,
+          (quality_settings_.long_shadow_width+7U)/8U,
+          (quality_settings_.long_shadow_height+7U)/8U,1U);
+      ++atmosphere_dispatch_counts_.long_shadow;
+      if(!initial_long_shadow){
+        ++long_shadow_update_phase_;
+        if(long_shadow_update_phase_>=long_shadow_update_phase_count&&
+           long_shadow_update_restart_needed_){
+          long_shadow_update_phase_=0U;
+          long_shadow_update_restart_needed_=false;
+        }
+      }
+    }
     if(plan.long_shadow&&epipolar_integrator){
       VkBufferMemoryBarrier counter_to_copy{
           VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};

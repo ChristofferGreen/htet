@@ -87,9 +87,11 @@ static VkDescriptorPool         g_DescriptorPool = VK_NULL_HANDLE;
 static ImGui_ImplVulkanH_Window g_MainWindowData;
 static int                      g_MinImageCount = 2;
 static bool                     g_SwapChainRebuild = false;
-static bool                     g_VSyncEnabled = false;
+static bool                     g_VSyncEnabled = true;
 static VkPresentModeKHR         g_UncappedPresentMode =
     VK_PRESENT_MODE_FIFO_KHR;
+static PFN_vkGetRefreshCycleDurationGOOGLE g_GetRefreshCycleDuration = nullptr;
+static std::uint64_t            g_RefreshDurationNanoseconds = 0U;
 static tetra_viewer::SceneRenderer g_SceneRenderer;
 static std::array<float, 28> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
 static bool g_BlackSceneClear = false;
@@ -124,6 +126,9 @@ static void check_vk_result(VkResult err)
 
 static int window_display_refresh_rate(GLFWwindow* window)
 {
+    if(g_RefreshDurationNanoseconds!=0U)
+        return std::max(1,static_cast<int>(std::lround(
+            1.0e9/static_cast<double>(g_RefreshDurationNanoseconds))));
     int window_x{},window_y{},window_width{},window_height{};
     glfwGetWindowPos(window,&window_x,&window_y);
     glfwGetWindowSize(window,&window_width,&window_height);
@@ -290,6 +295,8 @@ static void SetupVulkan(ImVector<const char*> instance_extensions)
         vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &properties_count, nullptr);
         properties.resize(properties_count);
         vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &properties_count, properties.Data);
+        if(IsExtensionAvailable(properties,VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME))
+            device_extensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         if (IsExtensionAvailable(properties, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME))
         {
             if (IsExtensionAvailable(properties, "VK_KHR_multiview"))
@@ -337,6 +344,9 @@ static void SetupVulkan(ImVector<const char*> instance_extensions)
         create_info.pNext = &dynamic_rendering;
         err = vkCreateDevice(g_PhysicalDevice, &create_info, g_Allocator, &g_Device);
         check_vk_result(err);
+        g_GetRefreshCycleDuration=reinterpret_cast<
+            PFN_vkGetRefreshCycleDurationGOOGLE>(vkGetDeviceProcAddr(
+                g_Device,"vkGetRefreshCycleDurationGOOGLE"));
         vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);
     }
 
@@ -379,9 +389,9 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface
     const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
     wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(g_PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
-    // Prefer a non-blocking present mode so the live frame-time display
-    // measures renderer cost instead of quantized display-wait intervals.
-    // FIFO remains available from the world status panel for tear-free output.
+    // Discover the best non-blocking fallback, but default to FIFO so the
+    // interactive viewer is paced by the active display instead of exposing
+    // every small renderer-time fluctuation as visible frame-rate jitter.
     const VkPresentModeKHR uncapped_present_modes[] = {
         VK_PRESENT_MODE_MAILBOX_KHR,
         VK_PRESENT_MODE_IMMEDIATE_KHR,
@@ -528,6 +538,13 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd)
     info.swapchainCount = 1;
     info.pSwapchains = &wd->Swapchain;
     info.pImageIndices = &wd->FrameIndex;
+    if(g_GetRefreshCycleDuration!=nullptr){
+        VkRefreshCycleDurationGOOGLE duration{};
+        if(g_GetRefreshCycleDuration(
+               g_Device,wd->Swapchain,&duration)==VK_SUCCESS&&
+           duration.refreshDuration!=g_RefreshDurationNanoseconds)
+            g_RefreshDurationNanoseconds=duration.refreshDuration;
+    }
     VkResult err = vkQueuePresentKHR(g_Queue, &info);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
     {
@@ -1137,7 +1154,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         RenderResolutionMode::automatic;
     float world_fixed_render_scale=2.0F/3.0F;
     float world_auto_render_scale=1.0F;
-    float world_auto_minimum_scale=2.0F/3.0F;
+    float world_auto_minimum_scale=0.5F;
     float world_auto_maximum_scale=1.0F;
     int world_display_refresh_hz=window_display_refresh_rate(window);
     bool world_auto_target_display=true;
@@ -1146,6 +1163,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::vector<double> world_auto_gpu_samples;
     std::size_t world_render_scale_stable_frames{};
     double world_auto_gpu_median_milliseconds{};
+    double world_auto_gpu_percentile_95_milliseconds{};
     float world_sun_azimuth=
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
@@ -1186,6 +1204,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::size_t world_gpu_benchmark_warmup_frames{};
     std::array<std::vector<double>,7> world_gpu_benchmark_samples;
     std::array<double,7> world_gpu_refresh_maximum{};
+    struct WorldFramePacingSample {
+        double cpu_milliseconds{};
+        double gpu_milliseconds{};
+        double atmosphere_milliseconds{};
+        float render_scale{};
+    };
+    std::vector<WorldFramePacingSample> world_frame_pacing_samples;
+    double world_frame_elapsed_milliseconds{};
     std::size_t world_gpu_pre_resize_scene_bytes{};
     int world_process_exit_code{};
     double world_cursor_x{},world_cursor_y{};
@@ -1857,6 +1883,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_terrain_msaa?world_terrain_samples:
                                    VK_SAMPLE_COUNT_1_BIT);
             g_MainWindowData.FrameIndex = 0;
+            g_RefreshDurationNanoseconds=0U;
             g_SwapChainRebuild = false;
         }
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0)
@@ -3013,8 +3040,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::TextUnformatted("Mouse look  Esc releases pointer  Click captures");
             ImGui::Separator();
             const float frame_rate=ImGui::GetIO().Framerate;
-            ImGui::Text("Frame %.2f ms   %.1f FPS",
-                        frame_rate>0.0F?1000.0F/frame_rate:0.0F,frame_rate);
+            if(g_VSyncEnabled)
+                ImGui::Text("VSync %d Hz   %.2f ms frame budget",
+                    world_display_refresh_hz,
+                    1000.0/static_cast<double>(world_display_refresh_hz));
+            else ImGui::Text("Render loop %.2f ms   %.1f FPS",
+                frame_rate>0.0F?1000.0F/frame_rate:0.0F,frame_rate);
             const bool uncapped_present_supported=
                 g_UncappedPresentMode!=VK_PRESENT_MODE_FIFO_KHR;
             if(!uncapped_present_supported)ImGui::BeginDisabled();
@@ -3145,8 +3176,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGui::Text("GPU %.2f ms",gpu_total);
                     if(world_render_resolution_mode==
                            RenderResolutionMode::automatic)
-                        ImGui::TextDisabled("Auto median %.2f ms  stable %zu frames",
+                        ImGui::TextDisabled("Auto median %.2f ms  p95 %.2f ms  stable %zu",
                             world_auto_gpu_median_milliseconds,
+                            world_auto_gpu_percentile_95_milliseconds,
                             world_render_scale_stable_frames);
                 }
             }
@@ -3648,6 +3680,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const double elapsed=std::chrono::duration<double>(
                 now-previous_world_frame).count();
             previous_world_frame=now;
+            world_frame_elapsed_milliseconds=elapsed*1000.0;
             if(world_animate_sun){
                 world_sun_orbit_phase=
                     tetra_viewer::advance_world_sun_orbit_phase(
@@ -4443,6 +4476,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     timing.screen_integration_milliseconds+
                     timing.temporal_reconstruction_milliseconds+
                     timing.composite_milliseconds;
+                const double active_budget=1000.0/world_auto_target_fps;
+                if(world_render_scale_stable_frames>=15U&&
+                   gpu_total>active_budget*0.95&&
+                   world_auto_render_scale>
+                       world_auto_minimum_scale+0.001F){
+                    world_auto_render_scale=std::max(
+                        world_auto_minimum_scale,
+                        world_auto_render_scale-0.05F);
+                    world_auto_gpu_samples.clear();
+                }
+                world_frame_pacing_samples.push_back({
+                    world_frame_elapsed_milliseconds,gpu_total,
+                    timing.atmosphere_milliseconds,world_auto_render_scale});
+                constexpr std::size_t pacing_sample_limit=720U;
+                if(world_frame_pacing_samples.size()>pacing_sample_limit)
+                    world_frame_pacing_samples.erase(
+                        world_frame_pacing_samples.begin());
                 world_auto_gpu_samples.push_back(gpu_total);
                 constexpr std::size_t evaluation_frames=60U;
                 if(world_auto_gpu_samples.size()>=evaluation_frames){
@@ -4450,17 +4500,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     std::ranges::sort(ordered);
                     world_auto_gpu_median_milliseconds=
                         ordered[ordered.size()/2U];
+                    world_auto_gpu_percentile_95_milliseconds=ordered[
+                        (ordered.size()-1U)*19U/20U];
                     const double budget=1000.0/world_auto_target_fps;
                     float next_scale=world_auto_render_scale;
-                    if(world_auto_gpu_median_milliseconds>budget*0.95||
-                       world_auto_gpu_median_milliseconds<budget*0.72){
+                    // Keep ordinary slow frames inside the next vblank and
+                    // avoid quality oscillation: react to p95, shed quality
+                    // faster than it is restored, and retain a broad deadband.
+                    if(world_auto_gpu_percentile_95_milliseconds>budget*0.82||
+                       world_auto_gpu_percentile_95_milliseconds<budget*0.68){
                         const float predicted=world_auto_render_scale*
                             static_cast<float>(std::sqrt(
-                                budget*0.88/
-                                world_auto_gpu_median_milliseconds));
+                                budget*0.72/
+                                world_auto_gpu_percentile_95_milliseconds));
                         next_scale=std::clamp(predicted,
                             world_auto_render_scale-0.05F,
-                            world_auto_render_scale+0.05F);
+                            world_auto_render_scale+0.02F);
                         next_scale=std::round(next_scale*100.0F)/100.0F;
                         next_scale=std::clamp(next_scale,
                             world_auto_minimum_scale,
@@ -4651,12 +4706,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(world_auto_target_display?"display":"fixed")
                         <<"\",\"display_refresh_hz\":"
                         <<world_display_refresh_hz
+                        <<",\"render_loop_fps\":"
+                        <<ImGui::GetIO().Framerate
+                        <<",\"refresh_cycle_hz\":"
+                        <<(g_RefreshDurationNanoseconds==0U?0.0:
+                            1.0e9/g_RefreshDurationNanoseconds)
                         <<",\"auto_minimum_scale\":"
                         <<world_auto_minimum_scale
                         <<",\"auto_maximum_scale\":"
                         <<world_auto_maximum_scale
                         <<",\"auto_gpu_median_ms\":"
                         <<world_auto_gpu_median_milliseconds
+                        <<",\"auto_gpu_p95_ms\":"
+                        <<world_auto_gpu_percentile_95_milliseconds
                         <<",\"scale_stable_frames\":"
                         <<world_render_scale_stable_frames<<','
                         <<"\"rendering_method\":\""
@@ -5081,12 +5143,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<(world_auto_target_display?"display":"fixed")
                              <<"\",\"display_refresh_hz\":"
                              <<world_display_refresh_hz
+                             <<",\"render_loop_fps\":"
+                             <<ImGui::GetIO().Framerate
+                             <<",\"refresh_cycle_hz\":"
+                             <<(g_RefreshDurationNanoseconds==0U?0.0:
+                                 1.0e9/g_RefreshDurationNanoseconds)
                              <<",\"auto_minimum_scale\":"
                              <<world_auto_minimum_scale
                              <<",\"auto_maximum_scale\":"
                              <<world_auto_maximum_scale
                              <<",\"auto_gpu_median_ms\":"
                              <<world_auto_gpu_median_milliseconds
+                             <<",\"auto_gpu_p95_ms\":"
+                             <<world_auto_gpu_percentile_95_milliseconds
                              <<",\"scale_stable_frames\":"
                              <<world_render_scale_stable_frames
                              <<",\"rgb_hash\":"
@@ -5282,6 +5351,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                  <<",\"render_origin\":"
                                  <<revisions->render_origin.value<<'}';
                     }
+                    std::cout<<",\"frame_pacing\":[";
+                    const std::size_t pacing_begin=
+                        world_frame_pacing_samples.size()>240U?
+                            world_frame_pacing_samples.size()-240U:0U;
+                    for(std::size_t index=pacing_begin;
+                        index<world_frame_pacing_samples.size();++index){
+                        if(index!=pacing_begin)std::cout<<',';
+                        const auto& sample=world_frame_pacing_samples[index];
+                        std::cout<<'['<<sample.cpu_milliseconds<<','
+                                 <<sample.gpu_milliseconds<<','
+                                 <<sample.atmosphere_milliseconds<<','
+                                 <<sample.render_scale<<']';
+                    }
+                    std::cout<<']';
                     std::cout<<"}\n";
                 }
                 world_gpu_atmosphere_capture_path.clear();

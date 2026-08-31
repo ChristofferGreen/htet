@@ -245,6 +245,9 @@ class SceneRenderer {
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
   std::uint32_t dynamic_sun_shadow_phase_{};
   bool dynamic_sun_was_active_{};
+  static constexpr std::uint32_t long_shadow_update_phase_count=16U;
+  std::uint32_t long_shadow_update_phase_{long_shadow_update_phase_count};
+  bool long_shadow_update_restart_needed_{};
   AtmosphereGpuProbe latest_atmosphere_probe_{};
   AtmosphereShadowMapStatus atmosphere_shadow_map_status_{};
   SceneCapture latest_capture_{};

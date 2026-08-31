@@ -768,8 +768,8 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
           (baseline&&orientation),
       .sky_irradiance=optical||scattering||sun||sky_position,
       .aerial_perspective=
-          optical||scattering||sun||position||(baseline&&orientation)||
-          integrator||shadow||origin,
+          optical||scattering||sun||position||
+          (baseline&&(orientation||integrator||shadow))||origin,
       .long_shadow=transport==AtmosphereTransport::faithful_hillaire&&
           (optical||scattering||sun||position||integrator||shadow||origin),
   };

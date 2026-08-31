@@ -14847,7 +14847,7 @@ TEST_CASE("reference Hillaire transport never schedules legacy long shadows") {
   ++relit.shadow.value;
   const auto updated=atmosphere_dispatch_plan(
       state,relit,AtmosphereTransport::reference_hillaire_2020);
-  CHECK(updated.aerial_perspective);
+  CHECK_FALSE(updated.aerial_perspective);
   CHECK_FALSE(updated.long_shadow);
 }
 
@@ -15182,7 +15182,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.multiple_scattering);
   CHECK_FALSE(plan.sky_view);
   CHECK_FALSE(plan.sky_irradiance);
-  CHECK(plan.aerial_perspective);
+  CHECK_FALSE(plan.aerial_perspective);
   CHECK(plan.long_shadow);
 
   auto sky_moved=state;
@@ -15211,7 +15211,7 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   CHECK_FALSE(plan.transmittance);
   CHECK_FALSE(plan.multiple_scattering);
   CHECK_FALSE(plan.sky_view);
-  CHECK(plan.aerial_perspective);
+  CHECK_FALSE(plan.aerial_perspective);
   CHECK(plan.long_shadow);
 
   auto rebased=state;
