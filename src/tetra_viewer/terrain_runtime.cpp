@@ -1517,7 +1517,8 @@ bool evict_terrain_detail_sector_for_budget(
   return true;
 }
 
-BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
+BlockedTerrainRuntime::BlockedTerrainRuntime(
+    WorldProfile profile,std::optional<tetra::Camera> initial_camera)
     :profile_(profile),executor_(std::make_shared<tetra::GeometryExecutor>(
         tetra::GeometryExecutorConfiguration{
             .worker_count=tetra::default_geometry_worker_count(),
@@ -1542,7 +1543,11 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   field_.terrain=profile_.terrain;
   field_.secondary=profile_.octave_detail_amplitude;
   field_.frequency=profile_.octave_detail_frequency;
-  camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
+  if(initial_camera)camera_=*initial_camera;
+  else{
+    camera_.position={0.5,0.72,0.78};
+    camera_.forward={0.0,-0.2,-1.0};
+  }
   last_requested_camera_=camera_;
   auto initial=build_publication(
       profile_,field_,camera_,1U,{}, {}, {}, {}, {}, {},executor_.get());
@@ -2652,14 +2657,15 @@ std::vector<TerrainDebugLine> BlockedTerrainRuntime::lod_zone_lines() const {
 }
 
 std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
-    WorldProfile profile) {
-  return std::make_unique<BlockedTerrainRuntime>(profile);
+    WorldProfile profile,std::optional<tetra::Camera> initial_camera) {
+  return std::make_unique<BlockedTerrainRuntime>(profile,initial_camera);
 }
 
 std::future<std::unique_ptr<TerrainRuntime>>
-make_production_terrain_runtime_async(WorldProfile profile) {
-  return std::async(std::launch::async,[profile]{
-    return make_production_terrain_runtime(profile);
+make_production_terrain_runtime_async(
+    WorldProfile profile,std::optional<tetra::Camera> initial_camera) {
+  return std::async(std::launch::async,[profile,initial_camera]{
+    return make_production_terrain_runtime(profile,initial_camera);
   });
 }
 

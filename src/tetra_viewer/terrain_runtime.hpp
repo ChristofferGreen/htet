@@ -603,7 +603,9 @@ class MonolithicTerrainRuntime final : public TerrainRuntime {
 
 class BlockedTerrainRuntime final : public TerrainRuntime {
  public:
-  explicit BlockedTerrainRuntime(WorldProfile profile=production_world_profile());
+  explicit BlockedTerrainRuntime(
+      WorldProfile profile=production_world_profile(),
+      std::optional<tetra::Camera> initial_camera=std::nullopt);
   ~BlockedTerrainRuntime() override;
 
   void set_camera(const tetra::Camera& camera,bool interactive) override;
@@ -715,9 +717,11 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 };
 
 [[nodiscard]] std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(
-    WorldProfile profile=production_world_profile());
+    WorldProfile profile=production_world_profile(),
+    std::optional<tetra::Camera> initial_camera=std::nullopt);
 [[nodiscard]] std::future<std::unique_ptr<TerrainRuntime>>
 make_production_terrain_runtime_async(
-    WorldProfile profile=production_world_profile());
+    WorldProfile profile=production_world_profile(),
+    std::optional<tetra::Camera> initial_camera=std::nullopt);
 
 }  // namespace tetra_viewer

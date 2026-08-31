@@ -5,7 +5,7 @@
 namespace tetra_viewer {
 
 struct WorldResourceBudgets {
-  std::size_t maximum_cpu_bytes{512U*1024U*1024U};
+  std::size_t maximum_cpu_bytes{640U*1024U*1024U};
   std::size_t maximum_triangles{500000U};
   std::size_t maximum_work_units{25000000U};
   std::size_t maximum_upload_bytes{32U*1024U*1024U};

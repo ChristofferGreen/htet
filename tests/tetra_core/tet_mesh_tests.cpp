@@ -1132,7 +1132,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.field_error_pixel_threshold==doctest::Approx(16384.0));
   CHECK(profile.limb_error_pixel_threshold==doctest::Approx(2.0));
   CHECK(profile.maximum_depth==20U);
-  CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
+  CHECK(profile.budgets.maximum_cpu_bytes==640U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
   CHECK(profile.budgets.maximum_work_units==25000000U);
   CHECK(profile.budgets.maximum_upload_bytes==32U*1024U*1024U);
@@ -3045,6 +3045,32 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   CHECK_FALSE(runtime.diagnostics().busy);
   CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
   CHECK(runtime.diagnostics().scene_generation==final_generation);
+}
+
+TEST_CASE("blocked world builds its first front for the requested startup camera") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.background_red_depth=3U;
+  profile.near_red_depth=7U;
+  tetra::Camera camera;
+  camera.position={0.5,0.5,0.78};
+  camera.forward={0.73,-0.1,0.68};
+  camera.up={0.0,1.0,0.0};
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.6;
+
+  tetra_viewer::BlockedTerrainRuntime runtime(profile,camera);
+  const auto initial=runtime.diagnostics();
+  CHECK(initial.published_camera_position.x==camera.position.x);
+  CHECK(initial.published_camera_position.y==camera.position.y);
+  CHECK(initial.published_camera_position.z==camera.position.z);
+  CHECK(initial.published_camera_forward.x==camera.forward.x);
+  CHECK(initial.published_camera_forward.y==camera.forward.y);
+  CHECK(initial.published_camera_forward.z==camera.forward.z);
+  CHECK(initial.submitted_builds==1U);
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==1U);
 }
 
 TEST_CASE("blocked world schedules accumulated camera rotation without translation") {
