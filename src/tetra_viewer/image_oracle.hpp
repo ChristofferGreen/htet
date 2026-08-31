@@ -72,6 +72,13 @@ struct ScalarSampleSummary {
     std::span<const std::uint8_t> geometry,std::uint32_t width,
     std::uint32_t height,std::uint32_t radius,
     std::vector<std::uint8_t>& mask,std::string& error);
+// Select only clear pixels immediately outside a geometry silhouette.  This
+// gives orbital atmosphere qualification a stable region in which to require
+// a visible limb without mixing terrain pixels into the measurement.
+[[nodiscard]] bool make_outer_silhouette_band_mask(
+    std::span<const std::uint8_t> geometry,std::uint32_t width,
+    std::uint32_t height,std::uint32_t radius,
+    std::vector<std::uint8_t>& mask,std::string& error);
 [[nodiscard]] bool make_horizontal_band_mask(
     std::uint32_t width,std::uint32_t height,double centre,
     double height_fraction,std::vector<std::uint8_t>& mask,

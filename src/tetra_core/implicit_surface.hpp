@@ -102,15 +102,25 @@ struct Sphere {
   double secondary{0.12};
   double frequency{3.0};
   TerrainParameters terrain{};
+  // Zero evaluates the complete procedural spectrum. A positive value is
+  // the world-space sample footprint used to band-limit planetary terrain.
+  double sampling_footprint{};
 
   [[nodiscard]] double signed_distance(Vec3 point) const;
+  [[nodiscard]] double signed_distance(Vec3 point,double sampling_footprint) const;
   [[nodiscard]] Vec3 normal(Vec3 point) const;
   [[nodiscard]] Vec3 edge_intersection(Vec3 first,Vec3 second) const;
+  [[nodiscard]] Vec3 edge_intersection(
+      Vec3 first,Vec3 second,double sampling_footprint) const;
   [[nodiscard]] Vec3 project_to_surface(Vec3 point) const;
 };
 
 [[nodiscard]] TerrainHeightSample terrain_height_sample(
     const Sphere& terrain,double x,double z);
+// Conservative absolute displacement from the spherical/planar datum.  This
+// is a height bound, not a gradient bound, and is suitable for sizing systems
+// such as a planetary atmosphere around every possible terrain realization.
+[[nodiscard]] double terrain_height_magnitude_bound(const Sphere& terrain);
 [[nodiscard]] double terrain_height_slope_bound(const Sphere& terrain);
 [[nodiscard]] double terrain_height_slope_bound(
     const Sphere& terrain,double x,double z,double horizontal_radius);

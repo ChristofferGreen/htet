@@ -2809,13 +2809,13 @@ void append_screen_space_edges(PreparedScene& scene, bool show_surface_edges,
     if(!solid){
       colour={0.78F,0.92F,1.0F};
     }else if(connected_surface){
-      colour={0.015F,0.055F,0.028F};
+      colour={0.05F,0.17F,0.15F};
       priority=3;
     }else if(volume_face&&vertices[0].colour[0]>0.7F){
       colour={0.18F,0.055F,0.015F};
       priority=2;
     }else{
-      colour={0.025F,0.04F,0.055F};
+      colour={0.045F,0.13F,0.16F};
     }
     for(std::size_t edge_index=0;edge_index<3;++edge_index){
       if((mask&(1<<edge_index))==0)continue;
@@ -2881,7 +2881,19 @@ PreparedScene prepare_blocked_derived_surface_scene(
   scene.connected_surface_hash=surface.canonical_surface_hash;
   scene.optimized_surface_vertices=surface.vertices.size();
   if(!show_faces&&!show_edges)return scene;
-  scene.triangle_vertices.reserve(surface.triangles.size()*3U);
+  // The planetary renderer normally consumes only the derived boundary, not
+  // the conforming volume behind it. Split that draw surface once so orbital
+  // wireframes remain legible without forcing four times as many sparse
+  // tetrahedral owners into the active hierarchy. Evaluate each shared edge
+  // midpoint on the same band-limited field used to extract the parent. A
+  // planar split only made the wire denser while retaining the visibly coarse
+  // tetrahedral interpolation that looked like unstable procedural noise.
+  const bool subdivide_planet_surface=field.terrain.planet_radius>0.0;
+  auto midpoint_field=field;
+  if(midpoint_field.sampling_footprint>0.0)
+    midpoint_field.sampling_footprint*=0.5;
+  scene.triangle_vertices.reserve(
+      surface.triangles.size()*(subdivide_planet_surface?12U:3U));
   constexpr std::array<std::array<float,3>,3> barycentric{{
       {{1.0F,0.0F,0.0F}},{{0.0F,1.0F,0.0F}},{{0.0F,0.0F,1.0F}}}};
   for(const auto& triangle:surface.triangles){
@@ -2894,24 +2906,46 @@ PreparedScene prepare_blocked_derived_surface_scene(
         throw std::logic_error("blocked render triangle references a missing vertex");
       points[corner]=vertex->position;
     }
-    auto normal=face_normal(points[0],points[1],points[2]);
-    const auto centre=(points[0]+points[1]+points[2])/3.0;
-    const auto outward=field.normal(centre);
-    if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
-      normal={-normal.x,-normal.y,-normal.z};
-    for(std::size_t corner=0;corner<3U;++corner){
-      SceneVertex vertex{};
-      const auto position=render_position(scene,points[corner]);
-      std::ranges::copy(position,vertex.position);
-      vertex.colour[0]=0.24F;vertex.colour[1]=0.76F;vertex.colour[2]=0.38F;
-      vertex.normal[0]=static_cast<float>(normal.x);
-      vertex.normal[1]=static_cast<float>(normal.y);
-      vertex.normal[2]=static_cast<float>(normal.z);
-      vertex.diagnostics[0]=-2.0F;
-      vertex.edge_flags=show_edges?7.0F:0.0F;
-      std::ranges::copy(barycentric[corner],vertex.barycentric);
-      scene.triangle_vertices.push_back(vertex);
-    }
+    const auto emit=[&](const std::array<tetra::Vec3,3>& render_triangle){
+      auto normal=face_normal(
+          render_triangle[0],render_triangle[1],render_triangle[2]);
+      const auto centre=(render_triangle[0]+render_triangle[1]+
+                         render_triangle[2])/3.0;
+      const auto outward=field.normal(centre);
+      if(normal.x*outward.x+normal.y*outward.y+normal.z*outward.z<0.0)
+        normal={-normal.x,-normal.y,-normal.z};
+      for(std::size_t corner=0;corner<3U;++corner){
+        SceneVertex vertex{};
+        const auto position=render_position(scene,render_triangle[corner]);
+        std::ranges::copy(position,vertex.position);
+        vertex.colour[0]=0.24F;vertex.colour[1]=0.76F;vertex.colour[2]=0.38F;
+        vertex.normal[0]=static_cast<float>(normal.x);
+        vertex.normal[1]=static_cast<float>(normal.y);
+        vertex.normal[2]=static_cast<float>(normal.z);
+        vertex.diagnostics[0]=-2.0F;
+        vertex.edge_flags=show_edges?7.0F:0.0F;
+        std::ranges::copy(barycentric[corner],vertex.barycentric);
+        scene.triangle_vertices.push_back(vertex);
+      }
+    };
+    const auto subdivide=[&](auto&& self,
+                             const std::array<tetra::Vec3,3>& source,
+                             unsigned int levels)->void{
+      if(levels==0U){emit(source);return;}
+      const auto midpoint=[&](tetra::Vec3 first,tetra::Vec3 second){
+        const auto centre=(first+second)/2.0;
+        return subdivide_planet_surface?
+            midpoint_field.project_to_surface(centre):centre;
+      };
+      const auto ab=midpoint(source[0],source[1]);
+      const auto bc=midpoint(source[1],source[2]);
+      const auto ca=midpoint(source[2],source[0]);
+      self(self,{source[0],ab,ca},levels-1U);
+      self(self,{ab,source[1],bc},levels-1U);
+      self(self,{ca,bc,source[2]},levels-1U);
+      self(self,{ab,bc,ca},levels-1U);
+    };
+    subdivide(subdivide,points,subdivide_planet_surface?1U:0U);
   }
   // Keep lighting independent of triangle scale. The blocked path used to
   // submit raw area vectors here; sufficiently refined faces then fell below
@@ -3039,7 +3073,7 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   };
   hash_field_value(field.kind);
   for(const double value:{field.centre.x,field.centre.y,field.centre.z,
-      field.radius,field.secondary,field.frequency,
+      field.radius,field.secondary,field.frequency,field.sampling_footprint,
       field.terrain.height_offset,field.terrain.landform_amplitude,
       field.terrain.landform_frequency,field.terrain.mountain_amplitude,
       field.terrain.mountain_ridge_frequency,

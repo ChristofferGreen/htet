@@ -858,6 +858,176 @@ TEST_CASE("reversed depth retains useful precision from ground to Earth orbit") 
   }
 }
 
+TEST_CASE("atmosphere endpoint reduction conservatively retains foreground depth") {
+  using tetra_viewer::AtmosphereEndpointClass;
+  constexpr double near_plane=0.001;
+  const auto sky=tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.0F,0.0F,0.0F,0.0F},near_plane);
+  REQUIRE(sky);
+  CHECK(sky->classification==AtmosphereEndpointClass::sky);
+  CHECK(sky->reversed_depth==0.0F);
+  CHECK(sky->transition_confidence==1.0);
+
+  const auto mixed=tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.0F,0.0001F,0.0005F,0.0002F},near_plane);
+  REQUIRE(mixed);
+  CHECK(mixed->classification==AtmosphereEndpointClass::opaque);
+  CHECK(mixed->reversed_depth==doctest::Approx(0.0005F));
+  CHECK(mixed->linear_depth_metres==doctest::Approx(2.0));
+  CHECK(mixed->transition_confidence==0.0);
+
+  const auto foreground=tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.25F,0.5F,0.125F,0.0F},near_plane);
+  REQUIRE(foreground);
+  CHECK(foreground->reversed_depth==0.5F);
+  CHECK(foreground->linear_depth_metres==doctest::Approx(0.002));
+  CHECK(foreground->transition_confidence==0.0);
+
+  const auto stable=tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.5F,0.5F,0.5F,0.5F},near_plane,0x1234U);
+  REQUIRE(stable);
+  CHECK(stable->transition_confidence==doctest::Approx(1.0));
+  CHECK(stable->generation==0x1234U);
+
+  CHECK_FALSE(tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.0F,-0.1F,0.0F,0.0F},near_plane));
+  CHECK_FALSE(tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.0F,
+          std::numeric_limits<float>::quiet_NaN(),0.0F,0.0F},near_plane));
+  CHECK_FALSE(tetra_viewer::reduce_atmosphere_endpoint_2x2(
+      std::array<float,4>{0.0F,0.0F,0.0F,0.0F},0.0));
+}
+
+TEST_CASE("atmosphere reconstruction never mixes endpoint classes or distant depths") {
+  using tetra_viewer::AtmosphereEndpointClass;
+  using tetra_viewer::AtmosphereReducedEndpoint;
+  const std::array taps{
+      AtmosphereReducedEndpoint{AtmosphereEndpointClass::sky,0.0F,0.0},
+      AtmosphereReducedEndpoint{AtmosphereEndpointClass::opaque,0.5F,2.0},
+      AtmosphereReducedEndpoint{AtmosphereEndpointClass::opaque,0.48F,2.05},
+      AtmosphereReducedEndpoint{AtmosphereEndpointClass::opaque,0.125F,8.0}};
+  const std::array<double,4> bilinear{0.4,0.3,0.2,0.1};
+
+  const auto opaque=tetra_viewer::atmosphere_reconstruction_weights(
+      AtmosphereEndpointClass::opaque,2.0,taps,bilinear,0.05);
+  CHECK(opaque[0]==0.0);
+  CHECK(opaque[1]>opaque[2]);
+  CHECK(opaque[3]==0.0);
+  CHECK(std::accumulate(opaque.begin(),opaque.end(),0.0)==
+        doctest::Approx(1.0));
+
+  const auto sky=tetra_viewer::atmosphere_reconstruction_weights(
+      AtmosphereEndpointClass::sky,0.0,taps,bilinear,0.05);
+  CHECK(sky[0]==doctest::Approx(1.0));
+  CHECK(sky[1]==0.0);
+  CHECK(sky[2]==0.0);
+  CHECK(sky[3]==0.0);
+
+  const auto unsupported=tetra_viewer::atmosphere_reconstruction_weights(
+      AtmosphereEndpointClass::opaque,100.0,taps,bilinear,0.01);
+  CHECK(std::accumulate(unsupported.begin(),unsupported.end(),0.0)==0.0);
+}
+
+TEST_CASE("atmosphere screen history invalidates content but permits reprojection") {
+  using tetra_viewer::AtmosphereHistoryInvalidation;
+  tetra_viewer::AtmosphereScreenHistoryIdentity previous{
+      .revisions={.optical={1U},.scattering={2U},.sun={3U},
+                  .camera_position={4U},.sky_position={5U},
+                  .camera_orientation={6U},.shadow_integrator={7U},
+                  .shadow={8U},.render_origin={9U}},
+      .terrain_generation=10U,.result_generation=11U,
+      .width=1280U,.height=800U,.valid=true};
+  auto current=previous;
+  CHECK(tetra_viewer::atmosphere_screen_history_compatibility(
+      previous,current).compatible());
+
+  current.revisions.camera_position={40U};
+  current.revisions.camera_orientation={60U};
+  current.revisions.render_origin={90U};
+  const auto motion=tetra_viewer::atmosphere_screen_history_compatibility(
+      previous,current);
+  CHECK(motion.compatible());
+  CHECK(motion.camera_changed);
+  CHECK(motion.render_origin_changed);
+
+  const auto reason=[&](auto mutate){
+    auto incompatible=previous;
+    mutate(incompatible);
+    return tetra_viewer::atmosphere_screen_history_compatibility(
+        previous,incompatible).invalidation_mask;
+  };
+  const auto has_reason=[&](auto mutate,AtmosphereHistoryInvalidation expected){
+    return (reason(mutate)&static_cast<std::uint32_t>(expected))!=0U;
+  };
+  CHECK(has_reason([](auto& value){value.revisions.optical={99U};},
+                   AtmosphereHistoryInvalidation::optical));
+  CHECK(has_reason([](auto& value){value.revisions.scattering={99U};},
+                   AtmosphereHistoryInvalidation::scattering));
+  CHECK(has_reason([](auto& value){value.revisions.sun={99U};},
+                   AtmosphereHistoryInvalidation::sun));
+  CHECK(has_reason([](auto& value){value.revisions.shadow={99U};},
+                   AtmosphereHistoryInvalidation::shadow));
+  CHECK(has_reason([](auto& value){++value.terrain_generation;},
+                   AtmosphereHistoryInvalidation::terrain));
+  CHECK(has_reason([](auto& value){value.sample_count=16U;},
+                   AtmosphereHistoryInvalidation::representation));
+  CHECK(has_reason([](auto& value){++value.width;},
+                   AtmosphereHistoryInvalidation::extent));
+  CHECK(has_reason([](auto& value){value.valid=false;},
+                   AtmosphereHistoryInvalidation::uninitialized));
+}
+
+TEST_CASE("atmosphere history reprojection rejects disocclusion and stale samples") {
+  using tetra_viewer::AtmosphereEndpointClass;
+  const tetra_viewer::AtmosphereReprojectionCamera current{
+      .position_from_planet_centre_metres={0.0,10.0,0.0},
+      .right={1.0,0.0,0.0},.down={0.0,1.0,0.0},
+      .forward={0.0,0.0,1.0},.tangent_x=1.0,.tangent_y=1.0};
+  auto previous=current;
+  previous.position_from_planet_centre_metres.x=-1.0;
+  const auto opaque=tetra_viewer::reproject_atmosphere_endpoint(
+      current,previous,0.5,0.5,AtmosphereEndpointClass::opaque,10.0);
+  REQUIRE(opaque);
+  CHECK(opaque->u==doctest::Approx(0.55));
+  CHECK(opaque->v==doctest::Approx(0.5));
+  CHECK(opaque->previous_linear_depth_metres==
+        doctest::Approx(std::sqrt(101.0)));
+
+  previous.position_from_planet_centre_metres={1000.0,10.0,0.0};
+  const auto sky=tetra_viewer::reproject_atmosphere_endpoint(
+      current,previous,0.5,0.5,AtmosphereEndpointClass::sky,0.0);
+  REQUIRE(sky);
+  CHECK(sky->u==doctest::Approx(0.5));
+  CHECK(sky->v==doctest::Approx(0.5));
+  CHECK(sky->previous_linear_depth_metres==0.0);
+
+  previous.forward={0.0,0.0,-1.0};
+  CHECK_FALSE(tetra_viewer::reproject_atmosphere_endpoint(
+      current,previous,0.5,0.5,AtmosphereEndpointClass::sky,0.0));
+
+  const tetra_viewer::AtmosphereReducedEndpoint current_endpoint{
+      .classification=AtmosphereEndpointClass::opaque,
+      .reversed_depth=0.1F,.linear_depth_metres=10.0,
+      .transition_confidence=1.0,.generation=12U};
+  auto previous_endpoint=current_endpoint;
+  previous_endpoint.linear_depth_metres=10.1;
+  previous_endpoint.generation=11U;
+  CHECK(tetra_viewer::atmosphere_history_sample_compatible(
+      current_endpoint,previous_endpoint,10.0,11U,true));
+  previous_endpoint.linear_depth_metres=20.0;
+  CHECK_FALSE(tetra_viewer::atmosphere_history_sample_compatible(
+      current_endpoint,previous_endpoint,10.0,11U,true));
+  previous_endpoint.linear_depth_metres=10.0;
+  previous_endpoint.transition_confidence=0.0;
+  CHECK_FALSE(tetra_viewer::atmosphere_history_sample_compatible(
+      current_endpoint,previous_endpoint,10.0,11U,true));
+  previous_endpoint.transition_confidence=1.0;
+  CHECK_FALSE(tetra_viewer::atmosphere_history_sample_compatible(
+      current_endpoint,previous_endpoint,10.0,99U,true));
+  CHECK_FALSE(tetra_viewer::atmosphere_history_sample_compatible(
+      current_endpoint,previous_endpoint,10.0,11U,false));
+}
+
 TEST_CASE("block-local camera-relative conversion preserves ground detail at planet coordinates") {
   const tetra::Vec3 block_origin{6371000.0,-4213377.0,982451653.0};
   const tetra::Vec3 render_origin{
@@ -938,6 +1108,12 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.terrain.spawn_blend_radius==doctest::Approx(3.0));
   CHECK(profile.terrain.planet_radius==doctest::Approx(20'000.0));
   CHECK(profile.octave_detail_amplitude==doctest::Approx(0.0));
+  tetra::Sphere terrain;
+  terrain.kind=profile.shape;terrain.terrain=profile.terrain;
+  terrain.secondary=profile.octave_detail_amplitude;
+  terrain.frequency=profile.octave_detail_frequency;
+  CHECK(tetra::terrain_height_magnitude_bound(terrain)>144.0);
+  CHECK(tetra::terrain_height_magnitude_bound(terrain)<149.0);
   CHECK(profile.draw_chunks==tetra_viewer::default_surface_draw_chunk_strategy);
   CHECK(profile.domain.world_extent==doctest::Approx(65'536.0));
   CHECK(profile.background_red_depth==3U);
@@ -949,7 +1125,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
-  CHECK(profile.pixel_threshold==doctest::Approx(128.0));
+  CHECK(profile.pixel_threshold==doctest::Approx(256.0));
   CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
@@ -992,6 +1168,90 @@ TEST_CASE("production terrain is a closed radial field inside one sparse root") 
     CHECK(coordinate-radius>minimum);
     CHECK(coordinate+radius<upper);
   }
+}
+
+TEST_CASE("planetary terrain band limits detail to the hierarchy edge footprint") {
+  tetra::Sphere field;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field.terrain.planet_radius=20'000.0;
+  field.terrain.height_offset=0.0;
+  field.terrain.landform_amplitude=0.0;
+  field.terrain.mountain_amplitude=0.0;
+  field.terrain.gameplay_hill_amplitude=0.0;
+  field.terrain.gameplay_feature_amplitude=0.0;
+  field.terrain.ground_roughness_amplitude=1.0;
+  field.terrain.ground_roughness_frequency=2.0;
+  field.terrain.spawn_flat_radius=0.0;
+  field.terrain.spawn_blend_radius=0.0;
+  field.secondary=0.0;
+  const tetra::Vec3 raw_direction{0.23,0.96,-0.17};
+  const double length=std::sqrt(
+      raw_direction.x*raw_direction.x+raw_direction.y*raw_direction.y+
+      raw_direction.z*raw_direction.z);
+  const auto direction=raw_direction/length;
+  const tetra::Vec3 planet_centre{
+      field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
+  const auto datum=planet_centre+direction*field.terrain.planet_radius;
+  const double full=field.signed_distance(datum);
+  REQUIRE(std::abs(full)>1.0e-4);
+  CHECK(field.signed_distance(datum,0.1)==doctest::Approx(full).epsilon(1.0e-10));
+  const double shoulder=field.signed_distance(datum,0.25);
+  CHECK(std::abs(shoulder)<std::abs(full));
+  CHECK(std::abs(shoulder)>1.0e-6);
+  CHECK(field.signed_distance(datum,1.0)==doctest::Approx(0.0).epsilon(1.0e-10));
+  auto filtered=field;filtered.sampling_footprint=1.0;
+  CHECK(filtered.signed_distance(datum)==doctest::Approx(0.0).epsilon(1.0e-10));
+  const auto first=datum-direction*2.0,second=datum+direction*2.0;
+  const auto forward=field.edge_intersection(first,second,4.0);
+  const auto reverse=field.edge_intersection(second,first,4.0);
+  CHECK(forward.x==doctest::Approx(reverse.x).epsilon(1.0e-12));
+  CHECK(forward.y==doctest::Approx(reverse.y).epsilon(1.0e-12));
+  CHECK(forward.z==doctest::Approx(reverse.z).epsilon(1.0e-12));
+  const auto offset=forward-planet_centre;
+  CHECK(std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z)==
+        doctest::Approx(field.terrain.planet_radius).epsilon(1.0e-10));
+
+  tetra::Camera orbital_camera;
+  orbital_camera.position={field.centre.x,field.centre.y+100.0,field.centre.z};
+  orbital_camera.vertical_fov_radians=std::numbers::pi/2.0;
+  orbital_camera.viewport_height_pixels=1000.0;
+  CHECK(tetra_viewer::planetary_surface_sampling_footprint(
+            field,orbital_camera,256.0)==32.0);
+  orbital_camera.position.y=field.centre.y+0.01;
+  CHECK(tetra_viewer::planetary_surface_sampling_footprint(
+            field,orbital_camera,256.0)==0.0);
+  auto planar=field;planar.terrain.planet_radius=0.0;
+  CHECK(tetra_viewer::planetary_surface_sampling_footprint(
+            planar,orbital_camera,256.0)==0.0);
+
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere production_field;
+  production_field.kind=profile.shape;
+  production_field.terrain=profile.terrain;
+  production_field.secondary=profile.octave_detail_amplitude;
+  production_field.frequency=profile.octave_detail_frequency;
+  production_field.sampling_footprint=128.0;
+  const tetra::Vec3 production_centre{
+      production_field.centre.x,
+      production_field.centre.y-production_field.terrain.planet_radius,
+      production_field.centre.z};
+  double maximum_filtered_relief{};
+  for(std::size_t latitude=1U;latitude<=12U;++latitude){
+    const double theta=static_cast<double>(latitude)*0.1;
+    for(std::size_t longitude=0U;longitude<32U;++longitude){
+      const double phi=2.0*std::numbers::pi*
+          static_cast<double>(longitude)/32.0;
+      const tetra::Vec3 sample_direction{
+          std::sin(theta)*std::cos(phi),std::cos(theta),
+          std::sin(theta)*std::sin(phi)};
+      const auto datum=production_centre+sample_direction*
+          production_field.terrain.planet_radius;
+      maximum_filtered_relief=std::max(maximum_filtered_relief,
+          std::abs(production_field.signed_distance(datum)));
+    }
+  }
+  CHECK(maximum_filtered_relief>50.0);
+  CHECK(maximum_filtered_relief<140.0);
 }
 
 TEST_CASE("world resource budgets independently gate every publication cost") {
@@ -1361,6 +1621,19 @@ TEST_CASE("receiver-fitted atmosphere shadow map encloses guarded frustum and su
   moved_view.receiver_points[0].x+=0.01;
   CHECK_FALSE(tetra_viewer::atmosphere_shadow_request_covers_rotation(
       retained,moved_view));
+  tetra_viewer::AtmosphereShadowFront published;
+  published.request=retained;
+  published.completeness=1.0;
+  std::optional<tetra_viewer::AtmosphereShadowFront> published_front=published;
+  CHECK(tetra_viewer::atmosphere_shadow_front_covers_view(
+      published_front,small_turn));
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_covers_view(
+      published_front,moved_view));
+  published_front->completeness=0.5;
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_covers_view(
+      published_front,small_turn));
+  CHECK_FALSE(tetra_viewer::atmosphere_shadow_front_covers_view(
+      std::nullopt,small_turn));
   auto moved_sun=request;moved_sun.sun_direction={-0.7,0.2,-0.4};
   CHECK(tetra_viewer::fit_atmosphere_shadow_map(moved_sun,1024U).matrix!=
         fit.matrix);
@@ -1939,7 +2212,7 @@ TEST_CASE("captured world pointer is exclusively owned by camera look") {
   CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,false,true,true));
 }
 
-TEST_CASE("free fly retains the last gameplay camera for terrain LOD") {
+TEST_CASE("terrain LOD camera can be locked independently of navigation") {
   tetra::Camera locked;
   locked.position={1.0,2.0,3.0};
   tetra::Camera gameplay=locked;
@@ -1957,6 +2230,21 @@ TEST_CASE("free fly retains the last gameplay camera for terrain LOD") {
   resolved=tetra_viewer::resolve_world_lod_camera(free_fly,false,locked);
   CHECK(resolved.position.x==20.0);
   CHECK(locked.position.z==40.0);
+}
+
+TEST_CASE("automated world captures require a fully converged terrain front") {
+  tetra_viewer::TerrainRuntimeDiagnostics diagnostics;
+  CHECK_FALSE(tetra_viewer::world_capture_front_ready(diagnostics));
+  diagnostics.busy=true;
+  diagnostics.converged=true;
+  CHECK_FALSE(tetra_viewer::world_capture_front_ready(diagnostics));
+  diagnostics.busy=false;
+  CHECK(tetra_viewer::world_capture_front_ready(diagnostics));
+  diagnostics.converged=false;
+  diagnostics.budget_exceeded=true;
+  CHECK(tetra_viewer::world_capture_front_ready(diagnostics));
+  diagnostics.busy=true;
+  CHECK_FALSE(tetra_viewer::world_capture_front_ready(diagnostics));
 }
 
 TEST_CASE("implicit edge intersection preserves an endpoint already on the surface") {
@@ -9014,6 +9302,20 @@ TEST_CASE("blocked five-ring connected surface matches the production oracle") {
       blocked,sphere);
   CHECK(render.connected_surface_hash==blocked.canonical_surface_hash);
   REQUIRE(render.triangle_vertices.size()==blocked.triangles.size()*3U);
+  auto planetary_field=sphere;
+  planetary_field.terrain.planet_radius=20'000.0;
+  const auto orbital_render=tetra_viewer::prepare_blocked_derived_surface_scene(
+      blocked,planetary_field);
+  CHECK(orbital_render.connected_surface_hash==blocked.canonical_surface_hash);
+  REQUIRE(orbital_render.triangle_vertices.size()==blocked.triangles.size()*12U);
+  // The second vertex of the first emitted child is a projected shared-edge
+  // midpoint, not merely a coplanar rendering split.
+  const auto& projected=orbital_render.triangle_vertices[1U];
+  CHECK(std::abs(planetary_field.signed_distance({
+            projected.position[0],projected.position[1],projected.position[2]}))<
+        1.0e-3);
+  const auto orbital_hashes=tetra_viewer::surface_geometry_hashes(orbital_render);
+  CHECK(orbital_hashes.edge_count==orbital_hashes.wire_edge_count);
   const auto render_hashes=tetra_viewer::surface_geometry_hashes(render);
   CHECK(render_hashes.edge_count==render_hashes.wire_edge_count);
   for(std::size_t triangle=0;triangle<render.triangle_vertices.size();triangle+=3U){
@@ -9286,6 +9588,22 @@ TEST_CASE("world sun controls produce normalized sky directions") {
   CHECK(initial.x==doctest::Approx(-0.226338).epsilon(1.0e-5));
   CHECK(initial.y==doctest::Approx(0.0871558).epsilon(1.0e-5));
   CHECK(initial.z==doctest::Approx(-0.970142).epsilon(1.0e-5));
+
+  const auto quarter=tetra_viewer::advance_world_sun_orbit_phase(
+      0.0,2.5,tetra_viewer::default_world_sun_cycle_seconds);
+  CHECK(quarter==doctest::Approx(std::acos(-1.0)*0.5));
+  const auto overhead_angles=tetra_viewer::world_sun_orbit_angles(0.4,quarter);
+  CHECK(overhead_angles.elevation_radians==
+        doctest::Approx(std::acos(-1.0)*0.5));
+  const auto far_side=tetra_viewer::world_sun_orbit_angles(
+      0.4,std::acos(-1.0));
+  CHECK(far_side.elevation_radians==doctest::Approx(0.0).epsilon(1.0e-12));
+  CHECK(std::abs(std::remainder(
+      far_side.azimuth_radians-0.4-std::acos(-1.0),
+      2.0*std::acos(-1.0)))<1.0e-12);
+  CHECK(tetra_viewer::advance_world_sun_orbit_phase(
+      0.7,10.0,tetra_viewer::default_world_sun_cycle_seconds)==
+      doctest::Approx(0.7));
 }
 
 TEST_CASE("HDR scene colour uses the sampler2D-compatible image view") {
@@ -14221,6 +14539,13 @@ TEST_CASE("RGB image oracle round trips PPM and supports masked comparisons") {
   CHECK(std::ranges::count(silhouette,255U)==9U);
   CHECK(silhouette[12U]==255U);
   CHECK(silhouette.front()==0U);
+  std::vector<std::uint8_t> outer_silhouette;
+  REQUIRE(tetra_viewer::make_outer_silhouette_band_mask(
+      isolated_geometry,5U,5U,1U,outer_silhouette,error));
+  CHECK(std::ranges::count(outer_silhouette,255U)==8U);
+  CHECK(outer_silhouette[12U]==0U);
+  CHECK(outer_silhouette[6U]==255U);
+  CHECK(outer_silhouette.front()==0U);
   std::vector<std::uint8_t> horizon;
   REQUIRE(tetra_viewer::make_horizontal_band_mask(
       5U,10U,0.5,0.2,horizon,error));
@@ -14231,6 +14556,8 @@ TEST_CASE("RGB image oracle round trips PPM and supports masked comparisons") {
   CHECK(horizon[6U*5U]==0U);
   CHECK_FALSE(tetra_viewer::make_silhouette_band_mask(
       isolated_geometry,5U,5U,0U,silhouette,error));
+  CHECK_FALSE(tetra_viewer::make_outer_silhouette_band_mask(
+      isolated_geometry,5U,5U,0U,outer_silhouette,error));
   CHECK_FALSE(tetra_viewer::make_horizontal_band_mask(
       5U,10U,0.5,0.0,horizon,error));
   auto invalid_depth=std::array<float,4>{0.0F,1.0F,0.5F,2.0F};
@@ -14495,6 +14822,237 @@ TEST_CASE("atmosphere transport defaults to faithful with baseline available") {
             AtmosphereTransport::faithful_hillaire)=="faithful-hillaire");
 }
 
+TEST_CASE("native atmosphere oracle is selectable without changing the default") {
+  using tetra_viewer::AtmosphereRenderingMethod;
+  CHECK(tetra_viewer::default_atmosphere_rendering_method==
+        AtmosphereRenderingMethod::temporal_half_resolution);
+  CHECK(tetra_viewer::parse_atmosphere_rendering_method(
+            "current-qualified")==AtmosphereRenderingMethod::current_qualified);
+  CHECK(tetra_viewer::parse_atmosphere_rendering_method(
+            "native-screen-oracle")==
+        AtmosphereRenderingMethod::native_screen_oracle);
+  CHECK(tetra_viewer::parse_atmosphere_rendering_method(
+            "deterministic-half-resolution")==
+        AtmosphereRenderingMethod::deterministic_half_resolution);
+  CHECK(tetra_viewer::parse_atmosphere_rendering_method(
+            "temporal-half-resolution")==
+        AtmosphereRenderingMethod::temporal_half_resolution);
+  CHECK(tetra_viewer::parse_atmosphere_rendering_method(
+            "deterministic-shadowed-froxels")==
+        AtmosphereRenderingMethod::deterministic_shadowed_froxels);
+  CHECK_FALSE(tetra_viewer::parse_atmosphere_rendering_method("negative-light"));
+  CHECK(tetra_viewer::atmosphere_rendering_method_name(
+            AtmosphereRenderingMethod::current_qualified)==
+        "current-qualified");
+  CHECK(tetra_viewer::atmosphere_rendering_method_name(
+            AtmosphereRenderingMethod::native_screen_oracle)==
+        "native-screen-oracle");
+  CHECK(tetra_viewer::atmosphere_rendering_method_name(
+            AtmosphereRenderingMethod::deterministic_half_resolution)==
+        "deterministic-half-resolution");
+  CHECK(tetra_viewer::atmosphere_rendering_method_name(
+            AtmosphereRenderingMethod::temporal_half_resolution)==
+        "temporal-half-resolution");
+  CHECK(tetra_viewer::atmosphere_rendering_method_name(
+            AtmosphereRenderingMethod::deterministic_shadowed_froxels)==
+        "deterministic-shadowed-froxels");
+}
+
+TEST_CASE("atmosphere shadow integration defaults to the fast fixed sampler") {
+  using tetra_viewer::AtmosphereShadowIntegrator;
+  CHECK(tetra_viewer::default_atmosphere_shadow_integrator==
+        AtmosphereShadowIntegrator::fixed_32);
+  for(const auto method:{AtmosphereShadowIntegrator::fixed_32,
+                         AtmosphereShadowIntegrator::adaptive_transition,
+                         AtmosphereShadowIntegrator::minmax_segments,
+                         AtmosphereShadowIntegrator::dense_oracle,
+                         AtmosphereShadowIntegrator::moment_hybrid,
+                         AtmosphereShadowIntegrator::epipolar_minmax}){
+    const auto name=tetra_viewer::atmosphere_shadow_integrator_name(method);
+    REQUIRE(tetra_viewer::parse_atmosphere_shadow_integrator(name));
+    CHECK(*tetra_viewer::parse_atmosphere_shadow_integrator(name)==method);
+  }
+  CHECK_FALSE(tetra_viewer::parse_atmosphere_shadow_integrator("blur-it"));
+}
+
+TEST_CASE("epipolar shadow hierarchy sizing and angular rows are stable") {
+  CHECK(tetra_viewer::atmosphere_epipolar_minmax_element_count(8,3)==45);
+  CHECK(tetra_viewer::atmosphere_epipolar_minmax_element_count(1,7)==7);
+  CHECK(tetra_viewer::atmosphere_epipolar_minmax_element_count(0,7)==0);
+  const auto empty=tetra_viewer::atmosphere_epipolar_layout(0);
+  CHECK(empty.radial_resolution==0);
+  CHECK(empty.angular_rows==0);
+  CHECK(empty.element_count==0);
+  for(const auto [source,radial,rows]:
+      std::array<std::array<std::size_t,3>,4>{{
+          {1,0,0},{256,82,523},{512,165,1046},{1024,332,2096}}}){
+    const auto layout=tetra_viewer::atmosphere_epipolar_layout(source);
+    CHECK(layout.radial_resolution==radial);
+    CHECK(layout.angular_rows==rows);
+    const bool angular_density_satisfied=source==1||
+        layout.angular_rows>=static_cast<std::size_t>(
+            std::ceil(2.0*3.141592653589793*layout.radial_resolution));
+    CHECK(angular_density_satisfied);
+    CHECK(layout.element_count==
+        tetra_viewer::atmosphere_epipolar_minmax_element_count(
+            layout.radial_resolution,layout.angular_rows));
+    CHECK(layout.element_count<=
+        tetra_viewer::atmosphere_epipolar_minmax_element_count(source,source));
+    if(source>1U)
+      CHECK(layout.element_count+2U<=
+          tetra_viewer::atmosphere_epipolar_minmax_element_count(source,source));
+  }
+  CHECK(tetra_viewer::atmosphere_epipolar_row_from_angle(-3.141592653589793,
+                                                         8)==0);
+  CHECK(tetra_viewer::atmosphere_epipolar_row_from_angle(0.0,8)==4);
+  CHECK(tetra_viewer::atmosphere_epipolar_row_from_angle(3.141592653589793,
+                                                         8)==0);
+  CHECK(tetra_viewer::atmosphere_epipolar_row_from_angle(
+            3.141592653589793+2.0*3.141592653589793,8)==0);
+  CHECK(tetra_viewer::atmosphere_epipolar_row_from_angle(0.0,0)==0);
+}
+
+TEST_CASE("epipolar hierarchy cache identity follows its actual local source") {
+  using tetra_viewer::AtmosphereShadowFilter;
+  std::array<float,16> matrix{};
+  matrix[0]=matrix[5]=matrix[10]=matrix[15]=1.0F;
+  const auto base=tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,matrix,0.8125F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0036);
+  CHECK(base==tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,matrix,0.8125F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0036));
+  auto moved=matrix;
+  moved[12]=0.001F;
+  CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,moved,0.8125F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0036));
+  CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
+      8U,matrix,0.8125F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0036));
+  CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,matrix,0.75F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0036));
+  CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,matrix,0.8125F,1.21875F,
+      AtmosphereShadowFilter::fixed_tent,0.0036));
+  CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
+      7U,matrix,0.8125F,1.21875F,
+      AtmosphereShadowFilter::physical_footprint,0.0018));
+}
+
+TEST_CASE("every atmosphere shadow integrator has a distinct shader mode") {
+  using tetra_viewer::AtmosphereShadowIntegrator;
+  std::array<bool,6> seen{};
+  for(const auto method:{AtmosphereShadowIntegrator::fixed_32,
+                         AtmosphereShadowIntegrator::adaptive_transition,
+                         AtmosphereShadowIntegrator::minmax_segments,
+                         AtmosphereShadowIntegrator::dense_oracle,
+                         AtmosphereShadowIntegrator::moment_hybrid,
+                         AtmosphereShadowIntegrator::epipolar_minmax}){
+    const auto index=
+        tetra_viewer::atmosphere_shadow_integrator_shader_index(method);
+    REQUIRE(index<seen.size());
+    CHECK_FALSE(seen[index]);
+    seen[index]=true;
+  }
+}
+
+TEST_CASE("epipolar traversal emits ordered lit and shadow intervals") {
+  using namespace tetra_viewer;
+  const std::array depth{
+      1.0,1.0,0.2,0.2,1.0,1.0,0.4,0.4,
+      1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0};
+  const auto hierarchy=make_atmosphere_epipolar_depth_hierarchy(depth,8,2);
+  REQUIRE(hierarchy.levels.size()==4);
+  const auto forward=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.5,0.5);
+  CHECK_FALSE(forward.fallback);
+  REQUIRE(forward.intervals.size()==4);
+  CHECK(forward.intervals[0].begin==doctest::Approx(0.0));
+  CHECK(forward.intervals[0].end==doctest::Approx(0.25));
+  CHECK(forward.intervals[0].visibility==1.0);
+  CHECK(forward.intervals[1].visibility==0.0);
+  CHECK(forward.intervals[2].visibility==1.0);
+  CHECK(forward.intervals[3].visibility==0.0);
+  CHECK(forward.intervals.back().end==doctest::Approx(1.0));
+  CHECK(forward.visited_nodes<15);
+
+  const auto reverse=traverse_atmosphere_epipolar_row(
+      hierarchy,0,1.0,0.0,0.5,0.5);
+  CHECK_FALSE(reverse.fallback);
+  REQUIRE(reverse.intervals.size()==4);
+  CHECK(reverse.intervals[0].visibility==0.0);
+  CHECK(reverse.intervals[1].visibility==1.0);
+  CHECK(reverse.intervals[2].visibility==0.0);
+  CHECK(reverse.intervals[3].visibility==1.0);
+
+  const auto independent_row=traverse_atmosphere_epipolar_row(
+      hierarchy,1,0.0,1.0,0.5,0.5);
+  CHECK_FALSE(independent_row.fallback);
+  REQUIRE(independent_row.intervals.size()==1);
+  CHECK(independent_row.intervals[0].visibility==1.0);
+}
+
+TEST_CASE("epipolar traversal resolves a tangent crossing and bounds overflow") {
+  using namespace tetra_viewer;
+  const std::array depth{0.5,0.5,0.5,0.5};
+  const auto hierarchy=make_atmosphere_epipolar_depth_hierarchy(depth,4,1);
+  const auto crossing=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.4,0.6);
+  CHECK_FALSE(crossing.fallback);
+  REQUIRE(crossing.intervals.size()==2);
+  CHECK(crossing.intervals[0].begin==doctest::Approx(0.0));
+  CHECK(crossing.intervals[0].end==doctest::Approx(0.5));
+  CHECK(crossing.intervals[0].visibility==1.0);
+  CHECK(crossing.intervals[1].visibility==0.0);
+
+  const std::array alternating{1.0,0.0,1.0,0.0,1.0,0.0,1.0,0.0};
+  const auto complex=make_atmosphere_epipolar_depth_hierarchy(
+      alternating,8,1);
+  const auto bounded=traverse_atmosphere_epipolar_row(
+      complex,0,0.0,1.0,0.5,0.5,0.0,2);
+  CHECK(bounded.fallback);
+  CHECK(bounded.intervals.size()<=2);
+}
+
+TEST_CASE("epipolar traversal preserves three occluders seams and subtexel motion") {
+  using namespace tetra_viewer;
+  const std::array depth{
+      1.0,1.0,0.2,0.2,1.0,0.3,0.3,1.0,
+      1.0,1.0,0.4,0.4,0.4,1.0,1.0,1.0,
+      0.1,0.1,1.0,1.0,1.0,1.0,1.0,1.0,
+      1.0,1.0,1.0,1.0,1.0,1.0,0.7,0.7};
+  const auto hierarchy=make_atmosphere_epipolar_depth_hierarchy(depth,16,2);
+  const auto three=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.5,0.5);
+  CHECK_FALSE(three.fallback);
+  REQUIRE(three.intervals.size()==7);
+  CHECK(three.intervals.front().visibility==1.0);
+  CHECK(three.intervals.back().visibility==1.0);
+  CHECK(std::ranges::count(three.intervals,0.0,
+      &AtmosphereShadowInterval::visibility)==3);
+
+  CHECK(atmosphere_epipolar_row_from_angle(
+      -3.141592653589793+1.0e-12,2)==0);
+  CHECK(atmosphere_epipolar_row_from_angle(
+      3.141592653589793-1.0e-12,2)==1);
+  const auto first_seam=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.5,0.5);
+  const auto last_seam=traverse_atmosphere_epipolar_row(
+      hierarchy,1,0.0,1.0,0.5,0.5);
+  CHECK(first_seam.intervals.size()!=last_seam.intervals.size());
+
+  const auto below=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.5-1.0e-7,0.5-1.0e-7);
+  const auto above=traverse_atmosphere_epipolar_row(
+      hierarchy,0,0.0,1.0,0.5+1.0e-7,0.5+1.0e-7);
+  CHECK_FALSE(below.fallback);
+  CHECK_FALSE(above.fallback);
+  CHECK(below.intervals.size()==above.intervals.size());
+  CHECK(below.visited_nodes==above.visited_nodes);
+}
+
 TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   using namespace tetra_viewer;
   AtmosphereLookupRevisions state{
@@ -14537,6 +15095,17 @@ TEST_CASE("atmosphere lookup revisions dispatch only their dependencies") {
   auto moved=state;
   moved.camera_position.value++;
   plan=atmosphere_dispatch_plan(state,moved,
+      AtmosphereTransport::faithful_hillaire);
+  CHECK_FALSE(plan.transmittance);
+  CHECK_FALSE(plan.multiple_scattering);
+  CHECK_FALSE(plan.sky_view);
+  CHECK_FALSE(plan.sky_irradiance);
+  CHECK(plan.aerial_perspective);
+  CHECK(plan.long_shadow);
+
+  auto reintegrated=state;
+  reintegrated.shadow_integrator.value++;
+  plan=atmosphere_dispatch_plan(state,reintegrated,
       AtmosphereTransport::faithful_hillaire);
   CHECK_FALSE(plan.transmittance);
   CHECK_FALSE(plan.multiple_scattering);
@@ -14750,7 +15319,13 @@ TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
             game.ground_radius_metres,18.0)>2'000.0);
   CHECK(tetra_viewer::planetary_horizon_distance(
             game.ground_radius_metres,18.0)<3'000.0);
-  CHECK(game.mie_scale_height_metres==doctest::Approx(30.0));
+  CHECK(game.mie_scale_height_metres==doctest::Approx(300.0));
+  // A normal flight increment must not cross most of the aerosol profile in
+  // one visual update. The former 30 m scale retained barely half its density
+  // after this small ascent and made the golden horizon visibly flash blue.
+  CHECK(tetra_viewer::atmosphere_mie_density(20.0,game)>
+        tetra_viewer::atmosphere_mie_density(0.0,game)*0.90);
+  CHECK(tetra_viewer::atmosphere_mie_density(1'000.0,game)>0.03);
   CHECK(game.ground_albedo[0]==doctest::Approx(0.32));
   for(std::size_t channel=0;channel<3U;++channel){
     CHECK(game.rayleigh_scattering_per_metre[channel]*
@@ -14776,6 +15351,30 @@ TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
               (game.mie_scattering_per_metre[channel]+
                game.mie_absorption_per_metre[channel])>0.90);
   }
+}
+
+TEST_CASE("compact atmosphere encloses terrain relief without changing optical depth") {
+  using tetra_viewer::AtmospherePreset;
+  const auto original=tetra_viewer::atmosphere_preset(
+      AtmospherePreset::gameplay_planet);
+  constexpr double relief=1'490.0;
+  const auto adapted=tetra_viewer::adapt_compact_atmosphere_to_relief(
+      original,relief);
+  CHECK(adapted.rayleigh_scale_height_metres>
+        original.rayleigh_scale_height_metres);
+  CHECK(std::exp(-relief/adapted.rayleigh_scale_height_metres)>=0.75-1.0e-12);
+  CHECK(adapted.atmosphere_height_metres>=
+        relief+8.0*adapted.rayleigh_scale_height_metres);
+  CHECK(adapted.atmosphere_height_metres>20'000.0);
+  for(std::size_t channel=0;channel<3U;++channel)
+    CHECK(adapted.rayleigh_scattering_per_metre[channel]*
+              adapted.rayleigh_scale_height_metres==
+          doctest::Approx(original.rayleigh_scattering_per_metre[channel]*
+              original.rayleigh_scale_height_metres).epsilon(1.0e-12));
+
+  CHECK(tetra_viewer::adapt_compact_atmosphere_to_relief(
+            original,0.0).atmosphere_height_metres==
+        original.atmosphere_height_metres);
 }
 
 TEST_CASE("atmosphere validation rejects unphysical snapshots transactionally") {
@@ -14822,6 +15421,31 @@ TEST_CASE("atmosphere boundary rays remain stable from ground through space") {
   const auto tangent = tetra_viewer::atmosphere_ray_segment(
       {top, 0.0, 0.0}, {0.0, 1.0, 0.0}, parameters);
   CHECK_FALSE(tangent);  // A zero-length tangent contributes no medium.
+}
+
+TEST_CASE("terrain valleys keep the atmosphere observer above its reference ground") {
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const double ground=parameters.ground_radius_metres;
+
+  const tetra::Vec3 valley_camera{12.0,ground-45.0,-7.0};
+  const auto clamped=tetra_viewer::clamp_atmosphere_camera_to_medium(
+      valley_camera,parameters);
+  const auto radius=[](tetra::Vec3 value){
+    return std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
+  };
+  CHECK(radius(clamped)==doctest::Approx(ground+1.0));
+  CHECK(clamped.x/clamped.y==
+        doctest::Approx(valley_camera.x/valley_camera.y));
+  CHECK(clamped.z/clamped.y==
+        doctest::Approx(valley_camera.z/valley_camera.y));
+
+  const tetra::Vec3 above_ground{12.0,ground+45.0,-7.0};
+  const auto unchanged=tetra_viewer::clamp_atmosphere_camera_to_medium(
+      above_ground,parameters);
+  CHECK(unchanged.x==above_ground.x);
+  CHECK(unchanged.y==above_ground.y);
+  CHECK(unchanged.z==above_ground.z);
 }
 
 TEST_CASE("ground tangent contact remains medium while strict crossings stop") {
@@ -15254,6 +15878,51 @@ TEST_CASE("double precision atmosphere transport oracle covers ground to orbit")
   }
 }
 
+TEST_CASE("terrain visibility attenuates only positive direct atmosphere light") {
+  using tetra_viewer::AtmosphereSpectrum;
+  const auto parameters=tetra_viewer::atmosphere_preset(
+      tetra_viewer::AtmospherePreset::gameplay_planet);
+  const tetra::Vec3 origin{
+      0.0,parameters.ground_radius_metres+100.0,0.0};
+  const tetra::Vec3 direction{0.0,1.0,0.0};
+  const auto integrate=[&](double visibility){
+    return tetra_viewer::atmosphere_scattering_components_reference(
+        parameters,origin,direction,direction,20'000.0,
+        [visibility](tetra::Vec3){return visibility;},8U,4U,2U);
+  };
+  const auto lit=integrate(1.0);
+  const auto half=integrate(0.5);
+  const auto blocked=integrate(0.0);
+  const auto invalid=
+      tetra_viewer::atmosphere_scattering_components_reference(
+          parameters,origin,direction,direction,20'000.0,
+          [](tetra::Vec3){
+            return std::numeric_limits<double>::quiet_NaN();
+          },8U,4U,2U);
+
+  CHECK(*std::max_element(lit.direct_single_scattering.begin(),
+                          lit.direct_single_scattering.end())>0.0);
+  CHECK(*std::max_element(lit.multiple_scattering.begin(),
+                          lit.multiple_scattering.end())>0.0);
+  for(std::size_t channel=0;channel<AtmosphereSpectrum{}.size();++channel){
+    CAPTURE(channel);
+    CHECK(blocked.direct_single_scattering[channel]==0.0);
+    CHECK(invalid.direct_single_scattering[channel]==0.0);
+    CHECK(half.direct_single_scattering[channel]==
+          doctest::Approx(lit.direct_single_scattering[channel]*0.5));
+    CHECK(half.multiple_scattering[channel]==
+          doctest::Approx(lit.multiple_scattering[channel]));
+    CHECK(blocked.multiple_scattering[channel]==
+          doctest::Approx(lit.multiple_scattering[channel]));
+    CHECK(blocked.transmittance[channel]==
+          doctest::Approx(lit.transmittance[channel]));
+    CHECK(std::isfinite(blocked.multiple_scattering[channel]));
+    CHECK(blocked.multiple_scattering[channel]>=0.0);
+    CHECK(blocked.transmittance[channel]>=0.0);
+    CHECK(blocked.transmittance[channel]<=1.0);
+  }
+}
+
 TEST_CASE("atmosphere transport oracle composes split paths and distance") {
   const auto parameters=tetra_viewer::atmosphere_preset(
       tetra_viewer::AtmospherePreset::earth);
@@ -15606,13 +16275,242 @@ TEST_CASE("atmospheric shadow cascade policy blends continuously to unshadowed s
   }
 }
 
+TEST_CASE("transition-aware atmosphere shadow integration converges to dense oracle") {
+  const auto one_transition=[](double distance){return distance<0.413?1.0:0.0;};
+  tetra_viewer::AtmosphereShadowIntegrationOptions options;
+  options.maximum_subdivision_depth=10U;
+  const auto dense=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::dense_oracle,one_transition,
+      {},{},options);
+  const auto fixed=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::fixed_32,one_transition,
+      {},{},options);
+  const auto adaptive=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::adaptive_transition,
+      one_transition,{}, {},options);
+  CHECK(dense.weighted_loss==doctest::Approx(0.587).epsilon(2.0e-3));
+  CHECK(std::abs(adaptive.weighted_loss-dense.weighted_loss)<
+        std::abs(fixed.weighted_loss-dense.weighted_loss));
+  CHECK(std::abs(adaptive.weighted_loss-dense.weighted_loss)<2.0e-4);
+  CHECK(adaptive.maximum_loss==1.0);
+}
+
+TEST_CASE("minmax atmosphere segments preserve thin and separated occluders") {
+  const std::array ridges{std::pair{0.137,0.141},
+                          std::pair{0.477,0.534},
+                          std::pair{0.811,0.819}};
+  const auto visibility=[&](double distance){
+    for(const auto [begin,end]:ridges)
+      if(distance>=begin&&distance<=end)return 0.0;
+    return 1.0;
+  };
+  const auto classify=[&](double begin,double end)->std::optional<double>{
+    bool overlaps=false;
+    for(const auto [ridge_begin,ridge_end]:ridges){
+      if(begin>=ridge_begin&&end<=ridge_end)return 0.0;
+      overlaps|=end>=ridge_begin&&begin<=ridge_end;
+    }
+    if(!overlaps)return 1.0;
+    return std::nullopt;
+  };
+  tetra_viewer::AtmosphereShadowIntegrationOptions options;
+  options.maximum_subdivision_depth=12U;
+  const auto dense=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::dense_oracle,visibility,
+      {},{},options);
+  const auto segmented=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::minmax_segments,visibility,
+      {},classify,options);
+  CHECK(std::abs(segmented.weighted_loss-dense.weighted_loss)<1.5e-3);
+  CHECK(segmented.visited_ranges<512U);
+  CHECK_FALSE(segmented.fallback);
+}
+
+TEST_CASE("atmosphere shadow integration handles uniform tangent and capped work") {
+  for(const double uniform:{0.0,1.0}){
+    const auto result=tetra_viewer::integrate_atmosphere_shadow(
+        tetra_viewer::AtmosphereShadowIntegrator::adaptive_transition,
+        [=](double){return uniform;});
+    CHECK(result.weighted_loss==doctest::Approx(1.0-uniform));
+    CHECK_FALSE(result.fallback);
+  }
+  const auto tangent=[](double distance){
+    const double offset=distance-0.5;
+    return offset*offset<1.0e-8?0.0:1.0;
+  };
+  const auto classifier=[](double begin,double end)->std::optional<double>{
+    if(end<0.4999||begin>0.5001)return 1.0;
+    if(begin>=0.4999&&end<=0.5001)return 0.0;
+    return std::nullopt;
+  };
+  tetra_viewer::AtmosphereShadowIntegrationOptions precise;
+  precise.maximum_subdivision_depth=14U;
+  const auto thin=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::minmax_segments,tangent,
+      {},classifier,precise);
+  CHECK(thin.weighted_loss>0.0);
+
+  tetra_viewer::AtmosphereShadowIntegrationOptions capped;
+  capped.maximum_samples=4U;
+  capped.maximum_subdivision_depth=16U;
+  const auto overflow=tetra_viewer::integrate_atmosphere_shadow(
+      tetra_viewer::AtmosphereShadowIntegrator::adaptive_transition,
+      [](double distance){return std::fmod(distance*1000.0,2.0)<1.0?0.0:1.0;},
+      {},{},capped);
+  CHECK(overflow.fallback);
+  CHECK(overflow.visibility_samples<=capped.maximum_samples);
+  CHECK(std::isfinite(overflow.weighted_loss));
+}
+
+TEST_CASE("atmosphere shadow quality metrics expose boundary and staircase error") {
+  const std::array reference{0.0,0.1,0.4,0.8,1.0};
+  CHECK(tetra_viewer::atmosphere_shadow_error_metrics(reference,reference).
+        root_mean_square_error==0.0);
+  const std::array shifted{0.0,0.0,0.1,0.4,0.8};
+  const auto metrics=tetra_viewer::atmosphere_shadow_error_metrics(
+      shifted,reference,0.25);
+  CHECK(metrics.root_mean_square_error>0.0);
+  CHECK(metrics.maximum_error==doctest::Approx(0.4));
+  CHECK(metrics.boundary_distance==doctest::Approx(0.25));
+  CHECK(metrics.gradient_step_energy>0.0);
+}
+
+TEST_CASE("atmosphere shadow minmax hierarchy is conservative for odd depth images") {
+  const std::array depth{
+      1.0,0.8,0.7,0.6,1.0,
+      0.9,0.4,0.5,0.3,1.0,
+      1.0,1.0,std::numeric_limits<double>::quiet_NaN(),0.2,1.0};
+  const auto hierarchy=tetra_viewer::make_atmosphere_shadow_depth_hierarchy(
+      depth,5U,3U);
+  REQUIRE(hierarchy.levels.size()==4U);
+  CHECK(hierarchy.levels[0].width==5U);
+  CHECK(hierarchy.levels[1].width==3U);
+  CHECK(hierarchy.levels[1].height==2U);
+  CHECK(hierarchy.levels.back().width==1U);
+  CHECK(hierarchy.levels.back().height==1U);
+  REQUIRE(hierarchy.levels.back().ranges.size()==1U);
+  CHECK(hierarchy.levels.back().ranges.front().minimum==0.2);
+  CHECK(hierarchy.levels.back().ranges.front().maximum==1.0);
+  for(std::size_t level=1U;level<hierarchy.levels.size();++level){
+    const auto& children=hierarchy.levels[level-1U];
+    const auto& parents=hierarchy.levels[level];
+    for(std::size_t y=0;y<children.height;++y)
+      for(std::size_t x=0;x<children.width;++x){
+        const auto child=children.ranges[y*children.width+x];
+        const auto parent=parents.ranges[(y/2U)*parents.width+x/2U];
+        CHECK(parent.minimum<=child.minimum);
+        CHECK(parent.maximum>=child.maximum);
+      }
+  }
+}
+
+TEST_CASE("transition-aware atmosphere shadows vary continuously under subtexel motion") {
+  tetra_viewer::AtmosphereShadowIntegrationOptions options;
+  options.maximum_subdivision_depth=10U;
+  double previous=-1.0;
+  for(std::size_t frame=0;frame<32U;++frame){
+    const double boundary=0.4+static_cast<double>(frame)*1.0e-4;
+    const auto result=tetra_viewer::integrate_atmosphere_shadow(
+        tetra_viewer::AtmosphereShadowIntegrator::adaptive_transition,
+        [=](double distance){return distance<boundary?1.0:0.0;},
+        {},{},options);
+    if(previous>=0.0){
+      CHECK(result.weighted_loss<=previous);
+      CHECK(previous-result.weighted_loss<2.0e-4);
+    }
+    previous=result.weighted_loss;
+  }
+}
+
+TEST_CASE("ordered minmax traversal resolves thin separated and tangent blockers") {
+  using tetra_viewer::AtmosphereShadowIntegrator;
+  const std::array<std::pair<double,double>,3> blockers{{
+      {0.117,0.121},{0.500,0.5008},{0.811,0.839}}};
+  const auto visible=[&](double point){
+    return std::ranges::any_of(blockers,[&](const auto& blocker){
+      return point>=blocker.first&&point<=blocker.second;
+    })?0.0:1.0;
+  };
+  const auto classify=[&](double begin,double end)->std::optional<double>{
+    bool overlaps=false;
+    for(const auto& [low,high]:blockers){
+      if(end<low||begin>high)continue;
+      overlaps=true;
+      if(begin>=low&&end<=high)return 0.0;
+    }
+    if(!overlaps)return 1.0;
+    return std::nullopt;
+  };
+  tetra_viewer::AtmosphereShadowIntegrationOptions options;
+  options.base_intervals=32U;
+  options.dense_intervals=131'072U;
+  options.maximum_subdivision_depth=14U;
+  options.maximum_samples=4096U;
+  const auto hierarchy=tetra_viewer::integrate_atmosphere_shadow(
+      AtmosphereShadowIntegrator::minmax_segments,visible,{},classify,options);
+  const auto dense=tetra_viewer::integrate_atmosphere_shadow(
+      AtmosphereShadowIntegrator::dense_oracle,visible,{}, {},options);
+  CHECK_FALSE(hierarchy.fallback);
+  CHECK(hierarchy.visited_ranges>options.base_intervals);
+  CHECK(hierarchy.weighted_loss==
+        doctest::Approx(dense.weighted_loss).epsilon(2.5e-3));
+
+  options.maximum_samples=1U;
+  const auto capped=tetra_viewer::integrate_atmosphere_shadow(
+      AtmosphereShadowIntegrator::minmax_segments,visible,{},classify,options);
+  CHECK(capped.fallback);
+  CHECK(capped.visibility_samples<=2U);
+}
+
+TEST_CASE("atmosphere shadow generations reject stale hierarchies and fallbacks") {
+  using namespace tetra_viewer;
+  AtmosphereShadowIntegrationGeneration generation{
+      .integrator=AtmosphereShadowIntegrator::minmax_segments,
+      .shadow_depth_generation=7U,.hierarchy_generation=7U,
+      .fallback=false,.complete=true};
+  CHECK(compatible_atmosphere_shadow_generation(generation));
+  generation.hierarchy_generation=6U;
+  CHECK_FALSE(compatible_atmosphere_shadow_generation(generation));
+  generation.hierarchy_generation=7U;
+  generation.fallback=true;
+  CHECK_FALSE(compatible_atmosphere_shadow_generation(generation));
+  generation={.integrator=AtmosphereShadowIntegrator::adaptive_transition,
+              .shadow_depth_generation=8U,.hierarchy_generation=0U,
+              .fallback=false,.complete=true};
+  CHECK(compatible_atmosphere_shadow_generation(generation));
+  generation={.integrator=AtmosphereShadowIntegrator::moment_hybrid,
+              .shadow_depth_generation=9U,.hierarchy_generation=9U,
+              .fallback=false,.complete=true};
+  CHECK(compatible_atmosphere_shadow_generation(generation));
+  generation.hierarchy_generation=8U;
+  CHECK_FALSE(compatible_atmosphere_shadow_generation(generation));
+}
+
 TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") {
-  double previous_bias{};
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,0.72,0.78},{0.0,0.0,1.0},{-0.864838,0.052336,-0.499315},1024U);
+  double previous_bias=std::numeric_limits<double>::infinity();
+  const double surface_world_bias=
+      tetra_viewer::surface_shadow_world_bias(0.14);
   for(std::size_t cascade=0;cascade<tetra_viewer::shadow_cascade_count;
       ++cascade){
-    const double bias=tetra_viewer::atmosphere_shadow_depth_bias(cascade);
-    CHECK(bias>previous_bias);
+    const auto& shadow_cascade=cascades.cascades[cascade];
+    const double bias=tetra_viewer::atmosphere_shadow_depth_bias(shadow_cascade);
+    CHECK(bias<previous_bias);
     CHECK(bias<0.0011);
+    CHECK(bias*(2.0*shadow_cascade.depth_half_range)==
+          doctest::Approx(0.0036).epsilon(1.0e-12));
+    CHECK(shadow_cascade.split_distance*(16.0/3.0)==
+          doctest::Approx(2.0*shadow_cascade.depth_half_range));
+    const double depth_span=2.0*shadow_cascade.depth_half_range;
+    CHECK(tetra_viewer::atmosphere_shadow_depth_visibility(
+              0.5,0.5-0.0035/depth_span,bias)==1.0);
+    CHECK(tetra_viewer::atmosphere_shadow_depth_visibility(
+              0.5,0.5-0.0037/depth_span,bias)==0.0);
+    const double surface_bias=tetra_viewer::normalized_shadow_depth_bias(
+        shadow_cascade,surface_world_bias);
+    CHECK(surface_bias*(2.0*shadow_cascade.depth_half_range)==
+          doctest::Approx(surface_world_bias).epsilon(1.0e-12));
     previous_bias=bias;
   }
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.0,0.0)==1.0);
@@ -15621,6 +16519,157 @@ TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") 
         doctest::Approx(0.5));
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.98,0.5)==0.0);
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(1.2,0.5)==0.0);
+}
+
+TEST_CASE("local cascade cannot erase a fitted long-range mountain shadow") {
+  using tetra_viewer::combined_local_fitted_shadow_visibility;
+  CHECK(combined_local_fitted_shadow_visibility(1.0,0.0,1.0)==0.0);
+  CHECK(combined_local_fitted_shadow_visibility(1.0,0.25,1.0)==0.25);
+  CHECK(combined_local_fitted_shadow_visibility(0.0,1.0,1.0)==0.0);
+  CHECK(combined_local_fitted_shadow_visibility(0.0,1.0,0.5)==0.5);
+  CHECK(combined_local_fitted_shadow_visibility(0.0,1.0,0.0)==1.0);
+  CHECK(combined_local_fitted_shadow_visibility(1.0,0.0,0.0)==0.0);
+}
+
+TEST_CASE("fitted atmospheric comparison bias remains physical across fit scales") {
+  struct FitCase { double depth; double texel_x; double texel_y; };
+  constexpr std::array<FitCase,5> cases{{
+      {8.0,0.004,0.006},{512.0,0.25,0.3},{10'000.0,5.0,7.0},
+      {100'000.0,50.0,80.0},{1'000'000.0,500.0,800.0}}};
+  for(const auto& fit:cases){
+    const double normalized=tetra_viewer::atmosphere_fitted_shadow_depth_bias(
+        fit.depth,fit.texel_x,fit.texel_y);
+    const double world=normalized*fit.depth;
+    CHECK(normalized>0.0);
+    CHECK(world>=0.0036);
+    CHECK(world<=0.02);
+    CHECK(world==doctest::Approx(
+        tetra_viewer::atmosphere_fitted_shadow_world_bias(
+            fit.texel_x,fit.texel_y)).epsilon(1.0e-12));
+  }
+  CHECK(tetra_viewer::atmosphere_fitted_shadow_depth_bias(
+      0.0,1.0,1.0)==0.0);
+  CHECK(tetra_viewer::atmosphere_fitted_shadow_depth_bias(
+      std::numeric_limits<double>::infinity(),1.0,1.0)==0.0);
+}
+
+TEST_CASE("surface shadow bias modes round trip and stay experimental") {
+  using tetra_viewer::SurfaceShadowBiasMode;
+  for(const auto mode:{SurfaceShadowBiasMode::slope_scaled,
+                       SurfaceShadowBiasMode::receiver_plane}){
+    const auto name=tetra_viewer::surface_shadow_bias_mode_name(mode);
+    REQUIRE(tetra_viewer::parse_surface_shadow_bias_mode(name));
+    CHECK(*tetra_viewer::parse_surface_shadow_bias_mode(name)==mode);
+  }
+  CHECK_FALSE(tetra_viewer::parse_surface_shadow_bias_mode("adaptive-air"));
+}
+
+TEST_CASE("atmosphere shadow filtering modes round trip") {
+  using tetra_viewer::AtmosphereShadowFilter;
+  CHECK(tetra_viewer::default_atmosphere_shadow_filter==
+        AtmosphereShadowFilter::physical_footprint);
+  for(const auto filter:{AtmosphereShadowFilter::unfiltered,
+                         AtmosphereShadowFilter::fixed_tent,
+                         AtmosphereShadowFilter::physical_footprint}){
+    const auto name=tetra_viewer::atmosphere_shadow_filter_name(filter);
+    REQUIRE(tetra_viewer::parse_atmosphere_shadow_filter(name));
+    CHECK(*tetra_viewer::parse_atmosphere_shadow_filter(name)==filter);
+  }
+  CHECK_FALSE(tetra_viewer::parse_atmosphere_shadow_filter("final-loss-blur"));
+}
+
+TEST_CASE("moment shadow prototype is exact for two layers and rejects three") {
+  const std::array two_layers{0.2,0.2,0.2,0.2,0.8,0.8,0.8,0.8};
+  const auto between=tetra_viewer::atmosphere_moment_visibility(
+      two_layers,0.5,1.0e-8);
+  CHECK(between.confident);
+  CHECK(between.estimate==doctest::Approx(0.5).epsilon(1.0e-10));
+  CHECK(between.upper-between.lower<1.0e-6);
+  CHECK(tetra_viewer::atmosphere_moment_visibility(
+      two_layers,0.1,1.0e-8).estimate==doctest::Approx(1.0));
+  CHECK(tetra_viewer::atmosphere_moment_visibility(
+      two_layers,0.9,1.0e-8).estimate==doctest::Approx(0.0));
+  const std::array three_layers{0.1,0.1,0.45,0.45,0.9,0.9};
+  const auto ambiguous=tetra_viewer::atmosphere_moment_visibility(
+      three_layers,0.5,1.0e-8);
+  CHECK_FALSE(ambiguous.confident);
+  CHECK(ambiguous.upper-ambiguous.lower>0.1);
+}
+
+TEST_CASE("moment shadow confidence gate prevents black wall leakage and motion pops") {
+  // A mostly clear footprint containing a thin opaque wall is the classic
+  // moment-shadow light-leak case. More than two supports must be delegated
+  // to the exact path rather than returning an optimistic bound.
+  const std::array black_wall{0.02,0.02,0.22,0.48,0.71,0.94,1.0,1.0,1.0};
+  for(const double receiver:{0.1,0.3,0.6,0.9}){
+    const auto result=tetra_viewer::atmosphere_moment_visibility(
+        black_wall,receiver,1.0e-5);
+    CHECK_FALSE(result.confident);
+    CHECK(result.lower<=result.estimate);
+    CHECK(result.estimate<=result.upper);
+    CHECK(result.upper-result.lower>0.1);
+  }
+
+  // A genuine two-layer footprint remains exact while its receiver moves by
+  // sub-texel amounts. Crossing a support is the only permitted step.
+  const std::array two_layers{0.2,0.2,0.2,0.2,0.8,0.8,0.8,0.8};
+  double previous=1.0;
+  for(int index=0;index<=200;++index){
+    const double receiver=0.19+static_cast<double>(index)*0.0031;
+    const auto result=tetra_viewer::atmosphere_moment_visibility(
+        two_layers,receiver,1.0e-8);
+    REQUIRE(result.confident);
+    CHECK(result.upper-result.lower<1.0e-6);
+    CHECK(result.estimate<=previous);
+    const bool supported=result.estimate==doctest::Approx(1.0).epsilon(1.0e-12)||
+        result.estimate==doctest::Approx(0.5).epsilon(1.0e-12)||
+        result.estimate==doctest::Approx(0.0).epsilon(1.0e-12);
+    CHECK(supported);
+    previous=result.estimate;
+  }
+}
+
+TEST_CASE("fitted atmosphere shadow matrix is stable across the L0 fit matrix") {
+  using tetra::Vec3;
+  struct CameraBasis { Vec3 forward; Vec3 right; Vec3 down; };
+  const std::array cameras{
+      CameraBasis{{0.0,0.0,1.0},{1.0,0.0,0.0},{0.0,1.0,0.0}},
+      CameraBasis{{0.6,-0.2,0.7745966692},{0.790569415,0.0,-0.612372436},
+                  {0.122474487,0.979795897,0.158113883}},
+      CameraBasis{{-0.4,0.3,-0.866025404},{-0.907841299,0.0,0.419313935},
+                  {0.125794181,0.953939201,0.272352390}}};
+  for(const double distance:{128.0,2048.0,20'000.0})
+    for(const std::uint32_t resolution:{256U,512U,1024U})
+      for(const Vec3 sun:{Vec3{-0.86,0.05,-0.50},Vec3{-0.4,0.7,-0.59}})
+      for(const auto& camera:cameras){
+        const auto request=tetra_viewer::make_atmosphere_shadow_front_request(
+            {100'000.25,3.0,-200'000.5},camera.forward,camera.right,
+            camera.down,0.75,16.0/9.0,distance,1.15,sun,distance,
+            {100'000.0,0.0,-200'000.0},7U);
+        const auto fit=tetra_viewer::fit_atmosphere_shadow_map(
+            request,resolution);
+        CHECK(fit.depth_world_span>0.0);
+        CHECK(fit.texel_world_size_x>0.0);
+        CHECK(fit.texel_world_size_y>0.0);
+        const double bias=tetra_viewer::atmosphere_fitted_shadow_depth_bias(
+            fit.depth_world_span,fit.texel_world_size_x,
+            fit.texel_world_size_y);
+        CHECK(std::isfinite(bias));
+        CHECK(bias*fit.depth_world_span<=0.02);
+        auto rebased=request;
+        rebased.render_origin={99'900.0,0.0,-199'900.0};
+        const auto rebased_fit=tetra_viewer::fit_atmosphere_shadow_map(
+            rebased,resolution);
+        CHECK(rebased_fit.depth_world_span==
+              doctest::Approx(fit.depth_world_span).epsilon(1.0e-10));
+        CHECK(rebased_fit.texel_world_size_x==
+              doctest::Approx(fit.texel_world_size_x).epsilon(1.0e-10));
+        const double world_bias=
+            tetra_viewer::atmosphere_fitted_shadow_world_bias(
+                fit.texel_world_size_x,fit.texel_world_size_y);
+        CHECK(world_bias>=0.0036);
+        CHECK(world_bias<=0.02);
+      }
 }
 
 TEST_CASE("atmospheric receiver projection mirrors shader clip and depth policy") {
@@ -15692,4 +16741,29 @@ TEST_CASE("atmospheric receiver depth oracle preserves lit borders and partial f
   projection.inside_depth=false;
   CHECK(tetra_viewer::atmosphere_shadow_filtered_visibility(
       projection,{0.0,0.0,0.0,0.0},0.001)==1.0);
+}
+
+TEST_CASE("radial atmosphere visibility reconstructs shadow transitions") {
+  using tetra_viewer::atmosphere_interval_visibility;
+  CHECK(atmosphere_interval_visibility(1.0,1.0,1.0)==1.0);
+  CHECK(atmosphere_interval_visibility(0.0,0.0,0.0)==0.0);
+  CHECK(atmosphere_interval_visibility(0.0,1.0,1.0)==0.75);
+  CHECK(atmosphere_interval_visibility(0.0,0.0,1.0)==0.25);
+  CHECK(atmosphere_interval_visibility(1.0,0.0,1.0)==0.5);
+}
+
+TEST_CASE("camera motion never reuses atmosphere visibility from old rays") {
+  using tetra_viewer::AtmosphereHistoryCompatibility;
+  using tetra_viewer::atmosphere_visibility_refresh_intervals;
+  AtmosphereHistoryCompatibility compatibility{};
+  CHECK(atmosphere_visibility_refresh_intervals(false,compatibility)==32U);
+  CHECK(atmosphere_visibility_refresh_intervals(true,compatibility)==2U);
+  compatibility.camera_changed=true;
+  CHECK(atmosphere_visibility_refresh_intervals(true,compatibility)==32U);
+  compatibility.camera_changed=false;
+  compatibility.render_origin_changed=true;
+  CHECK(atmosphere_visibility_refresh_intervals(true,compatibility)==32U);
+  compatibility.render_origin_changed=false;
+  compatibility.invalidation_mask=1U;
+  CHECK(atmosphere_visibility_refresh_intervals(true,compatibility)==32U);
 }

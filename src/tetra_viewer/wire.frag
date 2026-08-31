@@ -20,8 +20,8 @@ void main() {
       : camera.rendering.y>0.5;
   if(!enabled)discard;
   vec3 edge_colour;
-  if(connected_surface)edge_colour=vec3(0.015,0.055,0.028);
+  if(connected_surface)edge_colour=vec3(0.05,0.17,0.15);
   else if(volume_face&&colour.r>0.7)edge_colour=vec3(0.18,0.055,0.015);
-  else edge_colour=vec3(0.025,0.04,0.055);
+  else edge_colour=vec3(0.045,0.13,0.16);
   out_colour=vec4(edge_colour,1.0);
 }

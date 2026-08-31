@@ -14,6 +14,7 @@ layout(std140,set=0,binding=1) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
   vec4 atmosphere_shadow_metadata;
+  vec4 epipolar_metadata;
 } shadow_cascades;
 layout(set=0,binding=2) uniform sampler2D transmittance_lut;
 layout(set=0,binding=3) uniform sampler2D multiple_scattering_lut;
@@ -44,14 +45,44 @@ layout(push_constant) uniform Camera {
   vec4 view_position;
 } camera;
 
-float cascade_visibility(vec3 position,float n_dot_l,int cascade) {
+float receiver_plane_depth_bias(vec3 position,vec3 receiver_normal,
+                                int cascade,vec3 projected) {
+  const ivec2 map_size=textureSize(sun_shadow_map,0).xy;
+  const vec2 texel=floor((projected.xy*0.5+0.5)*vec2(map_size))+0.5;
+  const vec2 centre_clip=texel/vec2(map_size)*2.0-1.0;
+  const mat4 inverse_shadow=inverse(shadow_cascades.shadow_matrices[cascade]);
+  vec4 near_h=inverse_shadow*vec4(centre_clip,0.0,1.0);
+  vec4 far_h=inverse_shadow*vec4(centre_clip,1.0,1.0);
+  const vec3 near_point=near_h.xyz/max(abs(near_h.w),1.0e-7);
+  const vec3 far_point=far_h.xyz/max(abs(far_h.w),1.0e-7);
+  const vec3 light_ray=far_point-near_point;
+  const float denominator=dot(receiver_normal,light_ray);
+  if(abs(denominator)<1.0e-5)return 0.0;
+  const float distance=dot(receiver_normal,position-near_point)/denominator;
+  const vec3 plane_point=near_point+light_ray*distance;
+  const float plane_depth=(shadow_cascades.shadow_matrices[cascade]*
+      vec4(plane_point,1.0)).z;
+  const float depth_span=max(
+      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+  return max(projected.z-plane_depth,0.0)+0.00144/depth_span;
+}
+
+float cascade_visibility(vec3 position,vec3 receiver_normal,
+                         float n_dot_l,int cascade) {
   const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
       vec4(position,1.0)).xyz;
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
      projected.z<0.0||projected.z>1.0)return 1.0;
   const vec2 uv=projected.xy*0.5+0.5;
-  const float bias=mix(0.00018,0.0012,1.0-n_dot_l)*
-      (1.0+float(cascade)*0.45);
+  // Bias is a world-space distance converted to this cascade's normalized
+  // depth. A fixed normalized bias grows with cascade extent and visibly
+  // erodes (shrinks) distant mountain shadows.
+  const float world_bias=mix(0.00144,0.0096,1.0-n_dot_l);
+  const float depth_span=max(
+      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+  const float bias=camera.light_direction.w>0.5?
+      receiver_plane_depth_bias(position,receiver_normal,cascade,projected):
+      world_bias/depth_span;
   const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
   float visibility=0.0;
   for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
@@ -62,20 +93,42 @@ float cascade_visibility(vec3 position,float n_dot_l,int cascade) {
   return visibility/9.0;
 }
 
-float sun_visibility(vec3 position,float n_dot_l) {
+float fitted_visibility(vec3 position) {
+  if(shadow_cascades.atmosphere_shadow_metadata.x<0.999)return 1.0;
+  const vec3 projected=(shadow_cascades.shadow_matrices[4]*
+      vec4(position,1.0)).xyz;
+  if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
+     projected.z<0.0||projected.z>1.0)return 1.0;
+  const float scale=shadow_cascades.atmosphere_shadow_metadata.w;
+  const vec2 uv=(projected.xy*0.5+0.5)*scale;
+  const float bias=shadow_cascades.atmosphere_shadow_metadata.z;
+  // This map only contributes distant casters. The sampler's linear depth
+  // reconstruction supplies a stable conservative footprint without adding
+  // a second 3x3 filter to every opaque terrain fragment.
+  const float blocker=texture(sun_shadow_map,vec3(uv,4.0)).r;
+  const float visibility=projected.z-bias<=blocker?1.0:0.0;
+  const float coverage=1.0-smoothstep(
+      0.94,0.995,max(abs(projected.x),abs(projected.y)));
+  return mix(1.0,visibility,coverage);
+}
+
+float sun_visibility(vec3 position,vec3 receiver_normal,float n_dot_l) {
   const float distance_from_camera=length(position-camera.view_position.xyz);
   int cascade=3;
   if(distance_from_camera<shadow_cascades.shadow_splits.x)cascade=0;
   else if(distance_from_camera<shadow_cascades.shadow_splits.y)cascade=1;
   else if(distance_from_camera<shadow_cascades.shadow_splits.z)cascade=2;
-  const float current=cascade_visibility(position,n_dot_l,cascade);
+  const float distant=fitted_visibility(position);
+  const float current=min(distant,cascade_visibility(
+      position,receiver_normal,n_dot_l,cascade));
   if(cascade==3)return current;
   const float split=shadow_cascades.shadow_splits[cascade];
   const float previous=cascade==0?0.0:
       shadow_cascades.shadow_splits[cascade-1];
   const float blend_start=mix(previous,split,0.85);
   const float blend=smoothstep(blend_start,split,distance_from_camera);
-  return mix(current,cascade_visibility(position,n_dot_l,cascade+1),blend);
+  return mix(current,min(distant,cascade_visibility(
+      position,receiver_normal,n_dot_l,cascade+1)),blend);
 }
 
 float atmosphere_sun_visibility(float radial_distance,float sun_cosine) {
@@ -188,7 +241,8 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
       radial_distance,sun_cosine);
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*2.8;
-  if(atmosphere.reserved1.y>0.5)
+  const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
+  if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
     return sample_sky_irradiance(surface_normal);
 
   // The qualified baseline retains its fitted readability terms. The
@@ -308,9 +362,13 @@ void main() {
     const vec3 environment=atmosphere_terrain_lighting(
         fragment_position,unit_normal,direct_sun);
     const vec3 ambient=(1.0-f0)*(1.0-metallic)*albedo*environment;
-    const float shadow=sun_visibility(fragment_position,n_dot_l);
-    const vec3 linear_colour=ambient+
-        (diffuse+specular)*n_dot_l*direct_sun*shadow;
+    const float shadow=sun_visibility(fragment_position,unit_normal,n_dot_l);
+    const vec3 direct=(diffuse+specular)*n_dot_l*direct_sun*shadow;
+    vec3 linear_colour=ambient+direct;
+    const int atmosphere_debug=int(atmosphere.reserved1.x+0.5);
+    if(atmosphere_debug==25)linear_colour=vec3(shadow);
+    else if(atmosphere_debug==26)linear_colour=ambient;
+    else if(atmosphere_debug==27)linear_colour=direct;
     // Keep scene radiance linear. The HDR composite owns exposure, tone
     // mapping, and the single display transfer for every material.
     shaded_colour=linear_colour;

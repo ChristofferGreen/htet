@@ -135,6 +135,597 @@ std::string_view atmosphere_transport_name(
   return "qualified-baseline";
 }
 
+std::optional<AtmosphereRenderingMethod> parse_atmosphere_rendering_method(
+    std::string_view name) {
+  if(name=="current-qualified")
+    return AtmosphereRenderingMethod::current_qualified;
+  if(name=="native-screen-oracle")
+    return AtmosphereRenderingMethod::native_screen_oracle;
+  if(name=="deterministic-half-resolution")
+    return AtmosphereRenderingMethod::deterministic_half_resolution;
+  if(name=="temporal-half-resolution")
+    return AtmosphereRenderingMethod::temporal_half_resolution;
+  if(name=="deterministic-shadowed-froxels")
+    return AtmosphereRenderingMethod::deterministic_shadowed_froxels;
+  return std::nullopt;
+}
+
+std::string_view atmosphere_rendering_method_name(
+    AtmosphereRenderingMethod method) noexcept {
+  switch(method){
+    case AtmosphereRenderingMethod::current_qualified:
+      return "current-qualified";
+    case AtmosphereRenderingMethod::native_screen_oracle:
+      return "native-screen-oracle";
+    case AtmosphereRenderingMethod::deterministic_half_resolution:
+      return "deterministic-half-resolution";
+    case AtmosphereRenderingMethod::temporal_half_resolution:
+      return "temporal-half-resolution";
+    case AtmosphereRenderingMethod::deterministic_shadowed_froxels:
+      return "deterministic-shadowed-froxels";
+  }
+  return "current-qualified";
+}
+
+std::optional<AtmosphereShadowIntegrator> parse_atmosphere_shadow_integrator(
+    std::string_view name) {
+  if(name=="fixed-32")return AtmosphereShadowIntegrator::fixed_32;
+  if(name=="adaptive-transition")
+    return AtmosphereShadowIntegrator::adaptive_transition;
+  if(name=="minmax-segments")
+    return AtmosphereShadowIntegrator::minmax_segments;
+  if(name=="dense-oracle")return AtmosphereShadowIntegrator::dense_oracle;
+  if(name=="moment-hybrid")return AtmosphereShadowIntegrator::moment_hybrid;
+  if(name=="epipolar-minmax")
+    return AtmosphereShadowIntegrator::epipolar_minmax;
+  return std::nullopt;
+}
+
+std::string_view atmosphere_shadow_integrator_name(
+    AtmosphereShadowIntegrator integrator) noexcept {
+  switch(integrator){
+    case AtmosphereShadowIntegrator::fixed_32:return "fixed-32";
+    case AtmosphereShadowIntegrator::adaptive_transition:
+      return "adaptive-transition";
+    case AtmosphereShadowIntegrator::minmax_segments:return "minmax-segments";
+    case AtmosphereShadowIntegrator::dense_oracle:return "dense-oracle";
+    case AtmosphereShadowIntegrator::moment_hybrid:return "moment-hybrid";
+    case AtmosphereShadowIntegrator::epipolar_minmax:
+      return "epipolar-minmax";
+  }
+  return "fixed-32";
+}
+
+std::size_t atmosphere_epipolar_minmax_element_count(
+    std::size_t radial_resolution,std::size_t angular_rows) noexcept {
+  std::size_t per_row{};
+  while(radial_resolution>0U){
+    per_row+=radial_resolution;
+    if(radial_resolution==1U)break;
+    radial_resolution=(radial_resolution+1U)/2U;
+  }
+  return per_row*angular_rows;
+}
+
+AtmosphereEpipolarLayout atmosphere_epipolar_layout(
+    std::size_t shadow_resolution) noexcept {
+  if(shadow_resolution==0U)return {};
+  std::size_t shadow_capacity{};
+  for(auto width=shadow_resolution;width>0U;width=(width+1U)/2U){
+    shadow_capacity+=width*width;
+    if(width==1U)break;
+  }
+  // The final two uvec2 entries are reserved for fence-safe GPU traversal
+  // diagnostics while the buffer contains the epipolar hierarchy.
+  if(shadow_capacity<=2U)return {};
+  shadow_capacity-=2U;
+  constexpr double tau=6.28318530717958647692;
+  const auto fits=[&](std::size_t radial){
+    const auto rows=static_cast<std::size_t>(
+        std::ceil(tau*static_cast<double>(radial)));
+    return atmosphere_epipolar_minmax_element_count(radial,rows)<=
+        shadow_capacity;
+  };
+  std::size_t low=1U;
+  std::size_t high=shadow_resolution;
+  while(low<high){
+    const auto middle=low+(high-low+1U)/2U;
+    if(fits(middle))low=middle;
+    else high=middle-1U;
+  }
+  const auto per_row=atmosphere_epipolar_minmax_element_count(low,1U);
+  const auto rows=std::max<std::size_t>(1U,shadow_capacity/per_row);
+  return {.radial_resolution=low,
+          .angular_rows=rows,
+          .element_count=per_row*rows};
+}
+
+std::size_t atmosphere_epipolar_row_from_angle(
+    double angle_radians,std::size_t angular_rows) noexcept {
+  if(angular_rows==0U||!std::isfinite(angle_radians))return 0U;
+  constexpr double tau=6.28318530717958647692;
+  double wrapped=std::fmod(angle_radians+3.14159265358979323846,tau);
+  if(wrapped<0.0)wrapped+=tau;
+  const auto row=static_cast<std::size_t>(
+      wrapped/tau*static_cast<double>(angular_rows));
+  return std::min(row,angular_rows-1U);
+}
+
+std::optional<SurfaceShadowBiasMode> parse_surface_shadow_bias_mode(
+    std::string_view name) {
+  if(name=="slope-scaled")return SurfaceShadowBiasMode::slope_scaled;
+  if(name=="receiver-plane")return SurfaceShadowBiasMode::receiver_plane;
+  return std::nullopt;
+}
+
+std::string_view surface_shadow_bias_mode_name(
+    SurfaceShadowBiasMode mode) noexcept {
+  switch(mode){
+    case SurfaceShadowBiasMode::slope_scaled:return "slope-scaled";
+    case SurfaceShadowBiasMode::receiver_plane:return "receiver-plane";
+  }
+  return "slope-scaled";
+}
+
+std::optional<AtmosphereShadowFilter> parse_atmosphere_shadow_filter(
+    std::string_view name) {
+  if(name=="unfiltered")return AtmosphereShadowFilter::unfiltered;
+  if(name=="fixed-tent")return AtmosphereShadowFilter::fixed_tent;
+  if(name=="physical-footprint")
+    return AtmosphereShadowFilter::physical_footprint;
+  return std::nullopt;
+}
+
+std::string_view atmosphere_shadow_filter_name(
+    AtmosphereShadowFilter filter) noexcept {
+  switch(filter){
+    case AtmosphereShadowFilter::unfiltered:return "unfiltered";
+    case AtmosphereShadowFilter::fixed_tent:return "fixed-tent";
+    case AtmosphereShadowFilter::physical_footprint:return "physical-footprint";
+  }
+  return "fixed-tent";
+}
+
+std::uint64_t atmosphere_epipolar_source_revision(
+    std::uint64_t surface_generation,const std::array<float,16>& matrix,
+    float raster_bias_constant,float raster_bias_slope,
+    AtmosphereShadowFilter filter,double comparison_bias_world) noexcept {
+  std::uint64_t hash=1469598103934665603ULL;
+  hash_double(hash,static_cast<double>(surface_generation));
+  for(const float value:matrix)hash_double(hash,static_cast<double>(value));
+  hash_double(hash,static_cast<double>(raster_bias_constant));
+  hash_double(hash,static_cast<double>(raster_bias_slope));
+  hash_double(hash,static_cast<double>(filter));
+  hash_double(hash,comparison_bias_world);
+  return hash;
+}
+
+bool compatible_atmosphere_shadow_generation(
+    const AtmosphereShadowIntegrationGeneration& generation) noexcept {
+  if(!generation.complete||generation.fallback)return false;
+  if(generation.integrator==AtmosphereShadowIntegrator::minmax_segments||
+     generation.integrator==AtmosphereShadowIntegrator::moment_hybrid||
+     generation.integrator==AtmosphereShadowIntegrator::epipolar_minmax)
+    return generation.shadow_depth_generation!=0U&&
+        generation.hierarchy_generation==generation.shadow_depth_generation;
+  return generation.hierarchy_generation==0U;
+}
+
+AtmosphereMomentVisibility atmosphere_moment_visibility(
+    std::span<const double> blocker_depths,double receiver_depth,
+    double residual_tolerance) {
+  AtmosphereMomentVisibility result;
+  if(blocker_depths.empty()||!std::isfinite(receiver_depth)||
+     !(residual_tolerance>=0.0)||!std::isfinite(residual_tolerance))
+    return result;
+  std::array<double,5> moment{};
+  moment[0]=1.0;
+  std::size_t count{};
+  for(const double depth:blocker_depths){
+    if(!std::isfinite(depth))continue;
+    const double value=std::clamp(depth,0.0,1.0);
+    double power=value;
+    for(std::size_t order=1;order<=4U;++order){
+      moment[order]+=power;
+      power*=value;
+    }
+    ++count;
+  }
+  if(count==0U)return result;
+  for(std::size_t order=1;order<=4U;++order)
+    moment[order]/=static_cast<double>(count);
+  const double variance=moment[2]-moment[1]*moment[1];
+  if(variance<=1.0e-12){
+    result.estimate=receiver_depth<=moment[1]?1.0:0.0;
+    result.lower=result.upper=result.estimate;
+    result.residual=0.0;
+    result.confident=true;
+    return result;
+  }
+  // A measure supported on at most two depths obeys m(k+2)=s*m(k+1)-p*m(k).
+  // Recover those two depths from the first three moments and use the fourth
+  // exclusively as a confidence test. Three-layer distributions generally
+  // violate the recurrence and therefore fall back to the min/max path.
+  const double sum=(moment[3]-moment[1]*moment[2])/variance;
+  const double product=sum*moment[1]-moment[2];
+  const double discriminant=sum*sum-4.0*product;
+  if(discriminant<0.0||!std::isfinite(discriminant))return result;
+  const double root=std::sqrt(std::max(discriminant,0.0));
+  const double first=0.5*(sum-root);
+  const double second=0.5*(sum+root);
+  if(first<-1.0e-6||second>1.0+1.0e-6||second-first<=1.0e-12)
+    return result;
+  const double first_weight=std::clamp(
+      (second-moment[1])/(second-first),0.0,1.0);
+  const double predicted_fourth=sum*moment[3]-product*moment[2];
+  result.residual=std::abs(predicted_fourth-moment[4]);
+  result.estimate=(receiver_depth<=first?first_weight:0.0)+
+      (receiver_depth<=second?1.0-first_weight:0.0);
+  const double uncertainty=std::clamp(
+      result.residual/std::max(residual_tolerance,1.0e-15),0.0,1.0);
+  result.lower=std::max(0.0,result.estimate-uncertainty);
+  result.upper=std::min(1.0,result.estimate+uncertainty);
+  result.confident=result.residual<=residual_tolerance;
+  return result;
+}
+
+AtmosphereShadowIntegrationResult integrate_atmosphere_shadow(
+    AtmosphereShadowIntegrator integrator,
+    const AtmosphereShadowVisibilityFunction& visibility,
+    const AtmosphereShadowWeightFunction& weight,
+    const AtmosphereShadowRangeClassifier& classify_range,
+    AtmosphereShadowIntegrationOptions options) {
+  AtmosphereShadowIntegrationResult result;
+  if(!visibility||options.base_intervals==0U||options.dense_intervals==0U||
+     options.maximum_samples==0U)return result;
+  const auto sample_weight=[&](double position){
+    const double value=weight?weight(position):1.0;
+    return std::isfinite(value)?std::max(0.0,value):0.0;
+  };
+  // The dense path is the qualification oracle.  Its requested interval
+  // count must not be silently truncated by the interactive hierarchy work
+  // budget, otherwise sufficiently narrow or late blockers disappear from
+  // the reference itself.
+  const std::size_t visibility_budget=
+      integrator==AtmosphereShadowIntegrator::dense_oracle?
+          options.dense_intervals:options.maximum_samples;
+  const auto sample_visibility=[&](double position){
+    if(result.visibility_samples>=visibility_budget){
+      result.fallback=true;
+      return 1.0;
+    }
+    ++result.visibility_samples;
+    const double value=visibility(std::clamp(position,0.0,1.0));
+    return std::isfinite(value)?std::clamp(value,0.0,1.0):1.0;
+  };
+  const auto emit=[&](double begin,double end,double visible){
+    if(!(end>begin))return;
+    result.intervals.push_back({begin,end,std::clamp(visible,0.0,1.0)});
+  };
+
+  if(integrator==AtmosphereShadowIntegrator::fixed_32||
+     integrator==AtmosphereShadowIntegrator::dense_oracle){
+    const std::size_t count=integrator==AtmosphereShadowIntegrator::fixed_32?
+        options.base_intervals:options.dense_intervals;
+    for(std::size_t index=0;index<count;++index){
+      const double u0=static_cast<double>(index)/static_cast<double>(count);
+      const double u1=static_cast<double>(index+1U)/static_cast<double>(count);
+      const double begin=u0*u0;
+      const double end=u1*u1;
+      emit(begin,end,sample_visibility(0.5*(begin+end)));
+    }
+  }else if((integrator==AtmosphereShadowIntegrator::minmax_segments||
+            integrator==AtmosphereShadowIntegrator::moment_hybrid||
+            integrator==AtmosphereShadowIntegrator::epipolar_minmax)&&
+           classify_range){
+    const auto descend=[&](auto&& self,double begin,double end,
+                           std::size_t depth)->void {
+      ++result.visited_ranges;
+      if(const auto uniform=classify_range(begin,end)){
+        emit(begin,end,*uniform);
+        return;
+      }
+      if(depth>=options.maximum_subdivision_depth||
+         result.visibility_samples>=options.maximum_samples){
+        if(result.visibility_samples>=options.maximum_samples)
+          result.fallback=true;
+        emit(begin,end,sample_visibility(0.5*(begin+end)));
+        return;
+      }
+      const double middle=0.5*(begin+end);
+      self(self,begin,middle,depth+1U);
+      self(self,middle,end,depth+1U);
+    };
+    for(std::size_t index=0;index<options.base_intervals;++index){
+      const double interval_count=static_cast<double>(options.base_intervals);
+      const double u0=static_cast<double>(index)/interval_count;
+      const double u1=static_cast<double>(index+1U)/interval_count;
+      descend(descend,u0*u0,u1*u1,0U);
+    }
+  }else{
+    const auto descend=[&](auto&& self,double begin,double end,
+                           double at_begin,double at_middle,double at_end,
+                           std::size_t depth)->void {
+      ++result.visited_ranges;
+      const double minimum=std::min({at_begin,at_middle,at_end});
+      const double maximum=std::max({at_begin,at_middle,at_end});
+      if(maximum-minimum<=options.transition_tolerance){
+        emit(begin,end,at_middle);
+        return;
+      }
+      if(depth>=options.maximum_subdivision_depth||
+         result.visibility_samples+2U>options.maximum_samples){
+        if(result.visibility_samples+2U>options.maximum_samples)
+          result.fallback=true;
+        // Conservative under the work cap: never invent sunlight across a
+        // visibility discontinuity that was actually observed.
+        emit(begin,end,minimum);
+        return;
+      }
+      const double middle=0.5*(begin+end);
+      const double left_middle=0.5*(begin+middle);
+      const double right_middle=0.5*(middle+end);
+      const double at_left=sample_visibility(left_middle);
+      const double at_right=sample_visibility(right_middle);
+      self(self,begin,middle,at_begin,at_left,at_middle,depth+1U);
+      self(self,middle,end,at_middle,at_right,at_end,depth+1U);
+    };
+    for(std::size_t index=0;index<options.base_intervals;++index){
+      const double interval_count=static_cast<double>(options.base_intervals);
+      const double u0=static_cast<double>(index)/interval_count;
+      const double u1=static_cast<double>(index+1U)/interval_count;
+      const double begin=u0*u0;
+      const double end=u1*u1;
+      const double middle=0.5*(begin+end);
+      descend(descend,begin,end,sample_visibility(begin),
+              sample_visibility(middle),sample_visibility(end),0U);
+    }
+  }
+
+  for(const auto& interval:result.intervals){
+    const double weighted_length=
+        sample_weight(0.5*(interval.begin+interval.end))*
+        (interval.end-interval.begin);
+    const double loss=1.0-interval.visibility;
+    result.weighted_loss+=weighted_length*loss;
+    result.total_weight+=weighted_length;
+    result.maximum_loss=std::max(result.maximum_loss,loss);
+  }
+  return result;
+}
+
+AtmosphereShadowErrorMetrics atmosphere_shadow_error_metrics(
+    std::span<const double> candidate,std::span<const double> reference,
+    double sample_spacing) {
+  AtmosphereShadowErrorMetrics result;
+  if(candidate.empty()||candidate.size()!=reference.size()||
+     !(sample_spacing>0.0)||!std::isfinite(sample_spacing)){
+    result.root_mean_square_error=std::numeric_limits<double>::infinity();
+    result.maximum_error=std::numeric_limits<double>::infinity();
+    result.boundary_distance=std::numeric_limits<double>::infinity();
+    result.gradient_step_energy=std::numeric_limits<double>::infinity();
+    return result;
+  }
+  double squared_error{};
+  for(std::size_t index=0;index<candidate.size();++index){
+    const double error=candidate[index]-reference[index];
+    squared_error+=error*error;
+    result.maximum_error=std::max(result.maximum_error,std::abs(error));
+    if(index>0U){
+      const double gradient_error=(candidate[index]-candidate[index-1U])-
+          (reference[index]-reference[index-1U]);
+      result.gradient_step_energy+=gradient_error*gradient_error;
+    }
+  }
+  result.root_mean_square_error=
+      std::sqrt(squared_error/static_cast<double>(candidate.size()));
+  const auto boundaries=[](std::span<const double> values){
+    std::vector<double> found;
+    for(std::size_t index=1;index<values.size();++index)
+      if((values[index-1U]<0.5)!=(values[index]<0.5))
+        found.push_back(static_cast<double>(index)-0.5);
+    return found;
+  };
+  const auto candidate_boundaries=boundaries(candidate);
+  const auto reference_boundaries=boundaries(reference);
+  if(candidate_boundaries.empty()&&reference_boundaries.empty())
+    result.boundary_distance=0.0;
+  else if(candidate_boundaries.empty()||reference_boundaries.empty())
+    result.boundary_distance=
+        sample_spacing*static_cast<double>(candidate.size());
+  else{
+    double total{};
+    for(const double boundary:reference_boundaries){
+      double closest=std::numeric_limits<double>::infinity();
+      for(const double other:candidate_boundaries)
+        closest=std::min(closest,std::abs(boundary-other));
+      total+=closest;
+    }
+    result.boundary_distance=sample_spacing*total/
+        static_cast<double>(reference_boundaries.size());
+  }
+  result.gradient_step_energy/=static_cast<double>(
+      std::max<std::size_t>(1U,candidate.size()-1U));
+  return result;
+}
+
+AtmosphereShadowDepthHierarchy make_atmosphere_shadow_depth_hierarchy(
+    std::span<const double> depth,std::size_t width,std::size_t height,
+    double clear_depth) {
+  AtmosphereShadowDepthHierarchy hierarchy;
+  if(width==0U||height==0U||depth.size()!=width*height||
+     !std::isfinite(clear_depth))return hierarchy;
+  AtmosphereShadowDepthLevel base;
+  base.width=width;
+  base.height=height;
+  base.ranges.reserve(depth.size());
+  for(double value:depth){
+    if(!std::isfinite(value))value=clear_depth;
+    value=std::clamp(value,0.0,1.0);
+    base.ranges.push_back({value,value});
+  }
+  hierarchy.levels.push_back(std::move(base));
+  while(width>1U||height>1U){
+    const auto& previous=hierarchy.levels.back();
+    AtmosphereShadowDepthLevel next;
+    next.width=(width+1U)/2U;
+    next.height=(height+1U)/2U;
+    next.ranges.resize(next.width*next.height);
+    for(std::size_t y=0;y<next.height;++y)
+      for(std::size_t x=0;x<next.width;++x){
+        AtmosphereShadowDepthRange range{1.0,0.0};
+        for(std::size_t dy=0;dy<2U;++dy)
+          for(std::size_t dx=0;dx<2U;++dx){
+            const std::size_t child_x=x*2U+dx;
+            const std::size_t child_y=y*2U+dy;
+            if(child_x>=width||child_y>=height)continue;
+            const auto child=previous.ranges[child_y*width+child_x];
+            range.minimum=std::min(range.minimum,child.minimum);
+            range.maximum=std::max(range.maximum,child.maximum);
+          }
+        next.ranges[y*next.width+x]=range;
+      }
+    width=next.width;
+    height=next.height;
+    hierarchy.levels.push_back(std::move(next));
+  }
+  return hierarchy;
+}
+
+AtmosphereEpipolarDepthHierarchy make_atmosphere_epipolar_depth_hierarchy(
+    std::span<const double> depth,std::size_t radial_resolution,
+    std::size_t angular_rows,double clear_depth) {
+  AtmosphereEpipolarDepthHierarchy hierarchy;
+  if(radial_resolution==0U||angular_rows==0U||
+     depth.size()!=radial_resolution*angular_rows||
+     !std::isfinite(clear_depth))return hierarchy;
+  hierarchy.radial_resolution=radial_resolution;
+  hierarchy.angular_rows=angular_rows;
+  AtmosphereEpipolarDepthLevel base{
+      .width=radial_resolution,.rows=angular_rows};
+  base.ranges.reserve(depth.size());
+  for(double value:depth){
+    if(!std::isfinite(value))value=clear_depth;
+    value=std::clamp(value,0.0,1.0);
+    base.ranges.push_back({value,value});
+  }
+  hierarchy.levels.push_back(std::move(base));
+  std::size_t width=radial_resolution;
+  while(width>1U){
+    const auto& previous=hierarchy.levels.back();
+    AtmosphereEpipolarDepthLevel next{
+        .width=(width+1U)/2U,.rows=angular_rows};
+    next.ranges.resize(next.width*angular_rows);
+    for(std::size_t row=0;row<angular_rows;++row)
+      for(std::size_t x=0;x<next.width;++x){
+        auto range=previous.ranges[row*width+x*2U];
+        if(x*2U+1U<width){
+          const auto second=previous.ranges[row*width+x*2U+1U];
+          range.minimum=std::min(range.minimum,second.minimum);
+          range.maximum=std::max(range.maximum,second.maximum);
+        }
+        next.ranges[row*next.width+x]=range;
+      }
+    width=next.width;
+    hierarchy.levels.push_back(std::move(next));
+  }
+  return hierarchy;
+}
+
+AtmosphereEpipolarTraversalResult traverse_atmosphere_epipolar_row(
+    const AtmosphereEpipolarDepthHierarchy& hierarchy,std::size_t row,
+    double radial_begin,double radial_end,double receiver_depth_begin,
+    double receiver_depth_end,double comparison_bias,
+    std::size_t maximum_intervals) {
+  AtmosphereEpipolarTraversalResult result;
+  if(hierarchy.levels.empty()||row>=hierarchy.angular_rows||
+     maximum_intervals==0U||!std::isfinite(radial_begin)||
+     !std::isfinite(radial_end)||!std::isfinite(receiver_depth_begin)||
+     !std::isfinite(receiver_depth_end)||!std::isfinite(comparison_bias)||
+     radial_begin==radial_end){
+    result.fallback=true;
+    return result;
+  }
+  const double radial_delta=radial_end-radial_begin;
+  const double receiver_delta=receiver_depth_end-receiver_depth_begin;
+  const auto emit=[&](double begin,double end,double visibility){
+    if(!(end>begin))return;
+    if(!result.intervals.empty()&&
+       std::abs(result.intervals.back().end-begin)<=1.0e-12&&
+       result.intervals.back().visibility==visibility){
+      result.intervals.back().end=end;
+      return;
+    }
+    if(result.intervals.size()>=maximum_intervals){
+      result.fallback=true;
+      return;
+    }
+    result.intervals.push_back({begin,end,visibility});
+  };
+  const auto visit=[&](auto&& self,std::size_t level,std::size_t node)->void {
+    if(result.fallback)return;
+    std::size_t scale=1U;
+    for(std::size_t index=0;index<level;++index)scale*=2U;
+    const double node_begin=static_cast<double>(node*scale)/
+        static_cast<double>(hierarchy.radial_resolution);
+    const double node_end=static_cast<double>(std::min(
+        (node+1U)*scale,hierarchy.radial_resolution)) /
+        static_cast<double>(hierarchy.radial_resolution);
+    double t0=(node_begin-radial_begin)/radial_delta;
+    double t1=(node_end-radial_begin)/radial_delta;
+    if(t1<t0)std::swap(t0,t1);
+    t0=std::clamp(t0,0.0,1.0);
+    t1=std::clamp(t1,0.0,1.0);
+    if(!(t1>t0))return;
+    ++result.visited_nodes;
+    const auto range=hierarchy.levels[level].ranges[
+        row*hierarchy.levels[level].width+node];
+    const double receiver0=receiver_depth_begin+receiver_delta*t0;
+    const double receiver1=receiver_depth_begin+receiver_delta*t1;
+    const double receiver_min=std::min(receiver0,receiver1)-comparison_bias;
+    const double receiver_max=std::max(receiver0,receiver1)-comparison_bias;
+    if(receiver_max<=range.minimum){emit(t0,t1,1.0);return;}
+    if(receiver_min>range.maximum){emit(t0,t1,0.0);return;}
+    if(level==0U){
+      if(std::abs(range.maximum-range.minimum)<=1.0e-12&&
+         std::abs(receiver_delta)>1.0e-15){
+        const double crossing=(range.minimum+comparison_bias-
+            receiver_depth_begin)/receiver_delta;
+        if(crossing>t0&&crossing<t1){
+          const bool begins_lit=receiver0-comparison_bias<=range.minimum;
+          emit(t0,crossing,begins_lit?1.0:0.0);
+          emit(crossing,t1,begins_lit?0.0:1.0);
+          return;
+        }
+        const double middle=0.5*(t0+t1);
+        const double middle_receiver=receiver_depth_begin+
+            receiver_delta*middle-comparison_bias;
+        emit(t0,t1,middle_receiver<=range.minimum?1.0:0.0);
+        return;
+      }
+      result.fallback=true;
+      return;
+    }
+    const std::size_t first=node*2U;
+    const std::size_t child_width=hierarchy.levels[level-1U].width;
+    if(radial_delta>0.0){
+      self(self,level-1U,first);
+      if(first+1U<child_width)self(self,level-1U,first+1U);
+    }else{
+      if(first+1U<child_width)self(self,level-1U,first+1U);
+      self(self,level-1U,first);
+    }
+  };
+  const std::size_t top=hierarchy.levels.size()-1U;
+  const std::size_t top_width=hierarchy.levels[top].width;
+  if(radial_delta>0.0){
+    for(std::size_t node=0;node<top_width;++node)visit(visit,top,node);
+  }else{
+    for(std::size_t node=top_width;node>0U;--node)visit(visit,top,node-1U);
+  }
+  return result;
+}
+
 AtmosphereDispatchPlan atmosphere_dispatch_plan(
     std::optional<AtmosphereLookupRevisions> previous,
     const AtmosphereLookupRevisions& next,
@@ -151,6 +742,8 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
   const bool sky_position=previous->sky_position!=next.sky_position;
   const bool orientation=
       previous->camera_orientation!=next.camera_orientation;
+  const bool integrator=
+      previous->shadow_integrator!=next.shadow_integrator;
   const bool shadow=previous->shadow!=next.shadow;
   const bool origin=previous->render_origin!=next.render_origin;
   const bool baseline=transport==AtmosphereTransport::qualified_baseline;
@@ -161,9 +754,10 @@ AtmosphereDispatchPlan atmosphere_dispatch_plan(
           (baseline&&orientation),
       .sky_irradiance=optical||scattering||sun||sky_position,
       .aerial_perspective=
-          optical||scattering||sun||position||(baseline&&orientation)||shadow||origin,
+          optical||scattering||sun||position||(baseline&&orientation)||
+          integrator||shadow||origin,
       .long_shadow=!baseline&&
-          (optical||scattering||sun||position||shadow||origin),
+          (optical||scattering||sun||position||integrator||shadow||origin),
   };
 }
 
@@ -246,7 +840,8 @@ AtmosphereLookupSnapshotSet advance_atmosphere_lookup_snapshots(
   if(dispatch.aerial_perspective||dispatch.long_shadow)
     result.view=AtmosphereViewLookupSnapshot{
         next.optical,next.scattering,next.sun,next.camera_position,
-        next.camera_orientation,next.shadow,next.render_origin,
+        next.camera_orientation,next.shadow_integrator,next.shadow,
+        next.render_origin,
         material.transport};
   return result;
 }
@@ -288,6 +883,7 @@ AtmosphereValidationSnapshot atmosphere_validation_snapshot(
           lookups.view->camera_position!=frame.camera_position||
           (material.transport==AtmosphereTransport::qualified_baseline&&
            lookups.view->camera_orientation!=frame.camera_orientation)||
+          lookups.view->shadow_integrator!=frame.shadow_integrator||
           lookups.view->shadow!=frame.shadow||
           lookups.view->render_origin!=frame.render_origin)
     reject("view lookup generation is incompatible");
@@ -307,16 +903,16 @@ AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
       result.rayleigh_scale_height_metres = 3'000.0;
       result.rayleigh_scattering_per_metre = {
           15.472e-6, 36.1546666666667e-6, 88.2666666666667e-6};
-      // Preserve Earth's integrated aerosol optical depth, but concentrate it
-      // into a shallow gameplay-scale boundary layer. On a 200 km planet the
-      // eye-level geometric horizon is only a few kilometres away; scaling
-      // the aerosol layer with the whole atmosphere made that entire useful
-      // range look crystal clear.
-      result.mie_scale_height_metres = 30.0;
+      // Preserve Earth's integrated aerosol optical depth in a compact but
+      // vertically resolvable gameplay boundary layer. A 30 m profile made
+      // the golden horizon switch almost completely over a few metres of
+      // camera ascent. 300 m keeps readable kilometre-scale haze while making
+      // the density change gradual at interactive flight speeds.
+      result.mie_scale_height_metres = 300.0;
       result.mie_scattering_per_metre = {
-          159.84e-6, 159.84e-6, 159.84e-6};
+          15.984e-6, 15.984e-6, 15.984e-6};
       result.mie_absorption_per_metre = {
-          16.16e-6, 16.16e-6, 16.16e-6};
+          1.616e-6, 1.616e-6, 1.616e-6};
       result.absorption_peak_altitude_metres = 8'000.0;
       result.absorption_half_width_metres = 4'500.0;
       result.absorption_per_metre = {
@@ -371,6 +967,36 @@ AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
       return result;
   }
   return result;
+}
+
+AtmosphereParameters adapt_compact_atmosphere_to_relief(
+    AtmosphereParameters parameters,double maximum_relief_metres) noexcept {
+  if(!(maximum_relief_metres>0.0)||!std::isfinite(maximum_relief_metres))
+    return parameters;
+
+  // A summit should retain at least 75% of datum-level molecular density.
+  // This is an artistic compact-planet constraint layered on Hillaire's
+  // altitude-only spherical medium, not a terrain-following atmosphere.
+  constexpr double minimum_summit_density=0.75;
+  const double required_scale_height=maximum_relief_metres/
+      -std::log(minimum_summit_density);
+  const double previous_scale_height=parameters.rayleigh_scale_height_metres;
+  const double next_scale_height=std::max(
+      previous_scale_height,required_scale_height);
+  if(next_scale_height>previous_scale_height){
+    const double optical_depth_scale=previous_scale_height/next_scale_height;
+    for(double& coefficient:parameters.rayleigh_scattering_per_metre)
+      coefficient*=optical_depth_scale;
+    parameters.rayleigh_scale_height_metres=next_scale_height;
+  }
+
+  // Eight molecular scale heights leave less than 0.04% of datum density at
+  // the top boundary.  Include the relief envelope explicitly so no terrain
+  // can approach the numerical end of the participating segment.
+  parameters.atmosphere_height_metres=std::max(
+      parameters.atmosphere_height_metres,
+      maximum_relief_metres+8.0*parameters.rayleigh_scale_height_metres);
+  return parameters;
 }
 
 std::optional<AtmospherePreset> parse_atmosphere_preset(std::string_view name) {
@@ -509,6 +1135,181 @@ AtmosphereInvalidation atmosphere_invalidation(
   return {optical, optical || albedo || phase || solar,
           optical || albedo || phase || solar,
           optical || albedo || phase || solar};
+}
+
+std::optional<AtmosphereReducedEndpoint> reduce_atmosphere_endpoint_2x2(
+    const std::array<float,4>& reversed_depth,
+    double near_plane_metres,std::uint32_t generation) noexcept {
+  if(!(near_plane_metres>0.0)||!std::isfinite(near_plane_metres))
+    return std::nullopt;
+  float nearest_depth=0.0F;
+  float farthest_opaque_depth=1.0F;
+  std::size_t opaque_count{};
+  for(const float depth:reversed_depth){
+    if(!std::isfinite(depth)||depth<0.0F||depth>1.0F)
+      return std::nullopt;
+    nearest_depth=std::max(nearest_depth,depth);
+    if(depth>1.0e-8F){
+      ++opaque_count;
+      farthest_opaque_depth=std::min(farthest_opaque_depth,depth);
+    }
+  }
+  if(nearest_depth<=1.0e-8F)
+    return AtmosphereReducedEndpoint{
+        .classification=AtmosphereEndpointClass::sky,
+        .reversed_depth=0.0F,
+        .linear_depth_metres=0.0,
+        .transition_confidence=1.0,
+        .generation=generation};
+  const double depth_spread=opaque_count>1U?
+      1.0-static_cast<double>(farthest_opaque_depth)/nearest_depth:0.0;
+  const double class_confidence=opaque_count==4U?1.0:0.0;
+  return AtmosphereReducedEndpoint{
+      .classification=AtmosphereEndpointClass::opaque,
+      .reversed_depth=nearest_depth,
+      .linear_depth_metres=near_plane_metres/
+          static_cast<double>(nearest_depth),
+      .transition_confidence=class_confidence*
+          (1.0-std::clamp(depth_spread/0.05,0.0,1.0)),
+      .generation=generation};
+}
+
+std::array<double,4> atmosphere_reconstruction_weights(
+    AtmosphereEndpointClass target_class,double target_linear_depth_metres,
+    const std::array<AtmosphereReducedEndpoint,4>& taps,
+    const std::array<double,4>& bilinear_weights,
+    double relative_depth_tolerance) noexcept {
+  std::array<double,4> result{};
+  if(!std::isfinite(relative_depth_tolerance)||
+     !(relative_depth_tolerance>0.0))return result;
+  if(target_class==AtmosphereEndpointClass::opaque&&
+     (!std::isfinite(target_linear_depth_metres)||
+      !(target_linear_depth_metres>0.0)))return result;
+  double sum{};
+  for(std::size_t index=0;index<result.size();++index){
+    const auto& tap=taps[index];
+    const double bilinear=bilinear_weights[index];
+    if(tap.classification!=target_class||!std::isfinite(bilinear)||
+       !(bilinear>0.0))continue;
+    double depth_weight=1.0;
+    if(target_class==AtmosphereEndpointClass::opaque){
+      if(!std::isfinite(tap.linear_depth_metres)||
+         !(tap.linear_depth_metres>0.0))continue;
+      const double threshold=std::max(
+          target_linear_depth_metres*relative_depth_tolerance,1.0e-6);
+      const double difference=std::abs(
+          tap.linear_depth_metres-target_linear_depth_metres);
+      if(difference>=threshold)continue;
+      depth_weight=1.0-difference/threshold;
+    }
+    result[index]=bilinear*depth_weight;
+    sum+=result[index];
+  }
+  if(sum>0.0)
+    for(auto& weight:result)weight/=sum;
+  return result;
+}
+
+AtmosphereHistoryCompatibility atmosphere_screen_history_compatibility(
+    const AtmosphereScreenHistoryIdentity& previous,
+    const AtmosphereScreenHistoryIdentity& current) noexcept {
+  using Reason=AtmosphereHistoryInvalidation;
+  auto mask=std::uint32_t{};
+  const auto add=[&](Reason reason){mask|=static_cast<std::uint32_t>(reason);};
+  if(!previous.valid||!current.valid)add(Reason::uninitialized);
+  if(previous.revisions.optical!=current.revisions.optical)
+    add(Reason::optical);
+  if(previous.revisions.scattering!=current.revisions.scattering)
+    add(Reason::scattering);
+  if(previous.revisions.sun!=current.revisions.sun)add(Reason::sun);
+  if(previous.revisions.shadow_integrator!=
+     current.revisions.shadow_integrator)add(Reason::shadow_integrator);
+  if(previous.revisions.shadow!=current.revisions.shadow)add(Reason::shadow);
+  if(previous.terrain_generation!=current.terrain_generation)
+    add(Reason::terrain);
+  if(previous.transport!=current.transport||
+     previous.rendering_method!=current.rendering_method||
+     previous.linear_resolution_divisor!=current.linear_resolution_divisor||
+     previous.sample_count!=current.sample_count)
+    add(Reason::representation);
+  if(previous.width!=current.width||previous.height!=current.height)
+    add(Reason::extent);
+  return {
+      .invalidation_mask=mask,
+      .camera_changed=
+          previous.revisions.camera_position!=current.revisions.camera_position||
+          previous.revisions.sky_position!=current.revisions.sky_position||
+          previous.revisions.camera_orientation!=
+              current.revisions.camera_orientation,
+      .render_origin_changed=previous.revisions.render_origin!=
+      current.revisions.render_origin};
+}
+
+std::optional<AtmosphereReprojectedEndpoint> reproject_atmosphere_endpoint(
+    const AtmosphereReprojectionCamera& current,
+    const AtmosphereReprojectionCamera& previous,double current_u,
+    double current_v,AtmosphereEndpointClass classification,
+    double current_linear_depth_metres) noexcept {
+  const auto finite_vector=[](tetra::Vec3 value){
+    return std::isfinite(value.x)&&std::isfinite(value.y)&&
+        std::isfinite(value.z);
+  };
+  if(!finite_vector(current.position_from_planet_centre_metres)||
+     !finite_vector(previous.position_from_planet_centre_metres)||
+     !finite_vector(current.right)||!finite_vector(current.down)||
+     !finite_vector(current.forward)||!finite_vector(previous.right)||
+     !finite_vector(previous.down)||!finite_vector(previous.forward)||
+     !std::isfinite(current_u)||!std::isfinite(current_v)||
+     !(current.tangent_x>0.0)||!(current.tangent_y>0.0)||
+     !(previous.tangent_x>0.0)||!(previous.tangent_y>0.0)||
+     (classification==AtmosphereEndpointClass::opaque&&
+      !(current_linear_depth_metres>0.0)))return std::nullopt;
+  auto direction=current.forward+
+      current.right*((current_u*2.0-1.0)*current.tangent_x)+
+      current.down*((current_v*2.0-1.0)*current.tangent_y);
+  const double direction_length=length(direction);
+  if(!(direction_length>0.0)||!std::isfinite(direction_length))
+    return std::nullopt;
+  direction=direction/direction_length;
+  tetra::Vec3 previous_vector=direction;
+  double expected_depth{};
+  if(classification==AtmosphereEndpointClass::opaque){
+    const auto point=current.position_from_planet_centre_metres+
+        direction*current_linear_depth_metres;
+    previous_vector=point-previous.position_from_planet_centre_metres;
+    expected_depth=length(previous_vector);
+  }
+  const double forward=dot(previous_vector,previous.forward);
+  if(!(forward>1.0e-9)||!std::isfinite(forward))return std::nullopt;
+  const double u=0.5+0.5*dot(previous_vector,previous.right)/
+      (forward*previous.tangent_x);
+  const double v=0.5+0.5*dot(previous_vector,previous.down)/
+      (forward*previous.tangent_y);
+  if(!(u>=0.0&&u<1.0&&v>=0.0&&v<1.0))return std::nullopt;
+  return AtmosphereReprojectedEndpoint{
+      .u=u,.v=v,.previous_linear_depth_metres=expected_depth};
+}
+
+bool atmosphere_history_sample_compatible(
+    const AtmosphereReducedEndpoint& current,
+    const AtmosphereReducedEndpoint& previous,
+    double expected_previous_depth_metres,
+    std::uint32_t expected_previous_generation,
+    bool reprojection_inside_view,double relative_depth_tolerance) noexcept {
+  if(!reprojection_inside_view||current.classification!=previous.classification||
+     current.generation==0U||previous.generation!=expected_previous_generation||
+     !(current.transition_confidence>0.5)||
+     !(previous.transition_confidence>0.5)||
+     !(relative_depth_tolerance>0.0)||
+     !std::isfinite(relative_depth_tolerance))return false;
+  if(current.classification==AtmosphereEndpointClass::sky)return true;
+  if(!(expected_previous_depth_metres>0.0)||
+     !std::isfinite(expected_previous_depth_metres)||
+     !(previous.linear_depth_metres>0.0)||
+     !std::isfinite(previous.linear_depth_metres))return false;
+  return std::abs(previous.linear_depth_metres-
+                  expected_previous_depth_metres)<
+      expected_previous_depth_metres*relative_depth_tolerance;
 }
 
 std::optional<AtmosphereRaySegment> atmosphere_ray_segment(
@@ -939,13 +1740,15 @@ AtmosphereSpectrum atmosphere_sky_irradiance_reference(
   return result;
 }
 
-AtmosphereScatteringReference atmosphere_scattering_reference(
+AtmosphereScatteringComponents atmosphere_scattering_components_reference(
     const AtmosphereParameters& parameters, tetra::Vec3 origin,
     tetra::Vec3 view_direction, tetra::Vec3 sun_direction,
-    double maximum_distance, std::size_t view_steps,
+    double maximum_distance,
+    const AtmosphereTerrainVisibilityFunction& terrain_visibility,
+    std::size_t view_steps,
     std::size_t multiple_direction_count,
     std::size_t multiple_ray_steps) {
-  AtmosphereScatteringReference result;
+  AtmosphereScatteringComponents result;
   if(validate_atmosphere(parameters)||!(maximum_distance>0.0)||
      !std::isfinite(maximum_distance))return result;
   view_direction=normalized(view_direction);
@@ -997,6 +1800,10 @@ AtmosphereScatteringReference atmosphere_scattering_reference(
     const auto multiple=atmosphere_multiple_scattering_reference(
         parameters,altitude,sun_cosine,multiple_direction_count,
         multiple_ray_steps).closed_contribution;
+    const double raw_visibility=terrain_visibility?
+        terrain_visibility(point):1.0;
+    const double visibility=std::isfinite(raw_visibility)?
+        std::clamp(raw_visibility,0.0,1.0):0.0;
     for(std::size_t channel=0;channel<3U;++channel){
       const double rayleigh_scattering=
           parameters.rayleigh_scattering_per_metre[channel]*rayleigh;
@@ -1011,15 +1818,34 @@ AtmosphereScatteringReference atmosphere_scattering_reference(
           (1.0-segment_transmittance)/extinction:step_length;
       const double direct=(rayleigh_scattering*rayleigh_phase_value+
           mie_scattering*mie_phase_value)*solar_transmittance[channel]*
-          parameters.solar_irradiance[channel];
+          parameters.solar_irradiance[channel]*visibility;
       const double higher_order=(rayleigh_scattering+mie_scattering)*
           multiple[channel]*parameters.solar_irradiance[channel];
-      result.radiance[channel]+=path_transmittance[channel]*
-          (direct+higher_order)*integral;
+      result.direct_single_scattering[channel]+=
+          path_transmittance[channel]*direct*integral;
+      result.multiple_scattering[channel]+=
+          path_transmittance[channel]*higher_order*integral;
       path_transmittance[channel]*=segment_transmittance;
     }
   }
   result.transmittance=path_transmittance;
+  return result;
+}
+
+AtmosphereScatteringReference atmosphere_scattering_reference(
+    const AtmosphereParameters& parameters, tetra::Vec3 origin,
+    tetra::Vec3 view_direction, tetra::Vec3 sun_direction,
+    double maximum_distance, std::size_t view_steps,
+    std::size_t multiple_direction_count,
+    std::size_t multiple_ray_steps) {
+  const auto components=atmosphere_scattering_components_reference(
+      parameters,origin,view_direction,sun_direction,maximum_distance,{},
+      view_steps,multiple_direction_count,multiple_ray_steps);
+  AtmosphereScatteringReference result{
+      .transmittance=components.transmittance};
+  for(std::size_t channel=0;channel<result.radiance.size();++channel)
+    result.radiance[channel]=components.direct_single_scattering[channel]+
+        components.multiple_scattering[channel];
   return result;
 }
 
@@ -1100,11 +1926,12 @@ AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
   const AtmosphereLookupCoordinates aerial_uv{
       (static_cast<double>(aerial_x)+0.5)/aerial_width,
       (static_cast<double>(aerial_y)+0.5)/aerial_height};
-  const double ndc_x=aerial_uv.u*2.0-1.0;
-  const double ndc_y=aerial_uv.v*2.0-1.0;
-  const auto aerial_direction=normalized(input.camera_forward+
-      input.camera_right*(ndc_x*input.vertical_tangent*input.aspect_ratio)+
-      input.camera_down*(ndc_y*input.vertical_tangent));
+  // The faithful aerial volume is stored in the same sun-focused full-sky
+  // domain as the shader, not in screen UV. Qualify the addressed texel's
+  // actual direction; camera-forward transport is covered independently by
+  // the direct probe below.
+  const auto aerial_direction=atmosphere_sun_focused_sky_direction(
+      aerial_uv,local_up,sun_direction);
   const auto depth_minus_one=std::max(quality.aerial_depth-1U,1U);
   const auto aerial_z=static_cast<unsigned>(std::clamp<long long>(
       std::llround(std::cbrt(0.5)*static_cast<double>(depth_minus_one)),
@@ -1269,6 +2096,22 @@ double atmosphere_local_aerial_distance(
   const double physical_extent=std::clamp(
       std::max(2'000.0,medium_extent+altitude_headroom),2'000.0,64'000.0);
   return std::min(visible_distance_metres,physical_extent);
+}
+
+tetra::Vec3 clamp_atmosphere_camera_to_medium(
+    tetra::Vec3 position, const AtmosphereParameters& parameters,
+    double minimum_altitude_metres) noexcept {
+  const double minimum_radius=parameters.ground_radius_metres+
+      std::max(0.0,std::isfinite(minimum_altitude_metres)?
+                       minimum_altitude_metres:0.0);
+  const double radius=std::sqrt(
+      position.x*position.x+position.y*position.y+position.z*position.z);
+  if(std::isfinite(radius)&&radius>=minimum_radius)return position;
+  if(std::isfinite(radius)&&radius>1.0e-12){
+    const double scale=minimum_radius/radius;
+    return position*scale;
+  }
+  return {0.0,minimum_radius,0.0};
 }
 
 double atmosphere_shadow_filter_visibility(

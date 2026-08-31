@@ -34,12 +34,36 @@ inline constexpr std::uint32_t surface_optimizer_passes=5U;
 inline constexpr std::uint32_t surface_optimizer_dependency_halo_rings=5U;
 inline constexpr float default_world_sun_azimuth_radians=-1.8F;
 inline constexpr float default_world_sun_elevation_radians=0.0872665F;
+inline constexpr double default_world_sun_cycle_seconds=10.0;
+
+struct WorldSunAngles {
+  double azimuth_radians{};
+  double elevation_radians{};
+};
 
 [[nodiscard]] inline tetra::Vec3 world_sun_direction(
     double azimuth_radians,double elevation_radians) noexcept {
   const double horizontal=std::cos(elevation_radians);
   return {horizontal*std::cos(azimuth_radians),std::sin(elevation_radians),
           horizontal*std::sin(azimuth_radians)};
+}
+
+[[nodiscard]] inline double advance_world_sun_orbit_phase(
+    double phase_radians,double elapsed_seconds,double cycle_seconds) noexcept {
+  if(!std::isfinite(phase_radians)||!std::isfinite(elapsed_seconds)||
+     !std::isfinite(cycle_seconds)||cycle_seconds<=0.0)
+    return phase_radians;
+  constexpr double tau=6.28318530717958647692;
+  return std::remainder(
+      phase_radians+tau*std::max(0.0,elapsed_seconds)/cycle_seconds,tau);
+}
+
+[[nodiscard]] inline WorldSunAngles world_sun_orbit_angles(
+    double orbit_azimuth_radians,double orbit_phase_radians) noexcept {
+  const auto direction=world_sun_direction(
+      orbit_azimuth_radians,orbit_phase_radians);
+  return {std::atan2(direction.z,direction.x),
+          std::asin(std::clamp(direction.y,-1.0,1.0))};
 }
 
 struct BoundedJacobiMetrics {

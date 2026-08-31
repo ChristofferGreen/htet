@@ -165,12 +165,31 @@ struct TerrainRuntimeDiagnostics {
   bool conforming_faces{};
 };
 
-// Free-fly is a render/navigation inspection mode, not terrain demand. Keep
-// the last gameplay camera until normal movement resumes; entity pins remain
-// an independent runtime input and can still trigger updates while locked.
+// An idle gap can occur between successive terrain reconciliation passes.
+// Automated images must wait for the final front, not merely for that gap.
+[[nodiscard]] constexpr bool world_capture_front_ready(
+    const TerrainRuntimeDiagnostics& diagnostics) noexcept {
+  // A resource-budget rejection is terminal for the current request: the
+  // last admitted front remains the authoritative visible result and no more
+  // work will be submitted. Treat it as stable so automated visual tests do
+  // not wait forever for an impossible higher-detail candidate.
+  return !diagnostics.busy&&
+      (diagnostics.converged||diagnostics.budget_exceeded);
+}
+
+// Preserve the last terrain-demand camera while explicitly locked.  Keeping
+// this policy separate from the navigation mode lets free-fly inspect a fixed
+// front or follow the camera during an ascent into orbit.
 [[nodiscard]] tetra::Camera resolve_world_lod_camera(
-    const tetra::Camera& player_camera,bool free_fly,
+    const tetra::Camera& player_camera,bool locked,
     tetra::Camera& locked_camera) noexcept;
+
+// Quantized world-space interval represented by one planetary hierarchy cell
+// at the camera altitude. Zero keeps the complete spectrum for non-planets or
+// sub-centimetre footprints.
+[[nodiscard]] double planetary_surface_sampling_footprint(
+    const tetra::Sphere& field,const tetra::Camera& camera,
+    double pixel_threshold) noexcept;
 
 struct TerrainDebugLine {
   tetra::Vec3 first{};

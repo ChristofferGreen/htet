@@ -32,10 +32,21 @@ struct AtmosphereFrameInput {
   int debug_view{};
   AtmosphereQuality quality{AtmosphereQuality::standard};
   AtmosphereTransport transport{default_atmosphere_transport};
+  AtmosphereRenderingMethod rendering_method{
+      default_atmosphere_rendering_method};
+  std::uint32_t screen_resolution_divisor{4U};
+  AtmosphereShadowIntegrator shadow_integrator{
+      default_atmosphere_shadow_integrator};
+  SurfaceShadowBiasMode surface_shadow_bias{SurfaceShadowBiasMode::slope_scaled};
+  AtmosphereShadowFilter shadow_filter{default_atmosphere_shadow_filter};
+  float shadow_raster_bias_constant{0.8125F};
+  float shadow_raster_bias_slope{1.21875F};
+  double atmosphere_shadow_comparison_bias_world_override{-1.0};
   const AtmosphereShadowFront* shadow_front{};
   bool numeric_probe_requested{};
   bool shadow_projection_probe_requested{};
   bool capture_requested{};
+  bool dynamic_sun{};
   bool enabled{};
 };
 
@@ -57,6 +68,9 @@ struct SceneGpuTimings {
   double shadows_milliseconds{};
   double atmosphere_milliseconds{};
   double terrain_milliseconds{};
+  double depth_reduction_milliseconds{};
+  double screen_integration_milliseconds{};
+  double temporal_reconstruction_milliseconds{};
   double composite_milliseconds{};
   bool valid{};
 };
@@ -68,12 +82,39 @@ struct AtmosphereDispatchCounts {
   std::uint64_t sky_irradiance{};
   std::uint64_t aerial_perspective{};
   std::uint64_t long_shadow{};
+  std::uint64_t screen_reconstruction{};
+  std::uint64_t temporal_history_accepts{};
+  std::uint64_t temporal_history_invalidations{};
 };
 
 struct AtmosphereShadowMapStatus {
   std::uint64_t revision{};
   std::uint64_t refreshes{};
+  std::uint64_t depth_generation{};
+  std::uint64_t hierarchy_generation{};
   std::size_t caster_draws{};
+  std::array<double,shadow_cascade_count> local_depth_world_spans{};
+  std::array<double,shadow_cascade_count> local_texel_world_sizes{};
+  std::array<double,shadow_cascade_count> local_comparison_biases_normalized{};
+  std::array<double,shadow_cascade_count> local_comparison_biases_world{};
+  double fitted_depth_world_span{};
+  double fitted_texel_world_size_x{};
+  double fitted_texel_world_size_y{};
+  double comparison_bias_normalized{};
+  double comparison_bias_world{};
+  double raster_bias_constant{0.8125};
+  double raster_bias_slope{1.21875};
+  std::size_t epipolar_radial_resolution{};
+  std::size_t epipolar_angular_rows{};
+  std::size_t epipolar_elements{};
+  std::uint64_t epipolar_visited_nodes{};
+  std::uint64_t epipolar_emitted_intervals{};
+  std::uint64_t epipolar_fallbacks{};
+  std::uint64_t epipolar_overflows{};
+  std::uint64_t epipolar_hierarchy_refreshes{};
+  AtmosphereShadowIntegrator integrator{default_atmosphere_shadow_integrator};
+  bool hierarchy_complete{};
+  bool integration_fallback{};
   bool complete{};
 };
 
@@ -81,7 +122,8 @@ class SceneRenderer {
  public:
   void initialize(VkPhysicalDevice physical_device, VkDevice device, VkFormat colour_format, VkFormat depth_format);
   void recreate(VkExtent2D extent, std::uint32_t image_count,
-                AtmosphereQuality quality=AtmosphereQuality::standard);
+                AtmosphereQuality quality=AtmosphereQuality::standard,
+                std::uint32_t screen_resolution_divisor=4U);
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
               std::span<const SceneVertex> surface_line_vertices);
@@ -156,6 +198,8 @@ class SceneRenderer {
   std::vector<bool> timing_queries_written_;
   SceneGpuTimings gpu_timings_{};
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
+  std::uint32_t dynamic_sun_shadow_phase_{};
+  bool dynamic_sun_was_active_{};
   AtmosphereGpuProbe latest_atmosphere_probe_{};
   AtmosphereShadowMapStatus atmosphere_shadow_map_status_{};
   SceneCapture latest_capture_{};
@@ -164,6 +208,7 @@ class SceneRenderer {
   std::uint64_t geometry_revision_{};
   AtmosphereQualitySettings quality_settings_{
       atmosphere_quality_settings(AtmosphereQuality::standard)};
+  std::uint32_t screen_resolution_divisor_{2U};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
@@ -182,6 +227,16 @@ class SceneRenderer {
     std::array<VkImageView,shadow_map_layer_count> layer_views{};
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
+    VkBuffer minmax_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory minmax_memory{VK_NULL_HANDLE};
+    VkBuffer epipolar_diagnostic_buffer{VK_NULL_HANDLE};
+    VkDeviceMemory epipolar_diagnostic_memory{VK_NULL_HANDLE};
+    bool epipolar_diagnostic_pending{};
+    std::uint64_t atmosphere_shadow_depth_generation{};
+    std::uint64_t minmax_generation{};
+    std::uint64_t epipolar_generation{};
+    std::uint64_t epipolar_source_revision{};
+    bool minmax_is_epipolar{};
     std::array<float,16> atmosphere_shadow_matrix{};
     std::uint64_t atmosphere_surface_generation{};
     std::uint64_t atmosphere_shadow_front_generation{};
@@ -198,11 +253,37 @@ class SceneRenderer {
     VkImageView view{VK_NULL_HANDLE};
   };
   struct AtmosphereFrameResources {
+    struct TemporalCameraSnapshot {
+      tetra::Vec3 position_from_planet_centre_metres{};
+      tetra::Vec3 right{-1.0,0.0,0.0};
+      tetra::Vec3 down{0.0,-1.0,0.0};
+      tetra::Vec3 forward{0.0,0.0,-1.0};
+      double tangent_x{1.0};
+      double tangent_y{1.0};
+    };
     VkBuffer uniform_buffer{VK_NULL_HANDLE};
     VkDeviceMemory uniform_memory{VK_NULL_HANDLE};
     VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
     VkBuffer probe_buffer{VK_NULL_HANDLE};
     VkDeviceMemory probe_memory{VK_NULL_HANDLE};
+    AtmosphereImage screen_scattering;
+    AtmosphereImage screen_transmittance;
+    AtmosphereImage screen_endpoint;
+    AtmosphereImage froxel_scattering;
+    AtmosphereImage froxel_transmittance;
+    std::array<AtmosphereImage,2> history_scattering;
+    std::array<AtmosphereImage,2> history_transmittance;
+    std::array<AtmosphereImage,2> history_endpoint;
+    std::array<AtmosphereImage,2> history_visibility;
+    std::array<AtmosphereScreenHistoryIdentity,2> history_identities;
+    std::array<TemporalCameraSnapshot,2> history_cameras;
+    std::array<std::uint32_t,2> history_sample_counts{};
+    std::uint32_t history_sequence{};
+    std::uint32_t history_write_index{};
+    bool screen_images_initialized{};
+    bool history_images_initialized{};
+    bool froxel_images_initialized{};
+    bool descriptor_images_initialized{};
     bool probe_pending{};
   };
   struct AtmosphereLookupResources {
@@ -216,6 +297,8 @@ class SceneRenderer {
     std::optional<AtmosphereLookupRevisions> lookup_revisions;
     std::optional<AtmosphereLookupSnapshotSet> lookup_snapshots;
     AtmosphereTransport transport{default_atmosphere_transport};
+    AtmosphereShadowIntegrator shadow_integrator{
+        default_atmosphere_shadow_integrator};
     bool images_initialized{};
   };
   AtmosphereLookupResources atmosphere_lookups_;

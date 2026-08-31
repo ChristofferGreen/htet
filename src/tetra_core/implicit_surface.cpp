@@ -127,7 +127,8 @@ double gradient_noise_3d(double x,double y,double z){
   return mix(mix(x00,x10,v),mix(x01,x11,v),w);
 }
 
-double planetary_terrain_displacement(const Sphere& surface,Vec3 direction){
+double planetary_terrain_displacement(
+    const Sphere& surface,Vec3 direction,double sampling_footprint=0.0){
   const auto& parameters=surface.terrain;
   const double radius=parameters.planet_radius;
   const auto sample=[&](double frequency,double ox,double oy,double oz){
@@ -135,9 +136,22 @@ double planetary_terrain_displacement(const Sphere& surface,Vec3 direction){
     return gradient_noise_3d(direction.x*scale+ox,
         direction.y*scale+oy,direction.z*scale+oz);
   };
+  // A hierarchy edge is the sampling interval of the extracted surface.
+  // Linear tetrahedral interpolation needs some margin around the bare
+  // Nyquist limit. Fade from 1.75 to 2.75 samples per wavelength: this retains
+  // useful ridge contrast at orbital LOD while suppressing the alternating
+  // phase pattern that produced radial spikes. The smooth shoulder avoids
+  // terrain popping when an edge crosses a LOD band.
+  const auto resolved=[&](double frequency){
+    if(!(sampling_footprint>0.0)||!(std::abs(frequency)>0.0))return 1.0;
+    const double samples_per_wavelength=
+        1.0/(std::abs(frequency)*sampling_footprint);
+    const double t=std::clamp(samples_per_wavelength-1.75,0.0,1.0);
+    return t*t*(3.0-2.0*t);
+  };
   double height=parameters.height_offset;
-  height+=parameters.landform_amplitude*sample(
-      parameters.landform_frequency,11.371,-7.219,3.117);
+  height+=parameters.landform_amplitude*resolved(parameters.landform_frequency)*
+      sample(parameters.landform_frequency,11.371,-7.219,3.117);
   const double mountain_frequency_scale=
       parameters.planetary_mountain_frequency_scale;
   const double range=std::clamp((sample(
@@ -149,6 +163,21 @@ double planetary_terrain_displacement(const Sphere& surface,Vec3 direction){
       6.691,13.733,-4.337);
   const double ridge=std::clamp((1.0-std::abs(ridge_noise)-0.30)/0.68,
                                 0.0,1.0);
+  const double range_resolution=resolved(
+      parameters.mountain_range_frequency*mountain_frequency_scale);
+  const double ridge_resolution=resolved(
+      parameters.mountain_ridge_frequency*mountain_frequency_scale);
+  // ridge^2 is a positive carrier modulated by the much broader range field.
+  // Removing an unresolved carrier by multiplying the whole mountain term by
+  // zero also erases its low-frequency envelope. Preserve the carrier's mean
+  // energy instead, analogous to prefiltering a procedural texture mip.
+  // Deterministic Monte-Carlo integration of this exact gradient table and
+  // ridge transform gives E[ridge^2] ~= 0.6634. Keeping the measured energy
+  // avoids making distant mountain ranges collapse toward the datum.
+  constexpr double unresolved_ridge_squared_mean=0.6634;
+  const double filtered_ridge_squared=
+      unresolved_ridge_squared_mean*(1.0-ridge_resolution)+
+      ridge*ridge*ridge_resolution;
   double mountain_fade=1.0;
   const double arc=std::acos(std::clamp(direction.y,-1.0,1.0))*radius;
   if(parameters.planetary_mountain_fade_end>
@@ -160,19 +189,23 @@ double planetary_terrain_displacement(const Sphere& surface,Vec3 direction){
   }
   height+=parameters.mountain_amplitude*
       parameters.planetary_mountain_amplitude_scale*mountain_fade*
-      range*range*ridge*ridge;
-  height+=parameters.gameplay_hill_amplitude*sample(
+      range_resolution*range*range*filtered_ridge_squared;
+  height+=parameters.gameplay_hill_amplitude*
+      resolved(parameters.gameplay_hill_frequency)*sample(
       parameters.gameplay_hill_frequency,4.117,7.731,-2.513);
   const double region=std::clamp((sample(
       parameters.gameplay_region_frequency,-2.719,5.303,8.117)+0.12)/0.30,
       0.0,1.0);
-  height+=parameters.gameplay_feature_amplitude*region*sample(
+  height+=parameters.gameplay_feature_amplitude*
+      std::min(resolved(parameters.gameplay_region_frequency),
+               resolved(parameters.gameplay_feature_frequency))*region*sample(
       parameters.gameplay_feature_frequency,-6.337,1.819,9.173);
-  height+=parameters.ground_roughness_amplitude*sample(
+  height+=parameters.ground_roughness_amplitude*
+      resolved(parameters.ground_roughness_frequency)*sample(
       parameters.ground_roughness_frequency,13.117,-11.731,2.337);
   double amplitude=surface.secondary,frequency=surface.frequency;
   for(int octave=0;octave<terrain_octave_count;++octave){
-    height+=amplitude*sample(frequency,0.0,0.0,0.0);
+    height+=amplitude*resolved(frequency)*sample(frequency,0.0,0.0,0.0);
     amplitude*=terrain_octave_gain;frequency*=2.0;
   }
   if(parameters.spawn_blend_radius>parameters.spawn_flat_radius){
@@ -759,11 +792,10 @@ TerrainHeightSample terrain_height_sample(
           spawn_blend*raw.dz+raw.value*blend_dz};
 }
 
-double terrain_height_slope_bound(const Sphere& terrain) {
+double terrain_height_magnitude_bound(const Sphere& terrain) {
   const auto& parameters=terrain.terrain;
   if(parameters.analytic_ridge)
-    return std::abs(parameters.analytic_ridge_height)/std::max(
-        parameters.analytic_ridge_half_width,1.0e-12);
+    return std::abs(parameters.analytic_ridge_height);
   constexpr double noise_value_bound=1.4142135623730950488;
   double detail_height_factor{},relative_amplitude=1.0;
   for(int octave=0;octave<terrain_octave_count;++octave){
@@ -772,8 +804,6 @@ double terrain_height_slope_bound(const Sphere& terrain) {
   }
   const double planetary_mountain_scale=parameters.planet_radius>0.0?
       std::abs(parameters.planetary_mountain_amplitude_scale):1.0;
-  const double planetary_frequency_scale=parameters.planet_radius>0.0?
-      std::abs(parameters.planetary_mountain_frequency_scale):1.0;
   const double raw_height_bound=
       std::abs(parameters.height_offset)+
       noise_value_bound*std::abs(parameters.landform_amplitude)+
@@ -783,6 +813,20 @@ double terrain_height_slope_bound(const Sphere& terrain) {
           std::abs(parameters.ground_roughness_amplitude))+
       std::abs(parameters.gameplay_corridor_depth)+
       noise_value_bound*std::abs(terrain.secondary)*detail_height_factor;
+  return raw_height_bound;
+}
+
+double terrain_height_slope_bound(const Sphere& terrain) {
+  const auto& parameters=terrain.terrain;
+  if(parameters.analytic_ridge)
+    return std::abs(parameters.analytic_ridge_height)/std::max(
+        parameters.analytic_ridge_half_width,1.0e-12);
+  constexpr double noise_value_bound=1.4142135623730950488;
+  const double raw_height_bound=terrain_height_magnitude_bound(terrain);
+  const double planetary_mountain_scale=parameters.planet_radius>0.0?
+      std::abs(parameters.planetary_mountain_amplitude_scale):1.0;
+  const double planetary_frequency_scale=parameters.planet_radius>0.0?
+      std::abs(parameters.planetary_mountain_frequency_scale):1.0;
   const double landform_slope=2.0*std::abs(
       parameters.landform_amplitude*parameters.landform_frequency);
   const double range_slope=15.0*std::abs(
@@ -1040,7 +1084,7 @@ double Sphere::signed_distance(Vec3 point) const {
             radial_offset.z*radial_offset.z);
         if(!(radial_length>1.0e-15))return -terrain.planet_radius;
         double displacement=planetary_terrain_displacement(
-            *this,radial_offset/radial_length);
+            *this,radial_offset/radial_length,sampling_footprint);
         if(terrain.analytic_ridge){
           const double distance=std::abs(
               (point.z-centre.z)-terrain.analytic_ridge_centre_z);
@@ -1070,6 +1114,29 @@ double Sphere::signed_distance(Vec3 point) const {
     }
   }
   return 0.0;
+}
+
+double Sphere::signed_distance(Vec3 point,double sampling_footprint) const {
+  if(kind!=ImplicitShapeKind::perlin_terrain||!(terrain.planet_radius>0.0)||
+     !(sampling_footprint>0.0)||!std::isfinite(sampling_footprint))
+    return signed_distance(point);
+  const Vec3 planet_centre{
+      centre.x,centre.y-terrain.planet_radius,centre.z};
+  const Vec3 radial_offset=point-planet_centre;
+  const double radial_length=std::sqrt(
+      radial_offset.x*radial_offset.x+radial_offset.y*radial_offset.y+
+      radial_offset.z*radial_offset.z);
+  if(!(radial_length>1.0e-15))return -terrain.planet_radius;
+  double displacement=planetary_terrain_displacement(
+      *this,radial_offset/radial_length,sampling_footprint);
+  if(terrain.analytic_ridge){
+    const double distance=std::abs(
+        (point.z-centre.z)-terrain.analytic_ridge_centre_z);
+    displacement=terrain.analytic_ridge_height*std::max(
+        0.0,1.0-distance/std::max(
+            terrain.analytic_ridge_half_width,1.0e-12));
+  }
+  return radial_length-(terrain.planet_radius+displacement);
 }
 
 void evaluate_signed_distances(
@@ -1240,6 +1307,24 @@ Vec3 Sphere::edge_intersection(Vec3 first,Vec3 second) const {
     if((first_distance<=0.0)==(middle_distance<=0.0)){
       first=middle;first_distance=middle_distance;
     }else{second=middle;}
+  }
+  return (first+second)/2.0;
+}
+
+Vec3 Sphere::edge_intersection(
+    Vec3 first,Vec3 second,double sampling_footprint) const {
+  if(kind!=ImplicitShapeKind::perlin_terrain||!(terrain.planet_radius>0.0))
+    return edge_intersection(first,second);
+  double first_distance=signed_distance(first,sampling_footprint);
+  const double second_distance=signed_distance(second,sampling_footprint);
+  if(std::abs(first_distance)<=1.0e-12)return first;
+  if(std::abs(second_distance)<=1.0e-12)return second;
+  for(int iteration=0;iteration<40;++iteration){
+    const Vec3 middle=(first+second)/2.0;
+    const double middle_distance=signed_distance(middle,sampling_footprint);
+    if((first_distance<=0.0)==(middle_distance<=0.0)){
+      first=middle;first_distance=middle_distance;
+    }else second=middle;
   }
   return (first+second)/2.0;
 }

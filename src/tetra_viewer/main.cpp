@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cfloat>
 #include <filesystem>
@@ -258,10 +259,23 @@ static void SetupVulkan(ImVector<const char*> instance_extensions)
         properties.resize(properties_count);
         vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &properties_count, properties.Data);
         if (IsExtensionAvailable(properties, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME))
+        {
+            if (IsExtensionAvailable(properties, "VK_KHR_multiview"))
+                device_extensions.push_back("VK_KHR_multiview");
+            if (IsExtensionAvailable(properties, "VK_KHR_maintenance2"))
+                device_extensions.push_back("VK_KHR_maintenance2");
+            if (IsExtensionAvailable(properties, "VK_KHR_depth_stencil_resolve"))
+                device_extensions.push_back("VK_KHR_depth_stencil_resolve");
+            if (IsExtensionAvailable(properties, "VK_KHR_create_renderpass2"))
+                device_extensions.push_back("VK_KHR_create_renderpass2");
             device_extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        }
 #ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
         if (IsExtensionAvailable(properties, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME))
             device_extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+#else
+        if (IsExtensionAvailable(properties, "VK_KHR_portability_subset"))
+            device_extensions.push_back("VK_KHR_portability_subset");
 #endif
 
         const float queue_priority[] = { 1.0f };
@@ -397,6 +411,21 @@ static void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
         err = vkBeginCommandBuffer(fd->CommandBuffer, &info);
         check_vk_result(err);
     }
+    VkImageMemoryBarrier backbuffer_to_colour{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    backbuffer_to_colour.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // UNDEFINED is intentional here: the scene overwrites the complete image,
+    // so preserving the previously presented contents would add no value.
+    backbuffer_to_colour.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    backbuffer_to_colour.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    backbuffer_to_colour.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backbuffer_to_colour.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backbuffer_to_colour.image = fd->Backbuffer;
+    backbuffer_to_colour.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    backbuffer_to_colour.subresourceRange.levelCount = 1;
+    backbuffer_to_colour.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &backbuffer_to_colour);
     const VkExtent2D extent{static_cast<std::uint32_t>(wd->Width), static_cast<std::uint32_t>(wd->Height)};
     g_SceneRenderer.record(fd->CommandBuffer,fd->BackbufferView,wd->FrameIndex,
                            extent,g_CameraData.data(),g_AtmosphereFrame,
@@ -417,6 +446,18 @@ static void FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
     begin_rendering(fd->CommandBuffer, reinterpret_cast<const VkRenderingInfoKHR*>(&overlay_info));
     ImGui_ImplVulkan_RenderDrawData(draw_data, fd->CommandBuffer);
     end_rendering(fd->CommandBuffer);
+    VkImageMemoryBarrier backbuffer_to_present{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    backbuffer_to_present.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    backbuffer_to_present.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    backbuffer_to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    backbuffer_to_present.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backbuffer_to_present.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backbuffer_to_present.image = fd->Backbuffer;
+    backbuffer_to_present.subresourceRange = backbuffer_to_colour.subresourceRange;
+    vkCmdPipelineBarrier(fd->CommandBuffer,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &backbuffer_to_present);
     {
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo info = {};
@@ -640,7 +681,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     g_SceneRenderer.recreate(
         {static_cast<std::uint32_t>(wd->Width),
          static_cast<std::uint32_t>(wd->Height)},wd->ImageCount,
-        g_AtmosphereFrame.quality);
+        g_AtmosphereFrame.quality,g_AtmosphereFrame.screen_resolution_divisor);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -1013,6 +1054,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_paused=false;
     bool world_single_step=false;
     bool world_free_fly=false;
+    bool world_lock_lod_camera=true;
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
     bool world_smooth_normals=false;
@@ -1020,6 +1062,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
         tetra_viewer::default_world_sun_elevation_radians;
+    bool world_animate_sun=false;
+    double world_sun_cycle_seconds=
+        tetra_viewer::default_world_sun_cycle_seconds;
+    double world_sun_orbit_azimuth=world_sun_azimuth;
+    double world_sun_orbit_phase=world_sun_elevation;
     tetra_viewer::AtmospherePreset world_atmosphere_preset=
         tetra_viewer::default_world_atmosphere_preset;
     double world_exposure_ev=-0.62;
@@ -1028,15 +1075,26 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_gpu_shadow_projection_probe=false;
     std::string world_gpu_atmosphere_capture_path;
     bool world_gpu_atmosphere_capture_submitted=false;
+    std::size_t world_gpu_capture_ready_frames{};
+    std::size_t world_gpu_capture_after_motion_frames{};
+    std::size_t world_gpu_capture_motion_frame_count{};
     bool world_gpu_atmosphere_resize_check=false;
+    std::size_t world_gpu_walk_steps{};
+    std::size_t world_gpu_walk_steps_remaining{};
+    double world_gpu_look_x{},world_gpu_look_y{};
+    std::size_t world_gpu_look_frames{1U};
+    std::size_t world_gpu_look_frames_remaining{};
+    bool world_gpu_motion_applied=false;
+    bool world_gpu_motion_saw_busy=false;
     bool world_analytic_ridge=false;
     std::optional<tetra_viewer::AtmosphereShadowFrontRequest>
         world_retained_atmosphere_shadow_request;
     bool world_gpu_atmosphere_resize_requested=false;
     bool world_gpu_automation_requested=false;
+    double world_maximum_terrain_relief_metres{};
     std::size_t world_gpu_benchmark_warmup_frames{};
-    std::array<std::vector<double>,4> world_gpu_benchmark_samples;
-    std::array<double,4> world_gpu_refresh_maximum{};
+    std::array<std::vector<double>,7> world_gpu_benchmark_samples;
+    std::array<double,7> world_gpu_refresh_maximum{};
     std::size_t world_gpu_pre_resize_scene_bytes{};
     int world_process_exit_code{};
     double world_cursor_x{},world_cursor_y{};
@@ -1045,14 +1103,39 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view preset_prefix="--atmosphere-preset=";
         constexpr std::string_view azimuth_prefix="--sun-azimuth-degrees=";
         constexpr std::string_view elevation_prefix="--sun-elevation-degrees=";
+        constexpr std::string_view sun_cycle_prefix="--sun-cycle-seconds=";
         constexpr std::string_view exposure_prefix="--exposure-ev=";
         constexpr std::string_view debug_prefix="--atmosphere-debug=";
         constexpr std::string_view quality_prefix="--atmosphere-quality=";
         constexpr std::string_view transport_prefix="--atmosphere-transport=";
+        constexpr std::string_view rendering_method_prefix=
+            "--atmosphere-rendering-method=";
+        constexpr std::string_view screen_resolution_prefix=
+            "--atmosphere-screen-resolution-divisor=";
+        constexpr std::string_view shadow_integrator_prefix=
+            "--atmosphere-shadow-integrator=";
+        constexpr std::string_view surface_bias_prefix=
+            "--surface-shadow-bias=";
+        constexpr std::string_view shadow_filter_prefix=
+            "--atmosphere-shadow-filter=";
+        constexpr std::string_view raster_constant_prefix=
+            "--shadow-raster-constant=";
+        constexpr std::string_view raster_slope_prefix=
+            "--shadow-raster-slope=";
+        constexpr std::string_view comparison_bias_prefix=
+            "--atmosphere-comparison-bias-metres=";
+        constexpr std::string_view comparison_bias_world_prefix=
+            "--atmosphere-comparison-bias-world=";
         constexpr std::string_view capture_prefix="--gpu-atmosphere-capture=";
+        constexpr std::string_view capture_after_motion_prefix=
+            "--gpu-atmosphere-capture-after-motion-frames=";
         constexpr std::string_view camera_prefix="--camera-feet=";
         constexpr std::string_view yaw_prefix="--camera-yaw-degrees=";
         constexpr std::string_view pitch_prefix="--camera-pitch-degrees=";
+        constexpr std::string_view walk_prefix="--automation-walk-steps=";
+        constexpr std::string_view look_prefix="--automation-look=";
+        constexpr std::string_view look_frames_prefix=
+            "--automation-look-frames=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1103,11 +1186,57 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     fprintf(stderr,"GPU atmosphere capture path is empty\n");
                     return 2;
                 }
+            }else if(value.starts_with(capture_after_motion_prefix)){
+                const auto text=value.substr(capture_after_motion_prefix.size());
+                std::size_t parsed{};
+                const auto [end,error]=std::from_chars(
+                    text.data(),text.data()+text.size(),parsed);
+                if(error!=std::errc{}||end!=text.data()+text.size()||
+                   parsed==0U||parsed>10000U){
+                    fprintf(stderr,
+                        "capture after motion frames must be in [1,10000]\n");
+                    return 2;
+                }
+                world_gpu_capture_after_motion_frames=parsed;
             }else if(value=="--free-fly"){
                 world_free_fly=true;
+            }else if(value=="--terrain-lod-follow"){
+                world_lock_lod_camera=false;
             }else if(value.starts_with(camera_prefix)){
                 if(!parse_camera_position(value.substr(camera_prefix.size()))){
                     fprintf(stderr,"camera feet must be finite x,y,z values\n");
+                    return 2;
+                }
+            }else if(value.starts_with(walk_prefix)){
+                const auto text=value.substr(walk_prefix.size());
+                std::size_t parsed{};
+                const auto [end,error]=std::from_chars(
+                    text.data(),text.data()+text.size(),parsed);
+                if(error!=std::errc{}||end!=text.data()+text.size()||
+                   parsed>10000U){
+                    fprintf(stderr,"automation walk steps must be in [0,10000]\n");
+                    return 2;
+                }
+                world_gpu_walk_steps=parsed;
+                world_gpu_walk_steps_remaining=parsed;
+            }else if(value.starts_with(look_frames_prefix)){
+                const auto text=value.substr(look_frames_prefix.size());
+                std::size_t parsed{};
+                const auto [end,error]=std::from_chars(
+                    text.data(),text.data()+text.size(),parsed);
+                if(error!=std::errc{}||end!=text.data()+text.size()||
+                   parsed==0U||parsed>10000U){
+                    fprintf(stderr,"automation look frames must be in [1,10000]\n");
+                    return 2;
+                }
+                world_gpu_look_frames=parsed;
+            }else if(value.starts_with(look_prefix)){
+                auto text=value.substr(look_prefix.size());
+                const auto comma=text.find(',');
+                if(comma==std::string_view::npos||
+                   !parse_argument_double(text.substr(0,comma),world_gpu_look_x)||
+                   !parse_argument_double(text.substr(comma+1U),world_gpu_look_y)){
+                    fprintf(stderr,"automation look must be finite DX,DY\n");
                     return 2;
                 }
             }else if(value.starts_with(yaw_prefix)){
@@ -1152,6 +1281,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 }
                 world_sun_elevation=static_cast<float>(degrees*
                     std::numbers::pi/180.0);
+            }else if(value.starts_with(sun_cycle_prefix)){
+                double seconds{};
+                if(!parse_argument_double(
+                       value.substr(sun_cycle_prefix.size()),seconds)||
+                   seconds<0.25||seconds>600.0){
+                    fprintf(stderr,"sun cycle must be in [0.25,600] seconds\n");
+                    return 2;
+                }
+                world_sun_cycle_seconds=seconds;
+                world_animate_sun=true;
             }else if(value.starts_with(exposure_prefix)){
                 if(!parse_argument_double(value.substr(exposure_prefix.size()),
                                           world_exposure_ev)){
@@ -1162,8 +1301,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const std::string debug(value.substr(debug_prefix.size()));
                 char* end=nullptr;
                 const long parsed=std::strtol(debug.c_str(),&end,10);
-                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>15){
-                    fprintf(stderr,"atmosphere debug view must be in [0,15]\n");
+                if(debug.empty()||end==nullptr||*end!='\0'||parsed<0||parsed>27){
+                    fprintf(stderr,"atmosphere debug view must be in [0,27]\n");
                     return 2;
                 }
                 g_AtmosphereFrame.debug_view=static_cast<int>(parsed);
@@ -1190,18 +1329,118 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 g_AtmosphereFrame.transport=*transport;
+            }else if(value.starts_with(rendering_method_prefix)){
+                const auto method=
+                    tetra_viewer::parse_atmosphere_rendering_method(
+                        value.substr(rendering_method_prefix.size()));
+                if(!method){
+                    fprintf(stderr,"unknown atmosphere rendering method\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.rendering_method=*method;
+            }else if(value.starts_with(screen_resolution_prefix)){
+                const std::string divisor_text(
+                    value.substr(screen_resolution_prefix.size()));
+                char* end=nullptr;
+                const long divisor=std::strtol(
+                    divisor_text.c_str(),&end,10);
+                if(divisor_text.empty()||end==nullptr||*end!='\0'||
+                   divisor<2||divisor>4){
+                    fprintf(stderr,
+                        "atmosphere screen resolution divisor must be in [2,4]\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.screen_resolution_divisor=
+                    static_cast<std::uint32_t>(divisor);
+            }else if(value.starts_with(shadow_integrator_prefix)){
+                const auto integrator=
+                    tetra_viewer::parse_atmosphere_shadow_integrator(
+                        value.substr(shadow_integrator_prefix.size()));
+                if(!integrator){
+                    fprintf(stderr,"unknown atmosphere shadow integrator\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.shadow_integrator=*integrator;
+            }else if(value.starts_with(surface_bias_prefix)){
+                const auto mode=tetra_viewer::parse_surface_shadow_bias_mode(
+                    value.substr(surface_bias_prefix.size()));
+                if(!mode){
+                    fprintf(stderr,"unknown surface shadow bias mode\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.surface_shadow_bias=*mode;
+            }else if(value.starts_with(shadow_filter_prefix)){
+                const auto filter=tetra_viewer::parse_atmosphere_shadow_filter(
+                    value.substr(shadow_filter_prefix.size()));
+                if(!filter){
+                    fprintf(stderr,"unknown atmosphere shadow filter\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.shadow_filter=*filter;
+            }else if(value.starts_with(raster_constant_prefix)){
+                double parsed{};
+                if(!parse_argument_double(
+                    value.substr(raster_constant_prefix.size()),parsed)||
+                   parsed<0.0||parsed>16.0){
+                    fprintf(stderr,"invalid shadow raster constant bias\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.shadow_raster_bias_constant=
+                    static_cast<float>(parsed);
+            }else if(value.starts_with(raster_slope_prefix)){
+                double parsed{};
+                if(!parse_argument_double(
+                    value.substr(raster_slope_prefix.size()),parsed)||
+                   parsed<0.0||parsed>16.0){
+                    fprintf(stderr,"invalid shadow raster slope bias\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.shadow_raster_bias_slope=
+                    static_cast<float>(parsed);
+            }else if(value.starts_with(comparison_bias_prefix)){
+                double parsed{};
+                if(!parse_argument_double(
+                    value.substr(comparison_bias_prefix.size()),parsed)||
+                   parsed<0.0||parsed>0.1){
+                    fprintf(stderr,"invalid atmosphere comparison bias\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.
+                    atmosphere_shadow_comparison_bias_world_override=parsed;
+            }else if(value.starts_with(comparison_bias_world_prefix)){
+                double parsed{};
+                if(!parse_argument_double(
+                    value.substr(comparison_bias_world_prefix.size()),parsed)||
+                   parsed<0.0||parsed>0.1){
+                    fprintf(stderr,"invalid atmosphere comparison bias\n");
+                    return 2;
+                }
+                g_AtmosphereFrame.
+                    atmosphere_shadow_comparison_bias_world_override=parsed;
             }
         }
+        world_sun_orbit_azimuth=world_sun_azimuth;
+        world_sun_orbit_phase=world_sun_elevation;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
             world_gpu_atmosphere_probe||
             world_gpu_shadow_projection_probe||
-            !world_gpu_atmosphere_capture_path.empty();
+            !world_gpu_atmosphere_capture_path.empty()||
+            world_gpu_walk_steps!=0U||world_gpu_look_x!=0.0||
+            world_gpu_look_y!=0.0;
+        if(g_AtmosphereFrame.shadow_integrator==
+               tetra_viewer::AtmosphereShadowIntegrator::dense_oracle&&
+           !world_gpu_automation_requested){
+            fprintf(stderr,"dense-oracle atmosphere shadow integration is headless only\n");
+            return 2;
+        }
         if(g_AtmosphereFrame.quality!=
-           tetra_viewer::AtmosphereQuality::standard){
+               tetra_viewer::AtmosphereQuality::standard||
+           g_AtmosphereFrame.screen_resolution_divisor!=4U){
             g_SceneRenderer.recreate(
                 {static_cast<std::uint32_t>(g_MainWindowData.Width),
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
-                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
+                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
+                g_AtmosphereFrame.screen_resolution_divisor);
         }
         if(world_gpu_atmosphere_probe&&g_AtmosphereFrame.transport!=
            tetra_viewer::AtmosphereTransport::faithful_hillaire){
@@ -1229,6 +1468,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         sphere.kind=profile.shape;sphere.terrain=profile.terrain;
         sphere.secondary=profile.octave_detail_amplitude;
         sphere.frequency=profile.octave_detail_frequency;
+        world_maximum_terrain_relief_metres=
+            tetra::terrain_height_magnitude_bound(sphere)*
+            g_AtmosphereFrame.parameters.metres_per_world_unit;
+        if(world_atmosphere_preset==
+           tetra_viewer::AtmospherePreset::gameplay_planet)
+            g_AtmosphereFrame.parameters=
+                tetra_viewer::adapt_compact_atmosphere_to_relief(
+                    g_AtmosphereFrame.parameters,
+                    world_maximum_terrain_relief_metres);
         const auto framebuffer_aspect=static_cast<double>(std::max(w,1))/
             static_cast<double>(std::max(h,1));
         camera=world_controller.camera(std::max(h,1),framebuffer_aspect);
@@ -1276,6 +1524,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
             const auto runtime_status=world_runtime?
                 world_runtime->diagnostics():tetra_viewer::TerrainRuntimeDiagnostics{};
+            const bool scripted_motion=world_gpu_walk_steps!=0U||
+                world_gpu_look_x!=0.0||world_gpu_look_y!=0.0;
+            if(scripted_motion&&!world_gpu_motion_applied&&world_runtime&&
+               !runtime_status.busy&&world_gpu_capture_ready_frames>=64U&&
+               g_SceneRenderer.latest_atmosphere_lookup_revisions()){
+                world_gpu_motion_applied=true;
+                world_gpu_look_frames_remaining=world_gpu_look_frames;
+            }
+            if(world_gpu_motion_applied&&world_gpu_look_frames_remaining!=0U){
+                world_controller.look(
+                    world_gpu_look_x/static_cast<double>(world_gpu_look_frames),
+                    world_gpu_look_y/static_cast<double>(world_gpu_look_frames));
+                --world_gpu_look_frames_remaining;
+            }
+            if(world_gpu_motion_applied&&runtime_status.busy)
+                world_gpu_motion_saw_busy=true;
+            if(world_gpu_motion_applied)
+                ++world_gpu_capture_motion_frame_count;
             if(world_runtime&&
                runtime_status.scene_generation!=world_scene_generation){
                 if(world_runtime->retained_surface()!=nullptr){
@@ -1344,7 +1610,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             g_SceneRenderer.recreate(
                 {static_cast<std::uint32_t>(g_MainWindowData.Width),
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
-                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
+                g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
+                g_AtmosphereFrame.screen_resolution_divisor);
             g_MainWindowData.FrameIndex = 0;
             g_SwapChainRebuild = false;
         }
@@ -2501,6 +2768,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::TextUnformatted("Ctrl super speed  Ctrl+Shift 10x super speed");
             ImGui::TextUnformatted("Mouse look  Esc releases pointer  Click captures");
             ImGui::Separator();
+            const float frame_rate=ImGui::GetIO().Framerate;
+            ImGui::Text("Frame %.2f ms   %.1f FPS",
+                        frame_rate>0.0F?1000.0F/frame_rate:0.0F,frame_rate);
             if(!world_runtime){
                 ImGui::TextUnformatted("Terrain loading...");
             }else{
@@ -2530,8 +2800,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::SameLine();
             if(ImGui::Button("Single step"))world_single_step=true;
             CheckboxWithHotkey("Free fly","F",ImGuiKey_F,&world_free_fly);
-            if(world_free_fly)
-                ImGui::TextDisabled("Terrain LOD camera locked");
+            CheckboxWithHotkey("Lock terrain LOD camera","G",ImGuiKey_G,
+                               &world_lock_lod_camera);
+            if(!world_free_fly)
+                ImGui::TextDisabled("Lock applies while free flying");
             CheckboxWithHotkey("Triangle wireframe","T",ImGuiKey_T,
                                &show_surface_edges);
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
@@ -2546,15 +2818,38 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                   &show_camera_lod_zones))
                 overlay_dirty=true;
             ImGui::SeparatorText("Sun");
-            ImGui::SetNextItemWidth(190.0F);
-            ImGui::SliderAngle("Azimuth",&world_sun_azimuth,-180.0F,180.0F);
-            ImGui::SetNextItemWidth(190.0F);
-            ImGui::SliderAngle("Elevation",&world_sun_elevation,5.0F,85.0F);
+            if(CheckboxWithHotkey("Animate sun","Y",ImGuiKey_Y,
+                                  &world_animate_sun)){
+                world_sun_orbit_azimuth=world_sun_azimuth;
+                world_sun_orbit_phase=world_sun_elevation;
+            }
+            if(world_animate_sun){
+                constexpr double minimum_cycle_seconds=0.25;
+                constexpr double maximum_cycle_seconds=600.0;
+                ImGui::SetNextItemWidth(190.0F);
+                ImGui::SliderScalar("Cycle (seconds)",ImGuiDataType_Double,
+                    &world_sun_cycle_seconds,
+                    &minimum_cycle_seconds,&maximum_cycle_seconds,"%.1f");
+                ImGui::Text("Azimuth %.1f deg",world_sun_azimuth*180.0F/
+                            std::numbers::pi_v<float>);
+                ImGui::Text("Elevation %.1f deg",world_sun_elevation*180.0F/
+                            std::numbers::pi_v<float>);
+                ImGui::TextDisabled("Fast live atmospheric shadows");
+            }else{
+                ImGui::SetNextItemWidth(190.0F);
+                ImGui::SliderAngle(
+                    "Azimuth",&world_sun_azimuth,-180.0F,180.0F);
+                ImGui::SetNextItemWidth(190.0F);
+                ImGui::SliderAngle(
+                    "Elevation",&world_sun_elevation,-90.0F,90.0F);
+            }
             if(ImGui::Button("Reset sun")){
                 world_sun_azimuth=
                     tetra_viewer::default_world_sun_azimuth_radians;
                 world_sun_elevation=
                     tetra_viewer::default_world_sun_elevation_radians;
+                world_sun_orbit_azimuth=world_sun_azimuth;
+                world_sun_orbit_phase=world_sun_elevation;
             }
             ImGui::SeparatorText("Atmosphere");
             CheckboxWithHotkey("Atmosphere","H",ImGuiKey_H,
@@ -2572,6 +2867,92 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     const bool selected=g_AtmosphereFrame.transport==transport;
                     if(ImGui::Selectable(name.data(),selected))
                         g_AtmosphereFrame.transport=transport;
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(190.0F);
+            const auto rendering_method_name=
+                tetra_viewer::atmosphere_rendering_method_name(
+                    g_AtmosphereFrame.rendering_method);
+            if(ImGui::BeginCombo("Atmosphere renderer",
+                                 rendering_method_name.data())){
+                constexpr std::array methods{
+                    tetra_viewer::AtmosphereRenderingMethod::current_qualified,
+                    tetra_viewer::AtmosphereRenderingMethod::native_screen_oracle,
+                    tetra_viewer::AtmosphereRenderingMethod::deterministic_half_resolution,
+                    tetra_viewer::AtmosphereRenderingMethod::temporal_half_resolution,
+                    tetra_viewer::AtmosphereRenderingMethod::deterministic_shadowed_froxels};
+                for(const auto method:methods){
+                    const auto name=
+                        tetra_viewer::atmosphere_rendering_method_name(method);
+                    const bool selected=
+                        g_AtmosphereFrame.rendering_method==method;
+                    if(ImGui::Selectable(name.data(),selected))
+                        g_AtmosphereFrame.rendering_method=method;
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(190.0F);
+            const auto shadow_integrator_name=
+                tetra_viewer::atmosphere_shadow_integrator_name(
+                    g_AtmosphereFrame.shadow_integrator);
+            if(ImGui::BeginCombo("Shadow integration",
+                                 shadow_integrator_name.data())){
+                constexpr std::array integrators{
+                    tetra_viewer::AtmosphereShadowIntegrator::fixed_32,
+                    tetra_viewer::AtmosphereShadowIntegrator::adaptive_transition,
+                    tetra_viewer::AtmosphereShadowIntegrator::minmax_segments,
+                    tetra_viewer::AtmosphereShadowIntegrator::moment_hybrid,
+                    tetra_viewer::AtmosphereShadowIntegrator::epipolar_minmax};
+                for(const auto integrator:integrators){
+                    const auto name=
+                        tetra_viewer::atmosphere_shadow_integrator_name(integrator);
+                    const bool selected=
+                        g_AtmosphereFrame.shadow_integrator==integrator;
+                    if(ImGui::Selectable(name.data(),selected))
+                        g_AtmosphereFrame.shadow_integrator=integrator;
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(190.0F);
+            const auto surface_bias_name=
+                tetra_viewer::surface_shadow_bias_mode_name(
+                    g_AtmosphereFrame.surface_shadow_bias);
+            if(ImGui::BeginCombo("Surface shadow bias",
+                                 surface_bias_name.data())){
+                constexpr std::array modes{
+                    tetra_viewer::SurfaceShadowBiasMode::slope_scaled,
+                    tetra_viewer::SurfaceShadowBiasMode::receiver_plane};
+                for(const auto mode:modes){
+                    const auto name=
+                        tetra_viewer::surface_shadow_bias_mode_name(mode);
+                    const bool selected=
+                        g_AtmosphereFrame.surface_shadow_bias==mode;
+                    if(ImGui::Selectable(name.data(),selected))
+                        g_AtmosphereFrame.surface_shadow_bias=mode;
+                    if(selected)ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(190.0F);
+            const auto shadow_filter_name=
+                tetra_viewer::atmosphere_shadow_filter_name(
+                    g_AtmosphereFrame.shadow_filter);
+            if(ImGui::BeginCombo("Shadow filtering",
+                                 shadow_filter_name.data())){
+                constexpr std::array filters{
+                    tetra_viewer::AtmosphereShadowFilter::unfiltered,
+                    tetra_viewer::AtmosphereShadowFilter::fixed_tent,
+                    tetra_viewer::AtmosphereShadowFilter::physical_footprint};
+                for(const auto filter:filters){
+                    const auto name=
+                        tetra_viewer::atmosphere_shadow_filter_name(filter);
+                    const bool selected=g_AtmosphereFrame.shadow_filter==filter;
+                    if(ImGui::Selectable(name.data(),selected))
+                        g_AtmosphereFrame.shadow_filter=filter;
                     if(selected)ImGui::SetItemDefaultFocus();
                 }
                 ImGui::EndCombo();
@@ -2596,6 +2977,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                             tetra_viewer::atmosphere_preset(preset);
                         g_AtmosphereFrame.parameters.metres_per_world_unit=
                             metres_per_world_unit;
+                        if(preset==tetra_viewer::AtmospherePreset::gameplay_planet)
+                            g_AtmosphereFrame.parameters=
+                                tetra_viewer::adapt_compact_atmosphere_to_relief(
+                                    g_AtmosphereFrame.parameters,
+                                    world_maximum_terrain_relief_metres);
                         world_atmosphere_preset=preset;
                     }
                     if(selected)ImGui::SetItemDefaultFocus();
@@ -2703,7 +3089,27 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     g_SceneRenderer.recreate(
                         {static_cast<std::uint32_t>(g_MainWindowData.Width),
                          static_cast<std::uint32_t>(g_MainWindowData.Height)},
-                        g_MainWindowData.ImageCount,g_AtmosphereFrame.quality);
+                        g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
+                        g_AtmosphereFrame.screen_resolution_divisor);
+                }
+                constexpr std::array<const char*,3> resolution_names{
+                    "Half","One third","One quarter"};
+                int resolution_index=static_cast<int>(
+                    g_AtmosphereFrame.screen_resolution_divisor)-2;
+                ImGui::SetNextItemWidth(190.0F);
+                if(ImGui::Combo("Screen integration",&resolution_index,
+                                resolution_names.data(),
+                                static_cast<int>(resolution_names.size()))){
+                    g_AtmosphereFrame.screen_resolution_divisor=
+                        static_cast<std::uint32_t>(resolution_index+2);
+                    if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
+                        throw std::runtime_error(
+                            "unable to idle Vulkan for atmosphere resolution change");
+                    g_SceneRenderer.recreate(
+                        {static_cast<std::uint32_t>(g_MainWindowData.Width),
+                         static_cast<std::uint32_t>(g_MainWindowData.Height)},
+                        g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
+                        g_AtmosphereFrame.screen_resolution_divisor);
                 }
                 const double distance_minimum=10'000.0;
                 const double distance_maximum=10'000'000.0;
@@ -2714,7 +3120,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGuiSliderFlags_Logarithmic);
             }
             if(ImGui::CollapsingHeader("Atmosphere diagnostics")){
-                constexpr std::array<const char*,16> debug_names{
+                constexpr std::array<const char*,28> debug_names{
                     "Final composition","Transmittance lookup",
                     "Multiple scattering lookup","Sky-view lookup",
                     "Aerial scattering slice","Aerial transmittance slice",
@@ -2723,7 +3129,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     "Long-path shadow coverage","Long-path direct loss",
                     "Full-sky before terrain shadow",
                     "Full-sky after terrain shadow",
-                    "Receiver-fitted atmosphere shadow"};
+                    "Receiver-fitted atmosphere shadow",
+                    "Full-resolution direct scattering",
+                    "Full-resolution multiple scattering",
+                    "Direct scattering after terrain shadow",
+                    "HDR terrain before atmosphere",
+                    "Surface-truncated direct after shadow",
+                    "Surface-truncated multiple scattering",
+                    "Raw directional shadow loss",
+                    "Long-shadow epipolar classification",
+                    "Long-shadow epipolar traversal",
+                    "Terrain direct-shadow visibility",
+                    "Terrain indirect lighting",
+                    "Terrain direct lighting"};
                 ImGui::SetNextItemWidth(190.0F);
                 ImGui::Combo("Debug view",&g_AtmosphereFrame.debug_view,
                              debug_names.data(),
@@ -2736,6 +3154,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGui::Text("GPU terrain %.2f ms  composite %.2f ms",
                                 timings.terrain_milliseconds,
                                 timings.composite_milliseconds);
+                    ImGui::Text("GPU depth %.2f  integrate %.2f  temporal %.2f ms",
+                                timings.depth_reduction_milliseconds,
+                                timings.screen_integration_milliseconds,
+                                timings.temporal_reconstruction_milliseconds);
                 }else ImGui::TextDisabled("GPU timings pending");
                 ImGui::Text("Atmosphere allocation %.1f MiB",
                     static_cast<double>(
@@ -2782,6 +3204,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const double elapsed=std::chrono::duration<double>(
                 now-previous_world_frame).count();
             previous_world_frame=now;
+            if(world_animate_sun){
+                world_sun_orbit_phase=
+                    tetra_viewer::advance_world_sun_orbit_phase(
+                        world_sun_orbit_phase,elapsed,
+                        world_sun_cycle_seconds);
+                const auto angles=tetra_viewer::world_sun_orbit_angles(
+                    world_sun_orbit_azimuth,world_sun_orbit_phase);
+                world_sun_azimuth=static_cast<float>(angles.azimuth_radians);
+                world_sun_elevation=static_cast<float>(
+                    angles.elevation_radians);
+            }
             if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS&&world_pointer_captured){
                 world_pointer_captured=false;
                 glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_NORMAL);
@@ -2805,6 +3238,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
             world_cursor_x=cursor_x;world_cursor_y=cursor_y;
             tetra_viewer::FirstPersonInput movement;
+            double world_free_fly_vertical=0.0;
             if(!input.WantCaptureKeyboard||world_pointer_captured){
                 movement.forward=(glfwGetKey(window,GLFW_KEY_W)==GLFW_PRESS?1.0:0.0)-
                     (glfwGetKey(window,GLFW_KEY_S)==GLFW_PRESS?1.0:0.0);
@@ -2817,12 +3251,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     glfwGetKey(window,GLFW_KEY_RIGHT_CONTROL)==GLFW_PRESS;
                 movement.jump=glfwGetKey(window,GLFW_KEY_SPACE)==GLFW_PRESS;
             }
+            if(world_gpu_motion_applied&&world_gpu_walk_steps_remaining!=0U)
+                movement.forward=1.0;
             if(world_free_fly){
-                const double vertical=
+                world_free_fly_vertical=
                     (glfwGetKey(window,GLFW_KEY_SPACE)==GLFW_PRESS?1.0:0.0)-
                     (glfwGetKey(window,GLFW_KEY_C)==GLFW_PRESS?1.0:0.0);
                 auto direction=world_controller.forward()*movement.forward+
-                    world_controller.right()*movement.right+tetra::Vec3{0.0,vertical,0.0};
+                    world_controller.right()*movement.right+
+                    tetra::Vec3{0.0,world_free_fly_vertical,0.0};
                 const double magnitude=std::sqrt(direction.x*direction.x+
                     direction.y*direction.y+direction.z*direction.z);
                 if(magnitude>1.0)direction=direction/magnitude;
@@ -2830,27 +3267,49 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const double speed=movement_configuration.walk_speed*
                     tetra_viewer::movement_speed_multiplier(
                         movement,movement_configuration);
-                if(!world_paused||world_single_step)
+                if(!world_paused||world_single_step){
+                    const bool automated_walk=world_gpu_motion_applied&&
+                        world_gpu_walk_steps_remaining!=0U;
                     world_controller.state().feet=world_controller.state().feet+
-                        direction*speed*(world_single_step?1.0/120.0:elapsed);
+                        direction*speed*(automated_walk?1.0/120.0:
+                            (world_single_step?1.0/120.0:elapsed));
+                    if(automated_walk)--world_gpu_walk_steps_remaining;
+                }
                 world_controller.state().velocity={};
                 world_controller.state().grounded=false;
             }else if(!world_paused||world_single_step){
                 world_controller.advance(
-                    world_single_step?1.0/120.0:elapsed,movement,
+                    world_gpu_motion_applied&&
+                        world_gpu_walk_steps_remaining!=0U?
+                        1.0/120.0:
+                        (world_single_step?1.0/120.0:elapsed),movement,
                     sphere);
+                if(world_gpu_motion_applied&&
+                   world_gpu_walk_steps_remaining!=0U)
+                    --world_gpu_walk_steps_remaining;
             }
             world_single_step=false;
+            // LOD error is measured in rendered pixels, not logical UI points.
+            // On a Retina display DisplaySize is half the framebuffer size;
+            // using it here made the terrain roughly twice as coarse as the
+            // configured pixel target after the first frame.
+            const double framebuffer_height=static_cast<double>(
+                std::max(g_MainWindowData.Height,1));
             camera=world_controller.camera(
-                static_cast<double>(std::max(1.0F,input.DisplaySize.y)),
-                static_cast<double>(std::max(1.0F,input.DisplaySize.x))/
-                    static_cast<double>(std::max(1.0F,input.DisplaySize.y)));
+                framebuffer_height,
+                static_cast<double>(std::max(g_MainWindowData.Width,1))/
+                    framebuffer_height);
+            const bool lod_camera_locked=
+                world_free_fly&&world_lock_lod_camera;
             const auto lod_camera=tetra_viewer::resolve_world_lod_camera(
-                camera,world_free_fly,world_lod_camera);
-            if(world_runtime)world_runtime->set_camera(lod_camera,
-                !world_free_fly&&(movement.forward!=0.0||movement.right!=0.0||
-                    !world_controller.state().grounded||
-                    world_camera_look_changed));
+                camera,lod_camera_locked,world_lod_camera);
+            const bool lod_camera_interactive=!lod_camera_locked&&
+                (movement.forward!=0.0||movement.right!=0.0||
+                 world_free_fly_vertical!=0.0||
+                 (!world_free_fly&&!world_controller.state().grounded)||
+                 world_camera_look_changed);
+            if(world_runtime)
+                world_runtime->set_camera(lod_camera,lod_camera_interactive);
             view_camera_position=world_controller.eye_position();
             if(world_show_capsule||world_show_contact_normal)overlay_dirty=true;
         }else{
@@ -3109,6 +3568,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         g_AtmosphereFrame.camera_down=projection.up;
         g_AtmosphereFrame.camera_forward=projection.forward;
         g_AtmosphereFrame.sun_direction=sun;
+        g_AtmosphereFrame.dynamic_sun=world_animate_sun;
         g_AtmosphereFrame.vertical_tangent=projection.tangent;
         g_AtmosphereFrame.aspect_ratio=projection.aspect_ratio;
         const double planet_radius_world=
@@ -3135,33 +3595,59 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 g_AtmosphereFrame.maximum_aerial_distance_metres);
             const auto quality=tetra_viewer::atmosphere_quality_settings(
                 g_AtmosphereFrame.quality);
-            const auto cascades=tetra_viewer::make_stable_shadow_cascades(
-                camera_position,projection.forward,sun,quality.shadow_resolution);
-            const double receiver_distance=std::clamp(
-                aerial/std::max(metres,1.0e-12),
-                cascades.cascades.back().split_distance,2048.0);
-            auto current_view=tetra_viewer::make_atmosphere_shadow_front_request(
-                view_camera_position,projection.forward,projection.right,
-                projection.up,projection.tangent,projection.aspect_ratio,
-                receiver_distance,1.0,sun,receiver_distance,
-                prepared_scene.render_origin,1U);
-            current_view.map_resolution=quality.atmosphere_shadow_resolution;
-            if(!world_retained_atmosphere_shadow_request||
-               !tetra_viewer::atmosphere_shadow_request_covers_rotation(
-                   *world_retained_atmosphere_shadow_request,current_view)){
-                world_retained_atmosphere_shadow_request=
+            if(world_animate_sun){
+                // A sun-specific CPU residency front cannot converge while
+                // its direction changes every frame. The renderer uses a live
+                // fitted GPU preview over the published terrain instead of
+                // superseding background terrain work. A complete residency
+                // front is requested immediately when animation stops.
+                // Preserve the last settled caster-residency request while
+                // the renderer changes its live fitted projection. This keeps
+                // the off-screen mountain blocks that were already selected
+                // instead of immediately collapsing to visible geometry and
+                // producing a detached atmospheric-shadow silhouette.
+                world_runtime->set_atmosphere_shadow_request(
+                    world_retained_atmosphere_shadow_request);
+            }else{
+                const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+                    camera_position,projection.forward,sun,
+                    quality.shadow_resolution);
+                const double receiver_distance=std::clamp(
+                    aerial/std::max(metres,1.0e-12),
+                    cascades.cascades.back().split_distance,2048.0);
+                auto current_view=
                     tetra_viewer::make_atmosphere_shadow_front_request(
                         view_camera_position,projection.forward,projection.right,
                         projection.up,projection.tangent,projection.aspect_ratio,
-                        receiver_distance,1.15,sun,receiver_distance,
+                        receiver_distance,1.0,sun,receiver_distance,
                         prepared_scene.render_origin,1U);
-                world_retained_atmosphere_shadow_request->map_resolution=
+                current_view.map_resolution=
                     quality.atmosphere_shadow_resolution;
+                if(!world_retained_atmosphere_shadow_request||
+                   !tetra_viewer::atmosphere_shadow_request_covers_rotation(
+                       *world_retained_atmosphere_shadow_request,current_view)){
+                    world_retained_atmosphere_shadow_request=
+                        tetra_viewer::make_atmosphere_shadow_front_request(
+                            view_camera_position,projection.forward,
+                            projection.right,projection.up,projection.tangent,
+                            projection.aspect_ratio,receiver_distance,1.15,sun,
+                            receiver_distance,prepared_scene.render_origin,1U);
+                    world_retained_atmosphere_shadow_request->map_resolution=
+                        quality.atmosphere_shadow_resolution;
+                }
+                world_runtime->set_atmosphere_shadow_request(
+                    world_retained_atmosphere_shadow_request);
+                const auto& front=world_runtime->atmosphere_shadow_front();
+                // A complete front is only complete for the camera footprint
+                // it was built from. During walking the runtime deliberately
+                // keeps presenting the previous terrain while its replacement
+                // shadow front is planned. Do not label that old front as
+                // current: its loss field can exceed an unrelated sky lookup
+                // and clamp the whole sky to black.
+                if(tetra_viewer::atmosphere_shadow_front_covers_view(
+                        front,current_view))
+                    g_AtmosphereFrame.shadow_front=&*front;
             }
-            world_runtime->set_atmosphere_shadow_request(
-                world_retained_atmosphere_shadow_request);
-            const auto& front=world_runtime->atmosphere_shadow_front();
-            if(front)g_AtmosphereFrame.shadow_front=&*front;
         }
         const tetra::Vec3 light=shading_model==tetra_viewer::ShadingModel::stone_pbr?
             sun:tetra::Vec3{-f.x,-f.y,-f.z};
@@ -3506,10 +3992,28 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
         if (!is_minimized)
         {
+            const bool capture_front_ready=world_runtime&&
+                tetra_viewer::world_capture_front_ready(
+                    world_runtime->diagnostics());
+            world_gpu_capture_ready_frames=capture_front_ready?
+                world_gpu_capture_ready_frames+1U:0U;
+            const std::size_t capture_warmup_frames=
+                g_AtmosphereFrame.rendering_method==
+                        tetra_viewer::AtmosphereRenderingMethod::
+                        temporal_half_resolution?64U:1U;
             g_AtmosphereFrame.capture_requested=
                 !world_gpu_atmosphere_capture_path.empty()&&
                 !world_gpu_atmosphere_capture_submitted&&world_runtime&&
-                !world_runtime->diagnostics().busy;
+                world_gpu_capture_ready_frames>=capture_warmup_frames&&(
+                ((world_gpu_walk_steps==0U&&world_gpu_look_x==0.0&&
+                  world_gpu_look_y==0.0))||
+                (world_gpu_motion_applied&&
+                 ((world_gpu_capture_after_motion_frames!=0U&&
+                   world_gpu_capture_motion_frame_count>=
+                       world_gpu_capture_after_motion_frames)||
+                  (world_gpu_capture_after_motion_frames==0U&&
+                   world_gpu_motion_saw_busy&&
+                   world_gpu_walk_steps_remaining==0U))));
             if(g_AtmosphereFrame.capture_requested)
                 world_gpu_atmosphere_capture_submitted=true;
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
@@ -3551,6 +4055,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         timing.shadows_milliseconds,
                         timing.atmosphere_milliseconds,
                         timing.terrain_milliseconds,
+                        timing.depth_reduction_milliseconds,
+                        timing.screen_integration_milliseconds,
+                        timing.temporal_reconstruction_milliseconds,
                         timing.composite_milliseconds};
                     constexpr std::size_t warmup_frames=8U;
                     constexpr std::size_t measured_frames=31U;
@@ -3565,7 +4072,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         world_gpu_benchmark_samples[pass].push_back(values[pass]);
                     if(world_gpu_benchmark_samples[0].size()<measured_frames)
                         continue;
-                    std::array<tetra_viewer::ScalarSampleSummary,4> summaries{};
+                    std::array<tetra_viewer::ScalarSampleSummary,7> summaries{};
                     for(std::size_t pass=0;pass<summaries.size();++pass)
                         summaries[pass]=*tetra_viewer::summarize_samples(
                             world_gpu_benchmark_samples[pass]);
@@ -3581,14 +4088,26 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     std::cout<<"{\"event\":\"gpu_atmosphere_benchmark\","
                         <<"\"sample_count\":"<<measured_frames<<','
                         <<"\"warmup_frames\":"<<warmup_frames<<','
+                        <<"\"rendering_method\":\""
+                        <<tetra_viewer::atmosphere_rendering_method_name(
+                              g_AtmosphereFrame.rendering_method)
+                        <<"\",\"screen_resolution_divisor\":"
+                        <<g_AtmosphereFrame.screen_resolution_divisor<<','
                         <<"\"shadows_ms\":"<<summaries[0].median<<','
                         <<"\"atmosphere_ms\":"<<summaries[1].median<<','
                         <<"\"terrain_ms\":"<<summaries[2].median<<','
-                        <<"\"composite_ms\":"<<summaries[3].median<<',';
+                        <<"\"depth_reduction_ms\":"<<summaries[3].median<<','
+                        <<"\"screen_integration_ms\":"<<summaries[4].median<<','
+                        <<"\"temporal_reconstruction_ms\":"
+                        <<summaries[5].median<<','
+                        <<"\"composite_ms\":"<<summaries[6].median<<',';
                     write_pass("shadows",0U);std::cout<<',';
                     write_pass("atmosphere",1U);std::cout<<',';
                     write_pass("terrain",2U);std::cout<<',';
-                    write_pass("composite",3U);std::cout<<',';
+                    write_pass("depth_reduction",3U);std::cout<<',';
+                    write_pass("screen_integration",4U);std::cout<<',';
+                    write_pass("temporal_reconstruction",5U);std::cout<<',';
+                    write_pass("composite",6U);std::cout<<',';
                     std::cout
                         <<"\"atmosphere_bytes\":"
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
@@ -3599,8 +4118,70 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     const auto runtime_shadow=world_runtime->diagnostics();
                     std::cout<<"\"atmosphere_shadow\":{\"revision\":"
                         <<fitted_shadow.revision<<",\"refreshes\":"
-                        <<fitted_shadow.refreshes<<",\"caster_draws\":"
-                        <<fitted_shadow.caster_draws<<",\"complete\":"
+                        <<fitted_shadow.refreshes<<",\"integrator\":\""
+                        <<tetra_viewer::atmosphere_shadow_integrator_name(
+                              fitted_shadow.integrator)
+                        <<"\",\"depth_generation\":"
+                        <<fitted_shadow.depth_generation
+                        <<",\"hierarchy_generation\":"
+                        <<fitted_shadow.hierarchy_generation
+                        <<",\"hierarchy_complete\":"
+                        <<(fitted_shadow.hierarchy_complete?"true":"false")
+                        <<",\"integration_fallback\":"
+                        <<(fitted_shadow.integration_fallback?"true":"false")
+                        <<",\"caster_draws\":"
+                        <<fitted_shadow.caster_draws
+                        <<",\"local_depth_world_spans\":["
+                        <<fitted_shadow.local_depth_world_spans[0]<<','
+                        <<fitted_shadow.local_depth_world_spans[1]<<','
+                        <<fitted_shadow.local_depth_world_spans[2]<<','
+                        <<fitted_shadow.local_depth_world_spans[3]<<']'
+                        <<",\"local_texel_world_sizes\":["
+                        <<fitted_shadow.local_texel_world_sizes[0]<<','
+                        <<fitted_shadow.local_texel_world_sizes[1]<<','
+                        <<fitted_shadow.local_texel_world_sizes[2]<<','
+                        <<fitted_shadow.local_texel_world_sizes[3]<<']'
+                        <<",\"local_comparison_biases_normalized\":["
+                        <<fitted_shadow.local_comparison_biases_normalized[0]<<','
+                        <<fitted_shadow.local_comparison_biases_normalized[1]<<','
+                        <<fitted_shadow.local_comparison_biases_normalized[2]<<','
+                        <<fitted_shadow.local_comparison_biases_normalized[3]<<']'
+                        <<",\"local_comparison_biases_world\":["
+                        <<fitted_shadow.local_comparison_biases_world[0]<<','
+                        <<fitted_shadow.local_comparison_biases_world[1]<<','
+                        <<fitted_shadow.local_comparison_biases_world[2]<<','
+                        <<fitted_shadow.local_comparison_biases_world[3]<<']'
+                        <<",\"depth_world_span\":"
+                        <<fitted_shadow.fitted_depth_world_span
+                        <<",\"texel_world_size_x\":"
+                        <<fitted_shadow.fitted_texel_world_size_x
+                        <<",\"texel_world_size_y\":"
+                        <<fitted_shadow.fitted_texel_world_size_y
+                        <<",\"comparison_bias_normalized\":"
+                        <<fitted_shadow.comparison_bias_normalized
+                        <<",\"comparison_bias_world\":"
+                        <<fitted_shadow.comparison_bias_world
+                        <<",\"raster_bias_constant\":"
+                        <<fitted_shadow.raster_bias_constant
+                        <<",\"raster_bias_slope\":"
+                        <<fitted_shadow.raster_bias_slope
+                        <<",\"epipolar_radial_resolution\":"
+                        <<fitted_shadow.epipolar_radial_resolution
+                        <<",\"epipolar_angular_rows\":"
+                        <<fitted_shadow.epipolar_angular_rows
+                        <<",\"epipolar_elements\":"
+                        <<fitted_shadow.epipolar_elements
+                        <<",\"epipolar_visited_nodes\":"
+                        <<fitted_shadow.epipolar_visited_nodes
+                        <<",\"epipolar_emitted_intervals\":"
+                        <<fitted_shadow.epipolar_emitted_intervals
+                        <<",\"epipolar_fallbacks\":"
+                        <<fitted_shadow.epipolar_fallbacks
+                        <<",\"epipolar_overflows\":"
+                        <<fitted_shadow.epipolar_overflows
+                        <<",\"epipolar_hierarchy_refreshes\":"
+                        <<fitted_shadow.epipolar_hierarchy_refreshes
+                        <<",\"complete\":"
                         <<(fitted_shadow.complete?"true":"false")
                         <<",\"front_publications\":"
                         <<runtime_shadow.atmosphere_shadow_publications
@@ -3608,6 +4189,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<runtime_shadow.atmosphere_shadow_cancellations
                         <<",\"front_planning_ms\":"
                         <<runtime_shadow.atmosphere_shadow_planning_milliseconds
+                        <<",\"terrain_busy\":"
+                        <<(runtime_shadow.busy?"true":"false")
+                        <<",\"terrain_converged\":"
+                        <<(runtime_shadow.converged?"true":"false")
+                        <<",\"terrain_budget_exceeded\":"
+                        <<(runtime_shadow.budget_exceeded?"true":"false")
+                        <<",\"terrain_logical_cells\":"
+                        <<runtime_shadow.logical_cells
                         <<"},"
                         <<"\"dispatches\":{"
                         <<"\"transmittance\":"
@@ -3622,6 +4211,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_dispatch_counts().aerial_perspective
                         <<",\"long_shadow\":"
                         <<g_SceneRenderer.atmosphere_dispatch_counts().long_shadow
+                        <<",\"screen_reconstruction\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().screen_reconstruction
+                        <<",\"temporal_history_accepts\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().temporal_history_accepts
+                        <<",\"temporal_history_invalidations\":"
+                        <<g_SceneRenderer.atmosphere_dispatch_counts().temporal_history_invalidations
                         <<"},"
                         <<"\"resize_checked\":"
                         <<(world_gpu_atmosphere_resize_check?"true":"false")
@@ -3756,7 +4351,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 const auto& capture=g_SceneRenderer.latest_capture();
                 tetra_viewer::Rgb8Image image;
                 std::vector<std::uint8_t> depth_mask,clear_mask,
-                    silhouette_mask,horizon_mask;
+                    silhouette_mask,outer_silhouette_mask,horizon_mask;
                 std::string image_error;
                 auto depth_mask_path=std::filesystem::path(
                     world_gpu_atmosphere_capture_path);
@@ -3789,6 +4384,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                    !tetra_viewer::make_silhouette_band_mask(
                        depth_mask,capture.width,capture.height,3U,
                        silhouette_mask,image_error)||
+                   !tetra_viewer::make_outer_silhouette_band_mask(
+                       depth_mask,capture.width,capture.height,12U,
+                       outer_silhouette_mask,image_error)||
                    !tetra_viewer::write_pgm(
                        silhouette_mask_path.string(),capture.width,
                        capture.height,silhouette_mask,image_error)||
@@ -3803,6 +4401,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     world_process_exit_code=2;
                 }else{
                     const auto analysis=tetra_viewer::analyse_rgb8_image(image);
+                    const auto outer_limb_analysis=
+                        tetra_viewer::analyse_rgb8_image(
+                            image,outer_silhouette_mask);
+                    std::size_t blue_outer_limb_pixels{};
+                    for(std::size_t pixel=0;
+                        pixel<outer_silhouette_mask.size();++pixel){
+                        if(outer_silhouette_mask[pixel]==0U)continue;
+                        const auto offset=pixel*3U;
+                        const int red=image.pixels[offset];
+                        const int green=image.pixels[offset+1U];
+                        const int blue=image.pixels[offset+2U];
+                        if(blue>=red+2&&blue>=green+2)
+                            ++blue_outer_limb_pixels;
+                    }
                     const auto projected_sun=projection.project(
                         projection.camera_relative+sun);
                     std::uint32_t sun_pixel_x{},sun_pixel_y{};
@@ -3847,11 +4459,27 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<",\"transport\":\""
                              <<tetra_viewer::atmosphere_transport_name(
                                    g_AtmosphereFrame.transport)
+                             <<"\",\"rendering_method\":\""
+                             <<tetra_viewer::atmosphere_rendering_method_name(
+                                   g_AtmosphereFrame.rendering_method)
+                             <<"\",\"screen_resolution_divisor\":"
+                             <<g_AtmosphereFrame.screen_resolution_divisor
+                             <<",\"shadow_integrator\":\""
+                             <<tetra_viewer::atmosphere_shadow_integrator_name(
+                                   g_AtmosphereFrame.shadow_integrator)
                              <<"\",\"quality\":\""<<quality_name
                              <<"\",\"preset\":\""
                              <<tetra_viewer::atmosphere_preset_name(
                                    world_atmosphere_preset)
-                             <<"\",\"exposure_ev\":"<<world_exposure_ev
+                             <<"\",\"atmosphere_parameters\":{\"maximum_relief_metres\":"
+                             <<world_maximum_terrain_relief_metres
+                             <<",\"height_metres\":"
+                             <<g_AtmosphereFrame.parameters.
+                                   atmosphere_height_metres
+                             <<",\"rayleigh_scale_height_metres\":"
+                             <<g_AtmosphereFrame.parameters.
+                                   rayleigh_scale_height_metres
+                             <<"},\"exposure_ev\":"<<world_exposure_ev
                              <<",\"camera_feet\":["
                              <<world_controller.state().feet.x<<','
                              <<world_controller.state().feet.y<<','
@@ -3895,7 +4523,53 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                    depth_mask,[](std::uint8_t value){
                                      return value!=0U;}))/
                                    static_cast<double>(depth_mask.size())
+                             <<"},\"outer_limb\":{\"sampled_pixels\":"
+                             <<outer_limb_analysis.sampled_pixels
+                             <<",\"mean\":["
+                             <<outer_limb_analysis.mean[0]<<','
+                             <<outer_limb_analysis.mean[1]<<','
+                             <<outer_limb_analysis.mean[2]
+                             <<"],\"luminance_mean\":"
+                             <<outer_limb_analysis.luminance_mean
+                             <<",\"black_fraction\":"
+                             <<outer_limb_analysis.black_fraction
+                             <<",\"blue_fraction\":"
+                             <<(outer_limb_analysis.sampled_pixels==0U?0.0:
+                                 static_cast<double>(blue_outer_limb_pixels)/
+                                 static_cast<double>(
+                                     outer_limb_analysis.sampled_pixels))
                              <<'}';
+                    const auto& capture_timing=g_SceneRenderer.gpu_timings();
+                    std::cout<<",\"gpu_timings\":{\"valid\":"
+                             <<(capture_timing.valid?"true":"false")
+                             <<",\"depth_reduction_ms\":"
+                             <<capture_timing.depth_reduction_milliseconds
+                             <<",\"screen_integration_ms\":"
+                             <<capture_timing.screen_integration_milliseconds
+                             <<",\"temporal_reconstruction_ms\":"
+                             <<capture_timing.temporal_reconstruction_milliseconds
+                             <<",\"composite_ms\":"
+                             <<capture_timing.composite_milliseconds<<'}';
+                    const auto& shadow_status=
+                        g_SceneRenderer.atmosphere_shadow_map_status();
+                    std::cout<<",\"shadow_diagnostics\":{\"hierarchy_complete\":"
+                             <<(shadow_status.hierarchy_complete?"true":"false")
+                             <<",\"epipolar_visited_nodes\":"
+                             <<shadow_status.epipolar_visited_nodes
+                             <<",\"epipolar_emitted_intervals\":"
+                             <<shadow_status.epipolar_emitted_intervals
+                             <<",\"epipolar_fallbacks\":"
+                             <<shadow_status.epipolar_fallbacks
+                             <<",\"epipolar_overflows\":"
+                             <<shadow_status.epipolar_overflows
+                             <<",\"epipolar_hierarchy_refreshes\":"
+                             <<shadow_status.epipolar_hierarchy_refreshes
+                             <<",\"comparison_bias_world\":"
+                             <<shadow_status.comparison_bias_world
+                             <<",\"raster_bias_constant\":"
+                             <<shadow_status.raster_bias_constant
+                             <<",\"raster_bias_slope\":"
+                             <<shadow_status.raster_bias_slope<<'}';
                     const auto& revisions=
                         g_SceneRenderer.latest_atmosphere_lookup_revisions();
                     if(revisions){

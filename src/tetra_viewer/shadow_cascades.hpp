@@ -73,11 +73,23 @@ struct AtmosphereShadowProjectionProbeCase {
     double distance_world,
     const ShadowCascadeSet& cascades) noexcept;
 
+[[nodiscard]] double surface_shadow_world_bias(double n_dot_l) noexcept;
+[[nodiscard]] double normalized_shadow_depth_bias(
+    const ShadowCascade& cascade,double world_bias) noexcept;
 [[nodiscard]] double atmosphere_shadow_depth_bias(
-    std::size_t cascade) noexcept;
+    const ShadowCascade& cascade) noexcept;
+[[nodiscard]] double atmosphere_fitted_shadow_world_bias(
+    double texel_world_size_x,double texel_world_size_y) noexcept;
+[[nodiscard]] double atmosphere_fitted_shadow_depth_bias(
+    double depth_world_span,double texel_world_size_x,
+    double texel_world_size_y) noexcept;
 
 [[nodiscard]] double atmosphere_shadow_footprint_fade(
     double projected_x,double projected_y) noexcept;
+
+[[nodiscard]] double combined_local_fitted_shadow_visibility(
+    double local_visibility,double fitted_visibility,
+    double local_coverage) noexcept;
 
 [[nodiscard]] AtmosphereShadowProjection project_atmosphere_shadow_point(
     const ShadowCascade& cascade,tetra::Vec3 point) noexcept;

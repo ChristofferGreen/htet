@@ -4,12 +4,16 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${1:-${repo_root}/build/release/src/tetra_viewer/tetra_world}"
 output_dir="${2:-${repo_root}/build/atmosphere-analytic-ridge}"
+shadow_integrator="${TETRA_ATMOSPHERE_SHADOW_INTEGRATOR:-adaptive-transition}"
+shadow_filter="${TETRA_ATMOSPHERE_SHADOW_FILTER:-fixed-tent}"
 mkdir -p "${output_dir}"
 
 common=(
   --window-size=960x540 --free-fly --analytic-ridge --surface-edges-off
   --atmosphere-preset=gameplay-planet --atmosphere-quality=default
   --atmosphere-transport=faithful-hillaire --exposure-ev=-0.62
+  --atmosphere-shadow-integrator="${shadow_integrator}"
+  --atmosphere-shadow-filter="${shadow_filter}"
   --camera-feet=0.5,4.0,2.0 --camera-yaw-degrees=180
   --camera-pitch-degrees=0 --sun-azimuth-degrees=-61.3
   --sun-elevation-degrees=2

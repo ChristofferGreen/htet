@@ -43,6 +43,16 @@ VkCompareOp depth_compare(DepthConvention convention,bool overlay=false) {
   return overlay?VK_COMPARE_OP_LESS_OR_EQUAL:VK_COMPARE_OP_LESS;
 }
 
+std::size_t shadow_minmax_element_count(std::uint32_t resolution) {
+  std::size_t count{};
+  while(resolution>0U){
+    count+=static_cast<std::size_t>(resolution)*resolution;
+    if(resolution==1U)break;
+    resolution=(resolution+1U)/2U;
+  }
+  return count;
+}
+
 float depth_clear(DepthConvention convention) {
   return convention==DepthConvention::reversed_infinite?0.0F:1.0F;
 }
@@ -119,7 +129,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create shadow descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,12> composite_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,17> composite_bindings{};
   for(std::uint32_t binding=0;binding<composite_bindings.size();++binding){
     composite_bindings[binding].binding=binding;
     composite_bindings[binding].descriptorType=(binding==7U||binding==10U)?
@@ -137,14 +147,15 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                  &composite_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite descriptor layout");
 
-  std::array<VkDescriptorSetLayoutBinding,11> atmosphere_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,26> atmosphere_bindings{};
   for(std::uint32_t binding=0;binding<atmosphere_bindings.size();++binding){
     atmosphere_bindings[binding].binding=binding;
-    atmosphere_bindings[binding].descriptorType=binding==9U?
+    atmosphere_bindings[binding].descriptorType=(binding==9U||binding==11U)?
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-        (binding<5U||binding==8U||binding==10U)?
+        (binding<5U||binding==8U||binding==10U||binding>=13U)?
         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-        (binding==6U?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+        (binding==6U||binding==12U?
+                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     atmosphere_bindings[binding].descriptorCount=1;
     atmosphere_bindings[binding].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
@@ -396,8 +407,14 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   shadow_raster.frontFace=VK_FRONT_FACE_COUNTER_CLOCKWISE;
   shadow_raster.lineWidth=1.0F;
   shadow_raster.depthBiasEnable=VK_TRUE;
-  shadow_raster.depthBiasConstantFactor=1.25F;
-  shadow_raster.depthBiasSlopeFactor=1.75F;
+  shadow_raster.depthBiasConstantFactor=0.8125F;
+  shadow_raster.depthBiasSlopeFactor=1.21875F;
+  const VkDynamicState shadow_dynamic_states[]{
+      VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_DEPTH_BIAS};
+  VkPipelineDynamicStateCreateInfo shadow_dynamic=dynamic;
+  shadow_dynamic.dynamicStateCount=3U;
+  shadow_dynamic.pDynamicStates=shadow_dynamic_states;
   VkPipelineDepthStencilStateCreateInfo shadow_depth{
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   shadow_depth.depthTestEnable=VK_TRUE;
@@ -420,7 +437,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   shadow_pipeline.pMultisampleState=&multisample;
   shadow_pipeline.pDepthStencilState=&shadow_depth;
   shadow_pipeline.pColorBlendState=&shadow_blend;
-  shadow_pipeline.pDynamicState=&dynamic;
+  shadow_pipeline.pDynamicState=&shadow_dynamic;
   shadow_pipeline.layout=pipeline_layout_;
   if(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&shadow_pipeline,nullptr,
                                &shadow_pipeline_)!=VK_SUCCESS)
@@ -439,9 +456,13 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
 }
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
-                             AtmosphereQuality quality) {
+                             AtmosphereQuality quality,
+                             std::uint32_t screen_resolution_divisor) {
   quality_settings_=atmosphere_quality_settings(quality);
+  screen_resolution_divisor_=std::clamp(screen_resolution_divisor,2U,4U);
   atmosphere_dispatch_counts_={};
+  dynamic_sun_shadow_phase_=0U;
+  dynamic_sun_was_active_=false;
   latest_atmosphere_probe_={};
   latest_capture_={};
   if(timing_query_pool_!=VK_NULL_HANDLE){
@@ -461,6 +482,10 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkFreeMemory(device_,shadow.memory,nullptr);
     vkDestroyBuffer(device_,shadow.uniform_buffer,nullptr);
     vkFreeMemory(device_,shadow.uniform_memory,nullptr);
+    vkDestroyBuffer(device_,shadow.minmax_buffer,nullptr);
+    vkFreeMemory(device_,shadow.minmax_memory,nullptr);
+    vkDestroyBuffer(device_,shadow.epipolar_diagnostic_buffer,nullptr);
+    vkFreeMemory(device_,shadow.epipolar_diagnostic_memory,nullptr);
   }
   for(auto* image:{&atmosphere_lookups_.transmittance,
                    &atmosphere_lookups_.multiple_scattering,
@@ -479,6 +504,22 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkFreeMemory(device_,frame.uniform_memory,nullptr);
     vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
     vkFreeMemory(device_,frame.probe_memory,nullptr);
+    for(auto* image:{&frame.screen_scattering,&frame.screen_transmittance,
+                     &frame.screen_endpoint,&frame.froxel_scattering,
+                     &frame.froxel_transmittance}){
+      vkDestroyImageView(device_,image->view,nullptr);
+      vkDestroyImage(device_,image->image,nullptr);
+      vkFreeMemory(device_,image->memory,nullptr);
+    }
+    for(std::size_t history=0;history<2U;++history)
+      for(auto* image:{&frame.history_scattering[history],
+                       &frame.history_transmittance[history],
+                       &frame.history_endpoint[history],
+                       &frame.history_visibility[history]}){
+        vkDestroyImageView(device_,image->view,nullptr);
+        vkDestroyImage(device_,image->image,nullptr);
+        vkFreeMemory(device_,image->memory,nullptr);
+      }
   }
   for(auto& capture:capture_frames_){
     vkDestroyImageView(device_,capture.view,nullptr);
@@ -500,7 +541,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   }
   VkQueryPoolCreateInfo timing_pool{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
   timing_pool.queryType=VK_QUERY_TYPE_TIMESTAMP;
-  timing_pool.queryCount=image_count*5U;
+  timing_pool.queryCount=image_count*8U;
   if(vkCreateQueryPool(device_,&timing_pool,nullptr,&timing_query_pool_)!=
      VK_SUCCESS)
     throw std::runtime_error("unable to create scene timing query pool");
@@ -525,7 +566,17 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   const std::size_t shadow_bytes=shadow_map_layer_count*
       quality_settings_.shadow_resolution*
       quality_settings_.shadow_resolution*4U;
-  atmosphere_allocation_bytes_=lookup_bytes+frames*shadow_bytes;
+  const std::size_t minmax_bytes=shadow_minmax_element_count(
+      quality_settings_.atmosphere_shadow_resolution)*sizeof(float)*2U;
+  constexpr std::size_t epipolar_diagnostic_bytes=sizeof(std::uint32_t)*4U;
+  const std::size_t reconstructed_screen_bytes=
+      static_cast<std::size_t>((extent.width+screen_resolution_divisor_-1U)/
+                               screen_resolution_divisor_)*
+      ((extent.height+screen_resolution_divisor_-1U)/
+       screen_resolution_divisor_)*((8U+8U+16U)*3U+8U*2U);
+  atmosphere_allocation_bytes_=lookup_bytes+frames*(
+      shadow_bytes+minmax_bytes+epipolar_diagnostic_bytes+
+      reconstructed_screen_bytes+32U*32U*32U*16U);
   depth_images_.assign(image_count, {});
   for (auto& depth : depth_images_) {
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; image.imageType = VK_IMAGE_TYPE_2D; image.format = depth_format_; image.extent = {extent.width, extent.height, 1}; image.mipLevels = 1; image.arrayLayers = 1; image.samples = VK_SAMPLE_COUNT_1_BIT; image.tiling = VK_IMAGE_TILING_OPTIMAL; image.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -586,10 +637,12 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   const auto make_atmosphere_image=[this](AtmosphereImage& destination,
                                            VkImageType image_type,
                                            VkImageViewType view_type,
-                                           VkExtent3D image_extent){
+                                           VkExtent3D image_extent,
+                                           VkFormat format=
+                                               VK_FORMAT_R16G16B16A16_SFLOAT){
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image.imageType=image_type;
-    image.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+    image.format=format;
     image.extent=image_extent;
     image.mipLevels=1;
     image.arrayLayers=1;
@@ -612,7 +665,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image=destination.image;
     view.viewType=view_type;
-    view.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+    view.format=format;
     view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
     view.subresourceRange.levelCount=1;
     view.subresourceRange.layerCount=1;
@@ -650,8 +703,38 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                         {quality_settings_.long_shadow_width,
                          quality_settings_.long_shadow_height,1U});
   for(auto& frame:atmosphere_frames_){
+    const VkExtent3D screen_extent{
+        (extent.width+screen_resolution_divisor_-1U)/
+            screen_resolution_divisor_,
+        (extent.height+screen_resolution_divisor_-1U)/
+            screen_resolution_divisor_,1U};
+    make_atmosphere_image(frame.screen_scattering,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,screen_extent);
+    make_atmosphere_image(frame.screen_transmittance,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,screen_extent);
+    make_atmosphere_image(frame.screen_endpoint,VK_IMAGE_TYPE_2D,
+                          VK_IMAGE_VIEW_TYPE_2D,screen_extent,
+                          VK_FORMAT_R32G32B32A32_SFLOAT);
+    make_atmosphere_image(frame.froxel_scattering,VK_IMAGE_TYPE_3D,
+                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,32U});
+    make_atmosphere_image(frame.froxel_transmittance,VK_IMAGE_TYPE_3D,
+                          VK_IMAGE_VIEW_TYPE_3D,{32U,32U,32U});
+    for(std::size_t history=0;history<2U;++history){
+      make_atmosphere_image(frame.history_scattering[history],
+                            VK_IMAGE_TYPE_2D,VK_IMAGE_VIEW_TYPE_2D,
+                            screen_extent);
+      make_atmosphere_image(frame.history_transmittance[history],
+                            VK_IMAGE_TYPE_2D,VK_IMAGE_VIEW_TYPE_2D,
+                            screen_extent);
+      make_atmosphere_image(frame.history_endpoint[history],VK_IMAGE_TYPE_2D,
+                            VK_IMAGE_VIEW_TYPE_2D,screen_extent,
+                            VK_FORMAT_R32G32B32A32_SFLOAT);
+      make_atmosphere_image(frame.history_visibility[history],
+                            VK_IMAGE_TYPE_2D,VK_IMAGE_VIEW_TYPE_2D,
+                            screen_extent,VK_FORMAT_R32G32_UINT);
+    }
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    buffer.size=sizeof(float)*64U;
+    buffer.size=sizeof(float)*96U;
     buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if(vkCreateBuffer(device_,&buffer,nullptr,&frame.uniform_buffer)!=VK_SUCCESS)
       throw std::runtime_error("unable to create atmosphere uniform buffer");
@@ -730,7 +813,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         throw std::runtime_error("unable to create sun shadow cascade view");
     }
     VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    buffer.size=sizeof(float)*(16U*shadow_map_layer_count+8U);
+    buffer.size=sizeof(float)*(16U*shadow_map_layer_count+12U);
     buffer.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if(vkCreateBuffer(device_,&buffer,nullptr,&shadow.uniform_buffer)!=VK_SUCCESS)
       throw std::runtime_error("unable to create shadow cascade uniform buffer");
@@ -745,14 +828,49 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     if(vkBindBufferMemory(device_,shadow.uniform_buffer,shadow.uniform_memory,0)!=
        VK_SUCCESS)
       throw std::runtime_error("unable to bind shadow cascade uniforms");
+    buffer={VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size=shadow_minmax_element_count(
+        quality_settings_.atmosphere_shadow_resolution)*sizeof(float)*2U;
+    buffer.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if(vkCreateBuffer(device_,&buffer,nullptr,&shadow.minmax_buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create atmosphere shadow min-max buffer");
+    vkGetBufferMemoryRequirements(device_,shadow.minmax_buffer,&requirements);
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(physical_device_,
+        requirements.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&shadow.minmax_memory)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to allocate atmosphere shadow min-max buffer");
+    if(vkBindBufferMemory(device_,shadow.minmax_buffer,shadow.minmax_memory,0)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to bind atmosphere shadow min-max buffer");
+    buffer={VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size=sizeof(std::uint32_t)*4U;
+    buffer.usage=VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if(vkCreateBuffer(device_,&buffer,nullptr,
+                      &shadow.epipolar_diagnostic_buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create epipolar diagnostic buffer");
+    vkGetBufferMemoryRequirements(
+        device_,shadow.epipolar_diagnostic_buffer,&requirements);
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,
+                        &shadow.epipolar_diagnostic_memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate epipolar diagnostics");
+    if(vkBindBufferMemory(device_,shadow.epipolar_diagnostic_buffer,
+                          shadow.epipolar_diagnostic_memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to bind epipolar diagnostics");
   }
 
   const std::array<VkDescriptorPoolSize,4> pool_sizes{
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           image_count*15U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*7U},
+                           image_count*21U},
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*20U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count*2U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets=image_count*3U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
@@ -787,7 +905,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo shadow_uniform_info{
         shadow_images_[index].uniform_buffer,0,
-        sizeof(float)*(16U*shadow_map_layer_count+8U)};
+        sizeof(float)*(16U*shadow_map_layer_count+12U)};
     auto& frame=atmosphere_frames_[index];
     auto& atmosphere=atmosphere_lookups_;
     const std::array<VkDescriptorImageInfo,3> lighting_images{
@@ -798,7 +916,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         VkDescriptorImageInfo{scene_sampler_,atmosphere.sky_irradiance.view,
                               VK_IMAGE_LAYOUT_GENERAL}};
     VkDescriptorBufferInfo atmosphere_uniform_info{
-        frame.uniform_buffer,0,sizeof(float)*64U};
+        frame.uniform_buffer,0,sizeof(float)*96U};
     std::array<VkWriteDescriptorSet,6> shadow_writes{};
     shadow_writes[0].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     shadow_writes[0].dstSet=descriptor_sets_[index];
@@ -836,7 +954,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(shadow_writes.size()),
                            shadow_writes.data(),0,nullptr);
 
-    const std::array<VkDescriptorImageInfo,10> composite_images{
+    const std::array<VkDescriptorImageInfo,15> composite_images{
         VkDescriptorImageInfo{scene_sampler_,scene_colour_images_[index].view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         VkDescriptorImageInfo{depth_sampler_,depth_images_[index].view,
@@ -856,10 +974,20 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         VkDescriptorImageInfo{scene_sampler_,atmosphere.sky_irradiance.view,
                               VK_IMAGE_LAYOUT_GENERAL},
         VkDescriptorImageInfo{scene_sampler_,atmosphere.long_shadow.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,frame.screen_scattering.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,frame.screen_transmittance.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{depth_sampler_,frame.screen_endpoint.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,frame.froxel_scattering.view,
+                              VK_IMAGE_LAYOUT_GENERAL},
+        VkDescriptorImageInfo{scene_sampler_,frame.froxel_transmittance.view,
                               VK_IMAGE_LAYOUT_GENERAL}};
     VkDescriptorBufferInfo uniform_info{frame.uniform_buffer,0,
-                                        sizeof(float)*64U};
-    std::array<VkWriteDescriptorSet,12> composite_writes{};
+                                        sizeof(float)*96U};
+    std::array<VkWriteDescriptorSet,17> composite_writes{};
     for(std::uint32_t binding=0;binding<composite_writes.size();++binding){
       auto& descriptor=composite_writes[binding];
       descriptor.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -871,7 +999,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         descriptor.pBufferInfo=binding==7U?&uniform_info:&shadow_uniform_info;
       }else{
         const std::size_t image_index=binding<7U?binding:
-            (binding==8U?7U:(binding==9U?8U:9U));
+            (binding==8U?7U:(binding==9U?8U:
+             (binding==11U?9U:binding-2U)));
         descriptor.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         descriptor.pImageInfo=&composite_images[image_index];
       }
@@ -886,7 +1015,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
         atmosphere.aerial_transmittance.view,
         atmosphere.sky_irradiance.view,atmosphere.long_shadow.view};
     std::array<VkDescriptorImageInfo,7> storage_images{};
-    std::array<VkWriteDescriptorSet,11> atmosphere_writes{};
+    std::array<VkWriteDescriptorSet,26> atmosphere_writes{};
     for(std::uint32_t binding=0;binding<5U;++binding){
       storage_images[binding].imageView=storage_views[binding];
       storage_images[binding].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
@@ -940,6 +1069,86 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     atmosphere_writes[10].descriptorCount=1;
     atmosphere_writes[10].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     atmosphere_writes[10].pImageInfo=&storage_images[6];
+    VkDescriptorBufferInfo minmax_info{shadow_images_[index].minmax_buffer,0,
+        VK_WHOLE_SIZE};
+    atmosphere_writes[11].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[11].dstSet=frame.descriptor_set;
+    atmosphere_writes[11].dstBinding=11U;
+    atmosphere_writes[11].descriptorCount=1;
+    atmosphere_writes[11].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    atmosphere_writes[11].pBufferInfo=&minmax_info;
+    VkDescriptorImageInfo scene_depth_info{
+        depth_sampler_,depth_images_[index].view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    atmosphere_writes[12].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    atmosphere_writes[12].dstSet=frame.descriptor_set;
+    atmosphere_writes[12].dstBinding=12U;
+    atmosphere_writes[12].descriptorCount=1;
+    atmosphere_writes[12].descriptorType=
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    atmosphere_writes[12].pImageInfo=&scene_depth_info;
+    const std::array<VkImageView,3> reconstructed_views{
+        frame.screen_scattering.view,frame.screen_transmittance.view,
+        frame.screen_endpoint.view};
+    std::array<VkDescriptorImageInfo,3> reconstructed_storage{};
+    for(std::uint32_t offset=0;offset<3U;++offset){
+      reconstructed_storage[offset].imageView=reconstructed_views[offset];
+      reconstructed_storage[offset].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+      auto& write=atmosphere_writes[13U+offset];
+      write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=frame.descriptor_set;
+      write.dstBinding=13U+offset;
+      write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      write.pImageInfo=&reconstructed_storage[offset];
+    }
+    const std::array<VkImageView,6> history_views{
+        frame.history_scattering[0].view,
+        frame.history_transmittance[0].view,
+        frame.history_endpoint[0].view,
+        frame.history_scattering[1].view,
+        frame.history_transmittance[1].view,
+        frame.history_endpoint[1].view};
+    std::array<VkDescriptorImageInfo,6> history_storage{};
+    for(std::uint32_t offset=0;offset<history_storage.size();++offset){
+      history_storage[offset].imageView=history_views[offset];
+      history_storage[offset].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+      auto& write=atmosphere_writes[16U+offset];
+      write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=frame.descriptor_set;
+      write.dstBinding=16U+offset;
+      write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      write.pImageInfo=&history_storage[offset];
+    }
+    const std::array<VkImageView,2> visibility_views{
+        frame.history_visibility[0].view,frame.history_visibility[1].view};
+    std::array<VkDescriptorImageInfo,2> visibility_storage{};
+    for(std::uint32_t offset=0;offset<visibility_storage.size();++offset){
+      visibility_storage[offset].imageView=visibility_views[offset];
+      visibility_storage[offset].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+      auto& write=atmosphere_writes[22U+offset];
+      write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=frame.descriptor_set;
+      write.dstBinding=22U+offset;
+      write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      write.pImageInfo=&visibility_storage[offset];
+    }
+    const std::array<VkImageView,2> froxel_views{
+        frame.froxel_scattering.view,frame.froxel_transmittance.view};
+    std::array<VkDescriptorImageInfo,2> froxel_storage{};
+    for(std::uint32_t offset=0;offset<froxel_storage.size();++offset){
+      froxel_storage[offset].imageView=froxel_views[offset];
+      froxel_storage[offset].imageLayout=VK_IMAGE_LAYOUT_GENERAL;
+      auto& write=atmosphere_writes[24U+offset];
+      write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet=frame.descriptor_set;
+      write.dstBinding=24U+offset;
+      write.descriptorCount=1;
+      write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+      write.pImageInfo=&froxel_storage[offset];
+    }
     vkUpdateDescriptorSets(device_,
         static_cast<std::uint32_t>(atmosphere_writes.size()),
         atmosphere_writes.data(),0,nullptr);
@@ -1202,7 +1411,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   if (begin_rendering == nullptr || end_rendering == nullptr)
     throw std::runtime_error("dynamic rendering is unavailable");
 
-  constexpr std::uint32_t timing_count=5U;
+  constexpr std::uint32_t timing_count=8U;
   const std::uint32_t timing_base=image_index*timing_count;
   if(timing_queries_written_.at(image_index)){
     std::array<std::uint64_t,timing_count> timestamps{};
@@ -1213,7 +1422,15 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         return static_cast<double>(timestamps[end]-timestamps[begin])*
             timestamp_period_nanoseconds_/1.0e6;
       };
-      gpu_timings_={elapsed(0,1),elapsed(1,2),elapsed(2,3),elapsed(3,4),true};
+      gpu_timings_={
+          .shadows_milliseconds=elapsed(0,1),
+          .atmosphere_milliseconds=elapsed(1,2),
+          .terrain_milliseconds=elapsed(2,3),
+          .depth_reduction_milliseconds=elapsed(3,4),
+          .screen_integration_milliseconds=elapsed(4,5),
+          .temporal_reconstruction_milliseconds=elapsed(5,6),
+          .composite_milliseconds=elapsed(6,7),
+          .valid=true};
     }
   }
   vkCmdResetQueryPool(command_buffer,timing_query_pool_,timing_base,timing_count);
@@ -1264,16 +1481,22 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   const bool atmosphere_enabled=atmosphere_input.enabled&&atmosphere_valid&&
                                 !black_clear;
   const double metres=parameters.metres_per_world_unit;
-  const auto camera_from_centre=
+  const auto physical_camera_from_centre=
       (atmosphere_input.camera_relative_world-
        atmosphere_input.planet_centre_relative_world)*metres;
+  // Valleys legitimately descend below the smooth planetary datum.  Feeding
+  // that physical position to the atmosphere model places the observer
+  // inside its opaque reference sphere and makes the entire sky disappear.
+  // Clamp the transport observer, not the rendered camera or terrain.
+  const auto camera_from_centre=clamp_atmosphere_camera_to_medium(
+      physical_camera_from_centre,parameters);
   const double local_aerial_distance=atmosphere_local_aerial_distance(
       parameters,std::sqrt(camera_from_centre.x*camera_from_centre.x+
           camera_from_centre.y*camera_from_centre.y+
           camera_from_centre.z*camera_from_centre.z)-
           parameters.ground_radius_metres,
       atmosphere_input.maximum_aerial_distance_metres);
-  std::array<float,64> atmosphere_uniform{};
+  std::array<float,96> atmosphere_uniform{};
   const auto spectrum=[&](std::size_t offset,
                           const AtmosphereSpectrum& value,float fourth){
     atmosphere_uniform[offset]=static_cast<float>(value[0]);
@@ -1331,9 +1554,32 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   atmosphere_uniform[51]=static_cast<float>(
       atmosphere_input.minimum_analytic_ground_distance_metres);
   atmosphere_uniform[52]=static_cast<float>(atmosphere_input.debug_view);
-  atmosphere_uniform[53]=static_cast<float>(atmosphere_input.transport==
-      AtmosphereTransport::faithful_hillaire?1:0);
-  atmosphere_uniform[54]=atmosphere_input.numeric_probe_requested?1.0F:0.0F;
+  atmosphere_uniform[53]=atmosphere_input.transport==
+      AtmosphereTransport::faithful_hillaire?
+      1.0F+static_cast<float>(atmosphere_input.rendering_method):0.0F;
+  const int shadow_filter=atmosphere_input.shadow_filter==
+      AtmosphereShadowFilter::unfiltered?0:
+      atmosphere_input.shadow_filter==AtmosphereShadowFilter::fixed_tent?1:2;
+  int dynamic_shadow_phase=-1;
+  if(atmosphere_input.dynamic_sun){
+    if(dynamic_sun_was_active_){
+      dynamic_shadow_phase=static_cast<int>(dynamic_sun_shadow_phase_);
+      dynamic_sun_shadow_phase_=(dynamic_sun_shadow_phase_+1U)%4U;
+    }else{
+      dynamic_sun_was_active_=true;
+      dynamic_sun_shadow_phase_=0U;
+    }
+  }else{
+    dynamic_sun_was_active_=false;
+    dynamic_sun_shadow_phase_=0U;
+  }
+  atmosphere_uniform[54]=static_cast<float>(shadow_filter+
+      (atmosphere_input.numeric_probe_requested?10:0)+
+      (atmosphere_input.dynamic_sun?100:0)+
+      (dynamic_shadow_phase+1)*1000);
+  atmosphere_uniform[55]=static_cast<float>(
+      atmosphere_shadow_integrator_shader_index(
+          atmosphere_input.shadow_integrator));
   const double camera_radius=std::sqrt(
       camera_from_centre.x*camera_from_centre.x+
       camera_from_centre.y*camera_from_centre.y+
@@ -1402,9 +1648,38 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         shadow.atmosphere_shadow_pending_complete;
     shadow.atmosphere_shadow_pending_completion=false;
   }
+  if(shadow.epipolar_diagnostic_pending){
+    std::array<std::uint32_t,4> counters{};
+    void* diagnostic_mapped{};
+    if(vkMapMemory(device_,shadow.epipolar_diagnostic_memory,0,
+                   sizeof(counters),0,&diagnostic_mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map epipolar diagnostics");
+    std::memcpy(counters.data(),diagnostic_mapped,sizeof(counters));
+    vkUnmapMemory(device_,shadow.epipolar_diagnostic_memory);
+    atmosphere_shadow_map_status_.epipolar_visited_nodes=counters[0];
+    atmosphere_shadow_map_status_.epipolar_emitted_intervals=counters[1];
+    atmosphere_shadow_map_status_.epipolar_fallbacks=counters[2];
+    atmosphere_shadow_map_status_.epipolar_overflows=counters[3];
+    shadow.epipolar_diagnostic_pending=false;
+  }
   const auto cascades=make_stable_shadow_cascades(
       atmosphere_input.camera_relative_world,atmosphere_input.camera_forward,
       atmosphere_input.sun_direction,quality_settings_.shadow_resolution);
+  const double local_comparison_bias_world=
+      atmosphere_input.atmosphere_shadow_comparison_bias_world_override>=0.0?
+      atmosphere_input.atmosphere_shadow_comparison_bias_world_override:0.0036;
+  for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
+    atmosphere_shadow_map_status_.local_depth_world_spans[cascade]=
+        2.0*cascades.cascades[cascade].depth_half_range;
+    atmosphere_shadow_map_status_.local_texel_world_sizes[cascade]=
+        cascades.cascades[cascade].texel_world_size;
+    atmosphere_shadow_map_status_.local_comparison_biases_normalized[cascade]=
+        normalized_shadow_depth_bias(cascades.cascades[cascade],
+                                     local_comparison_bias_world);
+    atmosphere_shadow_map_status_.local_comparison_biases_world[cascade]=
+        atmosphere_shadow_map_status_.local_comparison_biases_normalized[cascade]*
+        atmosphere_shadow_map_status_.local_depth_world_spans[cascade];
+  }
   if(atmosphere_input.numeric_probe_requested&&
      atmosphere_input.shadow_projection_probe_requested)
     throw std::invalid_argument("atmosphere probe modes are mutually exclusive");
@@ -1436,6 +1711,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       receiver_distance_world,{},1U);
   const bool planned_front_complete=atmosphere_input.shadow_front&&
       atmosphere_input.shadow_front->complete();
+  // While the background caster-residency front is still converging, render
+  // a coherent fitted preview from the surface that is already published.
+  // Disabling the fitted layer during this very visible startup interval
+  // leaves low-sun receivers at the mercy of shallow local cascade depth and
+  // makes distant mountains leak direct light across the foreground.
+  const bool live_published_front=!planned_front_complete&&
+      triangles_.count!=0U;
   const auto& atmosphere_shadow_request=planned_front_complete?
       atmosphere_input.shadow_front->request:live_atmosphere_shadow_request;
   auto atmosphere_shadow_fit=fit_atmosphere_shadow_map(
@@ -1446,11 +1728,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // arrives. Keep both the matrix and reach belonging to the previous depth
   // image; mixing a new matrix with old depth is worse than retaining an old
   // but internally coherent shadow generation.
-  if(!planned_front_complete&&shadow.atmosphere_shadow_initialized){
+  if(!planned_front_complete&&!live_published_front&&
+     shadow.atmosphere_shadow_initialized){
     atmosphere_shadow_fit.matrix=shadow.atmosphere_shadow_matrix;
     fitted_receiver_distance=shadow.atmosphere_shadow_receiver_distance;
   }
-  std::array<float,16U*shadow_map_layer_count+8U> shadow_uniform{};
+  std::array<float,16U*shadow_map_layer_count+12U> shadow_uniform{};
   for(std::size_t cascade=0;cascade<shadow_cascade_count;++cascade){
     std::copy(cascades.cascades[cascade].matrix.begin(),
               cascades.cascades[cascade].matrix.end(),
@@ -1463,13 +1746,54 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
             shadow_uniform.begin()+16U*shadow_cascade_count);
   const std::uint64_t planned_front_generation=planned_front_complete?
       atmosphere_input.shadow_front->generation:0U;
-  shadow_uniform[16U*shadow_map_layer_count+4U]=1.0F;
+  // Fitted depth and its min/max hierarchy are sampleable only while their
+  // planned front covers this frame. Local camera cascades remain current and
+  // provide a conservative unshadowed fallback until the replacement lands.
+  shadow_uniform[16U*shadow_map_layer_count+4U]=
+      (planned_front_complete||live_published_front)&&
+          shadow.atmosphere_shadow_initialized?1.0F:0.0F;
   shadow_uniform[16U*shadow_map_layer_count+5U]=
       static_cast<float>(fitted_receiver_distance);
-  shadow_uniform[16U*shadow_map_layer_count+6U]=0.00065F;
+  const double fitted_comparison_bias=
+      atmosphere_input.atmosphere_shadow_comparison_bias_world_override>=0.0?
+      atmosphere_input.atmosphere_shadow_comparison_bias_world_override/
+          std::max(atmosphere_shadow_fit.depth_world_span,1.0e-12):
+      atmosphere_fitted_shadow_depth_bias(
+          atmosphere_shadow_fit.depth_world_span,
+          atmosphere_shadow_fit.texel_world_size_x,
+          atmosphere_shadow_fit.texel_world_size_y);
+  shadow_uniform[16U*shadow_map_layer_count+6U]=
+      static_cast<float>(fitted_comparison_bias);
   shadow_uniform[16U*shadow_map_layer_count+7U]=
       static_cast<float>(quality_settings_.atmosphere_shadow_resolution)/
       static_cast<float>(quality_settings_.shadow_resolution);
+  const auto epipolar_layout=atmosphere_epipolar_layout(
+      quality_settings_.atmosphere_shadow_resolution);
+  shadow_uniform[16U*shadow_map_layer_count+8U]=
+      static_cast<float>(epipolar_layout.radial_resolution);
+  shadow_uniform[16U*shadow_map_layer_count+9U]=
+      static_cast<float>(epipolar_layout.angular_rows);
+  shadow_uniform[16U*shadow_map_layer_count+10U]=
+      static_cast<float>(local_comparison_bias_world);
+  shadow_uniform[16U*shadow_map_layer_count+11U]=
+      static_cast<float>(shadow_minmax_element_count(
+          quality_settings_.atmosphere_shadow_resolution));
+  atmosphere_shadow_map_status_.epipolar_radial_resolution=
+      epipolar_layout.radial_resolution;
+  atmosphere_shadow_map_status_.epipolar_angular_rows=
+      epipolar_layout.angular_rows;
+  atmosphere_shadow_map_status_.epipolar_elements=
+      epipolar_layout.element_count;
+  atmosphere_shadow_map_status_.fitted_depth_world_span=
+      atmosphere_shadow_fit.depth_world_span;
+  atmosphere_shadow_map_status_.fitted_texel_world_size_x=
+      atmosphere_shadow_fit.texel_world_size_x;
+  atmosphere_shadow_map_status_.fitted_texel_world_size_y=
+      atmosphere_shadow_fit.texel_world_size_y;
+  atmosphere_shadow_map_status_.comparison_bias_normalized=
+      fitted_comparison_bias;
+  atmosphere_shadow_map_status_.comparison_bias_world=
+      fitted_comparison_bias*atmosphere_shadow_fit.depth_world_span;
   if(vkMapMemory(device_,shadow.uniform_memory,0,sizeof(shadow_uniform),0,
                  &mapped)!=VK_SUCCESS)
     throw std::runtime_error("unable to map shadow cascade uniforms");
@@ -1480,7 +1804,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_shadow.dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   to_shadow.oldLayout=shadow.initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
       VK_IMAGE_LAYOUT_UNDEFINED;
-  to_shadow.newLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_shadow.newLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   to_shadow.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
   to_shadow.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
   to_shadow.image=shadow.image;
@@ -1503,14 +1827,20 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkRect2D shadow_scissor{{0,0},
       {quality_settings_.shadow_resolution,
        quality_settings_.shadow_resolution}};
+  bool fitted_shadow_updated=false;
   for(std::size_t cascade=0;cascade<shadow_map_layer_count;++cascade){
     const bool fitted_layer=cascade==shadow_cascade_count;
     const bool update_fitted=!shadow.atmosphere_shadow_initialized||
-        (planned_front_complete&&(
+        ((planned_front_complete||live_published_front)&&(
          shadow.atmosphere_shadow_matrix!=atmosphere_shadow_fit.matrix||
          shadow.atmosphere_shadow_front_generation!=planned_front_generation||
          shadow.atmosphere_surface_generation!=
              surface_upload_planner_.published_generation()));
+    // Do not publish a complete-but-empty fitted depth generation during the
+    // black startup frames.  Terrain upload and shadow-front planning are
+    // independent; the depth image becomes initialized only once it contains
+    // the published surface that the front describes.
+    if(fitted_layer&&triangles_.count==0U)continue;
     if(fitted_layer&&!update_fitted)continue;
     const std::uint32_t layer_resolution=cascade<shadow_cascade_count?
         quality_settings_.shadow_resolution:
@@ -1521,7 +1851,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     VkRenderingAttachmentInfo shadow_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     shadow_attachment.imageView=shadow.layer_views[cascade];
-    shadow_attachment.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    shadow_attachment.imageLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     shadow_attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;
     shadow_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
     shadow_attachment.clearValue=shadow_clear;
@@ -1533,6 +1863,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         reinterpret_cast<const VkRenderingInfoKHR*>(&shadow_rendering));
     vkCmdSetViewport(command_buffer,0,1,&shadow_viewport);
     vkCmdSetScissor(command_buffer,0,1,&shadow_scissor);
+    vkCmdSetDepthBias(command_buffer,
+        atmosphere_input.shadow_raster_bias_constant,0.0F,
+        atmosphere_input.shadow_raster_bias_slope);
+    atmosphere_shadow_map_status_.raster_bias_constant=
+        atmosphere_input.shadow_raster_bias_constant;
+    atmosphere_shadow_map_status_.raster_bias_slope=
+        atmosphere_input.shadow_raster_bias_slope;
     if(fitted_layer)atmosphere_shadow_map_status_.caster_draws=0U;
     if(triangles_.count!=0U){
       VkDeviceSize shadow_offset{};
@@ -1543,7 +1880,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           cascades.cascades[cascade].matrix:atmosphere_shadow_fit.matrix;
       std::copy(shadow_matrix.begin(),shadow_matrix.end(),shadow_push.begin());
       vkCmdPushConstants(command_buffer,pipeline_layout_,
-                         VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(float)*28,
+                         VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0,sizeof(float)*28,
                          shadow_push.data());
       vkCmdBindVertexBuffers(command_buffer,0,1,&triangles_.buffer,
                              &shadow_offset);
@@ -1586,6 +1924,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     }
     end_rendering(command_buffer);
     if(fitted_layer){
+      fitted_shadow_updated=true;
+      ++shadow.atmosphere_shadow_depth_generation;
+      atmosphere_shadow_map_status_.depth_generation=
+          shadow.atmosphere_shadow_depth_generation;
       shadow.atmosphere_shadow_matrix=atmosphere_shadow_fit.matrix;
       shadow.atmosphere_surface_generation=
           surface_upload_planner_.published_generation();
@@ -1603,7 +1945,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkImageMemoryBarrier to_sample{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   to_sample.srcAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   to_sample.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
-  to_sample.oldLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_sample.oldLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   to_sample.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   to_sample.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
   to_sample.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
@@ -1641,6 +1983,71 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         static_cast<std::uint32_t>(initialize_barriers.size()),
         initialize_barriers.data());
     atmosphere.images_initialized=true;
+  }else if(atmosphere_enabled){
+    // The lookup images are shared by all swapchain frames. A moving camera
+    // can make this frame regenerate aerial/sky data while the preceding
+    // frame is still sampling those same images in tone mapping. Submission
+    // order alone is not a memory dependency: close the cross-frame
+    // fragment-read -> compute-write hazard before any lookup dispatch.
+    std::array<VkImageMemoryBarrier,7> reuse_barriers{};
+    for(std::size_t index=0;index<reuse_barriers.size();++index){
+      auto& barrier=reuse_barriers[index];
+      barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.srcAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+          VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.image=atmosphere_images[index];
+      barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount=1;
+      barrier.subresourceRange.layerCount=1;
+    }
+    vkCmdPipelineBarrier(command_buffer,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(reuse_barriers.size()),
+        reuse_barriers.data());
+  }
+  // Descriptor validation is based on every image a shader can access, not
+  // only the branch selected at runtime. Establish GENERAL for the complete
+  // per-frame descriptor image set before any atmosphere dispatch or draw.
+  if(!atmosphere_frame.descriptor_images_initialized){
+    const std::array<VkImage,13> descriptor_images{
+        atmosphere_frame.screen_scattering.image,
+        atmosphere_frame.screen_transmittance.image,
+        atmosphere_frame.screen_endpoint.image,
+        atmosphere_frame.froxel_scattering.image,
+        atmosphere_frame.froxel_transmittance.image,
+        atmosphere_frame.history_scattering[0].image,
+        atmosphere_frame.history_transmittance[0].image,
+        atmosphere_frame.history_endpoint[0].image,
+        atmosphere_frame.history_visibility[0].image,
+        atmosphere_frame.history_scattering[1].image,
+        atmosphere_frame.history_transmittance[1].image,
+        atmosphere_frame.history_endpoint[1].image,
+        atmosphere_frame.history_visibility[1].image};
+    std::array<VkImageMemoryBarrier,descriptor_images.size()> barriers{};
+    for(std::size_t index=0;index<barriers.size();++index){
+      auto& barrier=barriers[index];
+      barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+      barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.image=descriptor_images[index];
+      barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount=1U;
+      barrier.subresourceRange.layerCount=1U;
+    }
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,0,nullptr,0,nullptr,static_cast<std::uint32_t>(barriers.size()),
+        barriers.data());
+    atmosphere_frame.descriptor_images_initialized=true;
   }
   if(atmosphere_enabled){
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1649,6 +2056,43 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
         nullptr);
+    const bool temporal=atmosphere_input.rendering_method==
+        AtmosphereRenderingMethod::temporal_half_resolution;
+    if(temporal){
+      const std::array<VkImage,8> history_images{
+          atmosphere_frame.history_scattering[0].image,
+          atmosphere_frame.history_transmittance[0].image,
+          atmosphere_frame.history_endpoint[0].image,
+          atmosphere_frame.history_visibility[0].image,
+          atmosphere_frame.history_scattering[1].image,
+          atmosphere_frame.history_transmittance[1].image,
+          atmosphere_frame.history_endpoint[1].image,
+          atmosphere_frame.history_visibility[1].image};
+      std::array<VkImageMemoryBarrier,8> prepare{};
+      for(std::size_t index=0;index<prepare.size();++index){
+        auto& barrier=prepare[index];
+        barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask=atmosphere_frame.history_images_initialized?
+            (VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT):0U;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+            VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.image=history_images[index];
+        barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount=1U;
+        barrier.subresourceRange.layerCount=1U;
+      }
+      vkCmdPipelineBarrier(command_buffer,
+          atmosphere_frame.history_images_initialized?
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT:
+              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+          static_cast<std::uint32_t>(prepare.size()),prepare.data());
+      atmosphere_frame.history_images_initialized=true;
+    }
     const auto dispatch=[&](std::uint32_t mode,std::uint32_t x,
                             std::uint32_t y,std::uint32_t z){
       const std::array<std::uint32_t,4> push{mode,0U,0U,0U};
@@ -1685,10 +2129,136 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           destination_stage,0,0,nullptr,0,nullptr,
           static_cast<std::uint32_t>(barriers.size()),barriers.data());
     };
+    const bool hierarchy_integrator=atmosphere_input.shadow_integrator==
+        AtmosphereShadowIntegrator::minmax_segments||
+        atmosphere_input.shadow_integrator==
+            AtmosphereShadowIntegrator::moment_hybrid||
+        atmosphere_input.shadow_integrator==
+            AtmosphereShadowIntegrator::epipolar_minmax;
+    const bool epipolar_integrator=atmosphere_input.shadow_integrator==
+        AtmosphereShadowIntegrator::epipolar_minmax;
+    const auto epipolar_source_revision=atmosphere_epipolar_source_revision(
+        surface_upload_planner_.published_generation(),
+        cascades.cascades[3].matrix,
+        atmosphere_input.shadow_raster_bias_constant,
+        atmosphere_input.shadow_raster_bias_slope,
+        atmosphere_input.shadow_filter,local_comparison_bias_world);
+    if(hierarchy_integrator&&!epipolar_integrator&&
+       (fitted_shadow_updated||shadow.minmax_generation!=
+          shadow.atmosphere_shadow_depth_generation||
+        (shadow.minmax_is_epipolar&&
+         (!epipolar_integrator||shadow.epipolar_generation!=
+           shadow.atmosphere_shadow_depth_generation)))){
+      std::uint32_t level_size=
+          quality_settings_.atmosphere_shadow_resolution;
+      std::uint32_t level{};
+      while(true){
+        const std::array<std::uint32_t,4> push{
+            8U,level,quality_settings_.atmosphere_shadow_resolution,
+            epipolar_integrator?3U:4U};
+        vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
+        vkCmdDispatch(command_buffer,(level_size+7U)/8U,
+                      (level_size+7U)/8U,1U);
+        VkBufferMemoryBarrier hierarchy_barrier{
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        hierarchy_barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+        hierarchy_barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+            VK_ACCESS_SHADER_WRITE_BIT;
+        hierarchy_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        hierarchy_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        hierarchy_barrier.buffer=shadow.minmax_buffer;
+        hierarchy_barrier.size=VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,
+            &hierarchy_barrier,0,nullptr);
+        if(level_size==1U)break;
+        level_size=(level_size+1U)/2U;
+        ++level;
+      }
+      shadow.minmax_generation=shadow.atmosphere_shadow_depth_generation;
+      shadow.minmax_is_epipolar=false;
+      atmosphere_shadow_map_status_.hierarchy_generation=
+          shadow.minmax_generation;
+      atmosphere_shadow_map_status_.hierarchy_complete=true;
+    }
+    if(epipolar_integrator&&
+       (shadow.epipolar_source_revision!=epipolar_source_revision||
+        !shadow.minmax_is_epipolar)){
+      const auto radial_resolution=static_cast<std::uint32_t>(
+          epipolar_layout.radial_resolution);
+      const auto angular_rows=static_cast<std::uint32_t>(
+          epipolar_layout.angular_rows);
+      const std::array<std::uint32_t,4> base_push{
+          9U,quality_settings_.atmosphere_shadow_resolution,
+          radial_resolution,angular_rows};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(base_push),base_push.data());
+      vkCmdDispatch(command_buffer,(radial_resolution+7U)/8U,
+                    (angular_rows+7U)/8U,1U);
+      VkBufferMemoryBarrier epipolar_barrier{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      epipolar_barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      epipolar_barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+          VK_ACCESS_SHADER_WRITE_BIT;
+      epipolar_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      epipolar_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      epipolar_barrier.buffer=shadow.minmax_buffer;
+      epipolar_barrier.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,
+          &epipolar_barrier,0,nullptr);
+      std::uint32_t level=1U;
+      std::uint32_t width=(radial_resolution+1U)/2U;
+      while(radial_resolution>1U){
+        const std::array<std::uint32_t,4> mip_push{
+            10U,level,radial_resolution,angular_rows};
+        vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+            VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(mip_push),mip_push.data());
+        vkCmdDispatch(command_buffer,(width+7U)/8U,
+                      (angular_rows+7U)/8U,1U);
+        vkCmdPipelineBarrier(command_buffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,
+            &epipolar_barrier,0,nullptr);
+        if(width==1U)break;
+        width=(width+1U)/2U;
+        ++level;
+      }
+      shadow.epipolar_generation=shadow.atmosphere_shadow_depth_generation;
+      shadow.epipolar_source_revision=epipolar_source_revision;
+      shadow.minmax_is_epipolar=true;
+      ++atmosphere_shadow_map_status_.epipolar_hierarchy_refreshes;
+    }
+    atmosphere_shadow_map_status_.integrator=
+        atmosphere_input.shadow_integrator;
+    const bool hierarchy_generation_complete=epipolar_integrator?
+        shadow.epipolar_source_revision==epipolar_source_revision:
+        shadow.minmax_generation==shadow.atmosphere_shadow_depth_generation;
+    atmosphere_shadow_map_status_.hierarchy_complete=hierarchy_integrator&&
+        shadow.atmosphere_shadow_depth_generation!=0U&&
+        hierarchy_generation_complete&&
+        (epipolar_integrator==shadow.minmax_is_epipolar);
+    std::uint64_t atmosphere_shadow_revision=1469598103934665603ULL;
+    hash_scalar(atmosphere_shadow_revision,static_cast<double>(
+        surface_upload_planner_.published_generation()));
+    hash_scalar(atmosphere_shadow_revision,static_cast<double>(
+        shadow.atmosphere_shadow_depth_generation));
+    hash_scalar(atmosphere_shadow_revision,
+        shadow.atmosphere_shadow_initialized?1.0:0.0);
+    for(const float value:shadow.atmosphere_shadow_matrix)
+      hash_scalar(atmosphere_shadow_revision,static_cast<double>(value));
     const AtmosphereLookupRevisions next_revisions{
         .optical={atmosphere_optical_hash(parameters)},
         .scattering={atmosphere_scattering_hash(parameters)},
-        .sun={hash_vectors({atmosphere_input.sun_direction})},
+        // Faithful final sky and aerial pixels evaluate the current primary
+        // ray directly. During a fast sun preview, keep the diagnostic and
+        // indirect-light lookup generation stable instead of rebuilding the
+        // complete 3D atmosphere volume every frame.
+        .sun={atmosphere_input.dynamic_sun?0xd79a4f3b2c1e6805ULL:
+              hash_vectors({atmosphere_input.sun_direction})},
         .camera_position={hash_vectors({camera_from_centre})},
         .sky_position=atmosphere_sky_position_revision(
             camera_from_centre,parameters),
@@ -1696,13 +2266,18 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
             {atmosphere_input.camera_right,atmosphere_input.camera_down,
              atmosphere_input.camera_forward},
             {atmosphere_input.vertical_tangent,atmosphere_input.aspect_ratio})},
-        .shadow={geometry_revision_},
+        .shadow_integrator={static_cast<std::uint64_t>(
+            atmosphere_input.shadow_integrator)+1U},
+        .shadow={atmosphere_shadow_revision},
         .render_origin={hash_vectors(
             {atmosphere_input.planet_centre_relative_world})}};
     const auto previous_revisions=atmosphere.transport==
-        atmosphere_input.transport?atmosphere.lookup_revisions:std::nullopt;
-    const auto plan=atmosphere_dispatch_plan(previous_revisions,next_revisions,
+        atmosphere_input.transport?
+        atmosphere.lookup_revisions:std::nullopt;
+    auto plan=atmosphere_dispatch_plan(previous_revisions,next_revisions,
         atmosphere_input.transport);
+    if(atmosphere_input.dynamic_sun&&previous_revisions)
+      plan.aerial_perspective=false;
     if(plan.transmittance){
       dispatch(0U,(quality_settings_.transmittance_width+7U)/8U,
                (quality_settings_.transmittance_height+7U)/8U,1U);
@@ -1731,9 +2306,62 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       dispatch(3U,(quality_settings_.aerial_width+7U)/8U,
                (quality_settings_.aerial_height+7U)/8U,
                quality_settings_.aerial_depth);
+    if(plan.long_shadow&&epipolar_integrator){
+      const std::array<std::uint32_t,4> reset_push{11U,0U,0U,0U};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(reset_push),reset_push.data());
+      vkCmdDispatch(command_buffer,1U,1U,1U);
+      VkBufferMemoryBarrier reset_barrier{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      reset_barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      reset_barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|
+          VK_ACCESS_SHADER_WRITE_BIT;
+      reset_barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      reset_barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      reset_barrier.buffer=shadow.minmax_buffer;
+      reset_barrier.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&reset_barrier,
+          0,nullptr);
+    }
     if(plan.long_shadow)
       dispatch(6U,(quality_settings_.long_shadow_width+7U)/8U,
                (quality_settings_.long_shadow_height+7U)/8U,1U);
+    if(plan.long_shadow&&epipolar_integrator){
+      VkBufferMemoryBarrier counter_to_copy{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      counter_to_copy.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      counter_to_copy.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+      counter_to_copy.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      counter_to_copy.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      counter_to_copy.buffer=shadow.minmax_buffer;
+      counter_to_copy.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,1,&counter_to_copy,
+          0,nullptr);
+      const auto counter_offset=(shadow_minmax_element_count(
+          quality_settings_.atmosphere_shadow_resolution)-2U)*
+          sizeof(std::uint32_t)*2U;
+      const VkBufferCopy copy{counter_offset,0,sizeof(std::uint32_t)*4U};
+      vkCmdCopyBuffer(command_buffer,shadow.minmax_buffer,
+                      shadow.epipolar_diagnostic_buffer,1U,&copy);
+      VkBufferMemoryBarrier copy_to_host{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      copy_to_host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+      copy_to_host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+      copy_to_host.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      copy_to_host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      copy_to_host.buffer=shadow.epipolar_diagnostic_buffer;
+      copy_to_host.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
+          VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&copy_to_host,0,nullptr);
+      shadow.epipolar_diagnostic_pending=true;
+    }else if(!epipolar_integrator){
+      atmosphere_shadow_map_status_.epipolar_visited_nodes=0U;
+      atmosphere_shadow_map_status_.epipolar_emitted_intervals=0U;
+      atmosphere_shadow_map_status_.epipolar_fallbacks=0U;
+      atmosphere_shadow_map_status_.epipolar_overflows=0U;
+    }
     if(atmosphere_input.numeric_probe_requested&&
        atmosphere_input.transport==AtmosphereTransport::faithful_hillaire){
       compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -1775,7 +2403,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&readback_barrier,0,nullptr);
       atmosphere_frame.probe_pending=true;
     }
-    compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    compute_barrier(atmosphere_images,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     const auto material=atmosphere_material_snapshot(
         parameters,atmosphere_input.transport);
     const auto snapshots=advance_atmosphere_lookup_snapshots(
@@ -1790,6 +2419,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     atmosphere.lookup_snapshots=snapshots;
     atmosphere.lookup_revisions=next_revisions;
     atmosphere.transport=atmosphere_input.transport;
+    atmosphere.shadow_integrator=atmosphere_input.shadow_integrator;
   }
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timing_query_pool_,timing_base+2U);
@@ -1814,7 +2444,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_scene[1].dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   to_scene[1].oldLayout=scene_depth.initialized?
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
-  to_scene[1].newLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_scene[1].newLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   to_scene[1].image=scene_depth.image;
   to_scene[1].subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
   vkCmdPipelineBarrier(command_buffer,
@@ -1831,13 +2461,17 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   VkClearValue depth{};
   depth.depthStencil={depth_clear(main_scene_depth_convention),0U};
   VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = scene_colour.view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
-  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = scene_depth.view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; depth_attachment.clearValue = depth;
+  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = scene_depth.view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; depth_attachment.clearValue = depth;
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;
   begin_rendering(command_buffer, reinterpret_cast<const VkRenderingInfoKHR*>(&rendering));
   VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F}; VkRect2D scissor{{0, 0}, extent}; VkDeviceSize offset{};
   vkCmdSetViewport(command_buffer, 0, 1, &viewport); vkCmdSetScissor(command_buffer, 0, 1, &scissor);
   std::array<float,28> push_data{};
   std::copy_n(camera_data,28,push_data.begin());
+  // The light vector's fourth component is intentionally not geometric. It
+  // carries the independently selectable surface receiver-bias experiment.
+  push_data[19]=atmosphere_input.surface_shadow_bias==
+      SurfaceShadowBiasMode::receiver_plane?1.0F:0.0F;
   const auto draw = [&](VkPipeline pipeline,VkPipelineLayout layout,
                         const VertexBuffer& vertices,
                         std::span<const SurfaceDeviceDrawRange> ranges={}) {
@@ -1896,17 +2530,307 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_composite[0].subresourceRange.layerCount=1;
   to_composite[1]=to_composite[0];
   to_composite[1].srcAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-  to_composite[1].oldLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  to_composite[1].oldLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   to_composite[1].image=scene_depth.image;
   to_composite[1].subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
   vkCmdPipelineBarrier(command_buffer,
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|
           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|
           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
       static_cast<std::uint32_t>(to_composite.size()),to_composite.data());
   scene_colour.initialized=true;
   scene_depth.initialized=true;
+
+  if(atmosphere_enabled&&atmosphere_input.transport==
+         AtmosphereTransport::faithful_hillaire&&
+     atmosphere_input.rendering_method==
+         AtmosphereRenderingMethod::deterministic_shadowed_froxels){
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        timing_query_pool_,timing_base+4U);
+    const std::array<VkImage,2> froxel_images{
+        atmosphere_frame.froxel_scattering.image,
+        atmosphere_frame.froxel_transmittance.image};
+    std::array<VkImageMemoryBarrier,2> froxel_barriers{};
+    for(std::size_t index=0;index<froxel_barriers.size();++index){
+      auto& barrier=froxel_barriers[index];
+      barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.srcAccessMask=atmosphere_frame.froxel_images_initialized?
+          VK_ACCESS_SHADER_READ_BIT:0U;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.image=froxel_images[index];
+      barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount=1U;
+      barrier.subresourceRange.layerCount=1U;
+    }
+    vkCmdPipelineBarrier(command_buffer,
+        atmosphere_frame.froxel_images_initialized?
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(froxel_barriers.size()),
+        froxel_barriers.data());
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                      faithful_atmosphere_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+        atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
+        nullptr);
+    const std::array<std::uint32_t,4> froxel_push{16U,0U,0U,0U};
+    vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+        VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(froxel_push),froxel_push.data());
+    vkCmdDispatch(command_buffer,4U,4U,32U);
+    for(auto& barrier:froxel_barriers){
+      barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+    }
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(froxel_barriers.size()),
+        froxel_barriers.data());
+    atmosphere_frame.froxel_images_initialized=true;
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        timing_query_pool_,timing_base+5U);
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        timing_query_pool_,timing_base+6U);
+  }else if(atmosphere_enabled&&atmosphere_input.transport==
+         AtmosphereTransport::faithful_hillaire&&
+     (atmosphere_input.rendering_method==
+          AtmosphereRenderingMethod::deterministic_half_resolution||
+      atmosphere_input.rendering_method==
+          AtmosphereRenderingMethod::temporal_half_resolution)){
+    const bool temporal=atmosphere_input.rendering_method==
+        AtmosphereRenderingMethod::temporal_half_resolution;
+    const std::array<VkImage,3> reconstructed_images{
+        atmosphere_frame.screen_scattering.image,
+        atmosphere_frame.screen_transmittance.image,
+        atmosphere_frame.screen_endpoint.image};
+    std::array<VkImageMemoryBarrier,3> to_compute{};
+    for(std::size_t index=0;index<to_compute.size();++index){
+      auto& barrier=to_compute[index];
+      barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+      barrier.srcAccessMask=atmosphere_frame.screen_images_initialized?
+          VK_ACCESS_SHADER_READ_BIT:0U;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      barrier.image=reconstructed_images[index];
+      barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+      barrier.subresourceRange.levelCount=1U;
+      barrier.subresourceRange.layerCount=1U;
+    }
+    vkCmdPipelineBarrier(command_buffer,
+        atmosphere_frame.screen_images_initialized?
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+                      faithful_atmosphere_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+        atmosphere_pipeline_layout_,0,1,&atmosphere_frame.descriptor_set,0,
+        nullptr);
+    std::uint64_t result_generation=hash_vectors(
+        {atmosphere_input.camera_relative_world,
+         atmosphere_input.camera_right,atmosphere_input.camera_down,
+         atmosphere_input.camera_forward,atmosphere_input.sun_direction,
+         atmosphere_input.planet_centre_relative_world},
+        {atmosphere_input.vertical_tangent,atmosphere_input.aspect_ratio,
+         static_cast<double>(surface_upload_planner_.published_generation()),
+         static_cast<double>(shadow.atmosphere_shadow_depth_generation),
+         static_cast<double>(atmosphere_optical_hash(parameters)),
+         static_cast<double>(atmosphere_scattering_hash(parameters))});
+    const std::uint32_t output_index=atmosphere_frame.history_write_index;
+    const std::uint32_t previous_index=output_index^1U;
+    AtmosphereScreenHistoryIdentity current_identity{
+        .revisions=atmosphere.lookup_revisions.value_or(
+            AtmosphereLookupRevisions{}),
+        .terrain_generation=surface_upload_planner_.published_generation(),
+        .result_generation=result_generation,
+        .width=extent.width,.height=extent.height,
+        .linear_resolution_divisor=screen_resolution_divisor_,
+        .sample_count=temporal?2U:32U,
+        .transport=atmosphere_input.transport,
+        .rendering_method=atmosphere_input.rendering_method,
+        .valid=atmosphere.lookup_revisions.has_value()};
+    const auto compatibility=atmosphere_screen_history_compatibility(
+        atmosphere_frame.history_identities[previous_index],current_identity);
+    if(temporal){
+      if(compatibility.compatible())
+        ++atmosphere_dispatch_counts_.temporal_history_accepts;
+      else ++atmosphere_dispatch_counts_.temporal_history_invalidations;
+    }
+    const std::uint32_t screen_width=
+        (extent.width+screen_resolution_divisor_-1U)/
+        screen_resolution_divisor_;
+    const std::uint32_t screen_height=
+        (extent.height+screen_resolution_divisor_-1U)/
+        screen_resolution_divisor_;
+    const std::uint32_t screen_groups_x=(screen_width+7U)/8U;
+    const std::uint32_t screen_groups_y=(screen_height+7U)/8U;
+    const std::array<std::uint32_t,4> push{
+        12U,static_cast<std::uint32_t>(result_generation),
+        screen_resolution_divisor_,0U};
+    vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+        VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
+    vkCmdDispatch(command_buffer,screen_groups_x,screen_groups_y,1U);
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        timing_query_pool_,timing_base+4U);
+    VkImageMemoryBarrier endpoint_ready=to_compute[2];
+    endpoint_ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+    endpoint_ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    endpoint_ready.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,1,
+        &endpoint_ready);
+    const std::uint32_t integration_samples=
+        atmosphere_visibility_refresh_intervals(temporal,compatibility);
+    const std::uint32_t visibility_control=temporal?
+        (((atmosphere_frame.history_sequence/2U)+1U)&15U)|
+        (previous_index<<5U)|(output_index<<6U)|
+        (compatibility.compatible()?128U:0U)|256U|
+        (compatibility.camera_changed?512U:0U):0U;
+    const std::array<std::uint32_t,4> integration_push{
+        13U,screen_resolution_divisor_,
+        integration_samples,visibility_control};
+    vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+        VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(integration_push),
+        integration_push.data());
+    vkCmdDispatch(command_buffer,screen_groups_x,screen_groups_y,1U);
+    ++atmosphere_dispatch_counts_.screen_reconstruction;
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        timing_query_pool_,timing_base+5U);
+    for(std::size_t index=0;index<to_compute.size();++index){
+      auto& barrier=to_compute[index];
+      barrier.srcAccessMask=index==2U?VK_ACCESS_SHADER_READ_BIT:
+          VK_ACCESS_SHADER_WRITE_BIT;
+      barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+    }
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        temporal?VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT:
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0,0,nullptr,0,nullptr,
+        static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
+    if(temporal){
+      const std::array<VkImage,8> history_images{
+          atmosphere_frame.history_scattering[0].image,
+          atmosphere_frame.history_transmittance[0].image,
+          atmosphere_frame.history_endpoint[0].image,
+          atmosphere_frame.history_visibility[0].image,
+          atmosphere_frame.history_scattering[1].image,
+          atmosphere_frame.history_transmittance[1].image,
+          atmosphere_frame.history_endpoint[1].image,
+          atmosphere_frame.history_visibility[1].image};
+      const std::uint32_t sample_count=
+          compatibility.compatible()&&!compatibility.camera_changed?
+          std::min(atmosphere_frame.history_sample_counts[previous_index]+1U,
+                   8U):1U;
+      const AtmosphereFrameResources::TemporalCameraSnapshot current_camera{
+          .position_from_planet_centre_metres=camera_from_centre,
+          .right=atmosphere_input.camera_right,
+          .down=atmosphere_input.camera_down,
+          .forward=atmosphere_input.camera_forward,
+          .tangent_x=atmosphere_input.vertical_tangent*
+              atmosphere_input.aspect_ratio,
+          .tangent_y=atmosphere_input.vertical_tangent};
+      const auto& previous_camera=compatibility.compatible()?
+          atmosphere_frame.history_cameras[previous_index]:current_camera;
+      std::array<float,20> temporal_uniform{};
+      const auto vector=[&](std::size_t offset,const tetra::Vec3& value,
+                            float fourth){
+        temporal_uniform[offset]=static_cast<float>(value.x);
+        temporal_uniform[offset+1U]=static_cast<float>(value.y);
+        temporal_uniform[offset+2U]=static_cast<float>(value.z);
+        temporal_uniform[offset+3U]=fourth;
+      };
+      vector(0U,previous_camera.position_from_planet_centre_metres,
+             static_cast<float>(default_camera_near_plane*metres));
+      vector(4U,previous_camera.right,
+             static_cast<float>(previous_camera.tangent_x));
+      vector(8U,previous_camera.down,
+             static_cast<float>(previous_camera.tangent_y));
+      vector(12U,previous_camera.forward,0.0F);
+      temporal_uniform[16]=compatibility.compatible()?1.0F:0.0F;
+      temporal_uniform[17]=std::bit_cast<float>(static_cast<std::uint32_t>(
+          atmosphere_frame.history_identities[previous_index].result_generation));
+      temporal_uniform[18]=static_cast<float>(sample_count-1U)/
+          static_cast<float>(sample_count);
+      void* temporal_mapped{};
+      if(vkMapMemory(device_,atmosphere_frame.uniform_memory,0,
+                     sizeof(float)*96U,0,&temporal_mapped)!=VK_SUCCESS)
+        throw std::runtime_error("unable to map atmosphere temporal uniform");
+      std::memcpy(static_cast<std::byte*>(temporal_mapped)+sizeof(float)*64U,
+                  temporal_uniform.data(),sizeof(temporal_uniform));
+      vkUnmapMemory(device_,atmosphere_frame.uniform_memory);
+
+      const std::array<std::uint32_t,4> temporal_push{
+          14U,previous_index,output_index,0U};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(temporal_push),
+          temporal_push.data());
+      vkCmdDispatch(command_buffer,screen_groups_x,screen_groups_y,1U);
+      std::array<VkImageMemoryBarrier,3> history_ready{};
+      for(std::size_t channel=0;channel<3U;++channel){
+        auto& barrier=history_ready[channel];
+        barrier.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.image=history_images[output_index*4U+channel];
+        barrier.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount=1U;
+        barrier.subresourceRange.layerCount=1U;
+      }
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+          static_cast<std::uint32_t>(history_ready.size()),
+          history_ready.data());
+      for(auto& barrier:to_compute){
+        barrier.srcAccessMask=VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+      }
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,0,nullptr,
+          static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
+      const std::array<std::uint32_t,4> publish_push{
+          15U,output_index,0U,0U};
+      vkCmdPushConstants(command_buffer,atmosphere_pipeline_layout_,
+          VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(publish_push),
+          publish_push.data());
+      vkCmdDispatch(command_buffer,screen_groups_x,screen_groups_y,1U);
+      for(auto& barrier:to_compute){
+        barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      }
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,
+          static_cast<std::uint32_t>(to_compute.size()),to_compute.data());
+      atmosphere_frame.history_identities[output_index]=current_identity;
+      atmosphere_frame.history_cameras[output_index]=current_camera;
+      atmosphere_frame.history_sample_counts[output_index]=sample_count;
+      ++atmosphere_frame.history_sequence;
+      atmosphere_frame.history_write_index=previous_index;
+    }
+    atmosphere_frame.screen_images_initialized=true;
+  }else{
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        timing_query_pool_,timing_base+4U);
+    vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        timing_query_pool_,timing_base+5U);
+  }
+  vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                      timing_query_pool_,timing_base+6U);
 
   VkRenderingAttachmentInfo output_attachment{
       VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1934,7 +2858,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkCmdDraw(command_buffer,3U,1U,0U,0U);
   end_rendering(command_buffer);
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                      timing_query_pool_,timing_base+4U);
+                      timing_query_pool_,timing_base+7U);
   if(atmosphere_input.capture_requested){
     ensure_capture_resources(capture_frame,extent);
     VkImageMemoryBarrier to_capture{
@@ -2046,6 +2970,10 @@ void SceneRenderer::shutdown() {
     vkFreeMemory(device_,shadow.memory,nullptr);
     vkDestroyBuffer(device_,shadow.uniform_buffer,nullptr);
     vkFreeMemory(device_,shadow.uniform_memory,nullptr);
+    vkDestroyBuffer(device_,shadow.minmax_buffer,nullptr);
+    vkFreeMemory(device_,shadow.minmax_memory,nullptr);
+    vkDestroyBuffer(device_,shadow.epipolar_diagnostic_buffer,nullptr);
+    vkFreeMemory(device_,shadow.epipolar_diagnostic_memory,nullptr);
   }
   for(auto* image:{&atmosphere_lookups_.transmittance,
                    &atmosphere_lookups_.multiple_scattering,
@@ -2063,6 +2991,22 @@ void SceneRenderer::shutdown() {
     vkFreeMemory(device_,frame.uniform_memory,nullptr);
     vkDestroyBuffer(device_,frame.probe_buffer,nullptr);
     vkFreeMemory(device_,frame.probe_memory,nullptr);
+    for(auto* image:{&frame.screen_scattering,&frame.screen_transmittance,
+                     &frame.screen_endpoint,&frame.froxel_scattering,
+                     &frame.froxel_transmittance}){
+      vkDestroyImageView(device_,image->view,nullptr);
+      vkDestroyImage(device_,image->image,nullptr);
+      vkFreeMemory(device_,image->memory,nullptr);
+    }
+    for(std::size_t history=0;history<2U;++history)
+      for(auto* image:{&frame.history_scattering[history],
+                       &frame.history_transmittance[history],
+                       &frame.history_endpoint[history],
+                       &frame.history_visibility[history]}){
+        vkDestroyImageView(device_,image->view,nullptr);
+        vkDestroyImage(device_,image->image,nullptr);
+        vkFreeMemory(device_,image->memory,nullptr);
+      }
   }
   for(auto& capture:capture_frames_){
     vkDestroyImageView(device_,capture.view,nullptr);

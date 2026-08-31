@@ -14,10 +14,34 @@
 namespace tetra_viewer {
 
 tetra::Camera resolve_world_lod_camera(
-    const tetra::Camera& player_camera,bool free_fly,
+    const tetra::Camera& player_camera,bool locked,
     tetra::Camera& locked_camera) noexcept {
-  if(!free_fly)locked_camera=player_camera;
+  if(!locked)locked_camera=player_camera;
   return locked_camera;
+}
+
+double planetary_surface_sampling_footprint(
+    const tetra::Sphere& field,const tetra::Camera& camera,
+    double pixel_threshold) noexcept {
+  if(!(field.terrain.planet_radius>0.0)||!(pixel_threshold>0.0)||
+     !(camera.viewport_height_pixels>0.0)||
+     !std::isfinite(pixel_threshold)||
+     !std::isfinite(camera.viewport_height_pixels)||
+     !std::isfinite(camera.vertical_fov_radians))return 0.0;
+  const tetra::Vec3 planet_centre{
+      field.centre.x,field.centre.y-field.terrain.planet_radius,
+      field.centre.z};
+  const auto camera_offset=camera.position-planet_centre;
+  const double camera_radius=std::sqrt(
+      camera_offset.x*camera_offset.x+camera_offset.y*camera_offset.y+
+      camera_offset.z*camera_offset.z);
+  const double altitude=std::max(
+      0.0,camera_radius-field.terrain.planet_radius);
+  const double world_per_pixel=2.0*altitude*
+      std::tan(camera.vertical_fov_radians*0.5)/camera.viewport_height_pixels;
+  const double requested=world_per_pixel*pixel_threshold;
+  return requested>=0.05&&std::isfinite(requested)?
+      std::exp2(std::floor(std::log2(requested))):0.0;
 }
 
 namespace {
@@ -1429,8 +1453,16 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   const auto hierarchy_demand_finished=std::chrono::steady_clock::now();
   const auto directory_finished=std::chrono::steady_clock::now();
+  auto surface_field=field;
+  // The projected-diameter threshold is the maximum interval represented by
+  // one hierarchy cell. Using that full interval prevents barely-Nyquist
+  // terrain bands from becoming long alternating tetrahedral spikes.
+  // Quantization prevents tiny camera movements from invalidating every
+  // retained surface block.
+  surface_field.sampling_footprint=planetary_surface_sampling_footprint(
+      field,camera,profile.pixel_threshold);
   auto surface=build_sparse_world_derived_surface(
-      *directory,profile.domain,field,true,cancellation,&surface_cache,
+      *directory,profile.domain,surface_field,true,cancellation,&surface_cache,
       residency.volume_blocks,true,false,hierarchy_update.changed_blocks,
       executor,false);
   const auto surface_built=std::chrono::steady_clock::now();
@@ -1444,7 +1476,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     throw std::runtime_error("world publication canceled");
   const auto snap=[](double value){return std::floor(value/8.0)*8.0;};
   auto prepared=prepare_retained_blocked_scene(
-      surface,field,profile.show_faces,profile.show_surface_edges,
+      surface,surface_field,profile.show_faces,profile.show_surface_edges,
       {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)},
       surface_cache,false);
   auto scene=std::move(prepared.scene);

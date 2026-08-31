@@ -181,6 +181,17 @@ bool make_silhouette_band_mask(std::span<const std::uint8_t> geometry,
   return true;
 }
 
+bool make_outer_silhouette_band_mask(
+    std::span<const std::uint8_t> geometry,std::uint32_t width,
+    std::uint32_t height,std::uint32_t radius,
+    std::vector<std::uint8_t>& mask,std::string& error) {
+  if(!make_silhouette_band_mask(
+         geometry,width,height,radius,mask,error))return false;
+  for(std::size_t index=0;index<mask.size();++index)
+    if(geometry[index]!=0U)mask[index]=0U;
+  return true;
+}
+
 bool make_horizontal_band_mask(std::uint32_t width,std::uint32_t height,
                                double centre,double height_fraction,
                                std::vector<std::uint8_t>& mask,

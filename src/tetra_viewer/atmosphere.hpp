@@ -8,6 +8,7 @@
 #include <functional>
 #include <iosfwd>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,6 +45,208 @@ enum class AtmosphereTransport {
   faithful_hillaire,
 };
 
+enum class AtmosphereRenderingMethod {
+  current_qualified,
+  native_screen_oracle,
+  deterministic_half_resolution,
+  temporal_half_resolution,
+  deterministic_shadowed_froxels,
+};
+
+inline constexpr AtmosphereRenderingMethod default_atmosphere_rendering_method=
+    AtmosphereRenderingMethod::temporal_half_resolution;
+[[nodiscard]] std::optional<AtmosphereRenderingMethod>
+parse_atmosphere_rendering_method(std::string_view name);
+[[nodiscard]] std::string_view atmosphere_rendering_method_name(
+    AtmosphereRenderingMethod method) noexcept;
+
+enum class AtmosphereShadowIntegrator {
+  fixed_32,
+  adaptive_transition,
+  minmax_segments,
+  dense_oracle,
+  moment_hybrid,
+  epipolar_minmax,
+};
+
+enum class SurfaceShadowBiasMode { slope_scaled, receiver_plane };
+[[nodiscard]] std::optional<SurfaceShadowBiasMode>
+parse_surface_shadow_bias_mode(std::string_view name);
+[[nodiscard]] std::string_view surface_shadow_bias_mode_name(
+    SurfaceShadowBiasMode mode) noexcept;
+
+enum class AtmosphereShadowFilter { unfiltered, fixed_tent, physical_footprint };
+inline constexpr AtmosphereShadowFilter default_atmosphere_shadow_filter=
+    AtmosphereShadowFilter::physical_footprint;
+[[nodiscard]] std::optional<AtmosphereShadowFilter>
+parse_atmosphere_shadow_filter(std::string_view name);
+[[nodiscard]] std::string_view atmosphere_shadow_filter_name(
+    AtmosphereShadowFilter filter) noexcept;
+
+[[nodiscard]] std::uint64_t atmosphere_epipolar_source_revision(
+    std::uint64_t surface_generation,const std::array<float,16>& matrix,
+    float raster_bias_constant,float raster_bias_slope,
+    AtmosphereShadowFilter filter,double comparison_bias_world) noexcept;
+
+inline constexpr AtmosphereShadowIntegrator default_atmosphere_shadow_integrator=
+    AtmosphereShadowIntegrator::fixed_32;
+
+[[nodiscard]] std::optional<AtmosphereShadowIntegrator>
+parse_atmosphere_shadow_integrator(std::string_view name);
+[[nodiscard]] std::string_view atmosphere_shadow_integrator_name(
+    AtmosphereShadowIntegrator integrator) noexcept;
+[[nodiscard]] constexpr unsigned atmosphere_shadow_integrator_shader_index(
+    AtmosphereShadowIntegrator integrator) noexcept {
+  switch(integrator){
+    case AtmosphereShadowIntegrator::fixed_32:return 0U;
+    case AtmosphereShadowIntegrator::adaptive_transition:return 1U;
+    case AtmosphereShadowIntegrator::minmax_segments:return 2U;
+    case AtmosphereShadowIntegrator::dense_oracle:return 3U;
+    case AtmosphereShadowIntegrator::moment_hybrid:return 4U;
+    case AtmosphereShadowIntegrator::epipolar_minmax:return 5U;
+  }
+  return 0U;
+}
+
+struct AtmosphereShadowIntegrationOptions {
+  std::size_t base_intervals{32U};
+  std::size_t dense_intervals{1024U};
+  std::size_t maximum_subdivision_depth{5U};
+  std::size_t maximum_samples{2048U};
+  double transition_tolerance{1.0e-6};
+};
+
+struct AtmosphereShadowInterval {
+  double begin{};
+  double end{};
+  double visibility{1.0};
+};
+
+struct AtmosphereShadowIntegrationResult {
+  double weighted_loss{};
+  double total_weight{};
+  double maximum_loss{};
+  std::size_t visibility_samples{};
+  std::size_t visited_ranges{};
+  std::vector<AtmosphereShadowInterval> intervals;
+  bool fallback{};
+};
+
+struct AtmosphereShadowIntegrationGeneration {
+  AtmosphereShadowIntegrator integrator{default_atmosphere_shadow_integrator};
+  std::uint64_t shadow_depth_generation{};
+  std::uint64_t hierarchy_generation{};
+  bool fallback{};
+  bool complete{};
+};
+
+[[nodiscard]] bool compatible_atmosphere_shadow_generation(
+    const AtmosphereShadowIntegrationGeneration& generation) noexcept;
+
+using AtmosphereShadowVisibilityFunction=std::function<double(double)>;
+using AtmosphereShadowWeightFunction=std::function<double(double)>;
+// A range classifier returns a constant visibility only when the complete
+// interval is proven uniform. A null result asks the integrator to descend.
+using AtmosphereShadowRangeClassifier=
+    std::function<std::optional<double>(double,double)>;
+
+[[nodiscard]] AtmosphereShadowIntegrationResult integrate_atmosphere_shadow(
+    AtmosphereShadowIntegrator integrator,
+    const AtmosphereShadowVisibilityFunction& visibility,
+    const AtmosphereShadowWeightFunction& weight={},
+    const AtmosphereShadowRangeClassifier& classify_range={},
+    AtmosphereShadowIntegrationOptions options={});
+
+struct AtmosphereShadowErrorMetrics {
+  double root_mean_square_error{};
+  double maximum_error{};
+  double boundary_distance{};
+  double gradient_step_energy{};
+};
+
+struct AtmosphereShadowDepthRange {
+  double minimum{1.0};
+  double maximum{1.0};
+};
+
+struct AtmosphereShadowDepthLevel {
+  std::size_t width{};
+  std::size_t height{};
+  std::vector<AtmosphereShadowDepthRange> ranges;
+};
+
+struct AtmosphereShadowDepthHierarchy {
+  std::vector<AtmosphereShadowDepthLevel> levels;
+};
+
+struct AtmosphereEpipolarDepthLevel {
+  std::size_t width{};
+  std::size_t rows{};
+  std::vector<AtmosphereShadowDepthRange> ranges;
+};
+
+struct AtmosphereEpipolarDepthHierarchy {
+  std::size_t radial_resolution{};
+  std::size_t angular_rows{};
+  std::vector<AtmosphereEpipolarDepthLevel> levels;
+};
+
+struct AtmosphereEpipolarTraversalResult {
+  std::vector<AtmosphereShadowInterval> intervals;
+  std::size_t visited_nodes{};
+  bool fallback{};
+};
+
+struct AtmosphereMomentVisibility {
+  double lower{};
+  double upper{1.0};
+  double estimate{1.0};
+  double residual{1.0};
+  bool confident{};
+};
+
+[[nodiscard]] AtmosphereMomentVisibility
+atmosphere_moment_visibility(std::span<const double> blocker_depths,
+                             double receiver_depth,
+                             double residual_tolerance=1.0e-5);
+
+[[nodiscard]] AtmosphereShadowDepthHierarchy
+make_atmosphere_shadow_depth_hierarchy(std::span<const double> depth,
+                                       std::size_t width,
+                                       std::size_t height,
+                                       double clear_depth=1.0);
+
+[[nodiscard]] AtmosphereEpipolarDepthHierarchy
+make_atmosphere_epipolar_depth_hierarchy(std::span<const double> depth,
+                                         std::size_t radial_resolution,
+                                         std::size_t angular_rows,
+                                         double clear_depth=1.0);
+[[nodiscard]] AtmosphereEpipolarTraversalResult
+traverse_atmosphere_epipolar_row(
+    const AtmosphereEpipolarDepthHierarchy& hierarchy,std::size_t row,
+    double radial_begin,double radial_end,double receiver_depth_begin,
+    double receiver_depth_end,double comparison_bias=0.0,
+    std::size_t maximum_intervals=128U);
+
+[[nodiscard]] AtmosphereShadowErrorMetrics atmosphere_shadow_error_metrics(
+    std::span<const double> candidate,std::span<const double> reference,
+    double sample_spacing=1.0);
+
+// A rectified epipolar hierarchy stores one independent one-dimensional
+// min/max pyramid for every angular row.  Keeping this sizing rule in the CPU
+// API makes allocation, diagnostics, and tests agree with the shader layout.
+[[nodiscard]] std::size_t atmosphere_epipolar_minmax_element_count(
+    std::size_t radial_resolution,std::size_t angular_rows) noexcept;
+struct AtmosphereEpipolarLayout {
+  std::size_t radial_resolution{};
+  std::size_t angular_rows{};
+  std::size_t element_count{};
+};
+[[nodiscard]] AtmosphereEpipolarLayout atmosphere_epipolar_layout(
+    std::size_t shadow_resolution) noexcept;
+[[nodiscard]] std::size_t atmosphere_epipolar_row_from_angle(
+    double angle_radians,std::size_t angular_rows) noexcept;
+
 inline constexpr AtmosphereTransport default_atmosphere_transport=
     AtmosphereTransport::faithful_hillaire;
 
@@ -65,6 +268,7 @@ struct AtmosphereSunRevisionTag;
 struct AtmosphereCameraPositionRevisionTag;
 struct AtmosphereSkyPositionRevisionTag;
 struct AtmosphereCameraOrientationRevisionTag;
+struct AtmosphereShadowIntegratorRevisionTag;
 struct AtmosphereShadowRevisionTag;
 struct AtmosphereRenderOriginRevisionTag;
 
@@ -79,6 +283,8 @@ using AtmosphereSkyPositionRevision=
     AtmosphereRevision<AtmosphereSkyPositionRevisionTag>;
 using AtmosphereCameraOrientationRevision=
     AtmosphereRevision<AtmosphereCameraOrientationRevisionTag>;
+using AtmosphereShadowIntegratorRevision=
+    AtmosphereRevision<AtmosphereShadowIntegratorRevisionTag>;
 using AtmosphereShadowRevision=AtmosphereRevision<AtmosphereShadowRevisionTag>;
 using AtmosphereRenderOriginRevision=
     AtmosphereRevision<AtmosphereRenderOriginRevisionTag>;
@@ -90,6 +296,7 @@ struct AtmosphereLookupRevisions {
   AtmosphereCameraPositionRevision camera_position{};
   AtmosphereSkyPositionRevision sky_position{};
   AtmosphereCameraOrientationRevision camera_orientation{};
+  AtmosphereShadowIntegratorRevision shadow_integrator{};
   AtmosphereShadowRevision shadow{};
   AtmosphereRenderOriginRevision render_origin{};
   friend constexpr bool operator==(const AtmosphereLookupRevisions&,
@@ -113,7 +320,6 @@ struct AtmosphereDispatchPlan {
     std::optional<AtmosphereLookupRevisions> previous,
     const AtmosphereLookupRevisions& next,
     AtmosphereTransport transport) noexcept;
-
 [[nodiscard]] std::uint64_t atmosphere_optical_hash(
     const AtmosphereParameters& parameters);
 [[nodiscard]] std::uint64_t atmosphere_scattering_hash(
@@ -201,6 +407,7 @@ struct AtmosphereViewLookupSnapshot {
   AtmosphereSunRevision sun{};
   AtmosphereCameraPositionRevision camera_position{};
   AtmosphereCameraOrientationRevision camera_orientation{};
+  AtmosphereShadowIntegratorRevision shadow_integrator{};
   AtmosphereShadowRevision shadow{};
   AtmosphereRenderOriginRevision render_origin{};
   AtmosphereTransport transport{default_atmosphere_transport};
@@ -273,6 +480,138 @@ struct AtmosphereScatteringReference {
   AtmosphereSpectrum transmittance{1.0,1.0,1.0};
 };
 
+// Split reference transport used to qualify every screen and froxel
+// representation. Terrain visibility attenuates direct single scattering at
+// the sample that creates it; it never subtracts already integrated radiance
+// and it does not shadow the current low-frequency multiple-scattering model.
+struct AtmosphereScatteringComponents {
+  AtmosphereSpectrum direct_single_scattering{};
+  AtmosphereSpectrum multiple_scattering{};
+  AtmosphereSpectrum transmittance{1.0,1.0,1.0};
+};
+
+using AtmosphereTerrainVisibilityFunction=
+    std::function<double(tetra::Vec3 position_from_planet_centre_metres)>;
+
+enum class AtmosphereEndpointClass : std::uint8_t { sky, opaque };
+
+struct AtmosphereReducedEndpoint {
+  AtmosphereEndpointClass classification{AtmosphereEndpointClass::sky};
+  float reversed_depth{};
+  double linear_depth_metres{};
+  double transition_confidence{1.0};
+  std::uint32_t generation{};
+};
+
+// Conservatively represents a 2x2 native footprint with its nearest opaque
+// endpoint. An all-clear footprint remains sky. Invalid depth is rejected so
+// it cannot enter temporal history as apparently valid geometry.
+[[nodiscard]] std::optional<AtmosphereReducedEndpoint>
+reduce_atmosphere_endpoint_2x2(
+    const std::array<float,4>& reversed_depth,
+    double near_plane_metres,std::uint32_t generation=0U) noexcept;
+
+[[nodiscard]] std::array<double,4> atmosphere_reconstruction_weights(
+    AtmosphereEndpointClass target_class,double target_linear_depth_metres,
+    const std::array<AtmosphereReducedEndpoint,4>& taps,
+    const std::array<double,4>& bilinear_weights,
+    double relative_depth_tolerance=0.05) noexcept;
+
+enum class AtmosphereHistoryInvalidation : std::uint32_t {
+  none=0U,
+  uninitialized=1U<<0U,
+  optical=1U<<1U,
+  scattering=1U<<2U,
+  sun=1U<<3U,
+  shadow_integrator=1U<<4U,
+  shadow=1U<<5U,
+  terrain=1U<<6U,
+  representation=1U<<7U,
+  extent=1U<<8U
+};
+
+struct AtmosphereScreenHistoryIdentity {
+  AtmosphereLookupRevisions revisions{};
+  std::uint64_t terrain_generation{};
+  std::uint64_t result_generation{};
+  std::uint32_t width{};
+  std::uint32_t height{};
+  std::uint32_t linear_resolution_divisor{2U};
+  std::uint32_t sample_count{32U};
+  AtmosphereTransport transport{default_atmosphere_transport};
+  AtmosphereRenderingMethod rendering_method{
+      AtmosphereRenderingMethod::deterministic_half_resolution};
+  bool valid{};
+};
+
+struct AtmosphereHistoryCompatibility {
+  std::uint32_t invalidation_mask{};
+  bool camera_changed{};
+  bool render_origin_changed{};
+  [[nodiscard]] constexpr bool compatible() const noexcept {
+    return invalidation_mask==0U;
+  }
+};
+
+// Cached visibility belongs to a specific camera ray. Unlike reconstructed
+// radiance, it cannot be safely clamped after reprojection: a stale binary
+// occlusion interval becomes a visible light shaft at the wrong screen
+// position. Static views may amortize exact queries, but every reprojected
+// view must refresh the complete interval set in the current frame.
+[[nodiscard]] constexpr std::uint32_t
+atmosphere_visibility_refresh_intervals(
+    bool temporal,const AtmosphereHistoryCompatibility& compatibility) noexcept {
+  return !temporal||!compatibility.compatible()||
+                 compatibility.camera_changed||
+                 compatibility.render_origin_changed?32U:2U;
+}
+
+// CPU mirror of the radial visibility reconstruction in atmosphere.comp.
+// Constant runs are preserved exactly; only intervals adjacent to a sampled
+// shadow transition are blended.
+[[nodiscard]] constexpr double atmosphere_interval_visibility(
+    double previous,double centre,double next) noexcept {
+  return (previous+2.0*centre+next)*0.25;
+}
+
+// Camera motion and render-origin rebasing are explicitly reprojectable.
+// Material, light, terrain/shadow, and representation changes are not: old
+// radiance must never be interpreted as a sample of the new transport.
+[[nodiscard]] AtmosphereHistoryCompatibility
+atmosphere_screen_history_compatibility(
+    const AtmosphereScreenHistoryIdentity& previous,
+    const AtmosphereScreenHistoryIdentity& current) noexcept;
+
+struct AtmosphereReprojectionCamera {
+  tetra::Vec3 position_from_planet_centre_metres{};
+  tetra::Vec3 right{1.0,0.0,0.0};
+  tetra::Vec3 down{0.0,1.0,0.0};
+  tetra::Vec3 forward{0.0,0.0,1.0};
+  double tangent_x{1.0};
+  double tangent_y{1.0};
+};
+
+struct AtmosphereReprojectedEndpoint {
+  double u{};
+  double v{};
+  double previous_linear_depth_metres{};
+};
+
+[[nodiscard]] std::optional<AtmosphereReprojectedEndpoint>
+reproject_atmosphere_endpoint(
+    const AtmosphereReprojectionCamera& current,
+    const AtmosphereReprojectionCamera& previous,double current_u,
+    double current_v,AtmosphereEndpointClass classification,
+    double current_linear_depth_metres) noexcept;
+
+[[nodiscard]] bool atmosphere_history_sample_compatible(
+    const AtmosphereReducedEndpoint& current,
+    const AtmosphereReducedEndpoint& previous,
+    double expected_previous_depth_metres,
+    std::uint32_t expected_previous_generation,
+    bool reprojection_inside_view,
+    double relative_depth_tolerance=0.05) noexcept;
+
 inline constexpr std::size_t atmosphere_boundary_probe_case_count=7U;
 inline constexpr std::size_t atmosphere_numeric_probe_base_value_count=10U;
 inline constexpr std::size_t atmosphere_numeric_probe_value_count=
@@ -314,6 +653,12 @@ using AtmosphereSkyRadianceFunction=
     std::function<AtmosphereSpectrum(tetra::Vec3 direction)>;
 
 [[nodiscard]] AtmosphereParameters atmosphere_preset(AtmospherePreset preset);
+// Expands the compact gameplay atmosphere around a known terrain envelope.
+// Molecular coefficients are rescaled inversely with scale height so the
+// vertical optical depth, and therefore the ground-level calibration, stays
+// constant while the visible limb has room above high relief.
+[[nodiscard]] AtmosphereParameters adapt_compact_atmosphere_to_relief(
+    AtmosphereParameters parameters,double maximum_relief_metres) noexcept;
 [[nodiscard]] std::optional<AtmospherePreset> parse_atmosphere_preset(
     std::string_view name);
 [[nodiscard]] std::string_view atmosphere_preset_name(AtmospherePreset preset);
@@ -390,6 +735,16 @@ atmosphere_multiple_scattering_reference(
     std::size_t view_steps=32U,
     std::size_t multiple_direction_count=16U,
     std::size_t multiple_ray_steps=8U);
+[[nodiscard]] AtmosphereScatteringComponents
+atmosphere_scattering_components_reference(
+    const AtmosphereParameters& parameters,
+    tetra::Vec3 position_from_planet_centre_metres,
+    tetra::Vec3 view_direction, tetra::Vec3 sun_direction,
+    double maximum_distance_metres,
+    const AtmosphereTerrainVisibilityFunction& terrain_visibility,
+    std::size_t view_steps=32U,
+    std::size_t multiple_direction_count=16U,
+    std::size_t multiple_ray_steps=8U);
 [[nodiscard]] AtmosphereNumericProbeValues atmosphere_numeric_probe_reference(
     const AtmosphereNumericProbeInput& input);
 [[nodiscard]] AtmosphereNumericProbeReport evaluate_atmosphere_numeric_probe(
@@ -410,6 +765,14 @@ atmosphere_multiple_scattering_reference(
 [[nodiscard]] double atmosphere_local_aerial_distance(
     const AtmosphereParameters& parameters, double camera_altitude_metres,
     double visible_distance_metres) noexcept;
+// Terrain relief can place a perfectly valid player below the atmosphere's
+// smooth reference ellipsoid.  Atmosphere lookups cannot use an observer
+// inside that opaque boundary; project only the transport observer to a
+// small positive altitude while scene geometry keeps its true position.
+[[nodiscard]] tetra::Vec3 clamp_atmosphere_camera_to_medium(
+    tetra::Vec3 position_from_planet_centre_metres,
+    const AtmosphereParameters& parameters,
+    double minimum_altitude_metres=1.0) noexcept;
 [[nodiscard]] double atmosphere_shadow_filter_visibility(
     std::size_t lit_samples, std::size_t sample_count,
     double footprint_fade) noexcept;

@@ -10,10 +10,29 @@ layout(rgba16f,set=0,binding=8) uniform image2D sky_irradiance_lut;
 layout(std430,set=0,binding=9) buffer AtmosphereProbe {
   vec4 values[31];
 } atmosphere_probe;
+layout(std430,set=0,binding=11) buffer AtmosphereShadowMinMax {
+  uvec2 ranges[];
+} atmosphere_shadow_minmax;
 #ifdef FAITHFUL_SHADOW_SPLIT
 layout(rgba16f,set=0,binding=10) uniform image2D long_shadow_lut;
 #endif
 layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
+layout(set=0,binding=12) uniform sampler2D scene_depth;
+layout(rgba16f,set=0,binding=13) uniform image2D screen_scattering;
+layout(rgba16f,set=0,binding=14) uniform image2D screen_transmittance;
+// x = linear endpoint depth, y = sky/opaque class, z = transition
+// confidence, w = bit-preserving result-generation identity.
+layout(rgba32f,set=0,binding=15) uniform image2D screen_endpoint;
+layout(rgba16f,set=0,binding=16) uniform image2D history_scattering_0;
+layout(rgba16f,set=0,binding=17) uniform image2D history_transmittance_0;
+layout(rgba32f,set=0,binding=18) uniform image2D history_endpoint_0;
+layout(rgba16f,set=0,binding=19) uniform image2D history_scattering_1;
+layout(rgba16f,set=0,binding=20) uniform image2D history_transmittance_1;
+layout(rgba32f,set=0,binding=21) uniform image2D history_endpoint_1;
+layout(rg32ui,set=0,binding=22) uniform uimage2D history_visibility_0;
+layout(rg32ui,set=0,binding=23) uniform uimage2D history_visibility_1;
+layout(rgba16f,set=0,binding=24) uniform image3D froxel_scattering;
+layout(rgba16f,set=0,binding=25) uniform image3D froxel_transmittance;
 
 layout(std140,set=0,binding=5) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -32,12 +51,20 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
   vec4 reserved1;
   vec4 reserved2;
   vec4 reserved3;
+  vec4 previous_camera_position_near;
+  vec4 previous_camera_right_tangent_x;
+  vec4 previous_camera_down_tangent_y;
+  vec4 previous_camera_forward;
+  // x = global history validity, y = previous generation bits,
+  // z = temporal blend, w = reserved.
+  vec4 temporal_control;
 } atmosphere;
 
 layout(std140,set=0,binding=7) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
   vec4 atmosphere_shadow_metadata;
+  vec4 epipolar_metadata;
 } shadow_cascades;
 
 layout(push_constant) uniform DispatchMode {
@@ -139,7 +166,7 @@ vec3 integrate_transmittance(vec3 origin,vec3 direction,float distance,
   vec3 optical_depth=vec3(0.0);
   const float closest_fraction=clamp(
       -dot(origin,direction)/distance,0.0,1.0);
-  for(int index=0;index<64;++index){
+  for(int index=0;index<128;++index){
     if(index>=steps)break;
     float fraction_begin=float(index)/float(steps);
     float fraction_end=float(index+1)/float(steps);
@@ -191,7 +218,106 @@ vec4 checked_lut_value(vec3 value,float maximum_value) {
 }
 
 bool faithful_transport(){return atmosphere.reserved1.y>0.5;}
-bool numeric_probe(){return atmosphere.reserved1.z>0.5;}
+bool numeric_probe(){return int(floor(atmosphere.reserved1.z/10.0))%10==1;}
+int shadow_filter_mode(){return int(mod(atmosphere.reserved1.z,10.0)+0.5);}
+bool dynamic_sun(){return atmosphere.reserved1.z>=99.5;}
+int dynamic_sun_shadow_phase(){
+  return int(floor(atmosphere.reserved1.z/1000.0))-1;
+}
+float atmosphere_comparison_bias_world(){
+  return max(shadow_cascades.epipolar_metadata.z,0.0);
+}
+
+uint shadow_minmax_level_offset(uint level,uint base_resolution) {
+  uint offset=0U;
+  uint size=base_resolution;
+  for(uint current=0U;current<level;++current){
+    offset+=size*size;
+    size=max(1U,(size+1U)/2U);
+  }
+  return offset;
+}
+
+uint shadow_minmax_level_size(uint level,uint base_resolution) {
+  uint size=base_resolution;
+  for(uint current=0U;current<level;++current)
+    size=max(1U,(size+1U)/2U);
+  return size;
+}
+
+vec2 shadow_minmax_load(uint level,ivec2 coordinate,uint base_resolution) {
+  const uint size=shadow_minmax_level_size(level,base_resolution);
+  coordinate=clamp(coordinate,ivec2(0),ivec2(int(size)-1));
+  return uintBitsToFloat(atmosphere_shadow_minmax.ranges[
+      shadow_minmax_level_offset(level,base_resolution)+
+      uint(coordinate.y)*size+uint(coordinate.x)]);
+}
+
+uint epipolar_level_offset(uint level,uint radial_resolution,
+                           uint angular_rows) {
+  uint offset=0U;
+  uint width=radial_resolution;
+  for(uint current=0U;current<level;++current){
+    offset+=width*angular_rows;
+    width=max(1U,(width+1U)/2U);
+  }
+  return offset;
+}
+
+uint epipolar_level_width(uint level,uint radial_resolution) {
+  uint width=radial_resolution;
+  for(uint current=0U;current<level;++current)
+    width=max(1U,(width+1U)/2U);
+  return width;
+}
+
+vec2 epipolar_minmax_load(uint level,int radial,int row,
+                          uint radial_resolution,uint angular_rows) {
+  const uint width=epipolar_level_width(level,radial_resolution);
+  radial=clamp(radial,0,int(width)-1);
+  row=(row%int(angular_rows)+int(angular_rows))%int(angular_rows);
+  return uintBitsToFloat(atmosphere_shadow_minmax.ranges[
+      epipolar_level_offset(level,radial_resolution,angular_rows)+
+      uint(row)*width+uint(radial)]);
+}
+
+float epipolar_radius_to_guarded_square(vec2 origin,vec2 direction) {
+  float distance=1.0e20;
+  if(direction.x>1.0e-7)distance=min(distance,(0.94-origin.x)/direction.x);
+  if(direction.x<-1.0e-7)distance=min(distance,(-0.94-origin.x)/direction.x);
+  if(direction.y>1.0e-7)distance=min(distance,(0.94-origin.y)/direction.y);
+  if(direction.y<-1.0e-7)distance=min(distance,(-0.94-origin.y)/direction.y);
+  return max(distance,0.0);
+}
+
+float epipolar_blocker_angle(float projected_radius,float blocker_depth,
+                             float camera_depth) {
+  // Cascade 3 has half_width=split/0.75 and
+  // depth_span=4*half_width.  Reconstruct only the two components needed for
+  // the angle between the camera-to-blocker ray and the sun direction.  The
+  // rectified map stores this angle (beta), not ordinary shadow-map depth.
+  const float half_width=shadow_cascades.shadow_splits.w*(4.0/3.0);
+  const float depth_span=half_width*4.0;
+  const float perpendicular=max(projected_radius,0.0)*half_width;
+  const float parallel=-(blocker_depth-camera_depth)*depth_span;
+  return atan(perpendicular,parallel);
+}
+
+uint epipolar_radial_resolution() {
+#ifndef FAITHFUL_SHADOW_SPLIT
+  return 0U;
+#else
+  return uint(round(shadow_cascades.epipolar_metadata.x));
+#endif
+}
+
+uint epipolar_angular_rows() {
+#ifndef FAITHFUL_SHADOW_SPLIT
+  return 0U;
+#else
+  return uint(round(shadow_cascades.epipolar_metadata.y));
+#endif
+}
 
 vec2 linear_lookup_uv(float altitude,float cosine_angle) {
   return vec2(clamp(cosine_angle*0.5+0.5,0.0,1.0),
@@ -298,6 +424,12 @@ float bilinear_shadow_visibility(vec2 uv,float layer,float receiver_depth,
                                  float bias) {
   const ivec2 size=textureSize(sun_shadow_map,0).xy;
   const vec2 texel_position=uv*vec2(size)-0.5;
+  if(shadow_filter_mode()==0){
+    const ivec2 coordinate=clamp(ivec2(round(texel_position)),ivec2(0),size-1);
+    const float blocker=texelFetch(
+        sun_shadow_map,ivec3(coordinate,int(layer)),0).r;
+    return receiver_depth-bias<=blocker?1.0:0.0;
+  }
   const ivec2 low=ivec2(floor(texel_position));
   const ivec2 high=low+1;
   const vec2 fraction=fract(texel_position);
@@ -316,6 +448,76 @@ float bilinear_shadow_visibility(vec2 uv,float layer,float receiver_depth,
              mix(upper_left,upper_right,fraction.x),fraction.y);
 }
 
+
+float physical_shadow_visibility(vec2 uv,float layer,float receiver_depth,
+                                 float bias,float footprint_texels) {
+  if(shadow_filter_mode()!=2)
+    return bilinear_shadow_visibility(uv,layer,receiver_depth,bias);
+  const vec2 texel=1.0/vec2(textureSize(sun_shadow_map,0).xy);
+  const float radius=clamp(footprint_texels,0.5,2.5);
+  float visibility=0.0;
+  float total=0.0;
+  for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+    const float weight=(x==0?2.0:1.0)*(y==0?2.0:1.0);
+    visibility+=weight*bilinear_shadow_visibility(
+        uv+vec2(x,y)*texel*radius,layer,receiver_depth,bias);
+    total+=weight;
+  }
+  return visibility/total;
+}
+
+float moment_hybrid_shadow_visibility(vec2 uv,float layer,
+                                      float receiver_depth,float bias,
+                                      float footprint_texels) {
+  const float fallback=physical_shadow_visibility(
+      uv,layer,receiver_depth,bias,footprint_texels);
+  if(int(atmosphere.reserved1.w+0.5)!=4)return fallback;
+  const ivec2 size=textureSize(sun_shadow_map,0).xy;
+  const ivec2 centre=clamp(ivec2(floor(uv*vec2(size))),ivec2(0),size-1);
+  vec4 moments=vec4(0.0);
+  float support0=-1.0;
+  float support1=-1.0;
+  int support_count=0;
+  for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+    // Form moments at each source sample and only then filter them. Filtering
+    // depth first and exponentiating the interpolated result is not a moment
+    // shadow map and hides the very depth complexity the confidence gate is
+    // meant to detect.
+    const float depth=texelFetch(sun_shadow_map,
+        ivec3(clamp(centre+ivec2(x,y),ivec2(0),size-1),int(layer)),0).r;
+    const float square=depth*depth;
+    moments+=vec4(depth,square,square*depth,square*square);
+    if(support_count==0){support0=depth;support_count=1;}
+    else if(abs(depth-support0)>2.0e-4&&support_count==1){
+      support1=depth;support_count=2;
+    }else if(abs(depth-support0)>2.0e-4&&
+             abs(depth-support1)>2.0e-4) support_count=3;
+  }
+  moments/=9.0;
+  if(support_count>2)return fallback;
+  const float threshold=receiver_depth-bias;
+  const float variance=moments.y-moments.x*moments.x;
+  if(variance<=1.0e-7)return threshold<=moments.x?1.0:0.0;
+  const float support_sum=(moments.z-moments.x*moments.y)/variance;
+  const float support_product=support_sum*moments.x-moments.y;
+  const float discriminant=support_sum*support_sum-4.0*support_product;
+  if(discriminant<0.0)return fallback;
+  const float root=sqrt(discriminant);
+  const float first=0.5*(support_sum-root);
+  const float second=0.5*(support_sum+root);
+  if(first<-1.0e-4||second>1.0001||second-first<=1.0e-6)return fallback;
+  const float predicted_fourth=support_sum*moments.z-
+      support_product*moments.y;
+  const float residual=abs(predicted_fourth-moments.w);
+  // Confidence gating is deliberately strict: a third depth layer, numerical
+  // instability, or a broad reconstruction goes through the qualified path.
+  if(residual>1.0e-5)return fallback;
+  const float first_weight=clamp(
+      (second-moments.x)/(second-first),0.0,1.0);
+  return (threshold<=first?first_weight:0.0)+
+      (threshold<=second?1.0-first_weight:0.0);
+}
+
 float atmosphere_fitted_visibility(vec3 point_world) {
   const vec3 projected=(shadow_cascades.shadow_matrices[4]*
       vec4(point_world,1.0)).xyz;
@@ -325,8 +527,14 @@ float atmosphere_fitted_visibility(vec3 point_world) {
   const float fitted_scale=shadow_cascades.atmosphere_shadow_metadata.w;
   const vec2 uv=(projected.xy*0.5+0.5)*fitted_scale;
   const float bias=shadow_cascades.atmosphere_shadow_metadata.z;
-  const float visibility=bilinear_shadow_visibility(
-      uv,4.0,projected.z,bias);
+  const float distance_world=length(point_world-atmosphere.reserved0.xyz);
+  const float fitted_texel_world=max(
+      2.0*shadow_cascades.atmosphere_shadow_metadata.y/
+      max(float(textureSize(sun_shadow_map,0).x)*fitted_scale,1.0),1.0e-6);
+  const float solar_footprint=tan(atmosphere.profile_and_mode.z)*
+      distance_world/fitted_texel_world;
+  const float visibility=moment_hybrid_shadow_visibility(
+      uv,4.0,projected.z,bias,solar_footprint);
   const float coverage=1.0-smoothstep(
       0.94,0.995,max(abs(projected.x),abs(projected.y)));
   return mix(1.0,visibility,coverage);
@@ -339,9 +547,19 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade,
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
      projected.z<0.0||projected.z>1.0)return fallback_visibility;
   const vec2 uv=projected.xy*0.5+0.5;
-  const float bias=0.00045*(1.0+float(cascade)*0.45);
-  const float visibility=bilinear_shadow_visibility(
-      uv,float(cascade),projected.z,bias);
+  // Keep receiver bias constant in world space across cascades. The split is
+  // 0.75 of the orthographic half-width and the depth span is four widths.
+  const float depth_span=max(
+      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+  const float bias=atmosphere_comparison_bias_world()/depth_span;
+  const float texel_world=2.0*shadow_cascades.shadow_splits[cascade]*
+      (2.0/3.0)/float(textureSize(sun_shadow_map,0).x);
+  const float receiver_distance=length(
+      point_world-atmosphere.reserved0.xyz);
+  const float solar_footprint=tan(atmosphere.profile_and_mode.z)*
+      receiver_distance/max(texel_world,1.0e-6);
+  const float visibility=moment_hybrid_shadow_visibility(
+      uv,float(cascade),projected.z,bias,solar_footprint);
   const float footprint=max(abs(projected.x),abs(projected.y));
   const float footprint_fade=1.0-smoothstep(0.88,0.98,footprint);
   // Preserve unit visibility for an unoccluded sample on both sides of the
@@ -349,7 +567,14 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade,
   // region four times brighter and produced a yellow halo behind mountains.
   const float filtered_visibility=faithful_transport()?
       visibility:visibility*4.0;
-  return mix(fallback_visibility,filtered_visibility,footprint_fade);
+  const float local_visibility=mix(
+      fallback_visibility,filtered_visibility,footprint_fade);
+  // A low sun can place the caster far outside a receiver's local cascade
+  // depth range even though the receiver itself is well inside that cascade.
+  // The fitted map carries those long-range casters. It is therefore an
+  // additional conservative visibility constraint, not merely an
+  // out-of-footprint fallback.
+  return min(local_visibility,fallback_visibility);
 }
 
 float atmosphere_sun_visibility(vec3 point_metres) {
@@ -369,6 +594,14 @@ float atmosphere_sun_visibility(vec3 point_metres) {
   const float current=atmosphere_cascade_visibility(
       point_world,cascade,fitted);
   if(cascade==3){
+    // The split distance is a selection threshold, not the physical edge of
+    // the outer orthographic map.  While the asynchronous fitted front is
+    // unavailable, fading to its unit-visibility fallback at the split
+    // discards valid outer-cascade occluders that are still well inside that
+    // map.  This was precisely the direct Mie light left on a mountain with
+    // the sun behind it.  The footprint fade inside `current` remains the
+    // conservative transition at the actual sampled-map boundary.
+    if(shadow_cascades.atmosphere_shadow_metadata.x<0.999)return current;
     const float outer_fade=smoothstep(
         shadow_cascades.shadow_splits.w*0.80,
         shadow_cascades.shadow_splits.w,distance_world);
@@ -380,6 +613,269 @@ float atmosphere_sun_visibility(vec3 point_metres) {
   const float blend=smoothstep(mix(previous,split,0.85),split,distance_world);
   return mix(current,atmosphere_cascade_visibility(
       point_world,cascade+1,fitted),blend);
+}
+
+float atmosphere_minmax_classify_segment(vec3 origin_metres,
+                                         vec3 direction,
+                                         float distance_begin,
+                                         float distance_end) {
+  if(numeric_probe())return -2.0;
+  if(shadow_cascades.atmosphere_shadow_metadata.x<0.999)return -2.0;
+  const float metres_per_world=atmosphere.profile_and_mode.y;
+  const vec3 first_world=atmosphere.reserved0.xyz+
+      (origin_metres+direction*distance_begin-
+       atmosphere.camera_position_near.xyz)/metres_per_world;
+  const vec3 last_world=atmosphere.reserved0.xyz+
+      (origin_metres+direction*distance_end-
+       atmosphere.camera_position_near.xyz)/metres_per_world;
+  // The fitted map is intentionally lower resolution than the local outer
+  // cascade. It cannot prove light inside that cascade without risking a
+  // missed sub-texel ridge, so the qualified path keeps local point samples
+  // authoritative there. The epipolar mode rectifies cascade 3 instead.
+  if(length(first_world-atmosphere.reserved0.xyz)<
+         shadow_cascades.shadow_splits.w||
+     length(last_world-atmosphere.reserved0.xyz)<
+         shadow_cascades.shadow_splits.w)return -2.0;
+  const vec3 first_projected=(shadow_cascades.shadow_matrices[4]*
+      vec4(first_world,1.0)).xyz;
+  const vec3 last_projected=(shadow_cascades.shadow_matrices[4]*
+      vec4(last_world,1.0)).xyz;
+  if(any(greaterThan(max(abs(first_projected.xy),abs(last_projected.xy)),
+                     vec2(0.94)))||
+     min(first_projected.z,last_projected.z)<0.0||
+     max(first_projected.z,last_projected.z)>1.0)return -2.0;
+  const uint base_resolution=uint(round(
+      float(textureSize(sun_shadow_map,0).x)*
+      shadow_cascades.atmosphere_shadow_metadata.w));
+  if(base_resolution==0U)return -2.0;
+  const vec2 first_texel=(first_projected.xy*0.5+0.5)*
+      float(base_resolution)-0.5;
+  const vec2 last_texel=(last_projected.xy*0.5+0.5)*
+      float(base_resolution)-0.5;
+  const float filter_guard=shadow_filter_mode()==2?2.5:
+      (shadow_filter_mode()==1?1.0:0.0);
+  const vec2 minimum_texel=min(first_texel,last_texel)-filter_guard;
+  const vec2 maximum_texel=max(first_texel,last_texel)+filter_guard;
+  const float span=max(maximum_texel.x-minimum_texel.x,
+                       maximum_texel.y-minimum_texel.y);
+  uint level=0U;
+  float level_scale=1.0;
+  while(level<15U&&span/level_scale>1.0){
+    ++level;
+    level_scale*=2.0;
+  }
+  const ivec2 low=ivec2(floor(minimum_texel/level_scale));
+  const ivec2 high=ivec2(floor(maximum_texel/level_scale));
+  vec2 depth_range=vec2(1.0,0.0);
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+    const ivec2 coordinate=ivec2(x==0?low.x:high.x,
+                                 y==0?low.y:high.y);
+    const vec2 range=shadow_minmax_load(level,coordinate,base_resolution);
+    depth_range.x=min(depth_range.x,range.x);
+    depth_range.y=max(depth_range.y,range.y);
+  }
+  const float receiver_min=min(first_projected.z,last_projected.z);
+  const float receiver_max=max(first_projected.z,last_projected.z);
+  const float bias=shadow_cascades.atmosphere_shadow_metadata.z;
+  if(receiver_max-bias<=depth_range.x)return 1.0;
+  if(receiver_min-bias>depth_range.y)return 0.0;
+  return -1.0;
+}
+
+float atmosphere_minmax_range_visibility(vec3 origin_metres,
+                                         vec3 direction,
+                                         float distance_begin,
+                                         float distance_end) {
+  // Until the rectified epipolar prepass exists, keep one conservative query
+  // here. Repeating a full hierarchy walk independently in every atmosphere
+  // sample caused multi-minute ridge frames. Ambiguous ranges retain the
+  // bounded adaptive fallback below; the prepass will own exact intervals.
+  return atmosphere_minmax_classify_segment(
+      origin_metres,direction,distance_begin,distance_end);
+}
+
+uint epipolar_last_visited_nodes=0U;
+uint epipolar_last_emitted_intervals=0U;
+uint epipolar_last_fallbacks=0U;
+uint epipolar_last_overflows=0U;
+
+uint epipolar_counter_base() {
+  return uint(shadow_cascades.epipolar_metadata.w+0.5)-2U;
+}
+
+void reset_epipolar_invocation_counters() {
+  epipolar_last_visited_nodes=0U;
+  epipolar_last_emitted_intervals=0U;
+  epipolar_last_fallbacks=0U;
+  epipolar_last_overflows=0U;
+}
+
+void commit_epipolar_invocation_counters() {
+  if(int(atmosphere.reserved1.w+0.5)!=5)return;
+  const uint base=epipolar_counter_base();
+  atomicAdd(atmosphere_shadow_minmax.ranges[base].x,
+            epipolar_last_visited_nodes);
+  atomicAdd(atmosphere_shadow_minmax.ranges[base].y,
+            epipolar_last_emitted_intervals);
+  atomicAdd(atmosphere_shadow_minmax.ranges[base+1U].x,
+            epipolar_last_fallbacks);
+  atomicAdd(atmosphere_shadow_minmax.ranges[base+1U].y,
+            epipolar_last_overflows);
+}
+
+float epipolar_fallback() {
+  ++epipolar_last_fallbacks;
+  return -2.0;
+}
+
+float atmosphere_epipolar_range_visibility(vec3 origin_metres,
+                                            vec3 direction,
+                                            float distance_begin,
+                                            float distance_end) {
+#ifndef FAITHFUL_SHADOW_SPLIT
+  return epipolar_fallback();
+#else
+  if(numeric_probe())return epipolar_fallback();
+  const float metres_per_world=atmosphere.profile_and_mode.y;
+  const float first_distance_world=distance_begin/metres_per_world;
+  const float last_distance_world=distance_end/metres_per_world;
+  // This hierarchy rectifies local cascade 3. Closer samples select or blend
+  // higher-resolution cascades, while the final outer band blends to the
+  // independently fitted map. A classification from cascade 3 alone is not a
+  // proof in either region, so preserve the qualified point fallback there.
+  if(first_distance_world<shadow_cascades.shadow_splits.z||
+     last_distance_world>shadow_cascades.shadow_splits.w*0.80)
+    return epipolar_fallback();
+  const vec3 first_world=atmosphere.reserved0.xyz+
+      (origin_metres+direction*distance_begin-
+       atmosphere.camera_position_near.xyz)/metres_per_world;
+  const vec3 last_world=atmosphere.reserved0.xyz+
+      (origin_metres+direction*distance_end-
+       atmosphere.camera_position_near.xyz)/metres_per_world;
+  const vec3 camera_projected=(shadow_cascades.shadow_matrices[3]*
+      vec4(atmosphere.reserved0.xyz,1.0)).xyz;
+  const vec3 first_projected=(shadow_cascades.shadow_matrices[3]*
+      vec4(first_world,1.0)).xyz;
+  const vec3 last_projected=(shadow_cascades.shadow_matrices[3]*
+      vec4(last_world,1.0)).xyz;
+  if(any(greaterThanEqual(abs(camera_projected.xy),vec2(0.94)))||
+     any(greaterThan(max(abs(first_projected.xy),abs(last_projected.xy)),
+                     vec2(0.94)))||
+     min(first_projected.z,last_projected.z)<0.0||
+     max(first_projected.z,last_projected.z)>1.0)return epipolar_fallback();
+  const vec2 projected_direction=last_projected.xy-first_projected.xy;
+  const float projected_length=length(projected_direction);
+  // The epipole is singular: a direction parallel to the sun projects to a
+  // point rather than a row. Keep the qualified bounded marcher there.
+  if(projected_length<1.0e-6)return epipolar_fallback();
+  const vec2 row_direction=projected_direction/projected_length;
+  const float radius=epipolar_radius_to_guarded_square(
+      camera_projected.xy,row_direction);
+  if(radius<=1.0e-6)return epipolar_fallback();
+  const float q0=dot(first_projected.xy-camera_projected.xy,row_direction)/
+      radius;
+  const float q1=dot(last_projected.xy-camera_projected.xy,row_direction)/
+      radius;
+  if(min(q0,q1)<0.0||max(q0,q1)>1.0)return epipolar_fallback();
+  const uint radial_resolution=epipolar_radial_resolution();
+  const uint angular_rows=epipolar_angular_rows();
+  if(radial_resolution==0U||angular_rows==0U)return epipolar_fallback();
+  const float angle=atan(row_direction.y,row_direction.x);
+  int row=int(floor((angle+PI)/(2.0*PI)*float(angular_rows)));
+  row=(row%int(angular_rows)+int(angular_rows))%int(angular_rows);
+  const float radial_low=min(q0,q1)*float(radial_resolution);
+  const float radial_high=max(q0,q1)*float(radial_resolution);
+  const float span=max(radial_high-radial_low,1.0);
+  // In true epipolar coordinates beta is constant along an un-biased camera
+  // ray.  Apply the physical comparison tolerance by moving the receiver
+  // toward the sun before deriving beta; checking both endpoints bounds the
+  // small distance-dependent angular change introduced by that move.
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const vec3 first_biased=direction*max(distance_begin,0.0)+
+      sun_direction*atmosphere_comparison_bias_world()*
+          atmosphere.profile_and_mode.y;
+  const vec3 last_biased=direction*max(distance_end,0.0)+
+      sun_direction*atmosphere_comparison_bias_world()*
+          atmosphere.profile_and_mode.y;
+  const float first_beta=acos(clamp(dot(normalize(first_biased),sun_direction),
+                                    -1.0,1.0));
+  const float last_beta=acos(clamp(dot(normalize(last_biased),sun_direction),
+                                   -1.0,1.0));
+  const float receiver_min=min(first_beta,last_beta);
+  const float receiver_max=max(first_beta,last_beta);
+  const uint query_begin=min(uint(floor(radial_low)),radial_resolution-1U);
+  const uint query_end=min(max(uint(ceil(radial_high)),query_begin+1U),
+                           radial_resolution);
+  uint root_level=0U;
+  for(uint width=radial_resolution;width>1U;
+      width=max(1U,(width+1U)/2U))++root_level;
+  uint stack_levels[16];
+  uint stack_indices[16];
+  uint stack_count=1U;
+  stack_levels[0]=root_level;
+  stack_indices[0]=0U;
+  int uniform_class=-1;
+  uint visited_nodes=0U;
+  while(stack_count>0U){
+    --stack_count;
+    const uint node_level=stack_levels[stack_count];
+    const uint node_index=stack_indices[stack_count];
+    const uint scale=1U<<node_level;
+    const uint node_begin=node_index*scale;
+    const uint node_end=min(node_begin+scale,radial_resolution);
+    if(node_end<=query_begin||node_begin>=query_end)continue;
+    if(++visited_nodes>128U){
+      epipolar_last_visited_nodes+=visited_nodes;
+      ++epipolar_last_overflows;
+      return epipolar_fallback();
+    }
+    const vec2 node_range=epipolar_minmax_load(
+        node_level,int(node_index),row,radial_resolution,angular_rows);
+    int node_class=-1;
+    if(receiver_max<node_range.x)node_class=1;
+    else if(receiver_min>=node_range.y)node_class=0;
+    if(node_class>=0){
+      ++epipolar_last_emitted_intervals;
+      if(uniform_class<0)uniform_class=node_class;
+      else if(uniform_class!=node_class){
+        epipolar_last_visited_nodes+=visited_nodes;
+        const int substeps=clamp(int(ceil(span)),2,32);
+        return -float(substeps+2);
+      }
+      continue;
+    }
+    if(node_level==0U){
+      epipolar_last_visited_nodes+=visited_nodes;
+      const int substeps=clamp(int(ceil(span)),2,32);
+      return -float(substeps+2);
+    }
+    if(stack_count+2U>16U){
+      epipolar_last_visited_nodes+=visited_nodes;
+      ++epipolar_last_overflows;
+      return epipolar_fallback();
+    }
+    const uint child_level=node_level-1U;
+    const uint child_width=epipolar_level_width(
+        child_level,radial_resolution);
+    const uint left=node_index*2U;
+    const uint right=left+1U;
+    // Push right first so the depth-first traversal visits radial intervals
+    // in increasing order when it pops the left child.
+    if(right<child_width){
+      stack_levels[stack_count]=child_level;
+      stack_indices[stack_count++]=right;
+    }
+    stack_levels[stack_count]=child_level;
+    stack_indices[stack_count++]=left;
+  }
+  epipolar_last_visited_nodes+=visited_nodes;
+  if(uniform_class>=0)return float(uniform_class);
+  // Ask the integration loop for ordered radial subdivisions. Distance and
+  // epipolar radius are affine on a directional camera ray, so these
+  // subdivisions align with the rectified row.
+  const int substeps=clamp(int(ceil(span)),2,32);
+  return -float(substeps+2);
+#endif
 }
 
 float rayleigh_phase(float cosine_angle) {
@@ -493,6 +989,9 @@ vec3 full_sky_load(vec3 direction) {
   return mix(lower,upper,fraction.y);
 }
 
+float atmosphere_minmax_range_visibility(vec3 origin_metres,
+    vec3 direction,float distance_begin,float distance_end);
+
 vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
                           out vec3 path_transmittance) {
   float begin,end;
@@ -512,6 +1011,8 @@ vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
   const float phase_mie=mie_phase(phase_cosine);
   vec3 radiance=vec3(0.0);
   vec3 transmittance=vec3(1.0);
+  const int shadow_integrator=int(atmosphere.reserved1.w+0.5);
+  if(shadow_integrator==0){
   for(int index=0;index<steps;++index){
     const float interval_begin=float(index)/float(steps);
     const float interval_end=float(index+1)/float(steps);
@@ -537,6 +1038,73 @@ vec3 integrate_scattering(vec3 origin,vec3 direction,float maximum_distance,
         max(local_extinction,vec3(1.0e-9));
     radiance+=transmittance*source*integral;
     transmittance*=segment_transmittance;
+  }
+  path_transmittance=transmittance;
+  return radiance;
+  }
+  for(int index=0;index<steps;++index){
+    const float interval_begin=float(index)/float(steps);
+    const float interval_end=float(index+1)/float(steps);
+    const float base_begin=begin+
+        segment_length*interval_begin*interval_begin;
+    const float base_end=begin+
+        segment_length*interval_end*interval_end;
+    const float base_middle=0.5*(base_begin+base_end);
+    const float visibility_begin=atmosphere_sun_visibility(
+        origin+direction*base_begin);
+    const float visibility_middle=atmosphere_sun_visibility(
+        origin+direction*base_middle);
+    const float visibility_end=atmosphere_sun_visibility(
+        origin+direction*base_end);
+    const float visibility_range=max(visibility_begin,
+        max(visibility_middle,visibility_end))-min(visibility_begin,
+        min(visibility_middle,visibility_end));
+    const float minmax_visibility=shadow_integrator==5?
+        atmosphere_epipolar_range_visibility(origin,direction,base_begin,
+                                              base_end):
+        ((shadow_integrator==2||shadow_integrator==4)?
+        atmosphere_minmax_range_visibility(origin,direction,base_begin,
+                                            base_end):-2.0);
+    const int hierarchy_substeps=minmax_visibility<=-3.0?
+        clamp(int(round(-minmax_visibility))-2,2,32):1;
+    int substeps=hierarchy_substeps>1?hierarchy_substeps:
+        (visibility_range>0.02?8:1);
+    if(shadow_integrator==3)substeps=32;
+    for(int substep=0;substep<32;++substep){
+      if(substep>=substeps)break;
+      const float sub_begin=mix(base_begin,base_end,
+          float(substep)/float(substeps));
+      const float sub_end=mix(base_begin,base_end,
+          float(substep+1)/float(substeps));
+      const float step_length=sub_end-sub_begin;
+      const float distance=0.5*(sub_begin+sub_end);
+      const vec3 point=origin+direction*distance;
+      const vec3 density=densities(length(point)-ground_radius());
+      const vec3 local_extinction=extinction(density);
+      const vec3 segment_transmittance=exp(-local_extinction*step_length);
+      float resolved_visibility=substeps==1&&minmax_visibility>=0.0?
+          minmax_visibility:-1.0;
+      // A -2 result explicitly delegates this interval to the qualified
+      // point sampler. Re-query only when the hierarchy requested ordered
+      // subdivisions; otherwise every substep would repeat the same known
+      // out-of-domain fallback.
+      if(shadow_integrator==5&&minmax_visibility<=-3.0)
+        resolved_visibility=atmosphere_epipolar_range_visibility(
+            origin,direction,sub_begin,sub_end);
+      const float direct_visibility=resolved_visibility>=0.0?
+          resolved_visibility:atmosphere_sun_visibility(point);
+      const vec3 direct_source=(
+          atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
+          atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie)*
+          lookup_transmittance(point,sun_direction)*
+          atmosphere.solar_absorption_peak.rgb*
+          direct_visibility;
+      const vec3 multiple_source=lookup_multiple_scattering(point,sun_direction);
+      const vec3 integral=(vec3(1.0)-segment_transmittance)/
+          max(local_extinction,vec3(1.0e-9));
+      radiance+=transmittance*(direct_source+multiple_source)*integral;
+      transmittance*=segment_transmittance;
+    }
   }
   path_transmittance=transmittance;
   return radiance;
@@ -588,10 +1156,12 @@ vec3 integrate_scattering_unshadowed(vec3 origin,vec3 direction,
   return radiance;
 }
 
-vec3 integrate_direct_shadow_loss(vec3 origin,vec3 direction,
-                                  float maximum_distance,
-                                  out float maximum_shadow_loss) {
+vec3 integrate_shadowed_direct_radiance(vec3 origin,vec3 direction,
+                                        float maximum_distance,
+                                        out float maximum_shadow_loss,
+                                        out vec3 unshadowed_direct) {
   maximum_shadow_loss=0.0;
+  unshadowed_direct=vec3(0.0);
   float begin,end;
   if(!medium_segment(origin,direction,begin,end)||maximum_distance<=begin)
     return vec3(0.0);
@@ -602,8 +1172,11 @@ vec3 integrate_direct_shadow_loss(vec3 origin,vec3 direction,
   const float phase_cosine=dot(direction,sun_direction);
   const float phase_rayleigh=rayleigh_phase(phase_cosine);
   const float phase_mie=mie_phase(phase_cosine);
-  vec3 loss=vec3(0.0);
+  vec3 shadowed_direct=vec3(0.0);
   vec3 transmittance=vec3(1.0);
+  const int shadow_integrator=int(atmosphere.reserved1.w+0.5);
+  // Preserve the qualified fixed path exactly as the comparison control.
+  if(shadow_integrator==0){
   for(int index=0;index<steps;++index){
     const float interval_begin=float(index)/float(steps);
     const float interval_end=float(index+1)/float(steps);
@@ -622,14 +1195,111 @@ vec3 integrate_direct_shadow_loss(vec3 origin,vec3 direction,
         atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie)*
         lookup_transmittance(point,sun_direction)*
         atmosphere.solar_absorption_peak.rgb;
-    const float shadow_loss=1.0-atmosphere_sun_visibility(point);
+    const float direct_visibility=atmosphere_sun_visibility(point);
+    const float shadow_loss=1.0-direct_visibility;
     maximum_shadow_loss=max(maximum_shadow_loss,shadow_loss);
     const vec3 integral=(vec3(1.0)-segment_transmittance)/
         max(local_extinction,vec3(1.0e-9));
-    loss+=transmittance*direct_source*shadow_loss*integral;
+    unshadowed_direct+=transmittance*direct_source*integral;
+    shadowed_direct+=transmittance*direct_source*direct_visibility*integral;
     transmittance*=segment_transmittance;
   }
-  return loss;
+  return shadowed_direct;
+  }
+  // The final faithful compositor samples a horizon ray in radial-altitude
+  // space. The former cache sampled the same ray in squared camera-distance
+  // space. Around a low sun those two grids do not overlap: the terrain query
+  // can report a fully occluded ray while every radiometric sample lands where
+  // the direct source has underflowed. Accumulate the shadowed numerator on
+  // exactly the compositor's 16+16 altitude intervals so its bounded
+  // visibility ratio describes the same light. Only visibility
+  // discontinuities receive additional substeps.
+  const float closest=clamp(-dot(origin,direction),begin,end);
+  const float closest_radius=length(origin+direction*closest);
+  const float closest_altitude=max(closest_radius-ground_radius(),0.0);
+  const float mie_scale=max(atmosphere.absorption_mie_scale.w,1.0);
+  const float altitude_power=mix(2.0,5.0,
+      exp(-closest_altitude/(4.0*mie_scale)));
+  const int half_steps=steps/2;
+  for(int index=0;index<steps;++index){
+    const bool before=index<half_steps;
+    const int local_index=before?index:index-half_steps;
+    const float u0=float(local_index)/float(half_steps);
+    const float u1=float(local_index+1)/float(half_steps);
+    const float side_distance=before?begin:end;
+    const float side_altitude=max(
+        length(origin+direction*side_distance)-ground_radius(),
+        closest_altitude);
+    const float altitude_begin=mix(closest_altitude,side_altitude,
+        pow(before?1.0-u0:u0,altitude_power));
+    const float altitude_end=mix(closest_altitude,side_altitude,
+        pow(before?1.0-u1:u1,altitude_power));
+    const float offset_begin=sqrt(max(
+        (ground_radius()+altitude_begin)*(ground_radius()+altitude_begin)-
+        closest_radius*closest_radius,0.0));
+    const float offset_end=sqrt(max(
+        (ground_radius()+altitude_end)*(ground_radius()+altitude_end)-
+        closest_radius*closest_radius,0.0));
+    const float base_begin=closest+(before?-offset_begin:offset_begin);
+    const float base_end=closest+(before?-offset_end:offset_end);
+    if(base_end<=base_begin)continue;
+    const float base_middle=0.5*(base_begin+base_end);
+    const float visibility_begin=atmosphere_sun_visibility(
+        origin+direction*base_begin);
+    const float visibility_middle=atmosphere_sun_visibility(
+        origin+direction*base_middle);
+    const float visibility_end=atmosphere_sun_visibility(
+        origin+direction*base_end);
+    const float visibility_range=max(visibility_begin,
+        max(visibility_middle,visibility_end))-min(visibility_begin,
+        min(visibility_middle,visibility_end));
+    const float minmax_visibility=shadow_integrator==5?
+        atmosphere_epipolar_range_visibility(origin,direction,base_begin,
+                                              base_end):
+        ((shadow_integrator==2||shadow_integrator==4)?
+        atmosphere_minmax_range_visibility(origin,direction,base_begin,
+                                            base_end):-2.0);
+    const int hierarchy_substeps=minmax_visibility<=-3.0?
+        clamp(int(round(-minmax_visibility))-2,2,32):1;
+    int substeps=hierarchy_substeps>1?hierarchy_substeps:
+        (visibility_range>0.02?8:1);
+    if((shadow_integrator==2||shadow_integrator==4||shadow_integrator==5)&&
+       minmax_visibility>-2.5&&minmax_visibility<-1.5)substeps=8;
+    if(shadow_integrator==3)substeps=32;
+    for(int substep=0;substep<32;++substep){
+      if(substep>=substeps)break;
+      const float sub_begin=mix(base_begin,base_end,
+          float(substep)/float(substeps));
+      const float sub_end=mix(base_begin,base_end,
+          float(substep+1)/float(substeps));
+      const float step_length=sub_end-sub_begin;
+      const float distance=0.5*(sub_begin+sub_end);
+      const vec3 point=origin+direction*distance;
+      const vec3 density=densities(length(point)-ground_radius());
+      const vec3 local_extinction=extinction(density);
+      const vec3 segment_transmittance=exp(-local_extinction*step_length);
+      const vec3 direct_source=(
+          atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
+          atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie)*
+          lookup_transmittance(point,sun_direction)*
+          atmosphere.solar_absorption_peak.rgb;
+      float resolved_visibility=substeps==1&&minmax_visibility>=0.0?
+          minmax_visibility:-1.0;
+      if(shadow_integrator==5&&minmax_visibility<=-3.0)
+        resolved_visibility=atmosphere_epipolar_range_visibility(
+            origin,direction,sub_begin,sub_end);
+      const float direct_visibility=resolved_visibility>=0.0?
+          resolved_visibility:atmosphere_sun_visibility(point);
+      const float shadow_loss=1.0-direct_visibility;
+      maximum_shadow_loss=max(maximum_shadow_loss,shadow_loss);
+      const vec3 integral=(vec3(1.0)-segment_transmittance)/
+          max(local_extinction,vec3(1.0e-9));
+      unshadowed_direct+=transmittance*direct_source*integral;
+      shadowed_direct+=transmittance*direct_source*direct_visibility*integral;
+      transmittance*=segment_transmittance;
+    }
+  }
+  return shadowed_direct;
 }
 #endif
 
@@ -654,7 +1324,7 @@ void generate_transmittance(ivec2 coordinate) {
       medium_segment(origin,direction,begin,end);
   if(has_segment)
     value=integrate_transmittance(origin+direction*begin,direction,end-begin,
-        faithful_transport()?64:32,faithful_transport());
+        faithful_transport()?128:32,faithful_transport());
   imageStore(transmittance_lut,coordinate,checked_lut_value(value,1.0));
 }
 
@@ -768,10 +1438,394 @@ void generate_aerial(ivec3 coordinate) {
              checked_lut_value(transmittance,1.0));
 }
 
+// Deterministic screen candidates must differ from the native oracle only in
+// where the result is evaluated and reconstructed.  In particular, retain the
+// oracle's radial-altitude interval placement: distance-space intervals change
+// the number of samples inside the compact Mie layer as the camera moves.
+// Direct sunlight is visibility-weighted at the quadrature point; multiple
+// scattering stays positive and unshadowed.
+void reconstructed_interval(vec3 origin,vec3 direction,float begin,float end,
+                            float closest,float ground,float closest_radius,
+                            float closest_altitude,float altitude_power,
+                            int index,out float distance_begin,
+                            out float distance_end) {
+  const bool before=index<16;
+  const int local_index=before?index:index-16;
+  const float u0=float(local_index)/16.0;
+  const float u1=float(local_index+1)/16.0;
+  const float side_distance=before?begin:end;
+  const float side_altitude=max(
+      length(origin+direction*side_distance)-ground,closest_altitude);
+  const float altitude_begin=mix(closest_altitude,side_altitude,
+      pow(before?1.0-u0:u0,altitude_power));
+  const float altitude_end=mix(closest_altitude,side_altitude,
+      pow(before?1.0-u1:u1,altitude_power));
+  const float offset_begin=sqrt(max(
+      (ground+altitude_begin)*(ground+altitude_begin)-
+      closest_radius*closest_radius,0.0));
+  const float offset_end=sqrt(max(
+      (ground+altitude_end)*(ground+altitude_end)-
+      closest_radius*closest_radius,0.0));
+  distance_begin=closest+(before?-offset_begin:offset_begin);
+  distance_end=closest+(before?-offset_end:offset_end);
+}
+
+bool previous_history_coordinate(vec2 uv,vec4 endpoint,
+                                 out ivec2 coordinate,
+                                 out float expected_depth);
+
+vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
+                                    float maximum_distance,
+                                    out vec3 path_transmittance,
+                                    out float transition_confidence,
+                                    int shadow_query_count,
+                                    uint temporal_phase,
+                                    ivec2 visibility_history_coordinate) {
+  float begin,end;
+  path_transmittance=vec3(1.0);
+  transition_confidence=1.0;
+  if(!medium_segment(origin,direction,begin,end)||maximum_distance<=begin)
+    return vec3(0.0);
+  end=min(end,maximum_distance);
+  const float closest=clamp(-dot(origin,direction),begin,end);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float phase_cosine=dot(direction,sun_direction);
+  const float phase_rayleigh=rayleigh_phase(phase_cosine);
+  const float phase_mie=mie_phase(phase_cosine);
+  const float ground=ground_radius();
+  const float closest_radius=length(origin+direction*closest);
+  const float closest_altitude=max(closest_radius-ground,0.0);
+  const float mie_scale=max(atmosphere.absorption_mie_scale.w,1.0);
+  const float altitude_power=mix(2.0,5.0,
+      exp(-closest_altitude/(4.0*mie_scale)));
+  const uint previous_visibility_index=(temporal_phase>>5U)&1U;
+  const uint output_visibility_index=(temporal_phase>>6U)&1U;
+  const bool visibility_history_valid=(temporal_phase&128U)!=0U;
+  const bool temporal_visibility=(temporal_phase&256U)!=0U;
+  uvec2 packed_visibility=uvec2(0U);
+  if(shadow_query_count<32&&visibility_history_valid)
+    packed_visibility=previous_visibility_index==0U?
+        imageLoad(history_visibility_0,visibility_history_coordinate).xy:
+        imageLoad(history_visibility_1,visibility_history_coordinate).xy;
+  const int query_count=shadow_query_count>=32?32:
+      (shadow_query_count>=8?8:2);
+  const int phase=int(temporal_phase&uint(32/query_count-1));
+  for(int sample_index=0;sample_index<32;++sample_index){
+    if(sample_index>=query_count)break;
+    const int interval=query_count==32?sample_index:
+        sample_index*(32/query_count)+phase;
+      float sample_begin,sample_end;
+      reconstructed_interval(origin,direction,begin,end,closest,ground,
+          closest_radius,closest_altitude,altitude_power,interval,
+          sample_begin,sample_end);
+      const vec3 sample_point=origin+direction*
+          (0.5*(sample_begin+sample_end));
+    const uint quantized=uint(round(clamp(
+        atmosphere_sun_visibility(sample_point),0.0,1.0)*3.0));
+    const uint channel=uint(interval)/16U;
+    const uint shift=(uint(interval)&15U)*2U;
+    packed_visibility[channel]=(packed_visibility[channel]&~(3U<<shift))|
+        (quantized<<shift);
+  }
+  if(temporal_visibility){
+    if(output_visibility_index==0U)
+      imageStore(history_visibility_0,ivec2(gl_GlobalInvocationID.xy),
+                 uvec4(packed_visibility,0U,0U));
+    else imageStore(history_visibility_1,ivec2(gl_GlobalInvocationID.xy),
+                    uvec4(packed_visibility,0U,0U));
+  }
+  vec3 radiance=vec3(0.0);
+  vec3 transmittance=vec3(1.0);
+  for(int index=0;index<32;++index){
+    float distance_begin,distance_end;
+    reconstructed_interval(origin,direction,begin,end,closest,ground,
+        closest_radius,closest_altitude,altitude_power,index,
+        distance_begin,distance_end);
+    const float step_length=distance_end-distance_begin;
+    if(step_length<=0.0)continue;
+    const vec3 point=origin+direction*
+        (0.5*(distance_begin+distance_end));
+    const vec3 density=densities(length(point)-ground);
+    const vec3 local_extinction=extinction(density);
+    const vec3 segment_transmittance=exp(-local_extinction*step_length);
+    const uint channel=uint(index)/16U;
+    const uint shift=(uint(index)&15U)*2U;
+    const float centre_visibility=float(
+        (packed_visibility[channel]>>shift)&3U)/3.0;
+    const int previous_index=max(index-1,0);
+    const int next_index=min(index+1,31);
+    const uint previous_channel=uint(previous_index)/16U;
+    const uint previous_shift=(uint(previous_index)&15U)*2U;
+    const uint next_channel=uint(next_index)/16U;
+    const uint next_shift=(uint(next_index)&15U)*2U;
+    const float previous_visibility=float(
+        (packed_visibility[previous_channel]>>previous_shift)&3U)/3.0;
+    const float next_visibility=float(
+        (packed_visibility[next_channel]>>next_shift)&3U)/3.0;
+    // Reconstruct a continuous interval-average visibility from neighbouring
+    // radial samples. Using each midpoint as a piecewise-constant value
+    // stamped displaced copies of a mountain silhouette into the haze. This
+    // compact tent is exact on constant visibility runs and only smooths the
+    // two intervals adjacent to an actual shadow transition.
+    const float terrain_visibility=(previous_visibility+
+        2.0*centre_visibility+next_visibility)*0.25;
+    transition_confidence=min(transition_confidence,
+        abs(centre_visibility-0.5)*2.0);
+    const vec3 direct_source=(
+        atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
+        atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie)*
+        lookup_transmittance(point,sun_direction)*
+        atmosphere.solar_absorption_peak.rgb*terrain_visibility;
+    const vec3 multiple_source=lookup_multiple_scattering(point,sun_direction);
+    const vec3 integral=(vec3(1.0)-segment_transmittance)/
+        max(local_extinction,vec3(1.0e-9));
+    radiance+=transmittance*(direct_source+multiple_source)*integral;
+    transmittance*=segment_transmittance;
+  }
+  path_transmittance=transmittance;
+  return radiance;
+}
+
+void generate_reconstructed_endpoint(ivec2 coordinate) {
+  const ivec2 output_size=imageSize(screen_endpoint);
+  if(any(greaterThanEqual(coordinate,output_size)))return;
+  const ivec2 depth_size=textureSize(scene_depth,0);
+  const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
+  const ivec2 base=coordinate*divisor;
+  float nearest_depth=0.0;
+  int opaque_count=0;
+  float farthest_opaque_depth=1.0;
+  ivec2 representative=min(base,depth_size-1);
+  for(int y=0;y<4;++y)for(int x=0;x<4;++x){
+    if(x>=divisor||y>=divisor)continue;
+    const ivec2 source=min(base+ivec2(x,y),depth_size-1);
+    const float depth=texelFetch(scene_depth,source,0).r;
+    if(depth>nearest_depth){
+      nearest_depth=depth;
+      representative=source;
+    }
+    if(depth>1.0e-8){
+      ++opaque_count;
+      farthest_opaque_depth=min(farthest_opaque_depth,depth);
+    }
+  }
+  const bool opaque=nearest_depth>1.0e-8;
+  const float linear_depth=opaque?
+      atmosphere.camera_position_near.w/nearest_depth:0.0;
+  const float depth_spread=opaque_count>1?
+      1.0-farthest_opaque_depth/max(nearest_depth,1.0e-8):0.0;
+  const float class_confidence=(opaque_count==0||
+      opaque_count==divisor*divisor)?1.0:0.0;
+  const float transition_confidence=class_confidence*
+      (1.0-clamp(depth_spread/0.05,0.0,1.0));
+  imageStore(screen_endpoint,coordinate,
+      vec4(linear_depth,opaque?1.0:0.0,transition_confidence,
+           uintBitsToFloat(dispatch_mode.reserved0)));
+}
+
+void generate_reconstructed_scattering(ivec2 coordinate) {
+  const ivec2 output_size=imageSize(screen_scattering);
+  if(any(greaterThanEqual(coordinate,output_size)))return;
+  const ivec2 depth_size=textureSize(scene_depth,0);
+  const int divisor=clamp(int(dispatch_mode.reserved0),2,4);
+  const ivec2 base=coordinate*divisor;
+  const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
+  const bool opaque=endpoint.y>0.5;
+  ivec2 representative=min(base,depth_size-1);
+  if(opaque){
+    float nearest_depth=0.0;
+    for(int y=0;y<4;++y)for(int x=0;x<4;++x){
+      if(x>=divisor||y>=divisor)continue;
+      const ivec2 source=min(base+ivec2(x,y),depth_size-1);
+      const float depth=texelFetch(scene_depth,source,0).r;
+      if(depth>nearest_depth){
+        nearest_depth=depth;
+        representative=source;
+      }
+    }
+  }
+  const vec2 uv=opaque?
+      (vec2(representative)+0.5)/vec2(depth_size):
+      (vec2(base)+vec2(float(divisor)*0.5))/vec2(depth_size);
+  ivec2 visibility_history_coordinate=coordinate;
+  uint visibility_control=dispatch_mode.reserved2;
+  if((visibility_control&128U)!=0U&&(visibility_control&512U)!=0U){
+    float expected_depth;
+    if(!previous_history_coordinate(uv,endpoint,
+         visibility_history_coordinate,expected_depth))
+      visibility_control&=~128U;
+  }
+  vec3 transmittance;
+  float shadow_confidence;
+  const vec3 radiance=integrate_reconstructed_screen(
+      atmosphere.camera_position_near.xyz,view_direction(uv),
+      opaque?endpoint.x:1.0e9,transmittance,shadow_confidence,
+      clamp(int(dispatch_mode.reserved1),2,32),visibility_control,
+      visibility_history_coordinate);
+  imageStore(screen_scattering,coordinate,
+      checked_lut_value(radiance,65504.0));
+  imageStore(screen_transmittance,coordinate,
+      checked_lut_value(transmittance,1.0));
+  imageStore(screen_endpoint,coordinate,vec4(
+      endpoint.xy,min(endpoint.z,shadow_confidence),endpoint.w));
+}
+
+void generate_shadowed_froxel(ivec3 coordinate) {
+  const ivec3 size=imageSize(froxel_scattering);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const vec2 uv=(vec2(coordinate.xy)+0.5)/vec2(size.xy);
+  const float slice=(float(coordinate.z)+0.5)/float(size.z);
+  const float distance=slice*slice*slice*
+      atmosphere.camera_forward_maximum_distance.w;
+  vec3 transmittance;
+  float transition_confidence;
+  const vec3 radiance=integrate_reconstructed_screen(
+      atmosphere.camera_position_near.xyz,view_direction(uv),distance,
+      transmittance,transition_confidence,32,0U,coordinate.xy);
+  imageStore(froxel_scattering,coordinate,
+      checked_lut_value(radiance,65504.0));
+  imageStore(froxel_transmittance,coordinate,
+      checked_lut_value(transmittance,1.0));
+}
+
+vec4 history_scattering_load(uint index,ivec2 coordinate) {
+  return index==0U?imageLoad(history_scattering_0,coordinate):
+      imageLoad(history_scattering_1,coordinate);
+}
+
+vec4 history_transmittance_load(uint index,ivec2 coordinate) {
+  return index==0U?imageLoad(history_transmittance_0,coordinate):
+      imageLoad(history_transmittance_1,coordinate);
+}
+
+vec4 history_endpoint_load(uint index,ivec2 coordinate) {
+  return index==0U?imageLoad(history_endpoint_0,coordinate):
+      imageLoad(history_endpoint_1,coordinate);
+}
+
+void history_store(uint index,ivec2 coordinate,vec4 scattering,
+                   vec4 transmittance,vec4 endpoint) {
+  if(index==0U){
+    imageStore(history_scattering_0,coordinate,scattering);
+    imageStore(history_transmittance_0,coordinate,transmittance);
+    imageStore(history_endpoint_0,coordinate,endpoint);
+  }else{
+    imageStore(history_scattering_1,coordinate,scattering);
+    imageStore(history_transmittance_1,coordinate,transmittance);
+    imageStore(history_endpoint_1,coordinate,endpoint);
+  }
+}
+
+bool previous_history_coordinate(vec2 uv,vec4 endpoint,
+                                 out ivec2 coordinate,
+                                 out float expected_depth) {
+  const vec3 direction=view_direction(uv);
+  vec3 previous_vector=direction;
+  if(endpoint.y>0.5){
+    const vec3 point=atmosphere.camera_position_near.xyz+
+        direction*endpoint.x;
+    previous_vector=point-atmosphere.previous_camera_position_near.xyz;
+    expected_depth=length(previous_vector);
+  }else expected_depth=0.0;
+  const float forward=dot(previous_vector,
+      atmosphere.previous_camera_forward.xyz);
+  if(forward<=1.0e-6)return false;
+  const vec2 ndc=vec2(
+      dot(previous_vector,atmosphere.previous_camera_right_tangent_x.xyz)/
+          (forward*atmosphere.previous_camera_right_tangent_x.w),
+      dot(previous_vector,atmosphere.previous_camera_down_tangent_y.xyz)/
+          (forward*atmosphere.previous_camera_down_tangent_y.w));
+  const vec2 previous_uv=ndc*0.5+0.5;
+  if(any(lessThan(previous_uv,vec2(0.0)))||
+     any(greaterThanEqual(previous_uv,vec2(1.0))))return false;
+  const ivec2 size=imageSize(screen_scattering);
+  coordinate=clamp(ivec2(previous_uv*vec2(size)),ivec2(0),size-1);
+  return true;
+}
+
+void resolve_reconstructed_history(ivec2 coordinate) {
+  const ivec2 size=imageSize(screen_scattering);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const uint previous_index=dispatch_mode.reserved0;
+  const uint output_index=dispatch_mode.reserved1;
+  const vec4 current_endpoint=imageLoad(screen_endpoint,coordinate);
+  vec4 resolved_scattering=imageLoad(screen_scattering,coordinate);
+  vec4 resolved_transmittance=imageLoad(screen_transmittance,coordinate);
+  bool accept=atmosphere.temporal_control.x>0.5&&
+      current_endpoint.z>0.5;
+  ivec2 previous_coordinate=coordinate;
+  float expected_depth=0.0;
+  const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
+  accept=accept&&previous_history_coordinate(
+      uv,current_endpoint,previous_coordinate,expected_depth);
+  vec4 previous_endpoint=vec4(0.0);
+  if(accept){
+    previous_endpoint=history_endpoint_load(
+        previous_index,previous_coordinate);
+    accept=floatBitsToUint(previous_endpoint.w)==
+        floatBitsToUint(atmosphere.temporal_control.y)&&
+        (previous_endpoint.y>0.5)==(current_endpoint.y>0.5)&&
+        previous_endpoint.z>0.5;
+  }
+  if(accept&&current_endpoint.y>0.5){
+    const float threshold=max(expected_depth*0.05,1.0e-5);
+    accept=abs(previous_endpoint.x-expected_depth)<threshold;
+  }
+  if(accept){
+    vec3 minimum_scattering=vec3(65504.0);
+    vec3 maximum_scattering=vec3(0.0);
+    vec3 minimum_transmittance=vec3(1.0);
+    vec3 maximum_transmittance=vec3(0.0);
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x){
+      const ivec2 neighbour=clamp(coordinate+ivec2(x,y),ivec2(0),size-1);
+      const vec4 neighbour_endpoint=imageLoad(screen_endpoint,neighbour);
+      if((neighbour_endpoint.y>0.5)!=(current_endpoint.y>0.5))continue;
+      const vec3 scattering=imageLoad(screen_scattering,neighbour).rgb;
+      const vec3 transmittance=imageLoad(screen_transmittance,neighbour).rgb;
+      minimum_scattering=min(minimum_scattering,scattering);
+      maximum_scattering=max(maximum_scattering,scattering);
+      minimum_transmittance=min(minimum_transmittance,transmittance);
+      maximum_transmittance=max(maximum_transmittance,transmittance);
+    }
+    const vec3 previous_scattering=clamp(history_scattering_load(
+        previous_index,previous_coordinate).rgb,
+        minimum_scattering,maximum_scattering);
+    const vec3 previous_transmittance=clamp(history_transmittance_load(
+        previous_index,previous_coordinate).rgb,
+        minimum_transmittance,maximum_transmittance);
+    const float blend=clamp(atmosphere.temporal_control.z,0.0,0.95);
+    resolved_scattering.rgb=mix(resolved_scattering.rgb,
+                                  previous_scattering,blend);
+    resolved_transmittance.rgb=mix(resolved_transmittance.rgb,
+                                    previous_transmittance,blend);
+  }
+  history_store(output_index,coordinate,resolved_scattering,
+                resolved_transmittance,current_endpoint);
+}
+
+void publish_reconstructed_history(ivec2 coordinate) {
+  const ivec2 size=imageSize(screen_scattering);
+  if(any(greaterThanEqual(coordinate,size)))return;
+  const uint index=dispatch_mode.reserved0;
+  imageStore(screen_scattering,coordinate,
+      history_scattering_load(index,coordinate));
+  imageStore(screen_transmittance,coordinate,
+      history_transmittance_load(index,coordinate));
+  imageStore(screen_endpoint,coordinate,
+      history_endpoint_load(index,coordinate));
+}
+
 #ifdef FAITHFUL_SHADOW_SPLIT
 void generate_long_shadow(ivec2 coordinate) {
   const ivec2 size=imageSize(long_shadow_lut);
   if(any(greaterThanEqual(coordinate,size)))return;
+  const int update_phase=dynamic_sun_shadow_phase();
+  // Match the 8x8 dispatch group so three quarters of groups can terminate
+  // coherently. Per-texel checkerboarding still executes every branch on a
+  // SIMD group and is slower than a complete update on this GPU.
+  const int texel_phase=((coordinate.x/8)&1)|(((coordinate.y/8)&1)<<1);
+  if(dynamic_sun()&&update_phase>=0&&texel_phase!=update_phase)return;
+  reset_epipolar_invocation_counters();
   const vec2 uv=(vec2(coordinate)+0.5)/vec2(size);
   // Store loss by planet/sun-relative direction rather than framebuffer
   // direction. Camera rotation can then reuse exactly the same texels instead
@@ -784,14 +1838,228 @@ void generate_long_shadow(ivec2 coordinate) {
   const float shadow_reach_metres=
       shadow_cascades.atmosphere_shadow_metadata.y*
       atmosphere.profile_and_mode.y;
+  const int debug_view=int(atmosphere.reserved1.x+0.5);
+  if(debug_view==23||debug_view==24){
+    float begin,end;
+    float classification=-2.0;
+    if(medium_segment(atmosphere.camera_position_near.xyz,direction,begin,end)){
+      if(debug_view==24){
+        begin=max(begin,shadow_cascades.shadow_splits.z*
+            atmosphere.profile_and_mode.y);
+        end=min(end,shadow_cascades.shadow_splits.w*0.80*
+            atmosphere.profile_and_mode.y);
+      }
+      if(end>begin)
+      classification=atmosphere_epipolar_range_visibility(
+          atmosphere.camera_position_near.xyz,direction,begin,
+          min(end,shadow_reach_metres));
+    }
+    const vec3 diagnostic=debug_view==24?
+        vec3(min(float(epipolar_last_visited_nodes)/128.0,1.0),
+             min(float(epipolar_last_emitted_intervals)/64.0,1.0),
+             epipolar_last_overflows>0U?1.0:
+                 (classification>-2.5&&classification<-1.5?0.5:0.0)):
+        (classification>=0.5?vec3(0.0,1.0,0.0):
+         (classification>=0.0?vec3(1.0,0.0,0.0):
+          (classification<=-3.0?vec3(0.0,0.0,1.0):
+           vec3(1.0,1.0,0.0))));
+    imageStore(long_shadow_lut,coordinate,vec4(diagnostic,1.0));
+    commit_epipolar_invocation_counters();
+    return;
+  }
   float maximum_shadow_loss;
-  const vec3 loss=integrate_direct_shadow_loss(
+  vec3 unshadowed_direct;
+  const vec3 shadowed_direct=integrate_shadowed_direct_radiance(
       atmosphere.camera_position_near.xyz,direction,
       shadow_reach_metres,
-      maximum_shadow_loss);
-  const vec4 checked=checked_lut_value(loss,65504.0);
+      maximum_shadow_loss,unshadowed_direct);
+  // Store bounded spectral visibility, not a radiance value to subtract later.
+  // This keeps approximation error from becoming negative light or a black
+  // halo when the exact and cached paths blend.
+  const vec3 visibility=clamp(
+      shadowed_direct/max(unshadowed_direct,vec3(1.0e-9)),
+      vec3(0.0),vec3(1.0));
+  const vec4 checked=checked_lut_value(visibility,1.0);
   imageStore(long_shadow_lut,coordinate,
       vec4(checked.rgb,checked.a*maximum_shadow_loss));
+  commit_epipolar_invocation_counters();
+}
+#endif
+
+void reset_epipolar_counters() {
+  if(any(notEqual(gl_GlobalInvocationID,uvec3(0))))return;
+  const uint base=epipolar_counter_base();
+  atmosphere_shadow_minmax.ranges[base]=uvec2(0U);
+  atmosphere_shadow_minmax.ranges[base+1U]=uvec2(0U);
+}
+
+void generate_shadow_minmax(ivec2 coordinate) {
+  const uint level=dispatch_mode.reserved0;
+  const uint base_resolution=dispatch_mode.reserved1;
+  const uint size=shadow_minmax_level_size(level,base_resolution);
+  if(any(greaterThanEqual(coordinate,ivec2(size))))return;
+  vec2 range;
+  if(level==0U){
+    const int source_layer=int(dispatch_mode.reserved2);
+    if(source_layer==4){
+      const float depth=texelFetch(sun_shadow_map,
+          ivec3(coordinate,source_layer),0).r;
+      range=vec2(depth);
+    }else{
+      // Conservatively reduce the higher-resolution outer local cascade into
+      // the reusable hierarchy allocation. Both dimensions use the same
+      // integer quality-profile ratio (currently two).
+      const uint source_size=uint(textureSize(sun_shadow_map,0).x);
+      const uint scale=max(1U,(source_size+base_resolution-1U)/
+          base_resolution);
+      const ivec2 first=coordinate*int(scale);
+      range=vec2(1.0,0.0);
+      for(uint y=0U;y<4U;++y)for(uint x=0U;x<4U;++x){
+        if(x>=scale||y>=scale)continue;
+        const ivec2 source=min(first+ivec2(x,y),
+            ivec2(int(source_size)-1));
+        const float depth=texelFetch(sun_shadow_map,
+            ivec3(source,source_layer),0).r;
+        range.x=min(range.x,depth);
+        range.y=max(range.y,depth);
+      }
+    }
+  }else{
+    range=vec2(1.0,0.0);
+    const ivec2 first=coordinate*2;
+    const uint previous_size=shadow_minmax_level_size(
+        level-1U,base_resolution);
+    for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+      const ivec2 child=first+ivec2(x,y);
+      if(any(greaterThanEqual(child,ivec2(previous_size))))continue;
+      const vec2 child_range=shadow_minmax_load(
+          level-1U,child,base_resolution);
+      range.x=min(range.x,child_range.x);
+      range.y=max(range.y,child_range.y);
+    }
+  }
+  atmosphere_shadow_minmax.ranges[
+      shadow_minmax_level_offset(level,base_resolution)+
+      uint(coordinate.y)*size+uint(coordinate.x)]=floatBitsToUint(range);
+}
+
+vec2 conservative_shadow_range(vec2 minimum_projected,
+                               vec2 maximum_projected,
+                               uint base_resolution) {
+  const vec2 minimum_texel=(minimum_projected*0.5+0.5)*
+      float(base_resolution)-0.5;
+  const vec2 maximum_texel=(maximum_projected*0.5+0.5)*
+      float(base_resolution)-0.5;
+  const float span=max(maximum_texel.x-minimum_texel.x,
+                       maximum_texel.y-minimum_texel.y);
+  uint level=0U;
+  float scale=1.0;
+  while(level<15U&&span/scale>1.0){
+    ++level;
+    scale*=2.0;
+  }
+  const ivec2 low=ivec2(floor(minimum_texel/scale));
+  const ivec2 high=ivec2(floor(maximum_texel/scale));
+  vec2 range=vec2(1.0,0.0);
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x){
+    const ivec2 cell=ivec2(x==0?low.x:high.x,y==0?low.y:high.y);
+    const vec2 sample_range=shadow_minmax_load(level,cell,base_resolution);
+    range.x=min(range.x,sample_range.x);
+    range.y=max(range.y,sample_range.y);
+  }
+  return range;
+}
+
+#ifdef FAITHFUL_SHADOW_SPLIT
+void generate_epipolar_shadow_base(ivec2 coordinate) {
+  const uint radial_resolution=dispatch_mode.reserved1;
+  const uint angular_rows=dispatch_mode.reserved2;
+  if(any(greaterThanEqual(coordinate,
+      ivec2(int(radial_resolution),int(angular_rows)))))return;
+  vec2 range=vec2(0.0,PI);
+  const vec3 camera_projected=(shadow_cascades.shadow_matrices[3]*
+      vec4(atmosphere.reserved0.xyz,1.0)).xyz;
+  if(all(lessThan(abs(camera_projected.xy),vec2(0.94)))){
+    const float centre_angle=(float(coordinate.y)+0.5)*2.0*PI/
+        float(angular_rows)-PI;
+    const float half_angle=PI/float(angular_rows);
+    const float q0=float(coordinate.x)/float(radial_resolution);
+    const float q1=float(coordinate.x+1)/float(radial_resolution);
+    vec2 minimum_projected=vec2(1.0e20);
+    vec2 maximum_projected=vec2(-1.0e20);
+    for(int angular_corner=0;angular_corner<2;++angular_corner){
+      const float angle=centre_angle+
+          (angular_corner==0?-half_angle:half_angle);
+      const vec2 direction=vec2(cos(angle),sin(angle));
+      const float radius=epipolar_radius_to_guarded_square(
+          camera_projected.xy,direction);
+      const vec2 first=camera_projected.xy+direction*(q0*radius);
+      const vec2 last=camera_projected.xy+direction*(q1*radius);
+      minimum_projected=min(minimum_projected,min(first,last));
+      maximum_projected=max(maximum_projected,max(first,last));
+    }
+    const uint shadow_base_resolution=uint(textureSize(sun_shadow_map,0).x);
+    const float guard_texels=shadow_filter_mode()==2?2.5:
+        (shadow_filter_mode()==1?1.0:0.0);
+    const vec2 projected_guard=vec2(
+        2.0*guard_texels/max(float(shadow_base_resolution),1.0));
+    minimum_projected-=projected_guard;
+    maximum_projected+=projected_guard;
+    const vec2 minimum_texel=(minimum_projected*0.5+0.5)*
+        float(shadow_base_resolution)-0.5;
+    const vec2 maximum_texel=(maximum_projected*0.5+0.5)*
+        float(shadow_base_resolution)-0.5;
+    const ivec2 low=ivec2(floor(minimum_texel));
+    const ivec2 high=ivec2(ceil(maximum_texel));
+    const ivec2 extent=high-low+1;
+    // Balanced rows normally cover only a few source texels. An oblique bin
+    // that exceeds the bounded footprint is marked ambiguous so traversal
+    // falls back instead of silently missing a blocker.
+    if(all(lessThanEqual(extent,ivec2(16)))){
+      range=vec2(PI,0.0);
+      for(int y=0;y<16;++y)for(int x=0;x<16;++x){
+        if(x>=extent.x||y>=extent.y)continue;
+        const ivec2 source=clamp(low+ivec2(x,y),ivec2(0),
+            ivec2(int(shadow_base_resolution)-1));
+        const float depth=texelFetch(
+            sun_shadow_map,ivec3(source,3),0).r;
+        const vec2 projected=(vec2(source)+0.5)/
+            float(shadow_base_resolution)*2.0-1.0;
+        const float beta=depth>=1.0-1.0e-7?PI:
+            epipolar_blocker_angle(
+                length(projected-camera_projected.xy),depth,
+                camera_projected.z);
+        range.x=min(range.x,beta);
+        range.y=max(range.y,beta);
+      }
+    }
+  }
+  atmosphere_shadow_minmax.ranges[
+      uint(coordinate.y)*radial_resolution+uint(coordinate.x)]=
+          floatBitsToUint(range);
+}
+
+void generate_epipolar_shadow_mip(ivec2 coordinate) {
+  const uint level=dispatch_mode.reserved0;
+  const uint radial_resolution=dispatch_mode.reserved1;
+  const uint angular_rows=dispatch_mode.reserved2;
+  const uint width=epipolar_level_width(level,radial_resolution);
+  if(coordinate.x>=int(width)||coordinate.y>=int(angular_rows))return;
+  vec2 range;
+  if(level==0U)return;
+  const int first=coordinate.x*2;
+  range=epipolar_minmax_load(level-1U,first,coordinate.y,
+                             radial_resolution,angular_rows);
+  const uint previous_width=epipolar_level_width(
+      level-1U,radial_resolution);
+  if(uint(first+1)<previous_width){
+    const vec2 second=epipolar_minmax_load(
+        level-1U,first+1,coordinate.y,radial_resolution,angular_rows);
+    range=vec2(min(range.x,second.x),max(range.y,second.y));
+  }
+  atmosphere_shadow_minmax.ranges[
+      epipolar_level_offset(level,radial_resolution,angular_rows)+
+      uint(coordinate.y)*width+uint(coordinate.x)]=floatBitsToUint(range);
 }
 #endif
 
@@ -850,7 +2118,7 @@ void generate_boundary_probe(int case_index,float altitude,
   vec3 exact=vec3(1.0);
   if(medium_segment(origin,direction,begin,end))
     exact=integrate_transmittance(origin+direction*begin,direction,end-begin,
-        faithful_transport()?64:32,faithful_transport());
+        faithful_transport()?128:32,faithful_transport());
   atmosphere_probe.values[base+2]=vec4(exact,1.0);
 }
 
@@ -868,7 +2136,7 @@ void generate_numeric_probe() {
   if(medium_segment(lookup_origin,lookup_direction,begin,end))
     exact_transmittance=integrate_transmittance(
         lookup_origin+lookup_direction*begin,lookup_direction,end-begin,
-        faithful_transport()?64:32,faithful_transport());
+        faithful_transport()?128:32,faithful_transport());
   atmosphere_probe.values[0]=vec4(
       bilinear_transmittance_load(lookup_uv),1.0);
   atmosphere_probe.values[1]=vec4(exact_transmittance,1.0);
@@ -951,4 +2219,23 @@ void main() {
     generate_long_shadow(ivec2(gl_GlobalInvocationID.xy));
 #endif
   else if(dispatch_mode.mode==7U)generate_shadow_projection_probe();
+  else if(dispatch_mode.mode==8U)
+    generate_shadow_minmax(ivec2(gl_GlobalInvocationID.xy));
+  #ifdef FAITHFUL_SHADOW_SPLIT
+  else if(dispatch_mode.mode==9U)
+    generate_epipolar_shadow_base(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==10U)
+    generate_epipolar_shadow_mip(ivec2(gl_GlobalInvocationID.xy));
+  #endif
+  else if(dispatch_mode.mode==11U)reset_epipolar_counters();
+  else if(dispatch_mode.mode==12U)
+    generate_reconstructed_endpoint(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==13U)
+    generate_reconstructed_scattering(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==14U)
+    resolve_reconstructed_history(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==15U)
+    publish_reconstructed_history(ivec2(gl_GlobalInvocationID.xy));
+  else if(dispatch_mode.mode==16U)
+    generate_shadowed_froxel(ivec3(gl_GlobalInvocationID));
 }

@@ -82,18 +82,69 @@ Transfer limits:
 ## 3. Coordinates, units, and invariants
 
 `tetra_world` defaults to an explicitly fictional but optically calibrated
-gameplay planet: 200 km ground radius and 20 km atmosphere height. Its 3 km
-Rayleigh profile preserves the Earth reference's vertical optical depth. Its
-30 m aerosol boundary layer also preserves integrated Earth-like aerosol
+gameplay planet with a 200 km ground radius. The preset begins with a 20 km
+atmosphere and 3 km Rayleigh profile, then is conservatively adapted to the
+production terrain's relief before publication. Its
+300 m aerosol boundary layer also preserves integrated Earth-like aerosol
 optical depth while concentrating extinction and scattering into the few
-kilometres visible from this compact body's surface. This supplies readable
-gameplay-distance haze without making the upper atmosphere opaque. The Mie
+kilometres visible from this compact body's surface. The original 30 m profile
+was optically integrated correctly but visually unusable: a 20 m ascent removed
+about half its local density, so the golden band flashed into a blue horizon at
+ordinary flight speeds. Increasing the scale height by 10 and reducing Mie
+scattering and absorption by 10 preserves vertical optical depth while making
+the transition resolvable. This supplies readable gameplay-distance haze
+without making the upper atmosphere opaque. The Mie
 absorption coefficient is extinction minus scattering (0.404e-6 rather than
 4.4e-6 inverse metres in the Earth reference), retaining a predominantly
 scattering aerosol instead of incorrectly darkening distant geometry. The
 Earth preset remains available as the physical reference; the compact body's
 ability to retain such an atmosphere is not claimed to be geophysically
 realistic.
+
+### 3.1 Compact-planet relief calibration
+
+The atmosphere remains radial around the spherical datum; it does not follow
+mountains. This matches Hillaire (2020), including that paper's deliberately
+small-planet experiment, and keeps one coherent density field from the ground
+to orbit. Schneegans et al. (2024) supports independently configurable density
+profiles and particle properties, but does not motivate terrain-following
+density.
+
+At startup the production terrain supplies a conservative maximum absolute
+relief `R`. The gameplay preset is adapted by
+
+`H' = max(H, R / -ln(0.75))`
+
+`beta' = beta H / H'`
+
+`A' = max(A, R + 8 H')`
+
+where `H` is Rayleigh scale height, `beta` is each Rayleigh scattering
+coefficient, and `A` is atmosphere height. Thus the highest possible summit
+retains at least 75% of datum-level Rayleigh density, the atmosphere contains
+eight further scale heights above it, and `beta H` preserves the preset's
+vertical Rayleigh optical depth. The current production bound is about 1.48 km,
+which yields roughly a 5.15 km Rayleigh scale height and 42.7 km atmosphere.
+Mie and absorption profiles remain independently editable.
+
+Release qualification captures at the ground, mountain horizon, atmosphere
+top, and 200, 500, and 1000 km altitude show a continuous limb enclosing the
+terrain. The 250 km orbital image selected 26,653 clear pixels immediately
+outside the rendered terrain silhouette; none were black and 99.8% were
+blue-dominant. Continuous ascent nevertheless exposed a narrower failure than
+those fixed-pose captures: the compact preset's shallow Mie layer moved between
+angular sky-view LUT texels, making its yellow limb fade in and out. Faithful
+clear-sky rendering therefore blends to a 32-sample full-resolution primary
+ray above one quarter of an atmosphere height and completes the transition by
+three quarters. The ray is split at closest approach. Crucially, its intervals
+are placed in radial-altitude space, not as fractions of the changing
+camera-to-limb distance. A density-aware fifth-power distribution gives the
+300-metre Mie layer several invariant intervals, while rays above the aerosol
+layer smoothly return to quadratic Rayleigh sampling. Terrain pixels keep the
+lookup path. Captures separated by 0.02 degrees of pitch and by four kilometres
+of orbital altitude now gate limb luminance, black fraction, and blue fraction
+drift. Faithful transmittance quadrature uses 128 concentrated intervals so the
+compact profile also passes the independent one-metre-horizon GPU probe.
 
 Atmospheric math uses SI units internally: metres, inverse-metres for
 scattering and absorption, dimensionless relative density, radians, and one
@@ -329,9 +380,10 @@ The horizon-concentrated 384x216 table is the minimum that keeps the Low
 profile's limb probe inside the transport error contract; lower-resolution
 Low resources remain useful for the other lookups. Larger sky-view tables are
 required for a clean orbital limb. Faithful long-path composition now reuses
-the camera-position-dependent, rotation-independent unshadowed full-sky
-integration, subtracts a separate view-dependent direct-solar terrain-shadow
-loss, and derives camera-to-surface transmittance from the endpoint/top ratio.
+the camera-position-dependent, rotation-independent full-sky integration and
+applies a bounded view-dependent terrain visibility inside its positive
+direct-scattering accumulation. It never subtracts a darkness term from final
+radiance. Camera-to-surface transmittance comes from the endpoint/top ratio.
 Repeating a 32-step march in every full-resolution far
 fragment was rejected: at 1920x1080 it cost about 3.9 ms in orbit even though
 the same integral was already present in the full-sky lookup. Lookup reuse
@@ -528,10 +580,11 @@ rejection, and non-blocking presentation; fixed endpoint captures were visually
 checked for the corresponding ground, altitude, orbital, and sun regimes.
 
 H7 resolves the former rotation dependency by keeping full-sky radiance and
-sky irradiance unshadowed and rotation-independent, while a separate
-view-dependent 96x54 Default lookup stores only lost direct-solar scattering.
+sky irradiance rotation-independent, while a separate view-dependent lookup
+stores bounded spectral visibility derived from paired lit and occluded
+direct-scattering integrals.
 Local froxels continue to query the cascades directly and higher-order fill
-remains unshadowed. The shadow-loss march is bounded to the outer cascade split
+remains unshadowed. The visibility march is bounded to the outer cascade split
 (3.84 km for the gameplay preset): distributing its 32 samples over the full
 atmospheric segment skipped ridge-scale intervals on horizon rays.
 
@@ -691,7 +744,7 @@ atmosphere material and optional tabulated aerosol phase data
 
 6. **One aerial volume spans incompatible scales.**
    Sixteen default depth slices cover 200 km while the gameplay aerosol layer
-   has a 30 m scale height. Cubic distance resolves the first samples but cannot
+   has a 300 m scale height. Cubic distance resolves the first samples but cannot
    simultaneously represent the boundary layer, kilometre-scale mountains, and
    orbital paths. Use a bounded local/flight froxel range and switch smoothly to
    a direct screen-space atmosphere march for orbital views, as Hillaire does.
@@ -1240,6 +1293,450 @@ bytes; its sampled refresh maximum is 9.07 ms and median composition is
 0.373 ms. Native-resolution paired-pitch inspection is smooth, and both
 mountain occlusion qualifications still pass.
 
+#### Gate J: Transition-aware terrain-shadow integration
+
+The remaining low-sun banding is an integration defect rather than a general
+texture-resolution defect. A release comparison at the production-mountain
+pose increased the receiver-fitted depth map from 512 to 1024 and the
+long-shadow lookup from 768x432 to 1024x576. The direct-loss images remained
+visually almost identical, with normalized RGB RMSE 0.0022, because both paths
+still classify one midpoint in each of 32 quadratically distributed intervals
+and apply that binary visibility to the complete interval. The existing
+analytic-ridge qualification proves attachment, connectivity, finite output,
+and lack of clipping, but does not measure convergence or boundary smoothness.
+
+The selected improvement combines three compatible ideas without replacing
+the qualified Hillaire transport:
+
+- Chen et al. (2011) use a one-dimensional min-max depth hierarchy to find
+  lit segments after epipolar rectification;
+- Muñoz (2014) shows that higher-order integration alone does not resolve
+  visibility discontinuities, while adaptive subdivision at those
+  discontinuities does;
+- Jakab (2025) demonstrates the value of encoding shadow visibility as radial
+  runs, but its preliminary point-light algorithm and fixed segment cap are
+  inspiration rather than a production specification.
+
+A second research pass adds two concrete comparison families. Klehm, Seidel,
+and Eisemann (2014) rectify and prefilter the single-scattering integrand;
+Belcour, Bala, and Soler (2014) explain how transport changes local bandwidth.
+Together they motivate an experimental prefiltered path whose footprint is
+chosen from projected shadow, density, and phase-function bandwidth rather
+than a fixed final-image blur. Peters et al. (2016, 2017) provide the strongest
+filterable shadow representation for that experiment: improved moment shadow
+maps support smooth visibility filtering, but must remain behind an option
+until thin-ridge leakage, bias, temporal motion, and memory are measured
+against binary min/max segments and the dense oracle.
+
+The complete moment-shadow chain sharpens that experiment. Peters and Klein
+(2015) define the four-moment lower-bound reconstruction, and their supplement
+contains the derivations and shader code needed for an independent CPU oracle.
+Peters (2017) then reduces compact 64-bit storage error through nonlinear
+quantization; use that encoding if the full 128-bit path is too bandwidth
+heavy, rather than compensating with an unexplained global bias. The 2018
+dissertation summary is a useful theory map but does not supersede those
+primary implementation sources. Dou et al. (2014) is orthogonal and applies to
+surface receivers with a tangent plane. It is therefore a candidate for terrain
+surface shading, not for atmospheric samples that have no surface normal. Its
+main lesson for the volume path is to derive and bound each bias in one physical
+unit instead of tuning a normalized constant. Measure detached shadows, acne,
+thin-ridge survival, motion stability, and cascade handoff separately so one
+bias cannot hide another defect.
+
+Kern, Brüll, and Grosch (2025) target semitransparent occluders rather than the
+current opaque mountains. Their view-importance allocation and acceleration-
+structure-backed deep-shadow storage are promising for future clouds and
+local media, especially when most of the atmosphere is empty. They do not
+replace the planet/sun-relative opaque min/max hierarchy: importing the method
+now records a future media path without coupling it to the qualified terrain
+shadow default.
+
+Voxelized shadow volumes (Wyman 2011), imperfect voxelized shadow volumes
+(Wyman and Dai 2013), and camera-space volumetric shadows (Hanika et al. 2012)
+remain comparison architectures. The voxel methods trade silhouette accuracy
+for a reusable world-space visibility volume; the camera-space method permits
+efficient filtering but reintroduces a moving view-dependent grid. Neither
+fits the current planet/sun-relative cache as directly as rectified filtering
+or moment visibility, so none replaces the qualified default.
+
+For a directional light, a camera ray projects to an affine line through the
+receiver-fitted shadow map: projected `u`, `v`, and receiver depth are linear
+in ray distance. Build min/max mip levels over the fitted depth image, traverse
+that line hierarchically, and classify ranges as definitely lit, definitely
+shadowed, or ambiguous. Descend only ambiguous ranges. Integrate the smooth
+Rayleigh/Mie source and extinction separately over the resulting
+constant-visibility intervals using the existing analytic exponential segment
+rule. This retains the current receiver-driven caster front, local-cascade
+handoff, planet/sun-relative directional atlas, typed revisions, and atomic
+publication.
+
+Full epipolar rectification and partial-sum trees are not the first production
+target. Their old GPU implementations assume a more homogeneous medium, add a
+second resampling domain, remain limited by the source shadow map, and report
+substantial off-chip tree bandwidth. Cube-map marching similarly duplicates
+the view-independent directional lookup already present. Temporal filtering
+cannot correct a static integration staircase and would add history rejection
+and ghosting failure modes. Breyer-Zirr remains a separate terminator and
+planet-shadow experiment because it does not encode mountain silhouettes.
+
+The architecture must make visibility representation independently selectable
+from atmospheric transport. `fixed-32` remains the frozen comparison,
+`adaptive-transition` is the minimal causal experiment, `minmax-segments` is
+the production candidate, and `dense-oracle` is a headless qualification path.
+The UI and command line expose the first three; the dense oracle cannot become
+an interactive default. A lookup generation records its integrator, shadow
+depth generation, hierarchy generation, and overflow/fallback status so no
+mixed generation can compose.
+
+- [x] J0: Extend the analytic ridge and production-mountain captures with a
+      dense 512/1024-step direct-loss oracle. Measure masked radiance RMSE,
+      shadow-boundary distance, gradient-step energy, convergence across
+      quality profiles, and sub-texel camera/sun motion; prove that the
+      previous connectivity-only test accepts the visible staircase.
+- [x] J1: Separate shadow visibility queries and long-shadow integration from
+      the common atmosphere source/transmittance evaluation. Add typed
+      integrator selection, immutable generation metadata, diagnostics, and
+      command-line/UI selection without changing `fixed-32` output.
+- [x] J2: Implement `adaptive-transition`: retain the 32 base intervals, sample
+      endpoints and midpoint, recursively bisect intervals containing a
+      visibility transition, and integrate the resulting subintervals with a
+      bounded work cap and an explicit conservative fallback.
+- [x] J3: Add analytic tests for wholly lit/shadowed rays, one transition,
+      multiple separated ridges, a thin ridge, near-tangent rays, cascade/fitted
+      handoff, and work-cap overflow. Compare every case with the dense oracle.
+- [x] J4: Generate min/max mip levels for the receiver-fitted depth layer after
+      its raster pass. Version the hierarchy with the complete fitted-depth
+      generation and validate barriers, odd dimensions, clear depth, bias, and
+      min/max conservativeness through CPU/GPU probes.
+- [x] J5: Implement `minmax-segments` by traversing each projected ray through
+      the hierarchy, skipping ranges proven uniformly lit or shadowed and
+      descending ambiguous ranges to bounded leaf intervals. Preserve stable
+      ordering and report visited nodes, emitted intervals, and fallbacks.
+- [x] J6: Make local aerial and long-path direct loss consume the selected
+      interval integrator while preserving unshadowed multiple scattering,
+      the local-cascade handoff, directional-atlas mappings, and exact transport
+      behaviour when terrain visibility is uniformly one.
+- [x] J7: Add deterministic motion tests and paired captures for pitch, yaw,
+      translation, sun dragging, LOD replacement, origin rebasing, and stale
+      generation rejection. Reject shimmer, detached shafts, missed thin
+      occluders, black fill, and direction-atlas seams.
+- [x] J8: Benchmark all three interactive methods in release mode at
+      Low/Default/High and native screenshot resolution. Record fitted-depth,
+      hierarchy-build, integration-refresh, composition, memory, and terrain
+      worker impact; require Default composition below 0.5 ms and normally keep
+      lookup refresh near the existing 5 ms target.
+- [x] J9: Promote the fastest method whose direct-loss error and boundary
+      metrics satisfy the dense oracle and whose final images pass visual
+      inspection. Keep the other methods for comparison, document rejected
+      tradeoffs, run the full release suite and Vulkan validation, and update
+      the recorded default only in one final switch.
+
+J0-J3 evidence (2026-08-29): `integrate_atmosphere_shadow` is the independent
+double-precision interval oracle used by wholly lit/shadowed, one-transition,
+separated-ridge, thin-ridge, tangent, work-cap, and sub-texel-motion tests. The
+GPU-only `dense-oracle` performs 1024 quadratic intervals and is rejected for
+ordinary interactive launch. `compare_atmosphere_shadow_integrators.py`
+measured the old `fixed-32` analytic-ridge direct-loss result against that
+oracle at 0.007432 normalized RGB RMSE, 285.88 pixels mean row-boundary error,
+and 1.183e-6 gradient-step energy. The old connectivity qualification still
+passed that visibly stair-stepped result. `adaptive-transition` reduced the
+same metrics to 0.001030, 13.85 pixels, and 2.095e-7.
+
+J4-J6 evidence (2026-08-29): each buffered fitted-depth layer now owns a packed
+RG min/max hierarchy. A compute pass builds all levels after the depth raster,
+with an explicit storage barrier between levels; depth and hierarchy generation
+IDs must match after method switches. The CPU mirror covers odd dimensions,
+clear depth, non-finite input, and parent conservativeness. Projected camera-ray
+ranges choose a hierarchy level, combine at most four overlapping cells, and
+skip proven lit or shadowed ranges; ambiguous leaves use bounded ordered
+subintervals. Both local aerial scattering and the directional long-shadow
+loss use the selected integrator while multiple scattering stays unshadowed.
+
+J7-J8 evidence (2026-08-29): the native 1920x1080 analytic-ridge and production
+mountain qualifications pass with `minmax-segments`, without detached shafts,
+black fill, clipping, or projection errors. Against the dense oracle it
+measured 0.000618 normalized RGB RMSE and 0.0118 maximum channel error after
+the local/long-path integration handoff. Paired +/-0.1 degree pitch captures,
+deterministic sub-texel CPU motion, stale-generation rejection, and the existing
+yaw/translation/sun/LOD/rebase qualifications cover motion stability. The
+Low/Default/High release matrix for all three interactive methods is recorded
+under `build/gate-j-benchmarks`; repeated Default min-max measurement used
+56,304,976 atmosphere bytes and measured 0.412 ms median composition. Min-max
+adds about 5.6 MB at Default, remains below the 64 MB gate, and is the promoted
+default. Fixed integration remains solely as the exact frozen comparison;
+adaptive remains the no-hierarchy-work architectural fallback.
+
+J9 validation (2026-08-29): the canonical clean release build passed all 387
+tests in 388.77 seconds. The complete faithful Default Vulkan image matrix and
+all preset numeric probes passed after correcting the CPU aerial oracle to use
+the shader's sun-focused lookup domain. Native contact-sheet inspection of
+ridge direct loss, the production mountain, ground, flight, orbit, and
+terminator views found no remaining integration staircase, detached shadow,
+black-fill regression, or atmosphere seam.
+
+K1 compact-relief qualification (2026-08-29): terrain magnitude is bounded
+independently from its slope, the gameplay atmosphere is adapted atomically
+from that bound while preserving vertical optical depth, and both zero-relief
+and production-relief cases are covered. Ground-to-1000-km release captures
+show a continuous atmospheric limb outside every rendered summit. Captures now
+report a clear-only outer-silhouette diagnostic, and the qualification script
+requires a nonblack, blue-dominant orbital ring rather than accepting bright
+terrain as evidence. The faithful GPU numeric probe passes after increasing
+the concentrated transmittance integral to 128 intervals. Continuous orbital
+motion revealed Mie-limb shimmer that the original static matrix missed.
+High-altitude clear-sky pixels now use the closest-approach primary-ray
+integration described above; the static outer-limb and sub-tenth-degree motion
+qualifications pass.
+
+#### Gate L: Research-driven shadow refinement
+
+A source-and-code audit after importing the complete moment-shadow and
+importance-deep-shadow chains found four actionable mismatches.
+
+First, the local cascades express their atmospheric comparison tolerance in
+world units, but the receiver-fitted layer still publishes a fixed normalized
+depth bias of `0.00065`. The fitted depth span changes with receiver extent,
+sun direction, and guarded caster reach, so this tolerance can grow from a
+small numeric offset into metres of false unshadowing. The shadow raster pass
+also applies independent constant and slope-scaled depth bias. These two
+offsets are currently tuned separately and can compound. Dou et al. cannot be
+copied onto atmospheric samples because its construction needs a receiver
+tangent plane, but it provides the right discipline: compute a tight bound,
+keep the epsilon in linear physical depth, and avoid a global normalized
+constant. For actual terrain receivers, its texel-centre ray/tangent-plane
+intersection is a valid comparison against the existing slope-scaled rule.
+
+Second, the GPU path named `minmax-segments` does not yet perform the complete
+hierarchical interval traversal described by Chen et al. It chooses one mip
+level covering the projected interval, combines at most four ranges, and then
+uses sixteen uniform substeps when that coarse test is ambiguous. This is
+conservative, but it gives both thin ridges and large ambiguous cells the same
+work and can still miss structure below the fixed subdivision. The next
+version should walk the projected line through the depth pyramid, emit ordered
+constant-visibility intervals, and descend only ambiguous nodes. The existing
+CPU range-classifier tests model this desired behaviour more closely than the
+current shader does.
+
+The first attempt to close that gap established an architectural boundary.
+Walking the complete two-dimensional hierarchy independently inside every one
+of the 32 radiometric intervals produced an analytic-ridge frame that remained
+unfinished after ten minutes. Guarding the filter footprint improved its
+dense-oracle error only from 0.00273227 to 0.00163664, still slightly worse
+than the bounded physical-footprint path at 0.00155578. The interval algorithm
+was mathematically useful but was executed in the wrong domain.
+
+Gate L therefore adopts rectified epipolar processing rather than duplicating
+exact traversal per atmosphere sample. A directional camera ray projects to a
+line from the projected camera position in the receiver-fitted shadow map.
+The prepass bins those lines by angle, conservatively resamples the fitted
+depth hierarchy into independent radial rows. As in Baran et al. and Chen et
+al., the stored value is not ordinary light-space depth: each blocker is
+reconstructed and encoded as the epipolar camera-ray angle `beta`. That value
+is constant along a camera ray and is the prerequisite that makes a
+one-dimensional min/max traversal both correct and useful. A separate
+ordinary-depth/radial layout is only a conservative prototype and is expected
+to classify most intervals as ambiguous. The rectified rows build a
+one-dimensional min/max pyramid. Ordered visibility traversal and direct-loss
+integration consume that representation once per rectified row. The completed
+loss remains in the existing planet/sun-relative directional cache, so camera
+rotation does not invalidate it. Directions sufficiently close to the solar
+epipole, buffer overflow, invalid fitted coverage, and local-cascade ranges use
+the qualified bounded marcher. Hillaire transmittance, sky view, irradiance,
+and multiple scattering are unchanged; only terrain visibility for direct
+single scattering is rectified.
+
+Rectification resolution follows projected source-shadow bandwidth, not the
+height of the final directional-loss cache. Sampling only one epipolar row per
+loss-cache row creates wedges many source texels wide at the cascade boundary;
+their conservative min/max range mixes clear and blocked depths and makes the
+entire hierarchy ambiguous. Choose angular rows from the guarded shadow-map
+perimeter bound (every source texel is within half a row), then choose radial
+resolution from the remaining hierarchy budget. Write the rectified base
+directly into level zero of the hierarchy buffer; using the lower-resolution
+loss image as scratch incorrectly couples these two independent resolutions.
+
+Third, filtering occurs at three different meanings of the signal: a fixed
+five-lobe shadow-map visibility filter, integration into the directional
+direct-loss lookup, and another fixed five-lobe filter when that completed loss
+is sampled. The papers distinguish these operations. Prefiltered single
+scattering filters visibility or the shadowed source over the projected
+footprint before integration; blurring the completed radiance or loss can move
+an umbra boundary and produce a detached halo. Filter width should follow the
+solar angular radius, projected shadow-map texel footprint, and transport
+bandwidth, not a fixed number of lookup texels. The unfiltered integrated loss
+must remain available as the reference.
+
+Fourth, moment shadow maps are a useful experiment but a poor unconditional
+replacement. Four moments reconstruct footprints containing at most two nearly
+constant depths especially well; three or more occluders necessarily produce
+light leaking. Six moments improve volumetric results, and filtering during
+rectification improves temporal stability, but the published prefix-sum method
+assumes homogeneous single scattering and a directional light. This renderer
+has altitude-varying spherical density and retained multiple scattering. A
+safe prototype therefore uses moments only as a filterable visibility query
+inside the existing transport integral. It starts with signed linear depth and
+four 32-bit moments as a correctness baseline, computes both sharp bounds, and
+falls back to exact min/max intervals when their width indicates uncertainty.
+Only then should 64-bit nonlinear quantization be tested. Its nonlinear values
+cannot use ordinary hardware interpolation; the paper filters moments in float
+on chip before quantizing and uses manual or dithered reconstruction. Temporal
+dithering is especially risky for the Mie shimmer cases, so it cannot be the
+first implementation.
+
+Importance Deep Shadow Maps do not improve the present opaque-terrain case.
+The 2025 paper explicitly finds direct opaque rays preferable and targets deep
+transmittance through smoke, hair, and clouds. Its reusable near-term idea is a
+fixed, measurable work budget driven by projected contribution. Apply that
+principle to long-shadow interval work only after the exact traversal exists.
+Retain the full deep-shadow design for future clouds: transparent-object mask,
+importance `transmittance * opacity`, budget redistribution, guard dilation for
+one-frame disocclusion, and a linked-list path on portable Vulkan. The
+acceleration-structure variant is optional on hardware with ray-query support
+and is not a viable baseline for the current macOS Vulkan path.
+
+- [x] L0: Instrument the local and fitted shadow paths with raster bias,
+      comparison bias, fitted depth span, texel footprint, and resulting
+      world-space offsets. Add a headless matrix covering receiver distance,
+      sun elevation, camera rotation, map resolution, and origin rebasing.
+- [x] L1: Replace the fitted layer's normalized comparison constant with a
+      bounded world-space numeric tolerance converted by its actual
+      `depth_world_span`. Independently sweep raster constant/slope bias and
+      comparison bias; retain the smallest pair that prevents acne without
+      measurable silhouette detachment. Add thin-ridge and low-sun regression
+      captures before changing the default.
+- [x] L2: Add Dou-style receiver-plane adaptive bias as an experimental terrain
+      surface option only. Compare it with the current slope-scaled surface
+      bias on grazing polygons, contact shadows, tessellation changes, and all
+      cascades; do not use it for atmospheric samples.
+- [x] L3: Replace the shader's coarse one-level min/max classification plus
+      fixed sixteen substeps with a rectified epipolar prepass and ordered
+      one-dimensional hierarchy traversal. Reuse the existing hierarchy
+      allocation in place, retain the bounded near-epipole/overflow fallback,
+      and prove conservative coverage for diagonal, tangent, separated,
+      sub-texel, seam-wrapped, and three-occluder rays. Report rectified rows,
+      visited nodes, emitted intervals, fallbacks, and overflow. Match the
+      dense oracle before benchmarking speed.
+- [x] L4: Separate visibility-footprint filtering from final-loss
+      reconstruction. Add unfiltered, physically footprint-filtered, and
+      current fixed-tent comparison modes; derive the footprint from solar
+      angular size and projection derivatives, and reject any mode that moves
+      the analytic ridge boundary or creates energy outside the reference
+      shadow cone.
+- [x] L5: Prototype confidence-gated moment visibility behind a non-default
+      option. Begin with four full-precision signed-depth moments and published
+      lower/upper reconstruction; use their interval width and depth-complexity
+      probes to fall back to min/max traversal. Test two-surface exactness,
+      three-surface leakage, black-wall light leaks, Mie forward scattering,
+      and motion before comparing six moments or 64-bit nonlinear storage.
+- [x] L6: Run matched-time and matched-memory release comparisons for the
+      qualified min/max path, rectified epipolar min/max, and the hybrid moment
+      experiment. Keep minmax as default unless the epipolar path improves
+      boundary error and temporal stability without leakage and its initial
+      refresh remains interactive. Defer importance deep shadows until
+      semitransparent cloud geometry exists.
+
+L3 intermediate evidence (2026-08-30): the first radial prototype was not a
+valid implementation of Chen et al. It interpreted a 192-wide rectified row
+as though it were the 256-wide source hierarchy and stored ordinary shadow
+depth instead of blocker angle `beta`; its full-ray classifier fell back over
+almost the entire sky. The corrected path reconstructs blocker `beta`, writes
+level zero directly from local cascade 3, and derives a balanced radial/angular
+layout from the existing allocation. Low now uses 82 radial samples and 523
+angular rows, Default 165 and 1046, and High 332 and 2096 without increasing
+memory. Intervals outside the range where cascade 3 is authoritative retain
+the qualified point fallback rather than making a false proof from a different
+cascade.
+
+The 1280x720 Low analytic-ridge direct-loss comparison against the 131,072-step
+dense oracle measures 0.000269 normalized RGB RMSE, 0.003922 maximum channel
+error, 0.5-pixel mean boundary distance, and 3.59e-8 gradient-step energy. The
+dense and epipolar peaks are both 21/255 red and 11/255 green; visual inspection
+shows the same attached ridge cone without the former missing boundary. The
+same-memory release benchmark is not yet a promotion result: epipolar measured
+12.54 ms median shadow work, 4.41 ms initial atmosphere refresh, and 3.35 ms
+median composition versus 10.79, 2.67, and 2.59 ms for `minmax-segments` in
+this Low analytic-ridge run. That static qualification originally selected
+`minmax-segments`; the later animated-sun benchmark supersedes the default
+choice (see the runtime note below).
+L3 stays open until GPU traversal/fallback counters, adversarial motion and
+coverage cases, and the performance regression are resolved.
+
+The subsequent ordered-traversal pass replaces the remaining one-level lookup
+with a bounded depth-first walk over the one-dimensional hierarchy. It visits
+left children first, skips nodes outside the requested radial interval, emits
+proven uniform nodes, descends ambiguous nodes, and reports bounded fallback
+on a 128-node or stack-cap overflow. Debug view 24 visualizes visited-node and
+emitted-interval load plus fallback/overflow, while benchmark JSON reports the
+rectified layout and allocation. The corrected traversal is image-identical to
+the preceding qualified epipolar result. CPU cases now cover forward/reverse
+order, tangent crossing, three separated occluders, seam wrapping, sub-texel
+receiver motion, and interval overflow. A paired -0.02/+0.02 degree pitch
+capture changed only 378 pixels by more than 1/255 over 1280x720, with
+0.000124 paired RGB RMSE and 1/255 maximum difference; visual inspection shows
+no boundary pop or detached cone. The Low ordered-path sample measured 11.37 ms
+median shadow work and 4.40 ms initial atmosphere refresh, so correctness is
+ahead of performance and the default remains unchanged.
+
+Exact fence-backed GPU counters then exposed a redundant-query problem rather
+than hierarchy overflow. Before correction, one Low analytic-ridge refresh
+visited 988,881 hierarchy nodes, emitted 205,441 uniform intervals, made
+2,388,467 fallback calls, and overflowed zero times. The integration loop was
+re-querying every subdivided interval even after its parent had explicitly
+selected the qualified fallback. Reusing proven uniform classifications and
+only re-querying hierarchy-requested subdivisions preserves the direct-loss
+image byte-for-byte. The same capture now visits 413,771 nodes, emits 65,151
+intervals, makes 274,572 fallback calls, and still has zero overflows. On a
+matched 1920x1080 Low run, rectified epipolar measured 9.43 ms median shadow
+work versus 9.25 ms for `minmax-segments`; this is close, but not yet a reason
+to change the default.
+
+Filtering qualification reinforces the architectural split. Against the
+131,072-step dense oracle at 1280x720, rectified epipolar with an unfiltered
+visibility/final-loss path measured 0.000547 normalized RGB RMSE and 0.02745
+maximum error. Filtering the *visibility footprint* from the projected solar
+radius, while reconstructing the completed loss only bilinearly, improved this
+to 0.000225 RMSE and 1/255 maximum error with the same 0.5-pixel boundary
+distance. The confidence-gated four-moment experiment measured 0.000247 RMSE
+and 1/255 maximum error, so it does not displace exact min/max traversal.
+
+Final Gate L qualification (2026-08-30) closes L0-L6. The fitted and local
+comparison offsets are reported in world units and the CPU matrix covers
+receiver range, resolution, sun direction, camera orientation, and origin
+rebasing. Raster-bias motion sweeps selected constant `0.8125` and slope
+`1.21875`, the lowest tested pair meeting the temporal threshold; the fitted
+world-space comparison tolerance remains scale-derived. Receiver-plane terrain
+bias produced no compelling improvement and remains experimental.
+
+At 1280x720, physical-footprint filtering measured 0.000230866 normalized RGB
+RMSE against the 131,072-step dense oracle, 1/255 maximum error, a 0.5-pixel
+boundary distance, and only 0.00000698 mean excess outside the oracle shadow
+cone. The fixed tent measured 0.000276025 RMSE and 2/255 maximum error. Matched
+640x360 release samples put the physical and fixed epipolar refreshes within
+measurement noise: 4.52 versus 4.10 ms initial atmosphere refresh, with 3.39
+versus 3.69 ms median composite work. Physical-footprint filtering therefore
+becomes the default, while fixed and unfiltered modes remain available for
+comparison.
+
+The confidence-gated moment path measured 0.000259788 RMSE and 2/255 maximum
+error and remains non-default. A pitch-motion pair measured 0.000619902 RMSE,
+0.035294 maximum error, and 491 pixels above 2/255, with zero hierarchy
+overflows. Visual inspection of the integrator, motion, raster-bias,
+receiver-plane, and comparison-bias matrices found no detached cone, acne, or
+gross leakage.
+
+The final audit also found a stale epipolar-cache dependency: rectification
+uses local cascade 3, but its generation had been keyed to the unrelated fitted
+shadow depth. The cache identity now includes the published terrain generation,
+local cascade matrix, raster biases, filter mode, and local comparison bias.
+A scripted camera-look run rebuilt the hierarchy four times versus two for a
+static run, proving that view-dependent rectification refreshes; both completed
+with zero overflow. This cache is deliberately separate from the completed
+planet/sun-relative visibility cache. A later 2560x1600 animated-sun release run
+measured the same low-sun image with `fixed-32` while reducing median atmosphere
+work from 12.69 ms to 3.26 ms. `fixed-32` is therefore the production default;
+the hierarchy methods remain qualified comparison paths for static scenes and
+thin-occluder experiments.
+
 #### Qualified follow-ons after H9
 
 - [ ] Evaluate the Breyer-Zirr deterministic low-sun planet-shadow interval
@@ -1286,6 +1783,49 @@ final manual visual inspection all pass.
   (2025): [local PDF](../papers/atmosphere/2025-Physically%20Based%20Real-Time%20Rendering%20of%20Eclipses.pdf), [DOI](https://doi.org/10.1111/cgf.70017)
 - C. Breyer and T. Zirr, *Planetary Shadow-Aware Distance Sampling* (2022):
   [local PDF](../papers/atmosphere/2022-Planetary%20Shadow-Aware%20Distance%20Sampling.pdf), [DOI](https://doi.org/10.2312/sr.20221152)
+- I. Baran et al., *A Hierarchical Volumetric Shadow Algorithm for Single
+  Scattering* (2010): [local PDF](../papers/atmosphere/2010-Hierarchical%20Volumetric%20Shadow%20Algorithm%20for%20Single%20Scattering.pdf), [DOI](https://doi.org/10.1145/1882262.1866200)
+- J. Chen et al., *Real-Time Volumetric Shadows Using One-Dimensional Min-Max
+  Mipmaps* (2011): [local PDF](../papers/atmosphere/2011-Real-Time%20Volumetric%20Shadows%20Using%20One-Dimensional%20Min-Max%20Mipmaps.pdf), [DOI](https://doi.org/10.1145/1944745.1944752)
+- O. Klehm, H.-P. Seidel, and E. Eisemann, *Prefiltered Single Scattering*
+  (2014): [DOI](https://doi.org/10.1145/2556700.2556704), public author PDF not found
+- O. Klehm, H.-P. Seidel, and E. Eisemann, *Filter-Based Real-Time Single
+  Scattering Using Rectified Shadow Maps* (2014):
+  [local PDF](../papers/atmosphere/2014-Filter-Based%20Real-Time%20Single%20Scattering.pdf), [JCGT](https://jcgt.org/published/0003/03/02/)
+- H. Dou et al., *Adaptive Depth Bias for Shadow Maps* (2014):
+  [local PDF](../papers/atmosphere/2014-Adaptive%20Depth%20Bias%20for%20Shadow%20Maps.pdf), [DOI](https://doi.org/10.1145/2556700.2556706)
+- C. Peters and R. Klein, *Moment Shadow Mapping* (2015):
+  [local PDF](../papers/atmosphere/2015-Moment%20Shadow%20Mapping.pdf),
+  [supplement](../papers/atmosphere/2015-Moment%20Shadow%20Mapping%20Supplementary%20Document.pdf), [DOI](https://doi.org/10.1145/2699276.2699277)
+- C. Peters et al., *Beyond Hard Shadows: Moment Shadow Maps for Single
+  Scattering, Soft Shadows and Translucent Occluders* (2016):
+  [local PDF](../papers/atmosphere/2016-Beyond%20Hard%20Shadows.pdf),
+  [supplement](../papers/atmosphere/2016-Beyond%20Hard%20Shadows%20Supplementary%20Document.pdf), [DOI](https://doi.org/10.1145/2856400.2856402)
+- C. Peters et al., *Improved Moment Shadow Maps for Translucent Occluders,
+  Soft Shadows and Single Scattering* (2017):
+  [local PDF](../papers/atmosphere/2017-Improved%20Moment%20Shadow%20Maps.pdf), [JCGT](https://jcgt.org/published/0006/01/03/)
+- C. Peters, *Non-Linearly Quantized Moment Shadow Maps* (2017):
+  [local PDF](../papers/atmosphere/2017-Nonlinearly%20Quantized%20Moment%20Shadow%20Maps.pdf),
+  [supplement](../papers/atmosphere/2017-Nonlinearly%20Quantized%20Moment%20Shadow%20Maps%20Supplementary%20Document.pdf), [DOI](https://doi.org/10.1145/3105762.3105775)
+- C. Peters, *Moment-Based Methods for Real-Time Shadows and Fast Transient
+  Imaging* (2018):
+  [local PDF](../papers/atmosphere/2018-Moment%20Based%20Methods%20for%20Real%20Time%20Shadows%20and%20Fast%20Transient%20Imaging.pdf)
+- L. Belcour, K. Bala, and C. Soler, *A Local Frequency Analysis of Light
+  Scattering and Absorption* (2014):
+  [local PDF](../papers/atmosphere/2014-Local%20Frequency%20Analysis%20of%20Light%20Scattering%20and%20Absorption.pdf), [DOI](https://doi.org/10.1145/2629490)
+- C. Wyman, *Voxelized Shadow Volumes* (2011):
+  [local PDF](../papers/atmosphere/2011-Voxelized%20Shadow%20Volumes.pdf), [DOI](https://doi.org/10.1145/2018323.2018329)
+- J. Hanika et al., *Camera Space Volumetric Shadows* (2012):
+  [local PDF](../papers/atmosphere/2012-Camera%20Space%20Volumetric%20Shadows.pdf), [DOI](https://doi.org/10.1145/2370919.2370921)
+- C. Wyman and Z. Dai, *Imperfect Voxelized Shadow Volumes* (2013):
+  [local PDF](../papers/atmosphere/2013-Imperfect%20Voxelized%20Shadow%20Volumes.pdf), [DOI](https://doi.org/10.1145/2492045.2492050)
+- A. Muñoz, *Higher Order Ray Marching* (2014):
+  [local PDF](../papers/atmosphere/2014-Higher%20Order%20Ray%20Marching.pdf), [DOI](https://doi.org/10.1111/cgf.12424)
+- M. Jakab, *Volumetric Radial Shadow Maps* (2025):
+  [local PDF](../papers/atmosphere/2025-Volumetric%20Radial%20Shadow%20Maps.pdf)
+- R. Kern, F. Brüll, and T. Grosch, *Real-Time Importance Deep Shadow Maps
+  with Hardware Ray Tracing* (2025):
+  [local PDF](../papers/atmosphere/2025-Real-Time%20Importance%20Deep%20Shadow%20Maps%20with%20Hardware%20Ray%20Tracing.pdf), [DOI](https://doi.org/10.1111/cgf.70178), [code](https://github.com/TU-Clausthal-Rendering/ImportanceDeepShadowMaps)
 - M. Kolarova, L. Lachiver, and A. Wilkie, *An Empirically Derived Adjustable
   Model for Particle Size Distributions in Advection Fog* (2024):
   [local PDF](../papers/atmosphere/2024-Adjustable%20Particle%20Size%20Distributions%20in%20Advection%20Fog.pdf), [DOI](https://doi.org/10.1111/cgf.15008)

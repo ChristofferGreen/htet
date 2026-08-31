@@ -249,6 +249,13 @@ bool atmosphere_shadow_request_covers_rotation(
   return true;
 }
 
+bool atmosphere_shadow_front_covers_view(
+    const std::optional<AtmosphereShadowFront>& front,
+    const AtmosphereShadowFrontRequest& current_view) noexcept {
+  return front&&front->complete()&&
+      atmosphere_shadow_request_covers_rotation(front->request,current_view);
+}
+
 AtmosphereShadowFront plan_atmosphere_shadow_front(
     const tetra::WorldCutCheckpoint& checkpoint,
     const tetra::WorldStreamingDemand::Domain& domain,

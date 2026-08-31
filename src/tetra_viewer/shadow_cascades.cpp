@@ -124,9 +124,43 @@ AtmosphereShadowCascadeBlend atmosphere_shadow_cascade_blend(
           .secondary_weight=smooth};
 }
 
-double atmosphere_shadow_depth_bias(std::size_t cascade) noexcept {
-  cascade=std::min(cascade,shadow_cascade_count-1U);
-  return 0.00045*(1.0+static_cast<double>(cascade)*0.45);
+double surface_shadow_world_bias(double n_dot_l) noexcept {
+  n_dot_l=std::clamp(std::isfinite(n_dot_l)?n_dot_l:0.0,0.0,1.0);
+  return 0.00144+(0.0096-0.00144)*(1.0-n_dot_l);
+}
+
+double normalized_shadow_depth_bias(
+    const ShadowCascade& cascade,double world_bias) noexcept {
+  const double depth_span=2.0*cascade.depth_half_range;
+  if(!(depth_span>0.0)||!std::isfinite(depth_span)||
+     !(world_bias>=0.0)||!std::isfinite(world_bias))return 0.0;
+  return world_bias/depth_span;
+}
+
+double atmosphere_shadow_depth_bias(const ShadowCascade& cascade) noexcept {
+  // Preserve the former nearest-cascade 0.00045 normalized bias as a world
+  // distance (0.00045 * 8 = 0.0036), rather than letting it grow to nearly two
+  // world units in the outer cascade.
+  return normalized_shadow_depth_bias(cascade,0.0036);
+}
+
+double atmosphere_fitted_shadow_world_bias(
+    double texel_world_size_x,double texel_world_size_y) noexcept {
+  // The comparison tolerance is a physical distance.  A small footprint term
+  // absorbs depth quantisation at large fitted extents, but is tightly capped
+  // so it cannot detach a mountain silhouette by metres as the former fixed
+  // normalized value did.
+  const double footprint=std::max(texel_world_size_x,texel_world_size_y);
+  if(!std::isfinite(footprint)||footprint<0.0)return 0.0036;
+  return std::clamp(0.0036+footprint*0.001,0.0036,0.02);
+}
+
+double atmosphere_fitted_shadow_depth_bias(
+    double depth_world_span,double texel_world_size_x,
+    double texel_world_size_y) noexcept {
+  if(!(depth_world_span>0.0)||!std::isfinite(depth_world_span))return 0.0;
+  return atmosphere_fitted_shadow_world_bias(
+      texel_world_size_x,texel_world_size_y)/depth_world_span;
 }
 
 double atmosphere_shadow_footprint_fade(
@@ -134,6 +168,20 @@ double atmosphere_shadow_footprint_fade(
   const double footprint=std::max(std::abs(projected_x),std::abs(projected_y));
   const double linear=std::clamp((footprint-0.88)/(0.98-0.88),0.0,1.0);
   return 1.0-linear*linear*(3.0-2.0*linear);
+}
+
+double combined_local_fitted_shadow_visibility(
+    double local_visibility,double fitted_visibility,
+    double local_coverage) noexcept {
+  local_visibility=std::clamp(
+      std::isfinite(local_visibility)?local_visibility:1.0,0.0,1.0);
+  fitted_visibility=std::clamp(
+      std::isfinite(fitted_visibility)?fitted_visibility:1.0,0.0,1.0);
+  local_coverage=std::clamp(
+      std::isfinite(local_coverage)?local_coverage:0.0,0.0,1.0);
+  const double blended=fitted_visibility+
+      (local_visibility-fitted_visibility)*local_coverage;
+  return std::min(blended,fitted_visibility);
 }
 
 AtmosphereShadowProjection project_atmosphere_shadow_point(

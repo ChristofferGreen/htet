@@ -1,5 +1,168 @@
 # Implementation TODO
 
+## Completed chain: orbital Mie-limb stability
+
+- [x] Reproduce the yellow atmospheric band fading under sub-tenth-degree
+      orbital camera motion and distinguish it from terrain-normal shimmer.
+- [x] Reproduce continuous ascent separately and reject the initial
+      pitch-only test after it failed to exercise changing ray length.
+- [x] Capture a live low-altitude ascent and a dense 0, 20, 40, 60, 100, 200,
+      400, 700, and 1000 m image sequence; identify the golden-to-blue flash as
+      the compact preset's physically over-compressed 30 m aerosol profile.
+- [x] Expand the gameplay Mie scale height to 300 m and divide scattering and
+      absorption coefficients by 10 so vertical optical depth is unchanged.
+- [x] Re-render the identical nine poses and visually verify that the golden
+      horizon now fades continuously through 1 km rather than collapsing in
+      the first few frames.
+- [x] Keep terrain and near-ground pixels on the qualified lookup path while
+      moving high-altitude clear-sky pixels to full-resolution integration.
+- [x] Split the camera ray at closest approach and place 32 samples at stable
+      radial-altitude boundaries rather than camera-relative distances.
+- [x] Use density-aware fifth-power spacing around the compact preset's
+      compact aerosol layer and quadratic spacing above that layer.
+- [x] Blend the orbital path across an altitude range so crossing the mode
+      boundary cannot create a new visible transition.
+- [x] Capture pitch motion at 500 km plus a 498--502 km ascent and reject drift
+      in outer-limb luminance, black fraction, and colour dominance.
+- [x] Build and benchmark the release executable, visually inspect the motion
+      contact sheet, and retain the path only within the interactive budget.
+
+## Completed chain: compact-planet atmosphere relief
+
+- [x] Derive a conservative production-terrain relief magnitude independently
+      from the existing gradient bound and lock it with a profile regression.
+- [x] Keep density spherical around the datum; enlarge Rayleigh scale height so
+      the highest summit retains at least 75% datum density.
+- [x] Preserve vertical Rayleigh optical depth by inversely rescaling the
+      scattering coefficients when the scale height changes.
+- [x] Place atmosphere top at least eight Rayleigh scale heights above the
+      entire conservative relief envelope.
+- [x] Apply the adaptation on startup and whenever the gameplay-planet preset
+      is restored without changing the Earth or alien presets.
+- [x] Increase faithful transmittance quadrature until the independent
+      one-metre-horizon GPU probe passes the adapted profile.
+- [x] Capture and inspect ground, mountain, atmosphere-top, 200 km, 500 km, and
+      1000 km views; record that fixed poses alone did not expose the later
+      continuous-motion orbital LUT artifact.
+- [x] Add a clear-only outer-silhouette image diagnostic and require the
+      orbital limb to be visible, nonblack, and blue-dominant.
+- [x] Run focused physical, boundary, profile, and image-mask tests, then the
+      complete release suite.
+
+## Completed chain: transition-aware atmospheric shadows
+
+Implement and qualify Gate J in
+[`planetary-atmosphere.md`](planetary-atmosphere.md). Preserve the current
+receiver-fitted shadow front and faithful Hillaire transport while replacing
+fixed midpoint visibility integration with a tested, selectable
+transition-aware path.
+
+- [x] Add dense direct-loss oracles and quantitative staircase, convergence,
+      boundary, thin-occluder, and sub-texel motion tests (J0).
+- [x] Separate visibility representation from atmospheric integration and add
+      typed fixed, adaptive-transition, min-max-segment, and dense-oracle modes
+      with immutable generation metadata (J1).
+- [x] Implement bounded adaptive transition subdivision and prove it against
+      analytic lit, shadowed, single-transition, multi-ridge, thin-ridge,
+      tangent, handoff, and overflow cases (J2-J3).
+- [x] Build and validate a generation-matched min/max pyramid over the fitted
+      depth layer (J4).
+- [x] Implement hierarchical projected-ray traversal that emits ordered
+      constant-visibility intervals with explicit bounded fallback (J5).
+- [x] Use the selected interval integrator in local and long-path direct loss
+      without shadowing multiple scattering or changing uniform-visibility
+      transport (J6).
+- [x] Qualify deterministic camera/sun motion, terrain replacement, rebasing,
+      stale generations, seams, attachment, thin occluders, and black fill
+      through scripted captures and CPU/GPU probes (J7).
+- [x] Benchmark every interactive method and quality profile in the release
+      binary, retaining the 0.5 ms composition, roughly 5 ms lookup-refresh,
+      64 MiB Default storage, and terrain-worker isolation targets where the
+      quality result permits (J8).
+- [x] Visually inspect native-resolution ridge, mountain, ground, flight,
+      orbit, and terminator captures; iterate until no objectionable staircase,
+      shimmer, leak, detachment, or seam remains (J9).
+- [x] Promote the fastest oracle-qualified method atomically, retain the other
+      methods for comparison, document rejected tradeoffs, and pass the full
+      release suite plus Vulkan validation (J9).
+
+## Active chain: reconstructed terrain-shadowed atmosphere
+
+Implement and qualify the architecture in
+[`atmosphere-shadow-rendering.md`](atmosphere-shadow-rendering.md). The native
+screen marcher is the correctness oracle, the half-resolution temporal screen
+march is the primary production candidate, and shadowed camera froxels remain
+a separately measured comparison. Do not promote a method from sample count or
+still-image appearance alone.
+
+- [x] Establish the oracle and frozen evidence.
+  - [x] Freeze the reported low-sun mountain poses, pitch and translation
+        pairs, orbital poses, native framebuffer dimensions, release timings,
+        deterministic captures, and motion sequences (A0).
+  - [x] Extract one shared, tested positive atmosphere-integration primitive
+        for all candidates; direct sunlight is multiplied by visibility where
+        scattering is generated, with no negative light or post-composite
+        shadow subtraction (A1).
+  - [x] Qualify the native deterministic 32-sample screen marcher as the
+        oracle, including coloured transmittance, per-sample cascade/fitted
+        visibility, bounded refinement at visibility transitions, and strict
+        `surface * T + L` composition (A2).
+- [x] Build the deterministic low-resolution candidate.
+  - [x] Add tested reversed-Z endpoint reconstruction and conservative
+        half-resolution depth and sky/terrain-class reduction, covering mixed
+        footprints and thin foreground ridges (A3).
+  - [x] Add half-resolution radiance, coloured-transmittance, linear-depth,
+        classification, transition-confidence, and generation resources, then
+        run the oracle's 32-sample transport without jitter or history (A4).
+  - [x] Add depth- and class-aware native reconstruction with direct evaluation
+        or a repair pass when no compatible low-resolution tap exists (A5).
+  - [x] Remove the directional long-shadow cache, fractional visibility mix,
+        and directional-airlight maximum from the candidate only after numeric
+        and image comparisons meet their declared thresholds (A6).
+- [x] Make temporal reconstruction correct under motion and updates.
+  - [x] Carry immutable current and previous camera, terrain, shadow,
+        atmosphere, sun, and render-origin identities and invalidate history on
+        every incompatible change (A7).
+  - [x] Add world-position reprojection for opaque endpoints, rotation-only
+        reprojection for sky, neighbourhood clamping, disocclusion and class
+        rejection, and shadow-transition rejection (A8).
+  - [x] Evaluate low-discrepancy per-ray jitter after deterministic motion
+        tests. The deterministic visibility cache passed without noise, so
+        jitter remains deliberately disabled (A9).
+- [x] Measure quality and cost before choosing the Default.
+  - [x] Add GPU timestamps for depth reduction, atmosphere integration,
+        temporal reconstruction, upsampling/composition, shadow rendering, and
+        the optical tables (A10).
+  - [x] Compare half, one-third, and one-quarter linear resolution and exact
+        visibility refresh schedules independently. Keep all 32 transport
+        intervals after the reduced-transport experiment produced noise (A10).
+  - [x] Require the selected screen path to pass the numeric, silhouette,
+        motion, orbital, generation, Vulkan-validation, and visual gates while
+        keeping all atmosphere integration and reconstruction within 25% of a
+        16.67 ms frame on the development machine. The promoted path passes all
+        gates at 3.83 ms on the development machine (A13).
+  - [x] Capture a multi-frame sub-degree camera drag while motion is still in
+        progress. Never reproject binary interval visibility from an old camera
+        ray; refresh all 32 intervals on camera or render-origin movement.
+- [x] Implement and judge the cheaper alternatives.
+  - [x] Add a deterministic `32 x 32 x 32` camera-frustum froxel comparison
+        using the shared transport and per-point cascade selection, and compare
+        it against the native oracle at matched time and quality (A11).
+  - [x] Add froxel history only if deterministic froxels are competitive and
+        the remaining error is temporal rather than spatial or angular (A12).
+  - [x] If both candidates retain a measured visibility or sampling
+        bottleneck, implement the complete heterogeneous Intel-style epipolar
+        pipeline as a third selectable comparison, including refinement,
+        cascade intervals, interpolation, unwarping, and depth-break repair.
+        The promoted screen path clears both gates, so this trigger is false
+        and no mislabeled partial epipolar path is added (A14).
+- [x] Promote and clean up.
+  - [x] Promote the fastest oracle-qualified method atomically while keeping
+        the native marcher selectable for regression captures (A13).
+  - [x] Remove superseded production code only after the complete numeric,
+        image, motion, orbital, release-performance, and Vulkan-validation
+        suite passes (A15).
+
 ## Active chain: bounded camera publication
 
 - [x] Add end-to-end and surface-substage timings to the production world
