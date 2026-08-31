@@ -2827,6 +2827,15 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkCmdSetScissor(command_buffer,0,1,&scene_scissor);
   std::array<float,28> push_data{};
   std::copy_n(camera_data,28,push_data.begin());
+  const auto terrain_draw_ranges=surface_upload_planner_.published_draws();
+  terrain_draw_visibility_=classify_surface_draw_visibility(
+      terrain_draw_ranges,std::span<const float,16>{camera_data,16U});
+  if(terrain_draw_ranges.empty()&&triangles_.count!=0U){
+    terrain_draw_visibility_.resident_ranges=1U;
+    terrain_draw_visibility_.submitted_ranges=1U;
+    terrain_draw_visibility_.resident_triangles=triangles_.count/3U;
+    terrain_draw_visibility_.submitted_triangles=triangles_.count/3U;
+  }
   // The light vector's fourth component is intentionally not geometric. It
   // carries the independently selectable surface receiver-bias experiment.
   push_data[19]=atmosphere_input.surface_shadow_bias==
@@ -2872,12 +2881,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   draw(terrain_pipeline(triangle_pipeline_,msaa2_triangle_pipeline_,
                         msaa_triangle_pipeline_),
        shaded_pipeline_layout_,triangles_,
-       surface_upload_planner_.published_draws());
+       terrain_draw_ranges);
   draw(terrain_pipeline(triangle_wire_pipeline_,
                         msaa2_triangle_wire_pipeline_,
                         msaa_triangle_wire_pipeline_),
        pipeline_layout_,triangles_,
-       surface_upload_planner_.published_draws());
+       terrain_draw_ranges);
   push_data[24]=static_cast<float>(scene_extent.width);
   push_data[25]=static_cast<float>(scene_extent.height);
   // One-pixel half-extent provides the complete filter footprint for an

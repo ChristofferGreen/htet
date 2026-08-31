@@ -6236,6 +6236,20 @@ bool surface_draw_range_intersects_frustum(
       all_outside([](const ClipPoint& p){return p.z >  p.w;}));
 }
 
+SurfaceDrawVisibility classify_surface_draw_visibility(
+    std::span<const SurfaceDeviceDrawRange> ranges,
+    std::span<const float,16> view_projection) noexcept {
+  SurfaceDrawVisibility result;
+  result.resident_ranges=ranges.size();
+  for(const auto& range:ranges){
+    result.resident_triangles+=range.vertex_count/3U;
+    if(!surface_draw_range_intersects_frustum(range,view_projection))continue;
+    ++result.submitted_ranges;
+    result.submitted_triangles+=range.vertex_count/3U;
+  }
+  return result;
+}
+
 void SurfaceDeviceUploadPlanner::commit() {
   if(!metrics_.prepared)
     throw std::logic_error("surface device upload has no prepared publication");

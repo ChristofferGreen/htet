@@ -1385,10 +1385,20 @@ struct SurfaceDeviceDrawRange {
   }
 };
 
+struct SurfaceDrawVisibility {
+  std::size_t resident_ranges{};
+  std::size_t submitted_ranges{};
+  std::size_t resident_triangles{};
+  std::size_t submitted_triangles{};
+};
+
 // Tests a retained render-block AABB against a Vulkan clip volume. The
 // column-major matrix has the same layout consumed by scene.vert.
 [[nodiscard]] bool surface_draw_range_intersects_frustum(
     const SurfaceDeviceDrawRange& range,
+    std::span<const float,16> view_projection) noexcept;
+[[nodiscard]] SurfaceDrawVisibility classify_surface_draw_visibility(
+    std::span<const SurfaceDeviceDrawRange> ranges,
     std::span<const float,16> view_projection) noexcept;
 
 struct SurfaceDeviceUploadMetrics {

@@ -173,6 +173,8 @@ class SceneRenderer {
   [[nodiscard]] const SceneGpuTimings& gpu_timings() const noexcept {
     return gpu_timings_;
   }
+  [[nodiscard]] const SurfaceDrawVisibility& terrain_draw_visibility()
+      const noexcept { return terrain_draw_visibility_; }
   [[nodiscard]] const AtmosphereDispatchCounts& atmosphere_dispatch_counts()
       const noexcept { return atmosphere_dispatch_counts_; }
   [[nodiscard]] const AtmosphereShadowMapStatus& atmosphere_shadow_map_status()
@@ -274,6 +276,7 @@ class SceneRenderer {
   VertexBuffer hierarchy_lines_;
   VertexBuffer editor_lines_;
   SurfaceDeviceUploadPlanner surface_upload_planner_;
+  SurfaceDrawVisibility terrain_draw_visibility_{};
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<DepthImage> depth_images_;
   struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };

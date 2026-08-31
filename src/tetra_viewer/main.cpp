@@ -5260,6 +5260,84 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                  static_cast<double>(
                                      outer_limb_analysis.sampled_pixels))
                              <<'}';
+                    const auto& runtime_status=world_runtime->diagnostics();
+                    const auto capture_profile=
+                        tetra_viewer::production_world_profile();
+                    const auto& draw_visibility=
+                        g_SceneRenderer.terrain_draw_visibility();
+                    std::cout<<",\"terrain_lod\":{\"capture_kind\":\""
+                             <<(requested_frame_ready?"early_frame":"settled")
+                             <<"\",\"front_ready\":"
+                             <<(capture_front_ready?"true":"false")
+                             <<",\"busy\":"
+                             <<(runtime_status.busy?"true":"false")
+                             <<",\"converged\":"
+                             <<(runtime_status.converged?"true":"false")
+                             <<",\"target_edge_physical_pixels\":"
+                             <<runtime_status.target_projected_edge_pixels
+                             <<",\"field_error_physical_pixels\":"
+                             <<runtime_status.field_error_pixel_threshold
+                             <<",\"limb_error_physical_pixels\":"
+                             <<runtime_status.limb_error_pixel_threshold
+                             <<",\"visible_edge_min\":"
+                             <<runtime_status.visible_minimum_projected_edge_pixels
+                             <<",\"visible_edge_median\":"
+                             <<runtime_status.visible_median_projected_edge_pixels
+                             <<",\"visible_edge_p95\":"
+                             <<runtime_status.visible_p95_projected_edge_pixels
+                             <<",\"visible_edge_max\":"
+                             <<runtime_status.visible_maximum_projected_edge_pixels
+                             <<",\"visible_field_error_p95\":"
+                             <<runtime_status.visible_p95_projected_field_error_pixels
+                             <<",\"visible_field_error_max\":"
+                             <<runtime_status.visible_maximum_projected_field_error_pixels
+                             <<",\"visible_limb_error_p95\":"
+                             <<runtime_status.visible_p95_projected_limb_error_pixels
+                             <<",\"visible_limb_error_max\":"
+                             <<runtime_status.visible_maximum_projected_limb_error_pixels
+                             <<",\"edge_splits\":"
+                             <<runtime_status.edge_density_splits
+                             <<",\"field_splits\":"
+                             <<runtime_status.field_error_splits
+                             <<",\"limb_splits\":"
+                             <<runtime_status.limb_error_splits
+                             <<",\"maximum_depth_exceptions\":"
+                             <<runtime_status.maximum_depth_error_exceptions
+                             <<",\"resident_sectors\":"
+                             <<runtime_status.resident_sector_count
+                             <<",\"hierarchy_resident_sectors\":"
+                             <<runtime_status.hierarchy_resident_sector_count
+                             <<",\"cpu_surface_resident_sectors\":"
+                             <<runtime_status.cpu_surface_resident_sector_count
+                             <<",\"upload_pending_sectors\":"
+                             <<runtime_status.upload_pending_sector_count
+                             <<",\"gpu_ready_sectors\":"
+                             <<runtime_status.gpu_ready_sector_count
+                             <<",\"sector_coverage_radians\":"
+                             <<runtime_status.resident_sector_angular_coverage_radians
+                             <<",\"sector_overlap_radians\":"
+                             <<capture_profile.terrain_sector_overlap_radians
+                             <<",\"current_sector_demand_hash\":"
+                             <<runtime_status.current_sector_demand_hash
+                             <<",\"sector_hits\":"<<runtime_status.sector_hits
+                             <<",\"sector_additions\":"
+                             <<runtime_status.sector_additions
+                             <<",\"sector_evictions\":"
+                             <<runtime_status.sector_evictions
+                             <<",\"sector_budget_rejections\":"
+                             <<runtime_status.sector_budget_rejections
+                             <<",\"published_cut_hash\":"
+                             <<runtime_status.hierarchy_hash
+                             <<",\"published_surface_hash\":"
+                             <<runtime_status.connected_surface_hash
+                             <<",\"resident_draw_ranges\":"
+                             <<draw_visibility.resident_ranges
+                             <<",\"submitted_draw_ranges\":"
+                             <<draw_visibility.submitted_ranges
+                             <<",\"resident_triangles\":"
+                             <<draw_visibility.resident_triangles
+                             <<",\"submitted_triangles\":"
+                             <<draw_visibility.submitted_triangles<<'}';
                     const auto& capture_timing=g_SceneRenderer.gpu_timings();
                     const double capture_gpu_total=
                         capture_timing.shadows_milliseconds+

@@ -11238,6 +11238,17 @@ TEST_CASE("resident surface draw ranges are conservatively frustum culled") {
   auto invalid=identity;
   invalid[0]=std::numeric_limits<float>::quiet_NaN();
   CHECK(tetra_viewer::surface_draw_range_intersects_frustum(range,invalid));
+
+  std::array<tetra_viewer::SurfaceDeviceDrawRange,3> ranges{};
+  ranges[0]={{},9U,{-0.5,-0.5,0.1},{0.5,0.5,0.9}};
+  ranges[1]={{},12U,{2.0,-0.5,0.1},{3.0,0.5,0.9}};
+  ranges[2]={{},6U,{0.9,-0.5,0.1},{1.1,0.5,0.9}};
+  const auto visibility=tetra_viewer::classify_surface_draw_visibility(
+      ranges,identity);
+  CHECK(visibility.resident_ranges==3U);
+  CHECK(visibility.submitted_ranges==2U);
+  CHECK(visibility.resident_triangles==9U);
+  CHECK(visibility.submitted_triangles==5U);
 }
 
 TEST_CASE("world render block estimate predicts fragmentation compaction") {
