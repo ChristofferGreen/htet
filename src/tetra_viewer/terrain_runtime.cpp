@@ -852,12 +852,10 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       value.x*value.x+value.y*value.y+value.z*value.z;};
   const double lipschitz=tetra::implicit_field_lipschitz_bound(field);
   const auto projection=tetra::prepare_camera_projection(camera);
-  const double guard_frustum_scale=profile.hierarchy_guard_frustum_scale;
-  auto guard_camera=camera;
-  guard_camera.vertical_fov_radians=2.0*std::atan(
-      std::tan(camera.vertical_fov_radians*0.5)*
-      guard_frustum_scale);
-  const auto guard_projection=tetra::prepare_camera_projection(guard_camera);
+  const double view_half_diagonal=std::atan(std::hypot(
+      projection.tangent,projection.horizontal_tangent));
+  const double sector_half_angle=view_half_diagonal+
+      profile.terrain_sector_overlap_radians;
   const tetra::Vec3 planet_centre{
       field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
   struct Evaluation {
@@ -928,12 +926,10 @@ static WorldLodCutSelection select_world_lod_cut_impl(
             std::max(eye_distance-result.radius,1.0e-12);
     result.projected_edges=tetra::projected_tetrahedron(points,projection);
     if(field.terrain.planet_radius>0.0){
-      const double view_half_angle=std::atan(std::hypot(
-          projection.tangent,projection.horizontal_tangent));
       const double rotation_margin=profile.terrain_sector_overlap_radians;
       const double inner_angle=std::max(
-          0.0,view_half_angle-rotation_margin);
-      const double view_cosine=std::cos(view_half_angle);
+          0.0,view_half_diagonal-rotation_margin);
+      const double view_cosine=std::cos(view_half_diagonal);
       const double inner_cosine=std::cos(inner_angle);
       const double perspective_growth=
           (inner_cosine*inner_cosine)/(view_cosine*view_cosine);
@@ -975,24 +971,16 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     }
     return result;
   };
-  const auto in_guard_frustum=[&](const Evaluation& evaluation){
-    const auto offset=evaluation.centre-guard_projection.position;
-    const double depth=offset.x*guard_projection.forward.x+
-        offset.y*guard_projection.forward.y+offset.z*guard_projection.forward.z;
-    if(depth+evaluation.radius<=0.0)return false;
-    const double horizontal=std::abs(offset.x*guard_projection.right.x+
-        offset.y*guard_projection.right.y+offset.z*guard_projection.right.z);
-    const double vertical=std::abs(offset.x*guard_projection.up.x+
-        offset.y*guard_projection.up.y+offset.z*guard_projection.up.z);
-    const double positive_depth=std::max(depth,0.0);
-    const double horizontal_margin=evaluation.radius*std::sqrt(
-        1.0+guard_projection.horizontal_tangent*
-            guard_projection.horizontal_tangent);
-    const double vertical_margin=evaluation.radius*std::sqrt(
-        1.0+guard_projection.tangent*guard_projection.tangent);
-    return horizontal<=positive_depth*guard_projection.horizontal_tangent+
-               horizontal_margin&&
-        vertical<=positive_depth*guard_projection.tangent+vertical_margin;
+  const auto in_sector_footprint=[&](const Evaluation& evaluation){
+    const auto offset=evaluation.centre-projection.position;
+    const double distance=std::sqrt(dot(offset));
+    if(distance<=evaluation.radius)return true;
+    const double centre_angle=std::acos(std::clamp(
+        (offset.x*projection.forward.x+offset.y*projection.forward.y+
+         offset.z*projection.forward.z)/distance,-1.0,1.0));
+    const double angular_radius=std::asin(std::clamp(
+        evaluation.radius/distance,0.0,1.0));
+    return centre_angle<=sector_half_angle+angular_radius;
   };
   const auto evaluate=[&](tetra::WorldTetAddress owner){
     return evaluate_geometry(tetra::world_tetrahedron_geometry(owner));
@@ -1076,7 +1064,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
               profile.view_distance;
       const bool useful_planetary_projection=
           !(field.terrain.planet_radius>0.0)||
-          (in_guard_frustum(evaluation)&&
+          (in_sector_footprint(evaluation)&&
            !sphere_fully_occluded_by_planet(
                camera.position,planet_centre,
                field.terrain.planet_radius-8.0,evaluation.centre,

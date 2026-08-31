@@ -1797,6 +1797,29 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
         selection.metrics.visible_maximum_projected_limb_error_pixels);
 }
 
+TEST_CASE("planetary sector LOD is independent of hierarchy guard width") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.near_red_depth=10U;
+  profile.pixel_threshold=256.0;
+  profile.field_error_pixel_threshold=1.0e12;
+  profile.limb_error_pixel_threshold=1.0e12;
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  constexpr std::uint16_t all_roots=
+      (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+
+  profile.hierarchy_guard_frustum_scale=1.0;
+  const auto narrow=tetra_viewer::select_world_requested_root_cuts(
+      profile,field,camera,all_roots);
+  profile.hierarchy_guard_frustum_scale=8.0;
+  const auto wide=tetra_viewer::select_world_requested_root_cuts(
+      profile,field,camera,all_roots);
+  CHECK(narrow.owners==wide.owners);
+  CHECK(narrow.metrics.projected_splits==wide.metrics.projected_splits);
+}
+
 TEST_CASE("planetary world cut hysteresis evaluates parents before merging") {
   auto fine_profile=tetra_viewer::production_world_profile();
   fine_profile.pixel_threshold=256.0;
