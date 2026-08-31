@@ -2,14 +2,14 @@
 
 ## Status
 
-This document describes the intended replacement for the current
-direction-centred terrain LOD heuristic. It is a design target, not a claim
-that the current implementation already has these properties.
+This document is the normative replacement for the former direction-centred
+terrain LOD heuristic. The implementation audit below distinguishes landed
+runtime contracts from validation that still requires the reference display;
+the design text remains normative where the audit reports an open gate.
 
-The existing wider high-altitude guard and delayed angular recentering are
-transitional mitigations. They postpone visible refinement but retain the
-same underlying failure mode and should be removed once this design is in
-place.
+The former wider high-altitude guard and delayed angular recentering were
+transitional mitigations. They postponed visible refinement but retained the
+same underlying failure mode and have now been removed from visual LOD policy.
 
 This document specializes and replaces the retention policy in
 [camera-lod.md](camera-lod.md) for production planetary terrain. Where the
@@ -20,11 +20,28 @@ replacement design take precedence. The transactional cut, residency tiers,
 immutable publication, and sparse-block contracts in those documents remain
 applicable.
 
+### Implementation audit (2026-08-31)
+
+| Requirement | Runtime state | Evidence |
+|---|---|---|
+| Physical-pixel edge metric | Implemented | All six projected tetrahedron edges are measured with near-plane fallback; the final planetary split test uses the conservative sector-footprint bound. |
+| Field and planetary-limb error | Implemented | Both metrics participate in split and parent-merge decisions and have separate thresholds, visible p95/maximum measurements, split causes, and maximum-depth exceptions. The field certificate intentionally remains the documented global Lipschitz bound. |
+| Split/merge hysteresis | Implemented | Retained parents use the lower merge thresholds and are re-evaluated before merging; the runtime reports retained hysteresis splits. |
+| Persistent sector demand and common refinement | Implemented | Fixed-position rotation accumulates canonical sector cuts, overlap uses strongest demand, and leaving the frustum does not weaken a retained GPU-ready cut. |
+| Multi-tier residency | Implemented | Sectors transition through hierarchy, retained CPU surface, upload pending, and GPU ready. CPU-surface demotion owns complete immutable upload payloads; further pressure releases those payloads while preserving the logical demand. |
+| Deterministic transactional budgeting | Implemented | Non-current LRU sectors demote GPU to CPU and then CPU to hierarchy before logical eviction. Certified unavoidable costs are reserved before surface construction, exact prepared payload costs are admitted before publication, and proposed/reserved/published/retired costs are captured without guessed size ratios. |
+| Atomic fallback and revisit | Implemented | The last complete drawable front remains published throughout promotion. A retained revisit reuses its demand and measurements without rerunning LOD selection; matching retained render payloads seed preparation. |
+| Spatial draw visibility | Implemented | Independent retained render ranges are camera-frustum classified; off-screen resident ranges remain allocated but are not submitted. Shadow caster selection remains separately light-driven. |
+| Visual versus volume residency | Implemented | Player, editing, and physics volume pins affect residency independently of the visual projected-error cut and are reported by demand kind. |
+| Transitional direction heuristic removal | Implemented | Terrain LOD no longer consumes hierarchy guard width or angular recenter state. The remaining guard-frustum scale is hierarchy streaming policy, not a visual-detail multiplier. |
+| Exact-pose and rotation automation | Implemented, live gate pending | `scripts/qualify_terrain_lod_residency.sh` captures exact early and settled frames plus same-process A-B-A and four-quarter-turn sequences. It rejects a monitor substitution and checks that returning to A schedules no build. The required `P34WD-40` display was unavailable at the latest run, so no new live pass is claimed. |
+| Atmosphere, shadow, and 120 Hz regression acceptance | Pending reference-display rerun | Earlier exact-pose captures remain available for comparison, but they do not validate the newly added rotation sequence. Completion requires running the strict harness on `P34WD-40`, inspecting all four images, and accepting the frame-pacing distribution. |
+
 ## Problem
 
-Terrain detail currently follows one camera-facing region. Turning away from
-that region causes its fine cut to be simplified while a new region is
-refined. Turning back therefore reveals coarse geometry again. The sequence
+The replaced implementation made terrain detail follow one camera-facing
+region. Turning away caused its fine cut to be simplified while a new region
+was refined. Turning back therefore revealed coarse geometry again. The sequence
 
 1. look in direction A;
 2. rotate 180 degrees to direction B and wait for refinement;
