@@ -5509,6 +5509,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.sector_coverage_samples
                              <<",\"sector_overlap_radians\":"
                              <<capture_profile.terrain_sector_overlap_radians
+                             <<",\"sector_minimum_anchor_radius_radians\":"
+                             <<capture_profile
+                                   .terrain_sector_minimum_anchor_radius_radians
                              <<",\"current_sector_demand_hash\":"
                              <<runtime_status.current_sector_demand_hash
                              <<",\"sector_hits\":"<<runtime_status.sector_hits
@@ -5587,6 +5590,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                             <<",\"demand_hash\":"<<sector.demand_hash
                             <<",\"readiness\":\""
                             <<readiness_name(sector.readiness)<<'"'
+                            <<",\"camera_anchor_radius_radians\":"
+                            <<sector.camera_anchor_radius_radians
+                            <<",\"overlap_radius_radians\":"
+                            <<sector.overlap_radius_radians
                             <<",\"angular_footprint_radians\":"
                             <<sector.angular_footprint_radians
                             <<",\"hierarchy_blocks\":"

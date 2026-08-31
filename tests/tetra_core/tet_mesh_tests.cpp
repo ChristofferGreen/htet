@@ -1123,6 +1123,8 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.maximum_hierarchy_blocks==73728U);
   CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
   CHECK(profile.terrain_sector_overlap_radians==doctest::Approx(
+      0.5*std::numbers::pi/180.0));
+  CHECK(profile.terrain_sector_minimum_anchor_radius_radians==doctest::Approx(
       2.0*std::numbers::pi/180.0));
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
@@ -2195,6 +2197,7 @@ TEST_CASE("terrain sector coverage reports overlap and uncovered rotation") {
 
   tetra_viewer::TerrainResidentSector sector;
   sector.camera_anchor=camera;
+  sector.camera_anchor_radius_radians=std::numbers::pi;
   sector.angular_footprint_radians=2.0*std::numbers::pi;
   working_set.sectors.push_back(sector);
   const auto covered=tetra_viewer::measure_terrain_sector_coverage(
@@ -2212,6 +2215,52 @@ TEST_CASE("terrain sector coverage reports overlap and uncovered rotation") {
   CHECK(overlapped.overlap_solid_angle_steradians==
         doctest::Approx(4.0*std::numbers::pi));
   CHECK(overlapped.uncovered_solid_angle_steradians==doctest::Approx(0.0));
+}
+
+TEST_CASE("terrain sector anchor radius grows with planetary horizon") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  tetra::Camera camera;
+  camera.position={field.centre.x,field.centre.y+0.1,field.centre.z};
+  const double near=tetra_viewer::terrain_sector_camera_anchor_radius(
+      profile,field,camera);
+  CHECK(near==doctest::Approx(
+      profile.terrain_sector_minimum_anchor_radius_radians));
+  camera.position.y=field.centre.y+1000.0;
+  const double elevated=tetra_viewer::terrain_sector_camera_anchor_radius(
+      profile,field,camera);
+  CHECK(elevated>near);
+  CHECK(elevated<=std::numbers::pi/3.0);
+}
+
+TEST_CASE("terrain sector overlap schedules handoff before coverage ends") {
+  const auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  tetra::Camera camera;
+  camera.position={field.centre.x,field.centre.y+0.1,field.centre.z};
+  camera.forward={0.0,0.0,-1.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  tetra_viewer::TerrainDetailWorkingSet working_set;
+  tetra_viewer::update_terrain_detail_working_set(
+      working_set,profile,field,camera,coarse,1U);
+  REQUIRE(working_set.sectors.size()==1U);
+  const auto& sector=working_set.sectors.front();
+  REQUIRE(sector.camera_anchor_radius_radians>
+          sector.overlap_radius_radians);
+  const double handoff=sector.camera_anchor_radius_radians-
+      sector.overlap_radius_radians;
+  const auto turn=[&](double radians){
+    camera.forward={std::sin(radians),0.0,-std::cos(radians)};
+  };
+  turn(handoff*0.99);
+  CHECK(tetra_viewer::terrain_detail_working_set_covers_camera(
+      working_set,field,camera));
+  turn(handoff*1.01);
+  CHECK_FALSE(tetra_viewer::terrain_detail_working_set_covers_camera(
+      working_set,field,camera));
 }
 
 TEST_CASE("root-local target fronts retain complete directory root fallbacks") {

@@ -817,6 +817,27 @@ static void capture_world_closure_metrics(
   selection.metrics.closure_rounds=cache.last_closure_rounds;
 }
 
+double terrain_sector_camera_anchor_radius(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
+  double horizon_angle{};
+  if(field.terrain.planet_radius>0.0){
+    const tetra::Vec3 centre{
+        field.centre.x,field.centre.y-field.terrain.planet_radius,
+        field.centre.z};
+    const auto offset=camera.position-centre;
+    const double distance=std::sqrt(
+        offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+    if(distance>field.terrain.planet_radius)
+      horizon_angle=std::acos(std::clamp(
+          field.terrain.planet_radius/distance,0.0,1.0));
+  }
+  return std::clamp(std::max(
+      profile.terrain_sector_minimum_anchor_radius_radians,horizon_angle),
+      profile.terrain_sector_minimum_anchor_radius_radians,
+      std::numbers::pi/3.0);
+}
+
 static WorldLodCutSelection select_world_lod_cut_impl(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,
@@ -841,7 +862,9 @@ static WorldLodCutSelection select_world_lod_cut_impl(
      profile.hierarchy_guard_frustum_scale<1.0||
      !std::isfinite(profile.hierarchy_guard_frustum_scale)||
      !(profile.terrain_sector_overlap_radians>0.0)||
-     !std::isfinite(profile.terrain_sector_overlap_radians))
+     !std::isfinite(profile.terrain_sector_overlap_radians)||
+     !(profile.terrain_sector_minimum_anchor_radius_radians>0.0)||
+     !std::isfinite(profile.terrain_sector_minimum_anchor_radius_radians))
     throw std::invalid_argument("world LOD distances must be finite and positive");
   constexpr std::uint16_t all_roots=
       (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
@@ -854,8 +877,10 @@ static WorldLodCutSelection select_world_lod_cut_impl(
   const auto projection=tetra::prepare_camera_projection(camera);
   const double view_half_diagonal=std::atan(std::hypot(
       projection.tangent,projection.horizontal_tangent));
+  const double sector_rotation_margin=
+      terrain_sector_camera_anchor_radius(profile,field,camera);
   const double sector_half_angle=view_half_diagonal+
-      profile.terrain_sector_overlap_radians;
+      sector_rotation_margin;
   const tetra::Vec3 planet_centre{
       field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
   struct Evaluation {
@@ -926,9 +951,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
             std::max(eye_distance-result.radius,1.0e-12);
     result.projected_edges=tetra::projected_tetrahedron(points,projection);
     if(field.terrain.planet_radius>0.0){
-      const double rotation_margin=profile.terrain_sector_overlap_radians;
       const double inner_angle=std::max(
-          0.0,view_half_diagonal-rotation_margin);
+          0.0,view_half_diagonal-sector_rotation_margin);
       const double view_cosine=std::cos(view_half_diagonal);
       const double inner_cosine=std::cos(inner_angle);
       const double perspective_growth=
@@ -1366,9 +1390,10 @@ double terrain_camera_half_diagonal(const tetra::Camera& camera) noexcept {
 }
 
 double terrain_sector_angular_footprint(
-    const WorldProfile& profile,const tetra::Camera& camera) noexcept {
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
   return terrain_camera_half_diagonal(camera)+
-      profile.terrain_sector_overlap_radians;
+      terrain_sector_camera_anchor_radius(profile,field,camera);
 }
 
 double terrain_direction_angle(tetra::Vec3 first,tetra::Vec3 second) noexcept {
@@ -1416,22 +1441,24 @@ bool terrain_detail_working_set_covers_camera(
     const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
     const tetra::Camera& camera) noexcept {
   if(!terrain_sector_position_matches(working_set,field,camera))return false;
-  const double view_radius=terrain_camera_half_diagonal(camera);
   return std::ranges::any_of(working_set.sectors,[&](const auto& sector){
+    const double handoff_radius=std::max(
+        0.0,sector.camera_anchor_radius_radians-
+                sector.overlap_radius_radians);
     return terrain_direction_angle(
-        sector.camera_anchor.forward,camera.forward)+view_radius<=
-        sector.angular_footprint_radians+1.0e-12;
+        sector.camera_anchor.forward,camera.forward)<=
+        handoff_radius+1.0e-12;
   });
 }
 
 TerrainSectorCoverage measure_terrain_sector_coverage(
     const TerrainDetailWorkingSet& working_set,const tetra::Camera& camera,
     std::size_t samples) noexcept {
+  (void)camera;
   TerrainSectorCoverage result;
   result.samples=samples;
   if(samples==0U)return result;
   std::size_t covered{},overlap{};
-  const double view_radius=terrain_camera_half_diagonal(camera);
   constexpr double golden_angle=2.3999632297286533222;
   for(std::size_t index=0U;index<samples;++index){
     const double z=1.0-2.0*(static_cast<double>(index)+0.5)/
@@ -1443,8 +1470,7 @@ TerrainSectorCoverage measure_terrain_sector_coverage(
     std::size_t owners{};
     for(const auto& sector:working_set.sectors){
       const double coverage_radius=std::clamp(
-          sector.angular_footprint_radians-view_radius,0.0,
-          std::numbers::pi);
+          sector.camera_anchor_radius_radians,0.0,std::numbers::pi);
       if(terrain_direction_angle(
              sector.camera_anchor.forward,direction)<=coverage_radius)
         ++owners;
@@ -1483,12 +1509,14 @@ void update_terrain_detail_working_set(
     working_set.viewport_height_pixels=camera.viewport_height_pixels;
     working_set.aspect_ratio=camera.aspect_ratio;
   }
-  const double view_radius=terrain_camera_half_diagonal(camera);
   const auto match=std::ranges::find_if(
       working_set.sectors,[&](const auto& sector){
+        const double handoff_radius=std::max(
+            0.0,sector.camera_anchor_radius_radians-
+                    sector.overlap_radius_radians);
         return terrain_direction_angle(
-            sector.camera_anchor.forward,camera.forward)+view_radius<=
-            sector.angular_footprint_radians+1.0e-12;
+            sector.camera_anchor.forward,camera.forward)<=
+            handoff_radius+1.0e-12;
       });
   if(match!=working_set.sectors.end()){
     match->last_visible_generation=generation;
@@ -1502,8 +1530,11 @@ void update_terrain_detail_working_set(
   sector.id=working_set.next_sector_id++;
   sector.demand_hash=terrain_requested_cut_hash(requested_cut);
   sector.camera_anchor=camera;
+  sector.camera_anchor_radius_radians=
+      terrain_sector_camera_anchor_radius(profile,field,camera);
+  sector.overlap_radius_radians=profile.terrain_sector_overlap_radians;
   sector.angular_footprint_radians=terrain_sector_angular_footprint(
-      profile,camera);
+      profile,field,camera);
   sector.requested_cut=std::move(requested_cut);
   sector.last_visible_generation=generation;
   sector.last_used_generation=generation;
@@ -1611,6 +1642,8 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
      profile_.maximum_hierarchy_blocks<tetra::bcc_root_tetrahedron_count||
      profile_.hierarchy_guard_frustum_scale<1.0||
      !std::isfinite(profile_.hierarchy_guard_frustum_scale)||
+     !(profile_.terrain_sector_minimum_anchor_radius_radians>0.0)||
+     !std::isfinite(profile_.terrain_sector_minimum_anchor_radius_radians)||
      profile_.hierarchy_prediction_factor<0.0||
      !std::isfinite(profile_.hierarchy_prediction_factor)||
      profile_.hierarchy_recent_retention_epochs==0U)
@@ -1632,7 +1665,9 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
         "initial world front exceeds its volume residency budget");
   if(initial.hierarchy_budget_exceeded)
     throw std::length_error(
-        "initial world front exceeds its hierarchy residency budget");
+        "initial world front exceeds its hierarchy residency budget: proposed="+
+        std::to_string(initial.diagnostics.hierarchy_blocks)+", maximum="+
+        std::to_string(profile_.maximum_hierarchy_blocks));
   const auto initial_host=host_staging_.estimate_world_render_blocks(
       initial.surface_cache.render_blocks);
   const auto initial_render_bytes=checked_resource_multiply(

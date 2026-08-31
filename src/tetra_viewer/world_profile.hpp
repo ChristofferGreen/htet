@@ -86,7 +86,9 @@ struct WorldProfile {
   std::size_t maximum_volume_blocks{4096U};
   std::size_t maximum_hierarchy_blocks{73728U};
   double hierarchy_guard_frustum_scale{1.35};
-  double terrain_sector_overlap_radians{0.03490658503988659};
+  double terrain_sector_overlap_radians{0.008726646259971648};
+  double terrain_sector_minimum_anchor_radius_radians{
+      0.03490658503988659};
   double hierarchy_prediction_factor{1.0};
   std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{5.0};

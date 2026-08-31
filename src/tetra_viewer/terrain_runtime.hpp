@@ -320,6 +320,8 @@ struct TerrainResidentSector {
   std::uint64_t id{};
   std::uint64_t demand_hash{};
   tetra::Camera camera_anchor{};
+  double camera_anchor_radius_radians{};
+  double overlap_radius_radians{};
   double angular_footprint_radians{};
   std::vector<tetra::WorldTetAddress> requested_cut;
   TerrainSectorReadiness readiness{TerrainSectorReadiness::hierarchy};
@@ -399,6 +401,9 @@ common_refinement_world_requested_cuts(
 
 [[nodiscard]] bool terrain_detail_working_set_covers_camera(
     const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept;
+[[nodiscard]] double terrain_sector_camera_anchor_radius(
+    const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera) noexcept;
 [[nodiscard]] TerrainSectorCoverage measure_terrain_sector_coverage(
     const TerrainDetailWorkingSet& working_set,const tetra::Camera& camera,
