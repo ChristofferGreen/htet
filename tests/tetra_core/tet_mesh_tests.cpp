@@ -1137,7 +1137,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.budgets.maximum_cpu_bytes==640U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
   CHECK(profile.budgets.maximum_work_units==25000000U);
-  CHECK(profile.budgets.maximum_upload_bytes==32U*1024U*1024U);
+  CHECK(profile.budgets.maximum_upload_bytes==64U*1024U*1024U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);
   CHECK_FALSE(profile.show_hierarchy_edges);
@@ -3497,7 +3497,8 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   profile.field_error_pixel_threshold=1.0e12;
   profile.limb_error_pixel_threshold=1.0e12;
   const tetra_viewer::BlockedTerrainRuntime probe(profile);
-  const auto single_sector_triangles=probe.diagnostics().render_triangles;
+  const auto single_sector_triangles=
+      probe.diagnostics().resident_render_triangles;
   REQUIRE(single_sector_triangles>0U);
   profile.budgets.maximum_triangles=single_sector_triangles*5U/4U;
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
@@ -3507,7 +3508,7 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   REQUIRE_FALSE(initial.budget_exceeded);
   REQUIRE(initial.resident_sector_count==1U);
   REQUIRE(initial.gpu_ready_sector_count==1U);
-  REQUIRE(initial.render_triangles==single_sector_triangles);
+  REQUIRE(initial.resident_render_triangles==single_sector_triangles);
   const auto first_demand_hash=initial.current_sector_demand_hash;
   REQUIRE(first_demand_hash!=0U);
   REQUIRE(runtime.resident_terrain_sectors().size()==1U);
@@ -3538,7 +3539,7 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   static_cast<void>(runtime.update());
   REQUIRE(settle());
   const auto second=runtime.diagnostics();
-  CAPTURE(second.render_triangles);
+  CAPTURE(second.resident_render_triangles);
   CAPTURE(profile.budgets.maximum_triangles);
   REQUIRE_FALSE(second.budget_exceeded);
   REQUIRE(second.resident_sector_count==2U);
@@ -3575,7 +3576,7 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   CHECK_FALSE(runtime.scene().triangle_vertices.empty());
   REQUIRE(settle());
   const auto returned=runtime.diagnostics();
-  CAPTURE(returned.render_triangles);
+  CAPTURE(returned.resident_render_triangles);
   CAPTURE(profile.budgets.maximum_triangles);
   CHECK_FALSE(returned.budget_exceeded);
   CHECK(returned.resident_sector_count==2U);

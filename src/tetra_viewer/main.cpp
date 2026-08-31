@@ -5555,6 +5555,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.cpu_high_water_bytes
                              <<",\"triangle_high_water\":"
                              <<runtime_status.triangle_high_water
+                             <<",\"resident_render_triangles\":"
+                             <<runtime_status.resident_render_triangles
                              <<",\"work_high_water\":"
                              <<runtime_status.work_high_water
                              <<",\"upload_high_water_bytes\":"

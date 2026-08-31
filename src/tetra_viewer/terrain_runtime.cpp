@@ -1720,18 +1720,19 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   const auto initial_host=host_staging_.estimate_world_render_blocks(
       initial.surface_cache.render_blocks);
   const auto initial_render_bytes=checked_resource_multiply(
-      checked_resource_multiply(initial.diagnostics.render_triangles,3U),
+      checked_resource_multiply(
+          initial.diagnostics.resident_render_triangles,3U),
       sizeof(SceneVertex));
   const auto initial_cpu_bytes=checked_resource_add(
       initial.diagnostics.resident_bytes,initial_host.retained_bytes);
   const auto initial_admission=evaluate_world_resource_budgets(
       profile_.budgets,{initial_cpu_bytes,
-        initial.diagnostics.render_triangles,initial.diagnostics.work_units,
-        initial_render_bytes});
+        initial.diagnostics.resident_render_triangles,
+        initial.diagnostics.work_units,initial_render_bytes});
   if(!initial_admission.admitted())
     throw std::length_error("initial world front exceeds its resource budget: cpu="+
         std::to_string(initial_cpu_bytes)+", triangles="+
-        std::to_string(initial.diagnostics.render_triangles)+", work="+
+        std::to_string(initial.diagnostics.resident_render_triangles)+", work="+
         std::to_string(initial.diagnostics.work_units)+", upload="+
         std::to_string(initial_render_bytes));
   host_staging_.stage_world_render_blocks(initial.surface_cache.render_blocks);
@@ -1746,7 +1747,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   requested_generation_=1U;demand_pending_=false;
   diagnostics_.submitted_builds=1U;
   diagnostics_.cpu_high_water_bytes=diagnostics_.resident_bytes;
-  diagnostics_.triangle_high_water=diagnostics_.render_triangles;
+  diagnostics_.triangle_high_water=diagnostics_.resident_render_triangles;
   diagnostics_.work_high_water=diagnostics_.work_units;
   diagnostics_.upload_high_water_bytes=diagnostics_.uploaded_render_bytes;
 }
@@ -2162,6 +2163,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.logical_cells=directory->logical_owner_count();
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
   diagnostics.render_triangles=surface.metrics.source_triangles;
+  for(const auto& block:surface_cache.render_blocks)
+    diagnostics.resident_render_triangles=checked_resource_add(
+        diagnostics.resident_render_triangles,
+        block.triangle_vertices.size()/3U);
   diagnostics.work_units=completed_work_units;
   diagnostics.target_projected_edge_pixels=
       selection.metrics.target_projected_edge_pixels;
@@ -2760,7 +2765,8 @@ bool BlockedTerrainRuntime::update() {
         publication.surface_cache.render_blocks);
     const auto total_render_bytes=checked_resource_multiply(
         checked_resource_multiply(
-            publication.diagnostics.render_triangles,3U),sizeof(SceneVertex));
+            publication.diagnostics.resident_render_triangles,3U),
+        sizeof(SceneVertex));
     const auto predicted_host_bytes=host_estimate.retained_bytes;
     const auto predicted_cpu_bytes=checked_resource_add(
         publication.diagnostics.resident_bytes,predicted_host_bytes);
@@ -2768,12 +2774,13 @@ bool BlockedTerrainRuntime::update() {
         host_estimate.required_vertex_capacity>simulated_device_vertex_capacity_?
             total_render_bytes:host_estimate.staged_bytes;
     const auto admission=evaluate_world_resource_budgets(profile_.budgets,{
-        predicted_cpu_bytes,publication.diagnostics.render_triangles,
+        predicted_cpu_bytes,publication.diagnostics.resident_render_triangles,
         publication.diagnostics.work_units,predicted_upload_bytes});
     diagnostics_.cpu_high_water_bytes=std::max(
         diagnostics_.cpu_high_water_bytes,predicted_cpu_bytes);
     diagnostics_.triangle_high_water=std::max(
-        diagnostics_.triangle_high_water,publication.diagnostics.render_triangles);
+        diagnostics_.triangle_high_water,
+        publication.diagnostics.resident_render_triangles);
     diagnostics_.work_high_water=std::max(
         diagnostics_.work_high_water,publication.diagnostics.work_units);
     diagnostics_.upload_high_water_bytes=std::max(
@@ -2783,7 +2790,7 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
       diagnostics_.rejected_proposed_cpu_bytes=predicted_cpu_bytes;
       diagnostics_.rejected_proposed_triangles=
-          publication.diagnostics.render_triangles;
+          publication.diagnostics.resident_render_triangles;
       diagnostics_.rejected_proposed_work_units=
           publication.diagnostics.work_units;
       diagnostics_.rejected_proposed_upload_bytes=predicted_upload_bytes;
@@ -2842,7 +2849,7 @@ bool BlockedTerrainRuntime::update() {
     diagnostics_.cpu_high_water_bytes=std::max(
         cumulative.cpu_high_water_bytes,diagnostics_.resident_bytes);
     diagnostics_.triangle_high_water=std::max(
-        cumulative.triangle_high_water,diagnostics_.render_triangles);
+        cumulative.triangle_high_water,diagnostics_.resident_render_triangles);
     diagnostics_.work_high_water=std::max(
         cumulative.work_high_water,diagnostics_.work_units);
     diagnostics_.upload_high_water_bytes=std::max(

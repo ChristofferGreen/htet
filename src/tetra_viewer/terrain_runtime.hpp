@@ -122,6 +122,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t staged_render_bytes{};
   std::size_t uploaded_render_bytes{};
   std::size_t render_triangles{};
+  std::size_t resident_render_triangles{};
   std::size_t work_units{};
   std::size_t cpu_high_water_bytes{};
   std::size_t triangle_high_water{};

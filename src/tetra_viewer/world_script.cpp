@@ -371,6 +371,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"uploaded_render_bytes\":"
           <<diagnostics.uploaded_render_bytes
           <<",\"render_triangles\":"<<diagnostics.render_triangles
+          <<",\"resident_render_triangles\":"
+          <<diagnostics.resident_render_triangles
           <<",\"work_units\":"<<diagnostics.work_units
           <<",\"target_projected_edge_pixels\":"
           <<diagnostics.target_projected_edge_pixels
@@ -804,6 +806,8 @@ int capture_world_runtime_view(std::string_view path,
           <<", budget_rejected_builds="<<diagnostics.budget_rejected_builds
           <<", resident_bytes="<<diagnostics.resident_bytes
           <<", render_triangles="<<diagnostics.render_triangles
+          <<", resident_render_triangles="
+          <<diagnostics.resident_render_triangles
           <<", rejected_cpu="<<diagnostics.rejected_cpu_budget
           <<", rejected_triangles="<<diagnostics.rejected_triangle_budget
           <<", rejected_work="<<diagnostics.rejected_work_budget
