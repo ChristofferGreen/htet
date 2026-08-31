@@ -2330,10 +2330,15 @@ void BlockedTerrainRuntime::set_camera(
     return difference.x*difference.x+difference.y*difference.y+
         difference.z*difference.z;
   };
+  // Visibility and sector-hit metadata follow the immediately preceding view,
+  // not merely the last view that happened to require construction. A camera
+  // can visit several retained sectors without submitting a build; comparing
+  // against last_requested_camera_ would then miss a turn that returns to that
+  // old build direction and leave the wrong sector marked current.
   const double forward_delta_squared=direction_delta_squared(
-      camera.forward,last_requested_camera_.forward);
+      camera.forward,camera_.forward);
   const double up_delta_squared=direction_delta_squared(
-      camera.up,last_requested_camera_.up);
+      camera.up,camera_.up);
   // Orientation changes inside any retained sector alter draw visibility but
   // not logical terrain demand. Crossing the retained angular footprint adds
   // a sector; it never weakens a sector that left the view.

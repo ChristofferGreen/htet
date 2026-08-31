@@ -3145,6 +3145,71 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   CHECK(returned.sector_hits>=1U);
 }
 
+TEST_CASE("blocked world retains four quarter-turn sectors after small translation") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=1024.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  REQUIRE(initial.resident_sector_count==1U);
+  REQUIRE(initial.current_sector_demand_hash!=0U);
+
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.0;
+  constexpr double down=-0.2;
+  constexpr double horizontal=0.9797958971132712;
+  const std::array<tetra::Vec3,4> directions{{
+      {horizontal,down,0.0},{0.0,down,horizontal},
+      {-horizontal,down,0.0},{0.0,down,-horizontal}}};
+  std::array<std::uint64_t,4> hashes{};
+  const auto settle=[&]{
+    const auto deadline=std::chrono::steady_clock::now()+
+        std::chrono::seconds(60);
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  for(std::size_t turn=0U;turn<directions.size();++turn){
+    camera.forward=directions[turn];
+    runtime.set_camera(camera,false);
+    static_cast<void>(runtime.update());
+    REQUIRE(settle());
+    const auto diagnostics=runtime.diagnostics();
+    REQUIRE_FALSE(diagnostics.budget_exceeded);
+    hashes[turn]=diagnostics.current_sector_demand_hash;
+    REQUIRE(hashes[turn]!=0U);
+  }
+  const auto complete=runtime.diagnostics();
+  CHECK(complete.resident_sector_count==4U);
+  CHECK(complete.gpu_ready_sector_count==4U);
+  CHECK(complete.sector_additions==4U);
+
+  camera.position.x+=0.01;
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  const auto submissions=runtime.diagnostics().submitted_builds;
+  const auto generation=runtime.diagnostics().scene_generation;
+  for(std::size_t turn=0U;turn<directions.size();++turn){
+    camera.forward=directions[turn];
+    runtime.set_camera(camera,false);
+    CHECK_FALSE(runtime.update());
+    const auto diagnostics=runtime.diagnostics();
+    CAPTURE(turn);
+    CAPTURE(diagnostics.current_sector_demand_hash);
+    CAPTURE(hashes[turn]);
+    CHECK(diagnostics.current_sector_demand_hash==hashes[turn]);
+    CHECK(diagnostics.submitted_builds==submissions);
+    CHECK(diagnostics.scene_generation==generation);
+  }
+  CHECK(runtime.diagnostics().resident_sector_count==4U);
+  CHECK(runtime.diagnostics().sector_hits>=4U);
+}
+
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
   auto mesh=tetra::TetMesh::make_unit_cube();
   tetra::Camera camera;
