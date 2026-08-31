@@ -161,6 +161,14 @@ struct CameraLodDemand {
 };
 
 [[nodiscard]] PreparedCameraProjection prepare_camera_projection(const Camera& camera);
+// Projects the six edges of an arbitrary world-space tetrahedron. A cell
+// crossing the eye plane receives the full viewport-height fallback so LOD
+// selection cannot underestimate a near-plane intersection.
+[[nodiscard]] ProjectedTetrahedron projected_tetrahedron(
+    const std::array<Vec3,4>& vertices,
+    const PreparedCameraProjection& camera);
+[[nodiscard]] ProjectedTetrahedron projected_tetrahedron(
+    const std::array<Vec3,4>& vertices,const Camera& camera);
 [[nodiscard]] ProjectedTetrahedron projected_tetrahedron(
     const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera);
 [[nodiscard]] ProjectedTetrahedron projected_tetrahedron(

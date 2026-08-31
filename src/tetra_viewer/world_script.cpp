@@ -372,6 +372,18 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.uploaded_render_bytes
           <<",\"render_triangles\":"<<diagnostics.render_triangles
           <<",\"work_units\":"<<diagnostics.work_units
+          <<",\"target_projected_edge_pixels\":"
+          <<diagnostics.target_projected_edge_pixels
+          <<",\"visible_projected_edge_samples\":"
+          <<diagnostics.visible_projected_edge_samples
+          <<",\"visible_minimum_projected_edge_pixels\":"
+          <<diagnostics.visible_minimum_projected_edge_pixels
+          <<",\"visible_median_projected_edge_pixels\":"
+          <<diagnostics.visible_median_projected_edge_pixels
+          <<",\"visible_p95_projected_edge_pixels\":"
+          <<diagnostics.visible_p95_projected_edge_pixels
+          <<",\"visible_maximum_projected_edge_pixels\":"
+          <<diagnostics.visible_maximum_projected_edge_pixels
           <<",\"cpu_high_water_bytes\":"
           <<diagnostics.cpu_high_water_bytes
           <<",\"triangle_high_water\":"

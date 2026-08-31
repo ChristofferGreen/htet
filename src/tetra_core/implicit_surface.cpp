@@ -1476,17 +1476,31 @@ PreparedCameraProjection prepare_camera_projection(const Camera& camera) {
 }
 
 ProjectedTetrahedron projected_tetrahedron(
-    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera) {
-  const auto& vertices=mesh.tetrahedron(tet).vertices;
+    const std::array<Vec3,4>& vertices,
+    const PreparedCameraProjection& camera) {
   const auto dot=[](Vec3 first,Vec3 second){
     return first.x*second.x+first.y*second.y+first.z*second.z;
   };
   std::array<CameraPoint,4> points{};
   for(std::size_t index=0;index<vertices.size();++index){
-    const Vec3 view=mesh.vertices().at(vertices[index])-camera.position;
+    const Vec3 view=vertices[index]-camera.position;
     points[index]={dot(view,camera.right),dot(view,camera.up),dot(view,camera.forward)};
   }
   return projected_camera_tetrahedron(points,camera);
+}
+
+ProjectedTetrahedron projected_tetrahedron(
+    const std::array<Vec3,4>& vertices,const Camera& camera) {
+  return projected_tetrahedron(vertices,prepare_camera_projection(camera));
+}
+
+ProjectedTetrahedron projected_tetrahedron(
+    const TetMesh& mesh,TetId tet,const PreparedCameraProjection& camera) {
+  const auto& indices=mesh.tetrahedron(tet).vertices;
+  std::array<Vec3,4> vertices{};
+  for(std::size_t index=0;index<vertices.size();++index)
+    vertices[index]=mesh.vertices().at(indices[index]);
+  return projected_tetrahedron(vertices,camera);
 }
 
 ProjectedTetrahedron projected_tetrahedron(

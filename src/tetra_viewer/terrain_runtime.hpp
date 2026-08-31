@@ -137,6 +137,12 @@ struct TerrainRuntimeDiagnostics {
   double world_extent{};
   std::size_t last_splits{};
   std::size_t last_merges{};
+  double target_projected_edge_pixels{};
+  std::size_t visible_projected_edge_samples{};
+  double visible_minimum_projected_edge_pixels{};
+  double visible_median_projected_edge_pixels{};
+  double visible_p95_projected_edge_pixels{};
+  double visible_maximum_projected_edge_pixels{};
   double last_update_milliseconds{};
   double cut_selection_milliseconds{};
   double cut_closure_milliseconds{};
@@ -242,6 +248,12 @@ struct WorldLodCutMetrics {
   unsigned int maximum_surface_depth{};
   unsigned int maximum_shared_vertex_depth_delta{};
   double maximum_retained_projected_diameter{};
+  double target_projected_edge_pixels{};
+  std::size_t visible_projected_edge_samples{};
+  double visible_minimum_projected_edge_pixels{};
+  double visible_median_projected_edge_pixels{};
+  double visible_p95_projected_edge_pixels{};
+  double visible_maximum_projected_edge_pixels{};
   double selection_milliseconds{};
   double closure_milliseconds{};
 };

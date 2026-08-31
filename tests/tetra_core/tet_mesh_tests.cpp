@@ -1791,6 +1791,15 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
   CHECK(selection.metrics.logical_owners_after_closure<1'100'000U);
   CHECK(selection.metrics.horizon_owners==0U);
+  CHECK(selection.metrics.target_projected_edge_pixels==
+        doctest::Approx(profile.pixel_threshold));
+  CHECK(selection.metrics.visible_projected_edge_samples>0U);
+  CHECK(selection.metrics.visible_minimum_projected_edge_pixels<=
+        selection.metrics.visible_median_projected_edge_pixels);
+  CHECK(selection.metrics.visible_median_projected_edge_pixels<=
+        selection.metrics.visible_p95_projected_edge_pixels);
+  CHECK(selection.metrics.visible_p95_projected_edge_pixels<=
+        selection.metrics.visible_maximum_projected_edge_pixels);
 }
 
 TEST_CASE("production radial world resolves the surface around the player") {
@@ -3034,6 +3043,41 @@ TEST_CASE("camera projection follows viewport field of view aspect and singular 
   CHECK(inside.intersects_frustum);
   CHECK(std::isfinite(inside.diameter_pixels));
   CHECK(inside.diameter_pixels>0.0);
+}
+
+TEST_CASE("world tetrahedron projection measures all six edges in physical pixels") {
+  tetra::Camera camera;
+  camera.position={0.0,0.0,0.0};
+  camera.forward={0.0,0.0,-1.0};
+  camera.viewport_height_pixels=1200.0;
+  camera.aspect_ratio=1.0;
+  const std::array<tetra::Vec3,4> near{{
+      {-0.5,-0.5,-4.0},{0.5,-0.5,-4.0},
+      {0.0,0.5,-4.0},{0.0,0.0,-5.0}}};
+  const auto projected=tetra::projected_tetrahedron(near,camera);
+  REQUIRE(projected.intersects_frustum);
+  CHECK(projected.diameter_pixels>0.0);
+
+  auto far=near;
+  for(auto& point:far)point.z*=2.0;
+  CHECK(tetra::projected_tetrahedron(far,camera).diameter_pixels==
+        doctest::Approx(projected.diameter_pixels*0.5).epsilon(1.0e-12));
+
+  auto narrow_fov=camera;
+  narrow_fov.vertical_fov_radians*=0.5;
+  CHECK(tetra::projected_tetrahedron(near,narrow_fov).diameter_pixels>
+        projected.diameter_pixels);
+
+  auto off_axis=near;
+  for(auto& point:off_axis)point.x+=5.0;
+  CHECK_FALSE(tetra::projected_tetrahedron(off_axis,camera).intersects_frustum);
+  auto wide=camera;wide.aspect_ratio=4.0;
+  CHECK(tetra::projected_tetrahedron(off_axis,wide).intersects_frustum);
+
+  auto crossing=near;crossing[3].z=0.0;
+  const auto near_plane=tetra::projected_tetrahedron(crossing,camera);
+  REQUIRE(near_plane.intersects_frustum);
+  CHECK(near_plane.diameter_pixels==camera.viewport_height_pixels);
 }
 
 TEST_CASE("guard near and cold camera demands remain meaningful outside the view") {

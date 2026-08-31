@@ -884,6 +884,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     double radius{};
     double horizontal_distance{};
     double projected_diameter{};
+    tetra::ProjectedTetrahedron projected_edges{};
   };
   const auto evaluate_geometry=[&](
       const tetra::WorldTetrahedronGeometry& normalized){
@@ -934,6 +935,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     result.projected_diameter=eye_distance<=result.radius?camera.viewport_height_pixels:
         2.0*projection.focal_length*result.radius/
             std::max(eye_distance-result.radius,1.0e-12);
+    result.projected_edges=tetra::projected_tetrahedron(points,projection);
     return result;
   };
   const auto in_guard_frustum=[&](const Evaluation& evaluation){
@@ -960,11 +962,13 @@ static WorldLodCutSelection select_world_lod_cut_impl(
   };
 
   WorldLodCutSelection result;
+  result.metrics.target_projected_edge_pixels=profile.pixel_threshold;
   struct RootTraversal {
     std::array<std::vector<tetra::WorldTetAddress>,
                tetra::maximum_world_red_depth+1U> owners_by_depth;
     std::size_t owner_count{};
     WorldLodCutMetrics metrics{};
+    std::vector<double> visible_projected_edges;
   };
   std::array<RootTraversal,tetra::bcc_root_tetrahedron_count> roots;
   const auto traverse_root=[&](std::uint8_t root){
@@ -973,14 +977,21 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       local.owners_by_depth[owner.red_depth()].push_back(owner);
       ++local.owner_count;
     };
+    const auto record_visible_edge=[&](const Evaluation& evaluation){
+      if(evaluation.may_cross&&evaluation.projected_edges.intersects_frustum)
+        local.visible_projected_edges.push_back(
+            evaluation.projected_edges.diameter_pixels);
+    };
     const auto visit=[&](auto&& self,tetra::WorldTetAddress owner,
                          const tetra::WorldTetrahedronGeometry& geometry)->void{
       const auto depth=owner.red_depth();
-      if(depth>=profile.near_red_depth){append(owner);return;}
       if((local.metrics.visited_owners&1023U)==0U&&
          cancellation.stop_requested())return;
       ++local.metrics.visited_owners;
       const auto evaluation=evaluate_geometry(geometry);
+      if(depth>=profile.near_red_depth){
+        record_visible_edge(evaluation);append(owner);return;
+      }
       if(!evaluation.may_cross){
         ++local.metrics.field_rejected_owners;
         append(owner);return;
@@ -1012,6 +1023,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
         local.metrics.maximum_retained_projected_diameter=std::max(
             local.metrics.maximum_retained_projected_diameter,
             evaluation.projected_diameter);
+        record_visible_edge(evaluation);
         append(owner);return;
       }
       local.metrics.background_splits+=background?1U:0U;
@@ -1053,6 +1065,32 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     result.metrics.maximum_retained_projected_diameter=std::max(
         result.metrics.maximum_retained_projected_diameter,
         root.metrics.maximum_retained_projected_diameter);
+  }
+  std::vector<double> visible_projected_edges;
+  std::size_t visible_sample_count{};
+  for(const auto& root:roots)
+    visible_sample_count+=root.visible_projected_edges.size();
+  visible_projected_edges.reserve(visible_sample_count);
+  for(auto& root:roots)
+    visible_projected_edges.insert(visible_projected_edges.end(),
+        std::make_move_iterator(root.visible_projected_edges.begin()),
+        std::make_move_iterator(root.visible_projected_edges.end()));
+  if(!visible_projected_edges.empty()){
+    std::ranges::sort(visible_projected_edges);
+    const auto quantile=[&](double fraction){
+      const auto index=static_cast<std::size_t>(std::ceil(
+          fraction*static_cast<double>(visible_projected_edges.size())))-1U;
+      return visible_projected_edges[std::min(
+          index,visible_projected_edges.size()-1U)];
+    };
+    result.metrics.visible_projected_edge_samples=
+        visible_projected_edges.size();
+    result.metrics.visible_minimum_projected_edge_pixels=
+        visible_projected_edges.front();
+    result.metrics.visible_median_projected_edge_pixels=quantile(0.5);
+    result.metrics.visible_p95_projected_edge_pixels=quantile(0.95);
+    result.metrics.visible_maximum_projected_edge_pixels=
+        visible_projected_edges.back();
   }
   if(!std::ranges::is_sorted(result.owners))
     throw std::logic_error("recursive world target traversal is not canonical");
@@ -1544,6 +1582,18 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.active_tetrahedra=surface.metrics.conforming_cells;
   diagnostics.render_triangles=surface.metrics.source_triangles;
   diagnostics.work_units=completed_work_units;
+  diagnostics.target_projected_edge_pixels=
+      selection.metrics.target_projected_edge_pixels;
+  diagnostics.visible_projected_edge_samples=
+      selection.metrics.visible_projected_edge_samples;
+  diagnostics.visible_minimum_projected_edge_pixels=
+      selection.metrics.visible_minimum_projected_edge_pixels;
+  diagnostics.visible_median_projected_edge_pixels=
+      selection.metrics.visible_median_projected_edge_pixels;
+  diagnostics.visible_p95_projected_edge_pixels=
+      selection.metrics.visible_p95_projected_edge_pixels;
+  diagnostics.visible_maximum_projected_edge_pixels=
+      selection.metrics.visible_maximum_projected_edge_pixels;
   std::size_t retained_certificate_bytes=
       surface_cache.surface_certificate_blocks.capacity()*
       sizeof(decltype(surface_cache.surface_certificate_blocks)::value_type);
