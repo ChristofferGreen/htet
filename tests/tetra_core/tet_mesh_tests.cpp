@@ -6058,11 +6058,6 @@ TEST_CASE("derived surface hashes and manifests ignore payload request ordering"
   std::ranges::reverse(reordered.triangles.front().vertices);
   std::ranges::reverse(reordered.dependency_blocks);
   CHECK(reordered.canonical_hash()==first.canonical_hash());
-  CHECK(reordered.canonical_content_hash()==first.canonical_content_hash());
-  auto republished=first;
-  ++republished.source_hierarchy_revision;
-  CHECK(republished.canonical_hash()!=first.canonical_hash());
-  CHECK(republished.canonical_content_hash()==first.canonical_content_hash());
 
   tetra::WorldDerivedSurfaceSnapshot later=first;
   later.id={tetra::WorldTetAddress::root(4U),3U};

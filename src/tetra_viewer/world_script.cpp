@@ -764,7 +764,6 @@ int capture_world_runtime_view(std::string_view path,
                                tetra::Vec3 camera_position,
                                tetra::Vec3 target,std::ostream& output,
                                std::ostream& errors) {
-  auto runtime=make_production_terrain_runtime(production_world_profile());
   tetra::Camera camera;
   camera.position=camera_position;
   auto forward=target-camera.position;
@@ -781,7 +780,8 @@ int capture_world_runtime_view(std::string_view path,
     camera.up={0.0,0.0,1.0};
   camera.viewport_height_pixels=480.0;
   camera.aspect_ratio=1.6;
-  runtime->set_camera(camera,false);
+  auto runtime=make_production_terrain_runtime(
+      production_world_profile(),camera);
   const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
   TerrainRuntimeDiagnostics diagnostics;
   do{
@@ -793,7 +793,28 @@ int capture_world_runtime_view(std::string_view path,
   }while(std::chrono::steady_clock::now()<deadline);
   if(!(diagnostics.converged&&!diagnostics.busy&&
        diagnostics.scene_mesh_revision==diagnostics.mesh_revision)){
-    errors<<"world runtime capture did not converge\n";return 1;
+    errors<<"world runtime capture did not converge: converged="
+          <<diagnostics.converged<<", busy="<<diagnostics.busy
+          <<", budget_exceeded="<<diagnostics.budget_exceeded
+          <<", scene_generation="<<diagnostics.scene_generation
+          <<", mesh_revision="<<diagnostics.mesh_revision
+          <<", scene_mesh_revision="<<diagnostics.scene_mesh_revision
+          <<", submitted_builds="<<diagnostics.submitted_builds
+          <<", budget_rejected_builds="<<diagnostics.budget_rejected_builds
+          <<", resident_bytes="<<diagnostics.resident_bytes
+          <<", render_triangles="<<diagnostics.render_triangles
+          <<", rejected_cpu="<<diagnostics.rejected_cpu_budget
+          <<", rejected_triangles="<<diagnostics.rejected_triangle_budget
+          <<", rejected_work="<<diagnostics.rejected_work_budget
+          <<", rejected_upload="<<diagnostics.rejected_upload_budget
+          <<", rejected_hierarchy="<<diagnostics.rejected_hierarchy_budget
+          <<", rejected_volume="<<diagnostics.rejected_volume_budget
+          <<", proposed_cpu="<<diagnostics.rejected_proposed_cpu_bytes
+          <<", proposed_triangles="<<diagnostics.rejected_proposed_triangles
+          <<", proposed_work="<<diagnostics.rejected_proposed_work_units
+          <<", proposed_upload="<<diagnostics.rejected_proposed_upload_bytes
+          <<'\n';
+    return 1;
   }
 
   constexpr int width=768,height=480;

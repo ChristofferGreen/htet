@@ -2103,7 +2103,6 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   for(const auto& snapshot:surface_cache.snapshots){
     auto& resource=find_sector_resource(snapshot.id);
     resource.cpu_surface_bytes+=snapshot.metrics.retained_bytes;
-    resource.surface_hash=snapshot.canonical_content_hash();
   }
   for(const auto& block:surface_cache.raw_blocks)
     find_sector_resource(block->id).cpu_surface_bytes+=
@@ -2117,6 +2116,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     resource.cpu_surface_bytes+=sizeof(block)+bytes;
     resource.gpu_bytes+=block.triangle_vertices.size()*sizeof(SceneVertex);
     resource.triangles+=block.triangle_vertices.size()/3U;
+    resource.surface_hash=block.surface_payload_hash;
     resource.render_hash=block.surface_payload_hash;
   }
   attribute_terrain_detail_sector_resources(
