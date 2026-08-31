@@ -1593,7 +1593,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             fprintf(stderr,"auto minimum scale exceeds maximum scale\n");
             return 2;
         }
-        world_auto_render_scale=world_auto_maximum_scale;
+        // Start Auto from its conservative bound so a Retina window does not
+        // spend its first several timing windows rendering at an unaffordable
+        // native resolution. The hysteretic controller raises quality after
+        // it has measured sustained GPU headroom.
+        world_auto_render_scale=world_auto_minimum_scale;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
             world_gpu_atmosphere_probe||
             world_gpu_shadow_projection_probe||
