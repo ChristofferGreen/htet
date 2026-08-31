@@ -1432,6 +1432,60 @@ void rebuild_gpu_terrain_requested_cut(TerrainDetailWorkingSet& working_set) {
       :common_refinement_world_requested_cuts(cuts);
 }
 
+std::vector<tetra::HierarchyBlockId> terrain_sector_demanded_blocks(
+    const TerrainResidentSector& sector,unsigned int block_generations) {
+  std::vector<tetra::HierarchyBlockId> result;
+  result.reserve(sector.requested_cut.size());
+  for(const auto owner:sector.requested_cut)
+    result.push_back(tetra::hierarchy_block_id(owner,block_generations));
+  std::ranges::sort(result);
+  result.erase(std::unique(result.begin(),result.end()),result.end());
+  return result;
+}
+
+void retain_demoted_terrain_surface_blocks(
+    TerrainDetailWorkingSet& working_set,
+    const SparseWorldSurfaceCache& surface_cache,
+    unsigned int block_generations) {
+  for(auto& sector:working_set.sectors){
+    if(sector.residency_target!=TerrainSectorReadiness::cpu_surface||
+       !sector.retained_surface_blocks.empty())continue;
+    const auto demanded=terrain_sector_demanded_blocks(
+        sector,block_generations);
+    for(const auto id:demanded){
+      const auto found=std::ranges::lower_bound(
+          surface_cache.render_blocks,id,{},
+          &SparseWorldSurfaceCache::RenderBlock::id);
+      if(found!=surface_cache.render_blocks.end()&&found->id==id)
+        sector.retained_surface_blocks.push_back(*found);
+    }
+    sector.readiness=sector.retained_surface_blocks.empty()
+        ?TerrainSectorReadiness::hierarchy
+        :TerrainSectorReadiness::cpu_surface;
+  }
+}
+
+void seed_promoted_terrain_surface_blocks(
+    const TerrainDetailWorkingSet& working_set,
+    SparseWorldSurfaceCache& surface_cache) {
+  std::vector<SparseWorldSurfaceCache::RenderBlock> retained;
+  for(const auto& sector:working_set.sectors){
+    if(sector.residency_target!=TerrainSectorReadiness::gpu_ready||
+       sector.retained_surface_blocks.empty())continue;
+    retained.insert(retained.end(),sector.retained_surface_blocks.begin(),
+                    sector.retained_surface_blocks.end());
+  }
+  if(retained.empty())return;
+  retained.insert(retained.end(),surface_cache.render_blocks.begin(),
+                  surface_cache.render_blocks.end());
+  std::ranges::stable_sort(retained,{},
+      &SparseWorldSurfaceCache::RenderBlock::id);
+  retained.erase(std::unique(retained.begin(),retained.end(),
+      [](const auto& left,const auto& right){return left.id==right.id;}),
+      retained.end());
+  surface_cache.render_blocks=std::move(retained);
+}
+
 bool terrain_sector_position_matches(
     const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
     const tetra::Camera& camera) noexcept {
@@ -1504,7 +1558,7 @@ void update_terrain_detail_working_set(
     TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
     const tetra::Sphere& field,const tetra::Camera& camera,
     std::vector<tetra::WorldTetAddress> requested_cut,
-    std::uint64_t generation) {
+    std::uint64_t generation,WorldLodCutMetrics demand_metrics) {
   if(generation==0U)
     throw std::invalid_argument("terrain sector generation must be nonzero");
   if(!working_set.sectors.empty()&&
@@ -1537,6 +1591,9 @@ void update_terrain_detail_working_set(
     ++working_set.sector_hits;
     if(match->residency_target!=TerrainSectorReadiness::gpu_ready){
       match->residency_target=TerrainSectorReadiness::gpu_ready;
+      match->readiness=match->retained_surface_blocks.empty()
+          ?TerrainSectorReadiness::hierarchy
+          :TerrainSectorReadiness::upload_pending;
       rebuild_gpu_terrain_requested_cut(working_set);
     }
     return;
@@ -1552,6 +1609,7 @@ void update_terrain_detail_working_set(
   sector.angular_footprint_radians=terrain_sector_angular_footprint(
       profile,field,camera);
   sector.requested_cut=std::move(requested_cut);
+  sector.demand_metrics=std::move(demand_metrics);
   sector.last_visible_generation=generation;
   sector.last_used_generation=generation;
   sector.hierarchy_bytes=sector.requested_cut.capacity()*
@@ -1593,8 +1651,10 @@ bool demote_terrain_detail_sector_for_budget(
      victim->id==working_set.current_sector_id||
      victim->residency_target!=TerrainSectorReadiness::gpu_ready)
     return false;
-  victim->residency_target=TerrainSectorReadiness::hierarchy;
-  victim->readiness=TerrainSectorReadiness::hierarchy;
+  victim->residency_target=TerrainSectorReadiness::cpu_surface;
+  victim->readiness=victim->retained_surface_blocks.empty()
+      ?TerrainSectorReadiness::hierarchy
+      :TerrainSectorReadiness::cpu_surface;
   ++working_set.sector_evictions;
   ++working_set.sector_demotions;
   ++working_set.budget_rejections;
@@ -1619,7 +1679,7 @@ void attribute_terrain_detail_sector_resources(
         hash^=(value>>(byte*8U))&0xffU;hash*=prime;
       }
     };
-    sector.readiness=sector.residency_target;
+    sector.readiness=TerrainSectorReadiness::hierarchy;
     sector.hierarchy_bytes=0U;
     sector.cpu_surface_bytes=0U;
     sector.upload_bytes=0U;
@@ -1629,28 +1689,42 @@ void attribute_terrain_detail_sector_resources(
     sector.gpu_draw_blocks=0U;
     sector.surface_block_hash=hash_offset;
     sector.render_block_hash=hash_offset;
-    std::vector<tetra::HierarchyBlockId> demanded_blocks;
-    demanded_blocks.reserve(sector.requested_cut.size());
-    for(const auto owner:sector.requested_cut)
-      demanded_blocks.push_back(
-          tetra::hierarchy_block_id(owner,block_generations));
-    std::ranges::sort(demanded_blocks);
-    demanded_blocks.erase(
-        std::unique(demanded_blocks.begin(),demanded_blocks.end()),
-        demanded_blocks.end());
+    const auto demanded_blocks=terrain_sector_demanded_blocks(
+        sector,block_generations);
+    std::size_t available_blocks{};
+    auto minimum_resource_readiness=TerrainSectorReadiness::gpu_ready;
+    sector.hierarchy_blocks=demanded_blocks.size();
+    if(sector.residency_target>=TerrainSectorReadiness::cpu_surface&&
+       !sector.retained_surface_blocks.empty()){
+      sector.readiness=sector.residency_target==
+              TerrainSectorReadiness::gpu_ready
+          ?TerrainSectorReadiness::upload_pending
+          :TerrainSectorReadiness::cpu_surface;
+      for(const auto& block:sector.retained_surface_blocks){
+        ++sector.cpu_surface_blocks;
+        const auto bytes=block.triangle_vertices.capacity()*
+            sizeof(SceneVertex);
+        sector.cpu_surface_bytes+=sizeof(block)+bytes;
+        sector.triangles+=block.triangle_vertices.size()/3U;
+        append_hash(sector.surface_block_hash,block.id.prefix.high);
+        append_hash(sector.surface_block_hash,block.id.prefix.low);
+        append_hash(sector.surface_block_hash,block.id.block_generations);
+        append_hash(sector.surface_block_hash,block.surface_payload_hash);
+      }
+    }
     for(const auto id:demanded_blocks){
       const auto found=std::ranges::lower_bound(
           resources,id,{},&TerrainSectorResourceBlock::id);
       if(found==resources.end()||found->id!=id){
-        sector.readiness=TerrainSectorReadiness::hierarchy;
         continue;
       }
-      ++sector.hierarchy_blocks;
+      ++available_blocks;
+      minimum_resource_readiness=std::min(
+          minimum_resource_readiness,found->readiness);
       sector.hierarchy_bytes+=found->hierarchy_bytes;
-      sector.readiness=std::min(sector.readiness,found->readiness);
       if(sector.residency_target>=TerrainSectorReadiness::cpu_surface&&
          found->readiness>=TerrainSectorReadiness::cpu_surface){
-        ++sector.cpu_surface_blocks;
+        if(sector.retained_surface_blocks.empty())++sector.cpu_surface_blocks;
         sector.cpu_surface_bytes+=found->cpu_surface_bytes;
         append_hash(sector.surface_block_hash,id.prefix.high);
         append_hash(sector.surface_block_hash,id.prefix.low);
@@ -1661,13 +1735,24 @@ void attribute_terrain_detail_sector_resources(
          found->readiness==TerrainSectorReadiness::gpu_ready){
         sector.gpu_draw_blocks+=found->gpu_bytes!=0U?1U:0U;
         sector.upload_bytes+=found->gpu_bytes;
-        sector.triangles+=found->triangles;
+        if(sector.retained_surface_blocks.empty())sector.triangles+=found->triangles;
         append_hash(sector.render_block_hash,id.prefix.high);
         append_hash(sector.render_block_hash,id.prefix.low);
         append_hash(sector.render_block_hash,id.block_generations);
         append_hash(sector.render_block_hash,found->render_hash);
       }
     }
+    if(available_blocks==demanded_blocks.size()&&
+       sector.residency_target==TerrainSectorReadiness::gpu_ready)
+      sector.readiness=minimum_resource_readiness;
+    else if(!sector.retained_surface_blocks.empty())
+      sector.readiness=sector.residency_target==
+              TerrainSectorReadiness::gpu_ready
+          ?TerrainSectorReadiness::upload_pending
+          :TerrainSectorReadiness::cpu_surface;
+    if(available_blocks!=demanded_blocks.size())
+      sector.hierarchy_bytes+=sector.requested_cut.capacity()*
+          sizeof(tetra::WorldTetAddress);
     if(sector.cpu_surface_blocks==0U)sector.surface_block_hash=0U;
     if(sector.gpu_draw_blocks==0U)sector.render_block_hash=0U;
   }
@@ -1921,13 +2006,33 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     if(current!=detail_working_set.sectors.end())
       retained_requested_cut=current->requested_cut;
   }
-  auto selection=select_world_requested_root_cuts(
-      profile,field,camera,all_roots,cancellation,executor,
-      retained_requested_cut);
-  completed_work_units=selection.metrics.visited_owners;
+  WorldLodCutSelection selection;
+  const auto retained_sector=terrain_sector_position_matches(
+      detail_working_set,field,camera)?std::ranges::find_if(
+          detail_working_set.sectors,[&](const auto& sector){
+            const double handoff_radius=std::max(
+                0.0,sector.camera_anchor_radius_radians-
+                        sector.overlap_radius_radians);
+            return terrain_direction_angle(
+                sector.camera_anchor.forward,camera.forward)<=
+                handoff_radius+1.0e-12;
+          }):detail_working_set.sectors.end();
+  if(retained_sector!=detail_working_set.sectors.end()){
+    selection.owners=retained_sector->requested_cut;
+    selection.metrics=retained_sector->demand_metrics;
+    // Retained measurements remain the evidence for this demand, while work
+    // and latency counters describe this update rather than its first build.
+    selection.metrics.visited_owners=0U;
+    selection.metrics.selection_milliseconds=0.0;
+  }else{
+    selection=select_world_requested_root_cuts(
+        profile,field,camera,all_roots,cancellation,executor,
+        retained_requested_cut);
+    completed_work_units=selection.metrics.visited_owners;
+  }
   update_terrain_detail_working_set(
       detail_working_set,profile,field,camera,std::move(selection.owners),
-      generation);
+      generation,selection.metrics);
   selection.owners=detail_working_set.combined_requested_cut;
   selection.metrics.logical_owners_before_closure=selection.owners.size();
   const auto closure_started=std::chrono::steady_clock::now();
@@ -2077,6 +2182,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   // retained surface block.
   surface_field.sampling_footprint=planetary_surface_sampling_footprint(
       field,camera,profile.pixel_threshold);
+  seed_promoted_terrain_surface_blocks(detail_working_set,surface_cache);
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,surface_field,true,cancellation,&surface_cache,
       residency.volume_blocks,true,false,hierarchy_update.changed_blocks,
@@ -2095,6 +2201,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       surface,surface_field,profile.show_faces,profile.show_surface_edges,
       {snap(camera.position.x),snap(camera.position.y),snap(camera.position.z)},
       surface_cache,false);
+  for(auto& sector:detail_working_set.sectors)
+    if(sector.residency_target==TerrainSectorReadiness::gpu_ready)
+      sector.retained_surface_blocks.clear();
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
   if(field.terrain.planet_radius>0.0){
@@ -2537,7 +2646,9 @@ void BlockedTerrainRuntime::finalize_render_front_metrics(
 }
 
 bool BlockedTerrainRuntime::schedule_sector_budget_retry(
-    TerrainDetailWorkingSet candidate,bool allow_hysteresis_fallback) {
+    TerrainDetailWorkingSet candidate,
+    const SparseWorldSurfaceCache* candidate_surface_cache,
+    bool allow_hysteresis_fallback) {
   if(!demote_terrain_detail_sector_for_budget(candidate)&&
      !evict_terrain_detail_sector_for_budget(candidate)){
     if(!allow_hysteresis_fallback||candidate.sectors.empty())return false;
@@ -2548,6 +2659,9 @@ bool BlockedTerrainRuntime::schedule_sector_budget_retry(
     candidate.combined_requested_cut.clear();
     candidate.current_sector_id=0U;
   }
+  if(candidate_surface_cache!=nullptr)
+    retain_demoted_terrain_surface_blocks(
+        candidate,*candidate_surface_cache,3U);
   diagnostics_.sector_evictions=candidate.sector_evictions;
   diagnostics_.sector_demotions=candidate.sector_demotions;
   diagnostics_.sector_budget_rejections=candidate.budget_rejections;
@@ -2629,7 +2743,17 @@ void BlockedTerrainRuntime::set_camera(
   const bool retained_orientation=directional_lod&&orientation_moved&&
       terrain_detail_working_set_covers_camera(
           detail_working_set_,field_,camera);
-  if(retained_orientation){
+  const bool retained_logical_orientation=directional_lod&&
+      terrain_sector_position_matches(detail_working_set_,field_,camera)&&
+      std::ranges::any_of(detail_working_set_.sectors,[&](const auto& sector){
+        const double handoff_radius=std::max(
+            0.0,sector.camera_anchor_radius_radians-
+                    sector.overlap_radius_radians);
+        return terrain_direction_angle(
+            sector.camera_anchor.forward,camera.forward)<=
+            handoff_radius+1.0e-12;
+      });
+  if(retained_logical_orientation){
     update_terrain_detail_working_set(
         detail_working_set_,profile_,field_,camera,{},
         std::max<std::uint64_t>(requested_generation_,1U));
@@ -2639,6 +2763,10 @@ void BlockedTerrainRuntime::set_camera(
            &TerrainResidentSector::id);
        current!=detail_working_set_.sectors.end())
       diagnostics_.current_sector_demand_hash=current->demand_hash;
+    diagnostics_.upload_pending_sector_count=static_cast<std::size_t>(
+        std::ranges::count(
+            detail_working_set_.sectors,TerrainSectorReadiness::upload_pending,
+            &TerrainResidentSector::readiness));
   }
   const bool orientation_requires_detail=
       directional_lod&&orientation_moved&&!retained_orientation;
@@ -2737,6 +2865,7 @@ bool BlockedTerrainRuntime::update() {
       if(publication.hierarchy_budget_exceeded&&
          schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
+             &publication.surface_cache,
              publication.diagnostics.hysteresis_retained_splits>0U)){
         surface_cache_={};
         diagnostics_.budget_exceeded=false;
@@ -2801,6 +2930,7 @@ bool BlockedTerrainRuntime::update() {
       surface_cache_={};
       if(schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
+             &publication.surface_cache,
              publication.diagnostics.hysteresis_retained_splits>0U&&
                  (!admission.cpu||!admission.triangles||!admission.work))){
         diagnostics_.budget_exceeded=false;

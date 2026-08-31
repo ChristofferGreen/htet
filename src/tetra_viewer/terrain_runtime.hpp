@@ -326,6 +326,10 @@ struct TerrainResidentSector {
   double overlap_radius_radians{};
   double angular_footprint_radians{};
   std::vector<tetra::WorldTetAddress> requested_cut;
+  // The exact measurements which produced requested_cut. A retained-sector
+  // promotion reuses both the canonical demand and its quality evidence;
+  // camera rotation must not rerun LOD selection for an unchanged anchor.
+  WorldLodCutMetrics demand_metrics{};
   TerrainSectorReadiness residency_target{TerrainSectorReadiness::gpu_ready};
   TerrainSectorReadiness readiness{TerrainSectorReadiness::hierarchy};
   std::uint64_t last_visible_generation{};
@@ -339,6 +343,10 @@ struct TerrainResidentSector {
   std::size_t gpu_draw_blocks{};
   std::uint64_t surface_block_hash{};
   std::uint64_t render_block_hash{};
+  // Complete immutable, upload-ready CPU payload retained when this sector
+  // leaves the GPU-ready union under budget pressure. These blocks keep the
+  // CPU-surface tier real rather than representing it with counters alone.
+  std::vector<SparseWorldSurfaceCache::RenderBlock> retained_surface_blocks;
 };
 
 struct TerrainSectorResourceBlock {
@@ -420,7 +428,7 @@ void update_terrain_detail_working_set(
     TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
     const tetra::Sphere& field,const tetra::Camera& camera,
     std::vector<tetra::WorldTetAddress> requested_cut,
-    std::uint64_t generation);
+    std::uint64_t generation,WorldLodCutMetrics demand_metrics={});
 // Removes exactly one least-recently-used non-current sector and recomputes
 // the logical union. The current visible sector is always protected.
 [[nodiscard]] bool evict_terrain_detail_sector_for_budget(
@@ -728,7 +736,9 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       std::unique_ptr<tetra::WorldCutDirectory> directory={});
   void submit();
   [[nodiscard]] bool schedule_sector_budget_retry(
-      TerrainDetailWorkingSet candidate,bool allow_hysteresis_fallback);
+      TerrainDetailWorkingSet candidate,
+      const SparseWorldSurfaceCache* candidate_surface_cache,
+      bool allow_hysteresis_fallback);
   void submit_atmosphere_shadow();
   [[nodiscard]] static AtmosphereShadowPublication
   build_atmosphere_shadow_publication(

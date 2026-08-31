@@ -2200,7 +2200,9 @@ TEST_CASE("terrain sector budget demotion retains logical demand and protects cu
   REQUIRE(working_set.sectors.size()==3U);
   CHECK(working_set.sectors[0].id==1U);
   CHECK(working_set.sectors[0].residency_target==
-        tetra_viewer::TerrainSectorReadiness::hierarchy);
+        tetra_viewer::TerrainSectorReadiness::cpu_surface);
+  // No payload was supplied to this policy-only unit test, so the sector
+  // truthfully remains hierarchy-ready until the runtime captures it.
   CHECK(working_set.sectors[0].readiness==
         tetra_viewer::TerrainSectorReadiness::hierarchy);
   CHECK(working_set.sectors[1].id==2U);
@@ -2213,7 +2215,7 @@ TEST_CASE("terrain sector budget demotion retains logical demand and protects cu
   CHECK(working_set.combined_requested_cut==coarse);
   REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
   CHECK(working_set.sectors[2].residency_target==
-        tetra_viewer::TerrainSectorReadiness::hierarchy);
+        tetra_viewer::TerrainSectorReadiness::cpu_surface);
   CHECK_FALSE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
 }
 
@@ -3544,7 +3546,7 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   REQUIRE_FALSE(second.budget_exceeded);
   REQUIRE(second.resident_sector_count==2U);
   REQUIRE(second.hierarchy_resident_sector_count==2U);
-  REQUIRE(second.cpu_surface_resident_sector_count==1U);
+  REQUIRE(second.cpu_surface_resident_sector_count==2U);
   REQUIRE(second.gpu_ready_sector_count==1U);
   REQUIRE(second.current_sector_demand_hash!=first_demand_hash);
   REQUIRE(second.sector_budget_rejections>=1U);
@@ -3552,12 +3554,13 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   const auto demoted=std::ranges::find_if(
       runtime.resident_terrain_sectors(),[](const auto& sector){
         return sector.residency_target==
-            tetra_viewer::TerrainSectorReadiness::hierarchy;
+            tetra_viewer::TerrainSectorReadiness::cpu_surface;
       });
   REQUIRE(demoted!=runtime.resident_terrain_sectors().end());
   CHECK(demoted->demand_hash==first_demand_hash);
-  CHECK(demoted->readiness==tetra_viewer::TerrainSectorReadiness::hierarchy);
-  CHECK(demoted->cpu_surface_blocks==0U);
+  CHECK(demoted->readiness==tetra_viewer::TerrainSectorReadiness::cpu_surface);
+  CHECK(demoted->cpu_surface_blocks>0U);
+  CHECK_FALSE(demoted->retained_surface_blocks.empty());
   CHECK(demoted->gpu_draw_blocks==0U);
   REQUIRE(second.positive_volumes);
   REQUIRE(second.conforming_faces);
@@ -3571,6 +3574,12 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   runtime.set_camera(camera,false);
   CHECK_FALSE(runtime.update());
   REQUIRE(runtime.diagnostics().busy);
+  const auto promoting=std::ranges::find(
+      runtime.resident_terrain_sectors(),first_demand_hash,
+      &tetra_viewer::TerrainResidentSector::demand_hash);
+  REQUIRE(promoting!=runtime.resident_terrain_sectors().end());
+  CHECK(promoting->readiness==
+        tetra_viewer::TerrainSectorReadiness::upload_pending);
   CHECK(runtime.diagnostics().scene_generation==fallback_generation);
   CHECK(runtime.diagnostics().render_hash==fallback_hash);
   CHECK_FALSE(runtime.scene().triangle_vertices.empty());
@@ -3581,7 +3590,7 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   CHECK_FALSE(returned.budget_exceeded);
   CHECK(returned.resident_sector_count==2U);
   CHECK(returned.hierarchy_resident_sector_count==2U);
-  CHECK(returned.cpu_surface_resident_sector_count==1U);
+  CHECK(returned.cpu_surface_resident_sector_count==2U);
   CHECK(returned.gpu_ready_sector_count==1U);
   CHECK(returned.current_sector_demand_hash==first_demand_hash);
   CHECK(returned.sector_budget_rejections>first_rejections);
@@ -3593,8 +3602,11 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
       runtime.resident_terrain_sectors(),first_demand_hash,
       &tetra_viewer::TerrainResidentSector::demand_hash);
   REQUIRE(rebuilt!=runtime.resident_terrain_sectors().end());
+  CHECK(rebuilt->readiness==tetra_viewer::TerrainSectorReadiness::gpu_ready);
+  CHECK(rebuilt->retained_surface_blocks.empty());
   CHECK(rebuilt->surface_block_hash==first_surface_block_hash);
   CHECK(rebuilt->render_block_hash==first_render_block_hash);
+  CHECK(returned.cut_selection_milliseconds==0.0);
 }
 
 TEST_CASE("blocked world retains four quarter-turn sectors after small translation") {
