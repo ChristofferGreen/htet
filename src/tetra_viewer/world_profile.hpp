@@ -90,6 +90,10 @@ struct WorldProfile {
   std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{5.0};
   double pixel_threshold{128.0};
+  // Coarse orbital views retain a much wider rotation guard so ordinary
+  // turns reveal prepared terrain instead of scheduling visible refinement.
+  double rotation_stable_lod_footprint{16.0};
+  double rotation_stable_guard_frustum_scale{4.0};
   unsigned int maximum_depth{20U};
   WorldResourceBudgets budgets{};
   bool show_faces{true};

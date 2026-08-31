@@ -1126,6 +1126,8 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
+  CHECK(profile.rotation_stable_lod_footprint==doctest::Approx(16.0));
+  CHECK(profile.rotation_stable_guard_frustum_scale==doctest::Approx(4.0));
   CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
@@ -1217,12 +1219,26 @@ TEST_CASE("planetary terrain band limits detail to the hierarchy edge footprint"
   orbital_camera.viewport_height_pixels=1000.0;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             field,orbital_camera,256.0)==32.0);
+  auto rotation_profile=tetra_viewer::production_world_profile();
+  rotation_profile.pixel_threshold=256.0;
+  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
+            rotation_profile,field,orbital_camera)==doctest::Approx(4.0));
+  CHECK(tetra_viewer::planetary_rotation_lod_recenter_radians(
+            rotation_profile,field,orbital_camera)*180.0/std::numbers::pi>
+        15.0);
   orbital_camera.position.y=field.centre.y+0.01;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             field,orbital_camera,256.0)==0.0);
+  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
+            rotation_profile,field,orbital_camera)==doctest::Approx(1.35));
+  CHECK(tetra_viewer::planetary_rotation_lod_recenter_radians(
+            rotation_profile,field,orbital_camera)==
+        doctest::Approx(2.0*std::numbers::pi/180.0));
   auto planar=field;planar.terrain.planet_radius=0.0;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             planar,orbital_camera,256.0)==0.0);
+  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
+            rotation_profile,planar,orbital_camera)==doctest::Approx(1.35));
 
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere production_field;
@@ -1292,6 +1308,18 @@ TEST_CASE("world resource budgets independently gate every publication cost") {
 
   invalid=tetra_viewer::production_world_profile();
   invalid.hierarchy_recent_retention_epochs=0U;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
+  invalid=tetra_viewer::production_world_profile();
+  invalid.rotation_stable_lod_footprint=0.0;
+  CHECK_THROWS_AS(([&]{
+      tetra_viewer::BlockedTerrainRuntime runtime{invalid};
+    }()),std::invalid_argument);
+
+  invalid=tetra_viewer::production_world_profile();
+  invalid.rotation_stable_guard_frustum_scale=1.0;
   CHECK_THROWS_AS(([&]{
       tetra_viewer::BlockedTerrainRuntime runtime{invalid};
     }()),std::invalid_argument);

@@ -191,6 +191,14 @@ struct TerrainRuntimeDiagnostics {
     const tetra::Sphere& field,const tetra::Camera& camera,
     double pixel_threshold) noexcept;
 
+[[nodiscard]] double planetary_rotation_guard_frustum_scale(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept;
+
+[[nodiscard]] double planetary_rotation_lod_recenter_radians(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept;
+
 struct TerrainDebugLine {
   tetra::Vec3 first{};
   tetra::Vec3 second{};

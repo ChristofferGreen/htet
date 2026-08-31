@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <set>
 #include <thread>
@@ -42,6 +43,31 @@ double planetary_surface_sampling_footprint(
   const double requested=world_per_pixel*pixel_threshold;
   return requested>=0.05&&std::isfinite(requested)?
       std::exp2(std::floor(std::log2(requested))):0.0;
+}
+
+double planetary_rotation_guard_frustum_scale(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
+  return planetary_surface_sampling_footprint(
+             field,camera,profile.pixel_threshold)>=
+         profile.rotation_stable_lod_footprint?
+      std::max(profile.hierarchy_guard_frustum_scale,
+               profile.rotation_stable_guard_frustum_scale):
+      profile.hierarchy_guard_frustum_scale;
+}
+
+double planetary_rotation_lod_recenter_radians(
+    const WorldProfile& profile,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
+  constexpr double minimum=2.0*std::numbers::pi/180.0;
+  const double guard_scale=planetary_rotation_guard_frustum_scale(
+      profile,field,camera);
+  if(!(guard_scale>profile.hierarchy_guard_frustum_scale))return minimum;
+  const double horizontal_tangent=
+      std::tan(camera.vertical_fov_radians*0.5)*camera.aspect_ratio;
+  const double visible_half_angle=std::atan(horizontal_tangent);
+  const double guard_half_angle=std::atan(horizontal_tangent*guard_scale);
+  return std::max(minimum,(guard_half_angle-visible_half_angle)*0.5);
 }
 
 namespace {
@@ -827,7 +853,12 @@ static WorldLodCutSelection select_world_lod_cut_impl(
      profile.near_red_depth>tetra::maximum_world_red_depth)
     throw std::invalid_argument("world LOD depths are inconsistent");
   if(!(profile.view_distance>0.0)||!std::isfinite(profile.view_distance)||
-     !(profile.pixel_threshold>0.0)||!std::isfinite(profile.pixel_threshold))
+     !(profile.pixel_threshold>0.0)||!std::isfinite(profile.pixel_threshold)||
+     !(profile.rotation_stable_lod_footprint>0.0)||
+     !std::isfinite(profile.rotation_stable_lod_footprint)||
+     profile.rotation_stable_guard_frustum_scale<
+         profile.hierarchy_guard_frustum_scale||
+     !std::isfinite(profile.rotation_stable_guard_frustum_scale))
     throw std::invalid_argument("world LOD distances must be finite and positive");
   constexpr std::uint16_t all_roots=
       (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
@@ -838,10 +869,12 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       value.x*value.x+value.y*value.y+value.z*value.z;};
   const double lipschitz=tetra::implicit_field_lipschitz_bound(field);
   const auto projection=tetra::prepare_camera_projection(camera);
+  const double guard_frustum_scale=planetary_rotation_guard_frustum_scale(
+      profile,field,camera);
   auto guard_camera=camera;
   guard_camera.vertical_fov_radians=2.0*std::atan(
       std::tan(camera.vertical_fov_radians*0.5)*
-      profile.hierarchy_guard_frustum_scale);
+      guard_frustum_scale);
   const auto guard_projection=tetra::prepare_camera_projection(guard_camera);
   const tetra::Vec3 planet_centre{
       field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
@@ -1413,7 +1446,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     hierarchy_plan=plan_world_hierarchy_demand(
         *directory,profile.domain,camera,volume_pins,
         {.player_radius=profile.near_volume_radius,
-         .guard_frustum_scale=profile.hierarchy_guard_frustum_scale,
+         .guard_frustum_scale=planetary_rotation_guard_frustum_scale(
+             profile,field,camera),
          .prediction_factor=profile.hierarchy_prediction_factor,
          .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
          .maximum_blocks=profile.maximum_hierarchy_blocks},
@@ -1852,10 +1886,12 @@ void BlockedTerrainRuntime::set_camera(
   const double up_delta_squared=direction_delta_squared(
       camera.up,last_requested_camera_.up);
   // Compare against the last submitted orientation, not the preceding mouse
-  // sample. A two-degree bucket is still responsive during a turn but avoids
-  // replacing geometry and interpolated normals for every tiny look motion;
-  // that publication churn appeared as view-dependent terrain shimmer.
-  constexpr double interactive_orientation_chord=0.03490481287456702;
+  // sample. Orbital views retain a broad guard and recenter only after using
+  // half of its angular margin; ground views retain the two-degree bucket.
+  const double recenter_angle=planetary_rotation_lod_recenter_radians(
+      profile_,field_,camera);
+  const double interactive_orientation_chord=
+      2.0*std::sin(recenter_angle*0.5);
   const bool orientation_moved=
       forward_delta_squared>interactive_orientation_chord*
           interactive_orientation_chord||
