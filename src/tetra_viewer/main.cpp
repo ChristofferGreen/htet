@@ -1441,7 +1441,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
            !world_atmosphere_rendering_method_explicit)
             g_AtmosphereFrame.rendering_method=
                 tetra_viewer::AtmosphereRenderingMethod::
-                    deterministic_shadowed_froxels;
+                    temporal_half_resolution;
         world_sun_orbit_azimuth=world_sun_azimuth;
         world_sun_orbit_phase=world_sun_elevation;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
@@ -2895,7 +2895,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                           reference_hillaire_2020)
                             g_AtmosphereFrame.rendering_method=
                                 tetra_viewer::AtmosphereRenderingMethod::
-                                    deterministic_shadowed_froxels;
+                                    temporal_half_resolution;
                     }
                     if(selected)ImGui::SetItemDefaultFocus();
                 }
