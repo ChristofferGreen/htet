@@ -69,7 +69,6 @@
 #pragma comment(lib, "legacy_stdio_definitions")
 #endif
 
-//#define APP_USE_UNLIMITED_FRAME_RATE
 #ifdef _DEBUG
 #define APP_USE_VULKAN_DEBUG_REPORT
 #endif
@@ -88,6 +87,9 @@ static VkDescriptorPool         g_DescriptorPool = VK_NULL_HANDLE;
 static ImGui_ImplVulkanH_Window g_MainWindowData;
 static int                      g_MinImageCount = 2;
 static bool                     g_SwapChainRebuild = false;
+static bool                     g_VSyncEnabled = false;
+static VkPresentModeKHR         g_UncappedPresentMode =
+    VK_PRESENT_MODE_FIFO_KHR;
 static tetra_viewer::SceneRenderer g_SceneRenderer;
 static std::array<float, 28> g_CameraData{1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
 static bool g_BlackSceneClear = false;
@@ -347,13 +349,20 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface
     const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
     wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(g_PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
-    // Select Present Mode
-#ifdef APP_USE_UNLIMITED_FRAME_RATE
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR };
-#else
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-#endif
-    wd->PresentMode = ImGui_ImplVulkanH_SelectPresentMode(g_PhysicalDevice, wd->Surface, &present_modes[0], IM_ARRAYSIZE(present_modes));
+    // Prefer a non-blocking present mode so the live frame-time display
+    // measures renderer cost instead of quantized display-wait intervals.
+    // FIFO remains available from the world status panel for tear-free output.
+    const VkPresentModeKHR uncapped_present_modes[] = {
+        VK_PRESENT_MODE_MAILBOX_KHR,
+        VK_PRESENT_MODE_IMMEDIATE_KHR,
+        VK_PRESENT_MODE_FIFO_KHR};
+    g_UncappedPresentMode=ImGui_ImplVulkanH_SelectPresentMode(
+        g_PhysicalDevice,wd->Surface,uncapped_present_modes,
+        IM_ARRAYSIZE(uncapped_present_modes));
+    if(g_UncappedPresentMode==VK_PRESENT_MODE_FIFO_KHR)
+        g_VSyncEnabled=true;
+    wd->PresentMode=g_VSyncEnabled?
+        VK_PRESENT_MODE_FIFO_KHR:g_UncappedPresentMode;
     //printf("[vulkan] Selected PresentMode = %d\n", wd->PresentMode);
 
     // Create SwapChain, RenderPass, Framebuffer, etc.
@@ -2821,6 +2830,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const float frame_rate=ImGui::GetIO().Framerate;
             ImGui::Text("Frame %.2f ms   %.1f FPS",
                         frame_rate>0.0F?1000.0F/frame_rate:0.0F,frame_rate);
+            const bool uncapped_present_supported=
+                g_UncappedPresentMode!=VK_PRESENT_MODE_FIFO_KHR;
+            if(!uncapped_present_supported)ImGui::BeginDisabled();
+            if(ImGui::Checkbox("VSync",&g_VSyncEnabled)){
+                g_MainWindowData.PresentMode=g_VSyncEnabled?
+                    VK_PRESENT_MODE_FIFO_KHR:g_UncappedPresentMode;
+                g_SwapChainRebuild=true;
+            }
+            if(!uncapped_present_supported){
+                ImGui::EndDisabled();
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(
+                        "This device exposes only synchronized presentation");
+            }
             if(!world_runtime){
                 ImGui::TextUnformatted("Terrain loading...");
             }else{
