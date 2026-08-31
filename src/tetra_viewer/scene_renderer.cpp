@@ -2094,6 +2094,14 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   bool fitted_shadow_updated=false;
   for(std::size_t cascade=0;cascade<shadow_map_layer_count;++cascade){
     const bool fitted_layer=cascade==shadow_cascade_count;
+    const auto& layer_matrix=fitted_layer?atmosphere_shadow_fit.matrix:
+        cascades.cascades[cascade].matrix;
+    const bool update_local=!fitted_layer&&
+        local_shadow_cascade_requires_refresh(
+            shadow.local_shadow_initialized[cascade],
+            shadow.local_shadow_matrices[cascade],
+            shadow.local_surface_generations[cascade],layer_matrix,
+            surface_upload_planner_.published_generation());
     const bool update_fitted=!shadow.atmosphere_shadow_initialized||
         ((planned_front_complete||live_published_front)&&(
          shadow.atmosphere_shadow_matrix!=atmosphere_shadow_fit.matrix||
@@ -2106,6 +2114,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     // the published surface that the front describes.
     if(fitted_layer&&triangles_.count==0U)continue;
     if(fitted_layer&&!update_fitted)continue;
+    if(!fitted_layer&&!update_local)continue;
     const std::uint32_t layer_resolution=cascade<shadow_cascade_count?
         quality_settings_.shadow_resolution:
         quality_settings_.atmosphere_shadow_resolution;
@@ -2140,9 +2149,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                         shadow_pipeline_);
       std::array<float,28> shadow_push{};
-      const auto& shadow_matrix=cascade<shadow_cascade_count?
-          cascades.cascades[cascade].matrix:atmosphere_shadow_fit.matrix;
-      std::copy(shadow_matrix.begin(),shadow_matrix.end(),shadow_push.begin());
+      std::copy(layer_matrix.begin(),layer_matrix.end(),shadow_push.begin());
       vkCmdPushConstants(command_buffer,pipeline_layout_,
                          VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
                          0,sizeof(float)*28,
@@ -2187,6 +2194,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       if(fitted_layer)atmosphere_shadow_map_status_.caster_draws=fitted_draws;
     }
     end_rendering(command_buffer);
+    if(!fitted_layer){
+      shadow.local_shadow_matrices[cascade]=layer_matrix;
+      shadow.local_surface_generations[cascade]=
+          surface_upload_planner_.published_generation();
+      shadow.local_shadow_initialized[cascade]=true;
+      ++atmosphere_shadow_map_status_.local_cascade_refreshes;
+    }
     if(fitted_layer){
       fitted_shadow_updated=true;
       ++shadow.atmosphere_shadow_depth_generation;

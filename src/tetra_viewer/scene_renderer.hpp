@@ -99,6 +99,7 @@ struct AtmosphereDispatchCounts {
 struct AtmosphereShadowMapStatus {
   std::uint64_t revision{};
   std::uint64_t refreshes{};
+  std::uint64_t local_cascade_refreshes{};
   std::uint64_t depth_generation{};
   std::uint64_t hierarchy_generation{};
   std::size_t caster_draws{};
@@ -300,6 +301,11 @@ class SceneRenderer {
     std::uint64_t epipolar_generation{};
     std::uint64_t epipolar_source_revision{};
     bool minmax_is_epipolar{};
+    std::array<std::array<float,16>,shadow_cascade_count>
+        local_shadow_matrices{};
+    std::array<std::uint64_t,shadow_cascade_count>
+        local_surface_generations{};
+    std::array<bool,shadow_cascade_count> local_shadow_initialized{};
     std::array<float,16> atmosphere_shadow_matrix{};
     std::uint64_t atmosphere_surface_generation{};
     std::uint64_t atmosphere_shadow_front_generation{};

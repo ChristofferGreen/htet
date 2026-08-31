@@ -31,6 +31,12 @@ struct ShadowCascadeSet {
   tetra::Vec3 sun_direction{};
 };
 
+[[nodiscard]] bool local_shadow_cascade_requires_refresh(
+    bool initialized,const std::array<float,16>& cached_matrix,
+    std::uint64_t cached_surface_generation,
+    const std::array<float,16>& requested_matrix,
+    std::uint64_t requested_surface_generation) noexcept;
+
 struct AtmosphereShadowCascadeBlend {
   std::size_t primary{};
   std::optional<std::size_t> secondary;

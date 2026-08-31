@@ -24,6 +24,15 @@ tetra::Vec3 normalized(tetra::Vec3 value,tetra::Vec3 fallback) noexcept {
 
 }  // namespace
 
+bool local_shadow_cascade_requires_refresh(
+    bool initialized,const std::array<float,16>& cached_matrix,
+    std::uint64_t cached_surface_generation,
+    const std::array<float,16>& requested_matrix,
+    std::uint64_t requested_surface_generation) noexcept {
+  return !initialized||cached_matrix!=requested_matrix||
+      cached_surface_generation!=requested_surface_generation;
+}
+
 ShadowCascadeSet make_stable_shadow_cascades(
     tetra::Vec3 camera_position,tetra::Vec3 camera_forward,
     tetra::Vec3 sun_direction,std::uint32_t map_resolution,

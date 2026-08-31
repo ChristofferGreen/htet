@@ -16604,6 +16604,23 @@ TEST_CASE("headless atmosphere check exposes deterministic camera sun and preset
   CHECK(invalid_errors.str().find("nonnegative") != std::string::npos);
 }
 
+TEST_CASE("local shadow cascade cache refreshes only for changed inputs") {
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.5,0.78,0.5},{0.0,0.0,-1.0},{-0.2,0.3,-0.9},2048U);
+  const auto original=cascades.cascades.front().matrix;
+  auto changed=original;
+  changed[12]+=0.25F;
+
+  CHECK(tetra_viewer::local_shadow_cascade_requires_refresh(
+      false,original,7U,original,7U));
+  CHECK_FALSE(tetra_viewer::local_shadow_cascade_requires_refresh(
+      true,original,7U,original,7U));
+  CHECK(tetra_viewer::local_shadow_cascade_requires_refresh(
+      true,original,7U,changed,7U));
+  CHECK(tetra_viewer::local_shadow_cascade_requires_refresh(
+      true,original,7U,original,8U));
+}
+
 TEST_CASE("stable shadow cascades are nested snapped and centred in clip space") {
   const auto cascades=tetra_viewer::make_stable_shadow_cascades(
       {0.5,0.78,0.5},{0.0,0.0,-1.0},{-0.2,0.3,-0.9},2048U);

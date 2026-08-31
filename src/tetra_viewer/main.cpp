@@ -4881,7 +4881,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     const auto runtime_shadow=world_runtime->diagnostics();
                     std::cout<<"\"atmosphere_shadow\":{\"revision\":"
                         <<fitted_shadow.revision<<",\"refreshes\":"
-                        <<fitted_shadow.refreshes<<",\"integrator\":\""
+                        <<fitted_shadow.refreshes
+                        <<",\"local_cascade_refreshes\":"
+                        <<fitted_shadow.local_cascade_refreshes
+                        <<",\"integrator\":\""
                         <<tetra_viewer::atmosphere_shadow_integrator_name(
                               fitted_shadow.integrator)
                         <<"\",\"depth_generation\":"
@@ -5571,6 +5574,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<shadow_status.epipolar_hierarchy_refreshes
                              <<",\"fitted_shadow_refreshes\":"
                              <<shadow_status.refreshes
+                             <<",\"local_cascade_refreshes\":"
+                             <<shadow_status.local_cascade_refreshes
                              <<",\"fitted_shadow_depth_generation\":"
                              <<shadow_status.depth_generation
                              <<",\"comparison_bias_world\":"
