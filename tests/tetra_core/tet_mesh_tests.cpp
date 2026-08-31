@@ -2205,6 +2205,12 @@ TEST_CASE("terrain sector budget demotion retains logical demand and protects cu
   // truthfully remains hierarchy-ready until the runtime captures it.
   CHECK(working_set.sectors[0].readiness==
         tetra_viewer::TerrainSectorReadiness::hierarchy);
+  tetra_viewer::SparseWorldSurfaceCache::RenderBlock retained_block;
+  retained_block.triangle_vertices.resize(3U);
+  working_set.sectors[0].retained_surface_blocks.push_back(
+      std::move(retained_block));
+  working_set.sectors[0].readiness=
+      tetra_viewer::TerrainSectorReadiness::cpu_surface;
   CHECK(working_set.sectors[1].id==2U);
   CHECK(working_set.sectors[1].residency_target==
         tetra_viewer::TerrainSectorReadiness::gpu_ready);
@@ -2216,6 +2222,13 @@ TEST_CASE("terrain sector budget demotion retains logical demand and protects cu
   REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
   CHECK(working_set.sectors[2].residency_target==
         tetra_viewer::TerrainSectorReadiness::cpu_surface);
+  REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
+  CHECK(working_set.sectors[0].residency_target==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK(working_set.sectors[0].retained_surface_blocks.empty());
+  REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
+  CHECK(working_set.sectors[2].residency_target==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
   CHECK_FALSE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
 }
 

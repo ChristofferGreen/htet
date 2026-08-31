@@ -1640,21 +1640,32 @@ bool evict_terrain_detail_sector_for_budget(
 
 bool demote_terrain_detail_sector_for_budget(
     TerrainDetailWorkingSet& working_set) {
-  const auto victim=std::ranges::min_element(
-      working_set.sectors,{},[&](const TerrainResidentSector& sector){
-        const bool unavailable=
-            sector.id==working_set.current_sector_id||
-            sector.residency_target!=TerrainSectorReadiness::gpu_ready;
-        return std::tuple{unavailable,sector.last_used_generation,sector.id};
-      });
-  if(victim==working_set.sectors.end()||
-     victim->id==working_set.current_sector_id||
-     victim->residency_target!=TerrainSectorReadiness::gpu_ready)
-    return false;
-  victim->residency_target=TerrainSectorReadiness::cpu_surface;
-  victim->readiness=victim->retained_surface_blocks.empty()
-      ?TerrainSectorReadiness::hierarchy
-      :TerrainSectorReadiness::cpu_surface;
+  const auto find_victim=[&](TerrainSectorReadiness target){
+    return std::ranges::min_element(
+        working_set.sectors,{},[&](const TerrainResidentSector& sector){
+          const bool unavailable=sector.id==working_set.current_sector_id||
+              sector.residency_target!=target;
+          return std::tuple{unavailable,sector.last_used_generation,sector.id};
+        });
+  };
+  auto victim=find_victim(TerrainSectorReadiness::gpu_ready);
+  if(victim!=working_set.sectors.end()&&
+     victim->id!=working_set.current_sector_id&&
+     victim->residency_target==TerrainSectorReadiness::gpu_ready){
+    victim->residency_target=TerrainSectorReadiness::cpu_surface;
+    victim->readiness=victim->retained_surface_blocks.empty()
+        ?TerrainSectorReadiness::hierarchy
+        :TerrainSectorReadiness::cpu_surface;
+  }else{
+    victim=find_victim(TerrainSectorReadiness::cpu_surface);
+    if(victim==working_set.sectors.end()||
+       victim->id==working_set.current_sector_id||
+       victim->residency_target!=TerrainSectorReadiness::cpu_surface)
+      return false;
+    victim->residency_target=TerrainSectorReadiness::hierarchy;
+    victim->readiness=TerrainSectorReadiness::hierarchy;
+    victim->retained_surface_blocks.clear();
+  }
   ++working_set.sector_evictions;
   ++working_set.sector_demotions;
   ++working_set.budget_rejections;
