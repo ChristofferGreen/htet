@@ -124,9 +124,20 @@ class SceneRenderer {
   void recreate(VkExtent2D extent, std::uint32_t image_count,
                 AtmosphereQuality quality=AtmosphereQuality::standard,
                 std::uint32_t screen_resolution_divisor=4U,
-                bool terrain_msaa=false);
+                VkSampleCountFlagBits terrain_samples=VK_SAMPLE_COUNT_1_BIT);
+  void configure_terrain_msaa(VkExtent2D extent,std::uint32_t image_count,
+                              VkSampleCountFlagBits terrain_samples);
   [[nodiscard]] bool supports_terrain_msaa() const noexcept {
-    return terrain_msaa_supported_;
+    return supports_terrain_samples(VK_SAMPLE_COUNT_2_BIT)||
+           supports_terrain_samples(VK_SAMPLE_COUNT_4_BIT);
+  }
+  [[nodiscard]] bool supports_terrain_samples(
+      VkSampleCountFlagBits samples) const noexcept {
+    return samples==VK_SAMPLE_COUNT_1_BIT||
+           (terrain_sample_counts_&samples)!=0U;
+  }
+  [[nodiscard]] bool terrain_msaa_memoryless() const noexcept {
+    return terrain_msaa_memoryless_;
   }
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
@@ -203,6 +214,11 @@ class SceneRenderer {
   VkPipeline msaa_triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline msaa_line_pipeline_{VK_NULL_HANDLE};
   VkPipeline msaa_editor_line_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa2_sky_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa2_triangle_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa2_triangle_wire_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa2_line_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa2_editor_line_pipeline_{VK_NULL_HANDLE};
   VkQueryPool timing_query_pool_{VK_NULL_HANDLE};
   float timestamp_period_nanoseconds_{};
   std::vector<bool> timing_queries_written_;
@@ -219,8 +235,9 @@ class SceneRenderer {
   AtmosphereQualitySettings quality_settings_{
       atmosphere_quality_settings(AtmosphereQuality::standard)};
   std::uint32_t screen_resolution_divisor_{2U};
-  bool terrain_msaa_supported_{};
-  bool terrain_msaa_enabled_{};
+  VkSampleCountFlags terrain_sample_counts_{VK_SAMPLE_COUNT_1_BIT};
+  VkSampleCountFlagBits terrain_samples_{VK_SAMPLE_COUNT_1_BIT};
+  bool terrain_msaa_memoryless_{};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
@@ -235,8 +252,11 @@ class SceneRenderer {
   std::vector<DepthImage> depth_images_;
   struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<SceneColourImage> scene_colour_images_;
-  DepthImage msaa_depth_image_;
-  SceneColourImage msaa_colour_image_;
+  std::vector<DepthImage> msaa_depth_images_;
+  std::vector<SceneColourImage> msaa_colour_images_;
+  void destroy_terrain_msaa_targets();
+  void create_terrain_msaa_targets(VkExtent2D extent,
+                                   std::uint32_t image_count);
   struct ShadowImage : DepthImage {
     std::array<VkImageView,shadow_map_layer_count> layer_views{};
     VkBuffer uniform_buffer{VK_NULL_HANDLE};

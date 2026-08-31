@@ -1059,6 +1059,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_show_contact_normal=false;
     bool world_smooth_normals=false;
     bool world_terrain_msaa=false;
+    VkSampleCountFlagBits world_terrain_samples=VK_SAMPLE_COUNT_4_BIT;
     float world_sun_azimuth=
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
@@ -1142,6 +1143,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view look_prefix="--automation-look=";
         constexpr std::string_view look_frames_prefix=
             "--automation-look-frames=";
+        constexpr std::string_view terrain_msaa_prefix="--terrain-msaa=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1177,6 +1179,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }else if(value=="--smooth-terrain-normals"){
                 world_smooth_normals=true;
             }else if(value=="--terrain-msaa"){
+                world_terrain_msaa=true;
+            }else if(value.starts_with(terrain_msaa_prefix)){
+                const auto samples=value.substr(terrain_msaa_prefix.size());
+                if(samples=="2")world_terrain_samples=VK_SAMPLE_COUNT_2_BIT;
+                else if(samples=="4")
+                    world_terrain_samples=VK_SAMPLE_COUNT_4_BIT;
+                else{
+                    fprintf(stderr,"terrain MSAA samples must be 2 or 4\n");
+                    return 2;
+                }
                 world_terrain_msaa=true;
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
@@ -1461,8 +1473,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             fprintf(stderr,"dense-oracle atmosphere shadow integration is headless only\n");
             return 2;
         }
-        if(world_terrain_msaa&&!g_SceneRenderer.supports_terrain_msaa()){
-            fprintf(stderr,"4x terrain MSAA is unavailable on this device\n");
+        if(world_terrain_msaa&&
+           !g_SceneRenderer.supports_terrain_samples(world_terrain_samples)){
+            fprintf(stderr,"requested terrain MSAA is unavailable on this device\n");
             return 2;
         }
         if(g_AtmosphereFrame.quality!=
@@ -1474,7 +1487,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
                 g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
                 g_AtmosphereFrame.screen_resolution_divisor,
-                world_terrain_msaa);
+                world_terrain_msaa?world_terrain_samples:
+                                   VK_SAMPLE_COUNT_1_BIT);
         }
         if(world_gpu_atmosphere_probe&&g_AtmosphereFrame.transport!=
            tetra_viewer::AtmosphereTransport::faithful_hillaire){
@@ -1646,7 +1660,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
                 g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
                 g_AtmosphereFrame.screen_resolution_divisor,
-                world_terrain_msaa);
+                world_terrain_msaa?world_terrain_samples:
+                                   VK_SAMPLE_COUNT_1_BIT);
             g_MainWindowData.FrameIndex = 0;
             g_SwapChainRebuild = false;
         }
@@ -2843,23 +2858,62 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                &show_surface_edges);
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
                                &world_smooth_normals);
-            if(!g_SceneRenderer.supports_terrain_msaa())ImGui::BeginDisabled();
-            if(ImGui::Checkbox("4x terrain MSAA",&world_terrain_msaa)){
+            const auto apply_terrain_msaa=[&]{
                 if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
                     throw std::runtime_error(
                         "unable to idle Vulkan for terrain MSAA change");
-                g_SceneRenderer.recreate(
+                g_SceneRenderer.configure_terrain_msaa(
                     {static_cast<std::uint32_t>(g_MainWindowData.Width),
                      static_cast<std::uint32_t>(g_MainWindowData.Height)},
-                    g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
-                    g_AtmosphereFrame.screen_resolution_divisor,
-                    world_terrain_msaa);
+                    g_MainWindowData.ImageCount,
+                    world_terrain_msaa?world_terrain_samples:
+                                       VK_SAMPLE_COUNT_1_BIT);
+            };
+            if(!g_SceneRenderer.supports_terrain_msaa())ImGui::BeginDisabled();
+            if(ImGui::Checkbox("Terrain MSAA",&world_terrain_msaa)){
+                if(world_terrain_msaa&&
+                   !g_SceneRenderer.supports_terrain_samples(
+                       world_terrain_samples))
+                    world_terrain_samples=
+                        g_SceneRenderer.supports_terrain_samples(
+                            VK_SAMPLE_COUNT_4_BIT)?
+                                VK_SAMPLE_COUNT_4_BIT:
+                                VK_SAMPLE_COUNT_2_BIT;
+                apply_terrain_msaa();
             }
             if(!g_SceneRenderer.supports_terrain_msaa()){
                 ImGui::EndDisabled();
                 if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip(
-                        "Requires 4x colour/depth samples and MAX depth resolve");
+                        "Requires multisampled colour/depth and MAX depth resolve");
+            }
+            if(world_terrain_msaa){
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(72.0F);
+                const char* sample_name=world_terrain_samples==
+                    VK_SAMPLE_COUNT_2_BIT?"2x":"4x";
+                if(ImGui::BeginCombo("##terrain-msaa-samples",sample_name)){
+                    constexpr std::array sample_options{
+                        VK_SAMPLE_COUNT_2_BIT,VK_SAMPLE_COUNT_4_BIT};
+                    for(const auto samples:sample_options){
+                        const bool supported=
+                            g_SceneRenderer.supports_terrain_samples(samples);
+                        if(!supported)ImGui::BeginDisabled();
+                        const bool selected=world_terrain_samples==samples;
+                        if(ImGui::Selectable(samples==VK_SAMPLE_COUNT_2_BIT?
+                                                 "2x":"4x",selected)){
+                            world_terrain_samples=samples;
+                            apply_terrain_msaa();
+                        }
+                        if(selected)ImGui::SetItemDefaultFocus();
+                        if(!supported)ImGui::EndDisabled();
+                    }
+                    ImGui::EndCombo();
+                }
+                if(g_SceneRenderer.terrain_msaa_memoryless()){
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("tile-local");
+                }
             }
             if(CheckboxWithHotkey("Capsule diagnostic","K",ImGuiKey_K,
                                   &world_show_capsule))
@@ -3151,7 +3205,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                          static_cast<std::uint32_t>(g_MainWindowData.Height)},
                         g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
                         g_AtmosphereFrame.screen_resolution_divisor,
-                        world_terrain_msaa);
+                        world_terrain_msaa?world_terrain_samples:
+                                           VK_SAMPLE_COUNT_1_BIT);
                 }
                 constexpr std::array<const char*,3> resolution_names{
                     "Half","One third","One quarter"};
@@ -3171,7 +3226,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                          static_cast<std::uint32_t>(g_MainWindowData.Height)},
                         g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
                         g_AtmosphereFrame.screen_resolution_divisor,
-                        world_terrain_msaa);
+                        world_terrain_msaa?world_terrain_samples:
+                                           VK_SAMPLE_COUNT_1_BIT);
                 }
                 const double distance_minimum=10'000.0;
                 const double distance_maximum=10'000'000.0;
@@ -4167,6 +4223,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                               g_AtmosphereFrame.rendering_method)
                         <<"\",\"terrain_msaa\":"
                         <<(world_terrain_msaa?"true":"false")
+                        <<",\"terrain_msaa_samples\":"
+                        <<(world_terrain_msaa?
+                               static_cast<std::uint32_t>(
+                                   world_terrain_samples):1U)
+                        <<",\"terrain_msaa_memoryless\":"
+                        <<(world_terrain_msaa&&
+                           g_SceneRenderer.terrain_msaa_memoryless()?
+                               "true":"false")
                         <<",\"screen_resolution_divisor\":"
                         <<g_AtmosphereFrame.screen_resolution_divisor<<','
                         <<"\"shadows_ms\":"<<summaries[0].median<<','
