@@ -835,7 +835,9 @@ static WorldLodCutSelection select_world_lod_cut_impl(
      !(profile.limb_error_pixel_threshold>0.0)||
      !std::isfinite(profile.limb_error_pixel_threshold)||
      profile.hierarchy_guard_frustum_scale<1.0||
-     !std::isfinite(profile.hierarchy_guard_frustum_scale))
+     !std::isfinite(profile.hierarchy_guard_frustum_scale)||
+     !(profile.terrain_sector_overlap_radians>0.0)||
+     !std::isfinite(profile.terrain_sector_overlap_radians))
     throw std::invalid_argument("world LOD distances must be finite and positive");
   constexpr std::uint16_t all_roots=
       (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
@@ -861,6 +863,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     double horizontal_distance{};
     double projected_diameter{};
     tetra::ProjectedTetrahedron projected_edges{};
+    double sector_projected_edge_bound{};
     double projected_field_error{};
     double projected_limb_error{};
   };
@@ -920,6 +923,19 @@ static WorldLodCutSelection select_world_lod_cut_impl(
         2.0*projection.focal_length*result.radius/
             std::max(eye_distance-result.radius,1.0e-12);
     result.projected_edges=tetra::projected_tetrahedron(points,projection);
+    if(field.terrain.planet_radius>0.0){
+      const double view_half_angle=std::atan(std::hypot(
+          projection.tangent,projection.horizontal_tangent));
+      const double rotation_margin=profile.terrain_sector_overlap_radians;
+      const double inner_angle=std::max(
+          0.0,view_half_angle-rotation_margin);
+      const double view_cosine=std::cos(view_half_angle);
+      const double inner_cosine=std::cos(inner_angle);
+      const double perspective_growth=
+          (inner_cosine*inner_cosine)/(view_cosine*view_cosine);
+      result.sector_projected_edge_bound=
+          result.projected_edges.diameter_pixels*perspective_growth;
+    }
     const auto project_world_error=[&](double world_error){
       if(!(world_error>0.0))return 0.0;
       if(eye_distance<=result.radius)
@@ -1015,7 +1031,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       ++local.metrics.visited_owners;
       const auto evaluation=evaluate_geometry(geometry);
       const double projected_edge_metric=field.terrain.planet_radius>0.0?
-          evaluation.projected_edges.diameter_pixels:
+          std::max(evaluation.projected_edges.diameter_pixels,
+                   evaluation.sector_projected_edge_bound):
           evaluation.projected_diameter;
       if(depth>=profile.near_red_depth){
         if(evaluation.projected_edges.intersects_frustum&&
@@ -1339,9 +1356,8 @@ double terrain_camera_half_diagonal(const tetra::Camera& camera) noexcept {
 
 double terrain_sector_angular_footprint(
     const WorldProfile& profile,const tetra::Camera& camera) noexcept {
-  const double scale=profile.hierarchy_guard_frustum_scale;
-  const double vertical=std::tan(camera.vertical_fov_radians*0.5)*scale;
-  return std::atan(std::hypot(vertical,vertical*camera.aspect_ratio));
+  return terrain_camera_half_diagonal(camera)+
+      profile.terrain_sector_overlap_radians;
 }
 
 double terrain_direction_angle(tetra::Vec3 first,tetra::Vec3 second) noexcept {

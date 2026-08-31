@@ -1122,6 +1122,8 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.maximum_volume_blocks==4096U);
   CHECK(profile.maximum_hierarchy_blocks==65536U);
   CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
+  CHECK(profile.terrain_sector_overlap_radians==doctest::Approx(
+      2.0*std::numbers::pi/180.0));
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
@@ -1775,7 +1777,7 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
   REQUIRE_FALSE(selection.owners.empty());
   CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
-  CHECK(selection.metrics.logical_owners_after_closure<1'200'000U);
+  CHECK(selection.metrics.logical_owners_after_closure<1'300'000U);
   CHECK(selection.metrics.horizon_owners==0U);
   CHECK(selection.metrics.target_projected_edge_pixels==
         doctest::Approx(profile.pixel_threshold));
@@ -1786,6 +1788,12 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
         selection.metrics.visible_p95_projected_edge_pixels);
   CHECK(selection.metrics.visible_p95_projected_edge_pixels<=
         selection.metrics.visible_maximum_projected_edge_pixels);
+  CHECK(selection.metrics.field_error_splits>0U);
+  CHECK(selection.metrics.limb_error_splits>0U);
+  CHECK(selection.metrics.visible_p95_projected_field_error_pixels<=
+        selection.metrics.visible_maximum_projected_field_error_pixels);
+  CHECK(selection.metrics.visible_p95_projected_limb_error_pixels<=
+        selection.metrics.visible_maximum_projected_limb_error_pixels);
 }
 
 TEST_CASE("production radial world resolves the surface around the player") {
