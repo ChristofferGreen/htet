@@ -1230,6 +1230,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::size_t world_gpu_capture_ready_frames{};
     std::size_t world_gpu_capture_frame_target{};
     std::size_t world_gpu_rendered_frames{};
+    std::size_t world_gpu_runtime_rendered_frames{};
+    std::size_t world_gpu_capture_submitted_rendered_frame{};
+    std::size_t world_gpu_capture_submitted_runtime_frame{};
     std::size_t world_gpu_capture_after_motion_frames{};
     std::size_t world_gpu_capture_motion_frame_count{};
     bool world_gpu_atmosphere_resize_check=false;
@@ -4655,6 +4658,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         if (!is_minimized)
         {
             ++world_gpu_rendered_frames;
+            if(world_runtime)++world_gpu_runtime_rendered_frames;
             const auto capture_runtime_diagnostics=world_runtime?
                 world_runtime->diagnostics():
                 tetra_viewer::TerrainRuntimeDiagnostics{};
@@ -4674,7 +4678,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         temporal_half_resolution?64U:1U;
             const bool requested_frame_ready=
                 world_gpu_capture_frame_target!=0U&&
-                world_gpu_rendered_frames>=world_gpu_capture_frame_target;
+                world_gpu_runtime_rendered_frames>=
+                    world_gpu_capture_frame_target;
             const bool static_capture=
                 world_gpu_walk_steps==0U&&world_gpu_look_x==0.0&&
                 world_gpu_look_y==0.0;
@@ -4749,8 +4754,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 !world_gpu_atmosphere_capture_path.empty()&&
                 !world_gpu_atmosphere_capture_submitted&&world_runtime&&
                 (requested_frame_ready||settled_capture_ready);
-            if(g_AtmosphereFrame.capture_requested)
+            if(g_AtmosphereFrame.capture_requested){
                 world_gpu_atmosphere_capture_submitted=true;
+                world_gpu_capture_submitted_rendered_frame=
+                    world_gpu_rendered_frames;
+                world_gpu_capture_submitted_runtime_frame=
+                    world_gpu_runtime_rendered_frames;
+            }
             wd->ClearValue.color.float32[0] = clear_color.x * clear_color.w;
             wd->ClearValue.color.float32[1] = clear_color.y * clear_color.w;
             wd->ClearValue.color.float32[2] = clear_color.z * clear_color.w;
@@ -5288,7 +5298,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<"\",\"width\":"<<capture.width
                              <<",\"height\":"<<capture.height
                              <<",\"rendered_frame\":"
-                             <<world_gpu_rendered_frames
+                             <<world_gpu_capture_submitted_rendered_frame
+                             <<",\"runtime_rendered_frame\":"
+                             <<world_gpu_capture_submitted_runtime_frame
                              <<",\"render_resolution_mode\":\""
                              <<render_mode_name
                              <<"\",\"requested_render_scale\":"
