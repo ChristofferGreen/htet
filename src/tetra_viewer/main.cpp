@@ -1254,9 +1254,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         double cpu_milliseconds{};
         double gpu_milliseconds{};
         double atmosphere_milliseconds{};
+        double terrain_construction_milliseconds{};
+        double upload_milliseconds{};
         float render_scale{};
     };
     std::vector<WorldFramePacingSample> world_frame_pacing_samples;
+    std::uint64_t world_pacing_scene_generation{};
+    double world_pending_upload_milliseconds{};
     double world_frame_elapsed_milliseconds{};
     std::size_t world_gpu_pre_resize_scene_bytes{};
     int world_process_exit_code{};
@@ -4402,6 +4406,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 }
             }
             if(upload_dirty){
+                const auto upload_started=std::chrono::steady_clock::now();
                 if(world_mode&&world_runtime&&
                    world_runtime->retained_surface()!=nullptr)
                     g_SceneRenderer.upload_surface_ranges(
@@ -4416,6 +4421,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                             overlay_lines);
                 if(retained_upload_check&&retained_surface_upload_ready)
                     retained_upload_present_pending=true;
+                if(world_mode)
+                    world_pending_upload_milliseconds=
+                        std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-upload_started)
+                            .count();
             }else g_SceneRenderer.upload_editor_lines(overlay_lines);
             upload_dirty = false;
             overlay_dirty = false;
@@ -4528,6 +4538,37 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
 
         if(world_mode){
             const auto& timing=g_SceneRenderer.gpu_timings();
+            if(timing.valid){
+                const double gpu_total=timing.shadows_milliseconds+
+                    timing.atmosphere_milliseconds+
+                    timing.terrain_milliseconds+
+                    timing.depth_reduction_milliseconds+
+                    timing.screen_integration_milliseconds+
+                    timing.temporal_reconstruction_milliseconds+
+                    timing.composite_milliseconds;
+                double terrain_construction_milliseconds{};
+                if(world_runtime){
+                    const auto pacing_status=world_runtime->diagnostics();
+                    if(pacing_status.scene_generation!=
+                       world_pacing_scene_generation){
+                        terrain_construction_milliseconds=
+                            pacing_status.last_update_milliseconds;
+                        world_pacing_scene_generation=
+                            pacing_status.scene_generation;
+                    }
+                }
+                world_frame_pacing_samples.push_back({
+                    world_frame_elapsed_milliseconds,gpu_total,
+                    timing.atmosphere_milliseconds,
+                    terrain_construction_milliseconds,
+                    world_pending_upload_milliseconds,
+                    world_auto_render_scale});
+                world_pending_upload_milliseconds=0.0;
+                constexpr std::size_t pacing_sample_limit=720U;
+                if(world_frame_pacing_samples.size()>pacing_sample_limit)
+                    world_frame_pacing_samples.erase(
+                        world_frame_pacing_samples.begin());
+            }
             if(world_render_resolution_mode==
                    RenderResolutionMode::automatic&&
                timing.valid&&world_render_scale_stable_frames>=30U){
@@ -4548,13 +4589,6 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         world_auto_render_scale-0.05F);
                     world_auto_gpu_samples.clear();
                 }
-                world_frame_pacing_samples.push_back({
-                    world_frame_elapsed_milliseconds,gpu_total,
-                    timing.atmosphere_milliseconds,world_auto_render_scale});
-                constexpr std::size_t pacing_sample_limit=720U;
-                if(world_frame_pacing_samples.size()>pacing_sample_limit)
-                    world_frame_pacing_samples.erase(
-                        world_frame_pacing_samples.begin());
                 world_auto_gpu_samples.push_back(gpu_total);
                 constexpr std::size_t evaluation_frames=60U;
                 if(world_auto_gpu_samples.size()>=evaluation_frames){
@@ -4779,6 +4813,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         std::cout<<"\""<<name<<"\":{\"median_ms\":"
                             <<summaries[pass].median<<",\"p95_ms\":"
                             <<summaries[pass].percentile_95
+                            <<",\"p99_ms\":"
+                            <<summaries[pass].percentile_99
                             <<",\"maximum_ms\":"<<summaries[pass].maximum
                             <<",\"initial_refresh_maximum_ms\":"
                             <<world_gpu_refresh_maximum[pass]<<'}';
@@ -5602,10 +5638,61 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                  <<",\"render_origin\":"
                                  <<revisions->render_origin.value<<'}';
                     }
-                    std::cout<<",\"frame_pacing\":[";
                     const std::size_t pacing_begin=
                         world_frame_pacing_samples.size()>240U?
                             world_frame_pacing_samples.size()-240U:0U;
+                    std::array<std::vector<double>,4> pacing_values;
+                    std::size_t missed_presents{};
+                    std::size_t consecutive_missed{},
+                                maximum_consecutive_missed{};
+                    const double present_budget_milliseconds=
+                        1000.0/std::max(world_display_refresh_hz,1);
+                    for(std::size_t index=pacing_begin;
+                        index<world_frame_pacing_samples.size();++index){
+                        const auto& sample=world_frame_pacing_samples[index];
+                        pacing_values[0].push_back(sample.cpu_milliseconds);
+                        pacing_values[1].push_back(sample.gpu_milliseconds);
+                        pacing_values[2].push_back(
+                            sample.terrain_construction_milliseconds);
+                        pacing_values[3].push_back(sample.upload_milliseconds);
+                        if(sample.cpu_milliseconds>
+                           present_budget_milliseconds*1.5){
+                            ++missed_presents;
+                            maximum_consecutive_missed=std::max(
+                                maximum_consecutive_missed,
+                                ++consecutive_missed);
+                        }else consecutive_missed=0U;
+                    }
+                    const auto write_pacing_summary=[&](
+                        std::string_view name,std::size_t source){
+                        const auto summary=tetra_viewer::summarize_samples(
+                            pacing_values[source]);
+                        std::cout<<'"'<<name<<"\":{";
+                        if(summary)
+                            std::cout<<"\"p50_ms\":"<<summary->median
+                                <<",\"p95_ms\":"<<summary->percentile_95
+                                <<",\"p99_ms\":"<<summary->percentile_99
+                                <<",\"maximum_ms\":"<<summary->maximum;
+                        else
+                            std::cout<<"\"p50_ms\":0,\"p95_ms\":0,"
+                                "\"p99_ms\":0,\"maximum_ms\":0";
+                        std::cout<<'}';
+                    };
+                    std::cout<<",\"frame_pacing_summary\":{"
+                             <<"\"sample_count\":"
+                             <<pacing_values[0].size()
+                             <<",\"present_budget_ms\":"
+                             <<present_budget_milliseconds
+                             <<",\"missed_present_count\":"
+                             <<missed_presents
+                             <<",\"maximum_consecutive_missed_presents\":"
+                             <<maximum_consecutive_missed<<',';
+                    write_pacing_summary("cpu",0U);std::cout<<',';
+                    write_pacing_summary("gpu",1U);std::cout<<',';
+                    write_pacing_summary("terrain_construction",2U);
+                    std::cout<<',';
+                    write_pacing_summary("upload",3U);std::cout<<'}';
+                    std::cout<<",\"frame_pacing\":[";
                     for(std::size_t index=pacing_begin;
                         index<world_frame_pacing_samples.size();++index){
                         if(index!=pacing_begin)std::cout<<',';
@@ -5613,6 +5700,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         std::cout<<'['<<sample.cpu_milliseconds<<','
                                  <<sample.gpu_milliseconds<<','
                                  <<sample.atmosphere_milliseconds<<','
+                                 <<sample.terrain_construction_milliseconds
+                                 <<','<<sample.upload_milliseconds<<','
                                  <<sample.render_scale<<']';
                     }
                     std::cout<<']';

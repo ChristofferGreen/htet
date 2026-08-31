@@ -44,6 +44,7 @@ struct ScalarSampleSummary {
   double minimum{};
   double median{};
   double percentile_95{};
+  double percentile_99{};
   double maximum{};
   std::size_t count{};
 };

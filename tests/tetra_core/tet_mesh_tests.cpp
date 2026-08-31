@@ -14860,6 +14860,7 @@ TEST_CASE("GPU capture conversion canonicalizes channel order and row direction"
   CHECK(summary->minimum==1.0);
   CHECK(summary->median==5.0);
   CHECK(summary->percentile_95==doctest::Approx(8.6));
+  CHECK(summary->percentile_99==doctest::Approx(8.92));
   CHECK(summary->maximum==9.0);
   CHECK_FALSE(tetra_viewer::summarize_samples(
       std::array<double,1>{std::numeric_limits<double>::infinity()}));

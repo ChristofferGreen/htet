@@ -271,7 +271,7 @@ std::optional<ScalarSampleSummary> summarize_samples(
     return sorted[lower]*(1.0-fraction)+sorted[upper]*fraction;
   };
   return ScalarSampleSummary{sorted.front(),percentile(0.5),percentile(0.95),
-                             sorted.back(),sorted.size()};
+                             percentile(0.99),sorted.back(),sorted.size()};
 }
 
 Rgb8ImageAnalysis analyse_rgb8_image(const Rgb8Image& image,
