@@ -3603,6 +3603,70 @@ TEST_CASE("blocked world retains four quarter-turn sectors after small translati
   CHECK(runtime.diagnostics().sector_hits>=4U);
 }
 
+TEST_CASE("blocked world replaces terrain sectors across altitude bands") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.background_red_depth=3U;
+  profile.near_red_depth=10U;
+  profile.pixel_threshold=1024.0;
+  profile.field_error_pixel_threshold=1.0e12;
+  profile.limb_error_pixel_threshold=1.0e12;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  REQUIRE(initial.converged);
+  REQUIRE_FALSE(initial.busy);
+  REQUIRE(initial.resident_sector_count==1U);
+  const auto initial_demand_hash=initial.current_sector_demand_hash;
+  REQUIRE(initial_demand_hash!=0U);
+  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
+  const auto initial_sector_id=runtime.resident_terrain_sectors().front().id;
+
+  const auto settle=[&] {
+    const auto deadline=std::chrono::steady_clock::now()+
+        std::chrono::seconds(30);
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.forward=initial.published_camera_forward;
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.0;
+  camera.position.y+=2.0;
+  runtime.set_camera(camera,false);
+  static_cast<void>(runtime.update());
+  REQUIRE(settle());
+  const auto ascended=runtime.diagnostics();
+  REQUIRE_FALSE(ascended.budget_exceeded);
+  REQUIRE(ascended.resident_sector_count==1U);
+  REQUIRE(ascended.gpu_ready_sector_count==1U);
+  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
+  CHECK(runtime.resident_terrain_sectors().front().id!=initial_sector_id);
+  CHECK(runtime.resident_terrain_sectors().front().camera_anchor.position.y==
+        camera.position.y);
+  CHECK(ascended.sector_evictions>=1U);
+  CHECK(ascended.positive_volumes);
+  CHECK(ascended.conforming_faces);
+
+  const auto ascent_evictions=ascended.sector_evictions;
+  camera.position=initial.published_camera_position;
+  runtime.set_camera(camera,false);
+  static_cast<void>(runtime.update());
+  REQUIRE(settle());
+  const auto descended=runtime.diagnostics();
+  CHECK_FALSE(descended.budget_exceeded);
+  CHECK(descended.resident_sector_count==1U);
+  CHECK(descended.gpu_ready_sector_count==1U);
+  CHECK(descended.current_sector_demand_hash==initial_demand_hash);
+  CHECK(descended.sector_evictions>ascent_evictions);
+  CHECK(descended.positive_volumes);
+  CHECK(descended.conforming_faces);
+}
+
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
   auto mesh=tetra::TetMesh::make_unit_cube();
   tetra::Camera camera;
