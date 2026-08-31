@@ -3338,6 +3338,53 @@ TEST_CASE("blocked world schedules accumulated camera rotation without translati
   CHECK(runtime.diagnostics().scene_generation==settled_generation);
 }
 
+TEST_CASE("blocked world supersedes an in-flight rotation without losing the original sector") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.background_red_depth=3U;
+  profile.near_red_depth=10U;
+  profile.pixel_threshold=256.0;
+  profile.field_error_pixel_threshold=1.0e12;
+  profile.limb_error_pixel_threshold=1.0e12;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  const auto original_hash=initial.current_sector_demand_hash;
+  REQUIRE(original_hash!=0U);
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.forward={0.9805806756909202,-0.19611613513818404,0.0};
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  REQUIRE(runtime.diagnostics().busy);
+
+  camera.forward={0.0,-0.19611613513818404,0.9805806756909202};
+  runtime.set_camera(camera,false);
+  const auto deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto newest=runtime.diagnostics();
+  REQUIRE(newest.converged);
+  CHECK_FALSE(newest.busy);
+  CHECK_FALSE(newest.budget_exceeded);
+  CHECK(newest.canceled_builds>=1U);
+  CHECK(newest.resident_sector_count==2U);
+  CHECK(newest.gpu_ready_sector_count==2U);
+  CHECK(newest.published_camera_forward.x==camera.forward.x);
+  CHECK(newest.published_camera_forward.y==camera.forward.y);
+  CHECK(newest.published_camera_forward.z==camera.forward.z);
+
+  const auto submissions=newest.submitted_builds;
+  camera.forward=initial.published_camera_forward;
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==submissions);
+  CHECK(runtime.diagnostics().current_sector_demand_hash==original_hash);
+}
+
 TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   auto profile=tetra_viewer::production_world_profile();
   profile.pixel_threshold=512.0;
