@@ -383,7 +383,14 @@ void main() {
         fragment_position,unit_normal,direct_sun);
     const vec3 ambient=(1.0-f0)*(1.0-metallic)*albedo*environment;
     const float shadow=sun_visibility(fragment_position,unit_normal,n_dot_l);
-    const vec3 direct=(diffuse+specular)*n_dot_l*direct_sun*shadow;
+    // The analytic terrain normal carries resolved macro relief. Feeding its
+    // full grazing-angle GGX response back through the same rough material
+    // turns that relief into large, unstable highlight islands. Retain a
+    // dusty dielectric sheen for the smoothed terrain while leaving the
+    // explicitly faceted material response unchanged.
+    const float specular_weight=smooth_surface?0.10:1.0;
+    const vec3 direct=(diffuse+specular*specular_weight)*
+        n_dot_l*direct_sun*shadow;
     const vec3 indirect=ambient;
     vec3 linear_colour=indirect+direct;
     const int atmosphere_debug=int(atmosphere.reserved1.x+0.5);

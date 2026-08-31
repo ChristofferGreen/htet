@@ -1173,6 +1173,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_analytic_ridge=true;
             }else if(value=="--surface-edges-off"){
                 show_surface_edges=false;
+            }else if(value=="--smooth-terrain-normals"){
+                world_smooth_normals=true;
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
