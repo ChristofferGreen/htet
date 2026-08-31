@@ -124,17 +124,20 @@ static void check_vk_result(VkResult err)
         abort();
 }
 
-static int window_display_refresh_rate(GLFWwindow* window)
+struct WindowDisplaySelection {
+    GLFWmonitor* monitor{};
+    int index{-1};
+};
+
+static WindowDisplaySelection window_display(GLFWwindow* window)
 {
-    if(g_RefreshDurationNanoseconds!=0U)
-        return std::max(1,static_cast<int>(std::lround(
-            1.0e9/static_cast<double>(g_RefreshDurationNanoseconds))));
     int window_x{},window_y{},window_width{},window_height{};
     glfwGetWindowPos(window,&window_x,&window_y);
     glfwGetWindowSize(window,&window_width,&window_height);
     int monitor_count{};
     GLFWmonitor** monitors=glfwGetMonitors(&monitor_count);
     GLFWmonitor* selected=glfwGetPrimaryMonitor();
+    int selected_index=-1;
     long long selected_overlap=-1;
     for(int index=0;index<monitor_count;++index){
         int monitor_x{},monitor_y{},monitor_width{},monitor_height{};
@@ -151,8 +154,18 @@ static int window_display_refresh_rate(GLFWwindow* window)
         if(overlap>selected_overlap){
             selected_overlap=overlap;
             selected=monitors[index];
+            selected_index=index;
         }
     }
+    return {selected,selected_index};
+}
+
+static int window_display_refresh_rate(GLFWwindow* window)
+{
+    if(g_RefreshDurationNanoseconds!=0U)
+        return std::max(1,static_cast<int>(std::lround(
+            1.0e9/static_cast<double>(g_RefreshDurationNanoseconds))));
+    const auto selected=window_display(window).monitor;
     const GLFWvidmode* mode=selected?glfwGetVideoMode(selected):nullptr;
     return mode&&mode->refreshRate>0?mode->refreshRate:60;
 }
@@ -657,8 +670,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     constexpr std::string_view geometry_workers_prefix="--geometry-workers=";
     constexpr std::string_view window_size_prefix="--window-size=";
     constexpr std::string_view window_position_prefix="--window-position=";
+    constexpr std::string_view display_name_prefix="--display-name=";
     std::array<std::uint32_t,2> initial_window_size{1280U,800U};
     std::optional<std::array<int,2>> initial_window_position;
+    std::optional<std::string> requested_display_name;
     for(int argument=1;argument<argc;++argument){
         const std::string_view value=argv[argument];
         if(value.starts_with(window_size_prefix)){
@@ -682,6 +697,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 return 2;
             }
             initial_window_position=position;
+            continue;
+        }
+        if(value.starts_with(display_name_prefix)){
+            const auto name=value.substr(display_name_prefix.size());
+            if(name.empty()){
+                fprintf(stderr,"display name must not be empty\n");
+                return 2;
+            }
+            requested_display_name=std::string(name);
             continue;
         }
         if(!value.starts_with(geometry_workers_prefix))continue;
@@ -719,6 +743,27 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
+
+    if(requested_display_name){
+        int monitor_count{};
+        GLFWmonitor** monitors=glfwGetMonitors(&monitor_count);
+        GLFWmonitor* selected{};
+        for(int index=0;index<monitor_count;++index){
+            const char* name=glfwGetMonitorName(monitors[index]);
+            if(name&&*requested_display_name==name){selected=monitors[index];break;}
+        }
+        if(!selected){
+            fprintf(stderr,"display not found: %s\n",
+                    requested_display_name->c_str());
+            glfwTerminate();
+            return 2;
+        }
+        int x{},y{},width{},height{};
+        glfwGetMonitorWorkarea(selected,&x,&y,&width,&height);
+        initial_window_position=std::array{
+            x+std::max(0,(width-static_cast<int>(initial_window_size[0]))/2),
+            y+std::max(0,(height-static_cast<int>(initial_window_size[1]))/2)};
+    }
 
     // Create window with Vulkan context
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -4569,9 +4614,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         if (!is_minimized)
         {
             ++world_gpu_rendered_frames;
+            const auto capture_runtime_diagnostics=world_runtime?
+                world_runtime->diagnostics():
+                tetra_viewer::TerrainRuntimeDiagnostics{};
             const bool capture_front_ready=world_runtime&&
-                tetra_viewer::world_capture_front_ready(
-                    world_runtime->diagnostics());
+                capture_runtime_diagnostics.converged&&
+                !capture_runtime_diagnostics.busy&&
+                !capture_runtime_diagnostics.budget_exceeded&&
+                g_SceneRenderer.atmosphere_shadow_map_status().complete;
             world_gpu_capture_ready_frames=capture_front_ready?
                 world_gpu_capture_ready_frames+1U:0U;
             const std::size_t capture_warmup_frames=
@@ -4601,6 +4651,59 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                      RenderResolutionMode::automatic||
                  world_render_scale_stable_frames>=120U)&&
                 (static_capture||motion_capture);
+            if(!world_gpu_atmosphere_capture_path.empty()&&
+               world_gpu_capture_frame_target==0U&&world_runtime&&
+               capture_runtime_diagnostics.budget_exceeded&&
+               !capture_runtime_diagnostics.busy){
+                const auto& budgets=world_runtime->profile().budgets;
+                std::cout<<"{\"event\":\"gpu_atmosphere_capture_rejected\","
+                         <<"\"reason\":\"terrain_budget\",\"cpu_bytes\":"
+                         <<capture_runtime_diagnostics.rejected_proposed_cpu_bytes
+                         <<",\"maximum_cpu_bytes\":"<<budgets.maximum_cpu_bytes
+                         <<",\"triangles\":"
+                         <<capture_runtime_diagnostics.rejected_proposed_triangles
+                         <<",\"maximum_triangles\":"
+                         <<budgets.maximum_triangles
+                         <<",\"work_units\":"
+                         <<capture_runtime_diagnostics.rejected_proposed_work_units
+                         <<",\"maximum_work_units\":"
+                         <<budgets.maximum_work_units
+                         <<",\"upload_bytes\":"
+                         <<capture_runtime_diagnostics.rejected_proposed_upload_bytes
+                         <<",\"maximum_upload_bytes\":"
+                         <<budgets.maximum_upload_bytes
+                         <<",\"failed\":{\"cpu\":"
+                         <<(capture_runtime_diagnostics.rejected_cpu_budget?
+                              "true":"false")
+                         <<",\"triangles\":"
+                         <<(capture_runtime_diagnostics.rejected_triangle_budget?
+                              "true":"false")
+                         <<",\"work\":"
+                         <<(capture_runtime_diagnostics.rejected_work_budget?
+                              "true":"false")
+                         <<",\"upload\":"
+                         <<(capture_runtime_diagnostics.rejected_upload_budget?
+                              "true":"false")
+                         <<",\"hierarchy\":"
+                         <<(capture_runtime_diagnostics.rejected_hierarchy_budget?
+                              "true":"false")
+                         <<",\"volume\":"
+                         <<(capture_runtime_diagnostics.rejected_volume_budget?
+                              "true":"false")
+                         <<"},\"hierarchy_blocks\":"
+                         <<capture_runtime_diagnostics.
+                               rejected_proposed_hierarchy_blocks
+                         <<",\"maximum_hierarchy_blocks\":"
+                         <<world_runtime->profile().maximum_hierarchy_blocks
+                         <<",\"volume_blocks\":"
+                         <<capture_runtime_diagnostics.
+                               rejected_proposed_volume_blocks
+                         <<",\"maximum_volume_blocks\":"
+                         <<world_runtime->profile().maximum_volume_blocks
+                         <<"}\n";
+                world_gpu_atmosphere_capture_path.clear();
+                world_process_exit_code=2;
+            }
             g_AtmosphereFrame.capture_requested=
                 !world_gpu_atmosphere_capture_path.empty()&&
                 !world_gpu_atmosphere_capture_submitted&&world_runtime&&
@@ -5117,6 +5220,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     const float actual_render_scale=allocated_extent.width==0U?
                         1.0F:static_cast<float>(render_extent.width)/
                             static_cast<float>(allocated_extent.width);
+                    const auto capture_display=window_display(window);
+                    const char* capture_display_name=capture_display.monitor?
+                        glfwGetMonitorName(capture_display.monitor):nullptr;
+                    float display_scale_x=1.0F,display_scale_y=1.0F;
+                    if(capture_display.monitor)
+                        glfwGetMonitorContentScale(capture_display.monitor,
+                                                   &display_scale_x,
+                                                   &display_scale_y);
                     std::cout<<"{\"event\":\"gpu_atmosphere_capture\","
                              <<"\"path\":\""
                              <<world_gpu_atmosphere_capture_path
@@ -5160,6 +5271,13 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<(world_auto_target_display?"display":"fixed")
                              <<"\",\"display_refresh_hz\":"
                              <<world_display_refresh_hz
+                             <<",\"display_index\":"
+                             <<capture_display.index
+                             <<",\"display_name\":\""
+                             <<(capture_display_name?capture_display_name:
+                                                      "unknown")
+                             <<"\",\"display_content_scale\":["
+                             <<display_scale_x<<','<<display_scale_y<<']'
                              <<",\"render_loop_fps\":"
                              <<ImGui::GetIO().Framerate
                              <<",\"refresh_cycle_hz\":"
@@ -5261,8 +5379,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                      outer_limb_analysis.sampled_pixels))
                              <<'}';
                     const auto& runtime_status=world_runtime->diagnostics();
-                    const auto capture_profile=
-                        tetra_viewer::production_world_profile();
+                    const auto& capture_profile=world_runtime->profile();
                     const auto& draw_visibility=
                         g_SceneRenderer.terrain_draw_visibility();
                     std::cout<<",\"terrain_lod\":{\"capture_kind\":\""
@@ -5273,6 +5390,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<(runtime_status.busy?"true":"false")
                              <<",\"converged\":"
                              <<(runtime_status.converged?"true":"false")
+                             <<",\"budget_exceeded\":"
+                             <<(runtime_status.budget_exceeded?"true":"false")
                              <<",\"target_edge_physical_pixels\":"
                              <<runtime_status.target_projected_edge_pixels
                              <<",\"merge_edge_physical_pixels\":"
@@ -5336,6 +5455,26 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.sector_budget_rejections
                              <<",\"hysteresis_budget_fallbacks\":"
                              <<runtime_status.hysteresis_budget_fallbacks
+                             <<",\"budget_rejected_builds\":"
+                             <<runtime_status.budget_rejected_builds
+                             <<",\"resident_bytes\":"
+                             <<runtime_status.resident_bytes
+                             <<",\"cpu_high_water_bytes\":"
+                             <<runtime_status.cpu_high_water_bytes
+                             <<",\"triangle_high_water\":"
+                             <<runtime_status.triangle_high_water
+                             <<",\"work_high_water\":"
+                             <<runtime_status.work_high_water
+                             <<",\"upload_high_water_bytes\":"
+                             <<runtime_status.upload_high_water_bytes
+                             <<",\"maximum_cpu_bytes\":"
+                             <<capture_profile.budgets.maximum_cpu_bytes
+                             <<",\"maximum_triangles\":"
+                             <<capture_profile.budgets.maximum_triangles
+                             <<",\"maximum_work_units\":"
+                             <<capture_profile.budgets.maximum_work_units
+                             <<",\"maximum_upload_bytes\":"
+                             <<capture_profile.budgets.maximum_upload_bytes
                              <<",\"published_cut_hash\":"
                              <<runtime_status.hierarchy_hash
                              <<",\"published_surface_hash\":"
@@ -5418,6 +5557,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         g_SceneRenderer.atmosphere_shadow_map_status();
                     std::cout<<",\"shadow_diagnostics\":{\"hierarchy_complete\":"
                              <<(shadow_status.hierarchy_complete?"true":"false")
+                             <<",\"complete\":"
+                             <<(shadow_status.complete?"true":"false")
                              <<",\"epipolar_visited_nodes\":"
                              <<shadow_status.epipolar_visited_nodes
                              <<",\"epipolar_emitted_intervals\":"

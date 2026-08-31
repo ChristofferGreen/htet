@@ -127,6 +127,18 @@ struct TerrainRuntimeDiagnostics {
   std::size_t triangle_high_water{};
   std::size_t work_high_water{};
   std::size_t upload_high_water_bytes{};
+  std::size_t rejected_proposed_cpu_bytes{};
+  std::size_t rejected_proposed_triangles{};
+  std::size_t rejected_proposed_work_units{};
+  std::size_t rejected_proposed_upload_bytes{};
+  bool rejected_cpu_budget{};
+  bool rejected_triangle_budget{};
+  bool rejected_work_budget{};
+  bool rejected_upload_budget{};
+  bool rejected_hierarchy_budget{};
+  bool rejected_volume_budget{};
+  std::size_t rejected_proposed_hierarchy_blocks{};
+  std::size_t rejected_proposed_volume_blocks{};
   std::size_t submitted_builds{};
   std::size_t superseded_builds{};
   std::size_t canceled_builds{};

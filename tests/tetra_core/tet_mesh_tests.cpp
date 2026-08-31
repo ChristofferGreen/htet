@@ -1120,7 +1120,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.near_red_depth==20U);
   CHECK(profile.near_volume_radius==doctest::Approx(0.6));
   CHECK(profile.maximum_volume_blocks==4096U);
-  CHECK(profile.maximum_hierarchy_blocks==65536U);
+  CHECK(profile.maximum_hierarchy_blocks==73728U);
   CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
   CHECK(profile.terrain_sector_overlap_radians==doctest::Approx(
       2.0*std::numbers::pi/180.0));
@@ -1134,7 +1134,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
-  CHECK(profile.budgets.maximum_work_units==20000000U);
+  CHECK(profile.budgets.maximum_work_units==25000000U);
   CHECK(profile.budgets.maximum_upload_bytes==32U*1024U*1024U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);

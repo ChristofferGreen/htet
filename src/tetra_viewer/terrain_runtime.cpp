@@ -2505,6 +2505,14 @@ bool BlockedTerrainRuntime::update() {
        publication.hierarchy_budget_exceeded){
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      diagnostics_.rejected_hierarchy_budget=
+          publication.hierarchy_budget_exceeded;
+      diagnostics_.rejected_volume_budget=
+          publication.residency_budget_exceeded;
+      diagnostics_.rejected_proposed_hierarchy_blocks=
+          publication.diagnostics.hierarchy_blocks;
+      diagnostics_.rejected_proposed_volume_blocks=
+          publication.diagnostics.resident_volume_blocks;
       if(publication.hierarchy_budget_exceeded&&
          schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
@@ -2557,6 +2565,16 @@ bool BlockedTerrainRuntime::update() {
     if(!admission.admitted()){
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      diagnostics_.rejected_proposed_cpu_bytes=predicted_cpu_bytes;
+      diagnostics_.rejected_proposed_triangles=
+          publication.diagnostics.render_triangles;
+      diagnostics_.rejected_proposed_work_units=
+          publication.diagnostics.work_units;
+      diagnostics_.rejected_proposed_upload_bytes=predicted_upload_bytes;
+      diagnostics_.rejected_cpu_budget=!admission.cpu;
+      diagnostics_.rejected_triangle_budget=!admission.triangles;
+      diagnostics_.rejected_work_budget=!admission.work;
+      diagnostics_.rejected_upload_budget=!admission.upload;
       surface_cache_={};
       if(schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
