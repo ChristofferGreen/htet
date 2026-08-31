@@ -1125,7 +1125,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
-  CHECK(profile.pixel_threshold==doctest::Approx(256.0));
+  CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
@@ -2717,7 +2717,8 @@ TEST_CASE("production world cold construction can begin without blocking present
 }
 
 TEST_CASE("blocked world supersession cancels stale work and converges to newest pose") {
-  const auto profile=tetra_viewer::production_world_profile();
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=256.0;
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
   tetra::Camera camera;
   camera.position={0.6,0.72,0.75};camera.forward={0.0,-0.2,-1.0};
@@ -2780,7 +2781,8 @@ TEST_CASE("blocked world supersession cancels stale work and converges to newest
 }
 
 TEST_CASE("blocked world publishes fronts during continuous interactive movement") {
-  const auto profile=tetra_viewer::production_world_profile();
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=256.0;
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
   const auto initial=runtime.diagnostics();
   tetra::Camera camera;
@@ -2861,7 +2863,8 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
 }
 
 TEST_CASE("blocked world schedules accumulated camera rotation without translation") {
-  const auto profile=tetra_viewer::production_world_profile();
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=256.0;
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
   const auto initial=runtime.diagnostics();
   tetra::Camera camera;

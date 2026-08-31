@@ -89,7 +89,7 @@ struct WorldProfile {
   double hierarchy_prediction_factor{1.0};
   std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{5.0};
-  double pixel_threshold{256.0};
+  double pixel_threshold{128.0};
   unsigned int maximum_depth{20U};
   WorldResourceBudgets budgets{};
   bool show_faces{true};
