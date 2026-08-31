@@ -2205,10 +2205,15 @@ TEST_CASE("first person mouse look uses the world application's expected axes") 
 TEST_CASE("captured world pointer is exclusively owned by camera look") {
   CHECK(tetra_viewer::world_ui_accepts_pointer(false));
   CHECK_FALSE(tetra_viewer::world_ui_accepts_pointer(true));
+  CHECK_FALSE(tetra_viewer::world_ui_owns_pointer(false,false));
+  CHECK(tetra_viewer::world_ui_owns_pointer(true,false));
+  CHECK(tetra_viewer::world_ui_owns_pointer(false,true));
   CHECK(tetra_viewer::world_pointer_capture_on_click(false,false,true,false));
   CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(true,false,true,false));
   CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,true,true,false));
   CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,false,false,false));
+  // The final case represents a combo popup: its parent controls window may
+  // not be hovered, but world_ui_owns_pointer still supplies true here.
   CHECK_FALSE(tetra_viewer::world_pointer_capture_on_click(false,false,true,true));
 }
 

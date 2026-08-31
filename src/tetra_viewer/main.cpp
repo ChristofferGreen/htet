@@ -3603,7 +3603,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             if(tetra_viewer::world_pointer_capture_on_click(
                    world_gpu_automation_requested,world_pointer_captured,
                    glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS,
-                   controls_hovered)){
+                   tetra_viewer::world_ui_owns_pointer(
+                       controls_hovered,input.WantCaptureMouse))){
                 world_pointer_captured=true;
                 glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_DISABLED);
                 glfwGetCursorPos(window,&world_cursor_x,&world_cursor_y);

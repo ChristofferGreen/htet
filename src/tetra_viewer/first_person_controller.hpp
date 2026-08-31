@@ -12,13 +12,21 @@ namespace tetra_viewer {
   return !pointer_captured;
 }
 
+// Popup windows can block their parent control window's hover state while
+// Dear ImGui still owns the active click. Both signals participate in the
+// viewport-capture decision.
+[[nodiscard]] constexpr bool world_ui_owns_pointer(
+    bool controls_hovered,bool imgui_wants_pointer) noexcept {
+  return controls_hovered||imgui_wants_pointer;
+}
+
 // Scripted captures must remain immune to the physical pointer even when the
 // launch happens while a mouse button is held outside the controls panel.
 [[nodiscard]] constexpr bool world_pointer_capture_on_click(
     bool automation_requested,bool pointer_captured,bool left_button_pressed,
-    bool controls_hovered) noexcept {
+    bool ui_owns_pointer) noexcept {
   return !automation_requested&&!pointer_captured&&left_button_pressed&&
-      !controls_hovered;
+      !ui_owns_pointer;
 }
 
 struct FirstPersonInput {
