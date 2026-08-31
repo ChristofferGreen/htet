@@ -122,6 +122,36 @@ static void check_vk_result(VkResult err)
         abort();
 }
 
+static int window_display_refresh_rate(GLFWwindow* window)
+{
+    int window_x{},window_y{},window_width{},window_height{};
+    glfwGetWindowPos(window,&window_x,&window_y);
+    glfwGetWindowSize(window,&window_width,&window_height);
+    int monitor_count{};
+    GLFWmonitor** monitors=glfwGetMonitors(&monitor_count);
+    GLFWmonitor* selected=glfwGetPrimaryMonitor();
+    long long selected_overlap=-1;
+    for(int index=0;index<monitor_count;++index){
+        int monitor_x{},monitor_y{},monitor_width{},monitor_height{};
+        glfwGetMonitorWorkarea(monitors[index],&monitor_x,&monitor_y,
+                               &monitor_width,&monitor_height);
+        const int overlap_width=std::max(0,
+            std::min(window_x+window_width,monitor_x+monitor_width)-
+            std::max(window_x,monitor_x));
+        const int overlap_height=std::max(0,
+            std::min(window_y+window_height,monitor_y+monitor_height)-
+            std::max(window_y,monitor_y));
+        const long long overlap=static_cast<long long>(overlap_width)*
+            overlap_height;
+        if(overlap>selected_overlap){
+            selected_overlap=overlap;
+            selected=monitors[index];
+        }
+    }
+    const GLFWvidmode* mode=selected?glfwGetVideoMode(selected):nullptr;
+    return mode&&mode->refreshRate>0?mode->refreshRate:60;
+}
+
 #ifdef APP_USE_VULKAN_DEBUG_REPORT
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_report(VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType, uint64_t object, size_t location, int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData)
 {
@@ -1109,7 +1139,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     float world_auto_render_scale=1.0F;
     float world_auto_minimum_scale=2.0F/3.0F;
     float world_auto_maximum_scale=1.0F;
-    int world_auto_target_fps=60;
+    int world_display_refresh_hz=window_display_refresh_rate(window);
+    bool world_auto_target_display=true;
+    int world_auto_target_fps=world_display_refresh_hz;
     float world_upscale_sharpening=0.2F;
     std::vector<double> world_auto_gpu_samples;
     std::size_t world_render_scale_stable_frames{};
@@ -1302,11 +1334,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_auto_maximum_scale=static_cast<float>(parsed);
             }else if(value.starts_with(render_auto_target_prefix)){
                 const auto target=value.substr(render_auto_target_prefix.size());
-                if(target=="60")world_auto_target_fps=60;
-                else if(target=="90")world_auto_target_fps=90;
-                else if(target=="120")world_auto_target_fps=120;
+                if(target=="display"){
+                    world_auto_target_display=true;
+                    world_auto_target_fps=world_display_refresh_hz;
+                }else if(target=="60"){
+                    world_auto_target_display=false;
+                    world_auto_target_fps=60;
+                }else if(target=="90"){
+                    world_auto_target_display=false;
+                    world_auto_target_fps=90;
+                }else if(target=="120"){
+                    world_auto_target_display=false;
+                    world_auto_target_fps=120;
+                }
                 else{
-                    fprintf(stderr,"auto target FPS must be 60, 90, or 120\n");
+                    fprintf(stderr,
+                        "auto target FPS must be display, 60, 90, or 120\n");
                     return 2;
                 }
             }else if(value.starts_with(render_sharpening_prefix)){
@@ -1693,6 +1736,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
         glfwPollEvents();
+        if(world_mode){
+            const int detected_refresh=window_display_refresh_rate(window);
+            if(world_auto_target_display&&
+               detected_refresh!=world_auto_target_fps){
+                world_auto_target_fps=detected_refresh;
+                world_auto_gpu_samples.clear();
+            }
+            world_display_refresh_hz=detected_refresh;
+        }
 
         // Publication is the only point where the render-thread mesh changes.
         // The worker owns and mutates a private snapshot while this thread
@@ -3019,14 +3071,21 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         world_render_scale_stable_frames=0U;
                 }else if(world_render_resolution_mode==
                              RenderResolutionMode::automatic){
-                    constexpr std::array<const char*,3> target_names{
-                        "60 FPS","90 FPS","120 FPS"};
+                    const std::string display_target_name="Display ("+
+                        std::to_string(world_display_refresh_hz)+" Hz)";
+                    const std::array<const char*,4> target_names{
+                        display_target_name.c_str(),"60 FPS","90 FPS",
+                        "120 FPS"};
                     constexpr std::array<int,3> target_values{60,90,120};
-                    int selected=world_auto_target_fps==60?0:
-                        (world_auto_target_fps==90?1:2);
+                    int selected=world_auto_target_display?0:
+                        (world_auto_target_fps==60?1:
+                         (world_auto_target_fps==90?2:3));
                     ImGui::SetNextItemWidth(120.0F);
-                    if(ImGui::Combo("Target",&selected,target_names.data(),3)){
-                        world_auto_target_fps=target_values[selected];
+                    if(ImGui::Combo("Target",&selected,target_names.data(),4)){
+                        world_auto_target_display=selected==0;
+                        world_auto_target_fps=world_auto_target_display?
+                            world_display_refresh_hz:
+                            target_values[static_cast<std::size_t>(selected-1)];
                         world_auto_gpu_samples.clear();
                     }
                     if(scale_combo("Minimum",world_auto_minimum_scale)){
@@ -4588,6 +4647,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(render_extent.width==allocated_extent.width?
                                0.0F:world_upscale_sharpening)
                         <<",\"auto_target_fps\":"<<world_auto_target_fps
+                        <<",\"auto_target_mode\":\""
+                        <<(world_auto_target_display?"display":"fixed")
+                        <<"\",\"display_refresh_hz\":"
+                        <<world_display_refresh_hz
                         <<",\"auto_minimum_scale\":"
                         <<world_auto_minimum_scale
                         <<",\"auto_maximum_scale\":"
@@ -5014,6 +5077,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                   0.0F:world_upscale_sharpening)
                              <<",\"auto_target_fps\":"
                              <<world_auto_target_fps
+                             <<",\"auto_target_mode\":\""
+                             <<(world_auto_target_display?"display":"fixed")
+                             <<"\",\"display_refresh_hz\":"
+                             <<world_display_refresh_hz
                              <<",\"auto_minimum_scale\":"
                              <<world_auto_minimum_scale
                              <<",\"auto_maximum_scale\":"
