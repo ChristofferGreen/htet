@@ -3436,6 +3436,78 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   CHECK(returned.sector_hits>=1U);
 }
 
+TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budget") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.background_red_depth=3U;
+  profile.near_red_depth=10U;
+  profile.pixel_threshold=512.0;
+  profile.field_error_pixel_threshold=1.0e12;
+  profile.limb_error_pixel_threshold=1.0e12;
+  const tetra_viewer::BlockedTerrainRuntime probe(profile);
+  const auto single_sector_triangles=probe.diagnostics().render_triangles;
+  REQUIRE(single_sector_triangles>0U);
+  profile.budgets.maximum_triangles=single_sector_triangles*5U/4U;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  REQUIRE(initial.converged);
+  REQUIRE_FALSE(initial.busy);
+  REQUIRE_FALSE(initial.budget_exceeded);
+  REQUIRE(initial.resident_sector_count==1U);
+  REQUIRE(initial.gpu_ready_sector_count==1U);
+  REQUIRE(initial.render_triangles==single_sector_triangles);
+  const auto first_demand_hash=initial.current_sector_demand_hash;
+  REQUIRE(first_demand_hash!=0U);
+  const auto settle=[&] {
+    const auto deadline=std::chrono::steady_clock::now()+
+        std::chrono::seconds(30);
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.forward={0.0,-0.2,1.0};
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.0;
+  runtime.set_camera(camera,false);
+  static_cast<void>(runtime.update());
+  REQUIRE(settle());
+  const auto second=runtime.diagnostics();
+  CAPTURE(second.render_triangles);
+  CAPTURE(profile.budgets.maximum_triangles);
+  REQUIRE_FALSE(second.budget_exceeded);
+  REQUIRE(second.resident_sector_count==1U);
+  REQUIRE(second.gpu_ready_sector_count==1U);
+  REQUIRE(second.current_sector_demand_hash!=first_demand_hash);
+  REQUIRE(second.sector_budget_rejections>=1U);
+  REQUIRE(second.sector_evictions>=1U);
+  REQUIRE(second.positive_volumes);
+  REQUIRE(second.conforming_faces);
+
+  const auto first_rejections=second.sector_budget_rejections;
+  const auto first_evictions=second.sector_evictions;
+  camera.forward=initial.published_camera_forward;
+  runtime.set_camera(camera,false);
+  static_cast<void>(runtime.update());
+  REQUIRE(settle());
+  const auto returned=runtime.diagnostics();
+  CAPTURE(returned.render_triangles);
+  CAPTURE(profile.budgets.maximum_triangles);
+  CHECK_FALSE(returned.budget_exceeded);
+  CHECK(returned.resident_sector_count==1U);
+  CHECK(returned.gpu_ready_sector_count==1U);
+  CHECK(returned.current_sector_demand_hash==first_demand_hash);
+  CHECK(returned.sector_budget_rejections>first_rejections);
+  CHECK(returned.sector_evictions>first_evictions);
+  CHECK(returned.positive_volumes);
+  CHECK(returned.conforming_faces);
+}
+
 TEST_CASE("blocked world retains four quarter-turn sectors after small translation") {
   auto profile=tetra_viewer::production_world_profile();
   profile.pixel_threshold=1024.0;
