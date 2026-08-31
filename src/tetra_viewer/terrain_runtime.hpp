@@ -138,6 +138,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t last_splits{};
   std::size_t last_merges{};
   double target_projected_edge_pixels{};
+  double merge_projected_edge_pixels{};
   std::size_t visible_projected_edge_samples{};
   double visible_minimum_projected_edge_pixels{};
   double visible_median_projected_edge_pixels{};
@@ -145,6 +146,8 @@ struct TerrainRuntimeDiagnostics {
   double visible_maximum_projected_edge_pixels{};
   double field_error_pixel_threshold{};
   double limb_error_pixel_threshold{};
+  double merge_field_error_pixel_threshold{};
+  double merge_limb_error_pixel_threshold{};
   double visible_p95_projected_field_error_pixels{};
   double visible_maximum_projected_field_error_pixels{};
   double visible_p95_projected_limb_error_pixels{};
@@ -152,6 +155,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t edge_density_splits{};
   std::size_t field_error_splits{};
   std::size_t limb_error_splits{};
+  std::size_t hysteresis_retained_splits{};
   std::size_t maximum_depth_error_exceptions{};
   std::size_t resident_sector_count{};
   std::size_t hierarchy_resident_sector_count{};
@@ -164,6 +168,7 @@ struct TerrainRuntimeDiagnostics {
   std::uint64_t sector_additions{};
   std::uint64_t sector_evictions{};
   std::uint64_t sector_budget_rejections{};
+  std::uint64_t hysteresis_budget_fallbacks{};
   double last_update_milliseconds{};
   double cut_selection_milliseconds{};
   double cut_closure_milliseconds{};
@@ -230,6 +235,7 @@ struct WorldLodCutMetrics {
   std::size_t projected_splits{};
   std::size_t field_error_splits{};
   std::size_t limb_error_splits{};
+  std::size_t hysteresis_retained_splits{};
   std::size_t maximum_depth_error_exceptions{};
   std::size_t background_splits{};
   std::size_t horizon_owners{};
@@ -319,6 +325,7 @@ struct TerrainDetailWorkingSet {
   std::uint64_t sector_additions{};
   std::uint64_t sector_evictions{};
   std::uint64_t budget_rejections{};
+  std::uint64_t hysteresis_budget_fallbacks{};
 };
 
 // Selects an exact raw red cut for a subset of the twelve independent BCC
@@ -329,7 +336,8 @@ struct TerrainDetailWorkingSet {
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint16_t root_mask,
     std::stop_token cancellation={},
-    tetra::GeometryExecutor* executor=nullptr);
+    tetra::GeometryExecutor* executor=nullptr,
+    std::span<const tetra::WorldTetAddress> retained_requested_cut={});
 
 // Advances one complete raw red cut toward another without applying
 // conformity closure. Selected split/merge families are disjoint and ordered
@@ -647,7 +655,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       std::unique_ptr<tetra::WorldCutDirectory> directory={});
   void submit();
   [[nodiscard]] bool schedule_sector_budget_retry(
-      TerrainDetailWorkingSet candidate);
+      TerrainDetailWorkingSet candidate,bool allow_hysteresis_fallback);
   void submit_atmosphere_shadow();
   [[nodiscard]] static AtmosphereShadowPublication
   build_atmosphere_shadow_publication(

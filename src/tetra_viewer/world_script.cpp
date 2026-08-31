@@ -374,6 +374,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"work_units\":"<<diagnostics.work_units
           <<",\"target_projected_edge_pixels\":"
           <<diagnostics.target_projected_edge_pixels
+          <<",\"merge_projected_edge_pixels\":"
+          <<diagnostics.merge_projected_edge_pixels
           <<",\"visible_projected_edge_samples\":"
           <<diagnostics.visible_projected_edge_samples
           <<",\"visible_minimum_projected_edge_pixels\":"
@@ -388,6 +390,10 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.field_error_pixel_threshold
           <<",\"limb_error_pixel_threshold\":"
           <<diagnostics.limb_error_pixel_threshold
+          <<",\"merge_field_error_pixel_threshold\":"
+          <<diagnostics.merge_field_error_pixel_threshold
+          <<",\"merge_limb_error_pixel_threshold\":"
+          <<diagnostics.merge_limb_error_pixel_threshold
           <<",\"visible_p95_projected_field_error_pixels\":"
           <<diagnostics.visible_p95_projected_field_error_pixels
           <<",\"visible_maximum_projected_field_error_pixels\":"
@@ -399,6 +405,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"edge_density_splits\":"<<diagnostics.edge_density_splits
           <<",\"field_error_splits\":"<<diagnostics.field_error_splits
           <<",\"limb_error_splits\":"<<diagnostics.limb_error_splits
+          <<",\"hysteresis_retained_splits\":"
+          <<diagnostics.hysteresis_retained_splits
           <<",\"maximum_depth_error_exceptions\":"
           <<diagnostics.maximum_depth_error_exceptions
           <<",\"resident_sector_count\":"
@@ -420,6 +428,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"sector_evictions\":"<<diagnostics.sector_evictions
           <<",\"sector_budget_rejections\":"
           <<diagnostics.sector_budget_rejections
+          <<",\"hysteresis_budget_fallbacks\":"
+          <<diagnostics.hysteresis_budget_fallbacks
           <<",\"cpu_high_water_bytes\":"
           <<diagnostics.cpu_high_water_bytes
           <<",\"triangle_high_water\":"

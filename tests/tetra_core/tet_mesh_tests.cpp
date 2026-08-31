@@ -1127,6 +1127,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.hierarchy_prediction_factor==doctest::Approx(1.0));
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
+  CHECK(profile.lod_merge_threshold_ratio==doctest::Approx(0.5));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
   CHECK(profile.field_error_pixel_threshold==doctest::Approx(16384.0));
   CHECK(profile.limb_error_pixel_threshold==doctest::Approx(2.0));
@@ -1794,6 +1795,34 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
         selection.metrics.visible_maximum_projected_field_error_pixels);
   CHECK(selection.metrics.visible_p95_projected_limb_error_pixels<=
         selection.metrics.visible_maximum_projected_limb_error_pixels);
+}
+
+TEST_CASE("planetary world cut hysteresis evaluates parents before merging") {
+  auto fine_profile=tetra_viewer::production_world_profile();
+  fine_profile.pixel_threshold=256.0;
+  fine_profile.field_error_pixel_threshold=1.0e12;
+  fine_profile.limb_error_pixel_threshold=1.0e12;
+  tetra::Sphere field;field.kind=fine_profile.shape;
+  field.terrain=fine_profile.terrain;
+  field.secondary=fine_profile.octave_detail_amplitude;
+  field.frequency=fine_profile.octave_detail_frequency;
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
+  constexpr std::uint16_t all_roots=
+      (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+  const auto fine=tetra_viewer::select_world_requested_root_cuts(
+      fine_profile,field,camera,all_roots);
+
+  auto coarse_profile=fine_profile;
+  coarse_profile.pixel_threshold=512.0;
+  const auto cold_coarse=tetra_viewer::select_world_requested_root_cuts(
+      coarse_profile,field,camera,all_roots);
+  const auto hysteretic=tetra_viewer::select_world_requested_root_cuts(
+      coarse_profile,field,camera,all_roots,{},nullptr,fine.owners);
+  REQUIRE(cold_coarse.owners.size()<fine.owners.size());
+  CHECK(hysteretic.owners==fine.owners);
+  CHECK(hysteretic.metrics.hysteresis_retained_splits>0U);
 }
 
 TEST_CASE("production radial world resolves the surface around the player") {

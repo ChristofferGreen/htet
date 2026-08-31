@@ -5275,10 +5275,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<(runtime_status.converged?"true":"false")
                              <<",\"target_edge_physical_pixels\":"
                              <<runtime_status.target_projected_edge_pixels
+                             <<",\"merge_edge_physical_pixels\":"
+                             <<runtime_status.merge_projected_edge_pixels
                              <<",\"field_error_physical_pixels\":"
                              <<runtime_status.field_error_pixel_threshold
                              <<",\"limb_error_physical_pixels\":"
                              <<runtime_status.limb_error_pixel_threshold
+                             <<",\"merge_field_error_physical_pixels\":"
+                             <<runtime_status.merge_field_error_pixel_threshold
+                             <<",\"merge_limb_error_physical_pixels\":"
+                             <<runtime_status.merge_limb_error_pixel_threshold
                              <<",\"visible_edge_min\":"
                              <<runtime_status.visible_minimum_projected_edge_pixels
                              <<",\"visible_edge_median\":"
@@ -5301,6 +5307,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.field_error_splits
                              <<",\"limb_splits\":"
                              <<runtime_status.limb_error_splits
+                             <<",\"hysteresis_retained_splits\":"
+                             <<runtime_status.hysteresis_retained_splits
                              <<",\"maximum_depth_exceptions\":"
                              <<runtime_status.maximum_depth_error_exceptions
                              <<",\"resident_sectors\":"
@@ -5326,6 +5334,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.sector_evictions
                              <<",\"sector_budget_rejections\":"
                              <<runtime_status.sector_budget_rejections
+                             <<",\"hysteresis_budget_fallbacks\":"
+                             <<runtime_status.hysteresis_budget_fallbacks
                              <<",\"published_cut_hash\":"
                              <<runtime_status.hierarchy_hash
                              <<",\"published_surface_hash\":"

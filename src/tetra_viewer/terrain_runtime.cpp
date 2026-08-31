@@ -823,7 +823,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     tetra::WorldConformingClosureCache* closure_cache,
     std::stop_token cancellation,std::size_t* completed_work_units,
     bool compute_quality_diagnostics,tetra::GeometryExecutor* executor,
-    std::uint16_t root_mask,bool apply_conforming_closure) {
+    std::uint16_t root_mask,bool apply_conforming_closure,
+    std::span<const tetra::WorldTetAddress> retained_requested_cut={}) {
   if(completed_work_units)*completed_work_units=0U;
   if(profile.background_red_depth>profile.near_red_depth||
      profile.near_red_depth>tetra::maximum_world_red_depth)
@@ -834,6 +835,9 @@ static WorldLodCutSelection select_world_lod_cut_impl(
      !std::isfinite(profile.field_error_pixel_threshold)||
      !(profile.limb_error_pixel_threshold>0.0)||
      !std::isfinite(profile.limb_error_pixel_threshold)||
+     !(profile.lod_merge_threshold_ratio>0.0)||
+     profile.lod_merge_threshold_ratio>1.0||
+     !std::isfinite(profile.lod_merge_threshold_ratio)||
      profile.hierarchy_guard_frustum_scale<1.0||
      !std::isfinite(profile.hierarchy_guard_frustum_scale)||
      !(profile.terrain_sector_overlap_radians>0.0)||
@@ -993,6 +997,16 @@ static WorldLodCutSelection select_world_lod_cut_impl(
   const auto evaluate=[&](tetra::WorldTetAddress owner){
     return evaluate_geometry(tetra::world_tetrahedron_geometry(owner));
   };
+  const std::unordered_set<tetra::WorldTetAddress,FrontierAddressHash>
+      retained_leaves(retained_requested_cut.begin(),retained_requested_cut.end());
+  const auto retained_owner_was_split=[&](tetra::WorldTetAddress owner){
+    if(retained_leaves.empty())return false;
+    while(true){
+      if(retained_leaves.contains(owner))return false;
+      if(owner.red_depth()==0U)return true;
+      owner=owner.parent();
+    }
+  };
 
   WorldLodCutSelection result;
   result.metrics.target_projected_edge_pixels=profile.pixel_threshold;
@@ -1030,18 +1044,21 @@ static WorldLodCutSelection select_world_lod_cut_impl(
          cancellation.stop_requested())return;
       ++local.metrics.visited_owners;
       const auto evaluation=evaluate_geometry(geometry);
+      const double threshold_scale=
+          field.terrain.planet_radius>0.0&&retained_owner_was_split(owner)?
+              profile.lod_merge_threshold_ratio:1.0;
       const double projected_edge_metric=field.terrain.planet_radius>0.0?
           std::max(evaluation.projected_edges.diameter_pixels,
                    evaluation.sector_projected_edge_bound):
           evaluation.projected_diameter;
       if(depth>=profile.near_red_depth){
         if(evaluation.projected_edges.intersects_frustum&&
-           (projected_edge_metric>profile.pixel_threshold||
+           (projected_edge_metric>profile.pixel_threshold*threshold_scale||
             (field.terrain.planet_radius>0.0&&
              evaluation.projected_field_error>
-                 profile.field_error_pixel_threshold)||
+                 profile.field_error_pixel_threshold*threshold_scale)||
             evaluation.projected_limb_error>
-                profile.limb_error_pixel_threshold))
+                profile.limb_error_pixel_threshold*threshold_scale))
           ++local.metrics.maximum_depth_error_exceptions;
         record_visible_edge(evaluation);append(owner);return;
       }
@@ -1064,12 +1081,13 @@ static WorldLodCutSelection select_world_lod_cut_impl(
                camera.position,planet_centre,
                field.terrain.planet_radius-8.0,evaluation.centre,
                evaluation.radius));
-      const bool edge_error=projected_edge_metric>profile.pixel_threshold;
+      const bool edge_error=
+          projected_edge_metric>profile.pixel_threshold*threshold_scale;
       const bool field_error=field.terrain.planet_radius>0.0&&
           evaluation.projected_field_error>
-              profile.field_error_pixel_threshold;
+              profile.field_error_pixel_threshold*threshold_scale;
       const bool limb_error=evaluation.projected_limb_error>
-          profile.limb_error_pixel_threshold;
+          profile.limb_error_pixel_threshold*threshold_scale;
       const bool projected=in_horizon&&useful_planetary_projection&&
           (edge_error||field_error||limb_error);
       if(!background&&!projected){
@@ -1084,6 +1102,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       local.metrics.projected_splits+=!background&&edge_error?1U:0U;
       local.metrics.field_error_splits+=!background&&field_error?1U:0U;
       local.metrics.limb_error_splits+=!background&&limb_error?1U:0U;
+      local.metrics.hysteresis_retained_splits+=
+          !background&&threshold_scale<1.0?1U:0U;
       const auto children=tetra::world_tetrahedron_red_children(geometry);
       for(std::uint8_t child=0;child<8U;++child)
         self(self,owner.child(child),children[child]);
@@ -1120,6 +1140,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     result.metrics.projected_splits+=root.metrics.projected_splits;
     result.metrics.field_error_splits+=root.metrics.field_error_splits;
     result.metrics.limb_error_splits+=root.metrics.limb_error_splits;
+    result.metrics.hysteresis_retained_splits+=
+        root.metrics.hysteresis_retained_splits;
     result.metrics.maximum_depth_error_exceptions+=
         root.metrics.maximum_depth_error_exceptions;
     result.metrics.maximum_retained_projected_diameter=std::max(
@@ -1258,10 +1280,11 @@ WorldLodCutSelection select_world_lod_cut(
 WorldLodCutSelection select_world_requested_root_cuts(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint16_t root_mask,
-    std::stop_token cancellation,tetra::GeometryExecutor* executor) {
+    std::stop_token cancellation,tetra::GeometryExecutor* executor,
+    std::span<const tetra::WorldTetAddress> retained_requested_cut) {
   return select_world_lod_cut_impl(
       profile,field,camera,nullptr,cancellation,nullptr,false,executor,
-      root_mask,false);
+      root_mask,false,retained_requested_cut);
 }
 
 std::vector<tetra::WorldTetAddress>
@@ -1722,8 +1745,19 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   const auto started=std::chrono::steady_clock::now();
   constexpr std::uint16_t all_roots=
       (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+  std::span<const tetra::WorldTetAddress> retained_requested_cut;
+  if(field.terrain.planet_radius>0.0&&
+     !detail_working_set.sectors.empty()&&
+     !terrain_sector_position_matches(detail_working_set,field,camera)){
+    const auto current=std::ranges::find(
+        detail_working_set.sectors,detail_working_set.current_sector_id,
+        &TerrainResidentSector::id);
+    if(current!=detail_working_set.sectors.end())
+      retained_requested_cut=current->requested_cut;
+  }
   auto selection=select_world_requested_root_cuts(
-      profile,field,camera,all_roots,cancellation,executor);
+      profile,field,camera,all_roots,cancellation,executor,
+      retained_requested_cut);
   completed_work_units=selection.metrics.visited_owners;
   update_terrain_detail_working_set(
       detail_working_set,profile,field,camera,std::move(selection.owners),
@@ -1931,6 +1965,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.work_units=completed_work_units;
   diagnostics.target_projected_edge_pixels=
       selection.metrics.target_projected_edge_pixels;
+  diagnostics.merge_projected_edge_pixels=
+      profile.pixel_threshold*profile.lod_merge_threshold_ratio;
   diagnostics.visible_projected_edge_samples=
       selection.metrics.visible_projected_edge_samples;
   diagnostics.visible_minimum_projected_edge_pixels=
@@ -1943,6 +1979,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       selection.metrics.visible_maximum_projected_edge_pixels;
   diagnostics.field_error_pixel_threshold=profile.field_error_pixel_threshold;
   diagnostics.limb_error_pixel_threshold=profile.limb_error_pixel_threshold;
+  diagnostics.merge_field_error_pixel_threshold=
+      profile.field_error_pixel_threshold*profile.lod_merge_threshold_ratio;
+  diagnostics.merge_limb_error_pixel_threshold=
+      profile.limb_error_pixel_threshold*profile.lod_merge_threshold_ratio;
   diagnostics.visible_p95_projected_field_error_pixels=
       selection.metrics.visible_p95_projected_field_error_pixels;
   diagnostics.visible_maximum_projected_field_error_pixels=
@@ -1954,6 +1994,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.edge_density_splits=selection.metrics.projected_splits;
   diagnostics.field_error_splits=selection.metrics.field_error_splits;
   diagnostics.limb_error_splits=selection.metrics.limb_error_splits;
+  diagnostics.hysteresis_retained_splits=
+      selection.metrics.hysteresis_retained_splits;
   diagnostics.maximum_depth_error_exceptions=
       selection.metrics.maximum_depth_error_exceptions;
   diagnostics.resident_sector_count=detail_working_set.sectors.size();
@@ -1966,6 +2008,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.sector_additions=detail_working_set.sector_additions;
   diagnostics.sector_evictions=detail_working_set.sector_evictions;
   diagnostics.sector_budget_rejections=detail_working_set.budget_rejections;
+  diagnostics.hysteresis_budget_fallbacks=
+      detail_working_set.hysteresis_budget_fallbacks;
   for(const auto& sector:detail_working_set.sectors){
     ++diagnostics.hierarchy_resident_sector_count;
     if(sector.readiness>=TerrainSectorReadiness::cpu_surface)
@@ -2274,10 +2318,20 @@ void BlockedTerrainRuntime::finalize_render_front_metrics(
 }
 
 bool BlockedTerrainRuntime::schedule_sector_budget_retry(
-    TerrainDetailWorkingSet candidate) {
-  if(!evict_terrain_detail_sector_for_budget(candidate))return false;
+    TerrainDetailWorkingSet candidate,bool allow_hysteresis_fallback) {
+  if(!evict_terrain_detail_sector_for_budget(candidate)){
+    if(!allow_hysteresis_fallback||candidate.sectors.empty())return false;
+    candidate.sector_evictions+=candidate.sectors.size();
+    ++candidate.budget_rejections;
+    ++candidate.hysteresis_budget_fallbacks;
+    candidate.sectors.clear();
+    candidate.combined_requested_cut.clear();
+    candidate.current_sector_id=0U;
+  }
   diagnostics_.sector_evictions=candidate.sector_evictions;
   diagnostics_.sector_budget_rejections=candidate.budget_rejections;
+  diagnostics_.hysteresis_budget_fallbacks=
+      candidate.hysteresis_budget_fallbacks;
   pending_detail_working_set_=std::move(candidate);
   demand_pending_=true;
   return true;
@@ -2453,7 +2507,8 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
       if(publication.hierarchy_budget_exceeded&&
          schedule_sector_budget_retry(
-             std::move(publication.detail_working_set))){
+             std::move(publication.detail_working_set),
+             publication.diagnostics.hysteresis_retained_splits>0U)){
         surface_cache_={};
         diagnostics_.budget_exceeded=false;
         active_superseded_=false;
@@ -2504,7 +2559,9 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
       surface_cache_={};
       if(schedule_sector_budget_retry(
-             std::move(publication.detail_working_set))){
+             std::move(publication.detail_working_set),
+             publication.diagnostics.hysteresis_retained_splits>0U&&
+                 (!admission.cpu||!admission.triangles||!admission.work))){
         diagnostics_.budget_exceeded=false;
         active_superseded_=false;
         submit();

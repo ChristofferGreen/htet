@@ -91,6 +91,9 @@ struct WorldProfile {
   std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{5.0};
   double pixel_threshold{128.0};
+  // Previously refined owners merge only below this fraction of each split
+  // threshold. One half corresponds to one ideal dyadic refinement level.
+  double lod_merge_threshold_ratio{0.5};
   // Certified scalar-interpolation and spherical-sagitta error bounds. The
   // field bound is deliberately loose until retained per-cell summaries can
   // replace the global Lipschitz certificate.
