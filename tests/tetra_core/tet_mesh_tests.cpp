@@ -3025,6 +3025,13 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   CHECK(rejected.conforming_volume_hash==initial.conforming_volume_hash);
   CHECK(rejected.render_hash==initial.render_hash);
   CHECK(rejected.discarded_work_units>0U);
+  CHECK(rejected.resource_transaction.proposed.upload_bytes>1U);
+  CHECK(rejected.resource_transaction.reserved==
+        tetra_viewer::WorldResourceUsage{});
+  CHECK(rejected.resource_transaction.published==
+        initial.resource_transaction.published);
+  CHECK(rejected.resource_transaction.retired==
+        tetra_viewer::WorldResourceUsage{});
   const auto& retained=runtime.scene().triangle_vertices;
   REQUIRE(retained.size()==initial_vertices.size());
   CHECK(std::memcmp(retained.data(),initial_vertices.data(),
@@ -3046,6 +3053,12 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   CHECK(recovered.budget_rejected_builds==1U);
   CHECK(recovered.scene_generation>initial.scene_generation);
   CHECK(recovered.hierarchy_hash!=initial.hierarchy_hash);
+  CHECK(recovered.resource_transaction.reserved==
+        recovered.resource_transaction.proposed);
+  CHECK(recovered.resource_transaction.published.cpu_bytes==
+        recovered.resident_bytes);
+  CHECK(recovered.resource_transaction.published.triangles==
+        recovered.resident_render_triangles);
 
   const auto recovered_vertices=runtime.scene().triangle_vertices;
   runtime.set_volume_pins({tetra_viewer::WorldVolumePin{

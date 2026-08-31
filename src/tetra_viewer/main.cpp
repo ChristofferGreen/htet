@@ -5561,6 +5561,40 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.work_high_water
                              <<",\"upload_high_water_bytes\":"
                              <<runtime_status.upload_high_water_bytes
+                             <<",\"resource_transaction\":{\"proposed\":{"
+                             <<"\"cpu_bytes\":"
+                             <<runtime_status.resource_transaction.proposed.cpu_bytes
+                             <<",\"triangles\":"
+                             <<runtime_status.resource_transaction.proposed.triangles
+                             <<",\"work_units\":"
+                             <<runtime_status.resource_transaction.proposed.work_units
+                             <<",\"upload_bytes\":"
+                             <<runtime_status.resource_transaction.proposed.upload_bytes
+                             <<"},\"reserved\":{\"cpu_bytes\":"
+                             <<runtime_status.resource_transaction.reserved.cpu_bytes
+                             <<",\"triangles\":"
+                             <<runtime_status.resource_transaction.reserved.triangles
+                             <<",\"work_units\":"
+                             <<runtime_status.resource_transaction.reserved.work_units
+                             <<",\"upload_bytes\":"
+                             <<runtime_status.resource_transaction.reserved.upload_bytes
+                             <<"},\"published\":{\"cpu_bytes\":"
+                             <<runtime_status.resource_transaction.published.cpu_bytes
+                             <<",\"triangles\":"
+                             <<runtime_status.resource_transaction.published.triangles
+                             <<",\"work_units\":"
+                             <<runtime_status.resource_transaction.published.work_units
+                             <<",\"upload_bytes\":"
+                             <<runtime_status.resource_transaction.published.upload_bytes
+                             <<"},\"retired\":{\"cpu_bytes\":"
+                             <<runtime_status.resource_transaction.retired.cpu_bytes
+                             <<",\"triangles\":"
+                             <<runtime_status.resource_transaction.retired.triangles
+                             <<",\"work_units\":"
+                             <<runtime_status.resource_transaction.retired.work_units
+                             <<",\"upload_bytes\":"
+                             <<runtime_status.resource_transaction.retired.upload_bytes
+                             <<"}}"
                              <<",\"maximum_cpu_bytes\":"
                              <<capture_profile.budgets.maximum_cpu_bytes
                              <<",\"maximum_triangles\":"

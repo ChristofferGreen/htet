@@ -14,6 +14,13 @@
 
 namespace tetra_viewer {
 
+struct TerrainResourceTransactionDiagnostics {
+  WorldResourceUsage proposed{};
+  WorldResourceUsage reserved{};
+  WorldResourceUsage published{};
+  WorldResourceUsage retired{};
+};
+
 struct TerrainRuntimeDiagnostics {
   std::uint64_t mesh_revision{};
   std::uint64_t world_revision{};
@@ -128,6 +135,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t triangle_high_water{};
   std::size_t work_high_water{};
   std::size_t upload_high_water_bytes{};
+  TerrainResourceTransactionDiagnostics resource_transaction{};
   std::size_t rejected_proposed_cpu_bytes{};
   std::size_t rejected_proposed_triangles{};
   std::size_t rejected_proposed_work_units{};

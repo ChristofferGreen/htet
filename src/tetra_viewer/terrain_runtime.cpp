@@ -1835,6 +1835,15 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   diagnostics_.triangle_high_water=diagnostics_.resident_render_triangles;
   diagnostics_.work_high_water=diagnostics_.work_units;
   diagnostics_.upload_high_water_bytes=diagnostics_.uploaded_render_bytes;
+  diagnostics_.resource_transaction.proposed={
+      initial_cpu_bytes,initial.diagnostics.resident_render_triangles,
+      initial.diagnostics.work_units,initial_render_bytes};
+  diagnostics_.resource_transaction.reserved=
+      diagnostics_.resource_transaction.proposed;
+  diagnostics_.resource_transaction.published={
+      diagnostics_.resident_bytes,diagnostics_.resident_render_triangles,
+      diagnostics_.work_units,checked_resource_multiply(
+          simulated_device_vertex_capacity_,sizeof(SceneVertex))};
 }
 
 BlockedTerrainRuntime::~BlockedTerrainRuntime(){
@@ -2902,9 +2911,12 @@ bool BlockedTerrainRuntime::update() {
     const auto predicted_upload_bytes=
         host_estimate.required_vertex_capacity>simulated_device_vertex_capacity_?
             total_render_bytes:host_estimate.staged_bytes;
-    const auto admission=evaluate_world_resource_budgets(profile_.budgets,{
+    const WorldResourceUsage proposed_resources{
         predicted_cpu_bytes,publication.diagnostics.resident_render_triangles,
-        publication.diagnostics.work_units,predicted_upload_bytes});
+        publication.diagnostics.work_units,predicted_upload_bytes};
+    publication.diagnostics.resource_transaction.proposed=proposed_resources;
+    const auto admission=evaluate_world_resource_budgets(
+        profile_.budgets,proposed_resources);
     diagnostics_.cpu_high_water_bytes=std::max(
         diagnostics_.cpu_high_water_bytes,predicted_cpu_bytes);
     diagnostics_.triangle_high_water=std::max(
@@ -2927,6 +2939,9 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.rejected_triangle_budget=!admission.triangles;
       diagnostics_.rejected_work_budget=!admission.work;
       diagnostics_.rejected_upload_budget=!admission.upload;
+      diagnostics_.resource_transaction.proposed=proposed_resources;
+      diagnostics_.resource_transaction.reserved={};
+      diagnostics_.resource_transaction.retired={};
       surface_cache_={};
       if(schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
@@ -2944,6 +2959,8 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.busy=false;
       return false;
     }
+    publication.diagnostics.resource_transaction.reserved=proposed_resources;
+    const auto previous_resources=diagnostics_.resource_transaction.published;
     const auto cumulative=diagnostics_;
     host_staging_.stage_world_render_blocks(
         publication.surface_cache.render_blocks);
@@ -2955,6 +2972,21 @@ bool BlockedTerrainRuntime::update() {
         std::chrono::duration<double,std::milli>(
             std::chrono::steady_clock::now()-adoption_started).count();
     finalize_render_front_metrics(publication.diagnostics);
+    publication.diagnostics.resource_transaction.published={
+        publication.diagnostics.resident_bytes,
+        publication.diagnostics.resident_render_triangles,
+        publication.diagnostics.work_units,checked_resource_multiply(
+            simulated_device_vertex_capacity_,sizeof(SceneVertex))};
+    const auto& published_resources=
+        publication.diagnostics.resource_transaction.published;
+    publication.diagnostics.resource_transaction.retired={
+        previous_resources.cpu_bytes>published_resources.cpu_bytes
+            ?previous_resources.cpu_bytes-published_resources.cpu_bytes:0U,
+        previous_resources.triangles>published_resources.triangles
+            ?previous_resources.triangles-published_resources.triangles:0U,
+        0U,
+        previous_resources.upload_bytes>published_resources.upload_bytes
+            ?previous_resources.upload_bytes-published_resources.upload_bytes:0U};
     scene_=std::move(publication.scene);
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);

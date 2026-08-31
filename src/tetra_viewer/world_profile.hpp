@@ -16,6 +16,7 @@ struct WorldResourceUsage {
   std::size_t triangles{};
   std::size_t work_units{};
   std::size_t upload_bytes{};
+  bool operator==(const WorldResourceUsage&) const = default;
 };
 
 struct WorldBudgetAdmission {

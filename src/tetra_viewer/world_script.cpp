@@ -440,6 +440,38 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"work_high_water\":"<<diagnostics.work_high_water
           <<",\"upload_high_water_bytes\":"
           <<diagnostics.upload_high_water_bytes
+          <<",\"resource_transaction\":{\"proposed\":{\"cpu_bytes\":"
+          <<diagnostics.resource_transaction.proposed.cpu_bytes
+          <<",\"triangles\":"
+          <<diagnostics.resource_transaction.proposed.triangles
+          <<",\"work_units\":"
+          <<diagnostics.resource_transaction.proposed.work_units
+          <<",\"upload_bytes\":"
+          <<diagnostics.resource_transaction.proposed.upload_bytes
+          <<"},\"reserved\":{\"cpu_bytes\":"
+          <<diagnostics.resource_transaction.reserved.cpu_bytes
+          <<",\"triangles\":"
+          <<diagnostics.resource_transaction.reserved.triangles
+          <<",\"work_units\":"
+          <<diagnostics.resource_transaction.reserved.work_units
+          <<",\"upload_bytes\":"
+          <<diagnostics.resource_transaction.reserved.upload_bytes
+          <<"},\"published\":{\"cpu_bytes\":"
+          <<diagnostics.resource_transaction.published.cpu_bytes
+          <<",\"triangles\":"
+          <<diagnostics.resource_transaction.published.triangles
+          <<",\"work_units\":"
+          <<diagnostics.resource_transaction.published.work_units
+          <<",\"upload_bytes\":"
+          <<diagnostics.resource_transaction.published.upload_bytes
+          <<"},\"retired\":{\"cpu_bytes\":"
+          <<diagnostics.resource_transaction.retired.cpu_bytes
+          <<",\"triangles\":"
+          <<diagnostics.resource_transaction.retired.triangles
+          <<",\"work_units\":"
+          <<diagnostics.resource_transaction.retired.work_units
+          <<",\"upload_bytes\":"
+          <<diagnostics.resource_transaction.retired.upload_bytes<<"}}"
           <<",\"submitted_builds\":"<<diagnostics.submitted_builds
           <<",\"superseded_builds\":"<<diagnostics.superseded_builds
           <<",\"canceled_builds\":"<<diagnostics.canceled_builds
