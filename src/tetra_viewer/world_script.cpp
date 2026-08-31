@@ -426,6 +426,7 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"sector_hits\":"<<diagnostics.sector_hits
           <<",\"sector_additions\":"<<diagnostics.sector_additions
           <<",\"sector_evictions\":"<<diagnostics.sector_evictions
+          <<",\"sector_demotions\":"<<diagnostics.sector_demotions
           <<",\"sector_budget_rejections\":"
           <<diagnostics.sector_budget_rejections
           <<",\"hysteresis_budget_fallbacks\":"

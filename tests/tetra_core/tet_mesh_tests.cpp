@@ -2182,6 +2182,41 @@ TEST_CASE("terrain sector budget eviction is deterministic and protects current 
   CHECK_FALSE(tetra_viewer::evict_terrain_detail_sector_for_budget(working_set));
 }
 
+TEST_CASE("terrain sector budget demotion retains logical demand and protects current view") {
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  tetra_viewer::TerrainDetailWorkingSet working_set;
+  working_set.current_sector_id=2U;
+  working_set.combined_requested_cut=coarse;
+  for(std::uint64_t id=1U;id<=3U;++id){
+    tetra_viewer::TerrainResidentSector sector;
+    sector.id=id;sector.requested_cut=coarse;
+    sector.last_used_generation=id==2U?1U:5U;
+    sector.readiness=tetra_viewer::TerrainSectorReadiness::gpu_ready;
+    working_set.sectors.push_back(std::move(sector));
+  }
+  REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
+  REQUIRE(working_set.sectors.size()==3U);
+  CHECK(working_set.sectors[0].id==1U);
+  CHECK(working_set.sectors[0].residency_target==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK(working_set.sectors[0].readiness==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK(working_set.sectors[1].id==2U);
+  CHECK(working_set.sectors[1].residency_target==
+        tetra_viewer::TerrainSectorReadiness::gpu_ready);
+  CHECK(working_set.current_sector_id==2U);
+  CHECK(working_set.sector_evictions==1U);
+  CHECK(working_set.sector_demotions==1U);
+  CHECK(working_set.budget_rejections==1U);
+  CHECK(working_set.combined_requested_cut==coarse);
+  REQUIRE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
+  CHECK(working_set.sectors[2].residency_target==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK_FALSE(tetra_viewer::demote_terrain_detail_sector_for_budget(working_set));
+}
+
 TEST_CASE("terrain sector coverage reports overlap and uncovered rotation") {
   tetra::Camera camera;
   camera.forward={0.0,0.0,-1.0};
@@ -3506,36 +3541,59 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   CAPTURE(second.render_triangles);
   CAPTURE(profile.budgets.maximum_triangles);
   REQUIRE_FALSE(second.budget_exceeded);
-  REQUIRE(second.resident_sector_count==1U);
+  REQUIRE(second.resident_sector_count==2U);
+  REQUIRE(second.hierarchy_resident_sector_count==2U);
+  REQUIRE(second.cpu_surface_resident_sector_count==1U);
   REQUIRE(second.gpu_ready_sector_count==1U);
   REQUIRE(second.current_sector_demand_hash!=first_demand_hash);
   REQUIRE(second.sector_budget_rejections>=1U);
   REQUIRE(second.sector_evictions>=1U);
+  const auto demoted=std::ranges::find_if(
+      runtime.resident_terrain_sectors(),[](const auto& sector){
+        return sector.residency_target==
+            tetra_viewer::TerrainSectorReadiness::hierarchy;
+      });
+  REQUIRE(demoted!=runtime.resident_terrain_sectors().end());
+  CHECK(demoted->demand_hash==first_demand_hash);
+  CHECK(demoted->readiness==tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK(demoted->cpu_surface_blocks==0U);
+  CHECK(demoted->gpu_draw_blocks==0U);
   REQUIRE(second.positive_volumes);
   REQUIRE(second.conforming_faces);
 
   const auto first_rejections=second.sector_budget_rejections;
   const auto first_evictions=second.sector_evictions;
+  const auto first_demotions=second.sector_demotions;
+  const auto fallback_generation=second.scene_generation;
+  const auto fallback_hash=second.render_hash;
   camera.forward=initial.published_camera_forward;
   runtime.set_camera(camera,false);
-  static_cast<void>(runtime.update());
+  CHECK_FALSE(runtime.update());
+  REQUIRE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().scene_generation==fallback_generation);
+  CHECK(runtime.diagnostics().render_hash==fallback_hash);
+  CHECK_FALSE(runtime.scene().triangle_vertices.empty());
   REQUIRE(settle());
   const auto returned=runtime.diagnostics();
   CAPTURE(returned.render_triangles);
   CAPTURE(profile.budgets.maximum_triangles);
   CHECK_FALSE(returned.budget_exceeded);
-  CHECK(returned.resident_sector_count==1U);
+  CHECK(returned.resident_sector_count==2U);
+  CHECK(returned.hierarchy_resident_sector_count==2U);
+  CHECK(returned.cpu_surface_resident_sector_count==1U);
   CHECK(returned.gpu_ready_sector_count==1U);
   CHECK(returned.current_sector_demand_hash==first_demand_hash);
   CHECK(returned.sector_budget_rejections>first_rejections);
   CHECK(returned.sector_evictions>first_evictions);
+  CHECK(returned.sector_demotions>first_demotions);
   CHECK(returned.positive_volumes);
   CHECK(returned.conforming_faces);
-  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
-  CHECK(runtime.resident_terrain_sectors().front().surface_block_hash==
-        first_surface_block_hash);
-  CHECK(runtime.resident_terrain_sectors().front().render_block_hash==
-        first_render_block_hash);
+  const auto rebuilt=std::ranges::find(
+      runtime.resident_terrain_sectors(),first_demand_hash,
+      &tetra_viewer::TerrainResidentSector::demand_hash);
+  REQUIRE(rebuilt!=runtime.resident_terrain_sectors().end());
+  CHECK(rebuilt->surface_block_hash==first_surface_block_hash);
+  CHECK(rebuilt->render_block_hash==first_render_block_hash);
 }
 
 TEST_CASE("blocked world retains four quarter-turn sectors after small translation") {

@@ -5519,6 +5519,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.sector_additions
                              <<",\"sector_evictions\":"
                              <<runtime_status.sector_evictions
+                             <<",\"sector_demotions\":"
+                             <<runtime_status.sector_demotions
                              <<",\"sector_budget_rejections\":"
                              <<runtime_status.sector_budget_rejections
                              <<",\"hysteresis_budget_fallbacks\":"
@@ -5588,6 +5590,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         const auto& sector=resident_sectors[index];
                         std::cout<<"{\"id\":"<<sector.id
                             <<",\"demand_hash\":"<<sector.demand_hash
+                            <<",\"residency_target\":\""
+                            <<readiness_name(sector.residency_target)<<'"'
                             <<",\"readiness\":\""
                             <<readiness_name(sector.readiness)<<'"'
                             <<",\"camera_anchor_radius_radians\":"

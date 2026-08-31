@@ -187,6 +187,7 @@ struct TerrainRuntimeDiagnostics {
   std::uint64_t sector_hits{};
   std::uint64_t sector_additions{};
   std::uint64_t sector_evictions{};
+  std::uint64_t sector_demotions{};
   std::uint64_t sector_budget_rejections{};
   std::uint64_t hysteresis_budget_fallbacks{};
   double last_update_milliseconds{};
@@ -324,6 +325,7 @@ struct TerrainResidentSector {
   double overlap_radius_radians{};
   double angular_footprint_radians{};
   std::vector<tetra::WorldTetAddress> requested_cut;
+  TerrainSectorReadiness residency_target{TerrainSectorReadiness::gpu_ready};
   TerrainSectorReadiness readiness{TerrainSectorReadiness::hierarchy};
   std::uint64_t last_visible_generation{};
   std::uint64_t last_used_generation{};
@@ -363,6 +365,7 @@ struct TerrainDetailWorkingSet {
   std::uint64_t sector_hits{};
   std::uint64_t sector_additions{};
   std::uint64_t sector_evictions{};
+  std::uint64_t sector_demotions{};
   std::uint64_t budget_rejections{};
   std::uint64_t hysteresis_budget_fallbacks{};
 };
@@ -420,6 +423,11 @@ void update_terrain_detail_working_set(
 // Removes exactly one least-recently-used non-current sector and recomputes
 // the logical union. The current visible sector is always protected.
 [[nodiscard]] bool evict_terrain_detail_sector_for_budget(
+    TerrainDetailWorkingSet& working_set);
+// Retains a sector's logical demand but removes its fine cut from the
+// GPU-ready common refinement. The published surface built from the remaining
+// GPU targets is the complete drawable fallback until revisit promotion.
+[[nodiscard]] bool demote_terrain_detail_sector_for_budget(
     TerrainDetailWorkingSet& working_set);
 void attribute_terrain_detail_sector_resources(
     TerrainDetailWorkingSet& working_set,
