@@ -242,8 +242,17 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*2.8;
   const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
-  if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
-    return sample_sky_irradiance(surface_normal);
+  if(atmosphere.reserved1.y>0.5&&!dynamic_sun){
+    const vec3 sky_irradiance=sample_sky_irradiance(surface_normal);
+    const bool reference_transport=atmosphere.reserved1.y>=9.5;
+    // Preserve the directional, sun-dependent sky lookup rather than adding
+    // a constant terrain floor. The compact low-sun lobe otherwise lands
+    // below the filmic toe after diffuse reflection, making the physically
+    // nonzero reference irradiance appear black on shadowed ground.
+    const float low_sun_gain=reference_transport?
+        mix(4.0,1.0,smoothstep(0.05,0.35,sun_cosine)):1.0;
+    return sky_irradiance*low_sun_gain;
+  }
 
   // The qualified baseline retains its fitted readability terms. The
   // faithful path above consumes the explicit cosine-convolved sky lookup.
