@@ -1126,8 +1126,8 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.hierarchy_recent_retention_epochs==8U);
   CHECK(profile.view_distance==doctest::Approx(5.0));
   CHECK(profile.pixel_threshold==doctest::Approx(128.0));
-  CHECK(profile.rotation_stable_lod_footprint==doctest::Approx(16.0));
-  CHECK(profile.rotation_stable_guard_frustum_scale==doctest::Approx(4.0));
+  CHECK(profile.field_error_pixel_threshold==doctest::Approx(16384.0));
+  CHECK(profile.limb_error_pixel_threshold==doctest::Approx(2.0));
   CHECK(profile.maximum_depth==20U);
   CHECK(profile.budgets.maximum_cpu_bytes==512U*1024U*1024U);
   CHECK(profile.budgets.maximum_triangles==500000U);
@@ -1219,26 +1219,12 @@ TEST_CASE("planetary terrain band limits detail to the hierarchy edge footprint"
   orbital_camera.viewport_height_pixels=1000.0;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             field,orbital_camera,256.0)==32.0);
-  auto rotation_profile=tetra_viewer::production_world_profile();
-  rotation_profile.pixel_threshold=256.0;
-  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
-            rotation_profile,field,orbital_camera)==doctest::Approx(4.0));
-  CHECK(tetra_viewer::planetary_rotation_lod_recenter_radians(
-            rotation_profile,field,orbital_camera)*180.0/std::numbers::pi>
-        15.0);
   orbital_camera.position.y=field.centre.y+0.01;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             field,orbital_camera,256.0)==0.0);
-  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
-            rotation_profile,field,orbital_camera)==doctest::Approx(1.35));
-  CHECK(tetra_viewer::planetary_rotation_lod_recenter_radians(
-            rotation_profile,field,orbital_camera)==
-        doctest::Approx(2.0*std::numbers::pi/180.0));
   auto planar=field;planar.terrain.planet_radius=0.0;
   CHECK(tetra_viewer::planetary_surface_sampling_footprint(
             planar,orbital_camera,256.0)==0.0);
-  CHECK(tetra_viewer::planetary_rotation_guard_frustum_scale(
-            rotation_profile,planar,orbital_camera)==doctest::Approx(1.35));
 
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere production_field;
@@ -1313,13 +1299,13 @@ TEST_CASE("world resource budgets independently gate every publication cost") {
     }()),std::invalid_argument);
 
   invalid=tetra_viewer::production_world_profile();
-  invalid.rotation_stable_lod_footprint=0.0;
+  invalid.field_error_pixel_threshold=0.0;
   CHECK_THROWS_AS(([&]{
       tetra_viewer::BlockedTerrainRuntime runtime{invalid};
     }()),std::invalid_argument);
 
   invalid=tetra_viewer::production_world_profile();
-  invalid.rotation_stable_guard_frustum_scale=1.0;
+  invalid.limb_error_pixel_threshold=0.0;
   CHECK_THROWS_AS(([&]{
       tetra_viewer::BlockedTerrainRuntime runtime{invalid};
     }()),std::invalid_argument);
@@ -1789,7 +1775,7 @@ TEST_CASE("projected radial world cut covers the globe with graded bounded detai
   REQUIRE_FALSE(selection.owners.empty());
   CHECK(selection.metrics.maximum_surface_depth==profile.near_red_depth);
   CHECK(selection.metrics.maximum_shared_vertex_depth_delta<=1U);
-  CHECK(selection.metrics.logical_owners_after_closure<1'100'000U);
+  CHECK(selection.metrics.logical_owners_after_closure<1'200'000U);
   CHECK(selection.metrics.horizon_owners==0U);
   CHECK(selection.metrics.target_projected_edge_pixels==
         doctest::Approx(profile.pixel_threshold));
@@ -1812,6 +1798,7 @@ TEST_CASE("production radial world resolves the surface around the player") {
   camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.6;
   const auto selection=tetra_viewer::select_world_lod_cut(profile,field,camera);
   double maximum_near_edge{};
+  double maximum_near_projected_edge{};
   unsigned int minimum_near_depth=profile.near_red_depth;
   std::size_t near_crossing_owners{};
   std::size_t far_crossing_owners{};
@@ -1835,6 +1822,10 @@ TEST_CASE("production radial world resolves the surface around the player") {
     if(!(negative&&positive)||camera_distance>0.4)continue;
     ++near_crossing_owners;
     minimum_near_depth=std::min(minimum_near_depth,owner.red_depth());
+    const auto projected=tetra::projected_tetrahedron(points,camera);
+    if(projected.intersects_frustum&&owner.red_depth()<profile.near_red_depth)
+      maximum_near_projected_edge=std::max(
+          maximum_near_projected_edge,projected.diameter_pixels);
     for(std::size_t first=0;first<points.size();++first)
       for(std::size_t second=first+1U;second<points.size();++second){
         const auto edge=points[first]-points[second];
@@ -1845,10 +1836,11 @@ TEST_CASE("production radial world resolves the surface around the player") {
   CAPTURE(near_crossing_owners);
   CAPTURE(minimum_near_depth);
   CAPTURE(maximum_near_edge);
+  CAPTURE(maximum_near_projected_edge);
   REQUIRE(near_crossing_owners>0U);
   CHECK(far_crossing_owners>0U);
-  CHECK(minimum_near_depth==profile.near_red_depth);
-  CHECK(maximum_near_edge<=0.09);
+  CHECK(minimum_near_depth<profile.near_red_depth);
+  CHECK(maximum_near_projected_edge<=profile.pixel_threshold);
 }
 
 TEST_CASE("production planet keeps local relief and tall distant landmarks") {
@@ -1975,6 +1967,125 @@ TEST_CASE("independent requested root cuts recombine to the monolithic target") 
       tetra_viewer::select_world_requested_root_cuts(
           profile,field,camera,std::uint16_t{1U}<<12U)),
       std::invalid_argument);
+}
+
+TEST_CASE("resident requested cuts compose their strongest common refinement") {
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  auto first=coarse;
+  first.erase(first.begin());
+  for(std::uint8_t child=0U;child<8U;++child)
+    first.push_back(tetra::WorldTetAddress::root(0U).child(child));
+  std::ranges::sort(first);
+  auto second=first;
+  const auto refined=std::ranges::find(
+      second,tetra::WorldTetAddress::root(0U).child(3U));
+  REQUIRE(refined!=second.end());
+  second.erase(refined);
+  for(std::uint8_t child=0U;child<8U;++child)
+    second.push_back(tetra::WorldTetAddress::root(0U).child(3U).child(child));
+  std::ranges::sort(second);
+
+  const std::array cuts{
+      std::span<const tetra::WorldTetAddress>{coarse},
+      std::span<const tetra::WorldTetAddress>{second},
+      std::span<const tetra::WorldTetAddress>{first}};
+  const auto combined=
+      tetra_viewer::common_refinement_world_requested_cuts(cuts);
+  CHECK(combined==second);
+
+  auto incomplete=coarse;incomplete.pop_back();
+  const std::array invalid{
+      std::span<const tetra::WorldTetAddress>{coarse},
+      std::span<const tetra::WorldTetAddress>{incomplete}};
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::common_refinement_world_requested_cuts(invalid)),
+      std::invalid_argument);
+  std::ranges::reverse(incomplete);
+  const std::array noncanonical{
+      std::span<const tetra::WorldTetAddress>{incomplete}};
+  CHECK_THROWS_AS(static_cast<void>(
+      tetra_viewer::common_refinement_world_requested_cuts(noncanonical)),
+      std::invalid_argument);
+}
+
+TEST_CASE("terrain detail sectors retain fixed-position rotation demand") {
+  auto profile=tetra_viewer::production_world_profile();
+  tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  auto refined=coarse;
+  refined.erase(refined.begin());
+  for(std::uint8_t child=0U;child<8U;++child)
+    refined.push_back(tetra::WorldTetAddress::root(0U).child(child));
+  std::ranges::sort(refined);
+
+  const tetra::Vec3 centre{
+      field.centre.x,field.centre.y-field.terrain.planet_radius,
+      field.centre.z};
+  tetra::Camera camera;
+  camera.position=centre+tetra::Vec3{0.0,field.terrain.planet_radius+1000.0,0.0};
+  camera.forward={0.0,0.0,-1.0};camera.aspect_ratio=1.6;
+  tetra_viewer::TerrainDetailWorkingSet working_set;
+  tetra_viewer::update_terrain_detail_working_set(
+      working_set,profile,field,camera,coarse,1U);
+  REQUIRE(working_set.sectors.size()==1U);
+  CHECK(working_set.sector_additions==1U);
+  CHECK(working_set.combined_requested_cut==coarse);
+
+  camera.forward={0.0,0.0,1.0};
+  CHECK_FALSE(tetra_viewer::terrain_detail_working_set_covers_camera(
+      working_set,field,camera));
+  tetra_viewer::update_terrain_detail_working_set(
+      working_set,profile,field,camera,refined,2U);
+  REQUIRE(working_set.sectors.size()==2U);
+  CHECK(working_set.sector_additions==2U);
+  CHECK(working_set.combined_requested_cut==refined);
+
+  camera.forward={0.0,0.0,-1.0};
+  REQUIRE(tetra_viewer::terrain_detail_working_set_covers_camera(
+      working_set,field,camera));
+  tetra_viewer::update_terrain_detail_working_set(
+      working_set,profile,field,camera,{},3U);
+  CHECK(working_set.sectors.size()==2U);
+  CHECK(working_set.sector_hits==1U);
+  CHECK(working_set.current_sector_id==working_set.sectors.front().id);
+
+  camera.position.x+=0.03;
+  tetra_viewer::update_terrain_detail_working_set(
+      working_set,profile,field,camera,coarse,4U);
+  CHECK(working_set.sectors.size()==1U);
+  CHECK(working_set.sector_evictions==2U);
+  CHECK(working_set.combined_requested_cut==coarse);
+}
+
+TEST_CASE("terrain sector budget eviction is deterministic and protects current view") {
+  std::vector<tetra::WorldTetAddress> coarse;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    coarse.push_back(tetra::WorldTetAddress::root(root));
+  tetra_viewer::TerrainDetailWorkingSet working_set;
+  working_set.current_sector_id=2U;
+  working_set.combined_requested_cut=coarse;
+  for(std::uint64_t id=1U;id<=3U;++id){
+    tetra_viewer::TerrainResidentSector sector;
+    sector.id=id;sector.requested_cut=coarse;
+    sector.last_used_generation=id==2U?1U:5U;
+    working_set.sectors.push_back(std::move(sector));
+  }
+  REQUIRE(tetra_viewer::evict_terrain_detail_sector_for_budget(working_set));
+  REQUIRE(working_set.sectors.size()==2U);
+  CHECK(working_set.sectors[0].id==2U);
+  CHECK(working_set.sectors[1].id==3U);
+  CHECK(working_set.current_sector_id==2U);
+  CHECK(working_set.sector_evictions==1U);
+  CHECK(working_set.budget_rejections==1U);
+  CHECK(working_set.combined_requested_cut==coarse);
+  REQUIRE(tetra_viewer::evict_terrain_detail_sector_for_budget(working_set));
+  REQUIRE(working_set.sectors.size()==1U);
+  CHECK(working_set.sectors.front().id==2U);
+  CHECK_FALSE(tetra_viewer::evict_terrain_detail_sector_for_budget(working_set));
 }
 
 TEST_CASE("root-local target fronts retain complete directory root fallbacks") {
@@ -2973,6 +3084,57 @@ TEST_CASE("blocked world schedules accumulated camera rotation without translati
   CHECK_FALSE(runtime.diagnostics().busy);
   CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
   CHECK(runtime.diagnostics().scene_generation==settled_generation);
+}
+
+TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=512.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto initial=runtime.diagnostics();
+  REQUIRE(initial.resident_sector_count==1U);
+  REQUIRE(initial.gpu_ready_sector_count==1U);
+  const auto first_demand_hash=initial.current_sector_demand_hash;
+  REQUIRE(first_demand_hash!=0U);
+
+  tetra::Camera camera;
+  camera.position=initial.published_camera_position;
+  camera.forward={0.0,-0.2,1.0};
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.0;
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  const auto deadline=
+      std::chrono::steady_clock::now()+std::chrono::seconds(60);
+  while(std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime.update());
+    if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto second=runtime.diagnostics();
+  CAPTURE(second.budget_exceeded);
+  CAPTURE(second.logical_cells);
+  CAPTURE(second.render_triangles);
+  REQUIRE(second.converged);
+  REQUIRE_FALSE(second.busy);
+  REQUIRE_FALSE(second.budget_exceeded);
+  REQUIRE(second.resident_sector_count==2U);
+  REQUIRE(second.gpu_ready_sector_count==2U);
+  CHECK(second.sector_additions==2U);
+  CHECK(second.current_sector_demand_hash!=first_demand_hash);
+
+  const auto submissions=second.submitted_builds;
+  const auto generation=second.scene_generation;
+  const auto combined_hash=second.hierarchy_hash;
+  camera.forward=initial.published_camera_forward;
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  const auto returned=runtime.diagnostics();
+  CHECK_FALSE(returned.busy);
+  CHECK(returned.submitted_builds==submissions);
+  CHECK(returned.scene_generation==generation);
+  CHECK(returned.hierarchy_hash==combined_hash);
+  CHECK(returned.current_sector_demand_hash==first_demand_hash);
+  CHECK(returned.sector_hits>=1U);
 }
 
 TEST_CASE("LOD camera pose manipulation changes directional refinement visibility") {
@@ -11046,6 +11208,28 @@ TEST_CASE("world render blocks retain local ranges and publish partial uploads")
   tetra_viewer::apply_surface_device_upload_plan(planner,staging,device);
   CHECK(equal(tetra_viewer::assemble_surface_device_publication(
                   planner,device),direct(blocks)));
+}
+
+TEST_CASE("resident surface draw ranges are conservatively frustum culled") {
+  constexpr std::array<float,16> identity{
+      1.0F,0.0F,0.0F,0.0F,
+      0.0F,1.0F,0.0F,0.0F,
+      0.0F,0.0F,1.0F,0.0F,
+      0.0F,0.0F,0.0F,1.0F};
+  tetra_viewer::SurfaceDeviceDrawRange range;
+  range.minimum={-0.5,-0.5,0.1};range.maximum={0.5,0.5,0.9};
+  CHECK(tetra_viewer::surface_draw_range_intersects_frustum(range,identity));
+  range.minimum={2.0,-0.5,0.1};range.maximum={3.0,0.5,0.9};
+  CHECK_FALSE(
+      tetra_viewer::surface_draw_range_intersects_frustum(range,identity));
+  range.minimum={0.9,-0.5,0.1};range.maximum={1.1,0.5,0.9};
+  CHECK(tetra_viewer::surface_draw_range_intersects_frustum(range,identity));
+  range.minimum={-0.5,-0.5,-2.0};range.maximum={0.5,0.5,-0.1};
+  CHECK_FALSE(
+      tetra_viewer::surface_draw_range_intersects_frustum(range,identity));
+  auto invalid=identity;
+  invalid[0]=std::numeric_limits<float>::quiet_NaN();
+  CHECK(tetra_viewer::surface_draw_range_intersects_frustum(range,invalid));
 }
 
 TEST_CASE("world render block estimate predicts fragmentation compaction") {

@@ -1385,6 +1385,12 @@ struct SurfaceDeviceDrawRange {
   }
 };
 
+// Tests a retained render-block AABB against a Vulkan clip volume. The
+// column-major matrix has the same layout consumed by scene.vert.
+[[nodiscard]] bool surface_draw_range_intersects_frustum(
+    const SurfaceDeviceDrawRange& range,
+    std::span<const float,16> view_projection) noexcept;
+
 struct SurfaceDeviceUploadMetrics {
   std::uint64_t source_generation{};
   bool prepared{};

@@ -384,6 +384,42 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<diagnostics.visible_p95_projected_edge_pixels
           <<",\"visible_maximum_projected_edge_pixels\":"
           <<diagnostics.visible_maximum_projected_edge_pixels
+          <<",\"field_error_pixel_threshold\":"
+          <<diagnostics.field_error_pixel_threshold
+          <<",\"limb_error_pixel_threshold\":"
+          <<diagnostics.limb_error_pixel_threshold
+          <<",\"visible_p95_projected_field_error_pixels\":"
+          <<diagnostics.visible_p95_projected_field_error_pixels
+          <<",\"visible_maximum_projected_field_error_pixels\":"
+          <<diagnostics.visible_maximum_projected_field_error_pixels
+          <<",\"visible_p95_projected_limb_error_pixels\":"
+          <<diagnostics.visible_p95_projected_limb_error_pixels
+          <<",\"visible_maximum_projected_limb_error_pixels\":"
+          <<diagnostics.visible_maximum_projected_limb_error_pixels
+          <<",\"edge_density_splits\":"<<diagnostics.edge_density_splits
+          <<",\"field_error_splits\":"<<diagnostics.field_error_splits
+          <<",\"limb_error_splits\":"<<diagnostics.limb_error_splits
+          <<",\"maximum_depth_error_exceptions\":"
+          <<diagnostics.maximum_depth_error_exceptions
+          <<",\"resident_sector_count\":"
+          <<diagnostics.resident_sector_count
+          <<",\"hierarchy_resident_sector_count\":"
+          <<diagnostics.hierarchy_resident_sector_count
+          <<",\"cpu_surface_resident_sector_count\":"
+          <<diagnostics.cpu_surface_resident_sector_count
+          <<",\"upload_pending_sector_count\":"
+          <<diagnostics.upload_pending_sector_count
+          <<",\"gpu_ready_sector_count\":"
+          <<diagnostics.gpu_ready_sector_count
+          <<",\"resident_sector_angular_coverage_radians\":"
+          <<diagnostics.resident_sector_angular_coverage_radians
+          <<",\"current_sector_demand_hash\":"
+          <<diagnostics.current_sector_demand_hash
+          <<",\"sector_hits\":"<<diagnostics.sector_hits
+          <<",\"sector_additions\":"<<diagnostics.sector_additions
+          <<",\"sector_evictions\":"<<diagnostics.sector_evictions
+          <<",\"sector_budget_rejections\":"
+          <<diagnostics.sector_budget_rejections
           <<",\"cpu_high_water_bytes\":"
           <<diagnostics.cpu_high_water_bytes
           <<",\"triangle_high_water\":"

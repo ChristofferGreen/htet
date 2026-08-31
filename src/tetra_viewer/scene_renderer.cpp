@@ -2845,9 +2845,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           layout,0,1,&descriptor_sets_.at(image_index),0,nullptr);
     if(ranges.empty())
       vkCmdDraw(command_buffer,static_cast<std::uint32_t>(vertices.count),1,0,0);
-    else for(const auto range:ranges)
+    else for(const auto range:ranges){
+      if(!surface_draw_range_intersects_frustum(
+             range,std::span<const float,16>{camera_data,16U}))continue;
       vkCmdDraw(command_buffer,static_cast<std::uint32_t>(range.vertex_count),1,
                 static_cast<std::uint32_t>(range.first_vertex),0);
+    }
   };
   const auto terrain_pipeline=[&](VkPipeline single,VkPipeline two,
                                    VkPipeline four){

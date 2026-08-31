@@ -6207,6 +6207,35 @@ void SurfaceDeviceUploadPlanner::prepare(
   metrics_.draw_calls=draw_scratch_.size();
 }
 
+bool surface_draw_range_intersects_frustum(
+    const SurfaceDeviceDrawRange& range,
+    std::span<const float,16> matrix) noexcept {
+  struct ClipPoint { double x{},y{},z{},w{}; };
+  std::array<ClipPoint,8> points{};
+  std::size_t index{};
+  for(const double x:{range.minimum.x,range.maximum.x})
+    for(const double y:{range.minimum.y,range.maximum.y})
+      for(const double z:{range.minimum.z,range.maximum.z}){
+        auto& point=points[index++];
+        point.x=matrix[0]*x+matrix[4]*y+matrix[8]*z+matrix[12];
+        point.y=matrix[1]*x+matrix[5]*y+matrix[9]*z+matrix[13];
+        point.z=matrix[2]*x+matrix[6]*y+matrix[10]*z+matrix[14];
+        point.w=matrix[3]*x+matrix[7]*y+matrix[11]*z+matrix[15];
+        if(!std::isfinite(point.x)||!std::isfinite(point.y)||
+           !std::isfinite(point.z)||!std::isfinite(point.w))return true;
+      }
+  const auto all_outside=[&](auto outside){
+    return std::ranges::all_of(points,outside);
+  };
+  return !(
+      all_outside([](const ClipPoint& p){return p.x < -p.w;})||
+      all_outside([](const ClipPoint& p){return p.x >  p.w;})||
+      all_outside([](const ClipPoint& p){return p.y < -p.w;})||
+      all_outside([](const ClipPoint& p){return p.y >  p.w;})||
+      all_outside([](const ClipPoint& p){return p.z <  0.0;})||
+      all_outside([](const ClipPoint& p){return p.z >  p.w;}));
+}
+
 void SurfaceDeviceUploadPlanner::commit() {
   if(!metrics_.prepared)
     throw std::logic_error("surface device upload has no prepared publication");

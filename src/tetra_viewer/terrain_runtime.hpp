@@ -143,6 +143,27 @@ struct TerrainRuntimeDiagnostics {
   double visible_median_projected_edge_pixels{};
   double visible_p95_projected_edge_pixels{};
   double visible_maximum_projected_edge_pixels{};
+  double field_error_pixel_threshold{};
+  double limb_error_pixel_threshold{};
+  double visible_p95_projected_field_error_pixels{};
+  double visible_maximum_projected_field_error_pixels{};
+  double visible_p95_projected_limb_error_pixels{};
+  double visible_maximum_projected_limb_error_pixels{};
+  std::size_t edge_density_splits{};
+  std::size_t field_error_splits{};
+  std::size_t limb_error_splits{};
+  std::size_t maximum_depth_error_exceptions{};
+  std::size_t resident_sector_count{};
+  std::size_t hierarchy_resident_sector_count{};
+  std::size_t cpu_surface_resident_sector_count{};
+  std::size_t upload_pending_sector_count{};
+  std::size_t gpu_ready_sector_count{};
+  double resident_sector_angular_coverage_radians{};
+  std::uint64_t current_sector_demand_hash{};
+  std::uint64_t sector_hits{};
+  std::uint64_t sector_additions{};
+  std::uint64_t sector_evictions{};
+  std::uint64_t sector_budget_rejections{};
   double last_update_milliseconds{};
   double cut_selection_milliseconds{};
   double cut_closure_milliseconds{};
@@ -197,14 +218,6 @@ struct TerrainRuntimeDiagnostics {
     const tetra::Sphere& field,const tetra::Camera& camera,
     double pixel_threshold) noexcept;
 
-[[nodiscard]] double planetary_rotation_guard_frustum_scale(
-    const WorldProfile& profile,const tetra::Sphere& field,
-    const tetra::Camera& camera) noexcept;
-
-[[nodiscard]] double planetary_rotation_lod_recenter_radians(
-    const WorldProfile& profile,const tetra::Sphere& field,
-    const tetra::Camera& camera) noexcept;
-
 struct TerrainDebugLine {
   tetra::Vec3 first{};
   tetra::Vec3 second{};
@@ -215,6 +228,9 @@ struct WorldLodCutMetrics {
   std::size_t visited_owners{};
   std::size_t field_rejected_owners{};
   std::size_t projected_splits{};
+  std::size_t field_error_splits{};
+  std::size_t limb_error_splits{};
+  std::size_t maximum_depth_error_exceptions{};
   std::size_t background_splits{};
   std::size_t horizon_owners{};
   std::size_t logical_owners_before_closure{};
@@ -254,6 +270,10 @@ struct WorldLodCutMetrics {
   double visible_median_projected_edge_pixels{};
   double visible_p95_projected_edge_pixels{};
   double visible_maximum_projected_edge_pixels{};
+  double visible_p95_projected_field_error_pixels{};
+  double visible_maximum_projected_field_error_pixels{};
+  double visible_p95_projected_limb_error_pixels{};
+  double visible_maximum_projected_limb_error_pixels{};
   double selection_milliseconds{};
   double closure_milliseconds{};
 };
@@ -261,6 +281,44 @@ struct WorldLodCutMetrics {
 struct WorldLodCutSelection {
   std::vector<tetra::WorldTetAddress> owners;
   WorldLodCutMetrics metrics{};
+};
+
+enum class TerrainSectorReadiness : std::uint8_t {
+  hierarchy,
+  cpu_surface,
+  upload_pending,
+  gpu_ready,
+};
+
+struct TerrainResidentSector {
+  std::uint64_t id{};
+  std::uint64_t demand_hash{};
+  tetra::Camera camera_anchor{};
+  double angular_footprint_radians{};
+  std::vector<tetra::WorldTetAddress> requested_cut;
+  TerrainSectorReadiness readiness{TerrainSectorReadiness::hierarchy};
+  std::uint64_t last_visible_generation{};
+  std::uint64_t last_used_generation{};
+  std::size_t hierarchy_bytes{};
+  std::size_t cpu_surface_bytes{};
+  std::size_t upload_bytes{};
+  std::size_t triangles{};
+};
+
+struct TerrainDetailWorkingSet {
+  tetra::Vec3 position_anchor{};
+  double altitude_band{};
+  double vertical_fov_radians{};
+  double viewport_height_pixels{};
+  double aspect_ratio{};
+  std::vector<TerrainResidentSector> sectors;
+  std::vector<tetra::WorldTetAddress> combined_requested_cut;
+  std::uint64_t next_sector_id{1U};
+  std::uint64_t current_sector_id{};
+  std::uint64_t sector_hits{};
+  std::uint64_t sector_additions{};
+  std::uint64_t sector_evictions{};
+  std::uint64_t budget_rejections{};
 };
 
 // Selects an exact raw red cut for a subset of the twelve independent BCC
@@ -283,6 +341,26 @@ advance_world_requested_frontier(
     std::span<const tetra::WorldTetAddress> target,
     const tetra::WorldStreamingDemand::Domain& domain,
     const tetra::Camera& camera,std::size_t maximum_operations);
+
+// Returns the strongest leaf demand contributed by every complete canonical
+// raw cut. No conformity closure is applied here; callers close the combined
+// result once so overlapping sectors cannot independently create seams.
+[[nodiscard]] std::vector<tetra::WorldTetAddress>
+common_refinement_world_requested_cuts(
+    std::span<const std::span<const tetra::WorldTetAddress>> cuts);
+
+[[nodiscard]] bool terrain_detail_working_set_covers_camera(
+    const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept;
+void update_terrain_detail_working_set(
+    TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
+    const tetra::Sphere& field,const tetra::Camera& camera,
+    std::vector<tetra::WorldTetAddress> requested_cut,
+    std::uint64_t generation);
+// Removes exactly one least-recently-used non-current sector and recomputes
+// the logical union. The current visible sector is always protected.
+[[nodiscard]] bool evict_terrain_detail_sector_for_budget(
+    TerrainDetailWorkingSet& working_set);
 
 enum class WorldVolumePinKind : std::uint8_t {
   player_collision,
@@ -545,6 +623,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     SparseWorldSurfaceCache surface_cache;
     WorldHierarchyDemandState hierarchy_demand;
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
+    TerrainDetailWorkingSet detail_working_set;
     bool canceled{};
     bool residency_budget_exceeded{};
     bool hierarchy_budget_exceeded{};
@@ -560,12 +639,15 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       const tetra::Camera& camera,std::uint64_t generation,
       SparseWorldSurfaceCache surface_cache={},
       WorldHierarchyDemandState hierarchy_demand={},
+      TerrainDetailWorkingSet detail_working_set={},
       std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request={},
       std::vector<WorldVolumePin> volume_pins={},
       std::stop_token cancellation={},
       tetra::GeometryExecutor* executor=nullptr,
       std::unique_ptr<tetra::WorldCutDirectory> directory={});
   void submit();
+  [[nodiscard]] bool schedule_sector_budget_retry(
+      TerrainDetailWorkingSet candidate);
   void submit_atmosphere_shadow();
   [[nodiscard]] static AtmosphereShadowPublication
   build_atmosphere_shadow_publication(
@@ -590,6 +672,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   std::stop_source atmosphere_shadow_cancellation_;
   SparseWorldSurfaceCache surface_cache_;
   WorldHierarchyDemandState hierarchy_demand_;
+  TerrainDetailWorkingSet detail_working_set_;
+  std::optional<TerrainDetailWorkingSet> pending_detail_working_set_;
   std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request_;
   std::optional<AtmosphereShadowFront> atmosphere_shadow_front_;
   std::vector<WorldVolumePin> volume_pins_;

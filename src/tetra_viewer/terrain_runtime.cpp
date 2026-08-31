@@ -6,6 +6,7 @@
 #include <map>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <stdexcept>
 #include <set>
 #include <thread>
@@ -43,31 +44,6 @@ double planetary_surface_sampling_footprint(
   const double requested=world_per_pixel*pixel_threshold;
   return requested>=0.05&&std::isfinite(requested)?
       std::exp2(std::floor(std::log2(requested))):0.0;
-}
-
-double planetary_rotation_guard_frustum_scale(
-    const WorldProfile& profile,const tetra::Sphere& field,
-    const tetra::Camera& camera) noexcept {
-  return planetary_surface_sampling_footprint(
-             field,camera,profile.pixel_threshold)>=
-         profile.rotation_stable_lod_footprint?
-      std::max(profile.hierarchy_guard_frustum_scale,
-               profile.rotation_stable_guard_frustum_scale):
-      profile.hierarchy_guard_frustum_scale;
-}
-
-double planetary_rotation_lod_recenter_radians(
-    const WorldProfile& profile,const tetra::Sphere& field,
-    const tetra::Camera& camera) noexcept {
-  constexpr double minimum=2.0*std::numbers::pi/180.0;
-  const double guard_scale=planetary_rotation_guard_frustum_scale(
-      profile,field,camera);
-  if(!(guard_scale>profile.hierarchy_guard_frustum_scale))return minimum;
-  const double horizontal_tangent=
-      std::tan(camera.vertical_fov_radians*0.5)*camera.aspect_ratio;
-  const double visible_half_angle=std::atan(horizontal_tangent);
-  const double guard_half_angle=std::atan(horizontal_tangent*guard_scale);
-  return std::max(minimum,(guard_half_angle-visible_half_angle)*0.5);
 }
 
 namespace {
@@ -854,11 +830,12 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     throw std::invalid_argument("world LOD depths are inconsistent");
   if(!(profile.view_distance>0.0)||!std::isfinite(profile.view_distance)||
      !(profile.pixel_threshold>0.0)||!std::isfinite(profile.pixel_threshold)||
-     !(profile.rotation_stable_lod_footprint>0.0)||
-     !std::isfinite(profile.rotation_stable_lod_footprint)||
-     profile.rotation_stable_guard_frustum_scale<
-         profile.hierarchy_guard_frustum_scale||
-     !std::isfinite(profile.rotation_stable_guard_frustum_scale))
+     !(profile.field_error_pixel_threshold>0.0)||
+     !std::isfinite(profile.field_error_pixel_threshold)||
+     !(profile.limb_error_pixel_threshold>0.0)||
+     !std::isfinite(profile.limb_error_pixel_threshold)||
+     profile.hierarchy_guard_frustum_scale<1.0||
+     !std::isfinite(profile.hierarchy_guard_frustum_scale))
     throw std::invalid_argument("world LOD distances must be finite and positive");
   constexpr std::uint16_t all_roots=
       (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
@@ -869,8 +846,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       value.x*value.x+value.y*value.y+value.z*value.z;};
   const double lipschitz=tetra::implicit_field_lipschitz_bound(field);
   const auto projection=tetra::prepare_camera_projection(camera);
-  const double guard_frustum_scale=planetary_rotation_guard_frustum_scale(
-      profile,field,camera);
+  const double guard_frustum_scale=profile.hierarchy_guard_frustum_scale;
   auto guard_camera=camera;
   guard_camera.vertical_fov_radians=2.0*std::atan(
       std::tan(camera.vertical_fov_radians*0.5)*
@@ -885,6 +861,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     double horizontal_distance{};
     double projected_diameter{};
     tetra::ProjectedTetrahedron projected_edges{};
+    double projected_field_error{};
+    double projected_limb_error{};
   };
   const auto evaluate_geometry=[&](
       const tetra::WorldTetrahedronGeometry& normalized){
@@ -903,6 +881,7 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     }
     result.centre=result.centre/4.0;
     double horizontal_radius{};
+    double maximum_edge{};
     for(const auto point:points)
     {
       const auto offset=point-result.centre;
@@ -910,6 +889,11 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       horizontal_radius=std::max(horizontal_radius,
           std::hypot(offset.x,offset.z));
     }
+    for(std::size_t first=0U;first<points.size();++first)
+      for(std::size_t second=first+1U;second<points.size();++second){
+        const auto edge=points[first]-points[second];
+        maximum_edge=std::max(maximum_edge,std::sqrt(dot(edge)));
+      }
     if(field.kind==tetra::ImplicitShapeKind::perlin_terrain&&
        !(field.terrain.planet_radius>0.0)){
       // A terrain is a height field, so bound its vertical range directly.
@@ -936,6 +920,39 @@ static WorldLodCutSelection select_world_lod_cut_impl(
         2.0*projection.focal_length*result.radius/
             std::max(eye_distance-result.radius,1.0e-12);
     result.projected_edges=tetra::projected_tetrahedron(points,projection);
+    const auto project_world_error=[&](double world_error){
+      if(!(world_error>0.0))return 0.0;
+      if(eye_distance<=result.radius)
+        return camera.viewport_height_pixels*std::hypot(1.0,camera.aspect_ratio);
+      return projection.focal_length*world_error/
+          std::max(eye_distance-result.radius,1.0e-12);
+    };
+    if(field.kind==tetra::ImplicitShapeKind::perlin_terrain)
+      result.projected_field_error=project_world_error(
+          lipschitz*maximum_edge);
+    if(field.terrain.planet_radius>0.0&&eye_distance>result.radius){
+      const auto to_planet=planet_centre-camera.position;
+      const double planet_distance=std::sqrt(dot(to_planet));
+      const double minimum_radius=std::max(
+          1.0,field.terrain.planet_radius-
+              tetra::terrain_height_magnitude_bound(field));
+      if(planet_distance>minimum_radius){
+        const double planet_angle=std::asin(std::clamp(
+            minimum_radius/planet_distance,0.0,1.0));
+        const double separation=std::acos(std::clamp(
+            (to_planet.x*horizontal.x+to_planet.y*horizontal.y+
+             to_planet.z*horizontal.z)/(planet_distance*eye_distance),
+            -1.0,1.0));
+        const double cell_angle=std::asin(std::clamp(
+            result.radius/eye_distance,0.0,1.0));
+        if(std::abs(separation-planet_angle)<=cell_angle){
+          const double half_chord=std::min(maximum_edge*0.5,minimum_radius);
+          const double sagitta=minimum_radius-std::sqrt(std::max(
+              0.0,minimum_radius*minimum_radius-half_chord*half_chord));
+          result.projected_limb_error=project_world_error(sagitta);
+        }
+      }
+    }
     return result;
   };
   const auto in_guard_frustum=[&](const Evaluation& evaluation){
@@ -969,6 +986,8 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     std::size_t owner_count{};
     WorldLodCutMetrics metrics{};
     std::vector<double> visible_projected_edges;
+    std::vector<double> visible_projected_field_errors;
+    std::vector<double> visible_projected_limb_errors;
   };
   std::array<RootTraversal,tetra::bcc_root_tetrahedron_count> roots;
   const auto traverse_root=[&](std::uint8_t root){
@@ -979,8 +998,14 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     };
     const auto record_visible_edge=[&](const Evaluation& evaluation){
       if(evaluation.may_cross&&evaluation.projected_edges.intersects_frustum)
+      {
         local.visible_projected_edges.push_back(
             evaluation.projected_edges.diameter_pixels);
+        local.visible_projected_field_errors.push_back(
+            evaluation.projected_field_error);
+        local.visible_projected_limb_errors.push_back(
+            evaluation.projected_limb_error);
+      }
     };
     const auto visit=[&](auto&& self,tetra::WorldTetAddress owner,
                          const tetra::WorldTetrahedronGeometry& geometry)->void{
@@ -989,7 +1014,18 @@ static WorldLodCutSelection select_world_lod_cut_impl(
          cancellation.stop_requested())return;
       ++local.metrics.visited_owners;
       const auto evaluation=evaluate_geometry(geometry);
+      const double projected_edge_metric=field.terrain.planet_radius>0.0?
+          evaluation.projected_edges.diameter_pixels:
+          evaluation.projected_diameter;
       if(depth>=profile.near_red_depth){
+        if(evaluation.projected_edges.intersects_frustum&&
+           (projected_edge_metric>profile.pixel_threshold||
+            (field.terrain.planet_radius>0.0&&
+             evaluation.projected_field_error>
+                 profile.field_error_pixel_threshold)||
+            evaluation.projected_limb_error>
+                profile.limb_error_pixel_threshold))
+          ++local.metrics.maximum_depth_error_exceptions;
         record_visible_edge(evaluation);append(owner);return;
       }
       if(!evaluation.may_cross){
@@ -1004,9 +1040,6 @@ static WorldLodCutSelection select_world_lod_cut_impl(
       const bool in_horizon=field.terrain.planet_radius>0.0||
           evaluation.horizontal_distance-evaluation.radius<=
               profile.view_distance;
-      const bool in_gameplay_neighborhood=
-          evaluation.horizontal_distance-evaluation.radius<=
-              profile.near_volume_radius;
       const bool useful_planetary_projection=
           !(field.terrain.planet_radius>0.0)||
           (in_guard_frustum(evaluation)&&
@@ -1014,10 +1047,14 @@ static WorldLodCutSelection select_world_lod_cut_impl(
                camera.position,planet_centre,
                field.terrain.planet_radius-8.0,evaluation.centre,
                evaluation.radius));
-      const bool projected=in_horizon&&
-          ((field.terrain.planet_radius>0.0&&in_gameplay_neighborhood)||
-           (useful_planetary_projection&&
-            evaluation.projected_diameter>profile.pixel_threshold));
+      const bool edge_error=projected_edge_metric>profile.pixel_threshold;
+      const bool field_error=field.terrain.planet_radius>0.0&&
+          evaluation.projected_field_error>
+              profile.field_error_pixel_threshold;
+      const bool limb_error=evaluation.projected_limb_error>
+          profile.limb_error_pixel_threshold;
+      const bool projected=in_horizon&&useful_planetary_projection&&
+          (edge_error||field_error||limb_error);
       if(!background&&!projected){
         if(!in_horizon)++local.metrics.horizon_owners;
         local.metrics.maximum_retained_projected_diameter=std::max(
@@ -1027,7 +1064,9 @@ static WorldLodCutSelection select_world_lod_cut_impl(
         append(owner);return;
       }
       local.metrics.background_splits+=background?1U:0U;
-      local.metrics.projected_splits+=!background?1U:0U;
+      local.metrics.projected_splits+=!background&&edge_error?1U:0U;
+      local.metrics.field_error_splits+=!background&&field_error?1U:0U;
+      local.metrics.limb_error_splits+=!background&&limb_error?1U:0U;
       const auto children=tetra::world_tetrahedron_red_children(geometry);
       for(std::uint8_t child=0;child<8U;++child)
         self(self,owner.child(child),children[child]);
@@ -1062,6 +1101,10 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     result.metrics.horizon_owners+=root.metrics.horizon_owners;
     result.metrics.background_splits+=root.metrics.background_splits;
     result.metrics.projected_splits+=root.metrics.projected_splits;
+    result.metrics.field_error_splits+=root.metrics.field_error_splits;
+    result.metrics.limb_error_splits+=root.metrics.limb_error_splits;
+    result.metrics.maximum_depth_error_exceptions+=
+        root.metrics.maximum_depth_error_exceptions;
     result.metrics.maximum_retained_projected_diameter=std::max(
         result.metrics.maximum_retained_projected_diameter,
         root.metrics.maximum_retained_projected_diameter);
@@ -1075,6 +1118,20 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     visible_projected_edges.insert(visible_projected_edges.end(),
         std::make_move_iterator(root.visible_projected_edges.begin()),
         std::make_move_iterator(root.visible_projected_edges.end()));
+  std::vector<double> visible_projected_field_errors;
+  std::vector<double> visible_projected_limb_errors;
+  visible_projected_field_errors.reserve(visible_sample_count);
+  visible_projected_limb_errors.reserve(visible_sample_count);
+  for(auto& root:roots){
+    visible_projected_field_errors.insert(
+        visible_projected_field_errors.end(),
+        std::make_move_iterator(root.visible_projected_field_errors.begin()),
+        std::make_move_iterator(root.visible_projected_field_errors.end()));
+    visible_projected_limb_errors.insert(
+        visible_projected_limb_errors.end(),
+        std::make_move_iterator(root.visible_projected_limb_errors.begin()),
+        std::make_move_iterator(root.visible_projected_limb_errors.end()));
+  }
   if(!visible_projected_edges.empty()){
     std::ranges::sort(visible_projected_edges);
     const auto quantile=[&](double fraction){
@@ -1091,6 +1148,20 @@ static WorldLodCutSelection select_world_lod_cut_impl(
     result.metrics.visible_p95_projected_edge_pixels=quantile(0.95);
     result.metrics.visible_maximum_projected_edge_pixels=
         visible_projected_edges.back();
+    const auto error_summary=[&](std::vector<double>& samples,
+                                  double& p95,double& maximum){
+      std::ranges::sort(samples);
+      const auto index=static_cast<std::size_t>(std::ceil(
+          0.95*static_cast<double>(samples.size())))-1U;
+      p95=samples[std::min(index,samples.size()-1U)];
+      maximum=samples.back();
+    };
+    error_summary(visible_projected_field_errors,
+        result.metrics.visible_p95_projected_field_error_pixels,
+        result.metrics.visible_maximum_projected_field_error_pixels);
+    error_summary(visible_projected_limb_errors,
+        result.metrics.visible_p95_projected_limb_error_pixels,
+        result.metrics.visible_maximum_projected_limb_error_pixels);
   }
   if(!std::ranges::is_sorted(result.owners))
     throw std::logic_error("recursive world target traversal is not canonical");
@@ -1176,6 +1247,237 @@ WorldLodCutSelection select_world_requested_root_cuts(
       root_mask,false);
 }
 
+std::vector<tetra::WorldTetAddress>
+common_refinement_world_requested_cuts(
+    std::span<const std::span<const tetra::WorldTetAddress>> cuts) {
+  if(cuts.empty())
+    throw std::invalid_argument("world requested-cut union is empty");
+  struct AddressHash {
+    std::size_t operator()(tetra::WorldTetAddress address) const noexcept {
+      const auto mixed=address.high^(
+          address.low+0x9e3779b97f4a7c15ULL+(address.high<<6U)+
+          (address.high>>2U));
+      return static_cast<std::size_t>(mixed^(mixed>>32U));
+    }
+  };
+  using AddressSet=std::unordered_set<tetra::WorldTetAddress,AddressHash>;
+  std::vector<AddressSet> leaves;
+  leaves.reserve(cuts.size());
+  for(const auto cut:cuts){
+    if(cut.empty()||!std::ranges::is_sorted(cut)||
+       std::adjacent_find(cut.begin(),cut.end())!=cut.end())
+      throw std::invalid_argument(
+          "world requested cut must be nonempty canonical and unique");
+    AddressSet set(cut.begin(),cut.end());
+    std::array<long double,tetra::bcc_root_tetrahedron_count> root_mass{};
+    for(const auto owner:cut){
+      if(owner.root_id()>=tetra::bcc_root_tetrahedron_count)
+        throw std::invalid_argument("world requested cut has an unknown root");
+      auto ancestor=owner;
+      while(ancestor.red_depth()>0U){
+        ancestor=ancestor.parent();
+        if(set.contains(ancestor))
+          throw std::invalid_argument(
+              "world requested cut contains overlapping leaves");
+      }
+      root_mass[owner.root_id()]+=std::exp2(
+          -3.0L*static_cast<long double>(owner.red_depth()));
+    }
+    if(std::ranges::any_of(root_mass,[](long double mass){
+         return std::abs(mass-1.0L)>1.0e-8L;
+       }))
+      throw std::invalid_argument("world requested cut is incomplete");
+    leaves.push_back(std::move(set));
+  }
+
+  const auto cut_splits=[&](const AddressSet& cut,
+                            tetra::WorldTetAddress owner){
+    while(true){
+      if(cut.contains(owner))return false;
+      if(owner.red_depth()==0U)return true;
+      owner=owner.parent();
+    }
+  };
+  std::vector<tetra::WorldTetAddress> result;
+  const auto visit=[&](auto&& self,tetra::WorldTetAddress owner)->void{
+    const bool split=std::ranges::any_of(leaves,[&](const AddressSet& cut){
+      return cut_splits(cut,owner);
+    });
+    if(!split){result.push_back(owner);return;}
+    if(owner.red_depth()>=tetra::maximum_world_red_depth)
+      throw std::invalid_argument("world requested cut is incomplete");
+    for(std::uint8_t child=0U;child<8U;++child)
+      self(self,owner.child(child));
+  };
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    visit(visit,tetra::WorldTetAddress::root(root));
+  std::ranges::sort(result);
+  return result;
+}
+
+namespace {
+
+double terrain_sector_altitude_band(
+    const tetra::Sphere& field,const tetra::Camera& camera) noexcept {
+  double altitude{};
+  if(field.terrain.planet_radius>0.0){
+    const tetra::Vec3 centre{
+        field.centre.x,field.centre.y-field.terrain.planet_radius,
+        field.centre.z};
+    const auto offset=camera.position-centre;
+    altitude=std::max(0.0,std::sqrt(
+        offset.x*offset.x+offset.y*offset.y+offset.z*offset.z)-
+        field.terrain.planet_radius);
+  }else altitude=std::abs(camera.position.y-field.centre.y);
+  return std::exp2(std::floor(std::log2(std::max(altitude,0.25))));
+}
+
+double terrain_camera_half_diagonal(const tetra::Camera& camera) noexcept {
+  const double vertical=std::tan(camera.vertical_fov_radians*0.5);
+  return std::atan(std::hypot(vertical,vertical*camera.aspect_ratio));
+}
+
+double terrain_sector_angular_footprint(
+    const WorldProfile& profile,const tetra::Camera& camera) noexcept {
+  const double scale=profile.hierarchy_guard_frustum_scale;
+  const double vertical=std::tan(camera.vertical_fov_radians*0.5)*scale;
+  return std::atan(std::hypot(vertical,vertical*camera.aspect_ratio));
+}
+
+double terrain_direction_angle(tetra::Vec3 first,tetra::Vec3 second) noexcept {
+  const auto length=[](tetra::Vec3 value){return std::sqrt(
+      value.x*value.x+value.y*value.y+value.z*value.z);};
+  const double first_length=length(first),second_length=length(second);
+  if(!(first_length>1.0e-15)||!(second_length>1.0e-15))
+    return std::numbers::pi;
+  return std::acos(std::clamp(
+      (first.x*second.x+first.y*second.y+first.z*second.z)/
+          (first_length*second_length),-1.0,1.0));
+}
+
+std::uint64_t terrain_requested_cut_hash(
+    std::span<const tetra::WorldTetAddress> cut) noexcept {
+  std::uint64_t hash=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  const auto append=[&](std::uint64_t value){
+    for(unsigned int byte=0U;byte<8U;++byte){
+      hash^=(value>>(byte*8U))&0xffU;hash*=prime;
+    }
+  };
+  append(cut.size());
+  for(const auto owner:cut){append(owner.high);append(owner.low);}
+  return hash;
+}
+
+bool terrain_sector_position_matches(
+    const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
+  if(working_set.sectors.empty())return false;
+  const auto delta=camera.position-working_set.position_anchor;
+  const double distance_squared=
+      delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
+  return distance_squared<=0.02*0.02&&
+      working_set.altitude_band==terrain_sector_altitude_band(field,camera)&&
+      working_set.vertical_fov_radians==camera.vertical_fov_radians&&
+      working_set.viewport_height_pixels==camera.viewport_height_pixels&&
+      working_set.aspect_ratio==camera.aspect_ratio;
+}
+
+}  // namespace
+
+bool terrain_detail_working_set_covers_camera(
+    const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
+    const tetra::Camera& camera) noexcept {
+  if(!terrain_sector_position_matches(working_set,field,camera))return false;
+  const double view_radius=terrain_camera_half_diagonal(camera);
+  return std::ranges::any_of(working_set.sectors,[&](const auto& sector){
+    return terrain_direction_angle(
+        sector.camera_anchor.forward,camera.forward)+view_radius<=
+        sector.angular_footprint_radians+1.0e-12;
+  });
+}
+
+void update_terrain_detail_working_set(
+    TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
+    const tetra::Sphere& field,const tetra::Camera& camera,
+    std::vector<tetra::WorldTetAddress> requested_cut,
+    std::uint64_t generation) {
+  if(generation==0U)
+    throw std::invalid_argument("terrain sector generation must be nonzero");
+  if(!working_set.sectors.empty()&&
+     !terrain_sector_position_matches(working_set,field,camera)){
+    working_set.sector_evictions+=working_set.sectors.size();
+    working_set.sectors.clear();
+    working_set.combined_requested_cut.clear();
+    working_set.current_sector_id=0U;
+  }
+  if(working_set.sectors.empty()){
+    working_set.position_anchor=camera.position;
+    working_set.altitude_band=terrain_sector_altitude_band(field,camera);
+    working_set.vertical_fov_radians=camera.vertical_fov_radians;
+    working_set.viewport_height_pixels=camera.viewport_height_pixels;
+    working_set.aspect_ratio=camera.aspect_ratio;
+  }
+  const double view_radius=terrain_camera_half_diagonal(camera);
+  const auto match=std::ranges::find_if(
+      working_set.sectors,[&](const auto& sector){
+        return terrain_direction_angle(
+            sector.camera_anchor.forward,camera.forward)+view_radius<=
+            sector.angular_footprint_radians+1.0e-12;
+      });
+  if(match!=working_set.sectors.end()){
+    match->last_visible_generation=generation;
+    match->last_used_generation=generation;
+    working_set.current_sector_id=match->id;
+    ++working_set.sector_hits;
+    return;
+  }
+  // The common-refinement validator below owns canonical/completeness checks.
+  TerrainResidentSector sector;
+  sector.id=working_set.next_sector_id++;
+  sector.demand_hash=terrain_requested_cut_hash(requested_cut);
+  sector.camera_anchor=camera;
+  sector.angular_footprint_radians=terrain_sector_angular_footprint(
+      profile,camera);
+  sector.requested_cut=std::move(requested_cut);
+  sector.last_visible_generation=generation;
+  sector.last_used_generation=generation;
+  sector.hierarchy_bytes=sector.requested_cut.capacity()*
+      sizeof(tetra::WorldTetAddress);
+  working_set.current_sector_id=sector.id;
+  working_set.sectors.push_back(std::move(sector));
+  ++working_set.sector_additions;
+  std::vector<std::span<const tetra::WorldTetAddress>> cuts;
+  cuts.reserve(working_set.sectors.size());
+  for(const auto& resident:working_set.sectors)
+    cuts.emplace_back(resident.requested_cut);
+  working_set.combined_requested_cut=
+      common_refinement_world_requested_cuts(cuts);
+}
+
+bool evict_terrain_detail_sector_for_budget(
+    TerrainDetailWorkingSet& working_set) {
+  if(working_set.sectors.size()<=1U)return false;
+  const auto victim=std::ranges::min_element(
+      working_set.sectors,{},[&](const TerrainResidentSector& sector){
+        const bool protected_sector=sector.id==working_set.current_sector_id;
+        return std::tuple{protected_sector,sector.last_used_generation,
+                          sector.id};
+      });
+  if(victim==working_set.sectors.end()||
+     victim->id==working_set.current_sector_id)return false;
+  working_set.sectors.erase(victim);
+  ++working_set.sector_evictions;
+  ++working_set.budget_rejections;
+  std::vector<std::span<const tetra::WorldTetAddress>> cuts;
+  cuts.reserve(working_set.sectors.size());
+  for(const auto& sector:working_set.sectors)
+    cuts.emplace_back(sector.requested_cut);
+  working_set.combined_requested_cut=
+      common_refinement_world_requested_cuts(cuts);
+  return true;
+}
+
 BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
     :profile_(profile),executor_(std::make_shared<tetra::GeometryExecutor>(
         tetra::GeometryExecutorConfiguration{
@@ -1204,7 +1506,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   camera_.position={0.5,0.72,0.78};camera_.forward={0.0,-0.2,-1.0};
   last_requested_camera_=camera_;
   auto initial=build_publication(
-      profile_,field_,camera_,1U,{}, {}, {}, {}, {},executor_.get());
+      profile_,field_,camera_,1U,{}, {}, {}, {}, {}, {},executor_.get());
   if(initial.residency_budget_exceeded)
     throw std::length_error(
         "initial world front exceeds its volume residency budget");
@@ -1234,6 +1536,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(WorldProfile profile)
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
   surface_cache_=std::move(initial.surface_cache);
   hierarchy_demand_=std::move(initial.hierarchy_demand);
+  detail_working_set_=std::move(initial.detail_working_set);
   atmosphere_shadow_front_=std::move(initial.atmosphere_shadow_front);
   flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
@@ -1393,6 +1696,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const tetra::Camera& camera,std::uint64_t generation,
     SparseWorldSurfaceCache surface_cache,
     WorldHierarchyDemandState hierarchy_demand,
+    TerrainDetailWorkingSet detail_working_set,
     std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request,
     std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation,
     tetra::GeometryExecutor* executor,
@@ -1400,9 +1704,32 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   std::size_t completed_work_units{};
   try{
   const auto started=std::chrono::steady_clock::now();
-  auto selection=select_world_lod_cut(
-      profile,field,camera,&surface_cache.closure,cancellation,
-      &completed_work_units,false,executor);
+  constexpr std::uint16_t all_roots=
+      (std::uint16_t{1U}<<tetra::bcc_root_tetrahedron_count)-1U;
+  auto selection=select_world_requested_root_cuts(
+      profile,field,camera,all_roots,cancellation,executor);
+  completed_work_units=selection.metrics.visited_owners;
+  update_terrain_detail_working_set(
+      detail_working_set,profile,field,camera,std::move(selection.owners),
+      generation);
+  selection.owners=detail_working_set.combined_requested_cut;
+  selection.metrics.logical_owners_before_closure=selection.owners.size();
+  const auto closure_started=std::chrono::steady_clock::now();
+  if(field.terrain.planet_radius>0.0){
+    const auto maximum_entries=surface_cache.closure.maximum_entries;
+    const auto fingerprint_bits=
+        surface_cache.closure.dependency_fingerprint_bits;
+    surface_cache.closure={};
+    surface_cache.closure.maximum_entries=maximum_entries;
+    surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
+  }
+  selection.owners=tetra::close_world_conforming_cut(
+      selection.owners,&surface_cache.closure,cancellation,3U,executor);
+  capture_world_closure_metrics(selection,surface_cache.closure);
+  selection.metrics.closure_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-closure_started).count();
+  selection.metrics.logical_owners_after_closure=selection.owners.size();
   if(cancellation.stop_requested())
     throw std::runtime_error("world publication canceled");
   const std::uint64_t hierarchy_revision=generation*2U-1U;
@@ -1421,6 +1748,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     rejected.diagnostics.work_units=completed_work_units;
     rejected.surface_cache=std::move(surface_cache);
     rejected.hierarchy_demand=std::move(hierarchy_demand);
+    rejected.detail_working_set=std::move(detail_working_set);
     rejected.residency_budget_exceeded=true;
     return rejected;
   }
@@ -1484,8 +1812,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     hierarchy_plan=plan_world_hierarchy_demand(
         *directory,profile.domain,camera,volume_pins,
         {.player_radius=profile.near_volume_radius,
-         .guard_frustum_scale=planetary_rotation_guard_frustum_scale(
-             profile,field,camera),
+         .guard_frustum_scale=profile.hierarchy_guard_frustum_scale,
          .prediction_factor=profile.hierarchy_prediction_factor,
          .recent_retention_epochs=profile.hierarchy_recent_retention_epochs,
          .maximum_blocks=profile.maximum_hierarchy_blocks},
@@ -1506,6 +1833,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         profile.maximum_hierarchy_blocks;
     rejected.surface_cache=std::move(surface_cache);
     rejected.hierarchy_demand=std::move(hierarchy_demand);
+    rejected.detail_working_set=std::move(detail_working_set);
     rejected.hierarchy_budget_exceeded=true;
     return rejected;
   }
@@ -1569,6 +1897,9 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   // manifest. Research/editor callers still use the directory surface API.
   const auto surface_published=std::chrono::steady_clock::now();
 
+  for(auto& sector:detail_working_set.sectors)
+    sector.readiness=TerrainSectorReadiness::gpu_ready;
+
   TerrainRuntimeDiagnostics diagnostics;
   diagnostics.mesh_revision=directory->revision();
   diagnostics.world_revision=directory->revision();
@@ -1594,6 +1925,42 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       selection.metrics.visible_p95_projected_edge_pixels;
   diagnostics.visible_maximum_projected_edge_pixels=
       selection.metrics.visible_maximum_projected_edge_pixels;
+  diagnostics.field_error_pixel_threshold=profile.field_error_pixel_threshold;
+  diagnostics.limb_error_pixel_threshold=profile.limb_error_pixel_threshold;
+  diagnostics.visible_p95_projected_field_error_pixels=
+      selection.metrics.visible_p95_projected_field_error_pixels;
+  diagnostics.visible_maximum_projected_field_error_pixels=
+      selection.metrics.visible_maximum_projected_field_error_pixels;
+  diagnostics.visible_p95_projected_limb_error_pixels=
+      selection.metrics.visible_p95_projected_limb_error_pixels;
+  diagnostics.visible_maximum_projected_limb_error_pixels=
+      selection.metrics.visible_maximum_projected_limb_error_pixels;
+  diagnostics.edge_density_splits=selection.metrics.projected_splits;
+  diagnostics.field_error_splits=selection.metrics.field_error_splits;
+  diagnostics.limb_error_splits=selection.metrics.limb_error_splits;
+  diagnostics.maximum_depth_error_exceptions=
+      selection.metrics.maximum_depth_error_exceptions;
+  diagnostics.resident_sector_count=detail_working_set.sectors.size();
+  diagnostics.resident_sector_angular_coverage_radians=std::accumulate(
+      detail_working_set.sectors.begin(),detail_working_set.sectors.end(),0.0,
+      [](double sum,const TerrainResidentSector& sector){
+        return sum+2.0*sector.angular_footprint_radians;
+      });
+  diagnostics.sector_hits=detail_working_set.sector_hits;
+  diagnostics.sector_additions=detail_working_set.sector_additions;
+  diagnostics.sector_evictions=detail_working_set.sector_evictions;
+  diagnostics.sector_budget_rejections=detail_working_set.budget_rejections;
+  for(const auto& sector:detail_working_set.sectors){
+    ++diagnostics.hierarchy_resident_sector_count;
+    if(sector.readiness>=TerrainSectorReadiness::cpu_surface)
+      ++diagnostics.cpu_surface_resident_sector_count;
+    if(sector.readiness==TerrainSectorReadiness::upload_pending)
+      ++diagnostics.upload_pending_sector_count;
+    if(sector.readiness==TerrainSectorReadiness::gpu_ready)
+      ++diagnostics.gpu_ready_sector_count;
+    if(sector.id==detail_working_set.current_sector_id)
+      diagnostics.current_sector_demand_hash=sector.demand_hash;
+  }
   std::size_t retained_certificate_bytes=
       surface_cache.surface_certificate_blocks.capacity()*
       sizeof(decltype(surface_cache.surface_certificate_blocks)::value_type);
@@ -1850,7 +2217,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   return {std::move(directory),std::move(hierarchy_update),std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
-          std::move(atmosphere_shadow_front),false,false,false};
+          std::move(atmosphere_shadow_front),std::move(detail_working_set),
+          false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
@@ -1889,10 +2257,23 @@ void BlockedTerrainRuntime::finalize_render_front_metrics(
   diagnostics.resident_bytes+=host.retained_bytes;
 }
 
+bool BlockedTerrainRuntime::schedule_sector_budget_retry(
+    TerrainDetailWorkingSet candidate) {
+  if(!evict_terrain_detail_sector_for_budget(candidate))return false;
+  diagnostics_.sector_evictions=candidate.sector_evictions;
+  diagnostics_.sector_budget_rejections=candidate.budget_rejections;
+  pending_detail_working_set_=std::move(candidate);
+  demand_pending_=true;
+  return true;
+}
+
 void BlockedTerrainRuntime::submit() {
   const auto profile=profile_;const auto field=field_;const auto camera=camera_;
   const auto volume_pins=volume_pins_;
   const auto hierarchy_demand=hierarchy_demand_;
+  auto detail_working_set=pending_detail_working_set_?
+      std::move(*pending_detail_working_set_):detail_working_set_;
+  pending_detail_working_set_.reset();
   const auto atmosphere_shadow_request=atmosphere_shadow_request_;
   const auto generation=++requested_generation_;
   auto surface_cache=std::move(surface_cache_);
@@ -1902,13 +2283,15 @@ void BlockedTerrainRuntime::submit() {
   auto directory=std::make_unique<tetra::WorldCutDirectory>(*directory_);
   future_=std::async(std::launch::async,
       [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
+       detail_working_set,
        atmosphere_shadow_request,
        executor,
        surface_cache=std::move(surface_cache),
        directory=std::move(directory)]() mutable {
     return build_publication(
         profile,field,camera,generation,std::move(surface_cache),
-        hierarchy_demand,atmosphere_shadow_request,volume_pins,token,
+        hierarchy_demand,detail_working_set,atmosphere_shadow_request,
+        volume_pins,token,
         executor.get(),std::move(directory));
   });
   ++diagnostics_.submitted_builds;
@@ -1935,30 +2318,41 @@ void BlockedTerrainRuntime::set_camera(
       camera.forward,last_requested_camera_.forward);
   const double up_delta_squared=direction_delta_squared(
       camera.up,last_requested_camera_.up);
-  // Compare against the last submitted orientation, not the preceding mouse
-  // sample. Orbital views retain a broad guard and recenter only after using
-  // half of its angular margin; ground views retain the two-degree bucket.
-  const double recenter_angle=planetary_rotation_lod_recenter_radians(
-      profile_,field_,camera);
-  const double interactive_orientation_chord=
-      2.0*std::sin(recenter_angle*0.5);
+  // Orientation changes inside any retained sector alter draw visibility but
+  // not logical terrain demand. Crossing the retained angular footprint adds
+  // a sector; it never weakens a sector that left the view.
+  constexpr double orientation_epsilon=1.0e-12;
   const bool orientation_moved=
-      forward_delta_squared>interactive_orientation_chord*
-          interactive_orientation_chord||
-      up_delta_squared>interactive_orientation_chord*
-          interactive_orientation_chord;
+      forward_delta_squared>orientation_epsilon*orientation_epsilon||
+      up_delta_squared>orientation_epsilon*orientation_epsilon;
   const bool projection_changed=
       camera.vertical_fov_radians!=last_requested_camera_.vertical_fov_radians||
       camera.viewport_height_pixels!=last_requested_camera_.viewport_height_pixels||
       camera.aspect_ratio!=last_requested_camera_.aspect_ratio;
   const bool directional_lod=profile_.terrain.planet_radius>0.0;
+  const bool retained_orientation=directional_lod&&orientation_moved&&
+      terrain_detail_working_set_covers_camera(
+          detail_working_set_,field_,camera);
+  if(retained_orientation){
+    update_terrain_detail_working_set(
+        detail_working_set_,profile_,field_,camera,{},
+        std::max<std::uint64_t>(requested_generation_,1U));
+    diagnostics_.sector_hits=detail_working_set_.sector_hits;
+    if(const auto current=std::ranges::find(
+           detail_working_set_.sectors,detail_working_set_.current_sector_id,
+           &TerrainResidentSector::id);
+       current!=detail_working_set_.sectors.end())
+      diagnostics_.current_sector_demand_hash=current->demand_hash;
+  }
+  const bool orientation_requires_detail=
+      directional_lod&&orientation_moved&&!retained_orientation;
   const bool demand_changed=distance_squared>0.02*0.02||
-      (directional_lod&&orientation_moved)||projection_changed;
+      orientation_requires_detail||projection_changed;
   constexpr double settled_position_epsilon=1.0e-9;
   constexpr double settled_orientation_epsilon=1.0e-12;
   const bool settled_pose_changed=
       distance_squared>settled_position_epsilon*settled_position_epsilon||
-      (directional_lod&&
+      (orientation_requires_detail&&
        (forward_delta_squared>settled_orientation_epsilon*
             settled_orientation_epsilon||
         up_delta_squared>settled_orientation_epsilon*
@@ -2034,9 +2428,19 @@ bool BlockedTerrainRuntime::update() {
     }
     if(publication.residency_budget_exceeded||
        publication.hierarchy_budget_exceeded){
-      surface_cache_=std::move(publication.surface_cache);
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
+      if(publication.hierarchy_budget_exceeded&&
+         schedule_sector_budget_retry(
+             std::move(publication.detail_working_set))){
+        surface_cache_={};
+        diagnostics_.budget_exceeded=false;
+        active_superseded_=false;
+        submit();
+        diagnostics_.busy=true;
+        return false;
+      }
+      surface_cache_=std::move(publication.surface_cache);
       diagnostics_.logical_cells=publication.diagnostics.logical_cells;
       diagnostics_.hierarchy_blocks=publication.diagnostics.hierarchy_blocks;
       diagnostics_.visible_hierarchy_blocks=
@@ -2077,8 +2481,16 @@ bool BlockedTerrainRuntime::update() {
     if(!admission.admitted()){
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
-      diagnostics_.budget_exceeded=true;
       surface_cache_={};
+      if(schedule_sector_budget_retry(
+             std::move(publication.detail_working_set))){
+        diagnostics_.budget_exceeded=false;
+        active_superseded_=false;
+        submit();
+        diagnostics_.busy=true;
+        return false;
+      }
+      diagnostics_.budget_exceeded=true;
       active_superseded_=false;demand_pending_=false;
       diagnostics_.busy=false;
       return false;
@@ -2098,6 +2510,7 @@ bool BlockedTerrainRuntime::update() {
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
     hierarchy_demand_=std::move(publication.hierarchy_demand);
+    detail_working_set_=std::move(publication.detail_working_set);
     atmosphere_shadow_front_=std::move(publication.atmosphere_shadow_front);
     if(atmosphere_shadow_request_)atmosphere_shadow_pending_=true;
     diagnostics_=publication.diagnostics;
