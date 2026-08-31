@@ -11,6 +11,15 @@ transitional mitigations. They postpone visible refinement but retain the
 same underlying failure mode and should be removed once this design is in
 place.
 
+This document specializes and replaces the retention policy in
+[camera-lod.md](camera-lod.md) for production planetary terrain. Where the
+current-status text in [world-visualizer.md](world-visualizer.md) or
+[implementation.md](implementation.md) says pure production camera rotation is
+already a zero-build operation, the observed `A -> B -> A` failure and this
+replacement design take precedence. The transactional cut, residency tiers,
+immutable publication, and sparse-block contracts in those documents remain
+applicable.
+
 ## Problem
 
 Terrain detail currently follows one camera-facing region. Turning away from
@@ -97,17 +106,26 @@ published algorithm.
 
 ### Screen-space geometry
 
-For every renderable surface tetrahedron not limited by maximum depth or a
-conformity transition, the maximum projected edge length should remain in a
-bounded interval:
+For an ordinary leaf whose depth is selected only by edge density, the target
+steady-state interval is approximately:
 
 ```text
 target_pixels / 2 <= maximum_projected_edge_pixels <= target_pixels
 ```
 
-The factor-of-two interval follows naturally from dyadic refinement. Split
-and merge hysteresis may widen it slightly, but must not make distant
-tetrahedra systematically larger or nearby tetrahedra systematically smaller.
+The factor-of-two interval is the ideal result of dyadic red refinement. It is
+not a hard bound on every rendered tetrahedron: split/merge hysteresis,
+restricted-green transitions, maximum depth, field error, limb error, and
+nonvisual pins can widen it or produce smaller cells. The hard requirements
+are that the configured upper edge threshold is satisfied wherever depth and
+budget permit, every exception is attributed, and distance does not
+systematically change the edge-size distribution.
+
+Merge eligibility must evaluate the proposed parent, not merely observe that
+the current children are small. A merge is rejected if the parent's projected
+edge, field, or limb error would immediately exceed its split threshold. This
+prevents hysteresis from publishing an overlarge parent that must split again
+on the next update.
 
 The measurement uses physical display pixels. It is independent of logical UI
 points and dynamic internal render scale, so changing Retina scale or
@@ -138,15 +156,28 @@ error may create tetrahedra smaller than the nominal edge target; diagnostics
 must identify these as intentional quality refinements rather than density
 failures.
 
+A field-error value may be called conservative only when it comes from a
+validated hierarchy summary, such as a bound on scalar interpolation error,
+surface displacement, gradient variation, or procedural octave amplitude over
+the complete cell. Sparse point samples are useful heuristics but cannot be
+reported as guarantees. Until certified summaries exist, projected diameter
+remains the conservative tessellation-density fallback; it does not establish
+a terrain-approximation guarantee. Procedural bandwidth filtering and visual
+validation remain required, and heuristic field errors must be named
+separately in diagnostics and acceptance results.
+
 ### Rotation stability
 
 Changing camera orientation without materially changing camera position,
 projection, or altitude must not discard already refined terrain.
 
-After directions A and B have converged, repeated `A -> B -> A` rotation must
-not schedule refinement merely because either direction left the frustum. A
-new direction may add detail to the working set, but leaving a direction does
-not immediately remove it.
+After directions A and B have converged and their combined working set fits the
+configured budgets, repeated `A -> B -> A` rotation must not schedule
+refinement merely because either direction left the frustum. A new direction
+may add detail to the working set, but leaving a direction does not immediately
+remove it. If the configured budget cannot retain the complete rotational
+working set, the resulting eviction and reduced revisit guarantee must be
+explicit in diagnostics rather than presented as rotation stability.
 
 ### Atomic presentation
 
@@ -185,10 +216,13 @@ For each candidate tetrahedron:
 8. retain extra refinement where conformity requires it.
 
 For a cached off-screen sector, evaluation uses the sector's camera anchor.
-When constructing a position-centred rotational working set, the camera may be
-treated as looking directly toward the candidate. The focal length and
-candidate distance then determine its screen size without depending on the
-current view direction.
+The metric must conservatively bound projection over the sector's complete
+angular footprint, including its guard band. Treating the camera as looking
+directly toward a candidate is only a cheap lower-cost estimate: it can
+underestimate perspective magnification near a frustum edge and therefore
+cannot be the final split test without a proven angular correction factor.
+Sector footprints must overlap far enough that a candidate entering a new
+view is already covered by at least one valid demand.
 
 The existing bounding-sphere estimate can remain as a cheap conservative
 traversal bound. Final split and merge decisions should use the combined
@@ -197,7 +231,7 @@ work, but must not lower the desired LOD of a resident sector.
 
 ### 2. Detail residency
 
-Residency answers: which already-computed directional regions remain ready?
+Residency answers: which already-computed spatial regions remain ready?
 
 Maintain a small collection of spatial terrain sectors. Each sector records:
 
@@ -205,6 +239,8 @@ Maintain a small collection of spatial terrain sectors. Each sector records:
 - an orientation or angular footprint;
 - the projection parameters used to calculate its LOD;
 - its refined logical cut and derived-surface dependencies;
+- independently tracked hierarchy, CPU-surface, upload-pending, and GPU-ready
+  residency states;
 - last-visible and last-used generations;
 - CPU, hierarchy, triangle, upload, and rebuild costs.
 
@@ -212,6 +248,10 @@ The active requested cut is the common refinement of all resident sector
 demands plus mandatory player, physics, editing, and atmosphere-shadow
 demands. Adding a sector refines this union. Looking away only updates usage
 metadata.
+
+Equivalently, each logical cell uses the strongest depth demand contributed by
+any resident sector or mandatory nonvisual producer. Sector overlap must not
+average or blend demands into a coarser result.
 
 Eviction is spatial and budget driven. Prefer, in order:
 
@@ -225,10 +265,22 @@ retention must preserve the logical cut and renderable surface, not merely
 hierarchy residency records.
 
 At a fixed camera position, ordinary rotation should accumulate enough sectors
-to cover the locally visible horizon region. Near the current startup pose
-this is approximately four directional sectors, not half of the entire
-planet. At higher altitude the position-centred horizon footprint grows, and
-sector count and world-space coverage should respond accordingly.
+to cover the complete surface region that can become visible under allowed
+rotation, bounded by the planetary horizon and camera projection. The required
+sector count is an output of measured angular coverage and overlap, not a
+fixed value. At higher altitude the potentially visible spherical cap grows,
+and sector count or world-space coverage must respond accordingly.
+
+Retaining a logical cut is cheaper than retaining its extracted surface, and
+retaining a CPU surface is cheaper than keeping all of its draw ranges on the
+GPU. These tiers may have separate budgets, but their readiness is explicit.
+Hierarchy or CPU-surface retention alone does not satisfy the seamless-revisit
+invariant: the complete rotational working set must remain GPU-ready. If an
+explicit budget policy demotes a sector from GPU residency, a complete
+drawable fallback must remain and the fine surface may be uploaded
+asynchronously on revisit, but that sector is reported as evicted from the
+rotation-stable set. It must never become a hole or an unreported coarse
+substitution.
 
 ### 3. Rendering visibility
 
@@ -244,8 +296,9 @@ Shadow passes use their own light-frustum and fitted-shadow caster selection.
 They must not reuse camera-frustum culling when off-screen terrain can cast a
 visible shadow.
 
-This separation allows rotation-stable CPU and GPU residency without paying
-the raster cost of drawing the entire retained horizon region.
+This separation allows rotation-stable detail without paying the raster cost
+of drawing the entire retained horizon region. CPU and GPU residency costs
+remain separately attributable.
 
 ## Player and physics detail
 
@@ -271,36 +324,51 @@ TerrainDetailWorkingSet
   resident_sectors[]
     angular_footprint
     requested_cut
+    hierarchy_residency
+    cpu_surface_residency
+    gpu_draw_residency
+    readiness
     last_visible_generation
     last_used_generation
     resource_costs
   combined_requested_cut
   published_conforming_cut
   pending_candidate
+    additions
+    evictions
+    reserved_resources
 ```
 
-Camera orientation changes update sector demand and rendering visibility.
-Camera translation first tests whether the existing positional working set
-still covers the new horizon footprint. Small movement reuses sectors;
-significant movement or altitude-band changes incrementally replace them.
+Camera orientation changes always update rendering visibility and either match
+an existing sector or add demand for a missing footprint; they never weaken an
+existing resident demand. Camera translation first tests whether the existing
+positional working set still covers the new horizon footprint. Small movement
+reuses sectors; significant movement or altitude-band changes incrementally
+replace them.
 
 ## Update sequence
 
-1. Build a screen-space demand for the current view using projected edge size.
+1. Build a screen-space demand for the current view using the combined edge,
+   field, and limb metrics.
 2. Match it to an existing resident sector or add a new sector.
-3. Form the common refinement of all retained sector cuts and mandatory
-   nonvisual demands.
-4. Apply restricted-green conformity closure once to the combined cut.
-5. Build changed surface blocks only.
-6. Check all resource budgets before publication.
-7. Atomically publish the complete cut and surface.
-8. Update spatially bounded GPU allocations.
-9. Cull resident render blocks against the current camera for drawing.
-10. Evict inactive sectors only when required by a budget or positional
-    invalidation.
+3. Construct a deterministic eviction or demotion plan if the proposed demand
+   would exceed any hierarchy, CPU-surface, GPU, upload, triangle, or work
+   budget. Visible and pinned demands are protected.
+4. Form the common refinement of all retained post-eviction sector cuts and
+   mandatory nonvisual demands.
+5. Apply restricted-green conformity closure once to the combined cut.
+6. Validate the complete candidate cost and reserve required resources before
+   expensive construction. Reject without mutation if the plan cannot fit.
+7. Build and upload changed surface blocks only.
+8. Atomically publish the complete cut, surface, residency changes, and draw
+   ranges after all replacements are ready.
+9. Retire evicted resources only after publication and the relevant GPU fences.
+10. Cull resident render blocks against the current camera for drawing.
 
 Coarsening is therefore a cache-management operation, not an automatic
-consequence of camera rotation.
+consequence of camera rotation. Addition, demotion, and eviction are one
+transactional candidate; the published front cannot temporarily contain both
+a missing old sector and an incomplete replacement.
 
 ## Diagnostics
 
@@ -313,9 +381,13 @@ The UI and capture JSON should expose:
 - split and retained-detail counts by cause: edge density, field error, limb
   error, conformity, physics, editing, and shadow demand;
 - counts of maximum-depth and conformity exceptions;
-- resident sector count and angular coverage;
+- resident sector count, angular coverage, overlap, and uncovered rotational
+  footprint;
+- hierarchy-resident, CPU-surface-resident, upload-pending, and GPU-ready
+  sector counts and bytes;
 - visible, cached-off-screen, shadow-only, and volume-only triangle counts;
 - sector additions, hits, evictions, and budget rejections;
+- proposed, reserved, published, and retired resource costs for each update;
 - whether an update refines, coarsens, or only changes draw visibility;
 - per-sector and combined working-set memory;
 - visible and submitted draw-range counts.
@@ -338,8 +410,32 @@ Automate and capture at least:
 - ascent and descent across altitude bands;
 - return to a recently used sector under and over the memory budget.
 
-After convergence, revisiting a retained sector must reuse its terrain hashes
-and must not increase its maximum projected edge error.
+After convergence, revisiting a retained sector must reuse its sector-demand
+hash. Unchanged retained surface-block hashes must also be reused; the combined
+published-cut hash is allowed to change when another sector legitimately adds
+common refinement or conformity detail. A revisit must not increase any
+applicable projected error.
+
+### Reproducible visual captures
+
+Every acceptance capture must record and replay:
+
+- camera position, orientation, projection, and control mode;
+- sun azimuth and elevation;
+- window drawable dimensions, selected display, native refresh rate, Retina
+  backing scale, and internal render scale;
+- quality profile, pixel/error targets, depth limits, and all residency
+  budgets;
+- terrain-field revision, sector-demand hashes, published cut/surface hashes,
+  convergence state, and frame number;
+- whether the image is an early-frame or settled capture, with an explicit
+  readiness condition for each.
+
+Validation must use the exact reported pose, display, and settled state. A
+capture from a nearby pose, another monitor, or a front that is merely idle but
+not converged is not evidence for the reported failure. Early-frame captures
+remain a separate required test because a correct settled image can still hide
+an unacceptable startup or rotation transition.
 
 ### Screen-space measurements
 
@@ -360,10 +456,16 @@ For multiple distances, altitudes, aspect ratios, and Retina scale factors:
 
 On the 120 Hz reference display:
 
-- ordinary rendering remains within the 8.33 ms frame budget after automatic
-  render scaling settles;
-- rotating through resident sectors does not cause frame-time spikes from
-  terrain construction or uploads;
+- ordinary rendering targets the 8.33 ms frame budget after automatic render
+  scaling settles;
+- capture median, p95, p99, maximum, missed-present count, and consecutive
+  missed presents for CPU frame, GPU frame, terrain construction, and upload
+  time; an average frame rate alone is not an acceptance metric;
+- rotating through GPU-ready resident sectors performs no terrain construction
+  or upload and does not introduce a distinct long-frame population;
+- rotation through a hierarchy- or CPU-surface-resident but non-GPU-ready
+  sector keeps a complete drawable fallback while bounded uploads finish and
+  is reported as outside the seamless rotation-stable set;
 - cached off-screen sectors do not increase submitted terrain draw work;
 - sector creation and eviction remain asynchronous and atomically published;
 - animated sun and atmosphere-shadow updates remain stable.
