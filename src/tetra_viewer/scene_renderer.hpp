@@ -123,7 +123,11 @@ class SceneRenderer {
   void initialize(VkPhysicalDevice physical_device, VkDevice device, VkFormat colour_format, VkFormat depth_format);
   void recreate(VkExtent2D extent, std::uint32_t image_count,
                 AtmosphereQuality quality=AtmosphereQuality::standard,
-                std::uint32_t screen_resolution_divisor=4U);
+                std::uint32_t screen_resolution_divisor=4U,
+                bool terrain_msaa=false);
+  [[nodiscard]] bool supports_terrain_msaa() const noexcept {
+    return terrain_msaa_supported_;
+  }
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
               std::span<const SceneVertex> surface_line_vertices);
@@ -194,6 +198,11 @@ class SceneRenderer {
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
   VkPipeline editor_line_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa_sky_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa_triangle_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa_triangle_wire_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa_line_pipeline_{VK_NULL_HANDLE};
+  VkPipeline msaa_editor_line_pipeline_{VK_NULL_HANDLE};
   VkQueryPool timing_query_pool_{VK_NULL_HANDLE};
   float timestamp_period_nanoseconds_{};
   std::vector<bool> timing_queries_written_;
@@ -210,6 +219,8 @@ class SceneRenderer {
   AtmosphereQualitySettings quality_settings_{
       atmosphere_quality_settings(AtmosphereQuality::standard)};
   std::uint32_t screen_resolution_divisor_{2U};
+  bool terrain_msaa_supported_{};
+  bool terrain_msaa_enabled_{};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
@@ -224,6 +235,8 @@ class SceneRenderer {
   std::vector<DepthImage> depth_images_;
   struct SceneColourImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };
   std::vector<SceneColourImage> scene_colour_images_;
+  DepthImage msaa_depth_image_;
+  SceneColourImage msaa_colour_image_;
   struct ShadowImage : DepthImage {
     std::array<VkImageView,shadow_map_layer_count> layer_views{};
     VkBuffer uniform_buffer{VK_NULL_HANDLE};

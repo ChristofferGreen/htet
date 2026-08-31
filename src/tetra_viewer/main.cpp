@@ -1058,6 +1058,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
     bool world_smooth_normals=false;
+    bool world_terrain_msaa=false;
     float world_sun_azimuth=
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
@@ -1175,6 +1176,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 show_surface_edges=false;
             }else if(value=="--smooth-terrain-normals"){
                 world_smooth_normals=true;
+            }else if(value=="--terrain-msaa"){
+                world_terrain_msaa=true;
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
@@ -1458,14 +1461,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             fprintf(stderr,"dense-oracle atmosphere shadow integration is headless only\n");
             return 2;
         }
+        if(world_terrain_msaa&&!g_SceneRenderer.supports_terrain_msaa()){
+            fprintf(stderr,"4x terrain MSAA is unavailable on this device\n");
+            return 2;
+        }
         if(g_AtmosphereFrame.quality!=
                tetra_viewer::AtmosphereQuality::standard||
-           g_AtmosphereFrame.screen_resolution_divisor!=4U){
+           g_AtmosphereFrame.screen_resolution_divisor!=4U||
+           world_terrain_msaa){
             g_SceneRenderer.recreate(
                 {static_cast<std::uint32_t>(g_MainWindowData.Width),
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
                 g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
-                g_AtmosphereFrame.screen_resolution_divisor);
+                g_AtmosphereFrame.screen_resolution_divisor,
+                world_terrain_msaa);
         }
         if(world_gpu_atmosphere_probe&&g_AtmosphereFrame.transport!=
            tetra_viewer::AtmosphereTransport::faithful_hillaire){
@@ -1636,7 +1645,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 {static_cast<std::uint32_t>(g_MainWindowData.Width),
                  static_cast<std::uint32_t>(g_MainWindowData.Height)},
                 g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
-                g_AtmosphereFrame.screen_resolution_divisor);
+                g_AtmosphereFrame.screen_resolution_divisor,
+                world_terrain_msaa);
             g_MainWindowData.FrameIndex = 0;
             g_SwapChainRebuild = false;
         }
@@ -2833,6 +2843,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                &show_surface_edges);
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
                                &world_smooth_normals);
+            if(!g_SceneRenderer.supports_terrain_msaa())ImGui::BeginDisabled();
+            if(ImGui::Checkbox("4x terrain MSAA",&world_terrain_msaa)){
+                if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
+                    throw std::runtime_error(
+                        "unable to idle Vulkan for terrain MSAA change");
+                g_SceneRenderer.recreate(
+                    {static_cast<std::uint32_t>(g_MainWindowData.Width),
+                     static_cast<std::uint32_t>(g_MainWindowData.Height)},
+                    g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
+                    g_AtmosphereFrame.screen_resolution_divisor,
+                    world_terrain_msaa);
+            }
+            if(!g_SceneRenderer.supports_terrain_msaa()){
+                ImGui::EndDisabled();
+                if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(
+                        "Requires 4x colour/depth samples and MAX depth resolve");
+            }
             if(CheckboxWithHotkey("Capsule diagnostic","K",ImGuiKey_K,
                                   &world_show_capsule))
                 overlay_dirty=true;
@@ -3122,7 +3150,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         {static_cast<std::uint32_t>(g_MainWindowData.Width),
                          static_cast<std::uint32_t>(g_MainWindowData.Height)},
                         g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
-                        g_AtmosphereFrame.screen_resolution_divisor);
+                        g_AtmosphereFrame.screen_resolution_divisor,
+                        world_terrain_msaa);
                 }
                 constexpr std::array<const char*,3> resolution_names{
                     "Half","One third","One quarter"};
@@ -3141,7 +3170,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         {static_cast<std::uint32_t>(g_MainWindowData.Width),
                          static_cast<std::uint32_t>(g_MainWindowData.Height)},
                         g_MainWindowData.ImageCount,g_AtmosphereFrame.quality,
-                        g_AtmosphereFrame.screen_resolution_divisor);
+                        g_AtmosphereFrame.screen_resolution_divisor,
+                        world_terrain_msaa);
                 }
                 const double distance_minimum=10'000.0;
                 const double distance_maximum=10'000'000.0;
@@ -4135,7 +4165,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<"\"rendering_method\":\""
                         <<tetra_viewer::atmosphere_rendering_method_name(
                               g_AtmosphereFrame.rendering_method)
-                        <<"\",\"screen_resolution_divisor\":"
+                        <<"\",\"terrain_msaa\":"
+                        <<(world_terrain_msaa?"true":"false")
+                        <<",\"screen_resolution_divisor\":"
                         <<g_AtmosphereFrame.screen_resolution_divisor<<','
                         <<"\"shadows_ms\":"<<summaries[0].median<<','
                         <<"\"atmosphere_ms\":"<<summaries[1].median<<','

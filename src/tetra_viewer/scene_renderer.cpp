@@ -95,6 +95,33 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   VkPhysicalDeviceProperties device_properties{};
   vkGetPhysicalDeviceProperties(physical_device_,&device_properties);
   timestamp_period_nanoseconds_=device_properties.limits.timestampPeriod;
+  VkPhysicalDeviceDepthStencilResolveProperties resolve_properties{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
+  VkPhysicalDeviceProperties2 device_properties_2{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  device_properties_2.pNext=&resolve_properties;
+  vkGetPhysicalDeviceProperties2(physical_device_,&device_properties_2);
+  const auto framebuffer_samples=
+      device_properties.limits.framebufferColorSampleCounts&
+      device_properties.limits.framebufferDepthSampleCounts;
+  const auto supports_four_samples=[&](VkFormat format,
+                                        VkImageUsageFlags usage){
+    VkImageFormatProperties properties{};
+    return vkGetPhysicalDeviceImageFormatProperties(
+               physical_device_,format,VK_IMAGE_TYPE_2D,
+               VK_IMAGE_TILING_OPTIMAL,usage,0U,&properties)==VK_SUCCESS&&
+           (properties.sampleCounts&VK_SAMPLE_COUNT_4_BIT)!=0U;
+  };
+  terrain_msaa_supported_=
+      (framebuffer_samples&VK_SAMPLE_COUNT_4_BIT)!=0U&&
+      (resolve_properties.supportedDepthResolveModes&
+       VK_RESOLVE_MODE_MAX_BIT)!=0U&&
+      supports_four_samples(
+          scene_colour_format_,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|
+                                   VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)&&
+      supports_four_samples(
+          depth_format_,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|
+                            VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
 
   std::array<VkDescriptorSetLayoutBinding,6> shadow_bindings{};
   shadow_bindings[0].binding=0;
@@ -268,6 +295,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                                    bool depth_overlay,
                                    bool alpha_blend, bool offset_fill,
                                    VkPipelineLayout pipeline_layout,
+                                   VkSampleCountFlagBits sample_count,
                                    VkPipeline* target) {
     constexpr VkPrimitiveTopology topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; assembly.topology = topology;
@@ -299,8 +327,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     }
     VkPipelineColorBlendStateCreateInfo pipeline_blend=blend;
     pipeline_blend.pAttachments=&pipeline_blend_attachment;
+    VkPipelineMultisampleStateCreateInfo pipeline_multisample=multisample;
+    pipeline_multisample.rasterizationSamples=sample_count;
     VkGraphicsPipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    pipeline.pNext = &rendering; pipeline.stageCount = 2; pipeline.pStages = pipeline_stages; pipeline.pVertexInputState = &vertex_input; pipeline.pInputAssemblyState = &assembly; pipeline.pViewportState = &viewport; pipeline.pRasterizationState = &raster; pipeline.pMultisampleState = &multisample; pipeline.pDepthStencilState = &depth; pipeline.pColorBlendState = &pipeline_blend; pipeline.pDynamicState = &dynamic; pipeline.layout = pipeline_layout;
+    pipeline.pNext = &rendering; pipeline.stageCount = 2; pipeline.pStages = pipeline_stages; pipeline.pVertexInputState = &vertex_input; pipeline.pInputAssemblyState = &assembly; pipeline.pViewportState = &viewport; pipeline.pRasterizationState = &raster; pipeline.pMultisampleState = &pipeline_multisample; pipeline.pDepthStencilState = &depth; pipeline.pColorBlendState = &pipeline_blend; pipeline.pDynamicState = &dynamic; pipeline.layout = pipeline_layout;
     const auto result=vkCreateGraphicsPipelines(
         device_,VK_NULL_HANDLE,1,&pipeline,nullptr,target);
     if(result!=VK_SUCCESS){
@@ -314,28 +344,48 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
     }
   };
   create_pipeline(stages, VK_POLYGON_MODE_FILL, true, false, false, true,
-                  shaded_pipeline_layout_,&triangle_pipeline_);
+                  shaded_pipeline_layout_,VK_SAMPLE_COUNT_1_BIT,
+                  &triangle_pipeline_);
   // The surface wire pass rasterizes the exact same triangle vertices as the
   // opaque pass. Each edge is therefore a native one-pixel line between its
   // two endpoints, with identical depth interpolation and no depth pull.
   create_pipeline(wire_stages,VK_POLYGON_MODE_LINE,true,true,false,false,
-                  pipeline_layout_,&triangle_wire_pipeline_);
+                  pipeline_layout_,VK_SAMPLE_COUNT_1_BIT,
+                  &triangle_wire_pipeline_);
   // Hierarchy edges are independent segments, expanded into screen-space
   // ribbons by edge.vert. They retain alpha coverage for antialiasing.
   create_pipeline(edge_stages,VK_POLYGON_MODE_FILL,true,true,true,false,
-                  pipeline_layout_,&line_pipeline_);
+                  pipeline_layout_,VK_SAMPLE_COUNT_1_BIT,&line_pipeline_);
   // Editor objects and manipulation handles remain visible when they overlap
   // the inspected mesh, as in conventional DCC applications. They use their
   // own buffer and pipeline so mesh-edge visibility remains depth correct.
   create_pipeline(edge_stages,VK_POLYGON_MODE_FILL,false,true,true,false,
-                  pipeline_layout_,&editor_line_pipeline_);
+                  pipeline_layout_,VK_SAMPLE_COUNT_1_BIT,
+                  &editor_line_pipeline_);
   VkPipelineShaderStageCreateInfo sky_stages[2]{
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
        VK_SHADER_STAGE_VERTEX_BIT,sky_vertex_shader,"main"},
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
        VK_SHADER_STAGE_FRAGMENT_BIT,sky_fragment_shader,"main"}};
   create_pipeline(sky_stages,VK_POLYGON_MODE_FILL,false,false,false,false,
-                  pipeline_layout_,&sky_pipeline_);
+                  pipeline_layout_,VK_SAMPLE_COUNT_1_BIT,&sky_pipeline_);
+  if(terrain_msaa_supported_){
+    create_pipeline(stages,VK_POLYGON_MODE_FILL,true,false,false,true,
+                    shaded_pipeline_layout_,VK_SAMPLE_COUNT_4_BIT,
+                    &msaa_triangle_pipeline_);
+    create_pipeline(wire_stages,VK_POLYGON_MODE_LINE,true,true,false,false,
+                    pipeline_layout_,VK_SAMPLE_COUNT_4_BIT,
+                    &msaa_triangle_wire_pipeline_);
+    create_pipeline(edge_stages,VK_POLYGON_MODE_FILL,true,true,true,false,
+                    pipeline_layout_,VK_SAMPLE_COUNT_4_BIT,
+                    &msaa_line_pipeline_);
+    create_pipeline(edge_stages,VK_POLYGON_MODE_FILL,false,true,true,false,
+                    pipeline_layout_,VK_SAMPLE_COUNT_4_BIT,
+                    &msaa_editor_line_pipeline_);
+    create_pipeline(sky_stages,VK_POLYGON_MODE_FILL,false,false,false,false,
+                    pipeline_layout_,VK_SAMPLE_COUNT_4_BIT,
+                    &msaa_sky_pipeline_);
+  }
 
   VkPipelineShaderStageCreateInfo composite_stages[2]{
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
@@ -469,9 +519,11 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
 
 void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                              AtmosphereQuality quality,
-                             std::uint32_t screen_resolution_divisor) {
+                             std::uint32_t screen_resolution_divisor,
+                             bool terrain_msaa) {
   quality_settings_=atmosphere_quality_settings(quality);
   screen_resolution_divisor_=std::clamp(screen_resolution_divisor,2U,4U);
+  terrain_msaa_enabled_=terrain_msaa&&terrain_msaa_supported_;
   atmosphere_dispatch_counts_={};
   dynamic_sun_shadow_phase_=0U;
   dynamic_sun_was_active_=false;
@@ -487,6 +539,14 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkDestroyImage(device_,colour.image,nullptr);
     vkFreeMemory(device_,colour.memory,nullptr);
   }
+  vkDestroyImageView(device_,msaa_depth_image_.view,nullptr);
+  vkDestroyImage(device_,msaa_depth_image_.image,nullptr);
+  vkFreeMemory(device_,msaa_depth_image_.memory,nullptr);
+  msaa_depth_image_={};
+  vkDestroyImageView(device_,msaa_colour_image_.view,nullptr);
+  vkDestroyImage(device_,msaa_colour_image_.image,nullptr);
+  vkFreeMemory(device_,msaa_colour_image_.memory,nullptr);
+  msaa_colour_image_={};
   for(auto& shadow:shadow_images_){
     for(auto view:shadow.layer_views)vkDestroyImageView(device_,view,nullptr);
     vkDestroyImageView(device_,shadow.view,nullptr);
@@ -563,6 +623,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   const auto frames=static_cast<std::size_t>(image_count);
   scene_target_allocation_bytes_=frames*
       static_cast<std::size_t>(extent.width)*extent.height*(8U+4U);
+  if(terrain_msaa_enabled_)
+    scene_target_allocation_bytes_+=
+        static_cast<std::size_t>(extent.width)*extent.height*4U*(8U+4U);
   const std::size_t lookup_bytes=
       quality_settings_.transmittance_width*
           quality_settings_.transmittance_height*8U+
@@ -642,6 +705,69 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     view.subresourceRange.layerCount=1;
     if(vkCreateImageView(device_,&view,nullptr,&colour.view)!=VK_SUCCESS)
       throw std::runtime_error("unable to create HDR scene colour view");
+  }
+
+  if(terrain_msaa_enabled_){
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType=VK_IMAGE_TYPE_2D;
+    image.extent={extent.width,extent.height,1U};
+    image.mipLevels=1U;
+    image.arrayLayers=1U;
+    image.samples=VK_SAMPLE_COUNT_4_BIT;
+    image.tiling=VK_IMAGE_TILING_OPTIMAL;
+    image.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+
+    image.format=scene_colour_format_;
+    image.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|
+                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+    if(vkCreateImage(device_,&image,nullptr,&msaa_colour_image_.image)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to create multisampled scene colour");
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device_,msaa_colour_image_.image,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,
+                        &msaa_colour_image_.memory)!=VK_SUCCESS||
+       vkBindImageMemory(device_,msaa_colour_image_.image,
+                         msaa_colour_image_.memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate multisampled scene colour");
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image=msaa_colour_image_.image;
+    view.viewType=VK_IMAGE_VIEW_TYPE_2D;
+    view.format=scene_colour_format_;
+    view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+    view.subresourceRange.levelCount=1U;
+    view.subresourceRange.layerCount=1U;
+    if(vkCreateImageView(device_,&view,nullptr,&msaa_colour_image_.view)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to create multisampled scene colour view");
+
+    image.format=depth_format_;
+    image.usage=VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|
+                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+    if(vkCreateImage(device_,&image,nullptr,&msaa_depth_image_.image)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to create multisampled scene depth");
+    vkGetImageMemoryRequirements(device_,msaa_depth_image_.image,&requirements);
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(
+        physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,
+                        &msaa_depth_image_.memory)!=VK_SUCCESS||
+       vkBindImageMemory(device_,msaa_depth_image_.image,
+                         msaa_depth_image_.memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate multisampled scene depth");
+    view.image=msaa_depth_image_.image;
+    view.format=depth_format_;
+    view.subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+    if(vkCreateImageView(device_,&view,nullptr,&msaa_depth_image_.view)!=
+       VK_SUCCESS)
+      throw std::runtime_error("unable to create multisampled scene depth view");
   }
 
   capture_frames_.resize(image_count);
@@ -2456,7 +2582,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
 
   auto& scene_colour=scene_colour_images_.at(image_index);
   auto& scene_depth=depth_images_.at(image_index);
-  std::array<VkImageMemoryBarrier,2> to_scene{};
+  std::array<VkImageMemoryBarrier,4> to_scene{};
   to_scene[0].sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
   to_scene[0].srcAccessMask=scene_colour.initialized?VK_ACCESS_SHADER_READ_BIT:0U;
   to_scene[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -2477,21 +2603,58 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   to_scene[1].newLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   to_scene[1].image=scene_depth.image;
   to_scene[1].subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
-  vkCmdPipelineBarrier(command_buffer,
+  std::uint32_t to_scene_count=2U;
+  if(terrain_msaa_enabled_){
+    to_scene[2]=to_scene[0];
+    to_scene[2].srcAccessMask=msaa_colour_image_.initialized?
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT:0U;
+    to_scene[2].oldLayout=msaa_colour_image_.initialized?
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+    to_scene[2].image=msaa_colour_image_.image;
+    to_scene[3]=to_scene[1];
+    to_scene[3].srcAccessMask=msaa_depth_image_.initialized?
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:0U;
+    to_scene[3].oldLayout=msaa_depth_image_.initialized?
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        VK_IMAGE_LAYOUT_UNDEFINED;
+    to_scene[3].image=msaa_depth_image_.image;
+    to_scene_count=4U;
+  }
+  VkPipelineStageFlags scene_source_stages=
       (scene_colour.initialized||scene_depth.initialized)?
-          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT:
+          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+  if(terrain_msaa_enabled_&&msaa_colour_image_.initialized)
+    scene_source_stages|=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  vkCmdPipelineBarrier(command_buffer,
+      scene_source_stages,
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|
           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-      0,0,nullptr,0,nullptr,static_cast<std::uint32_t>(to_scene.size()),
+      0,0,nullptr,0,nullptr,to_scene_count,
       to_scene.data());
 
   VkClearValue colour{};
-  colour.color=black_clear?VkClearColorValue{{0.0F,0.0F,0.0F,1.0F}}:
-      VkClearColorValue{{0.06F,0.08F,0.11F,1.0F}};
+  const float clear_alpha=terrain_msaa_enabled_&&atmosphere_enabled?0.0F:1.0F;
+  colour.color=black_clear||clear_alpha==0.0F?
+      VkClearColorValue{{0.0F,0.0F,0.0F,clear_alpha}}:
+      VkClearColorValue{{0.06F,0.08F,0.11F,clear_alpha}};
   VkClearValue depth{};
   depth.depthStencil={depth_clear(main_scene_depth_convention),0U};
-  VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = scene_colour.view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
-  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = scene_depth.view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; depth_attachment.clearValue = depth;
+  VkRenderingAttachmentInfo colour_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; colour_attachment.imageView = terrain_msaa_enabled_?msaa_colour_image_.view:scene_colour.view; colour_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; colour_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; colour_attachment.storeOp = terrain_msaa_enabled_?VK_ATTACHMENT_STORE_OP_DONT_CARE:VK_ATTACHMENT_STORE_OP_STORE; colour_attachment.clearValue = colour;
+  VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}; depth_attachment.imageView = terrain_msaa_enabled_?msaa_depth_image_.view:scene_depth.view; depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; depth_attachment.storeOp = terrain_msaa_enabled_?VK_ATTACHMENT_STORE_OP_DONT_CARE:VK_ATTACHMENT_STORE_OP_STORE; depth_attachment.clearValue = depth;
+  if(terrain_msaa_enabled_){
+    colour_attachment.resolveMode=VK_RESOLVE_MODE_AVERAGE_BIT;
+    colour_attachment.resolveImageView=scene_colour.view;
+    colour_attachment.resolveImageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // The scene uses reversed depth, so the closest covered sample has the
+    // greatest value and must win the single-sample atmosphere depth.
+    depth_attachment.resolveMode=VK_RESOLVE_MODE_MAX_BIT;
+    depth_attachment.resolveImageView=scene_depth.view;
+    depth_attachment.resolveImageLayout=
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  }
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;
   begin_rendering(command_buffer, reinterpret_cast<const VkRenderingInfoKHR*>(&rendering));
   VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F}; VkRect2D scissor{{0, 0}, extent}; VkDeviceSize offset{};
@@ -2524,15 +2687,19 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
   if(!black_clear&&!atmosphere_enabled){
-    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,sky_pipeline_);
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+        terrain_msaa_enabled_?msaa_sky_pipeline_:sky_pipeline_);
     vkCmdPushConstants(command_buffer,pipeline_layout_,
         VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
         sizeof(float)*28,push_data.data());
     vkCmdDraw(command_buffer,6U,1U,0U,0U);
   }
-  draw(triangle_pipeline_,shaded_pipeline_layout_,triangles_,
+  draw(terrain_msaa_enabled_?msaa_triangle_pipeline_:triangle_pipeline_,
+       shaded_pipeline_layout_,triangles_,
        surface_upload_planner_.published_draws());
-  draw(triangle_wire_pipeline_,pipeline_layout_,triangles_,
+  draw(terrain_msaa_enabled_?msaa_triangle_wire_pipeline_:
+                               triangle_wire_pipeline_,
+       pipeline_layout_,triangles_,
        surface_upload_planner_.published_draws());
   push_data[24]=static_cast<float>(extent.width);
   push_data[25]=static_cast<float>(extent.height);
@@ -2540,9 +2707,16 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   // analytically antialiased one-pixel centre line.
   push_data[26]=1.0F;
   push_data[27]=0.0F;
-  draw(line_pipeline_,pipeline_layout_,hierarchy_lines_);
-  draw(editor_line_pipeline_,pipeline_layout_,editor_lines_);
+  draw(terrain_msaa_enabled_?msaa_line_pipeline_:line_pipeline_,
+       pipeline_layout_,hierarchy_lines_);
+  draw(terrain_msaa_enabled_?msaa_editor_line_pipeline_:
+                               editor_line_pipeline_,
+       pipeline_layout_,editor_lines_);
   end_rendering(command_buffer);
+  if(terrain_msaa_enabled_){
+    msaa_colour_image_.initialized=true;
+    msaa_depth_image_.initialized=true;
+  }
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timing_query_pool_,timing_base+3U);
 
@@ -3004,6 +3178,12 @@ void SceneRenderer::shutdown() {
     vkDestroyImage(device_,colour.image,nullptr);
     vkFreeMemory(device_,colour.memory,nullptr);
   }
+  vkDestroyImageView(device_,msaa_depth_image_.view,nullptr);
+  vkDestroyImage(device_,msaa_depth_image_.image,nullptr);
+  vkFreeMemory(device_,msaa_depth_image_.memory,nullptr);
+  vkDestroyImageView(device_,msaa_colour_image_.view,nullptr);
+  vkDestroyImage(device_,msaa_colour_image_.image,nullptr);
+  vkFreeMemory(device_,msaa_colour_image_.memory,nullptr);
   for(auto& shadow:shadow_images_){
     for(auto view:shadow.layer_views)vkDestroyImageView(device_,view,nullptr);
     vkDestroyImageView(device_,shadow.view,nullptr);
@@ -3078,6 +3258,11 @@ void SceneRenderer::shutdown() {
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
   vkDestroyPipeline(device_, editor_line_pipeline_, nullptr);
+  vkDestroyPipeline(device_,msaa_sky_pipeline_,nullptr);
+  vkDestroyPipeline(device_,msaa_triangle_pipeline_,nullptr);
+  vkDestroyPipeline(device_,msaa_triangle_wire_pipeline_,nullptr);
+  vkDestroyPipeline(device_,msaa_line_pipeline_,nullptr);
+  vkDestroyPipeline(device_,msaa_editor_line_pipeline_,nullptr);
   vkDestroyPipelineLayout(device_,shaded_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,composite_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,atmosphere_pipeline_layout_,nullptr);

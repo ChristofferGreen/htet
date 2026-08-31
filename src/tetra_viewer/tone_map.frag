@@ -808,11 +808,61 @@ vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
   return surface_radiance*transmittance+scattering;
 }
 
+vec3 background_atmosphere() {
+  const vec3 view_direction=atmosphere_view_direction(texture_coordinate);
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float ground_distance=ground_intersection_distance(view_direction);
+  vec3 radiance;
+  if(ground_distance>0.0){
+    radiance=composite_aerial(
+        analytic_ground_radiance(view_direction,ground_distance),
+        ground_distance);
+  }else{
+    if(atmosphere.reserved1.y>0.5){
+      vec3 primary_transmittance;
+      const float terrain_shadow_weight=
+          primary_shadow_cone_weight(view_direction);
+      vec3 cached_shadow_visibility=vec3(1.0);
+#ifdef FAITHFUL_SHADOW_SPLIT
+      cached_shadow_visibility=sample_long_shadow_visibility(view_direction);
+#endif
+      if(reference_hillaire_transport())
+        radiance=sample_sky_view(view_direction,texture_coordinate);
+      else if(deterministic_shadowed_froxels())
+        shadowed_froxel_atmosphere(
+            atmosphere.camera_forward_maximum_distance.w,
+            radiance,primary_transmittance);
+      else if(deterministic_half_resolution())
+        reconstructed_atmosphere(0.0,radiance,primary_transmittance);
+      else
+        radiance=orbital_primary_scattering(
+            view_direction,1.0e9,terrain_shadow_weight,
+            cached_shadow_visibility,primary_transmittance);
+    }else{
+      radiance=sample_sky_view(view_direction,texture_coordinate);
+    }
+  }
+  if(ground_distance<0.0&&
+     dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
+     !planet_blocks_view(view_direction)){
+    const float altitude=length(atmosphere.camera_position_near.xyz)-
+        atmosphere.rayleigh_ground_radius.w;
+    const float cosine_angle=dot(
+        normalize(atmosphere.camera_position_near.xyz),view_direction);
+    const vec2 transmittance_uv=atmosphere_transmittance_uv(
+        altitude,cosine_angle);
+    radiance+=atmosphere.solar_absorption_peak.rgb*
+        texture(transmittance_lut,transmittance_uv).rgb*24.0;
+  }
+  return radiance;
+}
+
 void main() {
   // Manual fixed exposure is the deterministic qualification default. Scene
   // depth is deliberately bound here as the contract for the following
   // depth-aware atmosphere composition gate.
-  vec3 hdr=max(texture(hdr_scene,texture_coordinate).rgb,vec3(0.0));
+  const vec4 scene_sample=texture(hdr_scene,texture_coordinate);
+  vec3 hdr=max(scene_sample.rgb,vec3(0.0));
   const int debug_view=int(atmosphere.reserved1.x+0.5);
   if(debug_view!=0){
     vec3 diagnostic=vec3(0.0);
@@ -905,58 +955,16 @@ void main() {
   if(atmosphere.profile_and_mode.w>0.5){
     const float depth=texture(scene_depth,texture_coordinate).r;
     if(depth<=1.0e-8){
-      const vec3 view_direction=atmosphere_view_direction(texture_coordinate);
-      const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
-      const float ground_distance=ground_intersection_distance(view_direction);
-      if(ground_distance>0.0){
-        hdr=composite_aerial(
-            analytic_ground_radiance(view_direction,ground_distance),
-            ground_distance);
-      }else{
-        if(atmosphere.reserved1.y>0.5){
-          // Visible clear sky must follow the current camera position
-          // continuously.  Even outside the forward Mie cone, reconstructing
-          // it from a retained position-quantized table produces brightness
-          // steps during flight.  The table remains useful for irradiance,
-          // diagnostics, and bounded aerial fallbacks, but not final sky
-          // pixels.
-          vec3 primary_transmittance;
-          const float terrain_shadow_weight=
-              primary_shadow_cone_weight(view_direction);
-          vec3 cached_shadow_visibility=vec3(1.0);
-#ifdef FAITHFUL_SHADOW_SPLIT
-          cached_shadow_visibility=sample_long_shadow_visibility(view_direction);
-#endif
-          if(reference_hillaire_transport())
-            hdr=sample_sky_view(view_direction,texture_coordinate);
-          else if(deterministic_shadowed_froxels())
-            shadowed_froxel_atmosphere(
-                atmosphere.camera_forward_maximum_distance.w,
-                hdr,primary_transmittance);
-          else if(deterministic_half_resolution())
-            reconstructed_atmosphere(0.0,hdr,primary_transmittance);
-          else
-            hdr=orbital_primary_scattering(
-                view_direction,1.0e9,terrain_shadow_weight,
-                cached_shadow_visibility,primary_transmittance);
-        }else
-          hdr=sample_sky_view(view_direction,texture_coordinate);
-      }
-      if(ground_distance<0.0&&
-         dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
-         !planet_blocks_view(view_direction)){
-        const float altitude=length(atmosphere.camera_position_near.xyz)-
-            atmosphere.rayleigh_ground_radius.w;
-        const float cosine_angle=dot(
-            normalize(atmosphere.camera_position_near.xyz),view_direction);
-        const vec2 transmittance_uv=atmosphere_transmittance_uv(
-            altitude,cosine_angle);
-        hdr+=atmosphere.solar_absorption_peak.rgb*
-            texture(transmittance_lut,transmittance_uv).rgb*24.0;
-      }
+      hdr=background_atmosphere();
     }else{
       const float distance_metres=atmosphere.camera_position_near.w/depth;
-      hdr=composite_aerial(hdr,distance_metres);
+      const float coverage=clamp(scene_sample.a,0.0,1.0);
+      const vec3 surface_radiance=hdr/max(coverage,0.25);
+      const vec3 terrain_radiance=composite_aerial(
+          surface_radiance,distance_metres);
+      hdr=coverage<0.999?
+          mix(background_atmosphere(),terrain_radiance,coverage):
+          terrain_radiance;
     }
   }
   out_colour=vec4(linear_to_srgb(aces_fitted(
