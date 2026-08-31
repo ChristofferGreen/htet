@@ -45,6 +45,7 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
   vec4 previous_camera_down_tangent_y;
   vec4 previous_camera_forward;
   vec4 temporal_control;
+  vec4 render_resolution;
 } atmosphere;
 
 layout(std140,set=0,binding=7) uniform ShadowCascades {
@@ -60,6 +61,14 @@ layout(push_constant) uniform DispatchMode {
   uint reserved1;
   uint reserved2;
 } dispatch_mode;
+
+ivec2 active_scene_size() {
+  return max(ivec2(atmosphere.render_resolution.xy+0.5),ivec2(1));
+}
+
+ivec2 active_screen_size() {
+  return max(ivec2(atmosphere.render_resolution.zw+0.5),ivec2(1));
+}
 
 const float PI=3.14159265358979323846;
 const int SAMPLE_COUNT=32;
@@ -381,9 +390,9 @@ vec3 integrate_scattered_luminance(vec3 origin,vec3 direction,
 }
 
 void generate_endpoint(ivec2 coordinate) {
-  const ivec2 output_size=imageSize(screen_endpoint);
+  const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
-  const ivec2 depth_size=textureSize(scene_depth,0);
+  const ivec2 depth_size=active_scene_size();
   const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
   const ivec2 base=coordinate*divisor;
   float nearest_distance=1.0e30;
@@ -428,9 +437,9 @@ void generate_sky_view(ivec2 coordinate) {
 }
 
 void generate_scattering(ivec2 coordinate) {
-  const ivec2 output_size=imageSize(screen_scattering);
+  const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
-  const ivec2 depth_size=textureSize(scene_depth,0);
+  const ivec2 depth_size=active_scene_size();
   const int divisor=clamp(int(dispatch_mode.reserved0),2,4);
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);

@@ -58,6 +58,8 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
   // x = global history validity, y = previous generation bits,
   // z = temporal blend, w = reserved.
   vec4 temporal_control;
+  // xy = active scene extent, zw = active reconstructed-screen extent.
+  vec4 render_resolution;
 } atmosphere;
 
 layout(std140,set=0,binding=7) uniform ShadowCascades {
@@ -73,6 +75,14 @@ layout(push_constant) uniform DispatchMode {
   uint reserved1;
   uint reserved2;
 } dispatch_mode;
+
+ivec2 active_scene_size() {
+  return max(ivec2(atmosphere.render_resolution.xy+0.5),ivec2(1));
+}
+
+ivec2 active_screen_size() {
+  return max(ivec2(atmosphere.render_resolution.zw+0.5),ivec2(1));
+}
 
 const float PI=3.14159265358979323846;
 
@@ -1632,9 +1642,9 @@ vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
 }
 
 void generate_reconstructed_endpoint(ivec2 coordinate) {
-  const ivec2 output_size=imageSize(screen_endpoint);
+  const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
-  const ivec2 depth_size=textureSize(scene_depth,0);
+  const ivec2 depth_size=active_scene_size();
   const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
   const ivec2 base=coordinate*divisor;
   float nearest_depth=0.0;
@@ -1669,9 +1679,9 @@ void generate_reconstructed_endpoint(ivec2 coordinate) {
 }
 
 void generate_reconstructed_scattering(ivec2 coordinate) {
-  const ivec2 output_size=imageSize(screen_scattering);
+  const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
-  const ivec2 depth_size=textureSize(scene_depth,0);
+  const ivec2 depth_size=active_scene_size();
   const int divisor=clamp(int(dispatch_mode.reserved0),2,4);
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
@@ -1783,13 +1793,13 @@ bool previous_history_coordinate(vec2 uv,vec4 endpoint,
   const vec2 previous_uv=ndc*0.5+0.5;
   if(any(lessThan(previous_uv,vec2(0.0)))||
      any(greaterThanEqual(previous_uv,vec2(1.0))))return false;
-  const ivec2 size=imageSize(screen_scattering);
+  const ivec2 size=active_screen_size();
   coordinate=clamp(ivec2(previous_uv*vec2(size)),ivec2(0),size-1);
   return true;
 }
 
 void resolve_reconstructed_history(ivec2 coordinate) {
-  const ivec2 size=imageSize(screen_scattering);
+  const ivec2 size=active_screen_size();
   if(any(greaterThanEqual(coordinate,size)))return;
   const uint previous_index=dispatch_mode.reserved0;
   const uint output_index=dispatch_mode.reserved1;
@@ -1849,7 +1859,7 @@ void resolve_reconstructed_history(ivec2 coordinate) {
 }
 
 void publish_reconstructed_history(ivec2 coordinate) {
-  const ivec2 size=imageSize(screen_scattering);
+  const ivec2 size=active_screen_size();
   if(any(greaterThanEqual(coordinate,size)))return;
   const uint index=dispatch_mode.reserved0;
   imageStore(screen_scattering,coordinate,

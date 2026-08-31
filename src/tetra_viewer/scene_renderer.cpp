@@ -136,6 +136,14 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
             depth_format_,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|
                               VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)&
         (VK_SAMPLE_COUNT_2_BIT|VK_SAMPLE_COUNT_4_BIT);
+  VkPhysicalDeviceMemoryProperties memory_properties{};
+  vkGetPhysicalDeviceMemoryProperties(physical_device_,&memory_properties);
+  constexpr auto memoryless_flags=VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT|
+                                  VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+  for(std::uint32_t index=0;index<memory_properties.memoryTypeCount;++index)
+    terrain_msaa_memoryless_supported_|=
+        (memory_properties.memoryTypes[index].propertyFlags&memoryless_flags)==
+        memoryless_flags;
 
   std::array<VkDescriptorSetLayoutBinding,6> shadow_bindings{};
   shadow_bindings[0].binding=0;
@@ -246,6 +254,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   composite_layout.setLayoutCount=1;
   composite_layout.pSetLayouts=&composite_descriptor_set_layout_;
+  VkPushConstantRange composite_push{VK_SHADER_STAGE_FRAGMENT_BIT,0,
+                                     sizeof(float)*4U};
+  composite_layout.pushConstantRangeCount=1;
+  composite_layout.pPushConstantRanges=&composite_push;
   if(vkCreatePipelineLayout(device_,&composite_layout,nullptr,
                             &composite_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create scene composite pipeline layout");
@@ -625,14 +637,15 @@ void SceneRenderer::create_terrain_msaa_targets(
 }
 
 void SceneRenderer::configure_terrain_msaa(
-    VkExtent2D extent,std::uint32_t image_count,
     VkSampleCountFlagBits terrain_samples) {
   if(!supports_terrain_samples(terrain_samples))
     throw std::runtime_error("unsupported terrain MSAA sample count");
   destroy_terrain_msaa_targets();
   terrain_samples_=terrain_samples;
-  create_terrain_msaa_targets(extent,image_count);
-  const auto pixels=static_cast<std::size_t>(extent.width)*extent.height;
+  const auto image_count=static_cast<std::uint32_t>(depth_images_.size());
+  create_terrain_msaa_targets(allocated_extent_,image_count);
+  const auto pixels=static_cast<std::size_t>(allocated_extent_.width)*
+      allocated_extent_.height;
   scene_target_allocation_bytes_=static_cast<std::size_t>(image_count)*
       pixels*(8U+4U);
   if(terrain_samples_!=VK_SAMPLE_COUNT_1_BIT&&!terrain_msaa_memoryless_)
@@ -644,6 +657,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                              AtmosphereQuality quality,
                              std::uint32_t screen_resolution_divisor,
                              VkSampleCountFlagBits terrain_samples) {
+  allocated_extent_=extent;
+  render_extent_=extent;
+  upscale_sharpening_=0.0F;
   quality_settings_=atmosphere_quality_settings(quality);
   screen_resolution_divisor_=std::clamp(screen_resolution_divisor,2U,4U);
   if(!supports_terrain_samples(terrain_samples))
@@ -1351,6 +1367,15 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   }
 }
 
+void SceneRenderer::set_render_extent(VkExtent2D extent,float sharpening) {
+  if(extent.width==0U||extent.height==0U||
+     extent.width>allocated_extent_.width||
+     extent.height>allocated_extent_.height)
+    throw std::runtime_error("scene render extent exceeds allocated targets");
+  render_extent_=extent;
+  upscale_sharpening_=std::clamp(sharpening,0.0F,1.0F);
+}
+
 void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
                            std::span<const SceneVertex> hierarchy_line_vertices,
                            std::span<const SceneVertex> surface_line_vertices) {
@@ -1606,6 +1631,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       vkGetDeviceProcAddr(device_, "vkCmdEndRenderingKHR"));
   if (begin_rendering == nullptr || end_rendering == nullptr)
     throw std::runtime_error("dynamic rendering is unavailable");
+  const VkExtent2D output_extent=extent;
+  const VkExtent2D scene_extent=render_extent_;
 
   constexpr std::uint32_t timing_count=8U;
   const std::uint32_t timing_base=image_index*timing_count;
@@ -1650,8 +1677,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   }
   auto& capture_frame=capture_frames_.at(image_index);
   if(capture_frame.pending){
-    const std::size_t byte_count=static_cast<std::size_t>(extent.width)*
-        extent.height*4U;
+    const std::size_t byte_count=
+        static_cast<std::size_t>(output_extent.width)*output_extent.height*4U;
     latest_capture_.pixels.resize(byte_count);
     void* capture_mapped{};
     if(vkMapMemory(device_,capture_frame.buffer_memory,0,byte_count,0,
@@ -1660,13 +1687,37 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     std::memcpy(latest_capture_.pixels.data(),capture_mapped,byte_count);
     vkUnmapMemory(device_,capture_frame.buffer_memory);
     latest_capture_.reversed_depth.resize(byte_count/sizeof(float));
-    if(vkMapMemory(device_,capture_frame.depth_buffer_memory,0,byte_count,0,
+    const std::size_t source_depth_bytes=
+        static_cast<std::size_t>(capture_frame.source_width)*
+        capture_frame.source_height*sizeof(float);
+    if(vkMapMemory(device_,capture_frame.depth_buffer_memory,0,
+                   source_depth_bytes,0,
                    &capture_mapped)!=VK_SUCCESS)
       throw std::runtime_error("unable to map scene depth capture buffer");
-    std::memcpy(latest_capture_.reversed_depth.data(),capture_mapped,byte_count);
+    const auto* source_depth=static_cast<const float*>(capture_mapped);
+    if(capture_frame.source_width==output_extent.width&&
+       capture_frame.source_height==output_extent.height)
+      std::memcpy(latest_capture_.reversed_depth.data(),source_depth,
+                  source_depth_bytes);
+    else for(std::uint32_t y=0;y<output_extent.height;++y){
+      const auto source_y=std::min(
+          static_cast<std::uint32_t>(
+              static_cast<std::uint64_t>(y)*capture_frame.source_height/
+              output_extent.height),capture_frame.source_height-1U);
+      for(std::uint32_t x=0;x<output_extent.width;++x){
+        const auto source_x=std::min(
+            static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(x)*capture_frame.source_width/
+                output_extent.width),capture_frame.source_width-1U);
+        latest_capture_.reversed_depth[
+            static_cast<std::size_t>(y)*output_extent.width+x]=source_depth[
+                static_cast<std::size_t>(source_y)*
+                    capture_frame.source_width+source_x];
+      }
+    }
     vkUnmapMemory(device_,capture_frame.depth_buffer_memory);
-    latest_capture_.width=extent.width;
-    latest_capture_.height=extent.height;
+    latest_capture_.width=output_extent.width;
+    latest_capture_.height=output_extent.height;
     latest_capture_.bgra=colour_format_==VK_FORMAT_B8G8R8A8_UNORM||
                          colour_format_==VK_FORMAT_B8G8R8_UNORM;
     latest_capture_.valid=true;
@@ -1831,6 +1882,14 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       parameters.atmosphere_height_metres*
       (2.0*parameters.ground_radius_metres+
        parameters.atmosphere_height_metres)));
+  atmosphere_uniform[84]=static_cast<float>(render_extent_.width);
+  atmosphere_uniform[85]=static_cast<float>(render_extent_.height);
+  atmosphere_uniform[86]=static_cast<float>(
+      (render_extent_.width+screen_resolution_divisor_-1U)/
+      screen_resolution_divisor_);
+  atmosphere_uniform[87]=static_cast<float>(
+      (render_extent_.height+screen_resolution_divisor_-1U)/
+      screen_resolution_divisor_);
   void* mapped{};
   if(vkMapMemory(device_,atmosphere_frame.uniform_memory,0,
                  sizeof(atmosphere_uniform),0,&mapped)!=VK_SUCCESS)
@@ -2707,10 +2766,14 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     depth_attachment.resolveImageLayout=
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   }
-  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;
+  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO}; rendering.renderArea.extent = scene_extent; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &colour_attachment; rendering.pDepthAttachment = &depth_attachment;
   begin_rendering(command_buffer, reinterpret_cast<const VkRenderingInfoKHR*>(&rendering));
-  VkViewport viewport{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F}; VkRect2D scissor{{0, 0}, extent}; VkDeviceSize offset{};
-  vkCmdSetViewport(command_buffer, 0, 1, &viewport); vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+  VkViewport scene_viewport{0,0,static_cast<float>(scene_extent.width),
+      static_cast<float>(scene_extent.height),0.0F,1.0F};
+  VkRect2D scene_scissor{{0,0},scene_extent};
+  VkDeviceSize offset{};
+  vkCmdSetViewport(command_buffer,0,1,&scene_viewport);
+  vkCmdSetScissor(command_buffer,0,1,&scene_scissor);
   std::array<float,28> push_data{};
   std::copy_n(camera_data,28,push_data.begin());
   // The light vector's fourth component is intentionally not geometric. It
@@ -2761,8 +2824,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
                         msaa_triangle_wire_pipeline_),
        pipeline_layout_,triangles_,
        surface_upload_planner_.published_draws());
-  push_data[24]=static_cast<float>(extent.width);
-  push_data[25]=static_cast<float>(extent.height);
+  push_data[24]=static_cast<float>(scene_extent.width);
+  push_data[25]=static_cast<float>(scene_extent.height);
   // One-pixel half-extent provides the complete filter footprint for an
   // analytically antialiased one-pixel centre line.
   push_data[26]=1.0F;
@@ -2923,7 +2986,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
             AtmosphereLookupRevisions{}),
         .terrain_generation=surface_upload_planner_.published_generation(),
         .result_generation=result_generation,
-        .width=extent.width,.height=extent.height,
+        .width=scene_extent.width,.height=scene_extent.height,
         .linear_resolution_divisor=screen_resolution_divisor_,
         .sample_count=temporal?2U:32U,
         .transport=atmosphere_input.transport,
@@ -2937,10 +3000,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       else ++atmosphere_dispatch_counts_.temporal_history_invalidations;
     }
     const std::uint32_t screen_width=
-        (extent.width+screen_resolution_divisor_-1U)/
+        (scene_extent.width+screen_resolution_divisor_-1U)/
         screen_resolution_divisor_;
     const std::uint32_t screen_height=
-        (extent.height+screen_resolution_divisor_-1U)/
+        (scene_extent.height+screen_resolution_divisor_-1U)/
         screen_resolution_divisor_;
     const std::uint32_t screen_groups_x=(screen_width+7U)/8U;
     const std::uint32_t screen_groups_y=(screen_height+7U)/8U;
@@ -3111,14 +3174,23 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   output_attachment.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   output_attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo output_rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  output_rendering.renderArea.extent=extent;
+  output_rendering.renderArea.extent=output_extent;
   output_rendering.layerCount=1;
   output_rendering.colorAttachmentCount=1;
   output_rendering.pColorAttachments=&output_attachment;
+  const VkViewport output_viewport{0,0,
+      static_cast<float>(output_extent.width),
+      static_cast<float>(output_extent.height),0.0F,1.0F};
+  const VkRect2D output_scissor{{0,0},output_extent};
+  const std::array<float,4> composite_control{
+      upscale_sharpening_,
+      scene_extent.width!=output_extent.width||
+          scene_extent.height!=output_extent.height?1.0F:0.0F,
+      0.0F,0.0F};
   begin_rendering(command_buffer,
       reinterpret_cast<const VkRenderingInfoKHR*>(&output_rendering));
-  vkCmdSetViewport(command_buffer,0,1,&viewport);
-  vkCmdSetScissor(command_buffer,0,1,&scissor);
+  vkCmdSetViewport(command_buffer,0,1,&output_viewport);
+  vkCmdSetScissor(command_buffer,0,1,&output_scissor);
   const VkPipeline selected_composite_pipeline=
       atmosphere_input.transport==AtmosphereTransport::qualified_baseline?
           composite_pipeline_:faithful_composite_pipeline_;
@@ -3127,12 +3199,15 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
       composite_pipeline_layout_,0,1,&composite_descriptor_sets_.at(image_index),
       0,nullptr);
+  vkCmdPushConstants(command_buffer,composite_pipeline_layout_,
+      VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(composite_control),
+      composite_control.data());
   vkCmdDraw(command_buffer,3U,1U,0U,0U);
   end_rendering(command_buffer);
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                       timing_query_pool_,timing_base+7U);
   if(atmosphere_input.capture_requested){
-    ensure_capture_resources(capture_frame,extent);
+    ensure_capture_resources(capture_frame,output_extent);
     VkImageMemoryBarrier to_capture{
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     to_capture.srcAccessMask=capture_frame.initialized?
@@ -3156,13 +3231,16 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     output_attachment.imageView=capture_frame.view;
     begin_rendering(command_buffer,
         reinterpret_cast<const VkRenderingInfoKHR*>(&output_rendering));
-    vkCmdSetViewport(command_buffer,0,1,&viewport);
-    vkCmdSetScissor(command_buffer,0,1,&scissor);
+    vkCmdSetViewport(command_buffer,0,1,&output_viewport);
+    vkCmdSetScissor(command_buffer,0,1,&output_scissor);
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
                       selected_composite_pipeline);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
         composite_pipeline_layout_,0,1,
         &composite_descriptor_sets_.at(image_index),0,nullptr);
+    vkCmdPushConstants(command_buffer,composite_pipeline_layout_,
+        VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(composite_control),
+        composite_control.data());
     vkCmdDraw(command_buffer,3U,1U,0U,0U);
     end_rendering(command_buffer);
 
@@ -3177,7 +3255,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     VkBufferImageCopy copy{};
     copy.imageSubresource.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
     copy.imageSubresource.layerCount=1;
-    copy.imageExtent={extent.width,extent.height,1U};
+    copy.imageExtent={output_extent.width,output_extent.height,1U};
     vkCmdCopyImageToBuffer(command_buffer,capture_frame.image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture_frame.buffer,1,&copy);
 
@@ -3197,6 +3275,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,
         &depth_to_readback);
     copy.imageSubresource.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;
+    copy.imageExtent={scene_extent.width,scene_extent.height,1U};
     vkCmdCopyImageToBuffer(command_buffer,depth_images_.at(image_index).image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture_frame.depth_buffer,1,&copy);
     std::swap(depth_to_readback.srcAccessMask,
@@ -3222,6 +3301,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         static_cast<std::uint32_t>(host_reads.size()),host_reads.data(),
         0,nullptr);
     capture_frame.initialized=true;
+    capture_frame.source_width=scene_extent.width;
+    capture_frame.source_height=scene_extent.height;
     capture_frame.pending=true;
   }
 }

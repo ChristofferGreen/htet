@@ -32,7 +32,13 @@ inline constexpr SceneSampledImageDimension scene_colour_sample_dimension=
 
 inline constexpr std::uint32_t surface_optimizer_passes=5U;
 inline constexpr std::uint32_t surface_optimizer_dependency_halo_rings=5U;
-inline constexpr float default_world_sun_azimuth_radians=-1.8F;
+inline constexpr tetra::Vec3 default_world_camera_feet{
+    117.761,16.141,-134.089};
+inline constexpr double default_world_camera_yaw_radians=
+    2.469640891035986;
+inline constexpr double default_world_camera_pitch_radians=
+    0.064577182323791;
+inline constexpr float default_world_sun_azimuth_radians=-1.22173048F;
 inline constexpr float default_world_sun_elevation_radians=0.0872665F;
 inline constexpr double default_world_sun_cycle_seconds=10.0;
 

@@ -48,7 +48,80 @@ layout(std140,set=0,binding=7) uniform Atmosphere {
   vec4 previous_camera_down_tangent_y;
   vec4 previous_camera_forward;
   vec4 temporal_control;
+  vec4 render_resolution;
 } atmosphere;
+
+layout(push_constant) uniform CompositeControl {
+  // x = sharpening strength, y = spatial reconstruction enabled.
+  vec4 upscale;
+} composite_control;
+
+ivec2 active_scene_size() {
+  return max(ivec2(atmosphere.render_resolution.xy+0.5),ivec2(1));
+}
+
+ivec2 active_screen_size() {
+  return max(ivec2(atmosphere.render_resolution.zw+0.5),ivec2(1));
+}
+
+vec2 active_scene_uv(vec2 pixel_coordinate) {
+  const vec2 allocated=vec2(textureSize(hdr_scene,0));
+  const vec2 active_size=vec2(active_scene_size());
+  return clamp(pixel_coordinate,vec2(0.5),active_size-0.5)/allocated;
+}
+
+vec4 sample_scene_colour(vec2 uv) {
+  if(composite_control.upscale.y<0.5)return texture(hdr_scene,uv);
+  const vec2 active_size=vec2(active_scene_size());
+  const vec2 position=uv*active_size-0.5;
+  const vec2 base=floor(position);
+  const vec2 f=fract(position);
+  const vec2 w0=f*(-0.5+f*(1.0-0.5*f));
+  const vec2 w1=1.0+f*f*(-2.5+1.5*f);
+  const vec2 w2=f*(0.5+f*(2.0-1.5*f));
+  const vec2 w3=f*f*(-0.5+0.5*f);
+  const vec2 w12=w1+w2;
+  const vec2 middle=w2/max(w12,vec2(1.0e-6));
+  const vec3 x=vec3(base.x-0.5,base.x+middle.x+0.5,base.x+2.5);
+  const vec3 y=vec3(base.y-0.5,base.y+middle.y+0.5,base.y+2.5);
+  const vec3 wx=vec3(w0.x,w12.x,w3.x);
+  const vec3 wy=vec3(w0.y,w12.y,w3.y);
+  vec4 reconstructed=vec4(0.0);
+  vec3 local_minimum=vec3(3.402823466e+38);
+  vec3 local_maximum=vec3(-3.402823466e+38);
+  vec3 neighbour_sum=vec3(0.0);
+  for(int row=0;row<3;++row)for(int column=0;column<3;++column){
+    const vec4 sample_value=texture(hdr_scene,active_scene_uv(
+        vec2(x[column],y[row])));
+    reconstructed+=sample_value*wx[column]*wy[row];
+    local_minimum=min(local_minimum,sample_value.rgb);
+    local_maximum=max(local_maximum,sample_value.rgb);
+    if((row==1)!=(column==1))neighbour_sum+=sample_value.rgb;
+  }
+  const vec3 neighbour_average=neighbour_sum*0.25;
+  reconstructed.rgb=clamp(reconstructed.rgb+
+      composite_control.upscale.x*(reconstructed.rgb-neighbour_average),
+      local_minimum,local_maximum);
+  reconstructed.a=clamp(reconstructed.a,0.0,1.0);
+  return reconstructed;
+}
+
+float sample_scene_depth(vec2 uv) {
+  if(composite_control.upscale.y<0.5)return texture(scene_depth,uv).r;
+  const ivec2 size=active_scene_size();
+  const ivec2 coordinate=clamp(ivec2(uv*vec2(size)),ivec2(0),size-1);
+  return texelFetch(scene_depth,coordinate,0).r;
+}
+
+float sample_scene_depth_offset(vec2 uv,ivec2 offset) {
+  if(composite_control.upscale.y<0.5)
+    return texture(scene_depth,uv+
+        vec2(offset)/vec2(textureSize(scene_depth,0))).r;
+  const ivec2 size=active_scene_size();
+  const ivec2 coordinate=clamp(
+      ivec2(uv*vec2(size))+offset,ivec2(0),size-1);
+  return texelFetch(scene_depth,coordinate,0).r;
+}
 
 vec3 aces_fitted(vec3 value) {
   const float a=2.51;
@@ -650,7 +723,7 @@ void reconstructed_atmosphere(float native_depth,
   const bool near_solar_mie_lobe=dot(native_direction,normalize(
       atmosphere.sun_direction_exposure.xyz))>cos(radians(45.0));
   const bool native_class_boundary=!opaque&&near_solar_mie_lobe&&
-      textureOffset(scene_depth,texture_coordinate,ivec2(0,3)).r>1.0e-8;
+      sample_scene_depth_offset(texture_coordinate,ivec2(0,3))>1.0e-8;
   const float target_depth=opaque?
       atmosphere.camera_position_near.w/native_depth:0.0;
   if(native_class_boundary&&!reference_hillaire_transport()){
@@ -658,7 +731,7 @@ void reconstructed_atmosphere(float native_depth,
         opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);
     return;
   }
-  const ivec2 size=textureSize(screen_scattering,0);
+  const ivec2 size=active_screen_size();
   const vec2 texel=texture_coordinate*vec2(size)-0.5;
   const ivec2 low=ivec2(floor(texel));
   const vec2 fraction=fract(texel);
@@ -861,7 +934,7 @@ void main() {
   // Manual fixed exposure is the deterministic qualification default. Scene
   // depth is deliberately bound here as the contract for the following
   // depth-aware atmosphere composition gate.
-  const vec4 scene_sample=texture(hdr_scene,texture_coordinate);
+  const vec4 scene_sample=sample_scene_colour(texture_coordinate);
   vec3 hdr=max(scene_sample.rgb,vec3(0.0));
   const int debug_view=int(atmosphere.reserved1.x+0.5);
   if(debug_view!=0){
@@ -885,7 +958,7 @@ void main() {
       diagnostic=lookup.a<0.99?vec3(8.0,0.0,8.0):lookup.rgb;
     }
     else if(debug_view==6){
-      const float depth=texture(scene_depth,texture_coordinate).r;
+      const float depth=sample_scene_depth(texture_coordinate);
       diagnostic=vec3(pow(clamp(depth,0.0,1.0),0.2));
     }else if(debug_view>=7&&debug_view<=10){
       const int cascade=debug_view-7;
@@ -924,9 +997,9 @@ void main() {
            direct_radiance*sample_long_shadow_visibility(
                atmosphere_view_direction(texture_coordinate)));
     }else if(debug_view==19){
-      diagnostic=texture(hdr_scene,texture_coordinate).rgb;
+      diagnostic=sample_scene_colour(texture_coordinate).rgb;
     }else if(debug_view==20||debug_view==21){
-      const float depth=texture(scene_depth,texture_coordinate).r;
+      const float depth=sample_scene_depth(texture_coordinate);
       if(depth>1.0e-8){
         vec3 transmittance,direct_radiance,multiple_radiance;
         orbital_primary_scattering_components(
@@ -953,7 +1026,7 @@ void main() {
     return;
   }
   if(atmosphere.profile_and_mode.w>0.5){
-    const float depth=texture(scene_depth,texture_coordinate).r;
+    const float depth=sample_scene_depth(texture_coordinate);
     if(depth<=1.0e-8){
       hdr=background_atmosphere();
     }else{

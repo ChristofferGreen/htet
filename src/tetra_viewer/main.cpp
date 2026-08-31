@@ -517,6 +517,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     if(world_mode)
         g_AtmosphereFrame.parameters=tetra_viewer::atmosphere_preset(
             tetra_viewer::default_world_atmosphere_preset);
+    if(world_mode){
+        g_AtmosphereFrame.transport=
+            tetra_viewer::AtmosphereTransport::faithful_hillaire;
+        g_AtmosphereFrame.screen_resolution_divisor=2U;
+    }
     g_AtmosphereFrame.parameters.metres_per_world_unit=10.0;
     if(world_mode)g_AtmosphereFrame.maximum_aerial_distance_metres=
         tetra_viewer::default_world_aerial_distance_metres;
@@ -604,7 +609,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::size_t geometry_worker_count=tetra::default_geometry_worker_count();
     constexpr std::string_view geometry_workers_prefix="--geometry-workers=";
     constexpr std::string_view window_size_prefix="--window-size=";
+    constexpr std::string_view window_position_prefix="--window-position=";
     std::array<std::uint32_t,2> initial_window_size{1280U,800U};
+    std::optional<std::array<int,2>> initial_window_position;
     for(int argument=1;argument<argc;++argument){
         const std::string_view value=argv[argument];
         if(value.starts_with(window_size_prefix)){
@@ -615,6 +622,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 return 2;
             }
             initial_window_size=*extent;
+            continue;
+        }
+        if(value.starts_with(window_position_prefix)){
+            const std::string position_text(
+                value.substr(window_position_prefix.size()));
+            std::array<int,2> position{};
+            char trailing{};
+            if(std::sscanf(position_text.c_str(),"%d,%d%c",
+                           &position[0],&position[1],&trailing)!=2){
+                fprintf(stderr,"window position must be X,Y\n");
+                return 2;
+            }
+            initial_window_position=position;
             continue;
         }
         if(!value.starts_with(geometry_workers_prefix))continue;
@@ -659,6 +679,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         static_cast<int>(initial_window_size[0]),
         static_cast<int>(initial_window_size[1]),
         world_mode?"Tetra World":"Tetrahedral refinement",nullptr,nullptr);
+    if(initial_window_position)
+        glfwSetWindowPos(window,(*initial_window_position)[0],
+                        (*initial_window_position)[1]);
     if (argc > 1 && (strcmp(argv[1], "--whole-cell-check") == 0 ||
                     strcmp(argv[1], "--whole-cell-cutaway-check") == 0))
         glfwSetWindowPos(window, 20, 40);
@@ -1054,6 +1077,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         return parameters;
     };
     tetra_viewer::FirstPersonController world_controller;
+    if(world_mode){
+        world_controller.state().feet=
+            tetra_viewer::default_world_camera_feet;
+        world_controller.state().yaw=
+            tetra_viewer::default_world_camera_yaw_radians;
+        world_controller.state().pitch=
+            tetra_viewer::default_world_camera_pitch_radians;
+    }
     tetra::Camera world_lod_camera;
     std::unique_ptr<tetra_viewer::TerrainRuntime> world_runtime;
     std::future<std::unique_ptr<tetra_viewer::TerrainRuntime>>
@@ -1062,13 +1093,27 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_pointer_captured=world_mode;
     bool world_paused=false;
     bool world_single_step=false;
-    bool world_free_fly=false;
+    bool world_free_fly=world_mode;
     bool world_lock_lod_camera=true;
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
-    bool world_smooth_normals=false;
-    bool world_terrain_msaa=false;
+    bool world_smooth_normals=world_mode;
+    bool world_terrain_msaa=world_mode&&
+        g_SceneRenderer.prefers_tile_local_terrain_msaa();
+    bool world_terrain_msaa_explicit=false;
     VkSampleCountFlagBits world_terrain_samples=VK_SAMPLE_COUNT_4_BIT;
+    enum class RenderResolutionMode { native,fixed,automatic };
+    RenderResolutionMode world_render_resolution_mode=
+        RenderResolutionMode::automatic;
+    float world_fixed_render_scale=2.0F/3.0F;
+    float world_auto_render_scale=1.0F;
+    float world_auto_minimum_scale=2.0F/3.0F;
+    float world_auto_maximum_scale=1.0F;
+    int world_auto_target_fps=60;
+    float world_upscale_sharpening=0.2F;
+    std::vector<double> world_auto_gpu_samples;
+    std::size_t world_render_scale_stable_frames{};
+    double world_auto_gpu_median_milliseconds{};
     float world_sun_azimuth=
         tetra_viewer::default_world_sun_azimuth_radians;
     float world_sun_elevation=
@@ -1153,6 +1198,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view look_frames_prefix=
             "--automation-look-frames=";
         constexpr std::string_view terrain_msaa_prefix="--terrain-msaa=";
+        constexpr std::string_view render_resolution_prefix=
+            "--render-resolution=";
+        constexpr std::string_view render_scale_prefix="--render-scale=";
+        constexpr std::string_view render_auto_minimum_prefix=
+            "--render-auto-min-scale=";
+        constexpr std::string_view render_auto_maximum_prefix=
+            "--render-auto-max-scale=";
+        constexpr std::string_view render_auto_target_prefix=
+            "--render-auto-target-fps=";
+        constexpr std::string_view render_sharpening_prefix=
+            "--render-sharpening=";
         const auto parse_argument_double=[&](std::string_view text,
                                              double& destination){
             const std::string value(text);
@@ -1189,6 +1245,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_smooth_normals=true;
             }else if(value=="--terrain-msaa"){
                 world_terrain_msaa=true;
+                world_terrain_msaa_explicit=true;
+            }else if(value=="--terrain-msaa-off"){
+                world_terrain_msaa=false;
+                world_terrain_msaa_explicit=true;
             }else if(value.starts_with(terrain_msaa_prefix)){
                 const auto samples=value.substr(terrain_msaa_prefix.size());
                 if(samples=="2")world_terrain_samples=VK_SAMPLE_COUNT_2_BIT;
@@ -1199,6 +1259,65 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 world_terrain_msaa=true;
+                world_terrain_msaa_explicit=true;
+            }else if(value.starts_with(render_resolution_prefix)){
+                const auto mode=value.substr(render_resolution_prefix.size());
+                if(mode=="native")world_render_resolution_mode=
+                    RenderResolutionMode::native;
+                else if(mode=="fixed")world_render_resolution_mode=
+                    RenderResolutionMode::fixed;
+                else if(mode=="auto")world_render_resolution_mode=
+                    RenderResolutionMode::automatic;
+                else{
+                    fprintf(stderr,
+                        "render resolution must be native, fixed, or auto\n");
+                    return 2;
+                }
+            }else if(value.starts_with(render_scale_prefix)){
+                double parsed{};
+                if(!parse_argument_double(
+                       value.substr(render_scale_prefix.size()),parsed)||
+                   parsed<0.5||parsed>1.0){
+                    fprintf(stderr,"render scale must be in [0.5,1.0]\n");
+                    return 2;
+                }
+                world_fixed_render_scale=static_cast<float>(parsed);
+            }else if(value.starts_with(render_auto_minimum_prefix)){
+                double parsed{};
+                if(!parse_argument_double(value.substr(
+                       render_auto_minimum_prefix.size()),parsed)||
+                   parsed<0.5||parsed>1.0){
+                    fprintf(stderr,"auto minimum scale must be in [0.5,1.0]\n");
+                    return 2;
+                }
+                world_auto_minimum_scale=static_cast<float>(parsed);
+            }else if(value.starts_with(render_auto_maximum_prefix)){
+                double parsed{};
+                if(!parse_argument_double(value.substr(
+                       render_auto_maximum_prefix.size()),parsed)||
+                   parsed<0.5||parsed>1.0){
+                    fprintf(stderr,"auto maximum scale must be in [0.5,1.0]\n");
+                    return 2;
+                }
+                world_auto_maximum_scale=static_cast<float>(parsed);
+            }else if(value.starts_with(render_auto_target_prefix)){
+                const auto target=value.substr(render_auto_target_prefix.size());
+                if(target=="60")world_auto_target_fps=60;
+                else if(target=="90")world_auto_target_fps=90;
+                else if(target=="120")world_auto_target_fps=120;
+                else{
+                    fprintf(stderr,"auto target FPS must be 60, 90, or 120\n");
+                    return 2;
+                }
+            }else if(value.starts_with(render_sharpening_prefix)){
+                double parsed{};
+                if(!parse_argument_double(value.substr(
+                       render_sharpening_prefix.size()),parsed)||
+                   parsed<0.0||parsed>1.0){
+                    fprintf(stderr,"render sharpening must be in [0,1]\n");
+                    return 2;
+                }
+                world_upscale_sharpening=static_cast<float>(parsed);
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
@@ -1470,6 +1589,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     temporal_half_resolution;
         world_sun_orbit_azimuth=world_sun_azimuth;
         world_sun_orbit_phase=world_sun_elevation;
+        if(world_auto_minimum_scale>world_auto_maximum_scale){
+            fprintf(stderr,"auto minimum scale exceeds maximum scale\n");
+            return 2;
+        }
+        world_auto_render_scale=world_auto_maximum_scale;
         world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
             world_gpu_atmosphere_probe||
             world_gpu_shadow_projection_probe||
@@ -1498,6 +1622,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 g_AtmosphereFrame.screen_resolution_divisor,
                 world_terrain_msaa?world_terrain_samples:
                                    VK_SAMPLE_COUNT_1_BIT);
+        }
+        if(world_terrain_msaa&&!world_terrain_msaa_explicit&&
+           !g_SceneRenderer.terrain_msaa_memoryless()){
+            g_SceneRenderer.configure_terrain_msaa(VK_SAMPLE_COUNT_1_BIT);
+            world_terrain_msaa=false;
         }
         if(world_gpu_atmosphere_probe&&g_AtmosphereFrame.transport!=
            tetra_viewer::AtmosphereTransport::faithful_hillaire){
@@ -2844,6 +2973,120 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     ImGui::SetTooltip(
                         "This device exposes only synchronized presentation");
             }
+            if(ImGui::CollapsingHeader("Render resolution")){
+                constexpr std::array<const char*,3> mode_names{
+                    "Native","Fixed","Auto"};
+                int mode=static_cast<int>(world_render_resolution_mode);
+                ImGui::SetNextItemWidth(120.0F);
+                if(ImGui::Combo("Mode",&mode,mode_names.data(),
+                                static_cast<int>(mode_names.size()))){
+                    world_render_resolution_mode=
+                        static_cast<RenderResolutionMode>(mode);
+                    world_auto_gpu_samples.clear();
+                    world_render_scale_stable_frames=0U;
+                }
+                constexpr std::array<float,4> scale_values{
+                    0.5F,2.0F/3.0F,0.75F,1.0F};
+                constexpr std::array<const char*,4> scale_names{
+                    "50%","67%","75%","100%"};
+                const auto scale_combo=[&](const char* label,float& value){
+                    std::size_t selected{};
+                    for(std::size_t index=1U;index<scale_values.size();++index)
+                        if(std::abs(value-scale_values[index])<
+                           std::abs(value-scale_values[selected]))
+                            selected=index;
+                    ImGui::SetNextItemWidth(120.0F);
+                    if(!ImGui::BeginCombo(label,scale_names[selected]))
+                        return false;
+                    bool changed=false;
+                    for(std::size_t index=0;index<scale_values.size();++index){
+                        const bool current=index==selected;
+                        if(ImGui::Selectable(scale_names[index],current)){
+                            value=scale_values[index];
+                            changed=true;
+                        }
+                        if(current)ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                    return changed;
+                };
+                if(world_render_resolution_mode==RenderResolutionMode::fixed){
+                    if(scale_combo("Render scale",world_fixed_render_scale))
+                        world_render_scale_stable_frames=0U;
+                }else if(world_render_resolution_mode==
+                             RenderResolutionMode::automatic){
+                    constexpr std::array<const char*,3> target_names{
+                        "60 FPS","90 FPS","120 FPS"};
+                    constexpr std::array<int,3> target_values{60,90,120};
+                    int selected=world_auto_target_fps==60?0:
+                        (world_auto_target_fps==90?1:2);
+                    ImGui::SetNextItemWidth(120.0F);
+                    if(ImGui::Combo("Target",&selected,target_names.data(),3)){
+                        world_auto_target_fps=target_values[selected];
+                        world_auto_gpu_samples.clear();
+                    }
+                    if(scale_combo("Minimum",world_auto_minimum_scale)){
+                        world_auto_maximum_scale=std::max(
+                            world_auto_maximum_scale,
+                            world_auto_minimum_scale);
+                        world_auto_render_scale=std::clamp(
+                            world_auto_render_scale,
+                            world_auto_minimum_scale,
+                            world_auto_maximum_scale);
+                        world_auto_gpu_samples.clear();
+                    }
+                    if(scale_combo("Maximum",world_auto_maximum_scale)){
+                        world_auto_minimum_scale=std::min(
+                            world_auto_minimum_scale,
+                            world_auto_maximum_scale);
+                        world_auto_render_scale=std::clamp(
+                            world_auto_render_scale,
+                            world_auto_minimum_scale,
+                            world_auto_maximum_scale);
+                        world_auto_gpu_samples.clear();
+                    }
+                }
+                if(world_render_resolution_mode==RenderResolutionMode::native)
+                    ImGui::BeginDisabled();
+                ImGui::SetNextItemWidth(120.0F);
+                ImGui::SliderFloat("Sharpening",&world_upscale_sharpening,
+                                   0.0F,1.0F,"%.2f");
+                if(world_render_resolution_mode==RenderResolutionMode::native)
+                    ImGui::EndDisabled();
+                int logical_width{},logical_height{};
+                glfwGetWindowSize(window,&logical_width,&logical_height);
+                float content_scale_x{},content_scale_y{};
+                glfwGetWindowContentScale(
+                    window,&content_scale_x,&content_scale_y);
+                const auto internal=g_SceneRenderer.render_extent();
+                const auto drawable=g_SceneRenderer.allocated_extent();
+                const float active_scale=drawable.width==0U?1.0F:
+                    static_cast<float>(internal.width)/drawable.width;
+                ImGui::Text("Window %dx%d points  %.2fx%.2f scale",
+                            logical_width,logical_height,
+                            content_scale_x,content_scale_y);
+                ImGui::Text("Drawable %ux%u  internal %ux%u (%.0f%%)",
+                            drawable.width,drawable.height,
+                            internal.width,internal.height,
+                            active_scale*100.0F);
+                const auto& render_timings=g_SceneRenderer.gpu_timings();
+                if(render_timings.valid){
+                    const double gpu_total=
+                        render_timings.shadows_milliseconds+
+                        render_timings.atmosphere_milliseconds+
+                        render_timings.terrain_milliseconds+
+                        render_timings.depth_reduction_milliseconds+
+                        render_timings.screen_integration_milliseconds+
+                        render_timings.temporal_reconstruction_milliseconds+
+                        render_timings.composite_milliseconds;
+                    ImGui::Text("GPU %.2f ms",gpu_total);
+                    if(world_render_resolution_mode==
+                           RenderResolutionMode::automatic)
+                        ImGui::TextDisabled("Auto median %.2f ms  stable %zu frames",
+                            world_auto_gpu_median_milliseconds,
+                            world_render_scale_stable_frames);
+                }
+            }
             if(!world_runtime){
                 ImGui::TextUnformatted("Terrain loading...");
             }else{
@@ -2886,9 +3129,6 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     throw std::runtime_error(
                         "unable to idle Vulkan for terrain MSAA change");
                 g_SceneRenderer.configure_terrain_msaa(
-                    {static_cast<std::uint32_t>(g_MainWindowData.Width),
-                     static_cast<std::uint32_t>(g_MainWindowData.Height)},
-                    g_MainWindowData.ImageCount,
                     world_terrain_msaa?world_terrain_samples:
                                        VK_SAMPLE_COUNT_1_BIT);
             };
@@ -4127,6 +4367,65 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             }
         }
 
+        if(world_mode){
+            const auto& timing=g_SceneRenderer.gpu_timings();
+            if(world_render_resolution_mode==
+                   RenderResolutionMode::automatic&&
+               timing.valid&&world_render_scale_stable_frames>=30U){
+                const double gpu_total=timing.shadows_milliseconds+
+                    timing.atmosphere_milliseconds+
+                    timing.terrain_milliseconds+
+                    timing.depth_reduction_milliseconds+
+                    timing.screen_integration_milliseconds+
+                    timing.temporal_reconstruction_milliseconds+
+                    timing.composite_milliseconds;
+                world_auto_gpu_samples.push_back(gpu_total);
+                constexpr std::size_t evaluation_frames=60U;
+                if(world_auto_gpu_samples.size()>=evaluation_frames){
+                    auto ordered=world_auto_gpu_samples;
+                    std::ranges::sort(ordered);
+                    world_auto_gpu_median_milliseconds=
+                        ordered[ordered.size()/2U];
+                    const double budget=1000.0/world_auto_target_fps;
+                    float next_scale=world_auto_render_scale;
+                    if(world_auto_gpu_median_milliseconds>budget*0.95||
+                       world_auto_gpu_median_milliseconds<budget*0.72){
+                        const float predicted=world_auto_render_scale*
+                            static_cast<float>(std::sqrt(
+                                budget*0.88/
+                                world_auto_gpu_median_milliseconds));
+                        next_scale=std::clamp(predicted,
+                            world_auto_render_scale-0.05F,
+                            world_auto_render_scale+0.05F);
+                        next_scale=std::round(next_scale*100.0F)/100.0F;
+                        next_scale=std::clamp(next_scale,
+                            world_auto_minimum_scale,
+                            world_auto_maximum_scale);
+                    }
+                    world_auto_render_scale=next_scale;
+                    world_auto_gpu_samples.clear();
+                }
+            }
+            const float render_scale=world_render_resolution_mode==
+                    RenderResolutionMode::native?1.0F:
+                (world_render_resolution_mode==RenderResolutionMode::fixed?
+                    world_fixed_render_scale:world_auto_render_scale);
+            const auto drawable=g_SceneRenderer.allocated_extent();
+            const VkExtent2D internal{
+                std::clamp(static_cast<std::uint32_t>(std::lround(
+                    drawable.width*render_scale)),1U,drawable.width),
+                std::clamp(static_cast<std::uint32_t>(std::lround(
+                    drawable.height*render_scale)),1U,drawable.height)};
+            if(internal.width!=g_SceneRenderer.render_extent().width||
+               internal.height!=g_SceneRenderer.render_extent().height)
+                world_render_scale_stable_frames=0U;
+            else ++world_render_scale_stable_frames;
+            g_SceneRenderer.set_render_extent(
+                internal,internal.width==drawable.width&&
+                             internal.height==drawable.height?
+                             0.0F:world_upscale_sharpening);
+        }
+
         // Rendering
         ImGui::Render();
         ImDrawData* draw_data = ImGui::GetDrawData();
@@ -4162,6 +4461,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const bool settled_capture_ready=
                 world_gpu_capture_frame_target==0U&&
                 world_gpu_capture_ready_frames>=capture_warmup_frames&&
+                (world_render_resolution_mode!=
+                     RenderResolutionMode::automatic||
+                 world_render_scale_stable_frames>=120U)&&
                 (static_capture||motion_capture);
             g_AtmosphereFrame.capture_requested=
                 !world_gpu_atmosphere_capture_path.empty()&&
@@ -4192,6 +4494,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                !world_runtime->diagnostics().busy){
                 const auto& timing=g_SceneRenderer.gpu_timings();
                 if(timing.valid){
+                    if(world_render_resolution_mode==
+                           RenderResolutionMode::automatic&&
+                       world_render_scale_stable_frames<120U)
+                        continue;
                     if(world_gpu_atmosphere_resize_check&&
                        !world_gpu_atmosphere_resize_requested){
                         world_gpu_pre_resize_scene_bytes=
@@ -4238,9 +4544,53 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                             <<",\"initial_refresh_maximum_ms\":"
                             <<world_gpu_refresh_maximum[pass]<<'}';
                     };
+                    const auto render_mode_name=[&]{
+                        switch(world_render_resolution_mode){
+                        case RenderResolutionMode::native:return "native";
+                        case RenderResolutionMode::fixed:return "fixed";
+                        case RenderResolutionMode::automatic:return "auto";
+                        }
+                        return "unknown";
+                    }();
+                    const auto allocated_extent=
+                        g_SceneRenderer.allocated_extent();
+                    const auto render_extent=g_SceneRenderer.render_extent();
+                    int logical_width{},logical_height{};
+                    glfwGetWindowSize(window,&logical_width,&logical_height);
+                    const float actual_render_scale=allocated_extent.width==0U?
+                        1.0F:static_cast<float>(render_extent.width)/
+                            static_cast<float>(allocated_extent.width);
                     std::cout<<"{\"event\":\"gpu_atmosphere_benchmark\","
                         <<"\"sample_count\":"<<measured_frames<<','
                         <<"\"warmup_frames\":"<<warmup_frames<<','
+                        <<"\"render_resolution_mode\":\""
+                        <<render_mode_name
+                        <<"\",\"requested_render_scale\":"
+                        <<(world_render_resolution_mode==
+                                   RenderResolutionMode::fixed?
+                               world_fixed_render_scale:
+                           world_render_resolution_mode==
+                                   RenderResolutionMode::automatic?
+                               world_auto_render_scale:1.0F)
+                        <<",\"actual_render_scale\":"<<actual_render_scale
+                        <<",\"logical_width\":"<<logical_width
+                        <<",\"logical_height\":"<<logical_height
+                        <<",\"drawable_width\":"<<allocated_extent.width
+                        <<",\"drawable_height\":"<<allocated_extent.height
+                        <<",\"internal_width\":"<<render_extent.width
+                        <<",\"internal_height\":"<<render_extent.height
+                        <<",\"upscale_sharpening\":"
+                        <<(render_extent.width==allocated_extent.width?
+                               0.0F:world_upscale_sharpening)
+                        <<",\"auto_target_fps\":"<<world_auto_target_fps
+                        <<",\"auto_minimum_scale\":"
+                        <<world_auto_minimum_scale
+                        <<",\"auto_maximum_scale\":"
+                        <<world_auto_maximum_scale
+                        <<",\"auto_gpu_median_ms\":"
+                        <<world_auto_gpu_median_milliseconds
+                        <<",\"scale_stable_frames\":"
+                        <<world_render_scale_stable_frames<<','
                         <<"\"rendering_method\":\""
                         <<tetra_viewer::atmosphere_rendering_method_name(
                               g_AtmosphereFrame.rendering_method)
@@ -4604,6 +4954,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         }
                         return "unknown";
                     }();
+                    const auto render_mode_name=[&]{
+                        switch(world_render_resolution_mode){
+                        case RenderResolutionMode::native:return "native";
+                        case RenderResolutionMode::fixed:return "fixed";
+                        case RenderResolutionMode::automatic:return "auto";
+                        }
+                        return "unknown";
+                    }();
+                    const auto allocated_extent=
+                        g_SceneRenderer.allocated_extent();
+                    const auto render_extent=g_SceneRenderer.render_extent();
+                    int logical_width{},logical_height{};
+                    glfwGetWindowSize(window,&logical_width,&logical_height);
+                    const float actual_render_scale=allocated_extent.width==0U?
+                        1.0F:static_cast<float>(render_extent.width)/
+                            static_cast<float>(allocated_extent.width);
                     std::cout<<"{\"event\":\"gpu_atmosphere_capture\","
                              <<"\"path\":\""
                              <<world_gpu_atmosphere_capture_path
@@ -4619,6 +4985,38 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<",\"height\":"<<capture.height
                              <<",\"rendered_frame\":"
                              <<world_gpu_rendered_frames
+                             <<",\"render_resolution_mode\":\""
+                             <<render_mode_name
+                             <<"\",\"requested_render_scale\":"
+                             <<(world_render_resolution_mode==
+                                          RenderResolutionMode::fixed?
+                                      world_fixed_render_scale:
+                                  world_render_resolution_mode==
+                                          RenderResolutionMode::automatic?
+                                      world_auto_render_scale:1.0F)
+                             <<",\"actual_render_scale\":"
+                             <<actual_render_scale
+                             <<",\"logical_width\":"<<logical_width
+                             <<",\"logical_height\":"<<logical_height
+                             <<",\"drawable_width\":"
+                             <<allocated_extent.width
+                             <<",\"drawable_height\":"
+                             <<allocated_extent.height
+                             <<",\"internal_width\":"<<render_extent.width
+                             <<",\"internal_height\":"<<render_extent.height
+                             <<",\"upscale_sharpening\":"
+                             <<(render_extent.width==allocated_extent.width?
+                                  0.0F:world_upscale_sharpening)
+                             <<",\"auto_target_fps\":"
+                             <<world_auto_target_fps
+                             <<",\"auto_minimum_scale\":"
+                             <<world_auto_minimum_scale
+                             <<",\"auto_maximum_scale\":"
+                             <<world_auto_maximum_scale
+                             <<",\"auto_gpu_median_ms\":"
+                             <<world_auto_gpu_median_milliseconds
+                             <<",\"scale_stable_frames\":"
+                             <<world_render_scale_stable_frames
                              <<",\"rgb_hash\":"
                              <<tetra_viewer::rgb8_hash(image)
                              <<",\"transport\":\""

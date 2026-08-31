@@ -125,8 +125,8 @@ class SceneRenderer {
                 AtmosphereQuality quality=AtmosphereQuality::standard,
                 std::uint32_t screen_resolution_divisor=4U,
                 VkSampleCountFlagBits terrain_samples=VK_SAMPLE_COUNT_1_BIT);
-  void configure_terrain_msaa(VkExtent2D extent,std::uint32_t image_count,
-                              VkSampleCountFlagBits terrain_samples);
+  void configure_terrain_msaa(VkSampleCountFlagBits terrain_samples);
+  void set_render_extent(VkExtent2D extent,float sharpening);
   [[nodiscard]] bool supports_terrain_msaa() const noexcept {
     return supports_terrain_samples(VK_SAMPLE_COUNT_2_BIT)||
            supports_terrain_samples(VK_SAMPLE_COUNT_4_BIT);
@@ -138,6 +138,16 @@ class SceneRenderer {
   }
   [[nodiscard]] bool terrain_msaa_memoryless() const noexcept {
     return terrain_msaa_memoryless_;
+  }
+  [[nodiscard]] bool prefers_tile_local_terrain_msaa() const noexcept {
+    return terrain_msaa_memoryless_supported_&&
+           supports_terrain_samples(VK_SAMPLE_COUNT_4_BIT);
+  }
+  [[nodiscard]] VkExtent2D allocated_extent() const noexcept {
+    return allocated_extent_;
+  }
+  [[nodiscard]] VkExtent2D render_extent() const noexcept {
+    return render_extent_;
   }
   void upload(std::span<const SceneVertex> triangle_vertices,
               std::span<const SceneVertex> hierarchy_line_vertices,
@@ -238,6 +248,10 @@ class SceneRenderer {
   VkSampleCountFlags terrain_sample_counts_{VK_SAMPLE_COUNT_1_BIT};
   VkSampleCountFlagBits terrain_samples_{VK_SAMPLE_COUNT_1_BIT};
   bool terrain_msaa_memoryless_{};
+  bool terrain_msaa_memoryless_supported_{};
+  VkExtent2D allocated_extent_{};
+  VkExtent2D render_extent_{};
+  float upscale_sharpening_{};
   struct VertexBuffer {
     VkBuffer buffer{VK_NULL_HANDLE};
     VkDeviceMemory memory{VK_NULL_HANDLE};
@@ -345,6 +359,8 @@ class SceneRenderer {
     VkDeviceMemory buffer_memory{VK_NULL_HANDLE};
     VkBuffer depth_buffer{VK_NULL_HANDLE};
     VkDeviceMemory depth_buffer_memory{VK_NULL_HANDLE};
+    std::uint32_t source_width{};
+    std::uint32_t source_height{};
     bool initialized{};
     bool pending{};
   };
