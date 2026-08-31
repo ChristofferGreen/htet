@@ -232,6 +232,7 @@ vec3 sample_sky_irradiance(vec3 normal) {
 
 vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
                                  out vec3 direct_sun) {
+  const float terrain_solar_radiance_scale=2.8;
   if(atmosphere.profile_and_mode.w<0.5){
     const float sky_mix=clamp(surface_normal.y*0.5+0.5,0.0,1.0);
     direct_sun=vec3(2.8,2.60,2.30);
@@ -260,10 +261,11 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   const float planet_visibility=atmosphere_sun_visibility(
       radial_distance,sun_cosine);
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
-      planet_visibility*2.8;
+      planet_visibility*terrain_solar_radiance_scale;
   const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
   if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
-    return sample_sky_irradiance(surface_normal);
+    return sample_sky_irradiance(surface_normal)*
+        terrain_solar_radiance_scale;
 
   // The qualified baseline retains its fitted readability terms. The
   // faithful path above consumes the explicit cosine-convolved sky lookup.
