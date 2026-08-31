@@ -3394,6 +3394,9 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   REQUIRE(initial.gpu_ready_sector_count==1U);
   const auto first_demand_hash=initial.current_sector_demand_hash;
   REQUIRE(first_demand_hash!=0U);
+  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
+  REQUIRE(runtime.resident_terrain_sectors().front().surface_block_hash!=0U);
+  REQUIRE(runtime.resident_terrain_sectors().front().render_block_hash!=0U);
 
   tetra::Camera camera;
   camera.position=initial.published_camera_position;
@@ -3420,6 +3423,15 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   REQUIRE(second.gpu_ready_sector_count==2U);
   CHECK(second.sector_additions==2U);
   CHECK(second.current_sector_demand_hash!=first_demand_hash);
+  CHECK(second.reused_render_blocks>0U);
+  const auto retained_first=std::ranges::find(
+      runtime.resident_terrain_sectors(),first_demand_hash,
+      &tetra_viewer::TerrainResidentSector::demand_hash);
+  REQUIRE(retained_first!=runtime.resident_terrain_sectors().end());
+  const auto retained_surface_block_hash=retained_first->surface_block_hash;
+  const auto retained_render_block_hash=retained_first->render_block_hash;
+  REQUIRE(retained_surface_block_hash!=0U);
+  REQUIRE(retained_render_block_hash!=0U);
 
   const auto submissions=second.submitted_builds;
   const auto generation=second.scene_generation;
@@ -3434,6 +3446,12 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   CHECK(returned.hierarchy_hash==combined_hash);
   CHECK(returned.current_sector_demand_hash==first_demand_hash);
   CHECK(returned.sector_hits>=1U);
+  const auto revisited=std::ranges::find(
+      runtime.resident_terrain_sectors(),first_demand_hash,
+      &tetra_viewer::TerrainResidentSector::demand_hash);
+  REQUIRE(revisited!=runtime.resident_terrain_sectors().end());
+  CHECK(revisited->surface_block_hash==retained_surface_block_hash);
+  CHECK(revisited->render_block_hash==retained_render_block_hash);
 }
 
 TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budget") {
@@ -3457,6 +3475,13 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   REQUIRE(initial.render_triangles==single_sector_triangles);
   const auto first_demand_hash=initial.current_sector_demand_hash;
   REQUIRE(first_demand_hash!=0U);
+  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
+  const auto first_surface_block_hash=
+      runtime.resident_terrain_sectors().front().surface_block_hash;
+  const auto first_render_block_hash=
+      runtime.resident_terrain_sectors().front().render_block_hash;
+  REQUIRE(first_surface_block_hash!=0U);
+  REQUIRE(first_render_block_hash!=0U);
   const auto settle=[&] {
     const auto deadline=std::chrono::steady_clock::now()+
         std::chrono::seconds(30);
@@ -3506,6 +3531,11 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   CHECK(returned.sector_evictions>first_evictions);
   CHECK(returned.positive_volumes);
   CHECK(returned.conforming_faces);
+  REQUIRE(runtime.resident_terrain_sectors().size()==1U);
+  CHECK(runtime.resident_terrain_sectors().front().surface_block_hash==
+        first_surface_block_hash);
+  CHECK(runtime.resident_terrain_sectors().front().render_block_hash==
+        first_render_block_hash);
 }
 
 TEST_CASE("blocked world retains four quarter-turn sectors after small translation") {
@@ -5964,6 +5994,11 @@ TEST_CASE("derived surface hashes and manifests ignore payload request ordering"
   std::ranges::reverse(reordered.triangles.front().vertices);
   std::ranges::reverse(reordered.dependency_blocks);
   CHECK(reordered.canonical_hash()==first.canonical_hash());
+  CHECK(reordered.canonical_content_hash()==first.canonical_content_hash());
+  auto republished=first;
+  ++republished.source_hierarchy_revision;
+  CHECK(republished.canonical_hash()!=first.canonical_hash());
+  CHECK(republished.canonical_content_hash()==first.canonical_content_hash());
 
   tetra::WorldDerivedSurfaceSnapshot later=first;
   later.id={tetra::WorldTetAddress::root(4U),3U};

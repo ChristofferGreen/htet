@@ -263,6 +263,41 @@ std::uint64_t WorldDerivedSurfaceSnapshot::canonical_hash() const {
   return hash;
 }
 
+std::uint64_t WorldDerivedSurfaceSnapshot::canonical_content_hash() const {
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t hash=offset;
+  const auto add=[&](std::uint64_t value){hash^=value;hash*=prime;};
+  add(id.prefix.high);add(id.prefix.low);add(id.block_generations);
+  add(metrics.optimizer_passes);add(metrics.dependency_halo_rings);
+  std::vector<const WorldSurfaceVertex*> ordered_vertices;
+  ordered_vertices.reserve(vertices.size());
+  for(const auto& vertex:vertices)ordered_vertices.push_back(&vertex);
+  std::ranges::sort(ordered_vertices,{},[](const auto* vertex){return vertex->key;});
+  for(const auto* vertex:ordered_vertices){
+    hash_derived_vertex(hash,vertex->key);
+    add(std::bit_cast<std::uint64_t>(vertex->position.x));
+    add(std::bit_cast<std::uint64_t>(vertex->position.y));
+    add(std::bit_cast<std::uint64_t>(vertex->position.z));
+  }
+  auto ordered_triangles=triangles;
+  for(auto& triangle:ordered_triangles)std::ranges::sort(triangle.vertices);
+  std::ranges::sort(ordered_triangles);
+  for(const auto& triangle:ordered_triangles){
+    for(const auto& vertex:triangle.vertices)hash_derived_vertex(hash,vertex);
+    add(triangle.owner.high);add(triangle.owner.low);
+  }
+  auto ordered_dependencies=dependency_blocks;
+  std::ranges::sort(ordered_dependencies);
+  ordered_dependencies.erase(std::unique(ordered_dependencies.begin(),
+      ordered_dependencies.end()),ordered_dependencies.end());
+  for(const auto dependency:ordered_dependencies){
+    add(dependency.prefix.high);add(dependency.prefix.low);
+    add(dependency.block_generations);
+  }
+  return hash;
+}
+
 std::uint64_t hierarchy_block_canonical_hash(
     const HierarchyBlockSnapshot& block) {
   constexpr std::uint64_t offset=1469598103934665603ULL;

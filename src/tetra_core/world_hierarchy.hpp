@@ -194,6 +194,10 @@ struct WorldDerivedSurfaceSnapshot {
   std::vector<HierarchyBlockId> dependency_blocks;
   WorldDerivedSurfaceMetrics metrics{};
   [[nodiscard]] std::uint64_t canonical_hash() const;
+  // Stable semantic content identity. Unlike canonical_hash(), this excludes
+  // the publication revision so an evicted and deterministically rebuilt
+  // block can be compared with its earlier incarnation.
+  [[nodiscard]] std::uint64_t canonical_content_hash() const;
 };
 
 [[nodiscard]] HierarchyBlockId hierarchy_block_id(

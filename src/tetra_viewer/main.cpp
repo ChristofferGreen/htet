@@ -5602,6 +5602,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                             <<sector.cpu_surface_blocks
                             <<",\"gpu_draw_blocks\":"
                             <<sector.gpu_draw_blocks
+                            <<",\"surface_block_hash\":"
+                            <<sector.surface_block_hash
+                            <<",\"render_block_hash\":"
+                            <<sector.render_block_hash
                             <<",\"hierarchy_bytes\":"
                             <<sector.hierarchy_bytes
                             <<",\"cpu_surface_bytes\":"

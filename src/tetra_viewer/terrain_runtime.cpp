@@ -1584,6 +1584,13 @@ void attribute_terrain_detail_sector_resources(
     throw std::invalid_argument(
         "terrain sector resource blocks must be canonical and unique");
   for(auto& sector:working_set.sectors){
+    constexpr std::uint64_t hash_offset=1469598103934665603ULL;
+    const auto append_hash=[](std::uint64_t& hash,std::uint64_t value){
+      constexpr std::uint64_t prime=1099511628211ULL;
+      for(unsigned int byte=0U;byte<8U;++byte){
+        hash^=(value>>(byte*8U))&0xffU;hash*=prime;
+      }
+    };
     sector.readiness=TerrainSectorReadiness::gpu_ready;
     sector.hierarchy_bytes=0U;
     sector.cpu_surface_bytes=0U;
@@ -1592,6 +1599,8 @@ void attribute_terrain_detail_sector_resources(
     sector.hierarchy_blocks=0U;
     sector.cpu_surface_blocks=0U;
     sector.gpu_draw_blocks=0U;
+    sector.surface_block_hash=hash_offset;
+    sector.render_block_hash=hash_offset;
     std::vector<tetra::HierarchyBlockId> demanded_blocks;
     demanded_blocks.reserve(sector.requested_cut.size());
     for(const auto owner:sector.requested_cut)
@@ -1610,6 +1619,14 @@ void attribute_terrain_detail_sector_resources(
       }
       ++sector.hierarchy_blocks;
       sector.hierarchy_bytes+=found->hierarchy_bytes;
+      append_hash(sector.surface_block_hash,id.prefix.high);
+      append_hash(sector.surface_block_hash,id.prefix.low);
+      append_hash(sector.surface_block_hash,id.block_generations);
+      append_hash(sector.surface_block_hash,found->surface_hash);
+      append_hash(sector.render_block_hash,id.prefix.high);
+      append_hash(sector.render_block_hash,id.prefix.low);
+      append_hash(sector.render_block_hash,id.block_generations);
+      append_hash(sector.render_block_hash,found->render_hash);
       sector.readiness=std::min(sector.readiness,found->readiness);
       if(found->readiness>=TerrainSectorReadiness::cpu_surface){
         ++sector.cpu_surface_blocks;
@@ -1620,6 +1637,10 @@ void attribute_terrain_detail_sector_resources(
         sector.upload_bytes+=found->gpu_bytes;
         sector.triangles+=found->triangles;
       }
+    }
+    if(sector.hierarchy_blocks==0U){
+      sector.surface_block_hash=0U;
+      sector.render_block_hash=0U;
     }
   }
 }
@@ -2079,9 +2100,11 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           "retained surface resource has no hierarchy block");
     return *found;
   };
-  for(const auto& snapshot:surface_cache.snapshots)
-    find_sector_resource(snapshot.id).cpu_surface_bytes+=
-        snapshot.metrics.retained_bytes;
+  for(const auto& snapshot:surface_cache.snapshots){
+    auto& resource=find_sector_resource(snapshot.id);
+    resource.cpu_surface_bytes+=snapshot.metrics.retained_bytes;
+    resource.surface_hash=snapshot.canonical_content_hash();
+  }
   for(const auto& block:surface_cache.raw_blocks)
     find_sector_resource(block->id).cpu_surface_bytes+=
         sizeof(SparseWorldSurfaceCache::SurfaceRawBlock)+
@@ -2094,6 +2117,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     resource.cpu_surface_bytes+=sizeof(block)+bytes;
     resource.gpu_bytes+=block.triangle_vertices.size()*sizeof(SceneVertex);
     resource.triangles+=block.triangle_vertices.size()/3U;
+    resource.render_hash=block.surface_payload_hash;
   }
   attribute_terrain_detail_sector_resources(
       detail_working_set,sector_resources,directory->block_generations());

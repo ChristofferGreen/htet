@@ -334,6 +334,8 @@ struct TerrainResidentSector {
   std::size_t hierarchy_blocks{};
   std::size_t cpu_surface_blocks{};
   std::size_t gpu_draw_blocks{};
+  std::uint64_t surface_block_hash{};
+  std::uint64_t render_block_hash{};
 };
 
 struct TerrainSectorResourceBlock {
@@ -343,6 +345,8 @@ struct TerrainSectorResourceBlock {
   std::size_t cpu_surface_bytes{};
   std::size_t gpu_bytes{};
   std::size_t triangles{};
+  std::uint64_t surface_hash{};
+  std::uint64_t render_hash{};
   auto operator<=>(const TerrainSectorResourceBlock&) const = default;
 };
 
