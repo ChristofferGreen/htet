@@ -85,6 +85,15 @@ struct AtmosphereDispatchCounts {
   std::uint64_t screen_reconstruction{};
   std::uint64_t temporal_history_accepts{};
   std::uint64_t temporal_history_invalidations{};
+  std::uint64_t optical_changes{};
+  std::uint64_t scattering_changes{};
+  std::uint64_t sun_changes{};
+  std::uint64_t camera_position_changes{};
+  std::uint64_t sky_position_changes{};
+  std::uint64_t camera_orientation_changes{};
+  std::uint64_t shadow_integrator_changes{};
+  std::uint64_t shadow_changes{};
+  std::uint64_t render_origin_changes{};
 };
 
 struct AtmosphereShadowMapStatus {

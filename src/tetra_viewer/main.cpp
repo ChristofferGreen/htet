@@ -5175,8 +5175,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                      outer_limb_analysis.sampled_pixels))
                              <<'}';
                     const auto& capture_timing=g_SceneRenderer.gpu_timings();
+                    const double capture_gpu_total=
+                        capture_timing.shadows_milliseconds+
+                        capture_timing.atmosphere_milliseconds+
+                        capture_timing.terrain_milliseconds+
+                        capture_timing.depth_reduction_milliseconds+
+                        capture_timing.screen_integration_milliseconds+
+                        capture_timing.temporal_reconstruction_milliseconds+
+                        capture_timing.composite_milliseconds;
                     std::cout<<",\"gpu_timings\":{\"valid\":"
                              <<(capture_timing.valid?"true":"false")
+                             <<",\"total_ms\":"<<capture_gpu_total
+                             <<",\"shadows_ms\":"
+                             <<capture_timing.shadows_milliseconds
+                             <<",\"atmosphere_ms\":"
+                             <<capture_timing.atmosphere_milliseconds
+                             <<",\"terrain_ms\":"
+                             <<capture_timing.terrain_milliseconds
                              <<",\"depth_reduction_ms\":"
                              <<capture_timing.depth_reduction_milliseconds
                              <<",\"screen_integration_ms\":"
@@ -5185,6 +5200,46 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<capture_timing.temporal_reconstruction_milliseconds
                              <<",\"composite_ms\":"
                              <<capture_timing.composite_milliseconds<<'}';
+                    const auto& capture_dispatches=
+                        g_SceneRenderer.atmosphere_dispatch_counts();
+                    std::cout<<",\"atmosphere_dispatches\":{"
+                             <<"\"transmittance\":"
+                             <<capture_dispatches.transmittance
+                             <<",\"multiple_scattering\":"
+                             <<capture_dispatches.multiple_scattering
+                             <<",\"sky_view\":"
+                             <<capture_dispatches.sky_view
+                             <<",\"sky_irradiance\":"
+                             <<capture_dispatches.sky_irradiance
+                             <<",\"aerial_perspective\":"
+                             <<capture_dispatches.aerial_perspective
+                             <<",\"long_shadow\":"
+                             <<capture_dispatches.long_shadow
+                             <<",\"screen_reconstruction\":"
+                             <<capture_dispatches.screen_reconstruction
+                             <<",\"temporal_history_accepts\":"
+                             <<capture_dispatches.temporal_history_accepts
+                             <<",\"temporal_history_invalidations\":"
+                             <<capture_dispatches.temporal_history_invalidations
+                             <<",\"optical_changes\":"
+                             <<capture_dispatches.optical_changes
+                             <<",\"scattering_changes\":"
+                             <<capture_dispatches.scattering_changes
+                             <<",\"sun_changes\":"
+                             <<capture_dispatches.sun_changes
+                             <<",\"camera_position_changes\":"
+                             <<capture_dispatches.camera_position_changes
+                             <<",\"sky_position_changes\":"
+                             <<capture_dispatches.sky_position_changes
+                             <<",\"camera_orientation_changes\":"
+                             <<capture_dispatches.camera_orientation_changes
+                             <<",\"shadow_integrator_changes\":"
+                             <<capture_dispatches.shadow_integrator_changes
+                             <<",\"shadow_changes\":"
+                             <<capture_dispatches.shadow_changes
+                             <<",\"render_origin_changes\":"
+                             <<capture_dispatches.render_origin_changes
+                             <<'}';
                     const auto& shadow_status=
                         g_SceneRenderer.atmosphere_shadow_map_status();
                     std::cout<<",\"shadow_diagnostics\":{\"hierarchy_complete\":"
@@ -5199,6 +5254,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<shadow_status.epipolar_overflows
                              <<",\"epipolar_hierarchy_refreshes\":"
                              <<shadow_status.epipolar_hierarchy_refreshes
+                             <<",\"fitted_shadow_refreshes\":"
+                             <<shadow_status.refreshes
+                             <<",\"fitted_shadow_depth_generation\":"
+                             <<shadow_status.depth_generation
                              <<",\"comparison_bias_world\":"
                              <<shadow_status.comparison_bias_world
                              <<",\"raster_bias_constant\":"

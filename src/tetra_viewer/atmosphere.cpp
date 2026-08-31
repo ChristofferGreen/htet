@@ -304,6 +304,16 @@ std::uint64_t atmosphere_epipolar_source_revision(
   return hash;
 }
 
+std::uint64_t atmosphere_shadow_lookup_revision(
+    std::uint64_t surface_generation,bool initialized,
+    const std::array<float,16>& matrix) noexcept {
+  std::uint64_t hash=1469598103934665603ULL;
+  hash_double(hash,static_cast<double>(surface_generation));
+  hash_double(hash,initialized?1.0:0.0);
+  for(const float value:matrix)hash_double(hash,static_cast<double>(value));
+  return hash;
+}
+
 bool compatible_atmosphere_shadow_generation(
     const AtmosphereShadowIntegrationGeneration& generation) noexcept {
   if(!generation.complete||generation.fallback)return false;

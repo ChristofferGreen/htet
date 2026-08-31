@@ -2505,15 +2505,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         shadow.atmosphere_shadow_depth_generation!=0U&&
         hierarchy_generation_complete&&
         (epipolar_integrator==shadow.minmax_is_epipolar);
-    std::uint64_t atmosphere_shadow_revision=1469598103934665603ULL;
-    hash_scalar(atmosphere_shadow_revision,static_cast<double>(
-        surface_upload_planner_.published_generation()));
-    hash_scalar(atmosphere_shadow_revision,static_cast<double>(
-        shadow.atmosphere_shadow_depth_generation));
-    hash_scalar(atmosphere_shadow_revision,
-        shadow.atmosphere_shadow_initialized?1.0:0.0);
-    for(const float value:shadow.atmosphere_shadow_matrix)
-      hash_scalar(atmosphere_shadow_revision,static_cast<double>(value));
+    const auto atmosphere_shadow_revision=atmosphere_shadow_lookup_revision(
+        shadow.atmosphere_surface_generation,
+        shadow.atmosphere_shadow_initialized,
+        shadow.atmosphere_shadow_matrix);
     const AtmosphereLookupRevisions next_revisions{
         .optical={atmosphere_optical_hash(parameters)},
         .scattering={atmosphere_scattering_hash(parameters)},
@@ -2538,6 +2533,28 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     const auto previous_revisions=atmosphere.transport==
         atmosphere_input.transport?
         atmosphere.lookup_revisions:std::nullopt;
+    if(previous_revisions){
+      if(previous_revisions->optical!=next_revisions.optical)
+        ++atmosphere_dispatch_counts_.optical_changes;
+      if(previous_revisions->scattering!=next_revisions.scattering)
+        ++atmosphere_dispatch_counts_.scattering_changes;
+      if(previous_revisions->sun!=next_revisions.sun)
+        ++atmosphere_dispatch_counts_.sun_changes;
+      if(previous_revisions->camera_position!=next_revisions.camera_position)
+        ++atmosphere_dispatch_counts_.camera_position_changes;
+      if(previous_revisions->sky_position!=next_revisions.sky_position)
+        ++atmosphere_dispatch_counts_.sky_position_changes;
+      if(previous_revisions->camera_orientation!=
+         next_revisions.camera_orientation)
+        ++atmosphere_dispatch_counts_.camera_orientation_changes;
+      if(previous_revisions->shadow_integrator!=
+         next_revisions.shadow_integrator)
+        ++atmosphere_dispatch_counts_.shadow_integrator_changes;
+      if(previous_revisions->shadow!=next_revisions.shadow)
+        ++atmosphere_dispatch_counts_.shadow_changes;
+      if(previous_revisions->render_origin!=next_revisions.render_origin)
+        ++atmosphere_dispatch_counts_.render_origin_changes;
+    }
     auto plan=atmosphere_dispatch_plan(previous_revisions,next_revisions,
         atmosphere_input.transport);
     if(atmosphere_input.dynamic_sun&&previous_revisions)

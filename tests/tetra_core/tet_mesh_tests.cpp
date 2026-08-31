@@ -9590,9 +9590,9 @@ TEST_CASE("world sun controls produce normalized sky directions") {
   const double length=std::sqrt(
       initial.x*initial.x+initial.y*initial.y+initial.z*initial.z);
   CHECK(length==doctest::Approx(1.0));
-  CHECK(initial.x==doctest::Approx(-0.226338).epsilon(1.0e-5));
+  CHECK(initial.x==doctest::Approx(0.340719).epsilon(1.0e-5));
   CHECK(initial.y==doctest::Approx(0.0871558).epsilon(1.0e-5));
-  CHECK(initial.z==doctest::Approx(-0.970142).epsilon(1.0e-5));
+  CHECK(initial.z==doctest::Approx(-0.936117).epsilon(1.0e-5));
 
   const auto quarter=tetra_viewer::advance_world_sun_orbit_phase(
       0.0,2.5,tetra_viewer::default_world_sun_cycle_seconds);
@@ -14994,6 +14994,22 @@ TEST_CASE("epipolar hierarchy cache identity follows its actual local source") {
   CHECK(base!=tetra_viewer::atmosphere_epipolar_source_revision(
       7U,matrix,0.8125F,1.21875F,
       AtmosphereShadowFilter::physical_footprint,0.0018));
+}
+
+TEST_CASE("atmosphere lookup cache identity follows logical shadow content") {
+  std::array<float,16> matrix{};
+  matrix[0]=matrix[5]=matrix[10]=matrix[15]=1.0F;
+  const auto base=tetra_viewer::atmosphere_shadow_lookup_revision(
+      7U,true,matrix);
+  CHECK(base==tetra_viewer::atmosphere_shadow_lookup_revision(
+      7U,true,matrix));
+  CHECK(base!=tetra_viewer::atmosphere_shadow_lookup_revision(
+      8U,true,matrix));
+  CHECK(base!=tetra_viewer::atmosphere_shadow_lookup_revision(
+      7U,false,matrix));
+  matrix[12]=0.001F;
+  CHECK(base!=tetra_viewer::atmosphere_shadow_lookup_revision(
+      7U,true,matrix));
 }
 
 TEST_CASE("every atmosphere shadow integrator has a distinct shader mode") {

@@ -87,6 +87,9 @@ parse_atmosphere_shadow_filter(std::string_view name);
     std::uint64_t surface_generation,const std::array<float,16>& matrix,
     float raster_bias_constant,float raster_bias_slope,
     AtmosphereShadowFilter filter,double comparison_bias_world) noexcept;
+[[nodiscard]] std::uint64_t atmosphere_shadow_lookup_revision(
+    std::uint64_t surface_generation,bool initialized,
+    const std::array<float,16>& matrix) noexcept;
 
 inline constexpr AtmosphereShadowIntegrator default_atmosphere_shadow_integrator=
     AtmosphereShadowIntegrator::fixed_32;
