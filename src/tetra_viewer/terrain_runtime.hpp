@@ -15,6 +15,9 @@
 namespace tetra_viewer {
 
 struct TerrainResourceTransactionDiagnostics {
+  // Certified costs already unavoidable before derived-surface construction.
+  // This is a lower-bound reservation, never a guessed expansion ratio.
+  WorldResourceUsage preconstruction_reserved{};
   WorldResourceUsage proposed{};
   WorldResourceUsage reserved{};
   WorldResourceUsage published{};
@@ -723,6 +726,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     TerrainDetailWorkingSet detail_working_set;
     bool canceled{};
+    bool resource_budget_exceeded{};
     bool residency_budget_exceeded{};
     bool hierarchy_budget_exceeded{};
   };

@@ -5619,7 +5619,20 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.work_high_water
                              <<",\"upload_high_water_bytes\":"
                              <<runtime_status.upload_high_water_bytes
-                             <<",\"resource_transaction\":{\"proposed\":{"
+                             <<",\"resource_transaction\":{"
+                             <<"\"preconstruction_reserved\":{\"cpu_bytes\":"
+                             <<runtime_status.resource_transaction
+                                   .preconstruction_reserved.cpu_bytes
+                             <<",\"triangles\":"
+                             <<runtime_status.resource_transaction
+                                   .preconstruction_reserved.triangles
+                             <<",\"work_units\":"
+                             <<runtime_status.resource_transaction
+                                   .preconstruction_reserved.work_units
+                             <<",\"upload_bytes\":"
+                             <<runtime_status.resource_transaction
+                                   .preconstruction_reserved.upload_bytes
+                             <<"},\"proposed\":{"
                              <<"\"cpu_bytes\":"
                              <<runtime_status.resource_transaction.proposed.cpu_bytes
                              <<",\"triangles\":"

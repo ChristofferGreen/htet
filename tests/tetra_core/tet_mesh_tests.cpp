@@ -3537,6 +3537,10 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   REQUIRE(initial.resident_sector_count==1U);
   REQUIRE(initial.gpu_ready_sector_count==1U);
   REQUIRE(initial.resident_render_triangles==single_sector_triangles);
+  CHECK(initial.resource_transaction.preconstruction_reserved.cpu_bytes>0U);
+  CHECK(initial.resource_transaction.preconstruction_reserved.work_units>0U);
+  CHECK(initial.resource_transaction.preconstruction_reserved.cpu_bytes<=
+        initial.resource_transaction.proposed.cpu_bytes);
   const auto first_demand_hash=initial.current_sector_demand_hash;
   REQUIRE(first_demand_hash!=0U);
   REQUIRE(runtime.resident_terrain_sectors().size()==1U);

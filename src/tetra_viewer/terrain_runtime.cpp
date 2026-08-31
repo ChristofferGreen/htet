@@ -1486,6 +1486,17 @@ void seed_promoted_terrain_surface_blocks(
   surface_cache.render_blocks=std::move(retained);
 }
 
+std::size_t retained_terrain_sector_surface_bytes(
+    const TerrainDetailWorkingSet& working_set) {
+  std::size_t result{};
+  for(const auto& sector:working_set.sectors)
+    for(const auto& block:sector.retained_surface_blocks)
+      result=checked_resource_add(result,
+          checked_resource_add(sizeof(block),checked_resource_multiply(
+              block.triangle_vertices.capacity(),sizeof(SceneVertex))));
+  return result;
+}
+
 bool terrain_sector_position_matches(
     const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
     const tetra::Camera& camera) noexcept {
@@ -1813,6 +1824,9 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
         "initial world front exceeds its hierarchy residency budget: proposed="+
         std::to_string(initial.diagnostics.hierarchy_blocks)+", maximum="+
         std::to_string(profile_.maximum_hierarchy_blocks));
+  if(initial.resource_budget_exceeded)
+    throw std::length_error(
+        "initial world front exceeds its certified preconstruction resource reservation");
   const auto initial_host=host_staging_.estimate_world_render_blocks(
       initial.surface_cache.render_blocks);
   const auto initial_render_bytes=checked_resource_multiply(
@@ -2202,6 +2216,33 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   // retained surface block.
   surface_field.sampling_footprint=planetary_surface_sampling_footprint(
       field,camera,profile.pixel_threshold);
+  const WorldResourceUsage preconstruction_reservation{
+      checked_resource_add(directory->metrics().retained_bytes,
+          checked_resource_add(hierarchy_plan.metrics.retained_bytes,
+              retained_terrain_sector_surface_bytes(detail_working_set))),
+      0U,completed_work_units,0U};
+  const auto preconstruction_admission=evaluate_world_resource_budgets(
+      profile.budgets,preconstruction_reservation);
+  if(!preconstruction_admission.admitted()){
+    Publication rejected;
+    rejected.diagnostics.work_units=completed_work_units;
+    rejected.diagnostics.logical_cells=selection.owners.size();
+    rejected.diagnostics.resource_transaction.preconstruction_reserved=
+        preconstruction_reservation;
+    rejected.diagnostics.resource_transaction.proposed=
+        preconstruction_reservation;
+    rejected.diagnostics.rejected_proposed_cpu_bytes=
+        preconstruction_reservation.cpu_bytes;
+    rejected.diagnostics.rejected_proposed_work_units=
+        preconstruction_reservation.work_units;
+    rejected.diagnostics.rejected_cpu_budget=!preconstruction_admission.cpu;
+    rejected.diagnostics.rejected_work_budget=!preconstruction_admission.work;
+    rejected.surface_cache=std::move(surface_cache);
+    rejected.hierarchy_demand=std::move(hierarchy_plan.state);
+    rejected.detail_working_set=std::move(detail_working_set);
+    rejected.resource_budget_exceeded=true;
+    return rejected;
+  }
   seed_promoted_terrain_surface_blocks(detail_working_set,surface_cache);
   auto surface=build_sparse_world_derived_surface(
       *directory,profile.domain,surface_field,true,cancellation,&surface_cache,
@@ -2297,6 +2338,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         diagnostics.resident_render_triangles,
         block.triangle_vertices.size()/3U);
   diagnostics.work_units=completed_work_units;
+  diagnostics.resource_transaction.preconstruction_reserved=
+      preconstruction_reservation;
   diagnostics.target_projected_edge_pixels=
       selection.metrics.target_projected_edge_pixels;
   diagnostics.merge_projected_edge_pixels=
@@ -2539,12 +2582,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   for(const auto& block:surface_cache.render_blocks)
     diagnostics.retained_render_block_bytes+=
         block.triangle_vertices.capacity()*sizeof(SceneVertex);
-  for(const auto& sector:detail_working_set.sectors)
-    for(const auto& block:sector.retained_surface_blocks)
-      diagnostics.retained_sector_surface_bytes=checked_resource_add(
-          diagnostics.retained_sector_surface_bytes,
-          checked_resource_add(sizeof(block),checked_resource_multiply(
-              block.triangle_vertices.capacity(),sizeof(SceneVertex))));
+  diagnostics.retained_sector_surface_bytes=
+      retained_terrain_sector_surface_bytes(detail_working_set);
   diagnostics.retained_cache_bytes+=diagnostics.retained_render_block_bytes;
   diagnostics.retained_cache_bytes=checked_resource_add(
       diagnostics.retained_cache_bytes,
@@ -2635,7 +2674,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   return {std::move(directory),std::move(hierarchy_update),std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
           std::move(atmosphere_shadow_front),std::move(detail_working_set),
-          false,false,false};
+          false,false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
@@ -2879,7 +2918,8 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.busy=future_.valid();
       return false;
     }
-    if(publication.residency_budget_exceeded||
+    if(publication.resource_budget_exceeded||
+       publication.residency_budget_exceeded||
        publication.hierarchy_budget_exceeded){
       ++diagnostics_.budget_rejected_builds;
       diagnostics_.discarded_work_units+=publication.diagnostics.work_units;
@@ -2887,15 +2927,28 @@ bool BlockedTerrainRuntime::update() {
           publication.hierarchy_budget_exceeded;
       diagnostics_.rejected_volume_budget=
           publication.residency_budget_exceeded;
+      diagnostics_.rejected_cpu_budget=
+          publication.diagnostics.rejected_cpu_budget;
+      diagnostics_.rejected_work_budget=
+          publication.diagnostics.rejected_work_budget;
+      diagnostics_.rejected_proposed_cpu_bytes=
+          publication.diagnostics.rejected_proposed_cpu_bytes;
+      diagnostics_.rejected_proposed_work_units=
+          publication.diagnostics.rejected_proposed_work_units;
+      diagnostics_.resource_transaction=
+          publication.diagnostics.resource_transaction;
       diagnostics_.rejected_proposed_hierarchy_blocks=
           publication.diagnostics.hierarchy_blocks;
       diagnostics_.rejected_proposed_volume_blocks=
           publication.diagnostics.resident_volume_blocks;
-      if(publication.hierarchy_budget_exceeded&&
+      if((publication.hierarchy_budget_exceeded||
+          publication.resource_budget_exceeded)&&
          schedule_sector_budget_retry(
              std::move(publication.detail_working_set),
              &publication.surface_cache,
-             publication.diagnostics.hysteresis_retained_splits>0U)){
+             publication.diagnostics.hysteresis_retained_splits>0U||
+                 publication.diagnostics.rejected_cpu_budget||
+                 publication.diagnostics.rejected_work_budget)){
         surface_cache_={};
         diagnostics_.budget_exceeded=false;
         active_superseded_=false;

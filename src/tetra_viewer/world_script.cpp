@@ -442,7 +442,16 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"work_high_water\":"<<diagnostics.work_high_water
           <<",\"upload_high_water_bytes\":"
           <<diagnostics.upload_high_water_bytes
-          <<",\"resource_transaction\":{\"proposed\":{\"cpu_bytes\":"
+          <<",\"resource_transaction\":{\"preconstruction_reserved\":{"
+          <<"\"cpu_bytes\":"
+          <<diagnostics.resource_transaction.preconstruction_reserved.cpu_bytes
+          <<",\"triangles\":"
+          <<diagnostics.resource_transaction.preconstruction_reserved.triangles
+          <<",\"work_units\":"
+          <<diagnostics.resource_transaction.preconstruction_reserved.work_units
+          <<",\"upload_bytes\":"
+          <<diagnostics.resource_transaction.preconstruction_reserved.upload_bytes
+          <<"},\"proposed\":{\"cpu_bytes\":"
           <<diagnostics.resource_transaction.proposed.cpu_bytes
           <<",\"triangles\":"
           <<diagnostics.resource_transaction.proposed.triangles
