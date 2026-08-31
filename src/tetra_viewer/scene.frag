@@ -242,15 +242,11 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*2.8;
   const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
-  const bool reference_transport=atmosphere.reserved1.y>=9.5;
-  const vec3 sampled_sky=atmosphere.reserved1.y>0.5&&!dynamic_sun?
-      sample_sky_irradiance(surface_normal):vec3(0.0);
-  if(atmosphere.reserved1.y>0.5&&!reference_transport&&!dynamic_sun)
-    return sampled_sky;
+  if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
+    return sample_sky_irradiance(surface_normal);
 
   // The qualified baseline retains its fitted readability terms. The
-  // faithful path above consumes the explicit cosine-convolved sky lookup;
-  // the reference path uses the fit only as a lower bound for undersampling.
+  // faithful path above consumes the explicit cosine-convolved sky lookup.
   // Turn the retained incident-sky spherical average into a cosine-weighted
   // diffuse approximation for this surface normal.
   const vec3 average_radiance=texture(
@@ -269,13 +265,7 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   const float ground_facing=max(-upward,0.0);
   const vec3 ground_bounce=atmosphere.ground_albedo_mie_anisotropy.rgb*
       direct_sun*max(sun_cosine,0.0)*ground_facing*0.25;
-  const vec3 fitted_environment=sky_irradiance_over_pi+ground_bounce;
-  // The compact gameplay atmosphere can under-resolve the narrow sunset sky
-  // in its directional irradiance table. Keep the physical lookup where it
-  // has energy, but do not let that quadrature failure turn all foreground
-  // terrain below the horizon into a black slab.
-  return reference_transport&&!dynamic_sun?
-      max(sampled_sky,fitted_environment):fitted_environment;
+  return sky_irradiance_over_pi+ground_bounce;
 }
 
 vec3 angle_colour(float angle_degrees) {

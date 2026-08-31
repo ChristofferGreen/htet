@@ -712,18 +712,14 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   const vec3 solar_transmittance=texture(
       transmittance_lut,lighting_uv).rgb;
   const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb;
-  const bool static_lookup=atmosphere.reserved1.y>0.5&&
-      atmosphere.reserved1.z<99.5;
-  const vec3 sampled_ambient=static_lookup?
-      albedo*sample_sky_irradiance(normal):vec3(0.0);
-  const vec3 direct=albedo/3.14159265359*
-      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
-  if(static_lookup&&!reference_hillaire_transport())
-    return sampled_ambient+direct;
+  if(atmosphere.reserved1.y>0.5&&atmosphere.reserved1.z<99.5){
+    const vec3 ambient=albedo*sample_sky_irradiance(normal);
+    const vec3 direct=albedo/3.14159265359*
+        atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
+    return ambient+direct;
+  }
 
-  // The qualified baseline uses this fitted ground model directly. The
-  // reference path also uses it as a lower bound when its compact directional
-  // irradiance lookup under-resolves a narrow sunset sky.
+  // Keep the fitted ground model as the qualified baseline only.
   const vec3 average_radiance=texture(
       multiple_scattering_lut,scattering_uv).rgb;
   const vec3 vertical_transmittance=texture(
@@ -733,8 +729,9 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
       (vec3(1.0)-vertical_transmittance)*daylight*0.60;
   const vec3 environment=(average_radiance+single_scattered_fill)*2.0;
   const vec3 ambient=0.96*albedo*environment;
-  return (static_lookup?max(sampled_ambient,ambient):ambient)+
-      direct*(static_lookup?1.0:0.96);
+  const vec3 direct=0.96*albedo/3.14159265359*
+      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
+  return ambient+direct;
 }
 
 vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
@@ -922,6 +919,29 @@ void main() {
                 cached_shadow_visibility,primary_transmittance);
         }else
           hdr=sample_sky_view(view_direction,texture_coordinate);
+      }
+      // The procedural terrain can end a few pixels away from the
+      // mathematical planet rim. Both sides of the exact tangent are
+      // depthless there, so continue a clear ray from just above the horizon
+      // across that unresolved seam instead of inventing ambient terrain.
+      const vec3 local_up=normalize(atmosphere.camera_position_near.xyz);
+      const float horizon_cosine=dot(view_direction,local_up);
+      const float horizon_blend=1.0-smoothstep(
+          sin(radians(1.0)),sin(radians(3.0)),abs(horizon_cosine));
+      const float seam_darkness=1.0-smoothstep(0.0,0.002,
+          dot(hdr,vec3(0.2126,0.7152,0.0722)));
+      const float seam_weight=horizon_blend*seam_darkness;
+      if(reference_hillaire_transport()&&seam_weight>0.0){
+        const vec3 tangent=view_direction-local_up*horizon_cosine;
+        if(dot(tangent,tangent)>1.0e-8){
+          const vec3 clear_horizon_direction=normalize(
+              normalize(tangent)+local_up*sin(radians(1.0)));
+          vec3 clear_horizon_transmittance;
+          const vec3 clear_horizon=orbital_primary_scattering(
+              clear_horizon_direction,1.0e9,0.0,vec3(1.0),
+              clear_horizon_transmittance);
+          hdr=max(hdr,clear_horizon*seam_weight);
+        }
       }
       if(ground_distance<0.0&&
          dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
