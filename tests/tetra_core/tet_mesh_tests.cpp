@@ -1120,7 +1120,7 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.near_red_depth==20U);
   CHECK(profile.near_volume_radius==doctest::Approx(0.6));
   CHECK(profile.maximum_volume_blocks==4096U);
-  CHECK(profile.maximum_hierarchy_blocks==73728U);
+  CHECK(profile.maximum_hierarchy_blocks==147456U);
   CHECK(profile.hierarchy_guard_frustum_scale==doctest::Approx(1.35));
   CHECK(profile.terrain_sector_overlap_radians==doctest::Approx(
       0.5*std::numbers::pi/180.0));
@@ -1134,10 +1134,10 @@ TEST_CASE("production world profile pins the playable rendering contract") {
   CHECK(profile.field_error_pixel_threshold==doctest::Approx(16384.0));
   CHECK(profile.limb_error_pixel_threshold==doctest::Approx(2.0));
   CHECK(profile.maximum_depth==20U);
-  CHECK(profile.budgets.maximum_cpu_bytes==640U*1024U*1024U);
-  CHECK(profile.budgets.maximum_triangles==500000U);
-  CHECK(profile.budgets.maximum_work_units==25000000U);
-  CHECK(profile.budgets.maximum_upload_bytes==64U*1024U*1024U);
+  CHECK(profile.budgets.maximum_cpu_bytes==1024U*1024U*1024U);
+  CHECK(profile.budgets.maximum_triangles==1000000U);
+  CHECK(profile.budgets.maximum_work_units==50000000U);
+  CHECK(profile.budgets.maximum_upload_bytes==128U*1024U*1024U);
   CHECK(profile.show_faces);
   CHECK(profile.show_surface_edges);
   CHECK_FALSE(profile.show_hierarchy_edges);
@@ -3456,6 +3456,8 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   REQUIRE(initial.resident_sector_count==1U);
   REQUIRE(initial.gpu_ready_sector_count==1U);
   const auto first_demand_hash=initial.current_sector_demand_hash;
+  const auto first_visible_edge_median=
+      initial.visible_median_projected_edge_pixels;
   REQUIRE(first_demand_hash!=0U);
   REQUIRE(runtime.resident_terrain_sectors().size()==1U);
   REQUIRE(runtime.resident_terrain_sectors().front().surface_block_hash!=0U);
@@ -3508,6 +3510,8 @@ TEST_CASE("blocked world reuses GPU-ready terrain across A B A rotation") {
   CHECK(returned.scene_generation==generation);
   CHECK(returned.hierarchy_hash==combined_hash);
   CHECK(returned.current_sector_demand_hash==first_demand_hash);
+  CHECK(returned.visible_median_projected_edge_pixels==
+        first_visible_edge_median);
   CHECK(returned.sector_hits>=1U);
   const auto revisited=std::ranges::find(
       runtime.resident_terrain_sectors(),first_demand_hash,

@@ -7,6 +7,14 @@ output_dir="${2:-${repo_root}/artifacts/lod-residency-qualification}"
 display_name="${3:-P34WD-40}"
 mkdir -p "${output_dir}"
 
+if [[ "$(uname -s)" == "Darwin" ]] && command -v caffeinate >/dev/null 2>&1; then
+  # Keep the selected display awake across all four separate capture
+  # processes. A short synthetic activity pulse lets the first GLFW process
+  # see a monitor but permits it to disappear again before later captures.
+  caffeinate -dimsu -w "$$" &
+  caffeinate -u -t 2
+fi
+
 common=(
   --display-name="${display_name}" --window-size=1280x800
   --free-fly --surface-edges-off
@@ -28,13 +36,18 @@ capture() {
 
 capture exact-early-frame-2 --gpu-atmosphere-capture-frame=2
 capture exact-settled
+capture exact-settled-wireframe --surface-edges-on
+capture rotation-a-b \
+  --automation-yaw-sequence-degrees=180 \
+  --automation-look-frames=1 \
+  --gpu-atmosphere-capture-after-motion-frames=120
 capture rotation-a-b-a \
   --automation-yaw-sequence-degrees=180,-180 \
-  --automation-look-frames=16 \
+  --automation-look-frames=1 \
   --gpu-atmosphere-capture-after-motion-frames=120
 capture rotation-four-quarter-turns \
   --automation-yaw-sequence-degrees=90,90,90,90 \
-  --automation-look-frames=16 \
+  --automation-look-frames=1 \
   --gpu-atmosphere-capture-after-motion-frames=120
 
 python3 - "${output_dir}" "${display_name}" <<'PY'
@@ -69,28 +82,58 @@ if early.get("runtime_rendered_frame") != 2:
     raise SystemExit("early capture was not terrain runtime frame 2")
 
 settled = capture_event("exact-settled")
-if settled.get("budget_exceeded") or settled.get("resident_sector_count", 0) < 1:
+capture_event("exact-settled-wireframe")
+settled_lod = settled["terrain_lod"]
+if settled_lod.get("budget_exceeded") or settled_lod.get("resident_sectors", 0) < 1:
     raise SystemExit("settled exact pose did not publish a resident terrain front")
 
+ab = capture_event("rotation-a-b")
+ab_lod = ab["terrain_lod"]
+if ab_lod.get("gpu_ready_sectors", 0) < 2:
+    raise SystemExit("A-B did not retain both directional sectors GPU-ready")
+
 aba = capture_event("rotation-a-b-a")
-if aba.get("gpu_ready_sector_count", 0) < 2:
+aba_lod = aba["terrain_lod"]
+if aba_lod.get("gpu_ready_sectors", 0) < 2:
     raise SystemExit("A-B-A did not retain both directional sectors GPU-ready")
-if aba.get("submitted_builds") != 2:
+if aba_lod.get("submitted_builds") != 2:
     raise SystemExit(
-        f"A-B-A scheduled {aba.get('submitted_builds')} builds; expected startup plus B only")
+        f"A-B-A scheduled {aba_lod.get('submitted_builds')} builds; expected startup plus B only")
+aba_pacing = aba["frame_pacing_summary"]
+if aba_pacing["missed_present_count"] != 0:
+    raise SystemExit("cached return to A missed the 120 Hz presentation budget")
+if aba_pacing["gpu"]["p95_ms"] > aba_pacing["present_budget_ms"]:
+    raise SystemExit("cached return to A exceeded the 120 Hz GPU p95 budget")
+if aba_pacing["cpu"]["p95_ms"] > aba_pacing["present_budget_ms"] * 1.5:
+    raise SystemExit("cached return to A contains a distinct long-frame population")
+if aba_pacing["terrain_construction"]["maximum_ms"] != 0:
+    raise SystemExit("cached return to A performed terrain construction")
+if aba_pacing["upload"]["maximum_ms"] != 0:
+    raise SystemExit("cached return to A performed a terrain upload")
+for metric in ("visible_edge_p95", "visible_field_error_p95",
+               "visible_limb_error_p95"):
+    if aba_lod[metric] > settled_lod[metric] * (1.0 + 1.0e-9):
+        raise SystemExit(f"cached return to A increased {metric}")
 
 quarters = capture_event("rotation-four-quarter-turns")
-if quarters.get("gpu_ready_sector_count", 0) < 4:
-    raise SystemExit("four quarter turns did not retain four GPU-ready sectors")
-if quarters.get("budget_exceeded"):
+quarters_lod = quarters["terrain_lod"]
+if quarters_lod.get("resident_sectors", 0) < 4:
+    raise SystemExit("four quarter turns did not retain four logical sectors")
+if quarters_lod.get("budget_exceeded"):
     raise SystemExit("four quarter turns exceeded a declared resource budget")
+if (quarters_lod.get("gpu_ready_sectors", 0) < 4 and
+        quarters_lod.get("sector_demotions", 0) == 0):
+    raise SystemExit("quarter-turn GPU demotion was not reported explicitly")
 
 print(json.dumps({
     "event": "terrain_lod_residency_qualification",
     "display_name": display,
     "early_runtime_frame": early["runtime_rendered_frame"],
-    "aba_gpu_ready_sectors": aba["gpu_ready_sector_count"],
-    "aba_submitted_builds": aba["submitted_builds"],
-    "quarter_turn_gpu_ready_sectors": quarters["gpu_ready_sector_count"],
+    "aba_gpu_ready_sectors": aba_lod["gpu_ready_sectors"],
+    "aba_submitted_builds": aba_lod["submitted_builds"],
+    "aba_gpu_p95_ms": aba_pacing["gpu"]["p95_ms"],
+    "quarter_turn_resident_sectors": quarters_lod["resident_sectors"],
+    "quarter_turn_gpu_ready_sectors": quarters_lod["gpu_ready_sectors"],
+    "quarter_turn_demotions": quarters_lod["sector_demotions"],
 }, separators=(",", ":")))
 PY

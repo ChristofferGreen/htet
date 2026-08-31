@@ -1243,6 +1243,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::size_t world_gpu_look_frames_remaining{};
     std::vector<double> world_gpu_yaw_sequence_degrees;
     std::size_t world_gpu_yaw_sequence_index{};
+    bool world_gpu_automation_look_changed{};
     bool world_gpu_motion_applied=false;
     bool world_gpu_motion_saw_busy=false;
     bool world_analytic_ridge=false;
@@ -1264,6 +1265,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         float render_scale{};
     };
     std::vector<WorldFramePacingSample> world_frame_pacing_samples;
+    std::vector<WorldFramePacingSample> world_capture_frame_pacing_samples;
+    std::size_t world_capture_render_scale_stable_frames{};
     std::uint64_t world_pacing_scene_generation{};
     double world_pending_upload_milliseconds{};
     double world_frame_elapsed_milliseconds{};
@@ -1904,6 +1907,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const bool scripted_motion=world_gpu_walk_steps!=0U||
                 world_gpu_look_x!=0.0||world_gpu_look_y!=0.0||
                 !world_gpu_yaw_sequence_degrees.empty();
+            world_gpu_automation_look_changed=false;
             if(scripted_motion&&!world_gpu_motion_applied&&world_runtime&&
                !runtime_status.busy&&world_gpu_capture_ready_frames>=64U&&
                g_SceneRenderer.latest_atmosphere_lookup_revisions()){
@@ -1930,6 +1934,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_controller.look(
                     world_gpu_look_x/static_cast<double>(world_gpu_look_frames),
                     world_gpu_look_y/static_cast<double>(world_gpu_look_frames));
+                world_gpu_automation_look_changed=true;
                 --world_gpu_look_frames_remaining;
                 if(world_gpu_look_frames_remaining==0U)
                     world_gpu_capture_ready_frames=0U;
@@ -3913,7 +3918,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 (movement.forward!=0.0||movement.right!=0.0||
                  world_free_fly_vertical!=0.0||
                  (!world_free_fly&&!world_controller.state().grounded)||
-                 world_camera_look_changed);
+                 world_camera_look_changed||
+                 (world_gpu_automation_look_changed&&
+                  world_gpu_look_frames>1U));
             if(world_runtime)
                 world_runtime->set_camera(lod_camera,lod_camera_interactive);
             view_camera_position=world_controller.eye_position();
@@ -4812,6 +4819,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 (requested_frame_ready||settled_capture_ready);
             if(g_AtmosphereFrame.capture_requested){
                 world_gpu_atmosphere_capture_submitted=true;
+                // Synchronous image readback and file encoding are capture
+                // instrumentation, not gameplay cadence. Freeze the settled
+                // pacing window immediately before requesting that work.
+                world_capture_frame_pacing_samples=world_frame_pacing_samples;
+                world_capture_render_scale_stable_frames=
+                    world_render_scale_stable_frames;
                 world_gpu_capture_submitted_rendered_frame=
                     world_gpu_rendered_frames;
                 world_gpu_capture_submitted_runtime_frame=
@@ -5595,6 +5608,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.hysteresis_budget_fallbacks
                              <<",\"budget_rejected_builds\":"
                              <<runtime_status.budget_rejected_builds
+                             <<",\"submitted_builds\":"
+                             <<runtime_status.submitted_builds
+                             <<",\"superseded_builds\":"
+                             <<runtime_status.superseded_builds
+                             <<",\"canceled_builds\":"
+                             <<runtime_status.canceled_builds
                              <<",\"resident_bytes\":"
                              <<runtime_status.resident_bytes
                              <<",\"retained_cache_bytes\":"
@@ -5857,17 +5876,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     // resolution. Keep scale-transition samples in the raw
                     // trace below, but do not mix an obsolete resolution's
                     // cadence into the settled distribution.
+                    const auto& captured_pacing=
+                        world_capture_frame_pacing_samples.empty()
+                            ?world_frame_pacing_samples
+                            :world_capture_frame_pacing_samples;
                     const std::size_t stable_pacing_samples=std::min(
-                        world_frame_pacing_samples.size(),
-                        world_render_scale_stable_frames);
+                        captured_pacing.size(),
+                        world_capture_render_scale_stable_frames==0U
+                            ?world_render_scale_stable_frames
+                            :world_capture_render_scale_stable_frames);
                     const std::size_t summarized_pacing_samples=std::min(
                         stable_pacing_samples,std::size_t{240U});
                     const std::size_t pacing_summary_begin=
-                        world_frame_pacing_samples.size()-
+                        captured_pacing.size()-
                         summarized_pacing_samples;
                     const std::size_t pacing_trace_begin=
-                        world_frame_pacing_samples.size()>240U?
-                            world_frame_pacing_samples.size()-240U:0U;
+                        captured_pacing.size()>240U?
+                            captured_pacing.size()-240U:0U;
                     std::array<std::vector<double>,4> pacing_values;
                     std::size_t missed_presents{};
                     std::size_t consecutive_missed{},
@@ -5875,8 +5900,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     const double present_budget_milliseconds=
                         1000.0/std::max(world_display_refresh_hz,1);
                     for(std::size_t index=pacing_summary_begin;
-                        index<world_frame_pacing_samples.size();++index){
-                        const auto& sample=world_frame_pacing_samples[index];
+                        index<captured_pacing.size();++index){
+                        const auto& sample=captured_pacing[index];
                         pacing_values[0].push_back(sample.cpu_milliseconds);
                         pacing_values[1].push_back(sample.gpu_milliseconds);
                         pacing_values[2].push_back(
@@ -5921,9 +5946,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     write_pacing_summary("upload",3U);std::cout<<'}';
                     std::cout<<",\"frame_pacing\":[";
                     for(std::size_t index=pacing_trace_begin;
-                        index<world_frame_pacing_samples.size();++index){
+                        index<captured_pacing.size();++index){
                         if(index!=pacing_trace_begin)std::cout<<',';
-                        const auto& sample=world_frame_pacing_samples[index];
+                        const auto& sample=captured_pacing[index];
                         std::cout<<'['<<sample.cpu_milliseconds<<','
                                  <<sample.gpu_milliseconds<<','
                                  <<sample.atmosphere_milliseconds<<','

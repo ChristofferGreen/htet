@@ -1443,6 +1443,42 @@ std::vector<tetra::HierarchyBlockId> terrain_sector_demanded_blocks(
   return result;
 }
 
+struct TerrainSectorBlockCoverage {
+  explicit TerrainSectorBlockCoverage(
+      const TerrainResidentSector& sector,unsigned int block_generations)
+      :leaves(sector.requested_cut) {
+    if(block_generations==0U)
+      throw std::invalid_argument(
+          "terrain sector block coverage requires a nonzero block width");
+    for(const auto owner:leaves)
+      for(unsigned int depth=0U;depth<=owner.red_depth();
+          depth+=block_generations)
+        block_ancestors.push_back(owner.ancestor(depth));
+    std::ranges::sort(block_ancestors);
+    block_ancestors.erase(
+        std::unique(block_ancestors.begin(),block_ancestors.end()),
+        block_ancestors.end());
+  }
+
+  [[nodiscard]] bool covers(tetra::HierarchyBlockId id) const {
+    // The candidate block either contains at least one sector leaf or is a
+    // refined descendant of one. Checking both directions makes retention
+    // independent of block-boundary changes introduced by common refinement.
+    if(std::binary_search(
+           block_ancestors.begin(),block_ancestors.end(),id.prefix))
+      return true;
+    auto address=id.prefix;
+    while(true){
+      if(std::binary_search(leaves.begin(),leaves.end(),address))return true;
+      if(address.red_depth()==0U)return false;
+      address=address.parent();
+    }
+  }
+
+  std::span<const tetra::WorldTetAddress> leaves;
+  std::vector<tetra::WorldTetAddress> block_ancestors;
+};
+
 void retain_demoted_terrain_surface_blocks(
     TerrainDetailWorkingSet& working_set,
     const SparseWorldSurfaceCache& surface_cache,
@@ -1450,15 +1486,10 @@ void retain_demoted_terrain_surface_blocks(
   for(auto& sector:working_set.sectors){
     if(sector.residency_target!=TerrainSectorReadiness::cpu_surface||
        !sector.retained_surface_blocks.empty())continue;
-    const auto demanded=terrain_sector_demanded_blocks(
-        sector,block_generations);
-    for(const auto id:demanded){
-      const auto found=std::ranges::lower_bound(
-          surface_cache.render_blocks,id,{},
-          &SparseWorldSurfaceCache::RenderBlock::id);
-      if(found!=surface_cache.render_blocks.end()&&found->id==id)
-        sector.retained_surface_blocks.push_back(*found);
-    }
+    const TerrainSectorBlockCoverage coverage(sector,block_generations);
+    for(const auto& block:surface_cache.render_blocks)
+      if(coverage.covers(block.id))
+        sector.retained_surface_blocks.push_back(block);
     sector.readiness=sector.retained_surface_blocks.empty()
         ?TerrainSectorReadiness::hierarchy
         :TerrainSectorReadiness::cpu_surface;
@@ -1713,6 +1744,7 @@ void attribute_terrain_detail_sector_resources(
     sector.render_block_hash=hash_offset;
     const auto demanded_blocks=terrain_sector_demanded_blocks(
         sector,block_generations);
+    const TerrainSectorBlockCoverage coverage(sector,block_generations);
     std::size_t available_blocks{};
     auto minimum_resource_readiness=TerrainSectorReadiness::gpu_ready;
     sector.hierarchy_blocks=demanded_blocks.size();
@@ -1744,24 +1776,31 @@ void attribute_terrain_detail_sector_resources(
       minimum_resource_readiness=std::min(
           minimum_resource_readiness,found->readiness);
       sector.hierarchy_bytes+=found->hierarchy_bytes;
-      if(sector.residency_target>=TerrainSectorReadiness::cpu_surface&&
-         found->readiness>=TerrainSectorReadiness::cpu_surface){
-        if(sector.retained_surface_blocks.empty())++sector.cpu_surface_blocks;
-        sector.cpu_surface_bytes+=found->cpu_surface_bytes;
-        append_hash(sector.surface_block_hash,id.prefix.high);
-        append_hash(sector.surface_block_hash,id.prefix.low);
-        append_hash(sector.surface_block_hash,id.block_generations);
-        append_hash(sector.surface_block_hash,found->surface_hash);
-      }
-      if(sector.residency_target==TerrainSectorReadiness::gpu_ready&&
-         found->readiness==TerrainSectorReadiness::gpu_ready){
-        sector.gpu_draw_blocks+=found->gpu_bytes!=0U?1U:0U;
-        sector.upload_bytes+=found->gpu_bytes;
-        if(sector.retained_surface_blocks.empty())sector.triangles+=found->triangles;
-        append_hash(sector.render_block_hash,id.prefix.high);
-        append_hash(sector.render_block_hash,id.prefix.low);
-        append_hash(sector.render_block_hash,id.block_generations);
-        append_hash(sector.render_block_hash,found->render_hash);
+    }
+    if(sector.retained_surface_blocks.empty()){
+      for(const auto& resource:resources){
+        if(!coverage.covers(resource.id))continue;
+        if(sector.residency_target>=TerrainSectorReadiness::cpu_surface&&
+           resource.readiness>=TerrainSectorReadiness::cpu_surface&&
+           resource.cpu_surface_bytes!=0U){
+          ++sector.cpu_surface_blocks;
+          sector.cpu_surface_bytes+=resource.cpu_surface_bytes;
+          append_hash(sector.surface_block_hash,resource.id.prefix.high);
+          append_hash(sector.surface_block_hash,resource.id.prefix.low);
+          append_hash(sector.surface_block_hash,resource.id.block_generations);
+          append_hash(sector.surface_block_hash,resource.surface_hash);
+        }
+        if(sector.residency_target==TerrainSectorReadiness::gpu_ready&&
+           resource.readiness==TerrainSectorReadiness::gpu_ready&&
+           resource.gpu_bytes!=0U){
+          ++sector.gpu_draw_blocks;
+          sector.upload_bytes+=resource.gpu_bytes;
+          sector.triangles+=resource.triangles;
+          append_hash(sector.render_block_hash,resource.id.prefix.high);
+          append_hash(sector.render_block_hash,resource.id.prefix.low);
+          append_hash(sector.render_block_hash,resource.id.block_generations);
+          append_hash(sector.render_block_hash,resource.render_hash);
+        }
       }
     }
     if(available_blocks==demanded_blocks.size()&&
@@ -2829,8 +2868,40 @@ void BlockedTerrainRuntime::set_camera(
     if(const auto current=std::ranges::find(
            detail_working_set_.sectors,detail_working_set_.current_sector_id,
            &TerrainResidentSector::id);
-       current!=detail_working_set_.sectors.end())
+       current!=detail_working_set_.sectors.end()){
       diagnostics_.current_sector_demand_hash=current->demand_hash;
+      const auto& metrics=current->demand_metrics;
+      diagnostics_.target_projected_edge_pixels=
+          metrics.target_projected_edge_pixels;
+      diagnostics_.merge_projected_edge_pixels=
+          profile_.pixel_threshold*profile_.lod_merge_threshold_ratio;
+      diagnostics_.visible_projected_edge_samples=
+          metrics.visible_projected_edge_samples;
+      diagnostics_.visible_minimum_projected_edge_pixels=
+          metrics.visible_minimum_projected_edge_pixels;
+      diagnostics_.visible_median_projected_edge_pixels=
+          metrics.visible_median_projected_edge_pixels;
+      diagnostics_.visible_p95_projected_edge_pixels=
+          metrics.visible_p95_projected_edge_pixels;
+      diagnostics_.visible_maximum_projected_edge_pixels=
+          metrics.visible_maximum_projected_edge_pixels;
+      diagnostics_.visible_p95_projected_field_error_pixels=
+          metrics.visible_p95_projected_field_error_pixels;
+      diagnostics_.visible_maximum_projected_field_error_pixels=
+          metrics.visible_maximum_projected_field_error_pixels;
+      diagnostics_.visible_p95_projected_limb_error_pixels=
+          metrics.visible_p95_projected_limb_error_pixels;
+      diagnostics_.visible_maximum_projected_limb_error_pixels=
+          metrics.visible_maximum_projected_limb_error_pixels;
+      diagnostics_.edge_density_splits=metrics.projected_splits;
+      diagnostics_.field_error_splits=metrics.field_error_splits;
+      diagnostics_.limb_error_splits=metrics.limb_error_splits;
+      diagnostics_.hysteresis_retained_splits=
+          metrics.hysteresis_retained_splits;
+      diagnostics_.maximum_depth_error_exceptions=
+          metrics.maximum_depth_error_exceptions;
+      diagnostics_.cut_selection_milliseconds=0.0;
+    }
     diagnostics_.upload_pending_sector_count=static_cast<std::size_t>(
         std::ranges::count(
             detail_working_set_.sectors,TerrainSectorReadiness::upload_pending,

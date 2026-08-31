@@ -5,10 +5,10 @@
 namespace tetra_viewer {
 
 struct WorldResourceBudgets {
-  std::size_t maximum_cpu_bytes{640U*1024U*1024U};
-  std::size_t maximum_triangles{500000U};
-  std::size_t maximum_work_units{25000000U};
-  std::size_t maximum_upload_bytes{64U*1024U*1024U};
+  std::size_t maximum_cpu_bytes{1024U*1024U*1024U};
+  std::size_t maximum_triangles{1000000U};
+  std::size_t maximum_work_units{50000000U};
+  std::size_t maximum_upload_bytes{128U*1024U*1024U};
 };
 
 struct WorldResourceUsage {
@@ -85,7 +85,7 @@ struct WorldProfile {
   // the substantially larger tetrahedral volume arrays.
   double near_volume_radius{0.6};
   std::size_t maximum_volume_blocks{4096U};
-  std::size_t maximum_hierarchy_blocks{73728U};
+  std::size_t maximum_hierarchy_blocks{147456U};
   double hierarchy_guard_frustum_scale{1.35};
   double terrain_sector_overlap_radians{0.008726646259971648};
   double terrain_sector_minimum_anchor_radius_radians{

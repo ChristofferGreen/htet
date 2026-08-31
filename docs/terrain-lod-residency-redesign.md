@@ -3,9 +3,8 @@
 ## Status
 
 This document is the normative replacement for the former direction-centred
-terrain LOD heuristic. The implementation audit below distinguishes landed
-runtime contracts from validation that still requires the reference display;
-the design text remains normative where the audit reports an open gate.
+terrain LOD heuristic. The implementation audit below records the landed
+runtime contracts and their reference-display qualification.
 
 The former wider high-altitude guard and delayed angular recentering were
 transitional mitigations. They postponed visible refinement but retained the
@@ -34,8 +33,8 @@ applicable.
 | Spatial draw visibility | Implemented | Independent retained render ranges are camera-frustum classified; off-screen resident ranges remain allocated but are not submitted. Shadow caster selection remains separately light-driven. |
 | Visual versus volume residency | Implemented | Player, editing, and physics volume pins affect residency independently of the visual projected-error cut and are reported by demand kind. |
 | Transitional direction heuristic removal | Implemented | Terrain LOD no longer consumes hierarchy guard width or angular recenter state. The remaining guard-frustum scale is hierarchy streaming policy, not a visual-detail multiplier. |
-| Exact-pose and rotation automation | Implemented, live gate pending | `scripts/qualify_terrain_lod_residency.sh` captures exact early and settled frames plus same-process A-B-A and four-quarter-turn sequences. It rejects a monitor substitution and checks that returning to A schedules no build. The required `P34WD-40` display was unavailable at the latest run, so no new live pass is claimed. |
-| Atmosphere, shadow, and 120 Hz regression acceptance | Pending reference-display rerun | Earlier exact-pose captures remain available for comparison, but they do not validate the newly added rotation sequence. Completion requires running the strict harness on `P34WD-40`, inspecting all four images, and accepting the frame-pacing distribution. |
+| Exact-pose and rotation automation | Implemented and qualified | `scripts/qualify_terrain_lod_residency.sh` captures exact early, settled, and wireframe frames plus same-process A-B, A-B-A, and four-quarter-turn sequences. The 2026-08-31 run selected `P34WD-40` at 120 Hz. A-B-A retained two GPU-ready sectors, submitted exactly the startup and B builds, and scheduled no return build. Four quarter turns retained four logical sectors while reporting three budget-driven demotions. |
+| Atmosphere, shadow, and 120 Hz regression acceptance | Qualified | All six captures were visually inspected: silhouettes and terrain fronts remain complete, A-B-A returns to the original view, no LOD seam is visible, and wireframe density is continuous. The cached return recorded 120 settled samples, zero missed presents, zero construction or upload time, GPU p95 6.62649 ms, and CPU p95 below the harness's 1.5-frame long-tail limit. The full serial suite passed 434/435; the sole failure is the pre-existing unapproved default cutaway baseline (`10816334498792937846` actual versus `9289684079062712499` expected), which this work deliberately does not update. |
 
 ## Problem
 
