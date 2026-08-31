@@ -2180,6 +2180,40 @@ TEST_CASE("terrain sector budget eviction is deterministic and protects current 
   CHECK_FALSE(tetra_viewer::evict_terrain_detail_sector_for_budget(working_set));
 }
 
+TEST_CASE("terrain sector coverage reports overlap and uncovered rotation") {
+  tetra::Camera camera;
+  camera.forward={0.0,0.0,-1.0};
+  camera.viewport_height_pixels=800.0;
+  camera.aspect_ratio=1.6;
+  tetra_viewer::TerrainDetailWorkingSet working_set;
+  const auto empty=tetra_viewer::measure_terrain_sector_coverage(
+      working_set,camera,256U);
+  CHECK(empty.covered_solid_angle_steradians==0.0);
+  CHECK(empty.overlap_solid_angle_steradians==0.0);
+  CHECK(empty.uncovered_solid_angle_steradians==
+        doctest::Approx(4.0*std::numbers::pi));
+
+  tetra_viewer::TerrainResidentSector sector;
+  sector.camera_anchor=camera;
+  sector.angular_footprint_radians=2.0*std::numbers::pi;
+  working_set.sectors.push_back(sector);
+  const auto covered=tetra_viewer::measure_terrain_sector_coverage(
+      working_set,camera,256U);
+  CHECK(covered.covered_solid_angle_steradians==
+        doctest::Approx(4.0*std::numbers::pi));
+  CHECK(covered.overlap_solid_angle_steradians==0.0);
+  CHECK(covered.uncovered_solid_angle_steradians==doctest::Approx(0.0));
+
+  working_set.sectors.push_back(sector);
+  const auto overlapped=tetra_viewer::measure_terrain_sector_coverage(
+      working_set,camera,256U);
+  CHECK(overlapped.covered_solid_angle_steradians==
+        doctest::Approx(4.0*std::numbers::pi));
+  CHECK(overlapped.overlap_solid_angle_steradians==
+        doctest::Approx(4.0*std::numbers::pi));
+  CHECK(overlapped.uncovered_solid_angle_steradians==doctest::Approx(0.0));
+}
+
 TEST_CASE("root-local target fronts retain complete directory root fallbacks") {
   const auto profile=tetra_viewer::production_world_profile();
   tetra::Sphere field;field.kind=profile.shape;field.terrain=profile.terrain;

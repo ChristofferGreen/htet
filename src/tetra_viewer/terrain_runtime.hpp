@@ -179,6 +179,10 @@ struct TerrainRuntimeDiagnostics {
   std::size_t sector_gpu_bytes{};
   std::size_t sector_triangles{};
   double resident_sector_angular_coverage_radians{};
+  double resident_sector_covered_solid_angle_steradians{};
+  double resident_sector_overlap_solid_angle_steradians{};
+  double uncovered_rotational_footprint_steradians{};
+  std::size_t sector_coverage_samples{};
   std::uint64_t current_sector_demand_hash{};
   std::uint64_t sector_hits{};
   std::uint64_t sector_additions{};
@@ -357,6 +361,13 @@ struct TerrainDetailWorkingSet {
   std::uint64_t hysteresis_budget_fallbacks{};
 };
 
+struct TerrainSectorCoverage {
+  double covered_solid_angle_steradians{};
+  double overlap_solid_angle_steradians{};
+  double uncovered_solid_angle_steradians{};
+  std::size_t samples{};
+};
+
 // Selects an exact raw red cut for a subset of the twelve independent BCC
 // roots. Results are canonical and can be concatenated in root order before
 // conformity closure, allowing camera target discovery to publish spatial
@@ -389,6 +400,9 @@ common_refinement_world_requested_cuts(
 [[nodiscard]] bool terrain_detail_working_set_covers_camera(
     const TerrainDetailWorkingSet& working_set,const tetra::Sphere& field,
     const tetra::Camera& camera) noexcept;
+[[nodiscard]] TerrainSectorCoverage measure_terrain_sector_coverage(
+    const TerrainDetailWorkingSet& working_set,const tetra::Camera& camera,
+    std::size_t samples=16384U) noexcept;
 void update_terrain_detail_working_set(
     TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
     const tetra::Sphere& field,const tetra::Camera& camera,

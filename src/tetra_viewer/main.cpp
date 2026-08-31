@@ -5496,6 +5496,17 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.sector_triangles
                              <<",\"sector_coverage_radians\":"
                              <<runtime_status.resident_sector_angular_coverage_radians
+                             <<",\"sector_covered_solid_angle_steradians\":"
+                             <<runtime_status
+                                   .resident_sector_covered_solid_angle_steradians
+                             <<",\"sector_overlap_solid_angle_steradians\":"
+                             <<runtime_status
+                                   .resident_sector_overlap_solid_angle_steradians
+                             <<",\"uncovered_rotational_footprint_steradians\":"
+                             <<runtime_status
+                                   .uncovered_rotational_footprint_steradians
+                             <<",\"sector_coverage_samples\":"
+                             <<runtime_status.sector_coverage_samples
                              <<",\"sector_overlap_radians\":"
                              <<capture_profile.terrain_sector_overlap_radians
                              <<",\"current_sector_demand_hash\":"

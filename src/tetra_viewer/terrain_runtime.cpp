@@ -1424,6 +1424,44 @@ bool terrain_detail_working_set_covers_camera(
   });
 }
 
+TerrainSectorCoverage measure_terrain_sector_coverage(
+    const TerrainDetailWorkingSet& working_set,const tetra::Camera& camera,
+    std::size_t samples) noexcept {
+  TerrainSectorCoverage result;
+  result.samples=samples;
+  if(samples==0U)return result;
+  std::size_t covered{},overlap{};
+  const double view_radius=terrain_camera_half_diagonal(camera);
+  constexpr double golden_angle=2.3999632297286533222;
+  for(std::size_t index=0U;index<samples;++index){
+    const double z=1.0-2.0*(static_cast<double>(index)+0.5)/
+        static_cast<double>(samples);
+    const double radius=std::sqrt(std::max(0.0,1.0-z*z));
+    const double angle=golden_angle*static_cast<double>(index);
+    const tetra::Vec3 direction{
+        radius*std::cos(angle),radius*std::sin(angle),z};
+    std::size_t owners{};
+    for(const auto& sector:working_set.sectors){
+      const double coverage_radius=std::clamp(
+          sector.angular_footprint_radians-view_radius,0.0,
+          std::numbers::pi);
+      if(terrain_direction_angle(
+             sector.camera_anchor.forward,direction)<=coverage_radius)
+        ++owners;
+    }
+    covered+=owners!=0U?1U:0U;
+    overlap+=owners>1U?1U:0U;
+  }
+  constexpr double sphere_solid_angle=4.0*std::numbers::pi;
+  result.covered_solid_angle_steradians=sphere_solid_angle*
+      static_cast<double>(covered)/static_cast<double>(samples);
+  result.overlap_solid_angle_steradians=sphere_solid_angle*
+      static_cast<double>(overlap)/static_cast<double>(samples);
+  result.uncovered_solid_angle_steradians=sphere_solid_angle-
+      result.covered_solid_angle_steradians;
+  return result;
+}
+
 void update_terrain_detail_working_set(
     TerrainDetailWorkingSet& working_set,const WorldProfile& profile,
     const tetra::Sphere& field,const tetra::Camera& camera,
@@ -2079,6 +2117,15 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       [](double sum,const TerrainResidentSector& sector){
         return sum+2.0*sector.angular_footprint_radians;
       });
+  const auto sector_coverage=measure_terrain_sector_coverage(
+      detail_working_set,camera);
+  diagnostics.resident_sector_covered_solid_angle_steradians=
+      sector_coverage.covered_solid_angle_steradians;
+  diagnostics.resident_sector_overlap_solid_angle_steradians=
+      sector_coverage.overlap_solid_angle_steradians;
+  diagnostics.uncovered_rotational_footprint_steradians=
+      sector_coverage.uncovered_solid_angle_steradians;
+  diagnostics.sector_coverage_samples=sector_coverage.samples;
   diagnostics.sector_hits=detail_working_set.sector_hits;
   diagnostics.sector_additions=detail_working_set.sector_additions;
   diagnostics.sector_evictions=detail_working_set.sector_evictions;
