@@ -1241,6 +1241,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     double world_gpu_look_x{},world_gpu_look_y{};
     std::size_t world_gpu_look_frames{1U};
     std::size_t world_gpu_look_frames_remaining{};
+    std::vector<double> world_gpu_yaw_sequence_degrees;
+    std::size_t world_gpu_yaw_sequence_index{};
     bool world_gpu_motion_applied=false;
     bool world_gpu_motion_saw_busy=false;
     bool world_analytic_ridge=false;
@@ -1308,6 +1310,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view look_prefix="--automation-look=";
         constexpr std::string_view look_frames_prefix=
             "--automation-look-frames=";
+        constexpr std::string_view yaw_sequence_prefix=
+            "--automation-yaw-sequence-degrees=";
         constexpr std::string_view terrain_msaa_prefix="--terrain-msaa=";
         constexpr std::string_view terrain_pixel_threshold_prefix=
             "--terrain-pixel-threshold=";
@@ -1527,6 +1531,29 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 world_gpu_look_frames=parsed;
+            }else if(value.starts_with(yaw_sequence_prefix)){
+                auto text=value.substr(yaw_sequence_prefix.size());
+                while(!text.empty()){
+                    const auto comma=text.find(',');
+                    const auto component=comma==std::string_view::npos
+                        ?text:text.substr(0U,comma);
+                    double degrees{};
+                    if(!parse_argument_double(component,degrees)||
+                       degrees==0.0||
+                       world_gpu_yaw_sequence_degrees.size()>=32U){
+                        fprintf(stderr,
+                            "automation yaw sequence requires 1-32 finite, nonzero degree turns\n");
+                        return 2;
+                    }
+                    world_gpu_yaw_sequence_degrees.push_back(degrees);
+                    if(comma==std::string_view::npos)break;
+                    text.remove_prefix(comma+1U);
+                    if(text.empty()){
+                        fprintf(stderr,
+                            "automation yaw sequence has an empty turn\n");
+                        return 2;
+                    }
+                }
             }else if(value.starts_with(look_prefix)){
                 auto text=value.substr(look_prefix.size());
                 const auto comma=text.find(',');
@@ -1725,6 +1752,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     temporal_half_resolution;
         world_sun_orbit_azimuth=world_sun_azimuth;
         world_sun_orbit_phase=world_sun_elevation;
+        if(!world_gpu_yaw_sequence_degrees.empty()){
+            constexpr double controller_radians_per_pixel=0.0018;
+            world_gpu_look_x=world_gpu_yaw_sequence_degrees.front()*
+                std::numbers::pi/180.0/controller_radians_per_pixel;
+            world_gpu_look_y=0.0;
+        }
         if(world_auto_minimum_scale>world_auto_maximum_scale){
             fprintf(stderr,"auto minimum scale exceeds maximum scale\n");
             return 2;
@@ -1739,7 +1772,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             world_gpu_shadow_projection_probe||
             !world_gpu_atmosphere_capture_path.empty()||
             world_gpu_walk_steps!=0U||world_gpu_look_x!=0.0||
-            world_gpu_look_y!=0.0;
+            world_gpu_look_y!=0.0||!world_gpu_yaw_sequence_degrees.empty();
         if(g_AtmosphereFrame.shadow_integrator==
                tetra_viewer::AtmosphereShadowIntegrator::dense_oracle&&
            !world_gpu_automation_requested){
@@ -1869,18 +1902,37 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             const auto runtime_status=world_runtime?
                 world_runtime->diagnostics():tetra_viewer::TerrainRuntimeDiagnostics{};
             const bool scripted_motion=world_gpu_walk_steps!=0U||
-                world_gpu_look_x!=0.0||world_gpu_look_y!=0.0;
+                world_gpu_look_x!=0.0||world_gpu_look_y!=0.0||
+                !world_gpu_yaw_sequence_degrees.empty();
             if(scripted_motion&&!world_gpu_motion_applied&&world_runtime&&
                !runtime_status.busy&&world_gpu_capture_ready_frames>=64U&&
                g_SceneRenderer.latest_atmosphere_lookup_revisions()){
                 world_gpu_motion_applied=true;
                 world_gpu_look_frames_remaining=world_gpu_look_frames;
             }
+            if(world_gpu_motion_applied&&
+               world_gpu_look_frames_remaining==0U&&
+               world_gpu_yaw_sequence_index+1U<
+                   world_gpu_yaw_sequence_degrees.size()&&
+               !runtime_status.busy&&runtime_status.converged&&
+               world_gpu_capture_ready_frames>=64U){
+                ++world_gpu_yaw_sequence_index;
+                constexpr double controller_radians_per_pixel=0.0018;
+                world_gpu_look_x=
+                    world_gpu_yaw_sequence_degrees[
+                        world_gpu_yaw_sequence_index]*
+                    std::numbers::pi/180.0/controller_radians_per_pixel;
+                world_gpu_look_y=0.0;
+                world_gpu_look_frames_remaining=world_gpu_look_frames;
+                world_gpu_capture_ready_frames=0U;
+            }
             if(world_gpu_motion_applied&&world_gpu_look_frames_remaining!=0U){
                 world_controller.look(
                     world_gpu_look_x/static_cast<double>(world_gpu_look_frames),
                     world_gpu_look_y/static_cast<double>(world_gpu_look_frames));
                 --world_gpu_look_frames_remaining;
+                if(world_gpu_look_frames_remaining==0U)
+                    world_gpu_capture_ready_frames=0U;
             }
             if(world_gpu_motion_applied&&runtime_status.busy)
                 world_gpu_motion_saw_busy=true;
@@ -4684,6 +4736,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_gpu_walk_steps==0U&&world_gpu_look_x==0.0&&
                 world_gpu_look_y==0.0;
             const bool motion_capture=world_gpu_motion_applied&&
+                (world_gpu_yaw_sequence_degrees.empty()||
+                 (world_gpu_yaw_sequence_index+1U==
+                      world_gpu_yaw_sequence_degrees.size()&&
+                  world_gpu_look_frames_remaining==0U))&&
                 ((world_gpu_capture_after_motion_frames!=0U&&
                   world_gpu_capture_motion_frame_count>=
                       world_gpu_capture_after_motion_frames)||
