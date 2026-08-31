@@ -162,6 +162,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
           <<",\"active_tetrahedra\":"<<diagnostics.active_tetrahedra
           <<",\"resident_bytes\":"<<diagnostics.resident_bytes
           <<",\"retained_cache_bytes\":"<<diagnostics.retained_cache_bytes
+          <<",\"retained_sector_surface_bytes\":"
+          <<diagnostics.retained_sector_surface_bytes
           <<",\"retained_conforming_bytes\":"
           <<diagnostics.retained_conforming_bytes
           <<",\"retained_surface_certificate_bytes\":"

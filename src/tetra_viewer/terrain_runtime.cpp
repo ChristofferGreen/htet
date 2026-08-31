@@ -2528,7 +2528,16 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   for(const auto& block:surface_cache.render_blocks)
     diagnostics.retained_render_block_bytes+=
         block.triangle_vertices.capacity()*sizeof(SceneVertex);
+  for(const auto& sector:detail_working_set.sectors)
+    for(const auto& block:sector.retained_surface_blocks)
+      diagnostics.retained_sector_surface_bytes=checked_resource_add(
+          diagnostics.retained_sector_surface_bytes,
+          checked_resource_add(sizeof(block),checked_resource_multiply(
+              block.triangle_vertices.capacity(),sizeof(SceneVertex))));
   diagnostics.retained_cache_bytes+=diagnostics.retained_render_block_bytes;
+  diagnostics.retained_cache_bytes=checked_resource_add(
+      diagnostics.retained_cache_bytes,
+      diagnostics.retained_sector_surface_bytes);
   diagnostics.retained_cache_bytes+=diagnostics.retained_hierarchy_demand_bytes;
   diagnostics.resident_bytes=directory->metrics().retained_bytes+
       diagnostics.retained_cache_bytes;

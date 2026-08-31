@@ -40,6 +40,7 @@ struct TerrainRuntimeDiagnostics {
   std::size_t retained_conforming_bytes{};
   std::size_t retained_surface_certificate_bytes{};
   std::size_t retained_render_block_bytes{};
+  std::size_t retained_sector_surface_bytes{};
   std::size_t retained_host_staging_bytes{};
   std::size_t hierarchy_blocks{};
   std::size_t surface_blocks{};

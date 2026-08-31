@@ -5605,6 +5605,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.retained_surface_certificate_bytes
                              <<",\"retained_render_block_bytes\":"
                              <<runtime_status.retained_render_block_bytes
+                             <<",\"retained_sector_surface_bytes\":"
+                             <<runtime_status.retained_sector_surface_bytes
                              <<",\"retained_host_staging_bytes\":"
                              <<runtime_status.retained_host_staging_bytes
                              <<",\"cpu_high_water_bytes\":"

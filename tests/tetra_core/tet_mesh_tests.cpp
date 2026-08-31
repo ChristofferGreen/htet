@@ -3574,6 +3574,8 @@ TEST_CASE("blocked world evicts and deterministically rebuilds sectors over budg
   CHECK(demoted->readiness==tetra_viewer::TerrainSectorReadiness::cpu_surface);
   CHECK(demoted->cpu_surface_blocks>0U);
   CHECK_FALSE(demoted->retained_surface_blocks.empty());
+  CHECK(second.retained_sector_surface_bytes>0U);
+  CHECK(second.retained_cache_bytes>=second.retained_sector_surface_bytes);
   CHECK(demoted->gpu_draw_blocks==0U);
   REQUIRE(second.positive_volumes);
   REQUIRE(second.conforming_faces);
