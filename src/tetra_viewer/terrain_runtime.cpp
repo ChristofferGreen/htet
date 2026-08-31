@@ -1517,6 +1517,56 @@ bool evict_terrain_detail_sector_for_budget(
   return true;
 }
 
+void attribute_terrain_detail_sector_resources(
+    TerrainDetailWorkingSet& working_set,
+    std::span<const TerrainSectorResourceBlock> resources,
+    unsigned int block_generations) {
+  if(!std::ranges::is_sorted(resources,{},&TerrainSectorResourceBlock::id)||
+     std::ranges::adjacent_find(resources,{},
+         &TerrainSectorResourceBlock::id)!=resources.end())
+    throw std::invalid_argument(
+        "terrain sector resource blocks must be canonical and unique");
+  for(auto& sector:working_set.sectors){
+    sector.readiness=TerrainSectorReadiness::gpu_ready;
+    sector.hierarchy_bytes=0U;
+    sector.cpu_surface_bytes=0U;
+    sector.upload_bytes=0U;
+    sector.triangles=0U;
+    sector.hierarchy_blocks=0U;
+    sector.cpu_surface_blocks=0U;
+    sector.gpu_draw_blocks=0U;
+    std::vector<tetra::HierarchyBlockId> demanded_blocks;
+    demanded_blocks.reserve(sector.requested_cut.size());
+    for(const auto owner:sector.requested_cut)
+      demanded_blocks.push_back(
+          tetra::hierarchy_block_id(owner,block_generations));
+    std::ranges::sort(demanded_blocks);
+    demanded_blocks.erase(
+        std::unique(demanded_blocks.begin(),demanded_blocks.end()),
+        demanded_blocks.end());
+    for(const auto id:demanded_blocks){
+      const auto found=std::ranges::lower_bound(
+          resources,id,{},&TerrainSectorResourceBlock::id);
+      if(found==resources.end()||found->id!=id){
+        sector.readiness=TerrainSectorReadiness::hierarchy;
+        continue;
+      }
+      ++sector.hierarchy_blocks;
+      sector.hierarchy_bytes+=found->hierarchy_bytes;
+      sector.readiness=std::min(sector.readiness,found->readiness);
+      if(found->readiness>=TerrainSectorReadiness::cpu_surface){
+        ++sector.cpu_surface_blocks;
+        sector.cpu_surface_bytes+=found->cpu_surface_bytes;
+      }
+      if(found->readiness==TerrainSectorReadiness::gpu_ready){
+        sector.gpu_draw_blocks+=found->gpu_bytes!=0U?1U:0U;
+        sector.upload_bytes+=found->gpu_bytes;
+        sector.triangles+=found->triangles;
+      }
+    }
+  }
+}
+
 BlockedTerrainRuntime::BlockedTerrainRuntime(
     WorldProfile profile,std::optional<tetra::Camera> initial_camera)
     :profile_(profile),executor_(std::make_shared<tetra::GeometryExecutor>(
@@ -1952,8 +2002,40 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   // manifest. Research/editor callers still use the directory surface API.
   const auto surface_published=std::chrono::steady_clock::now();
 
-  for(auto& sector:detail_working_set.sectors)
-    sector.readiness=TerrainSectorReadiness::gpu_ready;
+  std::vector<TerrainSectorResourceBlock> sector_resources;
+  sector_resources.reserve(directory->hierarchy_blocks().size());
+  for(const auto& block:directory->hierarchy_blocks())
+    sector_resources.push_back({
+        .id=block->id,
+        .readiness=TerrainSectorReadiness::gpu_ready,
+        .hierarchy_bytes=block->metrics.retained_bytes});
+  const auto find_sector_resource=[&](tetra::HierarchyBlockId id)
+      ->TerrainSectorResourceBlock& {
+    const auto found=std::ranges::lower_bound(
+        sector_resources,id,{},&TerrainSectorResourceBlock::id);
+    if(found==sector_resources.end()||found->id!=id)
+      throw std::logic_error(
+          "retained surface resource has no hierarchy block");
+    return *found;
+  };
+  for(const auto& snapshot:surface_cache.snapshots)
+    find_sector_resource(snapshot.id).cpu_surface_bytes+=
+        snapshot.metrics.retained_bytes;
+  for(const auto& block:surface_cache.raw_blocks)
+    find_sector_resource(block->id).cpu_surface_bytes+=
+        sizeof(SparseWorldSurfaceCache::SurfaceRawBlock)+
+        block->vertices.capacity()*sizeof(tetra::WorldSurfaceVertex)+
+        block->triangles.capacity()*
+            sizeof(SparseWorldSurfaceCache::SurfaceRawBlock::Triangle);
+  for(const auto& block:surface_cache.render_blocks){
+    auto& resource=find_sector_resource(block.id);
+    const auto bytes=block.triangle_vertices.capacity()*sizeof(SceneVertex);
+    resource.cpu_surface_bytes+=sizeof(block)+bytes;
+    resource.gpu_bytes+=block.triangle_vertices.size()*sizeof(SceneVertex);
+    resource.triangles+=block.triangle_vertices.size()/3U;
+  }
+  attribute_terrain_detail_sector_resources(
+      detail_working_set,sector_resources,directory->block_generations());
 
   TerrainRuntimeDiagnostics diagnostics;
   diagnostics.mesh_revision=directory->revision();
@@ -2023,6 +2105,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       ++diagnostics.upload_pending_sector_count;
     if(sector.readiness==TerrainSectorReadiness::gpu_ready)
       ++diagnostics.gpu_ready_sector_count;
+    diagnostics.sector_hierarchy_bytes+=sector.hierarchy_bytes;
+    diagnostics.sector_cpu_surface_bytes+=sector.cpu_surface_bytes;
+    diagnostics.sector_gpu_bytes+=sector.upload_bytes;
+    diagnostics.sector_triangles+=sector.triangles;
     if(sector.id==detail_working_set.current_sector_id)
       diagnostics.current_sector_demand_hash=sector.demand_hash;
   }

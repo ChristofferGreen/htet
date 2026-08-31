@@ -2090,6 +2090,38 @@ TEST_CASE("terrain detail sectors retain fixed-position rotation demand") {
   CHECK(working_set.sector_hits==1U);
   CHECK(working_set.current_sector_id==working_set.sectors.front().id);
 
+  std::vector<tetra_viewer::TerrainSectorResourceBlock> resources;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    resources.push_back({
+        .id=tetra::hierarchy_block_id(
+            tetra::WorldTetAddress::root(root),3U),
+        .readiness=tetra_viewer::TerrainSectorReadiness::gpu_ready,
+        .hierarchy_bytes=10U,.cpu_surface_bytes=20U,.gpu_bytes=30U,
+        .triangles=1U});
+  std::ranges::sort(resources,{},
+                    &tetra_viewer::TerrainSectorResourceBlock::id);
+  tetra_viewer::attribute_terrain_detail_sector_resources(
+      working_set,resources);
+  for(const auto& sector:working_set.sectors){
+    CHECK(sector.readiness==
+          tetra_viewer::TerrainSectorReadiness::gpu_ready);
+    CHECK(sector.hierarchy_blocks==12U);
+    CHECK(sector.cpu_surface_blocks==12U);
+    CHECK(sector.gpu_draw_blocks==12U);
+    CHECK(sector.hierarchy_bytes==120U);
+    CHECK(sector.cpu_surface_bytes==240U);
+    CHECK(sector.upload_bytes==360U);
+    CHECK(sector.triangles==12U);
+  }
+  resources[0].readiness=tetra_viewer::TerrainSectorReadiness::cpu_surface;
+  resources[1].readiness=tetra_viewer::TerrainSectorReadiness::hierarchy;
+  tetra_viewer::attribute_terrain_detail_sector_resources(
+      working_set,resources);
+  CHECK(working_set.sectors.front().readiness==
+        tetra_viewer::TerrainSectorReadiness::hierarchy);
+  CHECK(working_set.sectors.front().cpu_surface_blocks==11U);
+  CHECK(working_set.sectors.front().gpu_draw_blocks==10U);
+
   camera.position.x+=0.03;
   tetra_viewer::update_terrain_detail_working_set(
       working_set,profile,field,camera,coarse,4U);

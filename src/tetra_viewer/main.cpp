@@ -5486,6 +5486,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<runtime_status.upload_pending_sector_count
                              <<",\"gpu_ready_sectors\":"
                              <<runtime_status.gpu_ready_sector_count
+                             <<",\"sector_hierarchy_bytes\":"
+                             <<runtime_status.sector_hierarchy_bytes
+                             <<",\"sector_cpu_surface_bytes\":"
+                             <<runtime_status.sector_cpu_surface_bytes
+                             <<",\"sector_gpu_bytes\":"
+                             <<runtime_status.sector_gpu_bytes
+                             <<",\"sector_triangles\":"
+                             <<runtime_status.sector_triangles
                              <<",\"sector_coverage_radians\":"
                              <<runtime_status.resident_sector_angular_coverage_radians
                              <<",\"sector_overlap_radians\":"
@@ -5542,7 +5550,52 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                              <<",\"resident_triangles\":"
                              <<draw_visibility.resident_triangles
                              <<",\"submitted_triangles\":"
-                             <<draw_visibility.submitted_triangles<<'}';
+                             <<draw_visibility.submitted_triangles
+                             <<",\"sectors\":[";
+                    const auto resident_sectors=
+                        world_runtime->resident_terrain_sectors();
+                    const auto readiness_name=[](
+                        tetra_viewer::TerrainSectorReadiness readiness){
+                        switch(readiness){
+                        case tetra_viewer::TerrainSectorReadiness::hierarchy:
+                            return "hierarchy";
+                        case tetra_viewer::TerrainSectorReadiness::cpu_surface:
+                            return "cpu_surface";
+                        case tetra_viewer::TerrainSectorReadiness::upload_pending:
+                            return "upload_pending";
+                        case tetra_viewer::TerrainSectorReadiness::gpu_ready:
+                            return "gpu_ready";
+                        }
+                        return "unknown";
+                    };
+                    for(std::size_t index=0U;
+                        index<resident_sectors.size();++index){
+                        if(index!=0U)std::cout<<',';
+                        const auto& sector=resident_sectors[index];
+                        std::cout<<"{\"id\":"<<sector.id
+                            <<",\"demand_hash\":"<<sector.demand_hash
+                            <<",\"readiness\":\""
+                            <<readiness_name(sector.readiness)<<'"'
+                            <<",\"angular_footprint_radians\":"
+                            <<sector.angular_footprint_radians
+                            <<",\"hierarchy_blocks\":"
+                            <<sector.hierarchy_blocks
+                            <<",\"cpu_surface_blocks\":"
+                            <<sector.cpu_surface_blocks
+                            <<",\"gpu_draw_blocks\":"
+                            <<sector.gpu_draw_blocks
+                            <<",\"hierarchy_bytes\":"
+                            <<sector.hierarchy_bytes
+                            <<",\"cpu_surface_bytes\":"
+                            <<sector.cpu_surface_bytes
+                            <<",\"gpu_bytes\":"<<sector.upload_bytes
+                            <<",\"triangles\":"<<sector.triangles
+                            <<",\"last_visible_generation\":"
+                            <<sector.last_visible_generation
+                            <<",\"last_used_generation\":"
+                            <<sector.last_used_generation<<'}';
+                    }
+                    std::cout<<"]}";
                     const auto& capture_timing=g_SceneRenderer.gpu_timings();
                     const double capture_gpu_total=
                         capture_timing.shadows_milliseconds+

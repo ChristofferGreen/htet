@@ -174,6 +174,10 @@ struct TerrainRuntimeDiagnostics {
   std::size_t cpu_surface_resident_sector_count{};
   std::size_t upload_pending_sector_count{};
   std::size_t gpu_ready_sector_count{};
+  std::size_t sector_hierarchy_bytes{};
+  std::size_t sector_cpu_surface_bytes{};
+  std::size_t sector_gpu_bytes{};
+  std::size_t sector_triangles{};
   double resident_sector_angular_coverage_radians{};
   std::uint64_t current_sector_demand_hash{};
   std::uint64_t sector_hits{};
@@ -321,6 +325,19 @@ struct TerrainResidentSector {
   std::size_t cpu_surface_bytes{};
   std::size_t upload_bytes{};
   std::size_t triangles{};
+  std::size_t hierarchy_blocks{};
+  std::size_t cpu_surface_blocks{};
+  std::size_t gpu_draw_blocks{};
+};
+
+struct TerrainSectorResourceBlock {
+  tetra::HierarchyBlockId id{};
+  TerrainSectorReadiness readiness{TerrainSectorReadiness::hierarchy};
+  std::size_t hierarchy_bytes{};
+  std::size_t cpu_surface_bytes{};
+  std::size_t gpu_bytes{};
+  std::size_t triangles{};
+  auto operator<=>(const TerrainSectorResourceBlock&) const = default;
 };
 
 struct TerrainDetailWorkingSet {
@@ -381,6 +398,10 @@ void update_terrain_detail_working_set(
 // the logical union. The current visible sector is always protected.
 [[nodiscard]] bool evict_terrain_detail_sector_for_budget(
     TerrainDetailWorkingSet& working_set);
+void attribute_terrain_detail_sector_resources(
+    TerrainDetailWorkingSet& working_set,
+    std::span<const TerrainSectorResourceBlock> resources,
+    unsigned int block_generations=3U);
 
 enum class WorldVolumePinKind : std::uint8_t {
   player_collision,
@@ -541,6 +562,8 @@ class TerrainRuntime {
   [[nodiscard]] virtual const WorldProfile& profile() const noexcept=0;
   [[nodiscard]] virtual const SurfaceHostStagingStorage* retained_surface()
       const noexcept { return nullptr; }
+  [[nodiscard]] virtual std::span<const TerrainResidentSector>
+  resident_terrain_sectors() const noexcept { return {}; }
   [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
   atmosphere_shadow_front() const noexcept {
     static const std::optional<AtmosphereShadowFront> none;
@@ -620,6 +643,10 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] const WorldProfile& profile() const noexcept override { return profile_; }
   [[nodiscard]] const SurfaceHostStagingStorage* retained_surface()
       const noexcept override { return &host_staging_; }
+  [[nodiscard]] std::span<const TerrainResidentSector>
+  resident_terrain_sectors() const noexcept override {
+    return detail_working_set_.sectors;
+  }
   [[nodiscard]] tetra::Vec3 render_origin() const noexcept override {
     return scene_.render_origin;
   }
