@@ -43,6 +43,56 @@ The current LOD calculation also mixes unrelated policies:
 This produces tetrahedra with visibly different screen sizes at different
 distances and makes residency changes appear as geometric LOD changes.
 
+## Research basis
+
+The local paper collection contains several close precedents, but no single
+paper provides the complete rotation-stable residency policy required here.
+
+- [Concurrent Binary Trees for Large-Scale Game Components
+  (2024)](../papers/hierarchy/2024-Concurrent%20Binary%20Trees%20for%20Large-Scale%20Game%20Components.pdf)
+  demonstrates Earth- and Moon-scale adaptive triangulations whose triangles
+  are kept approximately equal in screen-space area. Its planetary example
+  uses a target of roughly 49 pixels of triangle area and an explicit bounded
+  GPU memory pool. This supports a screen-space target and explicit resource
+  budgets, but its area target is not directly comparable to an edge-length
+  target.
+- [Level of Detail for Real-Time Volumetric Terrain Rendering
+  (2013)](../papers/hierarchy/2013-Level%20of%20Detail%20for%20Real-Time%20Volumetric%20Terrain%20Rendering.pdf)
+  and [Real-Time Isosurface Extraction with View-Dependent Level of Detail
+  and Applications
+  (2015)](../papers/subdivision/2015-Real-Time%20Isosurface%20Extraction%20with%20View-Dependent%20Level%20of%20Detail%20and%20Applications.pdf)
+  use a reversible diamond front, at least one hierarchy level of split/merge
+  hysteresis, immutable per-cell surface caches, background construction, and
+  a second fixed-capacity GPU-buffer front. These are direct precedents for
+  separating logical LOD, reusable surface construction, and render batching.
+- [Interactive View-Dependent Rendering of Large Isosurfaces
+  (2002)](../papers/subdivision/2002-Interactive%20View-Dependent%20Rendering%20of%20Large%20Isosurfaces.pdf)
+  projects a conservative isosurface approximation error into pixels, updates
+  a diamond cut with dual split/merge queues, and limits adaptation by a
+  per-frame work budget.
+- [Parallel View-Dependent Level-of-Detail Control
+  (2009)](../papers/hierarchy/2009-Parallel%20View-Dependent%20Level-of-Detail%20Control.pdf)
+  combines screen-space geometric error, frustum, and surface-orientation
+  tests; double-buffers render data; and amortizes updates across frames. It
+  also documents frame-time oscillation and occasional spikes under dynamic
+  viewpoints.
+- [Isodiamond Hierarchies
+  (2010)](../papers/subdivision/2010-Isodiamond%20Hierarchies%20-%20An%20Efficient%20Multiresolution%20Representation%20for%20Isosurfaces%20and%20Interval%20Volumes.pdf)
+  shows how surface-relevant refinement clusters and their ancestors can be
+  stored compactly while retaining crack-free selective refinement.
+
+The traditional algorithms commonly reduce detail outside the current
+frustum or behind the viewer. That policy is useful for minimizing the
+instantaneous active cut, but it directly produces the `A -> B -> A` failure
+when rebuilding a procedural surface is not cheap enough to hide. This design
+therefore retains their screen-space metrics, hysteresis, coherent fronts,
+cached cells, and bounded incremental work while deliberately replacing
+visibility-driven coarsening with budget-driven residency eviction.
+
+The persistent multi-sector demand union is a project-specific extension of
+the literature above. It must be validated as such rather than presented as a
+published algorithm.
+
 ## Required invariants
 
 ### Screen-space geometry
@@ -63,9 +113,30 @@ The measurement uses physical display pixels. It is independent of logical UI
 points and dynamic internal render scale, so changing Retina scale or
 upscaling quality does not silently change terrain geometry.
 
-The initial production target should be approximately 32 physical pixels and
-should be represented by one clearly named setting. It must be tuned through
-visual and resource measurements rather than hidden quality multipliers.
+An initial edge target of approximately 32 physical pixels is a tuning
+hypothesis, not a value established by the cited papers. It should be
+represented by one clearly named setting and tuned through visual and resource
+measurements rather than hidden quality multipliers. In particular, the
+roughly 49-pixel target in the 2024 concurrent-binary-tree planetary example
+is a triangle-area target and must not be treated as evidence for a 49-pixel
+edge target.
+
+Projected edge length is a tessellation-density constraint, not a complete
+terrain-error metric. A cell can have short projected edges while still
+poorly approximating a high-curvature field or the planetary silhouette. The
+refinement decision must therefore combine:
+
+- maximum projected tetrahedron edge length;
+- conservative terrain-field or extracted-surface approximation error
+  projected into physical pixels;
+- conservative projected radial or silhouette error near the planetary limb;
+- mandatory conformity refinements.
+
+Exceeding any upper bound requests refinement. Coarsening is allowed only when
+all applicable errors are below their lower hysteresis bounds. Field and limb
+error may create tetrahedra smaller than the nominal edge target; diagnostics
+must identify these as intentional quality refinements rather than density
+failures.
 
 ### Rotation stability
 
@@ -96,18 +167,22 @@ The redesign separates three concerns that are currently coupled.
 
 ### 1. LOD level
 
-LOD level answers only: how large would this tetrahedron be on screen if the
-viewer looked at it?
+LOD level answers only: how accurately and densely would this tetrahedron
+represent terrain on screen if the viewer looked at it?
 
 For each candidate tetrahedron:
 
 1. project all six edges using the camera projection and physical framebuffer
    dimensions;
 2. conservatively handle near-plane crossings;
-3. use the maximum projected edge length as the error metric;
-4. split above the upper hysteresis bound;
-5. merge below the lower hysteresis bound;
-6. retain extra refinement only where conformity requires it.
+3. calculate the maximum projected edge length;
+4. project a conservative field or surface approximation error into pixels;
+5. calculate projected radial or silhouette error where the cell can affect
+   the planetary limb;
+6. split when any upper error bound is exceeded;
+7. merge only when every applicable metric is below its lower hysteresis
+   bound;
+8. retain extra refinement where conformity requires it.
 
 For a cached off-screen sector, evaluation uses the sector's camera anchor.
 When constructing a position-centred rotational working set, the camera may be
@@ -116,7 +191,9 @@ candidate distance then determine its screen size without depending on the
 current view direction.
 
 The existing bounding-sphere estimate can remain as a cheap conservative
-traversal bound. Final split and merge decisions should use projected edges.
+traversal bound. Final split and merge decisions should use the combined
+projected metrics. Frustum membership and surface orientation may prioritize
+work, but must not lower the desired LOD of a resident sector.
 
 ### 2. Detail residency
 
@@ -231,6 +308,10 @@ The UI and capture JSON should expose:
 
 - target projected edge length in physical pixels;
 - visible minimum, median, p95, and maximum projected edge lengths;
+- configured field-error and limb-error tolerances in physical pixels;
+- visible maximum and p95 projected field and limb errors;
+- split and retained-detail counts by cause: edge density, field error, limb
+  error, conformity, physics, editing, and shadow demand;
 - counts of maximum-depth and conformity exceptions;
 - resident sector count and angular coverage;
 - visible, cached-off-screen, shadow-only, and volume-only triangle counts;
@@ -265,10 +346,15 @@ and must not increase its maximum projected edge error.
 For multiple distances, altitudes, aspect ratios, and Retina scale factors:
 
 1. collect every visible surface tetrahedron's maximum projected edge;
-2. exclude explicitly reported maximum-depth and conformity-only exceptions;
-3. verify the configured hysteresis interval;
-4. verify that distance has no systematic correlation with projected size;
-5. compare wireframe captures for visible density continuity.
+2. collect conservative projected field and limb errors and the reason each
+   tetrahedron retained its depth;
+3. exclude explicitly reported maximum-depth, field-error, limb-error, and
+   conformity-only exceptions from the edge-density interval check;
+4. verify the configured hysteresis intervals for every metric;
+5. verify that distance has no systematic correlation with projected edge
+   size after accounting for named exceptions;
+6. compare wireframe captures for visible density continuity and planet-limb
+   captures for silhouette stability.
 
 ### Performance gates
 
@@ -288,6 +374,7 @@ The redesign is complete only when:
 
 - `A -> B -> A` preserves fine geometry in both directions;
 - visible tetrahedra have approximately distance-independent projected size;
+- terrain-field and planetary-limb error remain within their pixel bounds;
 - rotation does not continuously replace terrain publications;
 - resource use remains bounded and diagnostically attributable;
 - horizon scattering, terrain lighting, crepuscular rays, and shadow stability
@@ -295,14 +382,17 @@ The redesign is complete only when:
 
 ## Implementation order
 
-1. Add projected-edge statistics without changing refinement decisions.
-2. Replace final LOD decisions with the projected-edge metric and establish
-   the production pixel target.
-3. Introduce persistent sector demand and common-refinement composition.
-4. Stop direction changes from immediately coarsening retained sectors.
-5. Add deterministic budget eviction and positional invalidation.
-6. Spatially partition retained rendering into independently culled draw
+1. Add projected-edge, projected-field-error, and projected-limb-error
+   statistics without changing refinement decisions.
+2. Replace final LOD decisions with the combined projected metrics and
+   establish measured production tolerances.
+3. Add at least one hierarchy level of split/merge hysteresis and attribute
+   every retained refinement to a diagnostic cause.
+4. Introduce persistent sector demand and common-refinement composition.
+5. Stop direction changes from immediately coarsening retained sectors.
+6. Add deterministic budget eviction and positional invalidation.
+7. Spatially partition retained rendering into independently culled draw
    ranges.
-7. Decouple near-volume residency from visual surface depth.
-8. Remove the transitional wide-guard and angular-recenter heuristic.
-9. Run the complete functional, visual, resource, and performance matrix.
+8. Decouple near-volume residency from visual surface depth.
+9. Remove the transitional wide-guard and angular-recenter heuristic.
+10. Run the complete functional, visual, resource, and performance matrix.
