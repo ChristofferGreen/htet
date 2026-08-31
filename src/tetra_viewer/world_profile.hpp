@@ -93,6 +93,8 @@ struct WorldProfile {
   unsigned int maximum_depth{20U};
   WorldResourceBudgets budgets{};
   bool show_faces{true};
+  // Retain edge-ready geometry so the interactive display toggle can enable
+  // wireframes without rebuilding the production terrain runtime.
   bool show_surface_edges{true};
   bool show_hierarchy_edges{false};
   bool show_volume_faces{false};

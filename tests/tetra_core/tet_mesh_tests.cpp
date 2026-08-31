@@ -14846,6 +14846,32 @@ TEST_CASE("reference Hillaire transport never schedules legacy long shadows") {
   CHECK_FALSE(updated.long_shadow);
 }
 
+TEST_CASE("reference view snapshots follow live generations without legacy lookups") {
+  using namespace tetra_viewer;
+  const auto material=atmosphere_material_snapshot(
+      AtmosphereParameters{},AtmosphereTransport::reference_hillaire_2020);
+  AtmosphereLookupRevisions first{
+      .optical=material.optical,.scattering=material.scattering,
+      .sun={3},.camera_position={4},
+      .sky_position={5},.camera_orientation={6},.shadow_integrator={7},
+      .shadow={8},.render_origin={9}};
+  AtmosphereDispatchPlan initial{
+      .transmittance=true,.multiple_scattering=true,.sky_view=true,
+      .sky_irradiance=true,.aerial_perspective=true};
+  auto snapshots=advance_atmosphere_lookup_snapshots(
+      std::nullopt,material,first,initial);
+  auto live=first;
+  ++live.camera_position.value;
+  ++live.shadow.value;
+  const AtmosphereDispatchPlan no_legacy_view_dispatch{};
+  snapshots=advance_atmosphere_lookup_snapshots(
+      snapshots,material,live,no_legacy_view_dispatch);
+  CHECK(snapshots.view.has_value());
+  CHECK(snapshots.view->camera_position==live.camera_position);
+  CHECK(snapshots.view->shadow==live.shadow);
+  CHECK(atmosphere_validation_snapshot(material,snapshots,live).compatible());
+}
+
 TEST_CASE("native atmosphere oracle is selectable without changing the default") {
   using tetra_viewer::AtmosphereRenderingMethod;
   CHECK(tetra_viewer::default_atmosphere_rendering_method==

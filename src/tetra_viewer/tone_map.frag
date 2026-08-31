@@ -712,14 +712,18 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
   const vec3 solar_transmittance=texture(
       transmittance_lut,lighting_uv).rgb;
   const vec3 albedo=atmosphere.ground_albedo_mie_anisotropy.rgb;
-  if(atmosphere.reserved1.y>0.5&&atmosphere.reserved1.z<99.5){
-    const vec3 ambient=albedo*sample_sky_irradiance(normal);
-    const vec3 direct=albedo/3.14159265359*
-        atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
-    return ambient+direct;
-  }
+  const bool static_lookup=atmosphere.reserved1.y>0.5&&
+      atmosphere.reserved1.z<99.5;
+  const vec3 sampled_ambient=static_lookup?
+      albedo*sample_sky_irradiance(normal):vec3(0.0);
+  const vec3 direct=albedo/3.14159265359*
+      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
+  if(static_lookup&&!reference_hillaire_transport())
+    return sampled_ambient+direct;
 
-  // Keep the fitted ground model as the qualified baseline only.
+  // The qualified baseline uses this fitted ground model directly. The
+  // reference path also uses it as a lower bound when its compact directional
+  // irradiance lookup under-resolves a narrow sunset sky.
   const vec3 average_radiance=texture(
       multiple_scattering_lut,scattering_uv).rgb;
   const vec3 vertical_transmittance=texture(
@@ -729,9 +733,8 @@ vec3 analytic_ground_radiance(vec3 direction,float distance_metres) {
       (vec3(1.0)-vertical_transmittance)*daylight*0.60;
   const vec3 environment=(average_radiance+single_scattered_fill)*2.0;
   const vec3 ambient=0.96*albedo*environment;
-  const vec3 direct=0.96*albedo/3.14159265359*
-      atmosphere.solar_absorption_peak.rgb*solar_transmittance*n_dot_l*2.8;
-  return ambient+direct;
+  return (static_lookup?max(sampled_ambient,ambient):ambient)+
+      direct*(static_lookup?1.0:0.96);
 }
 
 vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {

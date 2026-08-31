@@ -55,7 +55,7 @@ struct ScriptState {
   ShadingModel shading_model{ShadingModel::studio_flat};
   MaterialRule material_rule{MaterialRule::variational_smooth};
   bool show_faces{true};
-  bool show_surface_edges{true};
+  bool show_surface_edges{false};
   bool show_hierarchy_edges{};
   bool show_volume_edges{true};
   bool show_volume_faces{true};

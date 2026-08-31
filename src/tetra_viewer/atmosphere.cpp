@@ -841,7 +841,11 @@ AtmosphereLookupSnapshotSet advance_atmosphere_lookup_snapshots(
     result.lighting=AtmosphereLightingLookupSnapshot{
         next.optical,next.scattering,next.sun,next.sky_position,
         next.camera_orientation,material.transport};
-  if(dispatch.aerial_perspective||dispatch.long_shadow)
+  // The reference transport evaluates its view-dependent atmosphere directly
+  // every frame. Record that live generation even when dynamic-sun mode skips
+  // the retained legacy aerial and long-shadow lookups.
+  if(dispatch.aerial_perspective||dispatch.long_shadow||
+     material.transport==AtmosphereTransport::reference_hillaire_2020)
     result.view=AtmosphereViewLookupSnapshot{
         next.optical,next.scattering,next.sun,next.camera_position,
         next.camera_orientation,next.shadow_integrator,next.shadow,

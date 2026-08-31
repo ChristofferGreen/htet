@@ -799,7 +799,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool show_camera_lod_zones = false;
     bool show_faces = true;
     bool show_hierarchy_edges = false;
-    bool show_surface_edges = true;
+    bool show_surface_edges = deterministic_visual_check;
     bool show_volume_edges = true;
     bool show_volume_faces = true;
     if(retained_upload_check){show_volume_edges=false;show_volume_faces=false;}

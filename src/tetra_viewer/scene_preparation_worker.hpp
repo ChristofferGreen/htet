@@ -23,7 +23,7 @@ struct ScenePreparationParameters {
   MaterialRule material_rule{MaterialRule::variational_smooth};
   bool show_faces{true};
   bool show_hierarchy_edges{};
-  bool show_surface_edges{true};
+  bool show_surface_edges{false};
   bool depth_colours{};
   bool show_volume_edges{true};
   bool show_volume_faces{true};
