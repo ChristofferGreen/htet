@@ -44,11 +44,14 @@ Run:
 
 The script captures both transports at camera `(0.5, 0.5, 0.78)`, yaw
 `131.7` degrees, pitch `-5.7` degrees, sun azimuth `-49` degrees, and sun
-elevation `5` degrees. It records frames 1, 2, 4, 8, 16, and 64 without
-waiting for runtime settlement, debug views 25-27, and a separately settled
-capture. It also captures the reference transport on frame 8 of a continuous
-16-frame camera rotation. Each JSON record includes the rendered frame at
-which asynchronous GPU readback completed.
+elevation `5` degrees in a 1280 by 800 window on the `P34WD-40` display. The
+display name is the optional third script argument; a missing requested
+display is an error, never a fallback to another monitor. It records terrain
+runtime frames 1, 2, 4, 8, 16, and 64 without waiting for runtime settlement,
+debug views 25-27, and a separately settled capture. It also captures the
+reference transport on frame 8 of a continuous 16-frame camera rotation. Each
+JSON record includes both the process render frame and the terrain-runtime
+frame captured at asynchronous GPU submission.
 
 ## Validation result
 

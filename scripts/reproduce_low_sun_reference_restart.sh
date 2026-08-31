@@ -4,10 +4,16 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${1:-${repo_root}/build/release/src/tetra_viewer/tetra_world}"
 output_dir="${2:-${repo_root}/build/low-sun-reference-restart}"
+display_name="${3:-P34WD-40}"
 mkdir -p "${output_dir}"
 
+if [[ "$(uname -s)" == "Darwin" ]] && command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -u -t 2
+fi
+
 common=(
-  --window-size=960x600 --free-fly --surface-edges-off
+  --display-name="${display_name}" --window-size=1280x800
+  --free-fly --surface-edges-off
   --atmosphere-preset=gameplay-planet --atmosphere-quality=default
   --atmosphere-screen-resolution-divisor=2 --exposure-ev=-0.62
   --camera-feet=0.5,0.5,0.78 --camera-yaw-degrees=131.7
