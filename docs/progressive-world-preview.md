@@ -164,22 +164,70 @@ cross-chart reuse, and stitching are outside the first implementation.
 
 ## Worker scheduling and cancellation
 
-Use one persistent preview service, not one asynchronous task per camera event.
-It owns reusable scratch storage, one active request, and one replaceable
-pending-request slot keyed by `PreviewSpatialKey`. Submission copies a bounded
-request, replaces and cancels work only when its spatial key is obsolete, and
-returns in less than 2 ms without waiting for construction or destruction.
+Use one `PreviewSurfaceWorker`, not one asynchronous task per camera event. It
+owns one persistent serial `std::jthread`, one active request, one replaceable
+pending request, at most one unconsumed completion, and reusable cold-build
+scratch. The worker owns no coordinator or renderer state; the presentation
+thread remains the only place that applies a completion to
+`TerrainFrontCoordinator`.
 
-The cold builder accepts a `std::stop_token` and checks it at least once per
-clipmap row and level, before costly allocation growth, and before publication.
-Cancellation returns an explicit result; it is not reported as a build error.
-Only a complete immutable snapshot can cross the publication boundary.
+Submissions have two identities with different purposes. The complete
+`PreviewRequestIdentity` correlates a completion with the coordinator request,
+while `PreviewSpatialKey` decides whether geometry work is obsolete. An exact
+duplicate of the active, pending, or completed request is idempotently
+coalesced without canceling or rebuilding it. View-epoch changes inside the
+same spatial key do not submit again because the coordinator deliberately
+keeps the original request pending. A different request identity for a key
+still retained by the worker is therefore an integration contract error, not
+an invitation to retag an immutable front. After explicit cancellation has
+cleared that request, the same key may be submitted again normally. A different
+key atomically replaces the single pending slot and requests cancellation of
+an obsolete active build. Only the newest different key may start after that
+cancellation; intermediate camera keys never form a queue. An obsolete
+unconsumed completion is retired before replacement geometry is allocated, and
+stale worker completions never cross the take-completed boundary.
 
-Preview work must not delay exact convergence. It runs on a separate worker
-with lower scheduling priority or a bounded cooperative CPU budget, performs no
-busy polling, and yields promptly after cancellation. Measurements must show
-that continuous preview requests do not starve exact target selection,
-construction, publication, or renderer upload.
+Submission synchronously revalidates the already-planned bounded request, then
+copies only that request, configuration, field value, and resource limits while
+holding the worker mutex. Programmer-contract errors therefore cannot disappear
+with superseded asynchronous work. Submission performs no terrain sampling,
+geometry allocation, destruction of large buffers, or waiting under that lock.
+Request replacement, cancellation, and completion polling are non-blocking
+presentation-thread operations. Measured submission latency, including the
+bounded validation, must remain below 2 ms at the 99th percentile and maximum
+in a release request-storm test.
+
+The cold builder accepts a `std::stop_token` and checks it before reserve or
+capacity growth, at least once for every generated clipmap row and level, and
+immediately before immutable publication. Cancellation returns the typed
+`canceled` outcome rather than `failed`. The worker separately records whether
+that cancellation was explicit or caused by supersession. It publishes only a
+complete `ready` snapshot for the still-current request; partially filled
+scratch and results from obsolete keys remain worker-private.
+
+The worker's resource transaction covers retained scratch capacities, the
+active candidate, and an unconsumed completion. It must never retain two
+candidate fronts, must retire or reuse obsolete storage before replacement
+allocation, and must expose current and peak owned bytes. The later Metal
+integration will add visible-front and upload ownership to the end-to-end cap;
+those renderer-owned resources are not silently charged to this worker-only
+milestone.
+
+Preview construction is serial and uses at most one dedicated worker thread in
+this milestone; it must not enqueue nested work on the exact geometry executor.
+The worker sleeps on a condition variable while idle, performs no busy polling,
+and yields at bounded row/level cancellation points. Platform scheduling hints
+may lower its priority, but correctness and exact-worker progress must not rely
+on them. A release stress test must run continuous preview supersession beside
+the exact worker and show that exact publication still completes, its hashes
+are unchanged, and its settled convergence stays below the existing two-second
+gate. Worker destruction requests stop and joins safely; ordinary cancellation
+and supersession never join on the presentation thread.
+
+Diagnostics cover submitted and duplicate-coalesced requests, replaced pending
+requests, superseded active requests, explicit cancellations, completed and
+dropped-stale results, cancellation latency, submission latency, current and
+peak worker-owned bytes, and the active/pending/completed spatial keys.
 
 ## Rendering and handoff
 
@@ -314,9 +362,26 @@ visual failures can be tied to the exact coordinator state.
       transition matrix covering failures both before queuing and during
       guarded replacement. Do not add the worker, multi-chart stitching, or
       Metal integration in this milestone.
-- [ ] Add the persistent coalescing worker, cooperative cold-builder
-      cancellation, bounded scratch ownership, and submission/cancellation
-      tests proving the 2 ms presentation-thread limit.
+- [x] Add `PreviewSurfaceWorker` as a serial persistent service with exactly
+      one active request, one replaceable latest-key pending slot, at most one
+      current completion, and no coordinator or renderer mutation. Coalesce
+      exact duplicate requests without cancellation, reject a conflicting
+      identity for a retained key, and prove ordinary same-key view churn does
+      not resubmit; make different keys latest-wins; prevent stale completions
+      from escaping; and keep submit, cancel, and polling free of terrain
+      sampling, large-buffer destruction, and waits. Add `std::stop_token`
+      cancellation to the cold builder before
+      growth, per row/level, and before publication; preserve typed
+      canceled-versus-failed outcomes; bound and report scratch/candidate/
+      completion ownership without retaining two candidate fronts; and add
+      deterministic state-machine, race, teardown, fault, request-storm, and
+      exact-worker coexistence tests. Require release submission latency below
+      2 ms at both p99 and maximum, prompt cancellation, unchanged exact hashes,
+      and exact settled convergence below two seconds. Keep Metal integration,
+      multi-chart stitching, and retained row/column construction out of this
+      milestone. The release request-storm, cancellation, teardown, fault,
+      resource, and exact-worker coexistence tests pass, and the complete
+      468-test release suite including Metal shader translation is green.
 - [ ] Integrate the minimal cold preview in Metal with separate buffers,
       deterministic exact-face suppression, opaque handoff, and the explicit
       local-shadow and atmospheric-occlusion policy.

@@ -112,15 +112,7 @@ bool clipmap_extent_representable(
   return true;
 }
 
-struct PreviewResourceEstimate {
-  std::size_t cells{};
-  std::size_t vertices{};
-  std::size_t indices{};
-  std::size_t cpu_bytes{};
-  std::size_t upload_bytes{};
-};
-
-PreviewResourceEstimate preview_resource_estimate(
+PreviewSurfaceResourceEstimate compute_preview_resource_estimate(
     PreviewSurfaceConfiguration configuration) noexcept {
   const std::size_t cells=static_cast<std::size_t>(configuration.level_count)*
       configuration.cells_per_side*configuration.cells_per_side;
@@ -133,8 +125,16 @@ PreviewResourceEstimate preview_resource_estimate(
   const std::size_t metadata=levels*(sizeof(PreviewSurfaceDrawRange)+
       sizeof(PreviewSurfaceLevelOrigin)+sizeof(PreviewLevelOriginKey)+
       sizeof(PreviewLevelOriginGuard));
-  const std::size_t map_scratch=vertices*(sizeof(SampleKey)+
-      sizeof(std::uint32_t)+4U*sizeof(void*));
+  // std::map node layout is implementation-defined. Six pointers covers tree
+  // links, colour/alignment, and allocator bookkeeping conservatively. The
+  // vertex directory is released before incidence analysis, so admission pays
+  // for the larger map rather than charging two non-overlapping phases.
+  const std::size_t vertex_map_scratch=vertices*(sizeof(SampleKey)+
+      sizeof(std::uint32_t)+6U*sizeof(void*));
+  const std::size_t incidence_map_scratch=indices*(sizeof(EdgeKey)+
+      sizeof(std::size_t)+6U*sizeof(void*));
+  const std::size_t map_scratch=std::max(
+      vertex_map_scratch,incidence_map_scratch);
   return {cells,vertices,indices,
           geometry+coverage+metadata+map_scratch,geometry+coverage};
 }
@@ -176,6 +176,48 @@ std::uint64_t geometry_hash(
 
 bool preview_surface_supported(const tetra::Sphere& field) noexcept {
   return field.kind==tetra::ImplicitShapeKind::perlin_terrain;
+}
+
+struct PreviewSurfaceBuildScratch::Storage {
+  std::vector<PreviewSurfaceLevelOrigin> level_origins;
+  std::vector<PreviewSurfaceVertex> vertices;
+  std::vector<std::uint32_t> indices;
+  std::vector<PreviewSurfaceDrawRange> draw_ranges;
+  std::vector<PreviewCoverageCell> covered_cells;
+  std::vector<PreviewLevelOriginGuard> guarded_level_origins;
+
+  [[nodiscard]] std::size_t retained_bytes() const noexcept {
+    return level_origins.capacity()*sizeof(PreviewSurfaceLevelOrigin)+
+        vertices.capacity()*sizeof(PreviewSurfaceVertex)+
+        indices.capacity()*sizeof(std::uint32_t)+
+        draw_ranges.capacity()*sizeof(PreviewSurfaceDrawRange)+
+        covered_cells.capacity()*sizeof(PreviewCoverageCell)+
+        guarded_level_origins.capacity()*sizeof(PreviewLevelOriginGuard);
+  }
+
+  void clear() noexcept {
+    level_origins.clear();vertices.clear();indices.clear();draw_ranges.clear();
+    covered_cells.clear();guarded_level_origins.clear();
+  }
+
+  void release() noexcept {
+    *this={};
+  }
+};
+
+PreviewSurfaceBuildScratch::PreviewSurfaceBuildScratch()
+    :storage_(std::make_unique<Storage>()) {}
+
+PreviewSurfaceBuildScratch::~PreviewSurfaceBuildScratch()=default;
+
+std::size_t PreviewSurfaceBuildScratch::retained_bytes() const noexcept {
+  return storage_?storage_->retained_bytes():0U;
+}
+
+PreviewSurfaceResourceEstimate preview_surface_resource_estimate(
+    PreviewSurfaceConfiguration configuration) {
+  validate_configuration(configuration);
+  return compute_preview_resource_estimate(configuration);
 }
 
 std::uint64_t preview_surface_field_signature(
@@ -222,7 +264,8 @@ PreviewSupportDecision plan_preview_surface(
 PreviewSurfaceBuildResult build_preview_surface(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,
     PreviewSurfaceConfiguration configuration,
-    PreviewSurfaceResourceLimits resource_limits) {
+    PreviewSurfaceResourceLimits resource_limits,std::stop_token cancellation,
+    PreviewSurfaceBuildScratch* scratch) {
   PreviewSupportDecision plan;
   try {
     plan=plan_preview_surface(
@@ -240,158 +283,203 @@ PreviewSurfaceBuildResult build_preview_surface(
     return {PreviewFrontOutcome::unsupported,nullptr};
   if(request.spatial_key!=*plan.spatial_key)
     throw std::invalid_argument("preview request spatial key is stale");
-  const auto estimate=preview_resource_estimate(configuration);
+  if(cancellation.stop_requested())
+    return {PreviewFrontOutcome::canceled,nullptr};
+  const auto estimate=compute_preview_resource_estimate(configuration);
   if(estimate.cpu_bytes>resource_limits.maximum_cpu_bytes||
      estimate.upload_bytes>resource_limits.maximum_upload_bytes)
     return {PreviewFrontOutcome::resource_rejected,nullptr};
 
   try {
-  const auto started=std::chrono::steady_clock::now();
-  const auto& spatial_key=*plan.spatial_key;
-  auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
-  front->requested_view_=request.requested_view;
-  front->coverage_.spatial_key=spatial_key;
-  front->source_camera_=request.camera;
-  front->vertices_.reserve(estimate.vertices);
-  front->indices_.reserve(estimate.indices);
-  front->draw_ranges_.reserve(configuration.level_count);
-  front->level_origins_.reserve(configuration.level_count);
-  front->coverage_.covered_cells.reserve(estimate.cells);
-  const double half_spacing=configuration.finest_spacing*0.5;
-  const SampleKey origin{spatial_key.level_origins.front().sample_x,
-                         spatial_key.level_origins.front().sample_z};
-  constexpr std::int64_t guard_lattice_cells=2;
-  front->coverage_.guarded_level_origins.reserve(
-      spatial_key.level_origins.size());
-  for(const auto& level_origin:spatial_key.level_origins)
-    front->coverage_.guarded_level_origins.push_back(
-        {level_origin.level,
-         level_origin.sample_x-guard_lattice_cells,
-         level_origin.sample_z-guard_lattice_cells,
-         level_origin.sample_x+guard_lattice_cells,
-         level_origin.sample_z+guard_lattice_cells});
+    std::unique_ptr<PreviewSurfaceBuildScratch> owned_scratch;
+    if(scratch==nullptr){
+      owned_scratch=std::make_unique<PreviewSurfaceBuildScratch>();
+      scratch=owned_scratch.get();
+    }
+    auto& staging=*scratch->storage_;
+    if(staging.retained_bytes()>resource_limits.maximum_cpu_bytes)
+      staging.release();
+    staging.clear();
+    if(cancellation.stop_requested())
+      return {PreviewFrontOutcome::canceled,nullptr};
 
-  std::map<SampleKey,std::uint32_t> vertex_directory;
-  const auto vertex=[&](SampleKey key){
-    if(const auto found=vertex_directory.find(key);
-       found!=vertex_directory.end())return found->second;
-    if(front->vertices_.size()>=std::numeric_limits<std::uint32_t>::max())
-      throw std::length_error("preview vertex index exceeds 32-bit range");
-    const auto index=static_cast<std::uint32_t>(front->vertices_.size());
-    const auto sampled=sample_vertex(field,key,half_spacing);
-    const double values[]{sampled.position.x,sampled.position.y,
-        sampled.position.z,sampled.normal.x,sampled.normal.y,sampled.normal.z};
-    if(!std::ranges::all_of(values,[](double value){
-         return std::isfinite(value);
-       }))
-      throw std::runtime_error("preview terrain sample is non-finite");
-    front->vertices_.push_back(sampled);
-    vertex_directory.emplace(key,index);
-    return index;
-  };
+    const auto started=std::chrono::steady_clock::now();
+    const auto& spatial_key=*plan.spatial_key;
+    staging.vertices.reserve(estimate.vertices);
+    staging.indices.reserve(estimate.indices);
+    staging.draw_ranges.reserve(configuration.level_count);
+    staging.level_origins.reserve(configuration.level_count);
+    staging.covered_cells.reserve(estimate.cells);
+    staging.guarded_level_origins.reserve(spatial_key.level_origins.size());
+    if(cancellation.stop_requested())
+      return {PreviewFrontOutcome::canceled,nullptr};
 
-  const std::int64_t half_cells=
-      static_cast<std::int64_t>(configuration.cells_per_side/2U);
-  for(std::uint32_t level=0;level<configuration.level_count;++level){
-    const std::int64_t step=std::int64_t{2}<<level;
-    front->level_origins_.push_back({level,origin.x,origin.z,
-        std::ldexp(configuration.finest_spacing,static_cast<int>(level))});
-    const auto first_index=static_cast<std::uint32_t>(front->indices_.size());
-    for(std::int64_t row=-half_cells;row<half_cells;++row){
-      for(std::int64_t column=-half_cells;column<half_cells;++column){
-        if(level>0U){
-          const std::int64_t inner=half_cells*step/2;
-          const std::int64_t x0=column*step,x1=(column+1)*step;
-          const std::int64_t z0=row*step,z1=(row+1)*step;
-          if(x0>=-inner&&x1<=inner&&z0>=-inner&&z1<=inner)continue;
-        }
-        const SampleKey corners[]{
-            {origin.x+column*step,origin.z+row*step},
-            {origin.x+column*step,origin.z+(row+1)*step},
-            {origin.x+(column+1)*step,origin.z+(row+1)*step},
-            {origin.x+(column+1)*step,origin.z+row*step}};
-        front->coverage_.covered_cells.push_back(
-            {corners[0].x,corners[0].z,corners[2].x,corners[2].z});
-        for(const auto key:corners)(void)vertex(key);
-        std::vector<SampleKey> polygon;
-        polygon.reserve(8U);
-        for(std::size_t corner=0;corner<4U;++corner){
-          const auto first=corners[corner];
-          const auto second=corners[(corner+1U)%4U];
-          polygon.push_back(first);
-          const SampleKey midpoint{
-              (first.x+second.x)/2,(first.z+second.z)/2};
-          if(vertex_directory.contains(midpoint))polygon.push_back(midpoint);
-        }
-        const SampleKey centre{
-            origin.x+column*step+step/2,
-            origin.z+row*step+step/2};
-        const auto centre_index=vertex(centre);
-        for(std::size_t edge=0;edge<polygon.size();++edge){
-          front->indices_.push_back(centre_index);
-          front->indices_.push_back(vertex(polygon[edge]));
-          front->indices_.push_back(vertex(polygon[(edge+1U)%polygon.size()]));
+    const double half_spacing=configuration.finest_spacing*0.5;
+    const SampleKey origin{spatial_key.level_origins.front().sample_x,
+                           spatial_key.level_origins.front().sample_z};
+    constexpr std::int64_t guard_lattice_cells=2;
+    for(const auto& level_origin:spatial_key.level_origins){
+      if(cancellation.stop_requested())
+        return {PreviewFrontOutcome::canceled,nullptr};
+      staging.guarded_level_origins.push_back(
+          {level_origin.level,
+           level_origin.sample_x-guard_lattice_cells,
+           level_origin.sample_z-guard_lattice_cells,
+           level_origin.sample_x+guard_lattice_cells,
+           level_origin.sample_z+guard_lattice_cells});
+    }
+
+    std::map<SampleKey,std::uint32_t> vertex_directory;
+    const auto vertex=[&](SampleKey key){
+      if(const auto found=vertex_directory.find(key);
+         found!=vertex_directory.end())return found->second;
+      if(staging.vertices.size()>=std::numeric_limits<std::uint32_t>::max())
+        throw std::length_error("preview vertex index exceeds 32-bit range");
+      const auto index=static_cast<std::uint32_t>(staging.vertices.size());
+      const auto sampled=sample_vertex(field,key,half_spacing);
+      const double values[]{sampled.position.x,sampled.position.y,
+          sampled.position.z,sampled.normal.x,sampled.normal.y,sampled.normal.z};
+      if(!std::ranges::all_of(values,[](double value){
+           return std::isfinite(value);
+         }))
+        throw std::runtime_error("preview terrain sample is non-finite");
+      staging.vertices.push_back(sampled);
+      vertex_directory.emplace(key,index);
+      return index;
+    };
+
+    std::vector<SampleKey> polygon;
+    polygon.reserve(8U);
+    const std::int64_t half_cells=
+        static_cast<std::int64_t>(configuration.cells_per_side/2U);
+    for(std::uint32_t level=0;level<configuration.level_count;++level){
+      if(cancellation.stop_requested())
+        return {PreviewFrontOutcome::canceled,nullptr};
+      const std::int64_t step=std::int64_t{2}<<level;
+      staging.level_origins.push_back({level,origin.x,origin.z,
+          std::ldexp(configuration.finest_spacing,static_cast<int>(level))});
+      const auto first_index=static_cast<std::uint32_t>(staging.indices.size());
+      for(std::int64_t row=-half_cells;row<half_cells;++row){
+        if(cancellation.stop_requested())
+          return {PreviewFrontOutcome::canceled,nullptr};
+        for(std::int64_t column=-half_cells;column<half_cells;++column){
+          if(level>0U){
+            const std::int64_t inner=half_cells*step/2;
+            const std::int64_t x0=column*step,x1=(column+1)*step;
+            const std::int64_t z0=row*step,z1=(row+1)*step;
+            if(x0>=-inner&&x1<=inner&&z0>=-inner&&z1<=inner)continue;
+          }
+          const SampleKey corners[]{
+              {origin.x+column*step,origin.z+row*step},
+              {origin.x+column*step,origin.z+(row+1)*step},
+              {origin.x+(column+1)*step,origin.z+(row+1)*step},
+              {origin.x+(column+1)*step,origin.z+row*step}};
+          staging.covered_cells.push_back(
+              {corners[0].x,corners[0].z,corners[2].x,corners[2].z});
+          for(const auto key:corners)(void)vertex(key);
+          polygon.clear();
+          for(std::size_t corner=0;corner<4U;++corner){
+            const auto first=corners[corner];
+            const auto second=corners[(corner+1U)%4U];
+            polygon.push_back(first);
+            const SampleKey midpoint{
+                (first.x+second.x)/2,(first.z+second.z)/2};
+            if(vertex_directory.contains(midpoint))polygon.push_back(midpoint);
+          }
+          const SampleKey centre{
+              origin.x+column*step+step/2,
+              origin.z+row*step+step/2};
+          const auto centre_index=vertex(centre);
+          for(std::size_t edge=0;edge<polygon.size();++edge){
+            staging.indices.push_back(centre_index);
+            staging.indices.push_back(vertex(polygon[edge]));
+            staging.indices.push_back(
+                vertex(polygon[(edge+1U)%polygon.size()]));
+          }
         }
       }
+      const auto index_count=static_cast<std::uint32_t>(
+          staging.indices.size()-first_index);
+      staging.draw_ranges.push_back(
+          {level,first_index,index_count,
+           std::ldexp(configuration.finest_spacing,static_cast<int>(level))});
     }
-    const auto index_count=static_cast<std::uint32_t>(
-        front->indices_.size()-first_index);
-    front->draw_ranges_.push_back(
-        {level,first_index,index_count,
-         std::ldexp(configuration.finest_spacing,static_cast<int>(level))});
-  }
 
-  if(front->vertices_.empty())throw std::logic_error("preview surface is empty");
-  const double infinity=std::numeric_limits<double>::infinity();
-  front->covered_world_bounds_.minimum={infinity,infinity,infinity};
-  front->covered_world_bounds_.maximum={-infinity,-infinity,-infinity};
-  for(const auto& item:front->vertices_){
-    auto& minimum=front->covered_world_bounds_.minimum;
-    auto& maximum=front->covered_world_bounds_.maximum;
-    minimum.x=std::min(minimum.x,item.position.x);
-    minimum.y=std::min(minimum.y,item.position.y);
-    minimum.z=std::min(minimum.z,item.position.z);
-    maximum.x=std::max(maximum.x,item.position.x);
-    maximum.y=std::max(maximum.y,item.position.y);
-    maximum.z=std::max(maximum.z,item.position.z);
-  }
-  std::map<EdgeKey,std::size_t> incidence;
-  for(std::size_t index=0;index<front->indices_.size();index+=3U){
-    for(std::size_t edge=0;edge<3U;++edge){
-      auto first=front->indices_[index+edge];
-      auto second=front->indices_[index+(edge+1U)%3U];
-      if(second<first)std::swap(first,second);
-      ++incidence[{first,second}];
+    if(cancellation.stop_requested())
+      return {PreviewFrontOutcome::canceled,nullptr};
+    if(staging.vertices.empty())
+      throw std::logic_error("preview surface is empty");
+    vertex_directory.clear();
+    const double infinity=std::numeric_limits<double>::infinity();
+    PreviewSurfaceBounds bounds{{infinity,infinity,infinity},
+                                {-infinity,-infinity,-infinity}};
+    for(std::size_t index=0;index<staging.vertices.size();++index){
+      if((index&4095U)==0U&&cancellation.stop_requested())
+        return {PreviewFrontOutcome::canceled,nullptr};
+      const auto& item=staging.vertices[index];
+      bounds.minimum.x=std::min(bounds.minimum.x,item.position.x);
+      bounds.minimum.y=std::min(bounds.minimum.y,item.position.y);
+      bounds.minimum.z=std::min(bounds.minimum.z,item.position.z);
+      bounds.maximum.x=std::max(bounds.maximum.x,item.position.x);
+      bounds.maximum.y=std::max(bounds.maximum.y,item.position.y);
+      bounds.maximum.z=std::max(bounds.maximum.z,item.position.z);
     }
-  }
-  for(const auto& [edge,count]:incidence){
-    (void)edge;
-    front->diagnostics_.boundary_edge_count+=count==1U?1U:0U;
-    front->diagnostics_.maximum_edge_incidence=std::max(
-        front->diagnostics_.maximum_edge_incidence,count);
-  }
-  front->diagnostics_.vertex_count=front->vertices_.size();
-  front->diagnostics_.triangle_count=front->indices_.size()/3U;
-  front->diagnostics_.cpu_bytes=
-      front->vertices_.size()*sizeof(PreviewSurfaceVertex)+
-      front->indices_.size()*sizeof(std::uint32_t)+
-      front->draw_ranges_.size()*sizeof(PreviewSurfaceDrawRange)+
-      front->level_origins_.size()*sizeof(PreviewSurfaceLevelOrigin)+
-      front->coverage_.spatial_key.level_origins.size()*
-          sizeof(PreviewLevelOriginKey)+
-      front->coverage_.covered_cells.size()*sizeof(PreviewCoverageCell)+
-      front->coverage_.guarded_level_origins.size()*
-          sizeof(PreviewLevelOriginGuard);
-  front->diagnostics_.upload_bytes=
-      front->vertices_.size()*sizeof(PreviewSurfaceVertex)+
-      front->indices_.size()*sizeof(std::uint32_t)+
-      front->coverage_.covered_cells.size()*sizeof(PreviewCoverageCell);
-  front->diagnostics_.geometry_hash=geometry_hash(
-      front->vertices_,front->indices_);
-  front->diagnostics_.build_milliseconds=
-      std::chrono::duration<double,std::milli>(
-          std::chrono::steady_clock::now()-started).count();
-  return {PreviewFrontOutcome::ready,std::move(front)};
+    std::map<EdgeKey,std::size_t> incidence;
+    for(std::size_t index=0;index<staging.indices.size();index+=3U){
+      if((index&4095U)==0U&&cancellation.stop_requested())
+        return {PreviewFrontOutcome::canceled,nullptr};
+      for(std::size_t edge=0;edge<3U;++edge){
+        auto first=staging.indices[index+edge];
+        auto second=staging.indices[index+(edge+1U)%3U];
+        if(second<first)std::swap(first,second);
+        ++incidence[{first,second}];
+      }
+    }
+    PreviewSurfaceDiagnostics diagnostics;
+    for(const auto& [edge,count]:incidence){
+      (void)edge;
+      diagnostics.boundary_edge_count+=count==1U?1U:0U;
+      diagnostics.maximum_edge_incidence=std::max(
+          diagnostics.maximum_edge_incidence,count);
+    }
+    diagnostics.vertex_count=staging.vertices.size();
+    diagnostics.triangle_count=staging.indices.size()/3U;
+    diagnostics.cpu_bytes=
+        staging.vertices.size()*sizeof(PreviewSurfaceVertex)+
+        staging.indices.size()*sizeof(std::uint32_t)+
+        staging.draw_ranges.size()*sizeof(PreviewSurfaceDrawRange)+
+        staging.level_origins.size()*sizeof(PreviewSurfaceLevelOrigin)+
+        spatial_key.level_origins.size()*sizeof(PreviewLevelOriginKey)+
+        staging.covered_cells.size()*sizeof(PreviewCoverageCell)+
+        staging.guarded_level_origins.size()*sizeof(PreviewLevelOriginGuard);
+    diagnostics.upload_bytes=
+        staging.vertices.size()*sizeof(PreviewSurfaceVertex)+
+        staging.indices.size()*sizeof(std::uint32_t)+
+        staging.covered_cells.size()*sizeof(PreviewCoverageCell);
+    diagnostics.geometry_hash=geometry_hash(
+        staging.vertices,staging.indices);
+    diagnostics.build_milliseconds=
+        std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-started).count();
+    if(cancellation.stop_requested())
+      return {PreviewFrontOutcome::canceled,nullptr};
+
+    auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
+    front->requested_view_=request.requested_view;
+    front->coverage_.spatial_key=spatial_key;
+    front->source_camera_=request.camera;
+    front->covered_world_bounds_=bounds;
+    front->diagnostics_=diagnostics;
+    if(cancellation.stop_requested())
+      return {PreviewFrontOutcome::canceled,nullptr};
+    front->vertices_=std::move(staging.vertices);
+    front->indices_=std::move(staging.indices);
+    front->draw_ranges_=std::move(staging.draw_ranges);
+    front->level_origins_=std::move(staging.level_origins);
+    front->coverage_.covered_cells=std::move(staging.covered_cells);
+    front->coverage_.guarded_level_origins=
+        std::move(staging.guarded_level_origins);
+    return {PreviewFrontOutcome::ready,std::move(front)};
   }catch(const std::bad_alloc&){
     return {PreviewFrontOutcome::resource_rejected,nullptr};
   }catch(const std::length_error&){

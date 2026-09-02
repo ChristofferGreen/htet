@@ -406,9 +406,32 @@ still-image appearance alone.
         exact display. Add deterministic boundary/overflow, result-invariant,
         and guarded-replacement transition tests. Keep the persistent worker,
         multi-chart stitching, and Metal integration out of this milestone.
-  - [ ] Add one persistent coalescing preview worker with cooperative cold-build
-        cancellation and bounded scratch ownership; prove submission remains
-        below 2 ms without starving the independent exact worker.
+  - [x] Add `PreviewSurfaceWorker` as one persistent serial service with one
+        active request, one replaceable latest-key pending slot, at most one
+        current completion, and no coordinator or renderer mutation. Coalesce
+        exact duplicate requests without cancellation, reject a conflicting
+        request identity for a key still retained by the worker, and prove
+        ordinary same-key view churn does not resubmit. Make different keys
+        latest-wins, retire obsolete unconsumed storage before replacement
+        allocation, and never expose a stale completion. Synchronously
+        revalidate the bounded planned request so programmer-contract errors
+        cannot disappear with superseded work. Keep submit, cancel, and polling
+        free of terrain sampling, large-buffer destruction, waits, and
+        per-request thread creation. Add
+        `std::stop_token` checks before cold-builder growth, per clipmap
+        row/level, and before publication; return typed cancellation separately
+        from failure; bound and diagnose retained scratch, active candidate,
+        and completion ownership without retaining two candidate fronts. Cover
+        deterministic state transitions, same-key view churn, rapid distinct
+        keys, cancel/complete races, faults, teardown, and resource rejection.
+        In release request-storm and exact-worker coexistence tests require
+        submission below 2 ms at p99 and maximum, prompt cancellation, no busy
+        polling, unchanged exact hashes, and exact settled convergence below
+        two seconds. Do not add Metal integration, multi-chart stitching,
+        nested exact-executor work, or retained row/column construction here.
+        The release request-storm, cancellation, teardown, fault, resource,
+        and exact-worker coexistence tests pass, as does the complete 468-test
+        release suite including Metal shader translation.
   - [ ] Integrate the cold preview with separate Metal buffers, deterministic
         chart-cell exact-face suppression, opaque handoff, and consistent local
         shadow-caster and atmospheric-occlusion coverage.

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -60,6 +61,17 @@ struct PreviewSurfaceResourceLimits {
   std::size_t maximum_upload_bytes{16U*1024U*1024U};
 };
 
+struct PreviewSurfaceResourceEstimate {
+  std::size_t cells{};
+  std::size_t vertices{};
+  std::size_t indices{};
+  std::size_t cpu_bytes{};
+  std::size_t upload_bytes{};
+};
+
+[[nodiscard]] PreviewSurfaceResourceEstimate preview_surface_resource_estimate(
+    PreviewSurfaceConfiguration configuration);
+
 struct PreviewSurfaceRequest {
   TerrainViewIdentity requested_view;
   PreviewSpatialKey spatial_key;
@@ -67,6 +79,7 @@ struct PreviewSurfaceRequest {
 };
 
 class PreviewSurfaceBuildResult;
+class PreviewSurfaceBuildScratch;
 
 // A complete preview publication is a read-only value. Construction is only
 // available through build_preview_surface(), and assignment is disabled
@@ -119,7 +132,8 @@ class PreviewSurfaceFront final {
   PreviewSurfaceFront()=default;
   friend PreviewSurfaceBuildResult build_preview_surface(
       const PreviewSurfaceRequest&,const tetra::Sphere&,
-      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits);
+      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits,
+      std::stop_token,PreviewSurfaceBuildScratch*);
 
   TerrainViewIdentity requested_view_;
   PreviewCoverage coverage_;
@@ -130,6 +144,30 @@ class PreviewSurfaceFront final {
   std::vector<PreviewSurfaceDrawRange> draw_ranges_;
   PreviewSurfaceBounds covered_world_bounds_;
   PreviewSurfaceDiagnostics diagnostics_;
+};
+
+// Reused only by one serial builder. A canceled build leaves its vector
+// capacities here for the replacement; a ready build transfers them into the
+// immutable front. The implementation deliberately hides all mutable staging
+// arrays from consumers.
+class PreviewSurfaceBuildScratch final {
+ public:
+  PreviewSurfaceBuildScratch();
+  ~PreviewSurfaceBuildScratch();
+  PreviewSurfaceBuildScratch(const PreviewSurfaceBuildScratch&)=delete;
+  PreviewSurfaceBuildScratch& operator=(const PreviewSurfaceBuildScratch&)=delete;
+  PreviewSurfaceBuildScratch(PreviewSurfaceBuildScratch&&)=delete;
+  PreviewSurfaceBuildScratch& operator=(PreviewSurfaceBuildScratch&&)=delete;
+
+  [[nodiscard]] std::size_t retained_bytes() const noexcept;
+
+ private:
+  struct Storage;
+  std::unique_ptr<Storage> storage_;
+  friend PreviewSurfaceBuildResult build_preview_surface(
+      const PreviewSurfaceRequest&,const tetra::Sphere&,
+      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits,
+      std::stop_token,PreviewSurfaceBuildScratch*);
 };
 
 [[nodiscard]] bool preview_surface_supported(
@@ -155,7 +193,8 @@ class PreviewSurfaceBuildResult final {
  private:
   friend PreviewSurfaceBuildResult build_preview_surface(
       const PreviewSurfaceRequest&,const tetra::Sphere&,
-      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits);
+      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits,
+      std::stop_token,PreviewSurfaceBuildScratch*);
   PreviewSurfaceBuildResult(
       PreviewFrontOutcome outcome,
       std::shared_ptr<const PreviewSurfaceFront> front) noexcept
@@ -168,6 +207,8 @@ class PreviewSurfaceBuildResult final {
 [[nodiscard]] PreviewSurfaceBuildResult build_preview_surface(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,
     PreviewSurfaceConfiguration configuration={},
-    PreviewSurfaceResourceLimits resource_limits={});
+    PreviewSurfaceResourceLimits resource_limits={},
+    std::stop_token cancellation={},
+    PreviewSurfaceBuildScratch* scratch=nullptr);
 
 }  // namespace tetra_viewer

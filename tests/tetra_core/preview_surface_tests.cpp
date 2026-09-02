@@ -1,10 +1,14 @@
 #include <doctest/doctest.h>
 
 #include "tetra_core/world_cut_directory.hpp"
+#include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/preview_surface.hpp"
+#include "tetra_viewer/preview_surface_worker.hpp"
 #include "tetra_viewer/world_profile.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -12,6 +16,8 @@
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -38,17 +44,29 @@ tetra::Sphere planetary_production_field() {
 
 tetra_viewer::PreviewSurfaceRequest preview_request(
     std::uint64_t epoch,tetra::Vec3 position,const tetra::Sphere& field,
-    std::uint64_t field_revision) {
+    std::uint64_t field_revision,
+    tetra_viewer::PreviewSurfaceConfiguration configuration={}) {
   tetra_viewer::PreviewSurfaceRequest request;
   request.camera.position=position;
   request.requested_view=tetra_viewer::make_terrain_view_identity(
       epoch,field_revision,
       tetra_viewer::preview_surface_field_signature(field),request.camera);
   const auto plan=tetra_viewer::plan_preview_surface(
-      request.requested_view,request.camera,field);
+      request.requested_view,request.camera,field,configuration);
   if(!plan.supported())throw std::runtime_error("preview request is unsupported");
   request.spatial_key=*plan.spatial_key;
   return request;
+}
+
+template<class Predicate>
+bool wait_until(Predicate predicate,
+                std::chrono::milliseconds timeout=std::chrono::seconds(5)) {
+  const auto deadline=std::chrono::steady_clock::now()+timeout;
+  while(std::chrono::steady_clock::now()<deadline){
+    if(predicate())return true;
+    std::this_thread::yield();
+  }
+  return predicate();
 }
 
 std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> build_front(
@@ -779,4 +797,318 @@ TEST_CASE("60 and 120 Hz view churn cannot starve a 100 ms preview completion") 
     CHECK(coordinator.state().preview_visible->required_through_view_epoch==
           coordinator.state().current_view.view_epoch);
   }
+}
+
+TEST_CASE("preview cold builder cancellation is typed and retains bounded scratch") {
+  const auto field=planar_production_field();
+  const tetra_viewer::PreviewSurfaceConfiguration configuration{
+      .level_count=4U,.cells_per_side=64U,.finest_spacing=0.125};
+  const auto request=preview_request(1U,{0.0,2.0,0.0},field,3U,configuration);
+  tetra_viewer::PreviewSurfaceBuildScratch scratch;
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto canceled=tetra_viewer::build_preview_surface(
+      request,field,configuration,{},cancellation.get_token(),&scratch);
+  CHECK(canceled.outcome()==tetra_viewer::PreviewFrontOutcome::canceled);
+  CHECK_FALSE(canceled.front());
+  CHECK(scratch.retained_bytes()<=
+        tetra_viewer::PreviewSurfaceResourceLimits{}.maximum_cpu_bytes);
+
+  const auto ready=tetra_viewer::build_preview_surface(
+      request,field,configuration,{},std::stop_token{},&scratch);
+  REQUIRE(ready.ready());
+  REQUIRE(ready.front());
+  CHECK(scratch.retained_bytes()<ready.front()->diagnostics().cpu_bytes);
+}
+
+TEST_CASE("preview worker coalesces only the exact coordinator request") {
+  const auto field=planar_production_field();
+  const auto request=preview_request(1U,{0.01,2.0,0.01},field,7U);
+  tetra_viewer::PreviewSurfaceWorker worker;
+  const auto accepted=worker.submit(request,field);
+  CHECK(accepted.status==
+        tetra_viewer::PreviewSurfaceSubmissionStatus::accepted);
+  const auto duplicate=worker.submit(request,field);
+  CHECK(duplicate.status==
+        tetra_viewer::PreviewSurfaceSubmissionStatus::duplicate);
+  REQUIRE(wait_until([&]{return worker.state().completed.has_value();}));
+  CHECK(worker.submit(request,field).status==
+        tetra_viewer::PreviewSurfaceSubmissionStatus::duplicate);
+
+  auto conflicting=request;
+  conflicting.requested_view=tetra_viewer::make_terrain_view_identity(
+      2U,request.requested_view.field_revision,
+      request.requested_view.field_signature,request.camera);
+  CHECK_THROWS_AS((void)worker.submit(conflicting,field),std::logic_error);
+  auto completion=worker.take_completed();
+  REQUIRE(completion);
+  CHECK(completion->request().requested_view==request.requested_view);
+  REQUIRE(completion->result().ready());
+
+  CHECK(worker.submit(conflicting,field).status==
+        tetra_viewer::PreviewSurfaceSubmissionStatus::accepted);
+  completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  REQUIRE(completion->result().ready());
+  CHECK(completion->result().front()->requested_view()==
+        conflicting.requested_view);
+  const auto metrics=worker.metrics();
+  CHECK(metrics.submitted_requests==2U);
+  CHECK(metrics.duplicate_requests==2U);
+}
+
+TEST_CASE("same key view churn remains one preview worker submission") {
+  const auto field=planar_production_field();
+  const auto signature=tetra_viewer::terrain_field_signature(field);
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra_viewer::PreviewSurfaceWorker worker;
+  tetra::Camera camera;
+  camera.position={0.01,2.0,0.01};
+  auto view=coordinator.observe_view(camera,4U,signature);
+  auto plan=tetra_viewer::plan_preview_surface(view,camera,field);
+  REQUIRE(plan.supported());
+  coordinator.apply_preview_support(plan);
+  const auto request=coordinator.request_preview();
+  REQUIRE(request);
+  CHECK(worker.submit(
+      {.requested_view=request->requested_view,
+       .spatial_key=request->spatial_key,.camera=camera},field).status==
+      tetra_viewer::PreviewSurfaceSubmissionStatus::accepted);
+  const auto original_key=request->spatial_key;
+  for(std::uint64_t frame=1U;frame<=120U;++frame){
+    camera.position.x=0.01+static_cast<double>(frame)*0.00001;
+    view=coordinator.observe_view(camera,4U,signature);
+    plan=tetra_viewer::plan_preview_surface(view,camera,field);
+    REQUIRE(plan.supported());
+    REQUIRE(*plan.spatial_key==original_key);
+    coordinator.apply_preview_support(plan);
+    CHECK_FALSE(coordinator.request_preview());
+  }
+  const auto completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  REQUIRE(completion->result().ready());
+  CHECK(worker.metrics().submitted_requests==1U);
+}
+
+TEST_CASE("preview worker makes rapid distinct keys latest wins") {
+  const auto field=planar_production_field();
+  const tetra_viewer::PreviewSurfaceConfiguration configuration{
+      .level_count=4U,.cells_per_side=128U,.finest_spacing=0.125};
+  const tetra_viewer::PreviewSurfaceResourceLimits limits{
+      .maximum_cpu_bytes=256U*1024U*1024U,
+      .maximum_upload_bytes=128U*1024U*1024U};
+  const auto first=preview_request(
+      1U,{0.0,2.0,0.0},field,9U,configuration);
+  const auto second=preview_request(
+      2U,{8.0,2.0,0.0},field,9U,configuration);
+  const auto latest=preview_request(
+      3U,{16.0,2.0,0.0},field,9U,configuration);
+  tetra_viewer::PreviewSurfaceWorker worker;
+  static_cast<void>(worker.submit(first,field,configuration,limits));
+  REQUIRE(wait_until([&]{return worker.state().active.has_value();}));
+  static_cast<void>(worker.submit(second,field,configuration,limits));
+  static_cast<void>(worker.submit(latest,field,configuration,limits));
+  const auto completion=worker.wait_for_completed(std::chrono::seconds(10));
+  REQUIRE(completion);
+  CHECK(completion->request().spatial_key==latest.spatial_key);
+  REQUIRE(completion->result().ready());
+  const auto metrics=worker.metrics();
+  CHECK(metrics.submitted_requests==3U);
+  CHECK(metrics.superseded_active_requests+metrics.replaced_pending_requests>=1U);
+  CHECK(metrics.dropped_stale_results>=1U);
+  CHECK(metrics.canceled_builds>=1U);
+  CHECK(metrics.maximum_cancellation_latency_milliseconds<500.0);
+  CHECK(metrics.peak_owned_bytes<=limits.maximum_cpu_bytes);
+  CHECK_FALSE(worker.take_completed());
+}
+
+TEST_CASE("preview worker retires unconsumed fronts and wins cancel complete races") {
+  const auto field=planar_production_field();
+  const auto first=preview_request(1U,{0.0,2.0,0.0},field,6U);
+  const auto replacement=preview_request(2U,{2.0,2.0,0.0},field,6U);
+  tetra_viewer::PreviewSurfaceWorker worker;
+  static_cast<void>(worker.submit(first,field));
+  REQUIRE(wait_until([&]{return worker.state().completed.has_value();}));
+  static_cast<void>(worker.submit(replacement,field));
+  CHECK_FALSE(worker.state().completed);
+  auto completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  CHECK(completion->request().spatial_key==replacement.spatial_key);
+  REQUIRE(completion->result().ready());
+  CHECK(worker.metrics().dropped_stale_results>=1U);
+  CHECK(worker.metrics().peak_owned_bytes<=
+        tetra_viewer::PreviewSurfaceResourceLimits{}.maximum_cpu_bytes);
+
+  for(std::uint64_t iteration=0;iteration<64U;++iteration){
+    const auto request=preview_request(
+        iteration+3U,{4.0+static_cast<double>(iteration),2.0,0.0},field,6U);
+    static_cast<void>(worker.submit(request,field));
+    worker.cancel();
+    REQUIRE(wait_until([&]{return !worker.state().busy;}));
+    CHECK_FALSE(worker.take_completed());
+  }
+  const auto final_request=preview_request(100U,{100.0,2.0,0.0},field,6U);
+  static_cast<void>(worker.submit(final_request,field));
+  completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  CHECK(completion->request().spatial_key==final_request.spatial_key);
+  REQUIRE(completion->result().ready());
+}
+
+TEST_CASE("preview worker cancellation teardown and idle wait are bounded") {
+  const auto field=planar_production_field();
+  const tetra_viewer::PreviewSurfaceConfiguration configuration{
+      .level_count=4U,.cells_per_side=128U,.finest_spacing=0.125};
+  const tetra_viewer::PreviewSurfaceResourceLimits limits{
+      .maximum_cpu_bytes=256U*1024U*1024U,
+      .maximum_upload_bytes=128U*1024U*1024U};
+  const auto request=preview_request(
+      1U,{0.0,2.0,0.0},field,5U,configuration);
+  const auto started=std::chrono::steady_clock::now();
+  {
+    tetra_viewer::PreviewSurfaceWorker worker;
+    REQUIRE(wait_until([&]{return worker.metrics().idle_waits>0U;}));
+    const auto waits=worker.metrics().idle_waits;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    CHECK(worker.metrics().idle_waits==waits);
+    static_cast<void>(worker.submit(request,field,configuration,limits));
+    REQUIRE(wait_until([&]{return worker.state().active.has_value();}));
+    worker.cancel();
+    REQUIRE(wait_until([&]{return !worker.state().busy;}));
+    CHECK_FALSE(worker.take_completed());
+    const auto metrics=worker.metrics();
+    CHECK(metrics.explicit_cancellations==1U);
+    CHECK(metrics.canceled_builds>=1U);
+    CHECK(metrics.maximum_cancellation_latency_milliseconds<500.0);
+  }
+  const double elapsed=std::chrono::duration<double>(
+      std::chrono::steady_clock::now()-started).count();
+  CHECK(elapsed<2.0);
+}
+
+TEST_CASE("preview worker preserves resource failure and contract error boundaries") {
+  const auto field=planar_production_field();
+  const auto request=preview_request(1U,{0.0,2.0,0.0},field,2U);
+  tetra_viewer::PreviewSurfaceWorker worker;
+  static_cast<void>(worker.submit(
+      request,field,{},
+      {.maximum_cpu_bytes=0U,.maximum_upload_bytes=0U}));
+  auto completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  CHECK(completion->result().outcome()==
+        tetra_viewer::PreviewFrontOutcome::resource_rejected);
+
+  auto broken_field=field;
+  broken_field.terrain.landform_frequency=
+      std::numeric_limits<double>::quiet_NaN();
+  const auto broken=preview_request(
+      2U,{0.0,2.0,0.0},broken_field,3U);
+  static_cast<void>(worker.submit(broken,broken_field));
+  completion=worker.wait_for_completed(std::chrono::seconds(5));
+  REQUIRE(completion);
+  CHECK(completion->result().outcome()==
+        tetra_viewer::PreviewFrontOutcome::failed);
+
+  auto stale=request;
+  ++stale.spatial_key.level_origins.front().sample_x;
+  CHECK_THROWS_AS((void)worker.submit(stale,field),std::invalid_argument);
+
+  auto invalid=tetra_viewer::PreviewSurfaceConfiguration{};
+  invalid.level_count=0U;
+  CHECK_THROWS_AS((void)worker.submit(request,field,invalid),
+                  std::invalid_argument);
+}
+
+TEST_CASE("preview worker release request storm stays below two milliseconds") {
+  const auto field=planar_production_field();
+  const tetra_viewer::PreviewSurfaceConfiguration configuration{
+      .level_count=2U,.cells_per_side=4U,.finest_spacing=0.125};
+  std::vector<tetra_viewer::PreviewSurfaceRequest> requests;
+  requests.reserve(256U);
+  for(std::uint64_t index=0;index<256U;++index)
+    requests.push_back(preview_request(
+        index+1U,{static_cast<double>(index)*0.25,2.0,0.0},field,11U,
+        configuration));
+  tetra_viewer::PreviewSurfaceWorker worker;
+  std::vector<double> latencies;
+  latencies.reserve(requests.size());
+  for(const auto& request:requests)
+    latencies.push_back(
+        worker.submit(request,field,configuration).latency_milliseconds);
+  std::sort(latencies.begin(),latencies.end());
+  const auto p99=latencies[latencies.size()*99U/100U];
+  CHECK(p99<2.0);
+  CHECK(latencies.back()<2.0);
+  CHECK(worker.metrics().maximum_submission_latency_milliseconds<2.0);
+  worker.cancel();
+}
+
+TEST_CASE("serial preview work preserves independent exact worker output") {
+  const auto source=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  tetra::Sphere exact_field;
+  tetra::Camera exact_camera;
+  exact_camera.position={0.5,0.5,2.0};
+  tetra::AdaptationConfiguration adaptation;
+  adaptation.candidate_traversal=tetra::CandidateTraversal::hierarchy_bounds;
+  const tetra_viewer::MeshUpdateParameters parameters{
+      exact_field,exact_camera,4.0,9U,adaptation,0U};
+  const auto run_exact=[&](tetra_viewer::PreviewSurfaceWorker* preview){
+    tetra_viewer::MeshUpdateWorker exact;
+    std::atomic_bool exact_finished{};
+    std::jthread request_storm;
+    std::vector<tetra_viewer::PreviewSurfaceRequest> requests;
+    tetra::Sphere preview_field;
+    tetra_viewer::PreviewSurfaceConfiguration preview_configuration;
+    if(preview!=nullptr){
+      preview_field=planar_production_field();
+      preview_configuration={
+          .level_count=3U,.cells_per_side=32U,.finest_spacing=0.125};
+      requests.reserve(48U);
+      for(std::uint64_t index=0;index<48U;++index)
+        requests.push_back(preview_request(
+            index+1U,{static_cast<double>(index),2.0,0.0},preview_field,13U,
+            preview_configuration));
+    }
+    const auto started=std::chrono::steady_clock::now();
+    static_cast<void>(exact.submit(source,parameters));
+    if(preview!=nullptr){
+      request_storm=std::jthread([&](std::stop_token stop){
+        std::size_t index{};
+        while(!stop.stop_requested()&&
+              !exact_finished.load(std::memory_order_acquire)){
+          static_cast<void>(preview->submit(
+              requests[index%requests.size()],preview_field,
+              preview_configuration));
+          ++index;
+        }
+      });
+    }
+    auto result=exact.wait_for_completed(std::chrono::seconds(5));
+    exact_finished.store(true,std::memory_order_release);
+    if(request_storm.joinable())request_storm.join();
+    const double milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-started).count();
+    REQUIRE(result);
+    REQUIRE(result->converged);
+    return std::pair{std::move(*result),milliseconds};
+  };
+
+  auto baseline=run_exact(nullptr);
+  tetra_viewer::PreviewSurfaceWorker preview;
+  auto concurrent=run_exact(&preview);
+  preview.cancel();
+  const auto preview_metrics=preview.metrics();
+  CHECK(preview_metrics.submitted_requests>=16U);
+  CHECK(preview_metrics.replaced_pending_requests+
+        preview_metrics.superseded_active_requests>=1U);
+  CHECK(concurrent.second<2000.0);
+  CHECK(concurrent.first.mesh.logical_red_owners()==
+        baseline.first.mesh.logical_red_owners());
+  CHECK(std::ranges::equal(
+      concurrent.first.mesh.logical_midpoint_masks(),
+      baseline.first.mesh.logical_midpoint_masks()));
+  CHECK(std::ranges::equal(
+      concurrent.first.mesh.logical_derived_hashes(),
+      baseline.first.mesh.logical_derived_hashes()));
 }

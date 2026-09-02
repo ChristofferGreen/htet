@@ -57,6 +57,7 @@ add_library(tetra_viewer_script
   src/tetra_viewer/mesh_update_worker.cpp
   src/tetra_viewer/projection.cpp
   src/tetra_viewer/preview_surface.cpp
+  src/tetra_viewer/preview_surface_worker.cpp
   src/tetra_viewer/scene_preparation_worker.cpp
   src/tetra_viewer/shadow_cascades.cpp
   src/tetra_viewer/terrain_front_coordinator.cpp
