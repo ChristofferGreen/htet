@@ -4,6 +4,7 @@
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/preview_surface.hpp"
 #include "tetra_viewer/preview_surface_worker.hpp"
+#include "tetra_viewer/terrain_display_front.hpp"
 #include "tetra_viewer/world_profile.hpp"
 
 #include <algorithm>
@@ -123,6 +124,152 @@ static_assert(!std::is_move_assignable_v<tetra_viewer::PreviewSurfaceFront>);
 static_assert(!std::is_aggregate_v<tetra_viewer::PreviewSurfaceBuildResult>);
 static_assert(!std::is_default_constructible_v<
               tetra_viewer::PreviewSurfaceBuildResult>);
+
+TEST_CASE("terrain display composition uses deterministic chart-cell ownership") {
+  const auto field=planar_production_field();
+  const auto request=preview_request(3U,{0.25,2.0,-0.5},field,8U);
+  const auto front=build_front(request,field);
+  REQUIRE_FALSE(front->coverage().covered_cells.empty());
+  const auto cell=front->coverage().covered_cells.front();
+  const double half_spacing=front->level_origins().front().sample_spacing*0.5;
+  const tetra::Vec3 inside{
+      (static_cast<double>(cell.minimum_x)+0.25)*half_spacing,0.0,
+      (static_cast<double>(cell.minimum_z)+0.25)*half_spacing};
+  const auto outer_maximum_x=std::ranges::max(
+      front->coverage().covered_cells,{},
+      &tetra_viewer::PreviewCoverageCell::maximum_x).maximum_x;
+  const tetra::Vec3 boundary{
+      static_cast<double>(outer_maximum_x)*half_spacing,0.0,
+      (static_cast<double>(cell.minimum_z)+0.25)*half_spacing};
+  CHECK(tetra_viewer::preview_coverage_contains_world_point(
+      *front,field,inside));
+  CHECK_FALSE(tetra_viewer::preview_coverage_contains_world_point(
+      *front,field,boundary));
+
+  const tetra::Vec3 render_origin{17.0,-4.0,23.0};
+  const auto vertex=[&](tetra::Vec3 point){
+    tetra_viewer::SceneVertex result{};
+    const auto relative=point-render_origin;
+    result.position[0]=static_cast<float>(relative.x);
+    result.position[1]=static_cast<float>(relative.y);
+    result.position[2]=static_cast<float>(relative.z);
+    return result;
+  };
+  const std::array<tetra::Vec3,3> triangle{
+      inside+tetra::Vec3{-0.001,0.0,-0.001},
+      inside+tetra::Vec3{0.002,0.0,-0.001},
+      inside+tetra::Vec3{-0.001,0.0,0.002}};
+  std::vector<tetra_viewer::SceneVertex> exact{
+      vertex(triangle[0]),vertex(triangle[1]),vertex(triangle[2])};
+  const auto first=tetra_viewer::compose_terrain_display(
+      exact,render_origin,field,*front);
+  CHECK(first.metrics.exact_input_triangles==1U);
+  CHECK(first.metrics.exact_suppressed_triangles==1U);
+  CHECK(first.exact_indices.empty());
+  CHECK(first.metrics.preview_triangles==front->indices().size()/3U);
+  CHECK(first.preview_indices.size()==front->indices().size());
+  REQUIRE(first.preview_vertices.size()>=3U);
+  for(std::size_t corner=1U;corner<3U;++corner)
+    for(std::size_t axis=0;axis<3U;++axis)
+      CHECK(first.preview_vertices[corner].normal[axis]==
+            first.preview_vertices[0].normal[axis]);
+  const tetra::Vec3 geometric{
+      first.preview_vertices[0].normal[0],
+      first.preview_vertices[0].normal[1],
+      first.preview_vertices[0].normal[2]};
+  const tetra::Vec3 analytic{
+      first.preview_vertices[0].smooth_normal[0],
+      first.preview_vertices[0].smooth_normal[1],
+      first.preview_vertices[0].smooth_normal[2]};
+  CHECK(dot(geometric,analytic)>0.0);
+
+  std::ranges::reverse(exact);
+  const auto reordered=tetra_viewer::compose_terrain_display(
+      exact,render_origin,field,*front);
+  CHECK(reordered.metrics.exact_suppressed_triangles==1U);
+  CHECK(reordered.metrics.preview_triangles==first.metrics.preview_triangles);
+
+  const std::array<tetra::Vec3,3> crossing{
+      inside,inside+tetra::Vec3{0.001,0.0,0.001},boundary};
+  exact.clear();
+  for(const auto point:crossing)exact.push_back(vertex(point));
+  CHECK(tetra_viewer::preview_coverage_intersects_world_triangle(
+      *front,field,crossing));
+  const auto guarded=tetra_viewer::compose_terrain_display(
+      exact,render_origin,field,*front);
+  CHECK(guarded.metrics.exact_selected_triangles==1U);
+  CHECK(guarded.metrics.exact_suppressed_triangles==0U);
+}
+
+TEST_CASE("terrain display composition is render-origin coherent") {
+  const auto field=planar_production_field();
+  const auto request=preview_request(5U,{-1.0,2.0,1.0},field,9U);
+  const auto front=build_front(request,field);
+  const tetra::Vec3 outside{1.0e4,0.0,1.0e4};
+  const std::array<tetra::Vec3,3> points{
+      outside,outside+tetra::Vec3{1.0,0.0,0.0},
+      outside+tetra::Vec3{0.0,0.0,1.0}};
+  const auto exact_for_origin=[&](tetra::Vec3 origin){
+    std::vector<tetra_viewer::SceneVertex> result(3U);
+    for(std::size_t index=0;index<3U;++index){
+      const auto relative=points[index]-origin;
+      result[index].position[0]=static_cast<float>(relative.x);
+      result[index].position[1]=static_cast<float>(relative.y);
+      result[index].position[2]=static_cast<float>(relative.z);
+    }
+    return result;
+  };
+  const tetra::Vec3 first_origin{};
+  const tetra::Vec3 second_origin{8192.0,0.0,8192.0};
+  const auto first=tetra_viewer::compose_terrain_display(
+      exact_for_origin(first_origin),first_origin,field,*front);
+  const auto second=tetra_viewer::compose_terrain_display(
+      exact_for_origin(second_origin),second_origin,field,*front);
+  CHECK(first.metrics.exact_selected_triangles==1U);
+  CHECK(second.metrics.exact_selected_triangles==1U);
+  REQUIRE(first.preview_vertices.size()==second.preview_vertices.size());
+  REQUIRE_FALSE(first.preview_vertices.empty());
+  CHECK(first.preview_vertices.front().position[0]-
+            second.preview_vertices.front().position[0]==
+        doctest::Approx(static_cast<float>(second_origin.x)));
+  CHECK(first.preview_vertices.front().position[2]-
+            second.preview_vertices.front().position[2]==
+        doctest::Approx(static_cast<float>(second_origin.z)));
+}
+
+TEST_CASE("terrain display publication is atomic across failures and staleness") {
+  tetra::Camera camera;
+  const auto exact_view=tetra_viewer::make_terrain_view_identity(
+      4U,7U,11U,camera);
+  const tetra_viewer::TerrainDisplayIdentity first{
+      2U,exact_view,std::nullopt,{0.0,0.0,0.0}};
+  tetra_viewer::TerrainDisplayPublicationPlanner planner;
+  REQUIRE(planner.prepare(first,1024U,2048U));
+  REQUIRE(planner.complete(first,true,first));
+  REQUIRE(planner.state().published);
+  CHECK(*planner.state().published==first);
+
+  auto replacement=first;
+  replacement.exact_generation=3U;
+  CHECK_FALSE(planner.prepare(replacement,4096U,2048U));
+  CHECK(*planner.state().published==first);
+  CHECK(planner.state().last_outcome==
+        tetra_viewer::TerrainDisplayPublicationOutcome::resource_rejected);
+
+  REQUIRE(planner.prepare(replacement,1024U,2048U));
+  CHECK_FALSE(planner.complete(replacement,false,replacement));
+  CHECK(*planner.state().published==first);
+  CHECK(planner.state().last_outcome==
+        tetra_viewer::TerrainDisplayPublicationOutcome::upload_failed);
+
+  REQUIRE(planner.prepare(replacement,1024U,2048U));
+  auto newer=replacement;
+  newer.exact_generation=4U;
+  CHECK_FALSE(planner.complete(replacement,true,newer));
+  CHECK(*planner.state().published==first);
+  CHECK(planner.state().last_outcome==
+        tetra_viewer::TerrainDisplayPublicationOutcome::stale);
+}
 
 TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
   const auto field=planar_production_field();

@@ -432,9 +432,33 @@ still-image appearance alone.
         The release request-storm, cancellation, teardown, fault, resource,
         and exact-worker coexistence tests pass, as does the complete 468-test
         release suite including Metal shader translation.
-  - [ ] Integrate the cold preview with separate Metal buffers, deterministic
-        chart-cell exact-face suppression, opaque handoff, and consistent local
-        shadow-caster and atmospheric-occlusion coverage.
+  - [x] Integrate the cold preview as one atomic Metal terrain-display
+        publication. The presentation thread owns the front coordinator,
+        persistent worker, retained CPU preview, and published/candidate GPU
+        fronts; CPU-ready, upload-pending, and GPU-visible identities remain
+        distinct. Preserve separate exact and preview buffers, convert preview
+        world doubles to the exact front's recorded render origin, and use one
+        pure deterministic chart-cell composition result for complementary
+        exact/preview ownership, opaque distance-band handoff, main
+        colour/depth, local cascades, the receiver-fitted atmospheric shadow,
+        and ray-traced atmospheric visibility. Prepare and budget the complete
+        vertex/index/selection/caster buffers before one display-front commit;
+        build the combined acceleration structure from retained front buffers
+        and enable it only after its matching display generation promotes.
+        Failed, partial, stale, or superseded uploads preserve the prior
+        eligible preview or exact front. Add CPU boundary, reordering, and
+        origin tests; display-transaction failure/staleness tests; and scripted
+        Metal captures covering seams, motion, replacement, exact handoff,
+        fallback, shadows, atmospheric occlusion, and preview-disabled parity.
+        Leave comprehensive latency, cadence, memory, exact-starvation, and
+        convergence qualification to the following milestone. Apple M3 Pro
+        release evidence publishes 53,632 preview triangles plus 182,662
+        selected exact triangles in a 14,420,040-byte candidate, passes basic,
+        local-shadow, raster-atmosphere, and ray-traced-atmosphere smokes, and
+        hands off to an exact-only scene generation 2/display generation 3.
+        Neighboring overhead and back-lit mountain captures show continuous
+        opaque terrain, stable seams, correct solar occlusion, and no 2D Mie
+        cutout; the disabled control remains exact-only.
   - [ ] Qualify the cold path below 100 ms normally and 250 ms in the worst
         release case, with at most one-cell lag, exact convergence below 2
         seconds, 64 MiB preview CPU memory, 16 MiB uploads, failure fallback,

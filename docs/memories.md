@@ -10,6 +10,18 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: BCC logical-owner derived-cell slices are not guaranteed to be address-sorted, so consumers with sorted-range contracts must sort their flat scratch slice explicitly.
 - Evidence: The depth-10 sphere four-hexahedra benchmark threw `invalid four-hexahedra owner cell range` until `SceneCache` sorted each derived-cell slice; the production-depth regression then passed all 25 rows.
 
+### metal-preview-automation-contract
+- Updated: 2026-09-03
+- Tags: metal, preview, automation
+- Fact: Interactive Metal runs enable the cold terrain preview by default, automated runs disable it unless `TETWORLD_METAL_PREVIEW=1`, and exact-handoff captures additionally use `TETWORLD_METAL_CAPTURE_EXACT_HANDOFF=1`.
+- Evidence: Release preview-enabled and preview-disabled smokes exercised the same lowercase app launcher, while an exact-handoff capture reached scene generation 2/display generation 3 with zero preview triangles.
+
+### metal-preview-shader-contract
+- Updated: 2026-09-03
+- Tags: metal, preview, shaders
+- Fact: Generated preview `SceneVertex` values must set `diagnostics[0]` to `-2.0F` and carry both flat geometric and analytic smooth normals so the shader selects connected-world rendering and receiver-plane shadow bias remains valid.
+- Evidence: Without the marker the scene shader applied its research cut plane and produced a rectangular 2D terrain cutout; release seam, cascade-shadow, and back-lit atmosphere captures passed after using the connected-world marker and separate normals.
+
 ### release-validation-entry-point
 - Updated: 2026-08-24
 - Tags: build, cmake, tests

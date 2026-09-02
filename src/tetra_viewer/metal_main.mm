@@ -4,6 +4,8 @@
 #include "tetra_viewer/image_oracle.hpp"
 #include "tetra_viewer/projection.hpp"
 #include "tetra_viewer/shadow_cascades.hpp"
+#include "tetra_viewer/terrain_display_front.hpp"
+#include "tetra_viewer/preview_surface_worker.hpp"
 #include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/world_script.hpp"
@@ -828,6 +830,12 @@ struct MetalTerrainAccelerationStructure {
   id<MTLBuffer> active_vertices=nil;
   id<MTLAccelerationStructure> pending=nil;
   id<MTLBuffer> pending_vertices=nil;
+  id<MTLBuffer> active_exact_indices=nil;
+  id<MTLBuffer> active_preview_vertices=nil;
+  id<MTLBuffer> active_preview_indices=nil;
+  id<MTLBuffer> pending_exact_indices=nil;
+  id<MTLBuffer> pending_preview_vertices=nil;
+  id<MTLBuffer> pending_preview_indices=nil;
   id<MTLBuffer> pending_scratch=nil;
   std::uint64_t active_generation{};
   std::uint64_t pending_generation{};
@@ -840,6 +848,33 @@ struct MetalTerrainAccelerationStructure {
       std::make_shared<std::atomic<std::uint64_t>>(0U);
 };
 
+// One immutable set of buffers and identities is consumed by every terrain
+// pass in a frame. Replacing this value is the Metal-side publication point.
+struct MetalTerrainDisplayFront {
+  tetra_viewer::TerrainDisplayIdentity identity;
+  std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> preview_cpu;
+  id<MTLBuffer> exact_vertices=nil;
+  id<MTLBuffer> exact_indices=nil;
+  id<MTLBuffer> preview_vertices=nil;
+  id<MTLBuffer> preview_indices=nil;
+  bool indexed_exact_selection{};
+  std::size_t exact_vertex_count{};
+  std::size_t exact_index_count{};
+  std::size_t preview_vertex_count{};
+  std::size_t preview_index_count{};
+  std::size_t upload_bytes{};
+  std::uint64_t render_generation{};
+
+  [[nodiscard]] bool ready() const noexcept {
+    return identity.valid()&&exact_vertices!=nil&&exact_vertex_count!=0U&&
+        render_generation!=0U;
+  }
+  [[nodiscard]] std::size_t triangle_count() const noexcept {
+    return (indexed_exact_selection?exact_index_count:exact_vertex_count)/3U+
+        preview_index_count/3U;
+  }
+};
+
 void promote_completed_terrain_acceleration_structure(
     MetalTerrainAccelerationStructure& structures) {
   if(structures.pending==nil||structures.pending_generation==0U||
@@ -847,9 +882,15 @@ void promote_completed_terrain_acceleration_structure(
          structures.pending_generation)return;
   structures.active=structures.pending;
   structures.active_vertices=structures.pending_vertices;
+  structures.active_exact_indices=structures.pending_exact_indices;
+  structures.active_preview_vertices=structures.pending_preview_vertices;
+  structures.active_preview_indices=structures.pending_preview_indices;
   structures.active_generation=structures.pending_generation;
   structures.pending=nil;
   structures.pending_vertices=nil;
+  structures.pending_exact_indices=nil;
+  structures.pending_preview_vertices=nil;
+  structures.pending_preview_indices=nil;
   structures.pending_scratch=nil;
   structures.pending_generation=0U;
 }
@@ -857,21 +898,52 @@ void promote_completed_terrain_acceleration_structure(
 bool encode_terrain_acceleration_structure_build(
     id<MTLDevice> device,id<MTLCommandBuffer> command,
     MetalTerrainAccelerationStructure& structures,id<MTLBuffer> vertices,
-    std::size_t vertex_count,std::uint64_t generation) {
+    std::size_t vertex_count,bool indexed_exact_selection,
+    id<MTLBuffer> exact_indices,
+    std::size_t exact_index_count,id<MTLBuffer> preview_vertices,
+    std::size_t preview_vertex_count,id<MTLBuffer> preview_indices,
+    std::size_t preview_index_count,std::uint64_t generation) {
   promote_completed_terrain_acceleration_structure(structures);
-  if(vertices==nil||vertex_count==0U||vertex_count%3U!=0U||generation==0U)
+  if(vertices==nil||vertex_count==0U||vertex_count%3U!=0U||generation==0U||
+     (indexed_exact_selection&&exact_index_count%3U!=0U)||
+     (indexed_exact_selection&&exact_index_count!=0U&&exact_indices==nil)||
+     (preview_vertices!=nil&&
+      (preview_vertex_count==0U||preview_indices==nil||
+       preview_index_count%3U!=0U)))
     return false;
   if(structures.active_generation==generation)return true;
   if(structures.pending!=nil)return false;
-  MTLAccelerationStructureTriangleGeometryDescriptor* geometry=
-      [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-  geometry.vertexBuffer=vertices;
-  geometry.vertexFormat=MTLAttributeFormatFloat3;
-  geometry.vertexStride=sizeof(tetra_viewer::SceneVertex);
-  geometry.triangleCount=vertex_count/3U;
+  NSMutableArray<MTLAccelerationStructureGeometryDescriptor*>* geometries=
+      [NSMutableArray array];
+  if(!indexed_exact_selection||exact_index_count!=0U){
+    MTLAccelerationStructureTriangleGeometryDescriptor* exact_geometry=
+        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    exact_geometry.vertexBuffer=vertices;
+    exact_geometry.vertexFormat=MTLAttributeFormatFloat3;
+    exact_geometry.vertexStride=sizeof(tetra_viewer::SceneVertex);
+    exact_geometry.triangleCount=indexed_exact_selection?
+        exact_index_count/3U:vertex_count/3U;
+    if(indexed_exact_selection){
+      exact_geometry.indexBuffer=exact_indices;
+      exact_geometry.indexType=MTLIndexTypeUInt32;
+    }
+    [geometries addObject:exact_geometry];
+  }
+  MTLAccelerationStructureTriangleGeometryDescriptor* preview_geometry=nil;
+  if(preview_vertices!=nil){
+    preview_geometry=[MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    preview_geometry.vertexBuffer=preview_vertices;
+    preview_geometry.vertexFormat=MTLAttributeFormatFloat3;
+    preview_geometry.vertexStride=sizeof(tetra_viewer::SceneVertex);
+    preview_geometry.indexBuffer=preview_indices;
+    preview_geometry.indexType=MTLIndexTypeUInt32;
+    preview_geometry.triangleCount=preview_index_count/3U;
+    [geometries addObject:preview_geometry];
+  }
+  if(geometries.count==0U)return false;
   MTLPrimitiveAccelerationStructureDescriptor* descriptor=
       [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-  descriptor.geometryDescriptors=@[geometry];
+  descriptor.geometryDescriptors=geometries;
   const auto sizes=[device accelerationStructureSizesWithDescriptor:descriptor];
   id<MTLAccelerationStructure> candidate=
       [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
@@ -885,6 +957,9 @@ bool encode_terrain_acceleration_structure_build(
   [encoder endEncoding];
   structures.pending=candidate;
   structures.pending_vertices=vertices;
+  structures.pending_exact_indices=exact_indices;
+  structures.pending_preview_vertices=preview_vertices;
+  structures.pending_preview_indices=preview_indices;
   structures.pending_scratch=scratch;
   structures.pending_generation=generation;
   structures.resident_bytes=sizes.accelerationStructureSize;
@@ -2696,6 +2771,17 @@ int main(int argc,char** argv) {
   const bool automated_test=smoke_test||motion_test||render_test||metalfx_test||
       auto_resolution_test||overlay_test||shadow_test||capture_test||
       any_atmosphere_frame_test||atmosphere_quality_test||terrain_ray_oracle_test;
+  bool preview_enabled=!automated_test;
+  if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
+    if(std::strcmp(value,"0")==0)preview_enabled=false;
+    else if(std::strcmp(value,"1")==0)preview_enabled=true;
+    else {
+      std::fprintf(stderr,"TETWORLD_METAL_PREVIEW must be 0 or 1\n");
+      return 2;
+    }
+  }
+  const bool require_exact_handoff_capture=
+      std::getenv("TETWORLD_METAL_CAPTURE_EXACT_HANDOFF")!=nullptr;
   const bool hidden_window=automated_test&&
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
@@ -2954,6 +3040,14 @@ int main(int argc,char** argv) {
         world_profile);
     std::unique_ptr<tetra_viewer::TerrainRuntime> runtime;
     tetra_viewer::TerrainRuntimeDiagnostics diagnostics;
+    tetra_viewer::TerrainFrontCoordinator terrain_front_coordinator;
+    tetra_viewer::PreviewSurfaceWorker preview_surface_worker;
+    const tetra_viewer::PreviewSurfaceConfiguration preview_configuration{
+        .level_count=4U,.cells_per_side=64U,.finest_spacing=0.125};
+    tetra_viewer::TerrainDisplayPublicationPlanner terrain_display_planner;
+    MetalTerrainDisplayFront terrain_display_front;
+    std::size_t peak_terrain_display_transition_bytes{};
+    std::uint64_t next_terrain_render_generation{1U};
     id<MTLBuffer> scene_vertices=nil;
     id<MTLBuffer> player_overlay_vertices=nil;
     std::size_t player_overlay_vertex_count{};
@@ -3266,12 +3360,144 @@ int main(int argc,char** argv) {
            .ios_performance_mode=ios_performance_mode},
           metal_ray_tracing_supported&&
               terrain_acceleration_structure.active!=nil&&
-              terrain_acceleration_structure.active_generation==uploaded_generation&&
+              terrain_acceleration_structure.active_generation==
+                  terrain_display_front.render_generation&&
               atmosphere_resources.ray_visibility_pipeline!=nil);
       atmosphere_screen_divisor=plan.screen_divisor;
       return ensure_screen_atmosphere_resources(
           device,atmosphere_resources,render_width,render_height,
           atmosphere_screen_divisor);
+    };
+
+    const auto publish_terrain_display=[&](
+        std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> preview,
+        std::optional<tetra_viewer::PreviewRequestIdentity> preview_identity){
+      if(!runtime)return false;
+      const auto exact_generation=runtime->diagnostics().scene_generation;
+      const auto exact_view=runtime->published_view_identity();
+      const auto& exact_scene=runtime->scene();
+      if(exact_generation==0U||!exact_view.valid()||
+         exact_scene.triangle_vertices.empty())return false;
+      if(static_cast<bool>(preview)!=preview_identity.has_value())
+        throw std::logic_error("preview display identity is incomplete");
+      if(preview&&
+         (preview->field_revision()!=exact_view.field_revision||
+          preview->field_signature()!=exact_view.field_signature))return false;
+
+      const tetra_viewer::TerrainDisplayIdentity identity{
+          exact_generation,exact_view,preview_identity,exact_scene.render_origin};
+      std::optional<tetra_viewer::TerrainDisplayComposition> composition;
+      std::size_t upload_bytes{};
+      double composition_milliseconds{};
+      try {
+        if(preview){
+          const auto composition_started=std::chrono::steady_clock::now();
+          composition.emplace(tetra_viewer::compose_terrain_display(
+              exact_scene.triangle_vertices,exact_scene.render_origin,
+              runtime->field(),*preview));
+          composition_milliseconds=
+              std::chrono::duration<double,std::milli>(
+                  std::chrono::steady_clock::now()-composition_started).count();
+          upload_bytes=composition->metrics.upload_bytes;
+        }
+      }catch(const std::exception& error){
+        std::fprintf(stderr,"Preview display composition failed: %s\n",
+                     error.what());
+        return false;
+      }
+      constexpr std::size_t maximum_preview_upload_bytes=16U*1024U*1024U;
+      if(!terrain_display_planner.prepare(
+             identity,upload_bytes,maximum_preview_upload_bytes))return false;
+
+      MetalTerrainDisplayFront candidate;
+      candidate.identity=identity;
+      candidate.preview_cpu=std::move(preview);
+      candidate.exact_vertex_count=exact_scene.triangle_vertices.size();
+      candidate.upload_bytes=upload_bytes;
+      const bool exact_buffer_reusable=terrain_display_front.ready()&&
+          terrain_display_front.identity.exact_generation==exact_generation&&
+          terrain_display_front.identity.render_origin.x==exact_scene.render_origin.x&&
+          terrain_display_front.identity.render_origin.y==exact_scene.render_origin.y&&
+          terrain_display_front.identity.render_origin.z==exact_scene.render_origin.z;
+      if(exact_buffer_reusable)
+        candidate.exact_vertices=terrain_display_front.exact_vertices;
+      else {
+        const auto bytes=exact_scene.triangle_vertices.size()*
+            sizeof(tetra_viewer::SceneVertex);
+        candidate.exact_vertices=[device
+            newBufferWithBytes:exact_scene.triangle_vertices.data()
+                        length:bytes options:MTLResourceStorageModeShared];
+      }
+      if(composition){
+        candidate.indexed_exact_selection=true;
+        const auto make_buffer=[&](const auto& values)->id<MTLBuffer>{
+          if(values.empty())return nil;
+          return [device newBufferWithBytes:values.data()
+                                    length:values.size()*sizeof(values.front())
+                                   options:MTLResourceStorageModeShared];
+        };
+        candidate.exact_indices=make_buffer(composition->exact_indices);
+        candidate.exact_index_count=composition->exact_indices.size();
+        candidate.preview_vertices=make_buffer(composition->preview_vertices);
+        candidate.preview_vertex_count=composition->preview_vertices.size();
+        candidate.preview_indices=make_buffer(composition->preview_indices);
+        candidate.preview_index_count=composition->preview_indices.size();
+      }
+      const bool upload_succeeded=candidate.exact_vertices!=nil&&
+          (!composition||
+           ((candidate.exact_index_count==0U||candidate.exact_indices!=nil)&&
+            candidate.preview_vertices!=nil&&candidate.preview_indices!=nil));
+      const std::size_t transition_owned_bytes=
+          terrain_display_front.upload_bytes+candidate.upload_bytes;
+      peak_terrain_display_transition_bytes=std::max(
+          peak_terrain_display_transition_bytes,transition_owned_bytes);
+      if(automated_test&&composition)std::printf(
+          "{\"event\":\"metal_preview_candidate\","
+          "\"exact_input_triangles\":%zu,"
+          "\"exact_selected_triangles\":%zu,"
+          "\"exact_suppressed_triangles\":%zu,"
+          "\"preview_triangles\":%zu,\"upload_bytes\":%zu,"
+          "\"prior_upload_bytes\":%zu,"
+          "\"transition_owned_bytes\":%zu,"
+          "\"peak_transition_owned_bytes\":%zu,"
+          "\"upload_succeeded\":%s,"
+          "\"build_ms\":%.6f,\"composition_ms\":%.6f,"
+          "\"minimum_y\":%.6f,\"maximum_y\":%.6f,"
+          "\"exact_minimum_y\":%.6f,\"exact_maximum_y\":%.6f}\n",
+          composition->metrics.exact_input_triangles,
+          composition->metrics.exact_selected_triangles,
+          composition->metrics.exact_suppressed_triangles,
+          composition->metrics.preview_triangles,upload_bytes,
+          terrain_display_front.upload_bytes,transition_owned_bytes,
+          peak_terrain_display_transition_bytes,
+          upload_succeeded?"true":"false",
+          candidate.preview_cpu->diagnostics().build_milliseconds,
+          composition_milliseconds,
+          candidate.preview_cpu->covered_world_bounds().minimum.y,
+          candidate.preview_cpu->covered_world_bounds().maximum.y,
+          composition->metrics.suppressed_minimum_world_y,
+          composition->metrics.suppressed_maximum_world_y);
+      if(!terrain_display_planner.complete(
+             identity,upload_succeeded,identity))return false;
+      candidate.render_generation=next_terrain_render_generation++;
+      if(next_terrain_render_generation==0U)next_terrain_render_generation=1U;
+      terrain_display_front=std::move(candidate);
+      scene_vertices=terrain_display_front.exact_vertices;
+      scene_vertex_count=terrain_display_front.triangle_count()*3U;
+      uploaded_generation=exact_generation;
+      terrain_acceleration_structure.maximum_vertex_radius_world=0.0F;
+      const auto include_radius=[&](
+          std::span<const tetra_viewer::SceneVertex> vertices){
+        for(const auto& vertex:vertices)
+          terrain_acceleration_structure.maximum_vertex_radius_world=std::max(
+              terrain_acceleration_structure.maximum_vertex_radius_world,
+              std::sqrt(vertex.position[0]*vertex.position[0]+
+                        vertex.position[1]*vertex.position[1]+
+                        vertex.position[2]*vertex.position[2]));
+      };
+      include_radius(exact_scene.triangle_vertices);
+      if(composition)include_radius(composition->preview_vertices);
+      return true;
     };
 
     while(!glfwWindowShouldClose(window)){
@@ -3374,17 +3600,49 @@ int main(int argc,char** argv) {
         width=std::max(width,1);height=std::max(height,1);
         camera=controller.camera(static_cast<double>(height),
                                  static_cast<double>(width)/height);
+        bool runtime_started_this_frame=false;
         if(!runtime&&runtime_startup.valid()&&
            runtime_startup.wait_for(std::chrono::seconds(0))==
                std::future_status::ready){
           runtime=runtime_startup.get();
-          runtime->set_camera(camera,false);
+          runtime_started_this_frame=true;
         }
         if(runtime){
+          const auto published_view=runtime->published_view_identity();
+          if(!terrain_front_coordinator.state().current_view.valid()&&
+             published_view.valid())
+            terrain_front_coordinator=
+                tetra_viewer::TerrainFrontCoordinator(published_view);
+          const std::uint64_t field_revision=published_view.valid()?
+              published_view.field_revision:1U;
+          const auto field_signature=
+              tetra_viewer::preview_surface_field_signature(runtime->field());
+          const auto view=terrain_front_coordinator.observe_view(
+              camera,field_revision,field_signature);
+          if(preview_enabled){
+            const auto support=tetra_viewer::plan_preview_surface(
+                view,camera,runtime->field(),preview_configuration);
+            terrain_front_coordinator.apply_preview_support(support);
+          }else {
+            terrain_front_coordinator.apply_preview_support(
+                {tetra_viewer::PreviewSupportReason::unsupported_field,
+                 std::nullopt});
+          }
+          runtime->set_view_identity(view);
+          if(preview_enabled)
+            if(const auto request=terrain_front_coordinator.request_preview()){
+              tetra_viewer::PreviewSurfaceRequest work{
+                  request->requested_view,request->spatial_key,camera};
+              static_cast<void>(preview_surface_worker.submit(
+                  std::move(work),runtime->field(),preview_configuration));
+            }
           const bool request_interactive_camera=
               (force_runtime_camera||camera_changed)&&
               !(free_fly&&lock_lod_camera);
-          if(request_interactive_camera){
+          if(runtime_started_this_frame){
+            runtime->set_camera(camera,false);
+            runtime_camera_interactive=false;
+          }else if(request_interactive_camera){
             runtime->set_camera(camera,true);
             runtime_camera_interactive=true;
             force_runtime_camera=false;
@@ -3398,24 +3656,57 @@ int main(int argc,char** argv) {
           }
           static_cast<void>(runtime->update());
           diagnostics=runtime->diagnostics();
+          const auto exact_now=runtime->published_view_identity();
+          if(terrain_display_front.preview_cpu&&exact_now.valid())
+            terrain_front_coordinator.publish_exact(
+                exact_now,terrain_display_front.preview_cpu->coverage());
+          const bool coordinator_has_visible_preview=
+              terrain_front_coordinator.state().preview_visible.has_value();
+          const bool display_has_visible_preview=
+              static_cast<bool>(terrain_display_front.preview_cpu);
           if(diagnostics.scene_generation!=0U&&
-             diagnostics.scene_generation!=uploaded_generation){
-            const auto& scene=runtime->scene();
-            const auto byte_count=scene.triangle_vertices.size()*
-                                  sizeof(tetra_viewer::SceneVertex);
-            scene_vertices=byte_count==0U?nil:
-                [device newBufferWithBytes:scene.triangle_vertices.data()
-                                    length:byte_count
-                                   options:MTLResourceStorageModeShared];
-            scene_vertex_count=scene.triangle_vertices.size();
-            terrain_acceleration_structure.maximum_vertex_radius_world=0.0F;
-            for(const auto& vertex:scene.triangle_vertices)
-              terrain_acceleration_structure.maximum_vertex_radius_world=
-                  std::max(terrain_acceleration_structure.maximum_vertex_radius_world,
-                      std::sqrt(vertex.position[0]*vertex.position[0]+
-                                vertex.position[1]*vertex.position[1]+
-                                vertex.position[2]*vertex.position[2]));
-            uploaded_generation=diagnostics.scene_generation;
+             (diagnostics.scene_generation!=uploaded_generation||
+              !terrain_display_front.ready()||
+              coordinator_has_visible_preview!=display_has_visible_preview)){
+            std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> retained;
+            std::optional<tetra_viewer::PreviewRequestIdentity> retained_identity;
+            const auto& coordinator_state=terrain_front_coordinator.state();
+            if(coordinator_state.preview_visible&&
+               terrain_display_front.preview_cpu&&
+               terrain_display_front.preview_cpu->spatial_key()==
+                   coordinator_state.preview_visible->request.spatial_key){
+              retained=terrain_display_front.preview_cpu;
+              retained_identity=coordinator_state.preview_visible->request;
+            }
+            static_cast<void>(publish_terrain_display(
+                std::move(retained),retained_identity));
+          }
+
+          if(auto completion=preview_surface_worker.take_completed()){
+            const auto request=tetra_viewer::PreviewRequestIdentity{
+                completion->request().requested_view,
+                completion->request().spatial_key};
+            if(completion->has_contract_error()){
+              static_cast<void>(terrain_front_coordinator.complete_preview(
+                  request,tetra_viewer::PreviewFrontOutcome::failed));
+            }else {
+              const auto& result=completion->result();
+              if(result.ready()){
+                const auto front=result.front();
+                if(exact_now.valid())
+                  terrain_front_coordinator.publish_exact(
+                      exact_now,front->coverage());
+                if(terrain_front_coordinator.complete_preview(
+                       request,result.outcome(),front->coverage())){
+                  const bool uploaded=publish_terrain_display(front,request);
+                  static_cast<void>(
+                      terrain_front_coordinator.complete_preview_upload(
+                          request,uploaded));
+                }
+              }else static_cast<void>(
+                  terrain_front_coordinator.complete_preview(
+                      request,result.outcome()));
+            }
           }
         }
         single_step=false;
@@ -3426,7 +3717,9 @@ int main(int argc,char** argv) {
                                   std::array<float,3> colour){
             const auto vertex=[&](tetra::Vec3 point){
               tetra_viewer::SceneVertex output{};
-              point=point-runtime->render_origin();
+              point=point-(terrain_display_front.ready()?
+                  terrain_display_front.identity.render_origin:
+                  runtime->render_origin());
               output.position[0]=static_cast<float>(point.x);
               output.position[1]=static_cast<float>(point.y);
               output.position[2]=static_cast<float>(point.z);
@@ -4093,7 +4386,8 @@ int main(int argc,char** argv) {
                    .ios_performance_mode=ios_performance_mode},
                   metal_ray_tracing_supported&&
                       terrain_acceleration_structure.active!=nil&&
-                      terrain_acceleration_structure.active_generation==uploaded_generation&&
+                      terrain_acceleration_structure.active_generation==
+                          terrain_display_front.render_generation&&
                       atmosphere_resources.ray_visibility_pipeline!=nil);
           ImGui::TextDisabled("Metal ray tracing: %s; backend: %s",
               metal_ray_tracing_supported?"supported":"not supported",
@@ -4228,9 +4522,29 @@ int main(int argc,char** argv) {
             &exposure_minimum,&exposure_maximum,"%.2f");
 
         if(runtime&&ImGui::CollapsingHeader("Terrain diagnostics")){
+          if(ImGui::Checkbox("Fast terrain preview",&preview_enabled)&&
+             !preview_enabled)
+            preview_surface_worker.cancel();
           ImGui::Text("Scene generation %llu   triangles %zu",
               static_cast<unsigned long long>(uploaded_generation),
               scene_vertex_count/3U);
+          const auto& preview_state=terrain_front_coordinator.state();
+          ImGui::Text("Preview CPU %s   GPU %s   upload %.2f MiB",
+              preview_state.preview_awaiting_upload?"ready":
+                  (preview_state.preview_requested?"pending":"idle"),
+              terrain_display_front.preview_cpu?"visible":"exact",
+              static_cast<double>(terrain_display_front.upload_bytes)/
+                  (1024.0*1024.0));
+          ImGui::Text("Peak display transition %.2f MiB",
+              static_cast<double>(peak_terrain_display_transition_bytes)/
+                  (1024.0*1024.0));
+          ImGui::Text("Display generation %llu   exact/preview %zu / %zu",
+              static_cast<unsigned long long>(
+                  terrain_display_front.render_generation),
+              (terrain_display_front.indexed_exact_selection?
+                   terrain_display_front.exact_index_count:
+                   terrain_display_front.exact_vertex_count)/3U,
+              terrain_display_front.preview_index_count/3U);
           ImGui::Text("Resident %.1f MiB   cache %.1f MiB",
               static_cast<double>(diagnostics.resident_bytes)/(1024.0*1024.0),
               static_cast<double>(diagnostics.retained_cache_bytes)/
@@ -4272,19 +4586,47 @@ int main(int argc,char** argv) {
 
         id<MTLCommandBuffer> command_buffer=[command_queue commandBuffer];
         command_buffer.label=@"TetWorld frame";
-        if(metal_ray_tracing_supported&&scene_vertices!=nil&&
-           scene_vertex_count!=0U&&uploaded_generation!=0U)
+        if(metal_ray_tracing_supported&&terrain_display_front.ready())
           static_cast<void>(encode_terrain_acceleration_structure_build(
               device,command_buffer,terrain_acceleration_structure,
-              scene_vertices,scene_vertex_count,uploaded_generation));
+              terrain_display_front.exact_vertices,
+              terrain_display_front.exact_vertex_count,
+              terrain_display_front.indexed_exact_selection,
+              terrain_display_front.exact_indices,
+              terrain_display_front.exact_index_count,
+              terrain_display_front.preview_vertices,
+              terrain_display_front.preview_vertex_count,
+              terrain_display_front.preview_indices,
+              terrain_display_front.preview_index_count,
+              terrain_display_front.render_generation));
         // This qualification deliberately uses the currently published terrain
         // buffer.  It samples real triangle centroids on both sides of the
         // solar half-ray and compares Metal traversal against an independent
         // CPU Moller--Trumbore walk of all published triangles.
         if(terrain_ray_oracle_test&&!terrain_ray_oracle_encoded&&runtime&&
+           (!preview_enabled||terrain_display_front.preview_cpu)&&
            terrain_acceleration_structure.active!=nil&&
-           terrain_acceleration_structure.active_generation==uploaded_generation){
-          const auto& terrain=runtime->scene().triangle_vertices;
+           terrain_acceleration_structure.active_generation==
+               terrain_display_front.render_generation){
+          std::vector<tetra_viewer::SceneVertex> displayed_terrain_storage;
+          std::span<const tetra_viewer::SceneVertex> terrain=
+              runtime->scene().triangle_vertices;
+          if(terrain_display_front.preview_cpu){
+            const auto composition=tetra_viewer::compose_terrain_display(
+                runtime->scene().triangle_vertices,
+                terrain_display_front.identity.render_origin,
+                runtime->field(),*terrain_display_front.preview_cpu);
+            displayed_terrain_storage.reserve(
+                composition.exact_indices.size()+
+                composition.preview_vertices.size());
+            for(const auto index:composition.exact_indices)
+              displayed_terrain_storage.push_back(
+                  runtime->scene().triangle_vertices[index]);
+            displayed_terrain_storage.insert(displayed_terrain_storage.end(),
+                composition.preview_vertices.begin(),
+                composition.preview_vertices.end());
+            terrain=displayed_terrain_storage;
+          }
           const auto sun_world=tetra_viewer::world_sun_direction(
               sun_azimuth,sun_elevation);
           const simd_float3 sun=simd_normalize(simd_make_float3(
@@ -4364,7 +4706,9 @@ int main(int argc,char** argv) {
         std::uint64_t temporal_visual_signature{};
         if(runtime){
           frame_projection=tetra_viewer::make_infinite_reversed_projection(
-              camera.position,runtime->render_origin(),camera.forward,camera.up,
+              camera.position,(terrain_display_front.ready()?
+                  terrain_display_front.identity.render_origin:
+                  runtime->render_origin()),camera.forward,camera.up,
               camera.vertical_fov_radians,camera.aspect_ratio);
           frame_render_matrix=frame_projection->matrix;
           for(std::size_t column=0;column<4U;++column){
@@ -4381,7 +4725,9 @@ int main(int argc,char** argv) {
           const tetra::Vec3 planet_centre_world{
               0.5,0.5-planet_radius_world,0.5};
           const auto planet_centre_relative=
-              planet_centre_world-runtime->render_origin();
+              planet_centre_world-(terrain_display_front.ready()?
+                  terrain_display_front.identity.render_origin:
+                  runtime->render_origin());
           const auto jittered_atmosphere_forward=frame_projection->forward-
               frame_projection->right*(temporal_jitter_ndc_x*
                   frame_projection->tangent*frame_projection->aspect_ratio)-
@@ -4417,7 +4763,9 @@ int main(int argc,char** argv) {
           signature_value(atmosphere_enabled?1U:0U);
           const auto& previous=previous_temporal_projection.value_or(
               *frame_projection);
-          const auto render_origin=runtime->render_origin();
+          const auto render_origin=terrain_display_front.ready()?
+              terrain_display_front.identity.render_origin:
+              runtime->render_origin();
           const auto origin_delta=render_origin-previous_temporal_render_origin;
           const auto current_world_camera=
               frame_projection->camera_relative+render_origin;
@@ -4458,7 +4806,8 @@ int main(int argc,char** argv) {
               temporal_jitter_ndc_y,static_cast<float>(render_width),
               static_cast<float>(render_height),
               previous_temporal_scene_generation!=0U&&
-                      previous_temporal_scene_generation!=uploaded_generation?
+                      previous_temporal_scene_generation!=
+                          terrain_display_front.render_generation?
                   1.0F:0.0F};
           if(metalfx_test&&
              temporal_motion_uniforms.current_jitter_y_extent[3]>0.5F)
@@ -4495,13 +4844,40 @@ int main(int argc,char** argv) {
         }
         encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
                                 gpu_timestamp_scratch,1U);
+        const auto draw_terrain=[&](id<MTLRenderCommandEncoder> encoder,
+                                    NSUInteger vertex_buffer_index){
+          if(!terrain_display_front.ready())return;
+          [encoder setVertexBuffer:terrain_display_front.exact_vertices
+                            offset:0 atIndex:vertex_buffer_index];
+          if(terrain_display_front.indexed_exact_selection){
+            if(terrain_display_front.exact_index_count!=0U)
+              [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                  indexCount:terrain_display_front.exact_index_count
+                                   indexType:MTLIndexTypeUInt32
+                                 indexBuffer:terrain_display_front.exact_indices
+                           indexBufferOffset:0];
+          }else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0
+                            vertexCount:terrain_display_front.exact_vertex_count];
+          if(terrain_display_front.preview_vertices!=nil&&
+             terrain_display_front.preview_indices!=nil&&
+             terrain_display_front.preview_index_count!=0U){
+            [encoder setVertexBuffer:terrain_display_front.preview_vertices
+                              offset:0 atIndex:vertex_buffer_index];
+            [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                indexCount:terrain_display_front.preview_index_count
+                                 indexType:MTLIndexTypeUInt32
+                               indexBuffer:terrain_display_front.preview_indices
+                         indexBufferOffset:0];
+          }
+        };
         ShadowUniforms shadow_uniforms;
         std::optional<tetra_viewer::AtmosphereShadowMapFit> fitted_shadow_fit;
         double fitted_receiver_distance{};
         if(scene_vertices!=nil&&scene_vertex_count!=0U&&runtime){
           const auto sun=tetra_viewer::world_sun_direction(
               sun_azimuth,sun_elevation);
-          const auto relative_camera=camera.position-runtime->render_origin();
+          const auto relative_camera=camera.position-
+              terrain_display_front.identity.render_origin;
           const auto cascades=tetra_viewer::make_stable_shadow_cascades(
               relative_camera,camera.forward,sun,
               static_cast<std::uint32_t>(shadow_texture_resolution));
@@ -4530,7 +4906,8 @@ int main(int argc,char** argv) {
             if(!tetra_viewer::local_shadow_cascade_requires_refresh(
                    shadow_initialized[index],cached_shadow_matrices[index],
                    cached_shadow_generations[index],
-                   cascades.cascades[index].matrix,uploaded_generation))
+                   cascades.cascades[index].matrix,
+                   terrain_display_front.render_generation))
               continue;
             MTLRenderPassDescriptor* shadow_pass=
                 [MTLRenderPassDescriptor renderPassDescriptor];
@@ -4546,16 +4923,15 @@ int main(int argc,char** argv) {
             [shadow_encoder setCullMode:MTLCullModeNone];
             [shadow_encoder setDepthBias:0.8125F slopeScale:1.21875F
                                      clamp:0.0F];
-            [shadow_encoder setVertexBuffer:scene_vertices offset:0 atIndex:0];
             [shadow_encoder setVertexBytes:
                 shadow_uniforms.matrices[index].data()
                                       length:sizeof(std::array<float,16>)
                                      atIndex:1];
-            [shadow_encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                               vertexStart:0 vertexCount:scene_vertex_count];
+            draw_terrain(shadow_encoder,0U);
             [shadow_encoder endEncoding];
             cached_shadow_matrices[index]=cascades.cascades[index].matrix;
-            cached_shadow_generations[index]=uploaded_generation;
+            cached_shadow_generations[index]=
+                terrain_display_front.render_generation;
             shadow_initialized[index]=true;
             ++shadow_cascade_refreshes;
           }
@@ -4583,7 +4959,8 @@ int main(int argc,char** argv) {
               fitted_request,quality.atmosphere_shadow_resolution);
           if(!fitted_shadow_initialized||
              cached_fitted_shadow_matrix!=fitted_shadow_fit->matrix||
-             cached_fitted_shadow_generation!=uploaded_generation){
+             cached_fitted_shadow_generation!=
+                 terrain_display_front.render_generation){
             MTLRenderPassDescriptor* fitted_pass=
                 [MTLRenderPassDescriptor renderPassDescriptor];
             fitted_pass.depthAttachment.texture=shadow_texture;
@@ -4606,15 +4983,14 @@ int main(int argc,char** argv) {
                 quality.atmosphere_shadow_resolution}];
             [fitted_encoder setDepthBias:0.8125F slopeScale:1.21875F
                                       clamp:0.0F];
-            [fitted_encoder setVertexBuffer:scene_vertices offset:0 atIndex:0];
             [fitted_encoder setVertexBytes:fitted_shadow_fit->matrix.data()
                                     length:sizeof(fitted_shadow_fit->matrix)
                                    atIndex:1];
-            [fitted_encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                                vertexStart:0 vertexCount:scene_vertex_count];
+            draw_terrain(fitted_encoder,0U);
             [fitted_encoder endEncoding];
             cached_fitted_shadow_matrix=fitted_shadow_fit->matrix;
-            cached_fitted_shadow_generation=uploaded_generation;
+            cached_fitted_shadow_generation=
+                terrain_display_front.render_generation;
             fitted_shadow_initialized=true;
             ++fitted_shadow_refreshes;
             atmosphere_resources.minmax_scene_generation=0U;
@@ -4661,7 +5037,8 @@ int main(int argc,char** argv) {
                                     shadow_bias==1?1.0F:0.0F};
           uniforms.rendering={4.0F,show_surface_edges?1.0F:0.0F,
                               1.0F,2.0F};
-          const auto relative_camera=camera.position-runtime->render_origin();
+          const auto relative_camera=camera.position-
+              terrain_display_front.identity.render_origin;
           uniforms.view_position={static_cast<float>(relative_camera.x),
                                   static_cast<float>(relative_camera.y),
                                   static_cast<float>(relative_camera.z),
@@ -4672,7 +5049,6 @@ int main(int argc,char** argv) {
           [scene_encoder setRenderPipelineState:active_pipeline];
           [scene_encoder setDepthStencilState:depth_state];
           [scene_encoder setCullMode:MTLCullModeNone];
-          [scene_encoder setVertexBuffer:scene_vertices offset:0 atIndex:1];
           [scene_encoder setVertexBytes:&uniforms length:sizeof(uniforms)
                                 atIndex:0];
           [scene_encoder setFragmentBytes:&production_shadows
@@ -4692,9 +5068,7 @@ int main(int argc,char** argv) {
           for(NSUInteger index=0U;index<4U;++index)
             [scene_encoder setFragmentSamplerState:atmosphere_resources.sampler
                                             atIndex:index];
-          [scene_encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                            vertexStart:0
-                            vertexCount:scene_vertex_count];
+          draw_terrain(scene_encoder,1U);
           if(show_surface_edges){
             id<MTLRenderPipelineState> active_wire_pipeline=active_samples==4U?
                 wire_pipeline_4:(active_samples==2U?wire_pipeline_2:
@@ -4704,9 +5078,7 @@ int main(int argc,char** argv) {
             [scene_encoder setFragmentBytes:&uniforms length:sizeof(uniforms)
                                     atIndex:0];
             [scene_encoder setTriangleFillMode:MTLTriangleFillModeLines];
-            [scene_encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                              vertexStart:0
-                              vertexCount:scene_vertex_count];
+            draw_terrain(scene_encoder,1U);
             ++wireframe_draws;
             [scene_encoder setTriangleFillMode:MTLTriangleFillModeFill];
           }
@@ -4742,7 +5114,8 @@ int main(int argc,char** argv) {
                  .ios_performance_mode=ios_performance_mode},
                 metal_ray_tracing_supported&&
                     terrain_acceleration_structure.active!=nil&&
-                    terrain_acceleration_structure.active_generation==uploaded_generation&&
+                    terrain_acceleration_structure.active_generation==
+                        terrain_display_front.render_generation&&
                     atmosphere_resources.ray_visibility_pipeline!=nil);
         const bool ray_traced_screen_visibility_active=atmosphere_enabled&&
             atmosphere_transport!=2&&
@@ -4786,19 +5159,21 @@ int main(int argc,char** argv) {
            scene_vertex_count!=0U)
           encode_shadow_minmax_hierarchy(
               command_buffer,atmosphere_resources,shadow_texture,
-              uploaded_generation);
+              terrain_display_front.render_generation);
         if(atmosphere_enabled&&!ray_traced_screen_visibility_active&&
            shadow_integration==5&&
            scene_vertex_count!=0U)
           encode_shadow_epipolar_hierarchy(
               command_buffer,atmosphere_resources,atmosphere_uniform,
-              production_shadows,shadow_texture,uploaded_generation);
+              production_shadows,shadow_texture,
+              terrain_display_front.render_generation);
         if(atmosphere_enabled&&!ray_traced_screen_visibility_active&&
            atmosphere_transport!=0&&
            scene_vertex_count!=0U)
           encode_long_shadow_atmosphere(
               command_buffer,atmosphere_resources,atmosphere_uniform,
-              production_shadows,shadow_texture,uploaded_generation);
+              production_shadows,shadow_texture,
+              terrain_display_front.render_generation);
         if(atmosphere_enabled&&
            (atmosphere_renderer==2||atmosphere_renderer==3)&&
            scene_vertex_count!=0U){
@@ -5020,8 +5395,10 @@ int main(int argc,char** argv) {
                 ImGui::GetDrawData(),command_buffer,display_encoder);
           [display_encoder endEncoding];
           previous_temporal_projection=frame_projection;
-          previous_temporal_render_origin=runtime->render_origin();
-          previous_temporal_scene_generation=uploaded_generation;
+          previous_temporal_render_origin=
+              terrain_display_front.identity.render_origin;
+          previous_temporal_scene_generation=
+              terrain_display_front.render_generation;
           previous_temporal_visual_signature=temporal_visual_signature;
           ++metalfx_frame_index;
         }else{
@@ -5049,8 +5426,20 @@ int main(int argc,char** argv) {
         id<MTLBuffer> shadow_probe_buffer=nil;
         id<MTLBuffer> fitted_shadow_probe_buffer=nil;
         NSUInteger capture_row_bytes{};
+        const bool requested_preview_capture_ready=!preview_enabled||
+            !automated_test||(require_exact_handoff_capture?
+                (terrain_display_front.preview_cpu==nullptr&&
+                 terrain_front_coordinator.state().preview_retirement_reason==
+                     tetra_viewer::PreviewRetirementReason::exact_handoff):
+                terrain_display_front.preview_cpu!=nullptr);
+        const bool requested_rt_capture_ready=
+            !(any_atmosphere_frame_test&&atmosphere_transport!=2&&
+              metal_ray_tracing_supported)||
+            (terrain_acceleration_structure.active!=nil&&
+             terrain_acceleration_structure.active_generation==
+                 terrain_display_front.render_generation);
         if((capture_test||any_atmosphere_frame_test||metalfx_test)&&
-           scene_vertex_count!=0U){
+           scene_vertex_count!=0U&&requested_preview_capture_ready){
           capture_row_bytes=(static_cast<NSUInteger>(width)*4U+255U)&~255U;
           capture_buffer=[device
               newBufferWithLength:capture_row_bytes*static_cast<NSUInteger>(height)
@@ -5250,6 +5639,9 @@ int main(int argc,char** argv) {
         if(atmosphere_quality_test&&scene_vertex_count!=0U)
           ++atmosphere_quality_test_frames;
         const bool automated_frame_complete=scene_vertex_count!=0U&&
+            requested_preview_capture_ready&&
+            requested_rt_capture_ready&&
+            (!capture_test||capture_buffer!=nil)&&
             (!terrain_ray_oracle_test||terrain_ray_oracle_encoded)&&
             (!motion_test||(motion_rendered_frames>=30U&&
                             !runtime_camera_interactive&&
@@ -5315,12 +5707,21 @@ int main(int argc,char** argv) {
                   const auto analysis=tetra_viewer::analyse_rgb8_image(image);
                   std::printf("{\"event\":\"metal_capture\",\"path\":\"%s\","
                               "\"geometry_mask_path\":\"%s\","
-                              "\"scene_generation\":%llu,\"triangles\":%zu,"
+                              "\"scene_generation\":%llu,\"display_generation\":%llu,"
+                              "\"preview_visible\":%s,\"triangles\":%zu,"
+                              "\"exact_triangles\":%zu,\"preview_triangles\":%zu,"
                               "\"rgb_hash\":%llu,\"luminance_mean\":%.6f,"
                               "\"luminance_stddev\":%.6f}\n",
                               argv[2],geometry_path.string().c_str(),
                               static_cast<unsigned long long>(uploaded_generation),
+                              static_cast<unsigned long long>(
+                                  terrain_display_front.render_generation),
+                              terrain_display_front.preview_cpu?"true":"false",
                               scene_vertex_count/3U,
+                              (terrain_display_front.indexed_exact_selection?
+                                   terrain_display_front.exact_index_count:
+                                   terrain_display_front.exact_vertex_count)/3U,
+                              terrain_display_front.preview_index_count/3U,
                               static_cast<unsigned long long>(
                                   tetra_viewer::rgb8_hash(image)),
                               analysis.luminance_mean,
@@ -5373,7 +5774,8 @@ int main(int argc,char** argv) {
               const std::size_t blocked=actual==nullptr?0U:
                   static_cast<std::size_t>(std::count(actual,actual+query_count,0U));
               const bool passed=terrain_acceleration_structure.active!=nil&&
-                  terrain_acceleration_structure.active_generation==uploaded_generation&&
+                  terrain_acceleration_structure.active_generation==
+                      terrain_display_front.render_generation&&
                   terrain_ray_oracle_triangles!=0U&&query_count>=128U&&
                   mismatches==0U&&blocked!=0U&&blocked!=query_count;
               std::printf("{\"event\":\"metal_terrain_ray_oracle\","
@@ -5786,7 +6188,19 @@ int main(int argc,char** argv) {
           }
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }else if(automated_test&&now>=smoke_deadline){
-          std::fprintf(stderr,"Metal automated test timed out waiting for terrain.\n");
+          std::fprintf(stderr,
+              "Metal automated test timed out waiting for terrain "
+              "(scene=%llu requested_view=%llu published_view=%llu "
+              "submitted=%zu canceled=%zu busy=%s converged=%s "
+              "motion_frames=%zu).\n",
+              static_cast<unsigned long long>(diagnostics.scene_generation),
+              static_cast<unsigned long long>(
+                  diagnostics.exact_requested_view_epoch),
+              static_cast<unsigned long long>(
+                  diagnostics.exact_published_view_epoch),
+              diagnostics.submitted_builds,diagnostics.canceled_builds,
+              diagnostics.busy?"true":"false",
+              diagnostics.converged?"true":"false",motion_rendered_frames);
           result=1;
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }

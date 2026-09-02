@@ -237,6 +237,49 @@ uploaded generations, and diagnostics. Preview never replaces
 snapshot so a frame cannot mix identity metadata from one transition with
 buffers from another.
 
+The highest-priority integration boundary is one immutable **terrain display
+front** owned and published by the Metal presentation thread. It binds the
+coordinator state used for the decision, the exact scene generation, the
+GPU-visible preview request and coverage, one render origin, the exact-face
+selection, and every buffer required by terrain colour/depth, local shadows,
+and raster atmospheric occlusion. A ray-tracing acceleration structure is a
+generation-guarded derivative: it retains the front's immutable buffers while
+building, and RT visibility remains on its coherent raster fallback until an
+AS with the same display generation promotes. Worker completions may
+prepare candidates but cannot mutate this front. Follow the retained exact
+surface's existing prepare/copy/commit model: allocate and fill every candidate
+resource, validate its identities and budget again, then swap the complete
+front once. A failed, incomplete, or superseded candidate is discarded without
+changing the published front or clearing exact resources.
+
+The Metal application owns one `TerrainFrontCoordinator`, one
+`PreviewSurfaceWorker`, the immutable CPU preview front retained for the
+GPU-visible request, and the published/candidate Metal display fronts. It
+observes the camera and field, submits only coordinator-approved requests,
+drains completions, performs the upload transaction, and calls
+`complete_preview_upload` only after the complete candidate is usable. CPU
+ready, upload pending, and GPU visible are distinct states; a worker completion
+is not itself a render publication.
+
+Before upload, a pure CPU composition step classifies each exact triangle from
+world-space double positions against the preview's deterministic chart cells.
+It produces the exact draw/caster selection and the opaque boundary ownership
+used by all consumers. Classification uses the chart projection and integer
+cell rules, never the preview AABB, camera depth, floating-point coincidence,
+or an independently reconstructed coverage test in a shader. Its boundary
+rule is deterministic for negative coordinates and input reordering. The
+opaque distance-band dither assigns one owner at a time; complementary exact
+and preview ownership must not form transparent layers or draw both surfaces
+at the same sample.
+
+Preview vertices remain immutable world-space doubles on the CPU. Candidate
+upload converts them to floats relative to the exact scene's render origin,
+and the published front records that origin. An exact publication that changes
+the origin must prepare a coherently rebased display candidate before it can
+be combined with an existing preview. No frame may use a preview buffer, exact
+buffer, camera matrix, or temporal-history identity prepared for a different
+origin.
+
 The consumer policy for the first renderer integration is:
 
 - The preview supplies opaque terrain colour and main-pass depth inside its
@@ -245,8 +288,10 @@ The consumer policy for the first renderer integration is:
   the preview. A loose world-space AABB is diagnostic and is not sufficient for
   suppression. Exact terrain outside that mask remains visible.
 - The same combined preview/exact coverage is used for local terrain shadow
-  casters and atmospheric solar occlusion. Stale exact faces must not cast a
-  second, displaced mountain shadow through a visible preview surface.
+  casters and every enabled atmospheric solar-occlusion backend, including the
+  receiver-fitted atlas and ray-traced visibility acceleration structure.
+  Stale exact faces must not cast a second, displaced mountain shadow through
+  a visible preview surface.
 - Boundary replacement uses an opaque distance band with temporal dither; it
   must not use transparency that reveals hidden triangles or create two depth
   layers.
@@ -285,7 +330,15 @@ CPU admission includes the immutable front, worker scratch storage, retained
 rows/columns when enabled, and pending upload ownership. GPU admission includes
 vertex, index, coverage, and replacement buffers. Reuse buffers after warm-up;
 do not temporarily exceed the cap by retaining both an obsolete and replacement
-upload unless that overlap is included in the accounting.
+upload unless that overlap is included in the accounting. Admission is a
+transaction over the still-visible front, candidate vertex/index and exact
+selection data, boundary ownership, shadow/occlusion geometry, acceleration
+structure scratch, and any command-buffer lifetime overlap. The 16 MiB upload
+gate applies to all candidate display buffers together rather than to each
+buffer independently. Current-plus-candidate transition ownership is reported
+separately and is a qualification measurement for the following milestone;
+it must not be hidden by buffer reuse. Resource rejection preserves the
+previous display front and is reported before retrying or falling back.
 
 ## Diagnostics
 
@@ -316,6 +369,10 @@ visual failures can be tied to the exact coordinator state.
   origin shifts.
 - Stale, canceled, rejected, unsupported, or partially uploaded preview work
   cannot become visible.
+- A frame consumes one terrain display front: main colour/depth, exact-face
+  suppression, local shadow cascades, the fitted atmospheric shadow, and
+  ray-traced atmospheric visibility cannot disagree about preview ownership,
+  exact generation, coverage, or render origin.
 - Sub-cell motion never hides or rebuilds an eligible preview. Spatial-key
   replacement does not hide the guarded old front before its coverage expires.
 - Under 60--120 Hz camera input with an injected 100 ms cold build, valid
@@ -330,8 +387,9 @@ visual failures can be tied to the exact coordinator state.
 - Preview lag is at most one snapped innermost cell during continuous walking.
 - Exact settled convergence remains below 2 seconds and is not starved by
   continuous preview work.
-- Peak preview CPU ownership is at most 64 MiB and one upload is at most
-  16 MiB, including transition overlap as defined above.
+- Peak preview CPU ownership is at most 64 MiB and one complete candidate
+  upload is at most 16 MiB. Current-plus-candidate transition overlap is
+  measured explicitly and receives its final bound in cold-path qualification.
 - Release captures pass visual inspection for stationary, walking, turning,
   seams, planetary chart fallback, exact handoff, preview failure, shadow and
   atmospheric occlusion, and preview-disabled behavior.
@@ -382,9 +440,36 @@ visual failures can be tied to the exact coordinator state.
       milestone. The release request-storm, cancellation, teardown, fault,
       resource, and exact-worker coexistence tests pass, and the complete
       468-test release suite including Metal shader translation is green.
-- [ ] Integrate the minimal cold preview in Metal with separate buffers,
-      deterministic exact-face suppression, opaque handoff, and the explicit
-      local-shadow and atmospheric-occlusion policy.
+- [x] Integrate the minimal cold preview in Metal as one atomic terrain display
+      publication. Let the presentation thread own the coordinator, persistent
+      worker, CPU front, and published/candidate GPU fronts; preserve separate
+      exact and preview buffers and convert immutable world-double preview
+      vertices to the exact front's recorded render origin. Add a pure,
+      deterministic chart-cell composition helper that produces complementary
+      exact/preview ownership and one opaque distance-band handoff, then reuse
+      that selection for main colour/depth, local cascades, the receiver-fitted
+      atmospheric shadow, and ray-traced atmospheric visibility. Prepare,
+      budget, and validate every vertex/index/selection/caster buffer before a
+      single display-front commit; build the combined acceleration structure
+      from retained front buffers and enable it only after a matching-generation
+      promotion. Failed, partial, stale, or superseded uploads retain the prior
+      eligible preview or exact front. Add CPU
+      boundary/reordering/origin tests, display-transaction failure and stale
+      completion tests, and scripted Metal captures for seams, motion,
+      replacement, exact handoff, fallback, shadows, atmospheric occlusion,
+      and preview-disabled parity. This milestone proves coherent visible
+      integration; the following milestone retains the full latency, cadence,
+      memory, starvation, and convergence qualification. Release evidence on
+      Apple M3 Pro publishes 53,632 preview triangles with 182,662 selected
+      exact triangles as one 14,420,040-byte candidate; observed cold builds
+      were 36--65 ms and composition 2.6--8.1 ms. The preview-enabled basic and
+      four-cascade shadow smokes pass, the alternate ray-traced atmospheric
+      path owns visibility and dispatches against the same display generation,
+      and exact handoff reaches scene generation 2/display generation 3 with
+      zero preview triangles. Neighboring overhead captures have no seam,
+      moat, hole, or cutout; the reported back-lit mountain has an occluded sun
+      and dark foreground air rather than the former 2D Mie sheet. The
+      preview-disabled control retains the original exact-only cold front.
 - [ ] Qualify the cold path end to end: visual captures, useful-preview
       latency, cell lag, publication cadence, upload and memory caps, exact
       convergence under load, failure fallback, and enabled/disabled exact
