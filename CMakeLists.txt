@@ -56,6 +56,7 @@ add_library(tetra_viewer_script
   src/tetra_viewer/image_oracle.cpp
   src/tetra_viewer/mesh_update_worker.cpp
   src/tetra_viewer/projection.cpp
+  src/tetra_viewer/preview_surface.cpp
   src/tetra_viewer/scene_preparation_worker.cpp
   src/tetra_viewer/shadow_cascades.cpp
   src/tetra_viewer/terrain_runtime.cpp
@@ -91,7 +92,9 @@ target_compile_options(tetra_derived_surface_benchmark PRIVATE
   $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
 
 enable_testing()
-add_executable(tetra_tests tests/tetra_core/tet_mesh_tests.cpp)
+add_executable(tetra_tests
+  tests/tetra_core/tet_mesh_tests.cpp
+  tests/tetra_core/preview_surface_tests.cpp)
 target_link_libraries(tetra_tests PRIVATE tetra_viewer_script doctest::doctest)
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 doctest_discover_tests(tetra_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

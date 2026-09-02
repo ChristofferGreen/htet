@@ -95,6 +95,11 @@ struct TerrainHeightSample {
   double dz{};
 };
 
+struct TerrainSurfaceSample {
+  Vec3 position;
+  Vec3 normal;
+};
+
 struct Sphere {
   Vec3 centre{0.5, 0.5, 0.5};
   double radius{0.35};
@@ -117,6 +122,11 @@ struct Sphere {
 
 [[nodiscard]] TerrainHeightSample terrain_height_sample(
     const Sphere& terrain,double x,double z);
+// Samples the terrain's canonical height parameterization. Planar terrain
+// uses world x/z directly; planetary terrain uses the north-pole gnomonic
+// chart shared by the preview clipmap. Both paths return analytic normals.
+[[nodiscard]] TerrainSurfaceSample terrain_surface_sample(
+    const Sphere& terrain,double chart_x,double chart_z);
 // Conservative absolute displacement from the spherical/planar datum.  This
 // is a height bound, not a gradient bound, and is suitable for sizing systems
 // such as a planetary atmosphere around every possible terrain realization.

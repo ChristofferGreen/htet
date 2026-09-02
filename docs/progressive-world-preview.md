@@ -41,10 +41,12 @@ exact tetrahedral state.
 The default world is a height-field terrain, so the first preview should be a
 camera-centred geometry clipmap. Four or five nested square rings provide high
 local resolution and progressively larger samples toward the view distance.
-Every vertex samples the same `terrain_height_sample` function as the exact
-implicit field. Ring boundaries use deterministic stitch strips and shared
-integer sample coordinates; cracks, skirts hiding cracks, and independently
-rounded edge coordinates are not acceptable.
+Every vertex samples the canonical `terrain_surface_sample` function: it
+delegates to `terrain_height_sample` for planar terrain and evaluates the same
+radial displacement field as the exact implicit surface for the production
+planet. Ring boundaries use deterministic stitch strips and shared integer
+sample coordinates; cracks, skirts hiding cracks, and independently rounded
+edge coordinates are not acceptable.
 
 The preview snapshot contains contiguous arrays only:
 
@@ -118,11 +120,13 @@ research cases.
 
 ## TODO chain
 
-- [ ] Add `PreviewSurfaceFront`, preview diagnostics, and explicit exact versus
-      preview generation fields without changing the world directory.
-- [ ] Implement a deterministic cold geometry-clipmap builder over the terrain
+- [x] Add `PreviewSurfaceFront` and preview diagnostics without changing the
+      world directory.
+- [ ] Add explicit exact versus preview generation fields with the coalescing
+      worker and generation-ordered publication path.
+- [x] Implement a deterministic cold geometry-clipmap builder over the terrain
       field with welded ring stitches, oriented triangles, and analytic normals.
-- [ ] Add topology tests for duplicate vertices, boundary incidence, winding,
+- [x] Add topology tests for duplicate vertices, boundary incidence, winding,
       negative coordinates, snapped-origin shifts, and deterministic hashes.
 - [ ] Add a coalescing preview worker with cancellation and immutable
       publication; prove submission stays below 2 ms.
@@ -139,4 +143,3 @@ research cases.
       resource limits, exact hash invariance, and continuous-walk starvation.
 - [ ] Capture and visually inspect stationary, walking, turning, clipmap seam,
       exact-handoff, and preview-disabled frames in the release executable.
-

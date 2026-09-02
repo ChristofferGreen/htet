@@ -385,7 +385,7 @@ still-image appearance alone.
         production default.
 - [ ] Implement the render-only progressive terrain front specified in
       [`progressive-world-preview.md`](progressive-world-preview.md).
-  - [ ] Add the immutable preview snapshot and cold welded geometry-clipmap
+  - [x] Add the immutable preview snapshot and cold welded geometry-clipmap
         oracle without placing preview data in `WorldCutDirectory`.
   - [ ] Add coalescing background generation, cancellation, and generation-
         ordered handoff while the existing exact worker continues independently.
