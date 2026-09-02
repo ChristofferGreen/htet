@@ -565,8 +565,8 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
     // A coalesced motion history must settle to the same complete world as a
     // fresh runtime asked for only the final pose. This catches locality bugs
     // that per-slice warm/cold surface tests cannot observe.
-    auto oracle=make_production_terrain_runtime(production_world_profile());
-    oracle->set_camera(camera,true);
+    auto oracle=make_production_terrain_runtime(
+        production_world_profile(),camera);
     const auto oracle_deadline=
         std::chrono::steady_clock::now()+std::chrono::seconds(30);
     TerrainRuntimeDiagnostics oracle_diagnostics;
@@ -589,7 +589,37 @@ int run_world_runtime_benchmark(std::ostream& output,std::ostream& errors) {
             <<diagnostics.connected_surface_hash<<'/'
             <<oracle_diagnostics.connected_surface_hash<<' '
             <<diagnostics.render_hash<<'/'
-            <<oracle_diagnostics.render_hash<<'\n';
+            <<oracle_diagnostics.render_hash<<'\n'
+            <<"conforming volume "<<diagnostics.conforming_volume_hash<<'/'
+            <<oracle_diagnostics.conforming_volume_hash
+            <<" logical cells "<<diagnostics.logical_cells<<'/'
+            <<oracle_diagnostics.logical_cells
+            <<" active tetrahedra "<<diagnostics.active_tetrahedra<<'/'
+            <<oracle_diagnostics.active_tetrahedra
+            <<" surface blocks "<<diagnostics.surface_blocks<<'/'
+            <<oracle_diagnostics.surface_blocks
+            <<" render triangles "<<diagnostics.render_triangles<<'/'
+            <<oracle_diagnostics.render_triangles
+            <<" resident sectors "<<diagnostics.resident_sector_count<<'/'
+            <<oracle_diagnostics.resident_sector_count
+            <<" hierarchy demand "<<diagnostics.hierarchy_demand_hash<<'/'
+            <<oracle_diagnostics.hierarchy_demand_hash<<'\n'
+            <<"surface reuse/rebuild "<<diagnostics.reused_surface_blocks<<'/'
+            <<diagnostics.rebuilt_surface_blocks<<" vs "
+            <<oracle_diagnostics.reused_surface_blocks<<'/'
+            <<oracle_diagnostics.rebuilt_surface_blocks
+            <<" intersections "<<diagnostics.reused_surface_intersections<<'/'
+            <<diagnostics.computed_surface_intersections<<" vs "
+            <<oracle_diagnostics.reused_surface_intersections<<'/'
+            <<oracle_diagnostics.computed_surface_intersections
+            <<" conforming blocks "<<diagnostics.reused_conforming_blocks<<'/'
+            <<diagnostics.rebuilt_conforming_blocks<<" vs "
+            <<oracle_diagnostics.reused_conforming_blocks<<'/'
+            <<oracle_diagnostics.rebuilt_conforming_blocks
+            <<" candidates "<<diagnostics.surface_candidate_owners<<'/'
+            <<diagnostics.surface_candidate_blocks<<" vs "
+            <<oracle_diagnostics.surface_candidate_owners<<'/'
+            <<oracle_diagnostics.surface_candidate_blocks<<'\n';
       return 1;
     }
     output<<"{\"event\":\"world_continuous_movement\""

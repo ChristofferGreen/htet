@@ -3177,7 +3177,36 @@ bool BlockedTerrainRuntime::update() {
 }
 
 std::vector<TerrainDebugLine> BlockedTerrainRuntime::lod_zone_lines() const {
-  return {};
+  const auto colour=[](const WorldHierarchyDemandRecord& record){
+    if(has_world_hierarchy_demand(record,WorldHierarchyDemandKind::visible))
+      return std::array<float,3>{0.96F,0.98F,1.0F};
+    if(has_world_hierarchy_demand(
+           record,WorldHierarchyDemandKind::player_collision))
+      return std::array<float,3>{0.12F,0.88F,0.92F};
+    if(has_world_hierarchy_demand(record,WorldHierarchyDemandKind::guard))
+      return std::array<float,3>{0.98F,0.82F,0.12F};
+    if(has_world_hierarchy_demand(record,WorldHierarchyDemandKind::predicted))
+      return std::array<float,3>{1.0F,0.46F,0.10F};
+    if(has_world_hierarchy_demand(record,WorldHierarchyDemandKind::recent))
+      return std::array<float,3>{0.88F,0.30F,0.92F};
+    return std::array<float,3>{0.18F,0.32F,0.72F};
+  };
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},
+      {{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  std::vector<TerrainDebugLine> result;
+  result.reserve(hierarchy_demand_.records.size()*edges.size());
+  for(const auto& record:hierarchy_demand_.records){
+    const auto normalized=tetra::world_tetrahedron_geometry(record.id.prefix);
+    std::array<tetra::Vec3,4> points;
+    std::ranges::transform(normalized,points.begin(),[&](tetra::Vec3 point){
+      return profile_.domain.to_world(point);
+    });
+    const auto tint=colour(record);
+    for(const auto edge:edges)
+      result.push_back({points[edge[0]],points[edge[1]],tint});
+  }
+  return result;
 }
 
 std::unique_ptr<TerrainRuntime> make_production_terrain_runtime(

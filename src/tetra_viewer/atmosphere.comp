@@ -33,6 +33,12 @@ layout(rg32ui,set=0,binding=22) uniform uimage2D history_visibility_0;
 layout(rg32ui,set=0,binding=23) uniform uimage2D history_visibility_1;
 layout(rgba16f,set=0,binding=24) uniform image3D froxel_scattering;
 layout(rgba16f,set=0,binding=25) uniform image3D froxel_transmittance;
+// Metal's production path fills this with one hardware ray-query result for
+// every reconstructed-screen integration midpoint.  Keep it out of Vulkan's
+// descriptor ABI: Vulkan retains its cascade/min-max implementation.
+#ifdef TETRA_METAL_RAY_TRACED_VISIBILITY
+layout(r8ui,set=0,binding=26) uniform readonly uimage3D terrain_ray_visibility;
+#endif
 
 layout(std140,set=0,binding=5) uniform Atmosphere {
   vec4 rayleigh_ground_radius;
@@ -65,6 +71,7 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
 layout(std140,set=0,binding=7) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 local_depth_spans;
   vec4 atmosphere_shadow_metadata;
   vec4 epipolar_metadata;
 } shadow_cascades;
@@ -302,12 +309,10 @@ float epipolar_radius_to_guarded_square(vec2 origin,vec2 direction) {
 
 float epipolar_blocker_angle(float projected_radius,float blocker_depth,
                              float camera_depth) {
-  // Cascade 3 has half_width=split/0.75 and
-  // depth_span=4*half_width.  Reconstruct only the two components needed for
-  // the angle between the camera-to-blocker ray and the sun direction.  The
-  // rectified map stores this angle (beta), not ordinary shadow-map depth.
+  // Receiver footprint and caster depth are independent at low sun angles.
+  // The rectified map stores this angle (beta), not ordinary shadow depth.
   const float half_width=shadow_cascades.shadow_splits.w*(4.0/3.0);
-  const float depth_span=half_width*4.0;
+  const float depth_span=max(shadow_cascades.local_depth_spans.w,1.0e-6);
   const float perpendicular=max(projected_radius,0.0)*half_width;
   const float parallel=-(blocker_depth-camera_depth)*depth_span;
   return atan(perpendicular,parallel);
@@ -560,7 +565,7 @@ float atmosphere_cascade_visibility(vec3 point_world,int cascade,
   // Keep receiver bias constant in world space across cascades. The split is
   // 0.75 of the orthographic half-width and the depth span is four widths.
   const float depth_span=max(
-      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+      shadow_cascades.local_depth_spans[cascade],1.0e-6);
   const float bias=atmosphere_comparison_bias_world()/depth_span;
   const float texel_world=2.0*shadow_cascades.shadow_splits[cascade]*
       (2.0/3.0)/float(textureSize(sun_shadow_map,0).x);
@@ -1512,10 +1517,15 @@ void reconstructed_interval(vec3 origin,vec3 direction,float begin,float end,
                             float closest_altitude,float altitude_power,
                             int index,out float distance_begin,
                             out float distance_end) {
-  const bool before=index<16;
-  const int local_index=before?index:index-16;
-  const float u0=float(local_index)/16.0;
-  const float u1=float(local_index+1)/16.0;
+  const float segment_epsilon=max((end-begin)*1.0e-6,1.0e-3);
+  const bool has_before=closest>begin+segment_epsilon;
+  const bool has_after=end>closest+segment_epsilon;
+  const bool split=has_before&&has_after;
+  const bool before=split?index<16:has_before;
+  const int interval_count=split?16:32;
+  const int local_index=split?(before?index:index-16):index;
+  const float u0=float(local_index)/float(interval_count);
+  const float u1=float(local_index+1)/float(interval_count);
   const float side_distance=before?begin:end;
   const float side_altitude=max(
       length(origin+direction*side_distance)-ground,closest_altitude);
@@ -1543,7 +1553,8 @@ vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
                                     out float transition_confidence,
                                     int shadow_query_count,
                                     uint temporal_phase,
-                                    ivec2 visibility_history_coordinate) {
+                                    ivec2 visibility_history_coordinate,
+                                    ivec2 ray_visibility_coordinate) {
   float begin,end;
   path_transmittance=vec3(1.0);
   transition_confidence=1.0;
@@ -1571,7 +1582,7 @@ vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
         imageLoad(history_visibility_0,visibility_history_coordinate).xy:
         imageLoad(history_visibility_1,visibility_history_coordinate).xy;
   const int query_count=shadow_query_count>=32?32:
-      (shadow_query_count>=8?8:2);
+      (shadow_query_count>=8?8:(shadow_query_count<=1?1:2));
   const int phase=int(temporal_phase&uint(32/query_count-1));
   for(int sample_index=0;sample_index<32;++sample_index){
     if(sample_index>=query_count)break;
@@ -1583,8 +1594,13 @@ vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
           sample_begin,sample_end);
       const vec3 sample_point=origin+direction*
           (0.5*(sample_begin+sample_end));
-    const uint quantized=uint(round(clamp(
-        atmosphere_sun_visibility(sample_point),0.0,1.0)*3.0));
+    float visibility=atmosphere_sun_visibility(sample_point);
+#ifdef TETRA_METAL_RAY_TRACED_VISIBILITY
+    if(atmosphere.temporal_control.w>0.5)
+      visibility=float(imageLoad(terrain_ray_visibility,
+          ivec3(ray_visibility_coordinate,interval)).r)/255.0;
+#endif
+    const uint quantized=uint(round(clamp(visibility,0.0,1.0)*3.0));
     const uint channel=uint(interval)/16U;
     const uint shift=(uint(interval)&15U)*2U;
     packed_visibility[channel]=(packed_visibility[channel]&~(3U<<shift))|
@@ -1653,7 +1669,7 @@ void generate_reconstructed_endpoint(ivec2 coordinate) {
   const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
   const ivec2 depth_size=active_scene_size();
-  const int divisor=clamp(int(dispatch_mode.reserved1),2,4);
+  const int divisor=clamp(int(dispatch_mode.reserved1),1,4);
   const ivec2 base=coordinate*divisor;
   float nearest_depth=0.0;
   int opaque_count=0;
@@ -1690,7 +1706,10 @@ void generate_reconstructed_scattering(ivec2 coordinate) {
   const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
   const ivec2 depth_size=active_scene_size();
-  const int divisor=clamp(int(dispatch_mode.reserved0),2,4);
+  // The desktop ray-traced backend is native resolution. Clamping its
+  // divisor to two addresses the atmosphere texture as though it were half
+  // resolution, displacing terrain-shaped visibility across the sky.
+  const int divisor=clamp(int(dispatch_mode.reserved0),1,4);
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
   const bool opaque=endpoint.y>0.5;
@@ -1724,7 +1743,7 @@ void generate_reconstructed_scattering(ivec2 coordinate) {
       atmosphere.camera_position_near.xyz,view_direction(uv),
       opaque?endpoint.x:1.0e9,transmittance,shadow_confidence,
       clamp(int(dispatch_mode.reserved1),2,32),visibility_control,
-      visibility_history_coordinate);
+      visibility_history_coordinate,coordinate);
   imageStore(screen_scattering,coordinate,
       checked_lut_value(radiance,65504.0));
   imageStore(screen_transmittance,coordinate,
@@ -1744,7 +1763,7 @@ void generate_shadowed_froxel(ivec3 coordinate) {
   float transition_confidence;
   const vec3 radiance=integrate_reconstructed_screen(
       atmosphere.camera_position_near.xyz,view_direction(uv),distance,
-      transmittance,transition_confidence,32,0U,coordinate.xy);
+      transmittance,transition_confidence,32,0U,coordinate.xy,coordinate.xy);
   imageStore(froxel_scattering,coordinate,
       checked_lut_value(radiance,65504.0));
   imageStore(froxel_transmittance,coordinate,
@@ -2270,6 +2289,45 @@ void generate_shadow_projection_probe() {
 }
 
 void main() {
+#ifdef TETRA_ATMOSPHERE_SPECIALIZED_MODE
+#if TETRA_ATMOSPHERE_SPECIALIZED_MODE==0
+  generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==1
+  generate_multiple_scattering(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==2
+  generate_sky_view(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==3
+  generate_aerial(ivec3(gl_GlobalInvocationID));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==4
+  generate_sky_irradiance(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==5
+  generate_numeric_probe();
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==6
+  generate_long_shadow(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==7
+  generate_shadow_projection_probe();
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==8
+  generate_shadow_minmax(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==9
+  generate_epipolar_shadow_base(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==10
+  generate_epipolar_shadow_mip(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==11
+  reset_epipolar_counters();
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==12
+  generate_reconstructed_endpoint(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==13
+  generate_reconstructed_scattering(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==14
+  resolve_reconstructed_history(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==15
+  publish_reconstructed_history(ivec2(gl_GlobalInvocationID.xy));
+#elif TETRA_ATMOSPHERE_SPECIALIZED_MODE==16
+  generate_shadowed_froxel(ivec3(gl_GlobalInvocationID));
+#else
+#error Unsupported TETRA_ATMOSPHERE_SPECIALIZED_MODE
+#endif
+#else
   if(dispatch_mode.mode==0U)generate_transmittance(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==1U)
     generate_multiple_scattering(ivec2(gl_GlobalInvocationID.xy));
@@ -2302,4 +2360,5 @@ void main() {
     publish_reconstructed_history(ivec2(gl_GlobalInvocationID.xy));
   else if(dispatch_mode.mode==16U)
     generate_shadowed_froxel(ivec3(gl_GlobalInvocationID));
+#endif
 }

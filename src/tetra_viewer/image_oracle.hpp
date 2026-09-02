@@ -88,6 +88,10 @@ struct ScalarSampleSummary {
                              std::uint32_t height,
                              std::span<const std::uint8_t> values,
                              std::string& error);
+[[nodiscard]] bool read_pgm(std::string_view path,std::uint32_t& width,
+                            std::uint32_t& height,
+                            std::vector<std::uint8_t>& values,
+                            std::string& error);
 [[nodiscard]] std::optional<std::array<std::uint32_t,2>> parse_pixel_extent(
     std::string_view text) noexcept;
 [[nodiscard]] std::optional<ScalarSampleSummary> summarize_samples(

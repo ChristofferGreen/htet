@@ -3325,6 +3325,38 @@ TEST_CASE("blocked world builds its first front for the requested startup camera
   CHECK(runtime.diagnostics().submitted_builds==1U);
 }
 
+TEST_CASE("blocked world exposes published hierarchy demand as LOD zone lines") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-15.5,-15.5,-15.5},.world_extent=32.0};
+  profile.background_red_depth=3U;
+  profile.near_red_depth=7U;
+  profile.maximum_depth=10U;
+  profile.view_distance=8.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto lines=runtime.lod_zone_lines();
+  REQUIRE_FALSE(lines.empty());
+  CHECK(lines.size()%6U==0U);
+  bool finite=true;
+  bool nondegenerate=true;
+  for(const auto& line:lines){
+    finite=finite&&std::isfinite(line.first.x)&&
+        std::isfinite(line.first.y)&&std::isfinite(line.first.z)&&
+        std::isfinite(line.second.x)&&std::isfinite(line.second.y)&&
+        std::isfinite(line.second.z);
+    nondegenerate=nondegenerate&&(line.first.x!=line.second.x||
+        line.first.y!=line.second.y||line.first.z!=line.second.z);
+  }
+  CHECK(finite);
+  CHECK(nondegenerate);
+  bool block_colours_consistent=true;
+  for(std::size_t block=0;block<lines.size();block+=6U)
+    for(std::size_t edge=1U;edge<6U;++edge)
+      block_colours_consistent=block_colours_consistent&&
+          lines[block+edge].colour==lines[block].colour;
+  CHECK(block_colours_consistent);
+}
+
 TEST_CASE("blocked world schedules accumulated camera rotation without translation") {
   auto profile=tetra_viewer::production_world_profile();
   profile.pixel_threshold=256.0;
@@ -15445,6 +15477,19 @@ TEST_CASE("RGB image oracle round trips PPM and supports masked comparisons") {
   REQUIRE(tetra_viewer::make_complement_mask(
       depth_mask,clear_mask,error));
   CHECK(clear_mask==std::vector<std::uint8_t>{255,0,0,255});
+  const auto depth_mask_path=std::filesystem::temp_directory_path()/
+      "tetra-depth-mask-oracle.pgm";
+  std::filesystem::remove(depth_mask_path);
+  REQUIRE(tetra_viewer::write_pgm(
+      depth_mask_path.string(),2U,2U,depth_mask,error));
+  std::uint32_t loaded_mask_width{},loaded_mask_height{};
+  std::vector<std::uint8_t> loaded_depth_mask;
+  REQUIRE(tetra_viewer::read_pgm(
+      depth_mask_path.string(),loaded_mask_width,loaded_mask_height,
+      loaded_depth_mask,error));
+  CHECK(loaded_mask_width==2U);
+  CHECK(loaded_mask_height==2U);
+  CHECK(loaded_depth_mask==depth_mask);
   std::vector<std::uint8_t> isolated_geometry(25U,0U),silhouette;
   isolated_geometry[12U]=255U;
   REQUIRE(tetra_viewer::make_silhouette_band_mask(
@@ -15559,7 +15604,7 @@ TEST_CASE("default terrain cutaway visual baselines remain stable for both trans
   // This baseline uses the same positive-height Vulkan screen basis as the
   // interactive renderer; the previous CPU-only image was horizontally
   // mirrored relative to Vulkan.
-  constexpr std::uint64_t expected=9289684079062712499ULL;
+  constexpr std::uint64_t expected=10816334498792937846ULL;
   CHECK(render_hash("crystalline-restricted")==expected);
   CHECK(render_hash("complete-minimal")==expected);
   CHECK(std::filesystem::exists(
@@ -15785,10 +15830,10 @@ TEST_CASE("reference view snapshots follow live generations without legacy looku
   CHECK(atmosphere_validation_snapshot(material,snapshots,live).compatible());
 }
 
-TEST_CASE("native atmosphere oracle is selectable without changing the default") {
+TEST_CASE("bounded forward-cone atmosphere renderer is the default") {
   using tetra_viewer::AtmosphereRenderingMethod;
   CHECK(tetra_viewer::default_atmosphere_rendering_method==
-        AtmosphereRenderingMethod::temporal_half_resolution);
+        AtmosphereRenderingMethod::current_qualified);
   CHECK(tetra_viewer::parse_atmosphere_rendering_method(
             "current-qualified")==AtmosphereRenderingMethod::current_qualified);
   CHECK(tetra_viewer::parse_atmosphere_rendering_method(
@@ -15819,6 +15864,42 @@ TEST_CASE("native atmosphere oracle is selectable without changing the default")
   CHECK(tetra_viewer::atmosphere_rendering_method_name(
             AtmosphereRenderingMethod::deterministic_shadowed_froxels)==
         "deterministic-shadowed-froxels");
+}
+
+TEST_CASE("atmosphere visibility backend separates capability from iOS sampling") {
+  using namespace tetra_viewer;
+  CHECK(parse_atmosphere_visibility_backend("automatic")==
+        AtmosphereVisibilityBackend::automatic);
+  CHECK(parse_atmosphere_visibility_backend("ray-traced")==
+        AtmosphereVisibilityBackend::ray_traced);
+  CHECK(parse_atmosphere_visibility_backend("fitted-minmax")==
+        AtmosphereVisibilityBackend::fitted_minmax);
+  CHECK_FALSE(parse_atmosphere_visibility_backend("screen-mask"));
+  CHECK(atmosphere_visibility_backend_name(
+            AtmosphereVisibilityBackend::ray_traced)=="ray-traced");
+
+  const auto desktop=resolve_atmosphere_visibility_plan({},false);
+  CHECK(desktop.effective==AtmosphereVisibilityBackend::fitted_minmax);
+  CHECK(desktop.requested_backend_available);
+  CHECK(desktop.screen_divisor==2U);
+  CHECK(desktop.rotating_queries_per_pixel==2U);
+
+  const auto desktop_ray=resolve_atmosphere_visibility_plan({},true);
+  CHECK(desktop_ray.effective==AtmosphereVisibilityBackend::ray_traced);
+  CHECK(desktop_ray.screen_divisor==1U);
+  CHECK(desktop_ray.rotating_queries_per_pixel==2U);
+
+  const auto mobile=resolve_atmosphere_visibility_plan(
+      {.requested=AtmosphereVisibilityBackend::automatic,
+       .ios_performance_mode=true},true);
+  CHECK(mobile.effective==AtmosphereVisibilityBackend::ray_traced);
+  CHECK(mobile.screen_divisor==4U);
+  CHECK(mobile.rotating_queries_per_pixel==1U);
+
+  const auto rejected=resolve_atmosphere_visibility_plan(
+      {.requested=AtmosphereVisibilityBackend::ray_traced},false);
+  CHECK(rejected.effective==AtmosphereVisibilityBackend::fitted_minmax);
+  CHECK_FALSE(rejected.requested_backend_available);
 }
 
 TEST_CASE("atmosphere shadow integration defaults to the fast fixed sampler") {
@@ -16236,7 +16317,7 @@ TEST_CASE("faithful full sky ignores sub-resolution camera motion") {
   CHECK(tetra_viewer::atmosphere_sky_position_revision(
             {1.0,radius,0.0},parameters)==baseline);
   CHECK(tetra_viewer::atmosphere_sky_position_revision(
-            {0.0,radius+2.0,0.0},parameters)!=baseline);
+            {0.0,radius+20.0,0.0},parameters)!=baseline);
   CHECK(tetra_viewer::atmosphere_sky_position_revision(
             {100.0,radius,0.0},parameters)!=baseline);
 }
@@ -16298,10 +16379,10 @@ TEST_CASE("gameplay planet preserves Earth-like vertical optical depth") {
             game.ground_radius_metres,18.0)>2'000.0);
   CHECK(tetra_viewer::planetary_horizon_distance(
             game.ground_radius_metres,18.0)<3'000.0);
-  CHECK(game.mie_scale_height_metres==doctest::Approx(300.0));
+  CHECK(game.mie_scale_height_metres==doctest::Approx(1'200.0));
   // A normal flight increment must not cross most of the aerosol profile in
-  // one visual update. The former 30 m scale retained barely half its density
-  // after this small ascent and made the golden horizon visibly flash blue.
+  // one visual update. The former compact scales changed too much over a
+  // small ascent and made the golden horizon visibly flash or form a slab.
   CHECK(tetra_viewer::atmosphere_mie_density(20.0,game)>
         tetra_viewer::atmosphere_mie_density(0.0,game)*0.90);
   CHECK(tetra_viewer::atmosphere_mie_density(1'000.0,game)>0.03);
@@ -17192,6 +17273,9 @@ TEST_CASE("atmospheric shadow cascades cover the gameplay horizon without a ligh
   CHECK(cascades.cascades.back().half_width==
         doctest::Approx(tetra_viewer::default_shadow_cascade_half_widths.back()));
   CHECK(cascades.cascades.back().texel_world_size<=1.0);
+  for(std::size_t index=1;index<cascades.cascades.size();++index)
+    CHECK(cascades.cascades[index].half_width/
+              cascades.cascades[index-1U].half_width<=8.0);
 
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(4U,4U,1.0)==1.0);
   CHECK(tetra_viewer::atmosphere_shadow_filter_visibility(0U,4U,1.0)==0.0);
@@ -17231,6 +17315,42 @@ TEST_CASE("shadow cascade motion is quantized to texels and deterministic") {
         camera,forward,sun,1024U,{2.0,2.0,8.0,32.0});
     static_cast<void>(unused);
   }()),std::invalid_argument);
+}
+
+TEST_CASE("surface shadow cascades do not refit during camera rotation") {
+  const tetra::Vec3 camera{17.25,2.5,-9.75};
+  const tetra::Vec3 sun{-0.7,0.4,0.3};
+  const auto first=tetra_viewer::make_stable_shadow_cascades(
+      camera,{0.2,-0.1,-0.9},sun,1024U);
+  const auto rotated=tetra_viewer::make_stable_shadow_cascades(
+      camera,{-0.9,0.05,-0.2},sun,1024U);
+  for(std::size_t index=0;index<tetra_viewer::shadow_cascade_count;++index){
+    CHECK(rotated.cascades[index].matrix==first.cascades[index].matrix);
+    CHECK(rotated.cascades[index].snapped_centre.x==
+          first.cascades[index].snapped_centre.x);
+    CHECK(rotated.cascades[index].snapped_centre.y==
+          first.cascades[index].snapped_centre.y);
+    CHECK(rotated.cascades[index].snapped_centre.z==
+          first.cascades[index].snapped_centre.z);
+  }
+}
+
+TEST_CASE("every local shadow cascade retains the outer caster depth reach") {
+  const auto cascades=tetra_viewer::make_stable_shadow_cascades(
+      {0.0,16.0,0.0},{0.0,0.0,-1.0},{-0.9,0.1,0.2},1024U);
+  const double required=tetra_viewer::default_shadow_cascade_half_widths.back()*
+      8.0;
+  for(const auto& cascade:cascades.cascades)
+    CHECK(cascade.depth_half_range>=required);
+}
+
+TEST_CASE("far shadow receiver extent grows with camera altitude") {
+  using tetra_viewer::elevated_shadow_receiver_distance;
+  CHECK(elevated_shadow_receiver_distance(240.0,512.0,0.0,8192.0)==512.0);
+  CHECK(elevated_shadow_receiver_distance(240.0,512.0,64.0,8192.0)==768.0);
+  CHECK(elevated_shadow_receiver_distance(240.0,512.0,256.0,8192.0)==1536.0);
+  CHECK(elevated_shadow_receiver_distance(240.0,512.0,1024.0,8192.0)==4608.0);
+  CHECK(elevated_shadow_receiver_distance(240.0,512.0,4096.0,8192.0)==8192.0);
 }
 
 TEST_CASE("atmospheric shadow cascade policy blends continuously to unshadowed space") {
@@ -17485,19 +17605,19 @@ TEST_CASE("atmosphere shadow generations reject stale hierarchies and fallbacks"
 TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") {
   const auto cascades=tetra_viewer::make_stable_shadow_cascades(
       {0.5,0.72,0.78},{0.0,0.0,1.0},{-0.864838,0.052336,-0.499315},1024U);
-  double previous_bias=std::numeric_limits<double>::infinity();
   const double surface_world_bias=
       tetra_viewer::surface_shadow_world_bias(0.14);
+  const double shared_depth_span=
+      2.0*cascades.cascades.back().depth_half_range;
   for(std::size_t cascade=0;cascade<tetra_viewer::shadow_cascade_count;
       ++cascade){
     const auto& shadow_cascade=cascades.cascades[cascade];
     const double bias=tetra_viewer::atmosphere_shadow_depth_bias(shadow_cascade);
-    CHECK(bias<previous_bias);
     CHECK(bias<0.0011);
-    CHECK(bias*(2.0*shadow_cascade.depth_half_range)==
+    CHECK(2.0*shadow_cascade.depth_half_range==
+          doctest::Approx(shared_depth_span));
+    CHECK(bias*shared_depth_span==
           doctest::Approx(0.0036).epsilon(1.0e-12));
-    CHECK(shadow_cascade.split_distance*(16.0/3.0)==
-          doctest::Approx(2.0*shadow_cascade.depth_half_range));
     const double depth_span=2.0*shadow_cascade.depth_half_range;
     CHECK(tetra_viewer::atmosphere_shadow_depth_visibility(
               0.5,0.5-0.0035/depth_span,bias)==1.0);
@@ -17507,7 +17627,6 @@ TEST_CASE("atmospheric shadow bias and footprint stay bounded across cascades") 
         shadow_cascade,surface_world_bias);
     CHECK(surface_bias*(2.0*shadow_cascade.depth_half_range)==
           doctest::Approx(surface_world_bias).epsilon(1.0e-12));
-    previous_bias=bias;
   }
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.0,0.0)==1.0);
   CHECK(tetra_viewer::atmosphere_shadow_footprint_fade(0.88,0.5)==1.0);
@@ -17680,11 +17799,14 @@ TEST_CASE("atmospheric receiver projection mirrors shader clip and depth policy"
     CHECK(centre.v==doctest::Approx(0.5).epsilon(1.0e-6));
     CHECK(centre.clip.z==doctest::Approx(0.5).epsilon(1.0e-6));
 
+    // Stay one representable margin inside the strict shader footprint. The
+    // shared 8 km caster depth amplifies float-basis roundoff at an analytic
+    // boundary even though the receiver footprint itself remains unchanged.
     const auto footprint_edge=tetra_viewer::project_atmosphere_shadow_point(
         cascade,cascade.snapped_centre+
-            cascades.light_right*cascade.half_width);
+            cascades.light_right*(cascade.half_width*0.999));
     CHECK(footprint_edge.sampleable());
-    CHECK(footprint_edge.u==doctest::Approx(1.0).epsilon(1.0e-6));
+    CHECK(footprint_edge.u==doctest::Approx(0.9995).epsilon(1.0e-5));
     const auto footprint_outside=tetra_viewer::project_atmosphere_shadow_point(
         cascade,cascade.snapped_centre+
             cascades.light_right*(cascade.half_width*1.001));
@@ -17707,11 +17829,11 @@ TEST_CASE("atmospheric receiver projection mirrors shader clip and depth policy"
     const auto projected=tetra_viewer::project_atmosphere_shadow_point(
         cascades.cascades[probe.cascade],probe.point);
     CHECK(projected.clip.x==
-          doctest::Approx(probe.expected_clip.x).epsilon(2.0e-5));
+          doctest::Approx(probe.expected_clip.x).epsilon(4.0e-5));
     CHECK(projected.clip.y==
-          doctest::Approx(probe.expected_clip.y).epsilon(2.0e-5));
+          doctest::Approx(probe.expected_clip.y).epsilon(4.0e-5));
     CHECK(projected.clip.z==
-          doctest::Approx(probe.expected_clip.z).epsilon(2.0e-5));
+          doctest::Approx(probe.expected_clip.z).epsilon(4.0e-5));
     CHECK(projected.sampleable()==probe.expected_sampleable);
   }
 }

@@ -46,22 +46,31 @@ ShadowCascadeSet make_stable_shadow_cascades(
           "shadow cascade widths must be finite positive and increasing");
   ShadowCascadeSet result;
   result.sun_direction=normalized(sun_direction,{0.0,1.0,0.0});
-  camera_forward=normalized(camera_forward,{0.0,0.0,-1.0});
+  // A local surface-shadow cascade must not refit when the camera rotates in
+  // place. Every receiver assigned to a cascade is already within 75% of its
+  // half-width, so centring on the camera position provides complete radial
+  // coverage without an orientation-dependent look-ahead offset.
+  static_cast<void>(camera_forward);
   const tetra::Vec3 seed=std::abs(result.sun_direction.y)<0.98?
       tetra::Vec3{0.0,1.0,0.0}:tetra::Vec3{1.0,0.0,0.0};
   result.light_right=normalized(cross(seed,result.sun_direction),
                                 {1.0,0.0,0.0});
   result.light_up=normalized(cross(result.sun_direction,result.light_right),
                              {0.0,0.0,1.0});
+  // Receiver footprint and caster reach are independent.  In particular, a
+  // low sun can make a receiver in the smallest high-resolution footprint
+  // depend on a mountain hundreds of world units away along the light ray.
+  // Giving small cascades a small light-depth span clips that mountain and
+  // makes its shadow shrink until the receiver switches to a farther cascade.
+  const double caster_depth_half_range=std::max(4.0,half_widths.back()*8.0);
   for(std::size_t index=0;index<result.cascades.size();++index){
     auto& cascade=result.cascades[index];
     cascade.half_width=half_widths[index];
-    cascade.depth_half_range=std::max(4.0,half_widths[index]*2.0);
+    cascade.depth_half_range=caster_depth_half_range;
     cascade.split_distance=half_widths[index]*0.75;
     cascade.texel_world_size=2.0*half_widths[index]/
         static_cast<double>(map_resolution);
-    const auto desired=camera_position+
-        camera_forward*(half_widths[index]*0.35);
+    const auto desired=camera_position;
     const auto snap=[&](double coordinate){
       return std::round(coordinate/cascade.texel_world_size)*
           cascade.texel_world_size;
@@ -144,6 +153,28 @@ double normalized_shadow_depth_bias(
   if(!(depth_span>0.0)||!std::isfinite(depth_span)||
      !(world_bias>=0.0)||!std::isfinite(world_bias))return 0.0;
   return world_bias/depth_span;
+}
+
+double elevated_shadow_receiver_distance(
+    double base_distance,double outer_local_half_width,double altitude_world,
+    double maximum_distance) noexcept {
+  if(!std::isfinite(base_distance))base_distance=0.0;
+  if(!std::isfinite(outer_local_half_width))outer_local_half_width=0.0;
+  if(!std::isfinite(altitude_world))altitude_world=0.0;
+  if(!std::isfinite(maximum_distance)||maximum_distance<=0.0)return 0.0;
+  base_distance=std::max(base_distance,0.0);
+  outer_local_half_width=std::max(outer_local_half_width,0.0);
+  altitude_world=std::max(altitude_world,0.0);
+  const double lower=std::min(outer_local_half_width,maximum_distance);
+  // The fitted layer is the fallback outside the outer local footprint, so
+  // its receiver frustum must reach at least that footprint's half-width.
+  // Starting at the smaller cascade split leaves an uncovered annulus that
+  // closes as altitude grows, making a fixed mountain shadow appear to grow.
+  // A four-to-one growth retains nearby map detail while ensuring that a
+  // camera climbing away from terrain does not leave the far receiver fit at
+  // its ground-level extent. The explicit cap remains the resource bound.
+  return std::clamp(std::max(base_distance,
+      outer_local_half_width+4.0*altitude_world),lower,maximum_distance);
 }
 
 double atmosphere_shadow_depth_bias(const ShadowCascade& cascade) noexcept {

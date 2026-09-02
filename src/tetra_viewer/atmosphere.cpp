@@ -171,6 +171,24 @@ std::string_view atmosphere_rendering_method_name(
   return "current-qualified";
 }
 
+std::optional<AtmosphereVisibilityBackend>
+parse_atmosphere_visibility_backend(std::string_view name) {
+  if(name=="automatic")return AtmosphereVisibilityBackend::automatic;
+  if(name=="ray-traced")return AtmosphereVisibilityBackend::ray_traced;
+  if(name=="fitted-minmax")return AtmosphereVisibilityBackend::fitted_minmax;
+  return std::nullopt;
+}
+
+std::string_view atmosphere_visibility_backend_name(
+    AtmosphereVisibilityBackend backend) noexcept {
+  switch(backend){
+    case AtmosphereVisibilityBackend::automatic:return "automatic";
+    case AtmosphereVisibilityBackend::ray_traced:return "ray-traced";
+    case AtmosphereVisibilityBackend::fitted_minmax:return "fitted-minmax";
+  }
+  return "automatic";
+}
+
 std::optional<AtmosphereShadowIntegrator> parse_atmosphere_shadow_integrator(
     std::string_view name) {
   if(name=="fixed-32")return AtmosphereShadowIntegrator::fixed_32;
@@ -921,16 +939,16 @@ AtmosphereParameters atmosphere_preset(AtmospherePreset preset) {
       result.rayleigh_scale_height_metres = 3'000.0;
       result.rayleigh_scattering_per_metre = {
           15.472e-6, 36.1546666666667e-6, 88.2666666666667e-6};
-      // Preserve Earth's integrated aerosol optical depth in a compact but
-      // vertically resolvable gameplay boundary layer. A 30 m profile made
-      // the golden horizon switch almost completely over a few metres of
-      // camera ascent. 300 m keeps readable kilometre-scale haze while making
-      // the density change gradual at interactive flight speeds.
-      result.mie_scale_height_metres = 300.0;
+      // Retain the reference atmosphere's approximately 1.2 km aerosol scale
+      // height. Compressing the same optical depth into 300 m produced a thin
+      // brown horizon slab at terrain-view distances. Scale the coefficients
+      // inversely so the integrated vertical aerosol optical depth is
+      // unchanged while the boundary layer varies smoothly with altitude.
+      result.mie_scale_height_metres = 1'200.0;
       result.mie_scattering_per_metre = {
-          15.984e-6, 15.984e-6, 15.984e-6};
+          3.996e-6, 3.996e-6, 3.996e-6};
       result.mie_absorption_per_metre = {
-          1.616e-6, 1.616e-6, 1.616e-6};
+          0.404e-6, 0.404e-6, 0.404e-6};
       result.absorption_peak_altitude_metres = 8'000.0;
       result.absorption_half_width_metres = 4'500.0;
       result.absorption_per_metre = {

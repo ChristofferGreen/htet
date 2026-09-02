@@ -51,6 +51,7 @@ layout(std140,set=0,binding=5) uniform Atmosphere {
 layout(std140,set=0,binding=7) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 local_depth_spans;
   vec4 atmosphere_shadow_metadata;
   vec4 epipolar_metadata;
 } shadow_cascades;
@@ -233,7 +234,7 @@ float terrain_visibility(vec3 point_metres) {
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
      projected.z<0.0||projected.z>1.0)return 1.0;
   const float depth_span=max(
-      shadow_cascades.shadow_splits[layer]*(16.0/3.0),1.0e-6);
+      shadow_cascades.local_depth_spans[layer],1.0e-6);
   const float bias=max(shadow_cascades.epipolar_metadata.z,0.0)/depth_span;
   return shadow_compare_bilinear(
       projected.xy*0.5+0.5,layer,projected.z,bias);

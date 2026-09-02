@@ -53,8 +53,52 @@ enum class AtmosphereRenderingMethod {
   deterministic_shadowed_froxels,
 };
 
+// The transport implementation has one visibility input, but the producer of
+// that input is selected at runtime.  Keeping the choice separate from the
+// sampling preset prevents an iOS quality toggle from silently changing the
+// physical visibility algorithm.
+enum class AtmosphereVisibilityBackend { automatic, ray_traced, fitted_minmax };
+
+[[nodiscard]] std::optional<AtmosphereVisibilityBackend>
+parse_atmosphere_visibility_backend(std::string_view name);
+[[nodiscard]] std::string_view atmosphere_visibility_backend_name(
+    AtmosphereVisibilityBackend backend) noexcept;
+
+struct AtmosphereVisibilitySettings {
+  AtmosphereVisibilityBackend requested{AtmosphereVisibilityBackend::automatic};
+  bool ios_performance_mode{};
+};
+
+struct AtmosphereVisibilityPlan {
+  AtmosphereVisibilityBackend effective{AtmosphereVisibilityBackend::fitted_minmax};
+  std::uint32_t screen_divisor{2U};
+  std::uint32_t rotating_queries_per_pixel{2U};
+  bool requested_backend_available{};
+};
+
+// A forced ray-traced request remains visibly unavailable until both hardware
+// and the native backend are ready; it is never reported as active while the
+// fitted/min-max compatibility path is supplying the result.
+[[nodiscard]] constexpr AtmosphereVisibilityPlan
+resolve_atmosphere_visibility_plan(AtmosphereVisibilitySettings settings,
+                                   bool ray_tracing_backend_available) noexcept {
+  const bool wants_ray=settings.requested==AtmosphereVisibilityBackend::ray_traced;
+  const bool automatic_ray=settings.requested==AtmosphereVisibilityBackend::automatic&&
+      ray_tracing_backend_available;
+  const bool ray_active=(wants_ray||automatic_ray)&&ray_tracing_backend_available;
+  return {.effective=ray_active?AtmosphereVisibilityBackend::ray_traced:
+                                AtmosphereVisibilityBackend::fitted_minmax,
+          // Desktop RT integrates one physical atmosphere ray per native
+          // pixel so terrain silhouettes never fall back to a second 2D
+          // visibility representation. The explicit iOS-style preset keeps
+          // its quarter-resolution budget and class-aware reconstruction.
+          .screen_divisor=settings.ios_performance_mode?4U:(ray_active?1U:2U),
+          .rotating_queries_per_pixel=settings.ios_performance_mode?1U:2U,
+          .requested_backend_available=!wants_ray||ray_tracing_backend_available};
+}
+
 inline constexpr AtmosphereRenderingMethod default_atmosphere_rendering_method=
-    AtmosphereRenderingMethod::temporal_half_resolution;
+    AtmosphereRenderingMethod::current_qualified;
 [[nodiscard]] std::optional<AtmosphereRenderingMethod>
 parse_atmosphere_rendering_method(std::string_view name);
 [[nodiscard]] std::string_view atmosphere_rendering_method_name(

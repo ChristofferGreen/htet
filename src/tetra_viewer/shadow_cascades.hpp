@@ -13,7 +13,7 @@ inline constexpr std::size_t shadow_map_layer_count=shadow_cascade_count+1U;
 inline constexpr std::uint32_t shadow_map_resolution=1024U;
 inline constexpr std::size_t atmosphere_shadow_projection_probe_count=24U;
 inline constexpr std::array<double,shadow_cascade_count>
-    default_shadow_cascade_half_widths{2.0,8.0,32.0,512.0};
+    default_shadow_cascade_half_widths{2.0,12.0,72.0,512.0};
 
 struct ShadowCascade {
   std::array<float,16> matrix{};
@@ -82,6 +82,9 @@ struct AtmosphereShadowProjectionProbeCase {
 [[nodiscard]] double surface_shadow_world_bias(double n_dot_l) noexcept;
 [[nodiscard]] double normalized_shadow_depth_bias(
     const ShadowCascade& cascade,double world_bias) noexcept;
+[[nodiscard]] double elevated_shadow_receiver_distance(
+    double base_distance,double outer_local_half_width,double altitude_world,
+    double maximum_distance) noexcept;
 [[nodiscard]] double atmosphere_shadow_depth_bias(
     const ShadowCascade& cascade) noexcept;
 [[nodiscard]] double atmosphere_fitted_shadow_world_bias(

@@ -232,6 +232,43 @@ bool write_pgm(std::string_view path,std::uint32_t width,std::uint32_t height,
   return true;
 }
 
+bool read_pgm(std::string_view path,std::uint32_t& width,
+              std::uint32_t& height,std::vector<std::uint8_t>& values,
+              std::string& error) {
+  width=0U;height=0U;values.clear();error.clear();
+  std::ifstream input(std::string(path),std::ios::binary);
+  if(!input){error="could not open mask path";return false;}
+  std::string magic,width_text,height_text,maximum;
+  if(!read_token(input,magic)||!read_token(input,width_text)||
+     !read_token(input,height_text)||!read_token(input,maximum)||magic!="P5"||
+     maximum!="255"){
+    error="mask is not an 8-bit binary PGM";return false;
+  }
+  try{
+    const auto parsed_width=std::stoul(width_text);
+    const auto parsed_height=std::stoul(height_text);
+    if(parsed_width==0U||parsed_height==0U||
+       parsed_width>std::numeric_limits<std::uint32_t>::max()||
+       parsed_height>std::numeric_limits<std::uint32_t>::max())
+      throw std::out_of_range("PGM extent");
+    width=static_cast<std::uint32_t>(parsed_width);
+    height=static_cast<std::uint32_t>(parsed_height);
+  }catch(const std::exception&){
+    error="PGM extent is invalid";width=0U;height=0U;return false;
+  }
+  input.get();
+  const auto pixel_count=static_cast<std::size_t>(width)*height;
+  values.resize(pixel_count);
+  input.read(reinterpret_cast<char*>(values.data()),
+             static_cast<std::streamsize>(values.size()));
+  if(input.gcount()!=static_cast<std::streamsize>(values.size())||
+     input.peek()!=std::char_traits<char>::eof()){
+    error="PGM payload size does not match its extent";
+    width=0U;height=0U;values.clear();return false;
+  }
+  return true;
+}
+
 std::optional<std::array<std::uint32_t,2>> parse_pixel_extent(
     std::string_view text) noexcept {
   const auto separator=text.find('x');

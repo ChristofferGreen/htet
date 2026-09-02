@@ -14,6 +14,7 @@ layout(set = 0,binding = 9) uniform sampler2D sky_irradiance_lut;
 layout(std140,set=0,binding=10) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 local_depth_spans;
   vec4 atmosphere_shadow_metadata;
   vec4 epipolar_metadata;
 } shadow_cascades;
@@ -374,7 +375,7 @@ float primary_cascade_shadow_visibility(vec3 point_world,int cascade,
   if(any(greaterThan(abs(projected.xy),vec2(1.0)))||
      projected.z<0.0||projected.z>1.0)return fallback_visibility;
   const float depth_span=max(
-      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+      shadow_cascades.local_depth_spans[cascade],1.0e-6);
   const float visibility=primary_bilinear_shadow_visibility(
       projected.xy*0.5+0.5,float(cascade),projected.z,0.0036/depth_span);
   const float coverage=1.0-smoothstep(
@@ -547,6 +548,10 @@ bool deterministic_shadowed_froxels() {
   return atmosphere_rendering_method()==5;
 }
 
+bool ray_traced_screen_visibility() {
+  return atmosphere.temporal_control.w>0.5;
+}
+
 void shadowed_froxel_atmosphere(float distance_metres,
                                 out vec3 scattering,
                                 out vec3 transmittance) {
@@ -568,6 +573,38 @@ float orbital_mie_phase(float cosine_angle) {
   const float g=atmosphere.ground_albedo_mie_anisotropy.w;
   return (1.0-g*g)/(4.0*3.14159265359*pow(
       max(1.0+g*g-2.0*g*cosine_angle,1.0e-4),1.5));
+}
+
+void orbital_scattering_interval(
+    vec3 origin,vec3 direction,float begin,float end,float closest,
+    float ground_radius,float closest_radius,float closest_altitude,
+    float altitude_power,int index,out float distance_begin,
+    out float distance_end) {
+  const float segment_epsilon=max((end-begin)*1.0e-6,1.0e-3);
+  const bool has_before=closest>begin+segment_epsilon;
+  const bool has_after=end>closest+segment_epsilon;
+  const bool split=has_before&&has_after;
+  const bool before=split?index<16:has_before;
+  const int interval_count=split?16:32;
+  const int local_index=split?(before?index:index-16):index;
+  const float u0=float(local_index)/float(interval_count);
+  const float u1=float(local_index+1)/float(interval_count);
+  const float side_distance=before?begin:end;
+  const float side_altitude=max(
+      length(origin+direction*side_distance)-ground_radius,
+      closest_altitude);
+  const float altitude_begin=mix(closest_altitude,side_altitude,
+      pow(before?1.0-u0:u0,altitude_power));
+  const float altitude_end=mix(closest_altitude,side_altitude,
+      pow(before?1.0-u1:u1,altitude_power));
+  const float offset_begin=sqrt(max(
+      (ground_radius+altitude_begin)*(ground_radius+altitude_begin)-
+      closest_radius*closest_radius,0.0));
+  const float offset_end=sqrt(max(
+      (ground_radius+altitude_end)*(ground_radius+altitude_end)-
+      closest_radius*closest_radius,0.0));
+  distance_begin=closest+(before?-offset_begin:offset_begin);
+  distance_end=closest+(before?-offset_end:offset_end);
 }
 
 vec3 orbital_primary_scattering_components(
@@ -604,26 +641,10 @@ vec3 orbital_primary_scattering_components(
   const float altitude_power=mix(2.0,5.0,
       exp(-closest_altitude/(4.0*mie_scale)));
   for(int index=0;index<32;++index){
-    const bool before=index<16;
-    const int local_index=before?index:index-16;
-    const float u0=float(local_index)/16.0;
-    const float u1=float(local_index+1)/16.0;
-    const float side_distance=before?begin:end;
-    const float side_altitude=max(
-        length(origin+direction*side_distance)-ground_radius,
-        closest_altitude);
-    const float altitude_begin=mix(closest_altitude,side_altitude,
-        pow(before?1.0-u0:u0,altitude_power));
-    const float altitude_end=mix(closest_altitude,side_altitude,
-        pow(before?1.0-u1:u1,altitude_power));
-    const float offset_begin=sqrt(max(
-        (ground_radius+altitude_begin)*(ground_radius+altitude_begin)-
-        closest_radius*closest_radius,0.0));
-    const float offset_end=sqrt(max(
-        (ground_radius+altitude_end)*(ground_radius+altitude_end)-
-        closest_radius*closest_radius,0.0));
-    const float distance_begin=closest+(before?-offset_begin:offset_begin);
-    const float distance_end=closest+(before?-offset_end:offset_end);
+    float distance_begin,distance_end;
+    orbital_scattering_interval(origin,direction,begin,end,closest,
+        ground_radius,closest_radius,closest_altitude,altitude_power,index,
+        distance_begin,distance_end);
     const float interval_length=distance_end-distance_begin;
     if(interval_length<=0.0)continue;
     int substeps=1;
@@ -633,7 +654,7 @@ vec3 orbital_primary_scattering_components(
     // shadow volume. Locate those discontinuities before integrating. Smooth
     // intervals retain one quadrature point; only intervals crossing a
     // visibility boundary pay for eight ordered substeps.
-    if(exact_screen_visibility()||terrain_shadow_weight>0.0){
+    if(exact_screen_visibility()){
       const vec3 first_point=origin+direction*mix(
           distance_begin,distance_end,0.125);
       const vec3 middle_point=origin+direction*0.5*(
@@ -679,14 +700,19 @@ vec3 orbital_primary_scattering_components(
       // inexpensive, but the forward Mie cone needs visibility at the actual
       // quadrature point so occlusion happens before integration.
       float exact_visibility=1.0;
-      if(exact_screen_visibility()||
-         (terrain_shadow_weight>0.0&&density.y>1.0e-4))
+      if(exact_screen_visibility()&&density.y>1.0e-4){
         exact_visibility=primary_terrain_sun_visibility(point);
+      }else if(terrain_shadow_weight>0.0){
+        exact_visibility=primary_terrain_sun_visibility(point);
+      }
       if(exact_screen_visibility())direct_source*=exact_visibility;
       else{
-        const vec3 terrain_visibility=mix(cached_shadow_visibility,
-            vec3(exact_visibility),terrain_shadow_weight);
-        direct_source*=mix(vec3(1.0),terrain_visibility,0.25);
+        // The integrated directional atlas is a whole-ray value. Applying it
+        // back to every scattering sample turns a mountain shadow into a hard
+        // 2D polygon. Keep the atmosphere unshadowed outside the compact
+        // forward Mie cone and evaluate real per-point visibility inside it.
+        direct_source*=mix(vec3(1.0),vec3(exact_visibility),
+                           terrain_shadow_weight);
       }
 #endif
       const vec2 multiple_uv=vec2(sun_cosine*0.5+0.5,
@@ -726,7 +752,12 @@ void reconstructed_atmosphere(float native_depth,
       sample_scene_depth_offset(texture_coordinate,ivec2(0,3))>1.0e-8;
   const float target_depth=opaque?
       atmosphere.camera_position_near.w/native_depth:0.0;
-  if(native_class_boundary&&!reference_hillaire_transport()){
+  // The old silhouette fallback recomputed direct scattering with cascaded /
+  // fitted 2D shadow maps.  That created a second visibility owner beside the
+  // Metal ray queries and drew a bright/dark rim around mixed terrain blocks.
+  // It remains available only to the raster compatibility backend.
+  if(native_class_boundary&&!reference_hillaire_transport()&&
+     !ray_traced_screen_visibility()){
     radiance=orbital_primary_scattering(native_direction,
         opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);
     return;
@@ -762,14 +793,52 @@ void reconstructed_atmosphere(float native_depth,
     weight_sum+=weight;
   }
   if(weight_sum>0.0&&
-     (reference_hillaire_transport()||!(saw_opaque&&saw_sky))){
+     (ray_traced_screen_visibility()||reference_hillaire_transport()||
+      !(saw_opaque&&saw_sky))){
     radiance/=weight_sum;
     transmittance/=weight_sum;
     return;
   }
-  // A mixed 2x2 block can leave a native silhouette pixel with no compatible
-  // low-resolution tap. Evaluate that rare pixel directly instead of leaking
-  // lit sky through terrain or smearing foreground depth into the sky.
+  if(ray_traced_screen_visibility()){
+    // If the immediate 2x2 footprint contains no matching endpoint class,
+    // take the nearest class-compatible integration result.  Its direct term
+    // was still evaluated by sample-to-sun hardware rays; no screen-space or
+    // cascaded sun visibility is introduced here.
+    float nearest_distance=1.0e30;
+    ivec2 nearest=ivec2(0);
+    bool found=false;
+    const ivec2 centre=clamp(ivec2(texture_coordinate*vec2(size)),
+                             ivec2(0),size-1);
+    for(int y=-2;y<=2;++y)for(int x=-2;x<=2;++x){
+      const ivec2 coordinate=clamp(centre+ivec2(x,y),ivec2(0),size-1);
+      const vec4 endpoint=texelFetch(screen_endpoint,coordinate,0);
+      if((endpoint.y>0.5)!=opaque)continue;
+      if(opaque){
+        const float threshold=max(target_depth*0.10,1.0e-6);
+        if(abs(endpoint.x-target_depth)>=threshold)continue;
+      }
+      const float distance_squared=float(x*x+y*y);
+      if(distance_squared<nearest_distance){
+        nearest_distance=distance_squared;
+        nearest=coordinate;
+        found=true;
+      }
+    }
+    if(found){
+      radiance=texelFetch(screen_scattering,nearest,0).rgb;
+      transmittance=texelFetch(screen_transmittance,nearest,0).rgb;
+      return;
+    }
+    // The quarter-resolution iOS-style preset can contain an isolated native
+    // endpoint class smaller than one atmosphere texel. Preserve the nearest
+    // ray-integrated result rather than manufacturing visibility or invoking
+    // the raster shadow backend. Desktop RT is full resolution, so its native
+    // pixel is always class-compatible and never reaches this branch.
+    radiance=texelFetch(screen_scattering,centre,0).rgb;
+    transmittance=texelFetch(screen_transmittance,centre,0).rgb;
+    return;
+  }
+  // Raster fallback: preserve its qualified full-resolution cascade path.
   const vec3 direction=atmosphere_view_direction(texture_coordinate);
   radiance=orbital_primary_scattering(direction,
       opaque?target_depth:1.0e9,1.0,vec3(1.0),transmittance);
@@ -850,6 +919,9 @@ vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
     // Use one current, surface-truncated primary ray for every final faithful
     // aerial pixel.  Lookup volumes remain available to diagnostics and the
     // qualified baseline, but no longer form visible faithful output.
+    // Restrict expensive terrain visibility to the forward aerosol cone, but
+    // evaluate it at every retained scattering sample there. This is a true
+    // volume shadow: no direction-wide loss is applied to the complete ray.
     const float terrain_shadow_weight=primary_shadow_cone_weight(direction);
     vec3 cached_shadow_visibility=vec3(1.0);
 #ifdef FAITHFUL_SHADOW_SPLIT
@@ -879,6 +951,40 @@ vec3 composite_aerial(vec3 surface_radiance,float distance_metres) {
       max(optical_opacity,0.0);
   scattering=max(scattering,directional_airlight);
   return surface_radiance*transmittance+scattering;
+}
+
+vec3 physical_solar_disc(vec3 view_direction) {
+  const vec3 sun_direction=normalize(atmosphere.sun_direction_exposure.xyz);
+  const float angular_radius=max(atmosphere.profile_and_mode.z,1.0e-6);
+  const float cosine_angle=dot(view_direction,sun_direction);
+  const float cosine_radius=cos(angular_radius);
+  // Integrate the finite source over the pixel footprint. This preserves a
+  // stable round disc at small angular radii instead of a single aliased dot.
+  // Do not use screen derivatives here: this function is intentionally called
+  // only by clear-depth fragments, so derivatives across a terrain silhouette
+  // are undefined and can turn the whole ridge into a solar-coloured cutout.
+  const float pixel_angle=2.0*atmosphere.camera_down_tangent_y.w/
+      max(atmosphere.render_resolution.y,1.0);
+  const float edge_width=max(sin(angular_radius)*pixel_angle,1.0e-7);
+  const float coverage=smoothstep(
+      cosine_radius-edge_width,cosine_radius+edge_width,cosine_angle);
+  if(coverage<=0.0)return vec3(0.0);
+
+  const vec3 camera_position=atmosphere.camera_position_near.xyz;
+  const float radial_distance=max(length(camera_position),1.0);
+  const float ground_radius=atmosphere.rayleigh_ground_radius.w;
+  const float altitude=max(radial_distance-ground_radius,0.0);
+  const float sun_cosine=dot(camera_position/radial_distance,sun_direction);
+  const vec3 transmittance=texture(transmittance_lut,
+      atmosphere_transmittance_uv(altitude,sun_cosine)).rgb;
+  const float planet_visibility=orbital_sun_visibility(
+      radial_distance,sun_cosine);
+  // The atmosphere parameter is irradiance. Convert the finite uniform solar
+  // source to radiance using its projected solid angle before attenuation.
+  const float projected_solid_angle=
+      3.14159265359*max(sin(angular_radius)*sin(angular_radius),1.0e-8);
+  return atmosphere.solar_absorption_peak.rgb*transmittance*
+      (planet_visibility*coverage/projected_solid_angle);
 }
 
 vec3 background_atmosphere() {
@@ -914,18 +1020,10 @@ vec3 background_atmosphere() {
     }else{
       radiance=sample_sky_view(view_direction,texture_coordinate);
     }
-  }
-  if(ground_distance<0.0&&
-     dot(view_direction,sun_direction)>cos(atmosphere.profile_and_mode.z)&&
-     !planet_blocks_view(view_direction)){
-    const float altitude=length(atmosphere.camera_position_near.xyz)-
-        atmosphere.rayleigh_ground_radius.w;
-    const float cosine_angle=dot(
-        normalize(atmosphere.camera_position_near.xyz),view_direction);
-    const vec2 transmittance_uv=atmosphere_transmittance_uv(
-        altitude,cosine_angle);
-    radiance+=atmosphere.solar_absorption_peak.rgb*
-        texture(transmittance_lut,transmittance_uv).rgb*24.0;
+    // Opaque scene depth owns terrain occlusion. Therefore this term is
+    // reached only for the visible fraction of the finite solar source and
+    // cannot shine through a mountain silhouette.
+    radiance+=physical_solar_disc(view_direction);
   }
   return radiance;
 }
@@ -1019,7 +1117,7 @@ void main() {
       diagnostic=sample_long_shadow(
           atmosphere_view_direction(texture_coordinate)).rgb;
 #endif
-    }else if(debug_view>=25&&debug_view<=27){
+    }else if(debug_view>=25&&debug_view<=30){
       diagnostic=texture(hdr_scene,texture_coordinate).rgb;
     }
     out_colour=vec4(linear_to_srgb(aces_fitted(max(diagnostic,vec3(0.0)))),1.0);

@@ -13,6 +13,7 @@ layout(set = 0, binding = 0) uniform sampler2DArray sun_shadow_map;
 layout(std140,set=0,binding=1) uniform ShadowCascades {
   mat4 shadow_matrices[5];
   vec4 shadow_splits;
+  vec4 local_depth_spans;
   vec4 atmosphere_shadow_metadata;
   vec4 epipolar_metadata;
 } shadow_cascades;
@@ -63,7 +64,7 @@ float receiver_plane_depth_bias(vec3 position,vec3 receiver_normal,
   const float plane_depth=(shadow_cascades.shadow_matrices[cascade]*
       vec4(plane_point,1.0)).z;
   const float depth_span=max(
-      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+      shadow_cascades.local_depth_spans[cascade],1.0e-6);
   return max(projected.z-plane_depth,0.0)+0.00144/depth_span;
 }
 
@@ -79,7 +80,7 @@ float cascade_visibility(vec3 position,vec3 receiver_normal,
   // erodes (shrinks) distant mountain shadows.
   const float world_bias=mix(0.00144,0.0096,1.0-n_dot_l);
   const float depth_span=max(
-      shadow_cascades.shadow_splits[cascade]*(16.0/3.0),1.0e-6);
+      shadow_cascades.local_depth_spans[cascade],1.0e-6);
   const float bias=camera.light_direction.w>0.5?
       receiver_plane_depth_bias(position,receiver_normal,cascade,projected):
       world_bias/depth_span;
@@ -91,6 +92,14 @@ float cascade_visibility(vec3 position,vec3 receiver_normal,
     visibility+=projected.z-bias<=blocker?1.0:0.0;
   }
   return visibility/9.0;
+}
+
+float cascade_coverage(vec3 position,int cascade) {
+  const vec3 projected=(shadow_cascades.shadow_matrices[cascade]*
+      vec4(position,1.0)).xyz;
+  if(projected.z<0.0||projected.z>1.0)return 0.0;
+  const float footprint=max(abs(projected.x),abs(projected.y));
+  return 1.0-smoothstep(0.90,0.98,footprint);
 }
 
 float fitted_visibility(vec3 position) {
@@ -118,17 +127,24 @@ float sun_visibility(vec3 position,vec3 receiver_normal,float n_dot_l) {
   if(distance_from_camera<shadow_cascades.shadow_splits.x)cascade=0;
   else if(distance_from_camera<shadow_cascades.shadow_splits.y)cascade=1;
   else if(distance_from_camera<shadow_cascades.shadow_splits.z)cascade=2;
-  const float distant=fitted_visibility(position);
-  const float current=min(distant,cascade_visibility(
-      position,receiver_normal,n_dot_l,cascade));
-  if(cascade==3)return current;
+  const float current=cascade_visibility(
+      position,receiver_normal,n_dot_l,cascade);
+  if(cascade==3){
+    // The local cascade is authoritative wherever it has proven coverage.
+    // Beyond its footprint, hand off smoothly to the receiver-fitted far map
+    // so a mountain shadow remains present as the camera climbs into space.
+    // Keeping the fitted map out of covered local terrain avoids the
+    // camera-dependent surface blotches it previously introduced.
+    return mix(fitted_visibility(position),current,
+               cascade_coverage(position,cascade));
+  }
   const float split=shadow_cascades.shadow_splits[cascade];
   const float previous=cascade==0?0.0:
       shadow_cascades.shadow_splits[cascade-1];
   const float blend_start=mix(previous,split,0.85);
   const float blend=smoothstep(blend_start,split,distance_from_camera);
-  return mix(current,min(distant,cascade_visibility(
-      position,receiver_normal,n_dot_l,cascade+1)),blend);
+  return mix(current,cascade_visibility(
+      position,receiver_normal,n_dot_l,cascade+1),blend);
 }
 
 float atmosphere_sun_visibility(float radial_distance,float sun_cosine) {
@@ -263,9 +279,17 @@ vec3 atmosphere_terrain_lighting(vec3 position,vec3 surface_normal,
   direct_sun=atmosphere.solar_absorption_peak.rgb*solar_transmittance*
       planet_visibility*terrain_solar_radiance_scale;
   const bool dynamic_sun=atmosphere.reserved1.z>=99.5;
-  if(atmosphere.reserved1.y>0.5&&!dynamic_sun)
+  if(atmosphere.reserved1.y>0.5&&!dynamic_sun){
+    // Terrain visibility belongs only to the direct solar term. Hillaire's
+    // low-frequency multiple-scattering source remains positive in shadow and
+    // prevents back-lit mountains from collapsing into flat black cutouts.
+    // The irradiance LUT is cosine-convolved from the complete sky-view LUT,
+    // whose transport already contains the multiple-scattering closure. Do
+    // not add the multiple-scattering source again here: that double-counted
+    // isotropic haze and flattened back-lit terrain into a translucent slab.
     return sample_sky_irradiance(surface_normal)*
         terrain_solar_radiance_scale;
+  }
 
   // The qualified baseline retains its fitted readability terms. The
   // faithful path above consumes the explicit cosine-convolved sky lookup.
@@ -384,7 +408,13 @@ void main() {
     const vec3 environment=atmosphere_terrain_lighting(
         fragment_position,unit_normal,direct_sun);
     const vec3 ambient=(1.0-f0)*(1.0-metallic)*albedo*environment;
-    const float shadow=sun_visibility(fragment_position,unit_normal,n_dot_l);
+    // Receiver-plane depth bias must use the geometric triangle normal that
+    // produced the shadow-map depth. The analytic smooth normal is only a
+    // lighting normal; using it as the receiver plane creates isolated acne
+    // splotches on otherwise smooth ground.
+    const vec3 shadow_receiver_normal=normalize(normal);
+    const float shadow=sun_visibility(
+        fragment_position,shadow_receiver_normal,n_dot_l);
     // The analytic terrain normal carries resolved macro relief. Feeding its
     // full grazing-angle GGX response back through the same rough material
     // turns that relief into large, unstable highlight islands. Retain a
@@ -399,6 +429,19 @@ void main() {
     if(atmosphere_debug==25)linear_colour=vec3(shadow);
     else if(atmosphere_debug==26)linear_colour=indirect;
     else if(atmosphere_debug==27)linear_colour=direct;
+    else if(atmosphere_debug==28){
+      const float distance_from_camera=length(
+          fragment_position-camera.view_position.xyz);
+      int cascade=3;
+      if(distance_from_camera<shadow_cascades.shadow_splits.x)cascade=0;
+      else if(distance_from_camera<shadow_cascades.shadow_splits.y)cascade=1;
+      else if(distance_from_camera<shadow_cascades.shadow_splits.z)cascade=2;
+      linear_colour=vec3(cascade_visibility(
+          fragment_position,shadow_receiver_normal,n_dot_l,cascade));
+    }else if(atmosphere_debug==29)
+      linear_colour=vec3(fitted_visibility(fragment_position));
+    else if(atmosphere_debug==30)
+      linear_colour=vec3(cascade_coverage(fragment_position,3));
     // Keep scene radiance linear. The HDR composite owns exposure, tone
     // mapping, and the single display transfer for every material.
     shaded_colour=linear_colour;

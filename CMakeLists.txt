@@ -7,6 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TETRA_BUILD_VIEWER "Build the Vulkan tetrahedral viewer" ON)
+if(APPLE)
+  option(TETRA_BUILD_METAL "Build the native macOS Metal world viewer" ON)
+else()
+  option(TETRA_BUILD_METAL "Build the native macOS Metal world viewer" OFF)
+endif()
 option(TETRA_ENABLE_SIMD "Enable architecture-specific SIMD kernels" ON)
 
 include(FetchContent)
@@ -91,6 +96,7 @@ target_link_libraries(tetra_tests PRIVATE tetra_viewer_script doctest::doctest)
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 doctest_discover_tests(tetra_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+set(TETRA_VULKAN_VIEWER_AVAILABLE OFF)
 if(TETRA_BUILD_VIEWER)
   if(APPLE)
     find_path(Vulkan_INCLUDE_DIR vulkan/vulkan.h HINTS /opt/homebrew/opt/vulkan-headers/include /opt/homebrew/opt/molten-vk/libexec/include)
@@ -98,8 +104,21 @@ if(TETRA_BUILD_VIEWER)
   endif()
   find_package(Vulkan QUIET)
   if(Vulkan_FOUND)
-    add_subdirectory(src/tetra_viewer)
+    set(TETRA_VULKAN_VIEWER_AVAILABLE ON)
   else()
     message(STATUS "Vulkan SDK not found; tetra_viewer is disabled. Install a Vulkan SDK and reconfigure to enable it.")
   endif()
+endif()
+
+if(APPLE AND TETRA_BUILD_METAL)
+  # Homebrew GCC can be selected for the C++ project, but it cannot compile
+  # ARC Objective-C++ or Apple's modern Metal headers. Keep ordinary C++ on
+  # the user's selected compiler and use the platform compiler for .mm files.
+  set(CMAKE_OBJCXX_COMPILER /usr/bin/clang++ CACHE FILEPATH
+      "Objective-C++ compiler used by the native Metal target" FORCE)
+  enable_language(OBJCXX)
+endif()
+
+if(TETRA_VULKAN_VIEWER_AVAILABLE OR (APPLE AND TETRA_BUILD_METAL))
+  add_subdirectory(src/tetra_viewer)
 endif()
