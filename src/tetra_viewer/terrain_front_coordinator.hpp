@@ -50,6 +50,24 @@ struct PreviewSpatialKey {
   auto operator<=>(const PreviewSpatialKey&) const=default;
 };
 
+enum class PreviewSupportReason : std::uint8_t {
+  supported,
+  unsupported_field,
+  outside_chart_hemisphere,
+  non_finite_projection,
+  lattice_range_exceeded,
+  clipmap_extent_exceeded
+};
+
+struct PreviewSupportDecision {
+  PreviewSupportReason reason{PreviewSupportReason::unsupported_field};
+  std::optional<PreviewSpatialKey> spatial_key;
+
+  [[nodiscard]] bool supported() const noexcept {
+    return reason==PreviewSupportReason::supported&&spatial_key.has_value();
+  }
+};
+
 // Half-open chart-space cell in the key's deterministic half-spacing lattice.
 struct PreviewCoverageCell {
   std::int64_t minimum_x{};
@@ -128,6 +146,7 @@ struct TerrainFrontCoordinatorState {
   std::optional<TerrainViewIdentity> exact_published;
   std::optional<PreviewCoverage> exact_published_coverage;
   std::optional<PreviewSpatialKey> desired_preview_key;
+  std::optional<PreviewSupportReason> last_preview_support;
   std::optional<PreviewRequestIdentity> preview_requested;
   std::optional<StagedPreviewFront> preview_awaiting_upload;
   std::optional<VisiblePreviewFront> preview_visible;
@@ -145,8 +164,12 @@ class TerrainFrontCoordinator final {
 
   [[nodiscard]] TerrainViewIdentity observe_view(
       const tetra::Camera& camera,std::uint64_t field_revision,
+      std::uint64_t field_signature);
+  [[nodiscard]] TerrainViewIdentity observe_view(
+      const tetra::Camera& camera,std::uint64_t field_revision,
       std::uint64_t field_signature,
       std::optional<PreviewSpatialKey> desired_preview_key);
+  void apply_preview_support(const PreviewSupportDecision& decision);
   [[nodiscard]] std::optional<PreviewRequestIdentity> request_preview();
   [[nodiscard]] bool complete_preview(
       const PreviewRequestIdentity& request,PreviewFrontOutcome outcome,

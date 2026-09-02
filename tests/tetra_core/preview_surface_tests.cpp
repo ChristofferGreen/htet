@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 
@@ -42,9 +44,22 @@ tetra_viewer::PreviewSurfaceRequest preview_request(
   request.requested_view=tetra_viewer::make_terrain_view_identity(
       epoch,field_revision,
       tetra_viewer::preview_surface_field_signature(field),request.camera);
-  request.spatial_key=tetra_viewer::preview_surface_spatial_key(
+  const auto plan=tetra_viewer::plan_preview_surface(
       request.requested_view,request.camera,field);
+  if(!plan.supported())throw std::runtime_error("preview request is unsupported");
+  request.spatial_key=*plan.spatial_key;
   return request;
+}
+
+std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> build_front(
+    const tetra_viewer::PreviewSurfaceRequest& request,
+    const tetra::Sphere& field,
+    tetra_viewer::PreviewSurfaceConfiguration configuration={}) {
+  const auto result=tetra_viewer::build_preview_surface(
+      request,field,configuration);
+  if(!result.ready())
+    throw std::runtime_error("preview surface build did not produce a front");
+  return result.front();
 }
 
 tetra_viewer::PreviewSpatialKey synthetic_preview_key(
@@ -87,11 +102,14 @@ tetra::Vec3 cross(tetra::Vec3 first,tetra::Vec3 second) {
 
 static_assert(!std::is_copy_constructible_v<tetra_viewer::PreviewSurfaceFront>);
 static_assert(!std::is_move_assignable_v<tetra_viewer::PreviewSurfaceFront>);
+static_assert(!std::is_aggregate_v<tetra_viewer::PreviewSurfaceBuildResult>);
+static_assert(!std::is_default_constructible_v<
+              tetra_viewer::PreviewSurfaceBuildResult>);
 
 TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
   const auto field=planar_production_field();
   const auto request=preview_request(7U,{-2.31,4.0,-1.19},field,19U);
-  const auto front=tetra_viewer::build_preview_surface_front(request,field);
+  const auto front=build_front(request,field);
   REQUIRE(front);
   CHECK(front->request_view_epoch()==7U);
   CHECK(front->field_revision()==19U);
@@ -113,11 +131,11 @@ TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
 
   auto stale_camera=request;
   stale_camera.camera.position.x+=1.0;
-  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
+  CHECK_THROWS_AS((void)build_front(
                       stale_camera,field),std::invalid_argument);
   auto changed_field=field;
   changed_field.terrain.height_offset+=1.0;
-  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
+  CHECK_THROWS_AS((void)build_front(
                       request,changed_field),std::invalid_argument);
 
   std::set<std::pair<std::int64_t,std::int64_t>> coordinates;
@@ -140,7 +158,7 @@ TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
 TEST_CASE("preview winding and analytic terrain normals survive negative origins") {
   const auto field=planar_production_field();
   const auto request=preview_request(1U,{-19.93,3.0,-11.87},field,2U);
-  const auto front=tetra_viewer::build_preview_surface_front(request,field);
+  const auto front=build_front(request,field);
   REQUIRE(front->level_origins()[0].sample_x<0);
   REQUIRE(front->level_origins()[0].sample_z<0);
   for(const auto& vertex:front->vertices()){
@@ -168,16 +186,16 @@ TEST_CASE("preview origin is stable within a snapped finest cell and hashes dete
   const auto field=planar_production_field();
   const auto first_request=preview_request(3U,{-0.24,2.0,0.26},field,4U);
   auto second_request=preview_request(4U,{-0.14,7.0,0.34},field,4U);
-  const auto first=tetra_viewer::build_preview_surface_front(first_request,field);
-  const auto repeated=tetra_viewer::build_preview_surface_front(first_request,field);
-  const auto within=tetra_viewer::build_preview_surface_front(second_request,field);
+  const auto first=build_front(first_request,field);
+  const auto repeated=build_front(first_request,field);
+  const auto within=build_front(second_request,field);
   CHECK(first->diagnostics().geometry_hash==repeated->diagnostics().geometry_hash);
   CHECK(first->diagnostics().geometry_hash==within->diagnostics().geometry_hash);
   CHECK(std::ranges::equal(first->level_origins(),within->level_origins(),{},
       [](const auto& value){return std::tuple{value.level,value.sample_x,value.sample_z};},
       [](const auto& value){return std::tuple{value.level,value.sample_x,value.sample_z};}));
   second_request=preview_request(5U,{-0.26,7.0,0.34},field,4U);
-  const auto shifted=tetra_viewer::build_preview_surface_front(second_request,field);
+  const auto shifted=build_front(second_request,field);
   CHECK(first->diagnostics().geometry_hash!=shifted->diagnostics().geometry_hash);
   CHECK(first->level_origins()[0].sample_x!=shifted->level_origins()[0].sample_x);
   CHECK(tetra_viewer::preview_coverage_supports(
@@ -189,7 +207,7 @@ TEST_CASE("preview origin is stable within a snapped finest cell and hashes dete
   changed_field.terrain.height_offset+=0.25;
   const auto changed_request=preview_request(
       6U,first_request.camera.position,changed_field,5U);
-  const auto changed=tetra_viewer::build_preview_surface_front(
+  const auto changed=build_front(
       changed_request,changed_field);
   CHECK(first->field_signature()!=changed->field_signature());
   CHECK(first->diagnostics().geometry_hash!=changed->diagnostics().geometry_hash);
@@ -198,7 +216,7 @@ TEST_CASE("preview origin is stable within a snapped finest cell and hashes dete
 TEST_CASE("preview supports production planetary terrain and rejects non terrain shapes") {
   const auto field=planetary_production_field();
   const auto request=preview_request(5U,{0.5,3.0,0.5},field,6U);
-  const auto front=tetra_viewer::build_preview_surface_front(request,field);
+  const auto front=build_front(request,field);
   REQUIRE(front);
   CHECK(front->diagnostics().maximum_edge_incidence==2U);
   for(std::size_t index=0;index<front->vertices().size();++index){
@@ -237,11 +255,16 @@ TEST_CASE("preview supports production planetary terrain and rejects non terrain
   }
   auto sphere=field;sphere.kind=tetra::ImplicitShapeKind::sphere;
   CHECK_FALSE(tetra_viewer::preview_surface_supported(sphere));
-  const auto sphere_request=preview_request(
-      6U,request.camera.position,sphere,6U);
-  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
-                      sphere_request,sphere),
-                  std::invalid_argument);
+  tetra_viewer::PreviewSurfaceRequest sphere_request;
+  sphere_request.camera.position=request.camera.position;
+  sphere_request.requested_view=tetra_viewer::make_terrain_view_identity(
+      6U,6U,tetra_viewer::preview_surface_field_signature(sphere),
+      sphere_request.camera);
+  const auto unsupported=tetra_viewer::build_preview_surface(
+      sphere_request,sphere);
+  CHECK(unsupported.outcome()==tetra_viewer::PreviewFrontOutcome::unsupported);
+  CHECK_FALSE(unsupported.ready());
+  CHECK_FALSE(unsupported.front());
 
   auto ridge=field;
   ridge.terrain.analytic_ridge=true;
@@ -256,6 +279,122 @@ TEST_CASE("preview supports production planetary terrain and rejects non terrain
       ridge.centre.z})>0.0);
 }
 
+TEST_CASE("preview planning classifies every chart and integer boundary deterministically") {
+  const auto planar=planar_production_field();
+  const auto planet=planetary_production_field();
+  const auto plan_for=[](const tetra::Sphere& field,const tetra::Camera& camera,
+                         tetra_viewer::PreviewSurfaceConfiguration configuration={}){
+    const auto view=tetra_viewer::make_terrain_view_identity(
+        1U,3U,tetra_viewer::preview_surface_field_signature(field),camera);
+    return tetra_viewer::plan_preview_surface(view,camera,field,configuration);
+  };
+
+  tetra::Camera camera;
+  camera.position={0.25,2.0,-0.5};
+  const auto supported=plan_for(planar,camera);
+  REQUIRE(supported.supported());
+  REQUIRE(supported.spatial_key);
+  CHECK(supported.spatial_key->level_origins.size()==4U);
+  CHECK(plan_for(planar,camera).spatial_key==supported.spatial_key);
+
+  auto sphere=planar;
+  sphere.kind=tetra::ImplicitShapeKind::sphere;
+  const auto unsupported_field=plan_for(sphere,camera);
+  CHECK(unsupported_field.reason==
+        tetra_viewer::PreviewSupportReason::unsupported_field);
+  CHECK_FALSE(unsupported_field.spatial_key);
+
+  const tetra::Vec3 planet_centre{
+      planet.centre.x,
+      planet.centre.y-planet.terrain.planet_radius,
+      planet.centre.z};
+  camera.position=planet_centre+tetra::Vec3{1.0,0.0,0.0};
+  const auto outside=plan_for(planet,camera);
+  CHECK(outside.reason==
+        tetra_viewer::PreviewSupportReason::outside_chart_hemisphere);
+  CHECK_FALSE(outside.spatial_key);
+  camera.position=planet_centre+tetra::Vec3{1.0,2.0e-6,0.0};
+  CHECK(plan_for(planet,camera).supported());
+
+  camera.position={std::numeric_limits<double>::infinity(),2.0,0.0};
+  const auto non_finite=plan_for(planar,camera);
+  CHECK(non_finite.reason==
+        tetra_viewer::PreviewSupportReason::non_finite_projection);
+  CHECK_FALSE(non_finite.spatial_key);
+
+  camera.position={std::numeric_limits<double>::max(),2.0,0.0};
+  const auto lattice=plan_for(planar,camera);
+  CHECK(lattice.reason==
+        tetra_viewer::PreviewSupportReason::lattice_range_exceeded);
+  CHECK_FALSE(lattice.spatial_key);
+
+  tetra_viewer::PreviewSurfaceConfiguration widest;
+  widest.level_count=16U;
+  widest.cells_per_side=1024U;
+  widest.finest_spacing=1.0;
+  const auto half_max=std::numeric_limits<std::int64_t>::max()/2;
+  camera.position={
+      std::nextafter(static_cast<double>(half_max),0.0),2.0,0.0};
+  const auto extent=plan_for(planar,camera,widest);
+  CHECK(extent.reason==
+        tetra_viewer::PreviewSupportReason::clipmap_extent_exceeded);
+  CHECK_FALSE(extent.spatial_key);
+
+  auto invalid=widest;
+  invalid.level_count=0U;
+  CHECK_THROWS_AS((void)plan_for(planar,camera,invalid),
+                  std::invalid_argument);
+  invalid=widest;
+  invalid.finest_spacing=std::numeric_limits<double>::max();
+  CHECK_THROWS_AS((void)plan_for(planar,camera,invalid),
+                  std::invalid_argument);
+  invalid.finest_spacing=std::numeric_limits<double>::denorm_min();
+  CHECK_THROWS_AS((void)plan_for(planar,camera,invalid),
+                  std::invalid_argument);
+  auto valid_camera=camera;
+  valid_camera.position={0.0,2.0,0.0};
+  auto stale=tetra_viewer::make_terrain_view_identity(
+      1U,3U,tetra_viewer::preview_surface_field_signature(planar),valid_camera);
+  ++stale.camera_signature;
+  CHECK_THROWS_AS((void)tetra_viewer::plan_preview_surface(
+                      stale,valid_camera,planar),
+                  std::invalid_argument);
+}
+
+TEST_CASE("typed preview construction owns a front only when ready") {
+  const auto field=planar_production_field();
+  const auto request=preview_request(4U,{0.25,2.0,-0.5},field,8U);
+  const auto ready=tetra_viewer::build_preview_surface(request,field);
+  CHECK(ready.ready());
+  CHECK(ready.outcome()==tetra_viewer::PreviewFrontOutcome::ready);
+  REQUIRE(ready.front());
+
+  auto stale_key=request;
+  ++stale_key.spatial_key.level_origins.front().sample_x;
+  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface(
+                      stale_key,field),
+                  std::invalid_argument);
+
+  const auto rejected=tetra_viewer::build_preview_surface(
+      request,field,{},
+      {.maximum_cpu_bytes=0U,.maximum_upload_bytes=0U});
+  CHECK_FALSE(rejected.ready());
+  CHECK(rejected.outcome()==
+        tetra_viewer::PreviewFrontOutcome::resource_rejected);
+  CHECK_FALSE(rejected.front());
+
+  auto broken_field=field;
+  broken_field.terrain.landform_frequency=
+      std::numeric_limits<double>::quiet_NaN();
+  const auto broken_request=preview_request(
+      5U,request.camera.position,broken_field,9U);
+  const auto failed=tetra_viewer::build_preview_surface(
+      broken_request,broken_field);
+  CHECK_FALSE(failed.ready());
+  CHECK(failed.outcome()==tetra_viewer::PreviewFrontOutcome::failed);
+  CHECK_FALSE(failed.front());
+}
+
 TEST_CASE("preview construction cannot mutate exact world authority") {
   const auto field=planar_production_field();
   std::vector<tetra::WorldTetAddress> roots;
@@ -268,7 +407,7 @@ TEST_CASE("preview construction cannot mutate exact world authority") {
   std::vector<std::uint64_t> block_hashes;
   for(const auto& block:checkpoint.blocks)
     block_hashes.push_back(tetra::hierarchy_block_canonical_hash(block));
-  const auto front=tetra_viewer::build_preview_surface_front(
+  const auto front=build_front(
       preview_request(11U,{-1.0,2.0,-1.0},field,9U),field);
   REQUIRE(front);
   CHECK(directory.canonical_cut_hash()==cut_hash);
@@ -282,6 +421,10 @@ TEST_CASE("preview construction cannot mutate exact world authority") {
 
 TEST_CASE("terrain front coordinator separates view epochs from reusable spatial keys") {
   tetra_viewer::TerrainFrontCoordinator coordinator;
+  CHECK_THROWS_AS(coordinator.apply_preview_support(
+                      {tetra_viewer::PreviewSupportReason::unsupported_field,
+                       std::nullopt}),
+                  std::logic_error);
   tetra::Camera camera;
   camera.position={1.0,2.0,3.0};
   const auto key=synthetic_preview_key(4U,17U,8,12);
@@ -341,6 +484,82 @@ TEST_CASE("terrain front coordinator rejects every non published preview outcome
     CHECK(*coordinator.state().exact_published==view);
     CHECK_FALSE(coordinator.state().preview_awaiting_upload);
     CHECK_FALSE(coordinator.state().preview_visible);
+    REQUIRE(coordinator.state().last_preview_outcome);
+    CHECK(*coordinator.state().last_preview_outcome==outcome);
+  }
+}
+
+TEST_CASE("pre queue support failures retain exact display and record their reason") {
+  const std::array reasons{
+      tetra_viewer::PreviewSupportReason::unsupported_field,
+      tetra_viewer::PreviewSupportReason::outside_chart_hemisphere,
+      tetra_viewer::PreviewSupportReason::non_finite_projection,
+      tetra_viewer::PreviewSupportReason::lattice_range_exceeded,
+      tetra_viewer::PreviewSupportReason::clipmap_extent_exceeded};
+  for(const auto reason:reasons){
+    CAPTURE(reason);
+    tetra_viewer::TerrainFrontCoordinator coordinator;
+    tetra::Camera camera;
+    const auto key=synthetic_preview_key(2U,7U,0,0);
+    const auto view=coordinator.observe_view(camera,2U,7U,key);
+    const auto coverage=synthetic_preview_coverage(key);
+    coordinator.publish_exact(view,coverage);
+
+    coordinator.apply_preview_support({reason,std::nullopt});
+    REQUIRE(coordinator.state().exact_published);
+    CHECK(*coordinator.state().exact_published==view);
+    REQUIRE(coordinator.state().last_preview_support);
+    CHECK(*coordinator.state().last_preview_support==reason);
+    REQUIRE(coordinator.state().last_preview_outcome);
+    CHECK(*coordinator.state().last_preview_outcome==
+          tetra_viewer::PreviewFrontOutcome::unsupported);
+    CHECK_FALSE(coordinator.state().desired_preview_key);
+    CHECK_FALSE(coordinator.request_preview());
+  }
+
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra::Camera camera;
+  const auto key=synthetic_preview_key(2U,7U,0,0);
+  static_cast<void>(coordinator.observe_view(camera,2U,7U,key));
+  CHECK_THROWS_AS(coordinator.apply_preview_support(
+                      {tetra_viewer::PreviewSupportReason::supported,
+                       std::nullopt}),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(coordinator.apply_preview_support(
+                      {tetra_viewer::PreviewSupportReason::unsupported_field,
+                       key}),
+                  std::invalid_argument);
+}
+
+TEST_CASE("every replacement build failure retains guarded visible preview") {
+  const std::array outcomes{
+      tetra_viewer::PreviewFrontOutcome::superseded,
+      tetra_viewer::PreviewFrontOutcome::canceled,
+      tetra_viewer::PreviewFrontOutcome::unsupported,
+      tetra_viewer::PreviewFrontOutcome::resource_rejected,
+      tetra_viewer::PreviewFrontOutcome::failed};
+  for(const auto outcome:outcomes){
+    CAPTURE(outcome);
+    tetra_viewer::TerrainFrontCoordinator coordinator;
+    tetra::Camera camera;
+    const auto old_key=synthetic_preview_key(3U,11U,0,0);
+    static_cast<void>(coordinator.observe_view(camera,3U,11U,old_key));
+    const auto old_request=coordinator.request_preview();
+    REQUIRE(old_request);
+    REQUIRE(coordinator.complete_preview(
+        *old_request,tetra_viewer::PreviewFrontOutcome::ready,
+        synthetic_preview_coverage(old_key)));
+    REQUIRE(coordinator.complete_preview_upload(*old_request,true));
+
+    const auto replacement_key=synthetic_preview_key(3U,11U,2,0);
+    coordinator.apply_preview_support(
+        {tetra_viewer::PreviewSupportReason::supported,replacement_key});
+    REQUIRE(coordinator.state().preview_visible);
+    const auto replacement=coordinator.request_preview();
+    REQUIRE(replacement);
+    CHECK_FALSE(coordinator.complete_preview(*replacement,outcome));
+    REQUIRE(coordinator.state().preview_visible);
+    CHECK(coordinator.state().preview_visible->request.spatial_key==old_key);
     REQUIRE(coordinator.state().last_preview_outcome);
     CHECK(*coordinator.state().last_preview_outcome==outcome);
   }
@@ -516,41 +735,43 @@ TEST_CASE("60 and 120 Hz view churn cannot starve a 100 ms preview completion") 
     tetra_viewer::TerrainFrontCoordinator coordinator;
     tetra::Camera camera;
     camera.position={0.01,2.0,0.01};
-    auto view=coordinator.observe_view(camera,7U,field_signature,std::nullopt);
-    const auto key=tetra_viewer::preview_surface_spatial_key(
+    const auto view=coordinator.observe_view(camera,7U,field_signature);
+    const auto initial_plan=tetra_viewer::plan_preview_surface(
         view,camera,field);
-    view=coordinator.observe_view(camera,7U,field_signature,key);
+    REQUIRE(initial_plan.supported());
+    coordinator.apply_preview_support(initial_plan);
+    const auto key=*initial_plan.spatial_key;
     const auto request=coordinator.request_preview();
     REQUIRE(request);
-    const auto front=tetra_viewer::build_preview_surface_front(
+    const auto front=build_front(
         {.requested_view=request->requested_view,
          .spatial_key=request->spatial_key,.camera=camera},field);
     const auto delay_frames=frame_rate/10U;
     REQUIRE(delay_frames*1000U/frame_rate==100U);
     for(std::uint64_t frame=1U;frame<=delay_frames;++frame){
       camera.position.x=0.01+static_cast<double>(frame)*0.0001;
-      const auto next_view=tetra_viewer::make_terrain_view_identity(
-          coordinator.state().current_view.view_epoch+1U,7U,
-          field_signature,camera);
-      const auto next_key=tetra_viewer::preview_surface_spatial_key(
+      const auto next_view=coordinator.observe_view(
+          camera,7U,field_signature);
+      const auto next_plan=tetra_viewer::plan_preview_surface(
           next_view,camera,field);
+      REQUIRE(next_plan.supported());
+      const auto next_key=*next_plan.spatial_key;
       CHECK(next_key==key);
-      static_cast<void>(coordinator.observe_view(
-          camera,7U,field_signature,next_key));
+      coordinator.apply_preview_support(next_plan);
     }
     REQUIRE(coordinator.complete_preview(
         *request,tetra_viewer::PreviewFrontOutcome::ready,front->coverage()));
     REQUIRE(coordinator.complete_preview_upload(*request,true));
     for(std::uint64_t frame=delay_frames+1U;frame<=delay_frames*2U;++frame){
       camera.position.x=0.01+static_cast<double>(frame)*0.0001;
-      const auto next_view=tetra_viewer::make_terrain_view_identity(
-          coordinator.state().current_view.view_epoch+1U,7U,
-          field_signature,camera);
-      const auto next_key=tetra_viewer::preview_surface_spatial_key(
+      const auto next_view=coordinator.observe_view(
+          camera,7U,field_signature);
+      const auto next_plan=tetra_viewer::plan_preview_surface(
           next_view,camera,field);
+      REQUIRE(next_plan.supported());
+      const auto next_key=*next_plan.spatial_key;
       REQUIRE(next_key==key);
-      static_cast<void>(coordinator.observe_view(
-          camera,7U,field_signature,next_key));
+      coordinator.apply_preview_support(next_plan);
       REQUIRE(coordinator.state().preview_visible);
       CHECK_FALSE(coordinator.request_preview());
     }

@@ -394,8 +394,18 @@ still-image appearance alone.
         add field/chart/configuration/snapped-origin keys, deterministic guarded
         coverage, derived compatibility, and 60--120 Hz delayed-completion tests
         proving that valid previews survive pose churn and cannot starve.
-  - [ ] Add camera-aware planetary chart support and typed preview failure paths
-        that retain the last exact display for unsupported camera positions.
+  - [x] Close the preview support/error boundary before adding concurrency:
+        introduce a pure typed pre-queue decision that either yields one
+        complete spatial key or identifies unsupported field, chart hemisphere,
+        non-finite projection, lattice range, or full clipmap extent; use
+        checked arithmetic at every level; give construction a typed result
+        whose ready state alone owns a complete immutable front; convert
+        expected resource, allocation, and construction failures at the
+        preview boundary; and record pre-queue and build failures in the
+        coordinator while retaining a still-eligible old preview or the last
+        exact display. Add deterministic boundary/overflow, result-invariant,
+        and guarded-replacement transition tests. Keep the persistent worker,
+        multi-chart stitching, and Metal integration out of this milestone.
   - [ ] Add one persistent coalescing preview worker with cooperative cold-build
         cancellation and bounded scratch ownership; prove submission remains
         below 2 ms without starving the independent exact worker.

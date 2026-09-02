@@ -148,13 +148,19 @@ remains visible until replacement while it is still valid. Crossing a cell
 boundary shifts only entering rows and columns once the retained implementation
 is added; a full deterministic rebuild remains the correctness oracle.
 
-The current planetary preview uses a bounded north-pole gnomonic chart. Add a
-camera-aware support predicate that validates the hemisphere, finite projected
-coordinates, integer-lattice range, and configured clipmap extent before work
-is queued. An unsupported camera position is a normal fallback to exact
-terrain, not an exception that may escape through the frame loop. General
-planet-wide chart selection and cross-chart stitching are outside the first
-implementation.
+The current planetary preview uses a bounded north-pole gnomonic chart. Before
+work is queued, a pure camera-aware planning function must return one typed
+support decision: supported with a complete `PreviewSpatialKey`, unsupported
+field, outside chart hemisphere, non-finite projection, lattice range exceeded,
+or clipmap extent exceeded. It validates the camera position, projected chart
+coordinates, snapped origin, and every level's outermost cell with checked
+integer arithmetic. It must never return a partial key.
+
+Expected field or chart limitations are normal decisions, not exceptions that
+may escape through the frame loop. Invalid API contracts such as a stale view
+signature or malformed configuration remain programmer errors and are kept
+separate from runtime support outcomes. General planet-wide chart selection,
+cross-chart reuse, and stitching are outside the first implementation.
 
 ## Worker scheduling and cancellation
 
@@ -210,10 +216,21 @@ for sphere, cube, cylinder, or merged-sphere research cases.
 
 ## Error and resource flow
 
-The worker reports a typed outcome: published, superseded, canceled,
-unsupported, resource-rejected, or failed. The coordinator records the outcome
-and retains exact display state for every non-published result. Upload is a
-second fallible transition: a CPU preview becomes displayable only after all
+Preview planning and construction have explicit result invariants. Planning
+returns either one complete request/key or one typed unsupported reason.
+Construction returns one `PreviewFrontOutcome` plus an optional immutable
+front: `ready` has exactly one complete front, while superseded, canceled,
+unsupported, resource-rejected, and failed have none. Budget rejection is
+decided from a conservative allocation bound before large geometry allocation;
+unexpected allocation or construction exceptions are caught at the preview
+boundary and converted to a non-ready result without hiding the exact front.
+
+The coordinator records pre-queue support decisions as well as build outcomes.
+An unsupported current camera has no provably valid preview key and therefore
+falls back to the last exact display. A failed build for a valid replacement
+key retains an already-visible preview only while its guarded coverage still
+supports that key; otherwise it also falls back to exact. Upload remains a
+separate fallible transition: a CPU preview becomes displayable only after all
 required Metal buffers and coverage data have uploaded successfully.
 
 CPU admission includes the immutable front, worker scratch storage, retained
@@ -285,8 +302,18 @@ visual failures can be tied to the exact coordinator state.
       `PreviewCoverage`, and derived coverage compatibility. Preserve eligible
       fronts across view epochs and prove non-starving publication with
       60--120 Hz synthetic motion and 100 ms delayed completions.
-- [ ] Add camera-aware planetary chart validation and typed preview outcomes;
-      make every unsupported or failed path retain the last exact display.
+- [x] Close the preview support/error boundary before adding concurrency:
+      add a pure typed pre-queue support decision for field, hemisphere,
+      projection, lattice, and full clipmap-extent validation; make spatial-key
+      creation possible only for supported inputs; return a typed build result
+      whose `ready` state alone owns a complete front; convert expected support,
+      resource, allocation, and construction failures at the preview boundary;
+      and record all non-ready paths in the coordinator while preserving an
+      eligible old preview or the last exact display. Prove the contract with
+      deterministic boundary/overflow tests, result-invariant tests, and a
+      transition matrix covering failures both before queuing and during
+      guarded replacement. Do not add the worker, multi-chart stitching, or
+      Metal integration in this milestone.
 - [ ] Add the persistent coalescing worker, cooperative cold-builder
       cancellation, bounded scratch ownership, and submission/cancellation
       tests proving the 2 ms presentation-thread limit.

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -24,15 +25,6 @@ void hash_u64(std::uint64_t& hash,std::uint64_t value) noexcept {
 
 void hash_double(std::uint64_t& hash,double value) noexcept {
   hash_u64(hash,std::bit_cast<std::uint64_t>(value));
-}
-
-double length(tetra::Vec3 value) {
-  return std::sqrt(value.x*value.x+value.y*value.y+value.z*value.z);
-}
-
-tetra::Vec3 normalized(tetra::Vec3 value,tetra::Vec3 fallback={0.0,1.0,0.0}) {
-  const double magnitude=length(value);
-  return magnitude>1.0e-15?value/magnitude:fallback;
 }
 
 struct SampleKey {
@@ -54,32 +46,97 @@ void validate_configuration(PreviewSurfaceConfiguration configuration) {
     throw std::invalid_argument(
         "preview cells per side must be a multiple of four from 4 to 1024");
   if(!(configuration.finest_spacing>0.0)||
-     !std::isfinite(configuration.finest_spacing))
+     !std::isfinite(configuration.finest_spacing)||
+     !(configuration.finest_spacing*0.5>0.0)||
+     !std::isfinite(std::ldexp(
+         configuration.finest_spacing,
+         static_cast<int>(configuration.level_count-1U))))
     throw std::invalid_argument(
-        "preview finest spacing must be finite and positive");
+        "preview spacing range must remain finite and positive");
 }
 
-tetra::Vec3 preview_chart_coordinates(
-    const tetra::Sphere& field,tetra::Vec3 position) {
-  if(!(field.terrain.planet_radius>0.0))return position;
+struct ChartProjection {
+  PreviewSupportReason reason{PreviewSupportReason::supported};
+  double x{},z{};
+};
+
+ChartProjection preview_chart_projection(
+    const tetra::Sphere& field,tetra::Vec3 position) noexcept {
+  if(!std::isfinite(position.x)||!std::isfinite(position.y)||
+     !std::isfinite(position.z))
+    return {PreviewSupportReason::non_finite_projection};
+  if(!(field.terrain.planet_radius>0.0))
+    return {PreviewSupportReason::supported,position.x,position.z};
   const tetra::Vec3 planet_centre{
       field.centre.x,field.centre.y-field.terrain.planet_radius,field.centre.z};
-  const auto direction=normalized(position-planet_centre);
+  const auto offset=position-planet_centre;
+  const double magnitude=std::hypot(offset.x,offset.y,offset.z);
+  if(!std::isfinite(magnitude))
+    return {PreviewSupportReason::non_finite_projection};
+  if(!(magnitude>1.0e-15))
+    return {PreviewSupportReason::outside_chart_hemisphere};
+  const auto direction=offset/magnitude;
   if(direction.y<=1.0e-6)
-    throw std::invalid_argument(
-        "preview camera is outside the planetary north-pole height chart");
-  return {field.centre.x+field.terrain.planet_radius*direction.x/direction.y,
-          position.y,
-          field.centre.z+field.terrain.planet_radius*direction.z/direction.y};
+    return {PreviewSupportReason::outside_chart_hemisphere};
+  const double x=field.centre.x+
+      field.terrain.planet_radius*direction.x/direction.y;
+  const double z=field.centre.z+
+      field.terrain.planet_radius*direction.z/direction.y;
+  if(!std::isfinite(x)||!std::isfinite(z))
+    return {PreviewSupportReason::non_finite_projection};
+  return {PreviewSupportReason::supported,x,z};
 }
 
-std::int64_t snapped_half_lattice(double coordinate,double spacing) {
+std::optional<std::int64_t> snapped_half_lattice(
+    double coordinate,double spacing) noexcept {
   const double value=std::floor(coordinate/spacing);
-  const auto minimum=std::numeric_limits<std::int64_t>::min()/2;
-  const auto maximum=std::numeric_limits<std::int64_t>::max()/2;
-  if(value<static_cast<double>(minimum)||value>static_cast<double>(maximum))
-    throw std::overflow_error("preview clipmap origin exceeds integer lattice");
+  constexpr auto minimum=std::numeric_limits<std::int64_t>::min()/2;
+  constexpr auto maximum=std::numeric_limits<std::int64_t>::max()/2;
+  const double safe_maximum=std::nextafter(
+      static_cast<double>(maximum),0.0);
+  if(!std::isfinite(value)||value<static_cast<double>(minimum)||
+     value>safe_maximum)return std::nullopt;
   return static_cast<std::int64_t>(value)*2;
+}
+
+bool clipmap_extent_representable(
+    std::int64_t origin,PreviewSurfaceConfiguration configuration) noexcept {
+  const std::int64_t half_cells=
+      static_cast<std::int64_t>(configuration.cells_per_side/2U);
+  for(std::uint32_t level=0;level<configuration.level_count;++level){
+    const std::int64_t step=std::int64_t{2}<<level;
+    const std::int64_t extent=half_cells*step;
+    if(origin<std::numeric_limits<std::int64_t>::min()+extent||
+       origin>std::numeric_limits<std::int64_t>::max()-extent)return false;
+  }
+  return true;
+}
+
+struct PreviewResourceEstimate {
+  std::size_t cells{};
+  std::size_t vertices{};
+  std::size_t indices{};
+  std::size_t cpu_bytes{};
+  std::size_t upload_bytes{};
+};
+
+PreviewResourceEstimate preview_resource_estimate(
+    PreviewSurfaceConfiguration configuration) noexcept {
+  const std::size_t cells=static_cast<std::size_t>(configuration.level_count)*
+      configuration.cells_per_side*configuration.cells_per_side;
+  const std::size_t vertices=cells*9U;
+  const std::size_t indices=cells*24U;
+  const std::size_t levels=configuration.level_count;
+  const std::size_t geometry=vertices*sizeof(PreviewSurfaceVertex)+
+      indices*sizeof(std::uint32_t);
+  const std::size_t coverage=cells*sizeof(PreviewCoverageCell);
+  const std::size_t metadata=levels*(sizeof(PreviewSurfaceDrawRange)+
+      sizeof(PreviewSurfaceLevelOrigin)+sizeof(PreviewLevelOriginKey)+
+      sizeof(PreviewLevelOriginGuard));
+  const std::size_t map_scratch=vertices*(sizeof(SampleKey)+
+      sizeof(std::uint32_t)+4U*sizeof(void*));
+  return {cells,vertices,indices,
+          geometry+coverage+metadata+map_scratch,geometry+coverage};
 }
 
 std::uint64_t configuration_signature(
@@ -126,7 +183,7 @@ std::uint64_t preview_surface_field_signature(
   return terrain_field_signature(field);
 }
 
-PreviewSpatialKey preview_surface_spatial_key(
+PreviewSupportDecision plan_preview_surface(
     const TerrainViewIdentity& view,const tetra::Camera& camera,
     const tetra::Sphere& field,PreviewSurfaceConfiguration configuration) {
   validate_configuration(configuration);
@@ -136,11 +193,20 @@ PreviewSpatialKey preview_surface_spatial_key(
     throw std::invalid_argument("preview request camera identity is stale");
   if(view.field_signature!=preview_surface_field_signature(field))
     throw std::invalid_argument("preview request field identity is stale");
-  const auto chart=preview_chart_coordinates(field,camera.position);
-  const std::int64_t origin_x=snapped_half_lattice(
+  if(!preview_surface_supported(field))
+    return {PreviewSupportReason::unsupported_field,std::nullopt};
+  const auto chart=preview_chart_projection(field,camera.position);
+  if(chart.reason!=PreviewSupportReason::supported)
+    return {chart.reason,std::nullopt};
+  const auto origin_x=snapped_half_lattice(
       chart.x,configuration.finest_spacing);
-  const std::int64_t origin_z=snapped_half_lattice(
+  const auto origin_z=snapped_half_lattice(
       chart.z,configuration.finest_spacing);
+  if(!origin_x||!origin_z)
+    return {PreviewSupportReason::lattice_range_exceeded,std::nullopt};
+  if(!clipmap_extent_representable(*origin_x,configuration)||
+     !clipmap_extent_representable(*origin_z,configuration))
+    return {PreviewSupportReason::clipmap_extent_exceeded,std::nullopt};
   PreviewSpatialKey result{
       .field_revision=view.field_revision,
       .field_signature=view.field_signature,
@@ -149,25 +215,48 @@ PreviewSpatialKey preview_surface_spatial_key(
       .configuration_signature=configuration_signature(configuration)};
   result.level_origins.reserve(configuration.level_count);
   for(std::uint32_t level=0;level<configuration.level_count;++level)
-    result.level_origins.push_back({level,origin_x,origin_z});
-  return result;
+    result.level_origins.push_back({level,*origin_x,*origin_z});
+  return {PreviewSupportReason::supported,std::move(result)};
 }
 
-std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
+PreviewSurfaceBuildResult build_preview_surface(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,
-    PreviewSurfaceConfiguration configuration) {
-  const auto started=std::chrono::steady_clock::now();
-  if(!preview_surface_supported(field))
-    throw std::invalid_argument("preview surface requires height-field terrain");
-  const auto spatial_key=preview_surface_spatial_key(
-      request.requested_view,request.camera,field,configuration);
-  if(request.spatial_key!=spatial_key)
+    PreviewSurfaceConfiguration configuration,
+    PreviewSurfaceResourceLimits resource_limits) {
+  PreviewSupportDecision plan;
+  try {
+    plan=plan_preview_surface(
+        request.requested_view,request.camera,field,configuration);
+  }catch(const std::invalid_argument&){
+    throw;
+  }catch(const std::bad_alloc&){
+    return {PreviewFrontOutcome::resource_rejected,nullptr};
+  }catch(const std::length_error&){
+    return {PreviewFrontOutcome::resource_rejected,nullptr};
+  }catch(...){
+    return {PreviewFrontOutcome::failed,nullptr};
+  }
+  if(!plan.supported())
+    return {PreviewFrontOutcome::unsupported,nullptr};
+  if(request.spatial_key!=*plan.spatial_key)
     throw std::invalid_argument("preview request spatial key is stale");
+  const auto estimate=preview_resource_estimate(configuration);
+  if(estimate.cpu_bytes>resource_limits.maximum_cpu_bytes||
+     estimate.upload_bytes>resource_limits.maximum_upload_bytes)
+    return {PreviewFrontOutcome::resource_rejected,nullptr};
 
+  try {
+  const auto started=std::chrono::steady_clock::now();
+  const auto& spatial_key=*plan.spatial_key;
   auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
   front->requested_view_=request.requested_view;
   front->coverage_.spatial_key=spatial_key;
   front->source_camera_=request.camera;
+  front->vertices_.reserve(estimate.vertices);
+  front->indices_.reserve(estimate.indices);
+  front->draw_ranges_.reserve(configuration.level_count);
+  front->level_origins_.reserve(configuration.level_count);
+  front->coverage_.covered_cells.reserve(estimate.cells);
   const double half_spacing=configuration.finest_spacing*0.5;
   const SampleKey origin{spatial_key.level_origins.front().sample_x,
                          spatial_key.level_origins.front().sample_z};
@@ -189,7 +278,14 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
     if(front->vertices_.size()>=std::numeric_limits<std::uint32_t>::max())
       throw std::length_error("preview vertex index exceeds 32-bit range");
     const auto index=static_cast<std::uint32_t>(front->vertices_.size());
-    front->vertices_.push_back(sample_vertex(field,key,half_spacing));
+    const auto sampled=sample_vertex(field,key,half_spacing);
+    const double values[]{sampled.position.x,sampled.position.y,
+        sampled.position.z,sampled.normal.x,sampled.normal.y,sampled.normal.z};
+    if(!std::ranges::all_of(values,[](double value){
+         return std::isfinite(value);
+       }))
+      throw std::runtime_error("preview terrain sample is non-finite");
+    front->vertices_.push_back(sampled);
     vertex_directory.emplace(key,index);
     return index;
   };
@@ -295,7 +391,14 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
   front->diagnostics_.build_milliseconds=
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-started).count();
-  return front;
+  return {PreviewFrontOutcome::ready,std::move(front)};
+  }catch(const std::bad_alloc&){
+    return {PreviewFrontOutcome::resource_rejected,nullptr};
+  }catch(const std::length_error&){
+    return {PreviewFrontOutcome::resource_rejected,nullptr};
+  }catch(...){
+    return {PreviewFrontOutcome::failed,nullptr};
+  }
 }
 
 }  // namespace tetra_viewer

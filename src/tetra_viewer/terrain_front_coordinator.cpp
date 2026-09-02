@@ -134,13 +134,7 @@ TerrainFrontCoordinator::TerrainFrontCoordinator(
 
 TerrainViewIdentity TerrainFrontCoordinator::observe_view(
     const tetra::Camera& camera,std::uint64_t field_revision,
-    std::uint64_t field_signature,
-    std::optional<PreviewSpatialKey> desired_preview_key) {
-  if(desired_preview_key&&
-     (desired_preview_key->field_revision!=field_revision||
-      desired_preview_key->field_signature!=field_signature))
-    throw std::invalid_argument(
-        "desired preview key does not match the observed field");
+    std::uint64_t field_signature) {
   if(!same_view_payload(
          state_.current_view,camera,field_revision,field_signature)){
     if(state_.current_view.view_epoch==
@@ -149,6 +143,33 @@ TerrainViewIdentity TerrainFrontCoordinator::observe_view(
     state_.current_view=make_terrain_view_identity(
         state_.current_view.view_epoch+1U,field_revision,field_signature,camera);
   }
+  discard_ineligible_preview();
+  if(state_.preview_requested&&
+     (state_.preview_requested->spatial_key.field_revision!=field_revision||
+      state_.preview_requested->spatial_key.field_signature!=field_signature))
+    state_.preview_requested.reset();
+  if(state_.preview_awaiting_upload&&
+     (state_.preview_awaiting_upload->request.spatial_key.field_revision!=
+          field_revision||
+      state_.preview_awaiting_upload->request.spatial_key.field_signature!=
+          field_signature))
+    state_.preview_awaiting_upload.reset();
+  if(state_.preview_awaiting_upload)
+    state_.preview_awaiting_upload->required_through_view_epoch=
+        state_.current_view.view_epoch;
+  return state_.current_view;
+}
+
+TerrainViewIdentity TerrainFrontCoordinator::observe_view(
+    const tetra::Camera& camera,std::uint64_t field_revision,
+    std::uint64_t field_signature,
+    std::optional<PreviewSpatialKey> desired_preview_key) {
+  static_cast<void>(observe_view(camera,field_revision,field_signature));
+  if(desired_preview_key&&
+     (desired_preview_key->field_revision!=field_revision||
+      desired_preview_key->field_signature!=field_signature))
+    throw std::invalid_argument(
+        "desired preview key does not match the observed field");
   state_.desired_preview_key=std::move(desired_preview_key);
   discard_ineligible_preview();
   if(state_.preview_requested&&
@@ -164,6 +185,34 @@ TerrainViewIdentity TerrainFrontCoordinator::observe_view(
     state_.preview_awaiting_upload->required_through_view_epoch=
         state_.current_view.view_epoch;
   return state_.current_view;
+}
+
+void TerrainFrontCoordinator::apply_preview_support(
+    const PreviewSupportDecision& decision) {
+  if(!state_.current_view.valid())
+    throw std::logic_error(
+        "preview support cannot be applied before observing a view");
+  const bool has_key=decision.spatial_key.has_value();
+  if((decision.reason==PreviewSupportReason::supported)!=has_key)
+    throw std::invalid_argument("preview support decision is inconsistent");
+  if(has_key&&
+     (decision.spatial_key->field_revision!=state_.current_view.field_revision||
+      decision.spatial_key->field_signature!=state_.current_view.field_signature))
+    throw std::invalid_argument(
+        "preview support decision does not match the current field");
+  state_.last_preview_support=decision.reason;
+  state_.desired_preview_key=decision.spatial_key;
+  discard_ineligible_preview();
+  if(state_.preview_requested&&
+     (!state_.desired_preview_key||
+      state_.preview_requested->spatial_key!=*state_.desired_preview_key))
+    state_.preview_requested.reset();
+  if(state_.preview_awaiting_upload&&
+     (!state_.desired_preview_key||
+      state_.preview_awaiting_upload->request.spatial_key!=
+          *state_.desired_preview_key))
+    state_.preview_awaiting_upload.reset();
+  if(!has_key)state_.last_preview_outcome=PreviewFrontOutcome::unsupported;
 }
 
 std::optional<PreviewRequestIdentity>

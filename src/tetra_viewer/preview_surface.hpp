@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace tetra_viewer {
@@ -54,14 +55,21 @@ struct PreviewSurfaceConfiguration {
   double finest_spacing{0.125};
 };
 
+struct PreviewSurfaceResourceLimits {
+  std::size_t maximum_cpu_bytes{64U*1024U*1024U};
+  std::size_t maximum_upload_bytes{16U*1024U*1024U};
+};
+
 struct PreviewSurfaceRequest {
   TerrainViewIdentity requested_view;
   PreviewSpatialKey spatial_key;
   tetra::Camera camera;
 };
 
+class PreviewSurfaceBuildResult;
+
 // A complete preview publication is a read-only value. Construction is only
-// available through build_preview_surface_front(), and assignment is disabled
+// available through build_preview_surface(), and assignment is disabled
 // so a published snapshot cannot be repurposed in place.
 class PreviewSurfaceFront final {
  public:
@@ -109,10 +117,9 @@ class PreviewSurfaceFront final {
 
  private:
   PreviewSurfaceFront()=default;
-  friend std::shared_ptr<const PreviewSurfaceFront>
-  build_preview_surface_front(const PreviewSurfaceRequest&,
-                              const tetra::Sphere&,
-                              PreviewSurfaceConfiguration);
+  friend PreviewSurfaceBuildResult build_preview_surface(
+      const PreviewSurfaceRequest&,const tetra::Sphere&,
+      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits);
 
   TerrainViewIdentity requested_view_;
   PreviewCoverage coverage_;
@@ -129,13 +136,38 @@ class PreviewSurfaceFront final {
     const tetra::Sphere& field) noexcept;
 [[nodiscard]] std::uint64_t preview_surface_field_signature(
     const tetra::Sphere& field) noexcept;
-[[nodiscard]] PreviewSpatialKey preview_surface_spatial_key(
+[[nodiscard]] PreviewSupportDecision plan_preview_surface(
     const TerrainViewIdentity& view,const tetra::Camera& camera,
     const tetra::Sphere& field,
     PreviewSurfaceConfiguration configuration={});
-[[nodiscard]] std::shared_ptr<const PreviewSurfaceFront>
-build_preview_surface_front(
+
+class PreviewSurfaceBuildResult final {
+ public:
+  [[nodiscard]] PreviewFrontOutcome outcome() const noexcept {
+    return outcome_;
+  }
+  [[nodiscard]] const std::shared_ptr<const PreviewSurfaceFront>& front()
+      const noexcept { return front_; }
+  [[nodiscard]] bool ready() const noexcept {
+    return outcome_==PreviewFrontOutcome::ready;
+  }
+
+ private:
+  friend PreviewSurfaceBuildResult build_preview_surface(
+      const PreviewSurfaceRequest&,const tetra::Sphere&,
+      PreviewSurfaceConfiguration,PreviewSurfaceResourceLimits);
+  PreviewSurfaceBuildResult(
+      PreviewFrontOutcome outcome,
+      std::shared_ptr<const PreviewSurfaceFront> front) noexcept
+      :outcome_(outcome),front_(std::move(front)) {}
+
+  PreviewFrontOutcome outcome_;
+  std::shared_ptr<const PreviewSurfaceFront> front_;
+};
+
+[[nodiscard]] PreviewSurfaceBuildResult build_preview_surface(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,
-    PreviewSurfaceConfiguration configuration={});
+    PreviewSurfaceConfiguration configuration={},
+    PreviewSurfaceResourceLimits resource_limits={});
 
 }  // namespace tetra_viewer
