@@ -387,15 +387,23 @@ still-image appearance alone.
       [`progressive-world-preview.md`](progressive-world-preview.md).
   - [x] Add the immutable preview snapshot and cold welded geometry-clipmap
         oracle without placing preview data in `WorldCutDirectory`.
-  - [ ] Add coalescing background generation, cancellation, and generation-
-        ordered handoff while the existing exact worker continues independently.
-  - [ ] Integrate opaque preview rendering, exact-face suppression, seam-safe
-        boundary blending, and exact-generation retirement.
-  - [ ] Add retained clipmap updates only after they match the cold oracle.
-  - [ ] Qualify useful preview publication below 100 ms normally and 250 ms in
-        the worst release case, bounded lag, exact convergence below 2 seconds,
-        64 MiB preview memory, 16 MiB uploads, hash invariance, and visual
-        captures.
+  - [ ] Add a pure front coordinator with one shared source-view epoch for exact
+        and preview products, camera-aware chart support, typed failure paths,
+        exact coverage compatibility, and transition tests for stale,
+        canceled, rejected, failed-upload, and out-of-order completions.
+  - [ ] Add one persistent coalescing preview worker with cooperative cold-build
+        cancellation and bounded scratch ownership; prove submission remains
+        below 2 ms without starving the independent exact worker.
+  - [ ] Integrate the cold preview with separate Metal buffers, deterministic
+        chart-cell exact-face suppression, opaque handoff, and consistent local
+        shadow-caster and atmospheric-occlusion coverage.
+  - [ ] Qualify the cold path below 100 ms normally and 250 ms in the worst
+        release case, with at most one-cell lag, exact convergence below 2
+        seconds, 64 MiB preview CPU memory, 16 MiB uploads, failure fallback,
+        exact hash invariance, and release visual captures.
+  - [ ] Add retained row/column updates only after the cold path passes and they
+        match the cold oracle byte-for-byte, then repeat every performance,
+        resource, starvation, hash, and visual gate.
 
 The active execution queue is the remaining gate sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
