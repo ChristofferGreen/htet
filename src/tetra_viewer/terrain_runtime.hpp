@@ -30,8 +30,8 @@ struct TerrainRuntimeDiagnostics {
   std::uint64_t world_revision{};
   std::uint64_t scene_mesh_revision{};
   std::uint64_t scene_generation{};
-  std::uint64_t exact_requested_source_epoch{};
-  std::uint64_t exact_published_source_epoch{};
+  std::uint64_t exact_requested_view_epoch{};
+  std::uint64_t exact_published_view_epoch{};
   std::uint64_t hierarchy_hash{};
   std::uint64_t conforming_volume_hash{};
   std::uint64_t connected_surface_hash{};
@@ -608,7 +608,7 @@ class TerrainRuntime {
  public:
   virtual ~TerrainRuntime()=default;
   virtual void set_camera(const tetra::Camera& camera,bool interactive)=0;
-  virtual void set_source_identity(const TerrainSourceIdentity&) {}
+  virtual void set_view_identity(const TerrainViewIdentity&) {}
   virtual void set_atmosphere_shadow_request(
       std::optional<AtmosphereShadowFrontRequest>) {}
   // Non-blocking publication/scheduling pump, called once per presentation frame.
@@ -629,7 +629,7 @@ class TerrainRuntime {
     return scene().render_origin;
   }
   [[nodiscard]] virtual TerrainRuntimeDiagnostics diagnostics() const noexcept=0;
-  [[nodiscard]] virtual TerrainSourceIdentity published_source_identity()
+  [[nodiscard]] virtual TerrainViewIdentity published_view_identity()
       const noexcept { return {}; }
   [[nodiscard]] virtual double signed_distance(tetra::Vec3 point) const=0;
   [[nodiscard]] virtual std::vector<TerrainDebugLine> lod_zone_lines() const=0;
@@ -690,7 +690,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   ~BlockedTerrainRuntime() override;
 
   void set_camera(const tetra::Camera& camera,bool interactive) override;
-  void set_source_identity(const TerrainSourceIdentity& source) override;
+  void set_view_identity(const TerrainViewIdentity& view) override;
   void set_resource_budgets(WorldResourceBudgets budgets);
   void set_hierarchy_block_budget(std::size_t maximum_blocks);
   void set_volume_pins(std::vector<WorldVolumePin> pins);
@@ -716,11 +716,11 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] TerrainRuntimeDiagnostics diagnostics() const noexcept override {
     auto result=diagnostics_;result.busy=future_.valid()||
         atmosphere_shadow_future_.valid();
-    result.exact_requested_source_epoch=exact_requested_source_epoch_;
+    result.exact_requested_view_epoch=exact_requested_view_epoch_;
     return result;
   }
-  [[nodiscard]] TerrainSourceIdentity published_source_identity()
-      const noexcept override { return published_source_identity_; }
+  [[nodiscard]] TerrainViewIdentity published_view_identity()
+      const noexcept override { return published_view_identity_; }
   [[nodiscard]] double signed_distance(tetra::Vec3 point) const override {
     return field_.signed_distance(point);
   }
@@ -728,7 +728,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
 
  private:
   struct Publication {
-    TerrainSourceIdentity source_identity;
+    TerrainViewIdentity view_identity;
     std::unique_ptr<tetra::WorldCutDirectory> directory;
     tetra::WorldDirectoryUpdate hierarchy_update;
     PreparedScene scene;
@@ -751,7 +751,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] static Publication build_publication(
       const WorldProfile& profile,const tetra::Sphere& field,
       const tetra::Camera& camera,std::uint64_t generation,
-      TerrainSourceIdentity source_identity,
+      TerrainViewIdentity view_identity,
       SparseWorldSurfaceCache surface_cache={},
       WorldHierarchyDemandState hierarchy_demand={},
       TerrainDetailWorkingSet detail_working_set={},
@@ -808,9 +808,9 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   bool atmosphere_shadow_superseded_{};
   std::chrono::steady_clock::time_point superseded_at_{};
   std::uint64_t requested_generation_{};
-  TerrainSourceIdentity source_identity_;
-  TerrainSourceIdentity published_source_identity_;
-  std::uint64_t exact_requested_source_epoch_{};
+  TerrainViewIdentity view_identity_;
+  TerrainViewIdentity published_view_identity_;
+  std::uint64_t exact_requested_view_epoch_{};
   std::uint64_t atmosphere_shadow_requested_generation_{};
 };
 

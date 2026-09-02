@@ -5,26 +5,83 @@
 #include <compare>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace tetra_viewer {
 
-struct TerrainSourceIdentity {
-  std::uint64_t source_epoch{};
+struct TerrainViewIdentity {
+  std::uint64_t view_epoch{};
   std::uint64_t field_revision{};
   std::uint64_t field_signature{};
   std::uint64_t camera_signature{};
 
-  auto operator<=>(const TerrainSourceIdentity&) const=default;
-  [[nodiscard]] bool valid() const noexcept { return source_epoch!=0U; }
+  auto operator<=>(const TerrainViewIdentity&) const=default;
+  [[nodiscard]] bool valid() const noexcept { return view_epoch!=0U; }
 };
 
 [[nodiscard]] std::uint64_t terrain_camera_signature(
     const tetra::Camera& camera) noexcept;
 [[nodiscard]] std::uint64_t terrain_field_signature(
     const tetra::Sphere& field) noexcept;
-[[nodiscard]] TerrainSourceIdentity make_terrain_source_identity(
-    std::uint64_t source_epoch,std::uint64_t field_revision,
+[[nodiscard]] TerrainViewIdentity make_terrain_view_identity(
+    std::uint64_t view_epoch,std::uint64_t field_revision,
     std::uint64_t field_signature,const tetra::Camera& camera);
+
+enum class PreviewChart : std::uint8_t {
+  planar,
+  north_pole_gnomonic
+};
+
+struct PreviewLevelOriginKey {
+  std::uint32_t level{};
+  std::int64_t sample_x{};
+  std::int64_t sample_z{};
+
+  auto operator<=>(const PreviewLevelOriginKey&) const=default;
+};
+
+struct PreviewSpatialKey {
+  std::uint64_t field_revision{};
+  std::uint64_t field_signature{};
+  PreviewChart chart{PreviewChart::planar};
+  std::uint64_t configuration_signature{};
+  std::vector<PreviewLevelOriginKey> level_origins;
+
+  auto operator<=>(const PreviewSpatialKey&) const=default;
+};
+
+// Half-open chart-space cell in the key's deterministic half-spacing lattice.
+struct PreviewCoverageCell {
+  std::int64_t minimum_x{};
+  std::int64_t minimum_z{};
+  std::int64_t maximum_x{};
+  std::int64_t maximum_z{};
+
+  auto operator<=>(const PreviewCoverageCell&) const=default;
+};
+
+struct PreviewLevelOriginGuard {
+  std::uint32_t level{};
+  std::int64_t minimum_x{};
+  std::int64_t minimum_z{};
+  std::int64_t maximum_x{};
+  std::int64_t maximum_z{};
+
+  auto operator<=>(const PreviewLevelOriginGuard&) const=default;
+};
+
+struct PreviewCoverage {
+  PreviewSpatialKey spatial_key;
+  std::vector<PreviewCoverageCell> covered_cells;
+  std::vector<PreviewLevelOriginGuard> guarded_level_origins;
+
+  auto operator<=>(const PreviewCoverage&) const=default;
+};
+
+[[nodiscard]] bool preview_coverage_supports(
+    const PreviewCoverage& coverage,const PreviewSpatialKey& desired) noexcept;
+[[nodiscard]] bool preview_coverage_contains(
+    const PreviewCoverage& outer,const PreviewCoverage& inner) noexcept;
 
 enum class PreviewFrontOutcome : std::uint8_t {
   ready,
@@ -38,64 +95,78 @@ enum class PreviewFrontOutcome : std::uint8_t {
 
 enum class PreviewRetirementReason : std::uint8_t {
   none,
-  source_changed,
+  field_changed,
+  coverage_left,
   exact_handoff
 };
 
-enum class ExactPreviewCoverage : std::uint8_t {
-  incompatible,
-  compatible
+struct PreviewRequestIdentity {
+  TerrainViewIdentity requested_view;
+  PreviewSpatialKey spatial_key;
+
+  auto operator<=>(const PreviewRequestIdentity&) const=default;
+};
+
+struct StagedPreviewFront {
+  PreviewRequestIdentity request;
+  PreviewCoverage coverage;
+  std::uint64_t required_through_view_epoch{};
+
+  auto operator<=>(const StagedPreviewFront&) const=default;
 };
 
 struct VisiblePreviewFront {
-  TerrainSourceIdentity source;
-  std::uint64_t coverage_signature{};
+  PreviewRequestIdentity request;
+  PreviewCoverage coverage;
+  std::uint64_t required_through_view_epoch{};
 
   auto operator<=>(const VisiblePreviewFront&) const=default;
 };
 
 struct TerrainFrontCoordinatorState {
-  TerrainSourceIdentity current_source;
-  std::optional<TerrainSourceIdentity> exact_published;
-  std::optional<TerrainSourceIdentity> preview_requested;
-  std::optional<TerrainSourceIdentity> preview_awaiting_upload;
+  TerrainViewIdentity current_view;
+  std::optional<TerrainViewIdentity> exact_published;
+  std::optional<PreviewCoverage> exact_published_coverage;
+  std::optional<PreviewSpatialKey> desired_preview_key;
+  std::optional<PreviewRequestIdentity> preview_requested;
+  std::optional<StagedPreviewFront> preview_awaiting_upload;
   std::optional<VisiblePreviewFront> preview_visible;
   std::optional<PreviewFrontOutcome> last_preview_outcome;
   PreviewRetirementReason preview_retirement_reason{
       PreviewRetirementReason::none};
 };
 
-// Pure ordering state for the exact and render-only terrain products. Geometry,
-// workers, and GPU resources remain owned by their respective subsystems.
+// Pure ordering state for exact view publications and reusable spatial preview
+// fronts. Geometry, workers, and GPU resources remain externally owned.
 class TerrainFrontCoordinator final {
  public:
   TerrainFrontCoordinator()=default;
-  explicit TerrainFrontCoordinator(
-      const TerrainSourceIdentity& published_exact);
+  explicit TerrainFrontCoordinator(const TerrainViewIdentity& published_exact);
 
-  [[nodiscard]] TerrainSourceIdentity observe_source(
+  [[nodiscard]] TerrainViewIdentity observe_view(
       const tetra::Camera& camera,std::uint64_t field_revision,
-      std::uint64_t field_signature);
-  [[nodiscard]] bool request_preview(const TerrainSourceIdentity& source);
+      std::uint64_t field_signature,
+      std::optional<PreviewSpatialKey> desired_preview_key);
+  [[nodiscard]] std::optional<PreviewRequestIdentity> request_preview();
   [[nodiscard]] bool complete_preview(
-      const TerrainSourceIdentity& source,PreviewFrontOutcome outcome);
+      const PreviewRequestIdentity& request,PreviewFrontOutcome outcome,
+      std::optional<PreviewCoverage> coverage=std::nullopt);
   [[nodiscard]] bool complete_preview_upload(
-      const TerrainSourceIdentity& source,std::uint64_t coverage_signature,
-      bool succeeded);
+      const PreviewRequestIdentity& request,bool succeeded);
   void publish_exact(
-      const TerrainSourceIdentity& source,ExactPreviewCoverage coverage);
+      const TerrainViewIdentity& view,const PreviewCoverage& exact_coverage);
 
   [[nodiscard]] const TerrainFrontCoordinatorState& state() const noexcept {
     return state_;
   }
 
  private:
-  [[nodiscard]] bool is_current(
-      const TerrainSourceIdentity& source) const noexcept;
-  [[nodiscard]] static bool exact_can_replace_preview(
-      const TerrainSourceIdentity& exact,
-      const TerrainSourceIdentity& preview,
-      ExactPreviewCoverage coverage) noexcept;
+  [[nodiscard]] bool request_is_current(
+      const PreviewRequestIdentity& request) const noexcept;
+  [[nodiscard]] bool published_exact_covers(
+      std::uint64_t required_through_view_epoch,
+      const PreviewCoverage& preview_coverage) const noexcept;
+  void discard_ineligible_preview();
 
   TerrainFrontCoordinatorState state_;
 };

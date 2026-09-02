@@ -45,6 +45,20 @@ struct EdgeKey {
   auto operator<=>(const EdgeKey&) const=default;
 };
 
+void validate_configuration(PreviewSurfaceConfiguration configuration) {
+  if(configuration.level_count<1U||configuration.level_count>16U)
+    throw std::invalid_argument("preview level count must be between 1 and 16");
+  if(configuration.cells_per_side<4U||
+     configuration.cells_per_side>1024U||
+     configuration.cells_per_side%4U!=0U)
+    throw std::invalid_argument(
+        "preview cells per side must be a multiple of four from 4 to 1024");
+  if(!(configuration.finest_spacing>0.0)||
+     !std::isfinite(configuration.finest_spacing))
+    throw std::invalid_argument(
+        "preview finest spacing must be finite and positive");
+}
+
 tetra::Vec3 preview_chart_coordinates(
     const tetra::Sphere& field,tetra::Vec3 position) {
   if(!(field.terrain.planet_radius>0.0))return position;
@@ -57,6 +71,24 @@ tetra::Vec3 preview_chart_coordinates(
   return {field.centre.x+field.terrain.planet_radius*direction.x/direction.y,
           position.y,
           field.centre.z+field.terrain.planet_radius*direction.z/direction.y};
+}
+
+std::int64_t snapped_half_lattice(double coordinate,double spacing) {
+  const double value=std::floor(coordinate/spacing);
+  const auto minimum=std::numeric_limits<std::int64_t>::min()/2;
+  const auto maximum=std::numeric_limits<std::int64_t>::max()/2;
+  if(value<static_cast<double>(minimum)||value>static_cast<double>(maximum))
+    throw std::overflow_error("preview clipmap origin exceeds integer lattice");
+  return static_cast<std::int64_t>(value)*2;
+}
+
+std::uint64_t configuration_signature(
+    PreviewSurfaceConfiguration configuration) noexcept {
+  std::uint64_t hash=fnv_offset;
+  hash_u64(hash,configuration.level_count);
+  hash_u64(hash,configuration.cells_per_side);
+  hash_double(hash,configuration.finest_spacing);
+  return hash;
 }
 
 PreviewSurfaceVertex sample_vertex(
@@ -94,44 +126,61 @@ std::uint64_t preview_surface_field_signature(
   return terrain_field_signature(field);
 }
 
+PreviewSpatialKey preview_surface_spatial_key(
+    const TerrainViewIdentity& view,const tetra::Camera& camera,
+    const tetra::Sphere& field,PreviewSurfaceConfiguration configuration) {
+  validate_configuration(configuration);
+  if(!view.valid())
+    throw std::invalid_argument("preview request view identity is invalid");
+  if(view.camera_signature!=terrain_camera_signature(camera))
+    throw std::invalid_argument("preview request camera identity is stale");
+  if(view.field_signature!=preview_surface_field_signature(field))
+    throw std::invalid_argument("preview request field identity is stale");
+  const auto chart=preview_chart_coordinates(field,camera.position);
+  const std::int64_t origin_x=snapped_half_lattice(
+      chart.x,configuration.finest_spacing);
+  const std::int64_t origin_z=snapped_half_lattice(
+      chart.z,configuration.finest_spacing);
+  PreviewSpatialKey result{
+      .field_revision=view.field_revision,
+      .field_signature=view.field_signature,
+      .chart=field.terrain.planet_radius>0.0
+          ?PreviewChart::north_pole_gnomonic:PreviewChart::planar,
+      .configuration_signature=configuration_signature(configuration)};
+  result.level_origins.reserve(configuration.level_count);
+  for(std::uint32_t level=0;level<configuration.level_count;++level)
+    result.level_origins.push_back({level,origin_x,origin_z});
+  return result;
+}
+
 std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,
     PreviewSurfaceConfiguration configuration) {
   const auto started=std::chrono::steady_clock::now();
   if(!preview_surface_supported(field))
     throw std::invalid_argument("preview surface requires height-field terrain");
-  if(!request.source.valid())
-    throw std::invalid_argument("preview request source identity is invalid");
-  if(request.source.camera_signature!=terrain_camera_signature(request.camera))
-    throw std::invalid_argument("preview request camera identity is stale");
-  if(request.source.field_signature!=preview_surface_field_signature(field))
-    throw std::invalid_argument("preview request field identity is stale");
-  if(configuration.level_count<1U||configuration.level_count>16U)
-    throw std::invalid_argument("preview level count must be between 1 and 16");
-  if(configuration.cells_per_side<4U||
-     configuration.cells_per_side>1024U||
-     configuration.cells_per_side%4U!=0U)
-    throw std::invalid_argument(
-        "preview cells per side must be a multiple of four from 4 to 1024");
-  if(!(configuration.finest_spacing>0.0)||
-     !std::isfinite(configuration.finest_spacing))
-    throw std::invalid_argument("preview finest spacing must be finite and positive");
+  const auto spatial_key=preview_surface_spatial_key(
+      request.requested_view,request.camera,field,configuration);
+  if(request.spatial_key!=spatial_key)
+    throw std::invalid_argument("preview request spatial key is stale");
 
   auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
-  front->source_identity_=request.source;
+  front->requested_view_=request.requested_view;
+  front->coverage_.spatial_key=spatial_key;
   front->source_camera_=request.camera;
   const double half_spacing=configuration.finest_spacing*0.5;
-  const auto chart=preview_chart_coordinates(field,request.camera.position);
-  const auto snap=[](double coordinate,double spacing){
-    const double value=std::floor(coordinate/spacing);
-    if(value<static_cast<double>(std::numeric_limits<std::int64_t>::min())||
-       value>static_cast<double>(std::numeric_limits<std::int64_t>::max()))
-      throw std::overflow_error("preview clipmap origin exceeds integer lattice");
-    return static_cast<std::int64_t>(value);
-  };
-  const SampleKey origin{
-      snap(chart.x,configuration.finest_spacing)*2,
-      snap(chart.z,configuration.finest_spacing)*2};
+  const SampleKey origin{spatial_key.level_origins.front().sample_x,
+                         spatial_key.level_origins.front().sample_z};
+  constexpr std::int64_t guard_lattice_cells=2;
+  front->coverage_.guarded_level_origins.reserve(
+      spatial_key.level_origins.size());
+  for(const auto& level_origin:spatial_key.level_origins)
+    front->coverage_.guarded_level_origins.push_back(
+        {level_origin.level,
+         level_origin.sample_x-guard_lattice_cells,
+         level_origin.sample_z-guard_lattice_cells,
+         level_origin.sample_x+guard_lattice_cells,
+         level_origin.sample_z+guard_lattice_cells});
 
   std::map<SampleKey,std::uint32_t> vertex_directory;
   const auto vertex=[&](SampleKey key){
@@ -165,6 +214,8 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
             {origin.x+column*step,origin.z+(row+1)*step},
             {origin.x+(column+1)*step,origin.z+(row+1)*step},
             {origin.x+(column+1)*step,origin.z+row*step}};
+        front->coverage_.covered_cells.push_back(
+            {corners[0].x,corners[0].z,corners[2].x,corners[2].z});
         for(const auto key:corners)(void)vertex(key);
         std::vector<SampleKey> polygon;
         polygon.reserve(8U);
@@ -229,10 +280,16 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
       front->vertices_.size()*sizeof(PreviewSurfaceVertex)+
       front->indices_.size()*sizeof(std::uint32_t)+
       front->draw_ranges_.size()*sizeof(PreviewSurfaceDrawRange)+
-      front->level_origins_.size()*sizeof(PreviewSurfaceLevelOrigin);
+      front->level_origins_.size()*sizeof(PreviewSurfaceLevelOrigin)+
+      front->coverage_.spatial_key.level_origins.size()*
+          sizeof(PreviewLevelOriginKey)+
+      front->coverage_.covered_cells.size()*sizeof(PreviewCoverageCell)+
+      front->coverage_.guarded_level_origins.size()*
+          sizeof(PreviewLevelOriginGuard);
   front->diagnostics_.upload_bytes=
       front->vertices_.size()*sizeof(PreviewSurfaceVertex)+
-      front->indices_.size()*sizeof(std::uint32_t);
+      front->indices_.size()*sizeof(std::uint32_t)+
+      front->coverage_.covered_cells.size()*sizeof(PreviewCoverageCell);
   front->diagnostics_.geometry_hash=geometry_hash(
       front->vertices_,front->indices_);
   front->diagnostics_.build_milliseconds=

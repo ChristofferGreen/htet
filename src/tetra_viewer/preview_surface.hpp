@@ -55,7 +55,8 @@ struct PreviewSurfaceConfiguration {
 };
 
 struct PreviewSurfaceRequest {
-  TerrainSourceIdentity source;
+  TerrainViewIdentity requested_view;
+  PreviewSpatialKey spatial_key;
   tetra::Camera camera;
 };
 
@@ -69,20 +70,26 @@ class PreviewSurfaceFront final {
   PreviewSurfaceFront(PreviewSurfaceFront&&)=delete;
   PreviewSurfaceFront& operator=(PreviewSurfaceFront&&)=delete;
 
-  [[nodiscard]] const TerrainSourceIdentity& source_identity() const noexcept {
-    return source_identity_;
+  [[nodiscard]] const TerrainViewIdentity& requested_view() const noexcept {
+    return requested_view_;
   }
-  [[nodiscard]] std::uint64_t request_generation() const noexcept {
-    return source_identity_.source_epoch;
+  [[nodiscard]] const PreviewSpatialKey& spatial_key() const noexcept {
+    return coverage_.spatial_key;
+  }
+  [[nodiscard]] const PreviewCoverage& coverage() const noexcept {
+    return coverage_;
+  }
+  [[nodiscard]] std::uint64_t request_view_epoch() const noexcept {
+    return requested_view_.view_epoch;
   }
   [[nodiscard]] const tetra::Camera& source_camera() const noexcept {
     return source_camera_;
   }
   [[nodiscard]] std::uint64_t field_revision() const noexcept {
-    return source_identity_.field_revision;
+    return coverage_.spatial_key.field_revision;
   }
   [[nodiscard]] std::uint64_t field_signature() const noexcept {
-    return source_identity_.field_signature;
+    return coverage_.spatial_key.field_signature;
   }
   [[nodiscard]] std::span<const PreviewSurfaceLevelOrigin> level_origins()
       const noexcept { return level_origins_; }
@@ -107,7 +114,8 @@ class PreviewSurfaceFront final {
                               const tetra::Sphere&,
                               PreviewSurfaceConfiguration);
 
-  TerrainSourceIdentity source_identity_;
+  TerrainViewIdentity requested_view_;
+  PreviewCoverage coverage_;
   tetra::Camera source_camera_;
   std::vector<PreviewSurfaceLevelOrigin> level_origins_;
   std::vector<PreviewSurfaceVertex> vertices_;
@@ -121,6 +129,10 @@ class PreviewSurfaceFront final {
     const tetra::Sphere& field) noexcept;
 [[nodiscard]] std::uint64_t preview_surface_field_signature(
     const tetra::Sphere& field) noexcept;
+[[nodiscard]] PreviewSpatialKey preview_surface_spatial_key(
+    const TerrainViewIdentity& view,const tetra::Camera& camera,
+    const tetra::Sphere& field,
+    PreviewSurfaceConfiguration configuration={});
 [[nodiscard]] std::shared_ptr<const PreviewSurfaceFront>
 build_preview_surface_front(
     const PreviewSurfaceRequest& request,const tetra::Sphere& field,

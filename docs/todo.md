@@ -387,11 +387,10 @@ still-image appearance alone.
       [`progressive-world-preview.md`](progressive-world-preview.md).
   - [x] Add the immutable preview snapshot and cold welded geometry-clipmap
         oracle without placing preview data in `WorldCutDirectory`.
-  - [x] Add a pure front coordinator with one shared source-view epoch for exact
-        and preview products, exact coverage compatibility, and transition
-        tests for stale, canceled, rejected, failed-upload, and out-of-order
-        completions.
-  - [ ] Separate exact view ordering from reusable preview spatial identity:
+  - [x] Add the initial pure front coordinator, exact view-epoch metadata, and
+        transition tests for stale, canceled, rejected, failed-upload, and
+        out-of-order completions.
+  - [x] Separate exact view ordering from reusable preview spatial identity:
         add field/chart/configuration/snapped-origin keys, deterministic guarded
         coverage, derived compatibility, and 60--120 Hz delayed-completion tests
         proving that valid previews survive pose churn and cannot starve.

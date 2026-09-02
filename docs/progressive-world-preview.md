@@ -278,10 +278,9 @@ visual failures can be tied to the exact coordinator state.
 - [x] Implement the deterministic cold geometry-clipmap oracle with welded
       ring stitches, oriented triangles, analytic normals, and topology/hash
       tests.
-- [x] Add `TerrainFrontCoordinator`, shared source identities, exact source-
-      epoch tagging, and exhaustive transition-table tests. Do not integrate a
-      worker until exact/preview retirement is proven independently of timing.
-- [ ] Split view ordering from preview spatial identity: add
+- [x] Add the initial `TerrainFrontCoordinator`, exact view-epoch tagging, and
+      exhaustive transition-table tests without changing world authority.
+- [x] Split view ordering from preview spatial identity: add
       `TerrainViewIdentity`, `PreviewSpatialKey`, deterministic guarded
       `PreviewCoverage`, and derived coverage compatibility. Preserve eligible
       fronts across view epochs and prove non-starving publication with
