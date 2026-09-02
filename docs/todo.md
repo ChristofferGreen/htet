@@ -391,6 +391,10 @@ still-image appearance alone.
         and preview products, exact coverage compatibility, and transition
         tests for stale, canceled, rejected, failed-upload, and out-of-order
         completions.
+  - [ ] Separate exact view ordering from reusable preview spatial identity:
+        add field/chart/configuration/snapped-origin keys, deterministic guarded
+        coverage, derived compatibility, and 60--120 Hz delayed-completion tests
+        proving that valid previews survive pose churn and cannot starve.
   - [ ] Add camera-aware planetary chart support and typed preview failure paths
         that retain the last exact display for unsupported camera positions.
   - [ ] Add one persistent coalescing preview worker with cooperative cold-build

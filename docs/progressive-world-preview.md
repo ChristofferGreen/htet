@@ -35,25 +35,46 @@ The new contract has two products:
 
 This is intentional latency hiding, not a claim that approximate triangles are
 exact tetrahedral state. The products are built and revisioned independently,
-but a small front coordinator gives them a common source-view identity and
-decides which combination may be displayed.
+but a small front coordinator tracks both view ordering and spatial preview
+eligibility and decides which combination may be displayed.
 
-## Ownership and source-epoch protocol
+## Ownership, ordering, and spatial identity
 
 `TerrainFrontCoordinator` is a pure state machine at the viewer/runtime
-boundary. It owns one monotonically increasing **source epoch**. A meaningful
-camera, projection, or terrain-field change allocates an epoch before either
-product is requested. Exact and preview requests copy this epoch; neither
-worker invents an epoch from its own submission counter.
+boundary. It must not use one identity for two different questions:
 
-An identity used for handoff contains:
+1. A monotonically increasing **view epoch** orders exact camera observations
+   and exact/preview handoff. A meaningful camera, projection, or terrain-field
+   change allocates an epoch before work is offered. Workers never invent one
+   from their local submission counters.
+2. A stable **preview spatial key** identifies reusable geometry. It changes
+   only when the field, chart, clipmap configuration, or snapped level origins
+   change. Floating-point camera motion inside the same supported coverage does
+   not change this key.
+3. **Preview coverage** proves where a front remains displayable. It contains
+   deterministic chart cells plus a guard band and provides a camera-support
+   predicate. Coverage compatibility must be derived from these objects, not
+   supplied to the coordinator as an unverified Boolean.
+
+The ordering and spatial records are:
 
 ```text
-TerrainSourceIdentity
-  source epoch
+TerrainViewIdentity
+  view epoch
   field revision
   field signature
   camera/projection signature
+
+PreviewSpatialKey
+  field revision/signature
+  chart identifier
+  clipmap configuration signature
+  snapped integer origin per level
+
+PreviewCoverage
+  spatial key
+  deterministic covered chart cells
+  guarded camera-support region
 ```
 
 Product-local build/publication counters remain useful diagnostics, but they
@@ -64,25 +85,36 @@ compared safely with a preview counter.
 
 The coordinator follows these transitions:
 
-1. On a source change, allocate a new epoch and offer the newest identity to
-   both schedulers. Keep the last exact front visible until a valid preview or
-   newer exact front is ready.
-2. Publish a completed preview only when its identity is still the latest
-   preview-eligible identity and its field and chart coverage still match.
-3. Allow an older exact completion to publish as authoritative exact state if
-   the exact runtime accepts it. It does not retire a preview from a newer
-   source epoch.
-4. Retire the preview only when the accepted exact front has a source epoch at
-   least as new as the preview, the field identity matches, and exact coverage
-   is compatible with every preview region being handed back.
-5. On preview cancellation, rejection, unsupported chart position, allocation
-   failure, or upload failure, leave the last accepted exact front visible.
-   Never clear exact buffers in anticipation of a preview.
+1. On a view change, allocate a new view epoch and offer it to the exact
+   scheduler. Compute the desired preview spatial key independently.
+2. Keep a visible preview across view epochs while its field matches and its
+   coverage supports the current camera. Motion inside a snapped cell neither
+   hides the front nor queues another build.
+3. When the desired preview key changes, replace the pending request but retain
+   the old visible front while its guard coverage remains valid. Fall back to
+   the last exact front only after that coverage is left or the field changes.
+4. Publish a completed preview when its spatial key is still desired and its
+   coverage supports the current camera, even if its request view epoch is
+   older than the current view epoch. Reject it only when its spatial key or
+   field is obsolete, or its coverage no longer supports the camera.
+5. While a preview remains eligible across newer views, advance its
+   `required_through_view_epoch`. An exact result may retire it only when the
+   accepted exact view epoch reaches that value, the field matches, and exact
+   coverage contains the preview region being handed back.
+6. Allow an older exact completion to publish as authoritative exact state if
+   the exact runtime accepts it. It cannot retire a preview protected through a
+   newer view epoch.
+7. On preview cancellation, rejection, unsupported chart position, allocation
+   failure, or upload failure, retain any still-eligible old preview; otherwise
+   display the last accepted exact front. Never clear exact buffers in
+   anticipation of a preview.
 
 The coordinator does not own terrain geometry and does not enter
 `WorldCutDirectory`. Its transition table must be unit-tested with stale,
 canceled, rejected, unsupported, failed-upload, and out-of-order exact and
-preview completions before renderer integration.
+preview completions before renderer integration. A synthetic continuous-motion
+test must drive view changes faster than preview construction and prove that
+spatially valid fronts still publish and remain visible.
 
 ## Preview geometry
 
@@ -100,19 +132,21 @@ The preview snapshot contains contiguous arrays only:
 
 ```text
 PreviewSurfaceFront
-  source identity
-  snapped integer clipmap origin per level
+  request view epoch
+  preview spatial key
   vertices
   triangle indices
   per-level draw ranges
-  deterministic chart-coverage mask
+  deterministic preview coverage
   covered world bounds (diagnostic only)
 ```
 
-It is immutable after construction. Changing the camera within the innermost
-snapped cell reuses the current preview. Crossing a cell boundary shifts only
-entering rows and columns once the retained implementation is added; a full
-deterministic rebuild remains the correctness oracle.
+It is immutable after construction. Changing the camera within supported
+coverage reuses the current preview even though the view epoch advances.
+Crossing a snapped boundary requests the new spatial key; the guarded old front
+remains visible until replacement while it is still valid. Crossing a cell
+boundary shifts only entering rows and columns once the retained implementation
+is added; a full deterministic rebuild remains the correctness oracle.
 
 The current planetary preview uses a bounded north-pole gnomonic chart. Add a
 camera-aware support predicate that validates the hemisphere, finite projected
@@ -126,9 +160,9 @@ implementation.
 
 Use one persistent preview service, not one asynchronous task per camera event.
 It owns reusable scratch storage, one active request, and one replaceable
-pending-request slot. Submission copies a bounded request, replaces the pending
-request, requests cancellation of obsolete preview work, and returns in less
-than 2 ms without waiting for construction or destruction.
+pending-request slot keyed by `PreviewSpatialKey`. Submission copies a bounded
+request, replaces and cancels work only when its spatial key is obsolete, and
+returns in less than 2 ms without waiting for construction or destruction.
 
 The cold builder accepts a `std::stop_token` and checks it at least once per
 clipmap row and level, before costly allocation growth, and before publication.
@@ -193,9 +227,11 @@ upload unless that overlap is included in the accounting.
 Expose enough state to explain a bad frame without inferring ordering from
 timestamps:
 
-- current source epoch and field signature;
-- preview requested, running, CPU-published, and GPU-visible epochs;
-- exact requested and published source epochs plus exact-local generation;
+- current view epoch, field signature, desired preview spatial key, and chart;
+- preview requested/running keys and request epochs, CPU-published key, and
+  GPU-visible key;
+- visible coverage, guarded eligibility, and required-through view epoch;
+- exact requested and published view epochs plus exact-local generation;
 - preview retirement or rejection reason;
 - pending-request replacements, cancellation count, and cancellation latency;
 - cold/retained build, publication, upload, and exact-convergence timings;
@@ -215,6 +251,10 @@ visual failures can be tied to the exact coordinator state.
   origin shifts.
 - Stale, canceled, rejected, unsupported, or partially uploaded preview work
   cannot become visible.
+- Sub-cell motion never hides or rebuilds an eligible preview. Spatial-key
+  replacement does not hide the guarded old front before its coverage expires.
+- Under 60--120 Hz camera input with an injected 100 ms cold build, valid
+  previews continue to publish; request-epoch churn alone cannot starve them.
 - Exact publication, rollback, resource rejection, and hashes behave
   identically with preview enabled or disabled.
 - Disabling preview produces byte-identical exact hierarchy, surface, and
@@ -241,6 +281,11 @@ visual failures can be tied to the exact coordinator state.
 - [x] Add `TerrainFrontCoordinator`, shared source identities, exact source-
       epoch tagging, and exhaustive transition-table tests. Do not integrate a
       worker until exact/preview retirement is proven independently of timing.
+- [ ] Split view ordering from preview spatial identity: add
+      `TerrainViewIdentity`, `PreviewSpatialKey`, deterministic guarded
+      `PreviewCoverage`, and derived coverage compatibility. Preserve eligible
+      fronts across view epochs and prove non-starving publication with
+      60--120 Hz synthetic motion and 100 ms delayed completions.
 - [ ] Add camera-aware planetary chart validation and typed preview outcomes;
       make every unsupported or failed path retain the last exact display.
 - [ ] Add the persistent coalescing worker, cooperative cold-builder
