@@ -238,7 +238,7 @@ visual failures can be tied to the exact coordinator state.
 - [x] Implement the deterministic cold geometry-clipmap oracle with welded
       ring stitches, oriented triangles, analytic normals, and topology/hash
       tests.
-- [ ] Add `TerrainFrontCoordinator`, shared source identities, exact source-
+- [x] Add `TerrainFrontCoordinator`, shared source identities, exact source-
       epoch tagging, and exhaustive transition-table tests. Do not integrate a
       worker until exact/preview retirement is proven independently of timing.
 - [ ] Add camera-aware planetary chart validation and typed preview outcomes;

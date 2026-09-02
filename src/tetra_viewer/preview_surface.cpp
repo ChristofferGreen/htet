@@ -91,28 +91,7 @@ bool preview_surface_supported(const tetra::Sphere& field) noexcept {
 
 std::uint64_t preview_surface_field_signature(
     const tetra::Sphere& field) noexcept {
-  std::uint64_t hash=fnv_offset;
-  hash_u64(hash,static_cast<std::uint64_t>(field.kind));
-  hash_double(hash,field.centre.x);hash_double(hash,field.centre.y);
-  hash_double(hash,field.centre.z);hash_double(hash,field.radius);
-  hash_double(hash,field.secondary);hash_double(hash,field.frequency);
-  hash_double(hash,field.sampling_footprint);
-  const auto& p=field.terrain;
-  const double values[]{p.height_offset,p.landform_amplitude,p.landform_frequency,
-      p.mountain_amplitude,p.mountain_ridge_frequency,p.mountain_range_frequency,
-      p.planetary_mountain_amplitude_scale,p.planetary_mountain_frequency_scale,
-      p.planetary_mountain_fade_start,p.planetary_mountain_fade_end,
-      p.gameplay_hill_amplitude,p.gameplay_hill_frequency,
-      p.gameplay_feature_amplitude,p.gameplay_feature_frequency,
-      p.gameplay_region_frequency,p.gameplay_corridor_depth,
-      p.gameplay_warp_amplitude,p.gameplay_warp_frequency,
-      p.ground_roughness_amplitude,p.ground_roughness_frequency,
-      p.spawn_flat_radius,p.spawn_blend_radius,p.planet_radius,
-      p.analytic_ridge_height,p.analytic_ridge_centre_z,
-      p.analytic_ridge_half_width};
-  for(const double value:values)hash_double(hash,value);
-  hash_u64(hash,p.analytic_ridge?1U:0U);
-  return hash;
+  return terrain_field_signature(field);
 }
 
 std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
@@ -121,8 +100,12 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
   const auto started=std::chrono::steady_clock::now();
   if(!preview_surface_supported(field))
     throw std::invalid_argument("preview surface requires height-field terrain");
-  if(request.generation==0U)
-    throw std::invalid_argument("preview request generation must be nonzero");
+  if(!request.source.valid())
+    throw std::invalid_argument("preview request source identity is invalid");
+  if(request.source.camera_signature!=terrain_camera_signature(request.camera))
+    throw std::invalid_argument("preview request camera identity is stale");
+  if(request.source.field_signature!=preview_surface_field_signature(field))
+    throw std::invalid_argument("preview request field identity is stale");
   if(configuration.level_count<1U||configuration.level_count>16U)
     throw std::invalid_argument("preview level count must be between 1 and 16");
   if(configuration.cells_per_side<4U||
@@ -135,10 +118,8 @@ std::shared_ptr<const PreviewSurfaceFront> build_preview_surface_front(
     throw std::invalid_argument("preview finest spacing must be finite and positive");
 
   auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
-  front->request_generation_=request.generation;
+  front->source_identity_=request.source;
   front->source_camera_=request.camera;
-  front->field_revision_=request.field_revision;
-  front->field_signature_=preview_surface_field_signature(field);
   const double half_spacing=configuration.finest_spacing*0.5;
   const auto chart=preview_chart_coordinates(field,request.camera.position);
   const auto snap=[](double coordinate,double spacing){

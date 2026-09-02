@@ -1853,8 +1853,11 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
     camera_.forward={0.0,-0.2,-1.0};
   }
   last_requested_camera_=camera_;
+  source_identity_=make_terrain_source_identity(
+      1U,1U,terrain_field_signature(field_),camera_);
   auto initial=build_publication(
-      profile_,field_,camera_,1U,{}, {}, {}, {}, {}, {},executor_.get());
+      profile_,field_,camera_,1U,source_identity_,{}, {}, {}, {}, {}, {},
+      executor_.get());
   if(initial.residency_budget_exceeded)
     throw std::length_error(
         "initial world front exceeds its volume residency budget");
@@ -1888,12 +1891,14 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   finalize_render_front_metrics(initial.diagnostics);
   directory_=std::move(initial.directory);
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
+  published_source_identity_=initial.source_identity;
   surface_cache_=std::move(initial.surface_cache);
   hierarchy_demand_=std::move(initial.hierarchy_demand);
   detail_working_set_=std::move(initial.detail_working_set);
   atmosphere_shadow_front_=std::move(initial.atmosphere_shadow_front);
   flat_scene_current_=false;
   requested_generation_=1U;demand_pending_=false;
+  exact_requested_source_epoch_=source_identity_.source_epoch;
   diagnostics_.submitted_builds=1U;
   diagnostics_.cpu_high_water_bytes=diagnostics_.resident_bytes;
   diagnostics_.triangle_high_water=diagnostics_.resident_render_triangles;
@@ -2057,6 +2062,7 @@ void BlockedTerrainRuntime::submit_atmosphere_shadow() {
 BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     const WorldProfile& profile,const tetra::Sphere& field,
     const tetra::Camera& camera,std::uint64_t generation,
+    TerrainSourceIdentity source_identity,
     SparseWorldSurfaceCache surface_cache,
     WorldHierarchyDemandState hierarchy_demand,
     TerrainDetailWorkingSet detail_working_set,
@@ -2365,6 +2371,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   diagnostics.world_revision=directory->revision();
   diagnostics.scene_mesh_revision=directory->revision();
   diagnostics.scene_generation=generation;
+  diagnostics.exact_requested_source_epoch=source_identity.source_epoch;
+  diagnostics.exact_published_source_epoch=source_identity.source_epoch;
   diagnostics.published_camera_position=camera.position;
   diagnostics.published_camera_forward=camera.forward;
   diagnostics.hierarchy_hash=directory->canonical_cut_hash();
@@ -2710,13 +2718,15 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       diagnostics.field_sample_hash*=prime;
     }
   }
-  return {std::move(directory),std::move(hierarchy_update),std::move(scene),diagnostics,
+  return {source_identity,std::move(directory),std::move(hierarchy_update),
+          std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
           std::move(atmosphere_shadow_front),std::move(detail_working_set),
           false,false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
+    canceled.source_identity=source_identity;
     canceled.diagnostics.work_units=completed_work_units;
     canceled.surface_cache=std::move(surface_cache);
     canceled.hierarchy_demand=std::move(hierarchy_demand);
@@ -2788,20 +2798,24 @@ void BlockedTerrainRuntime::submit() {
   pending_detail_working_set_.reset();
   const auto atmosphere_shadow_request=atmosphere_shadow_request_;
   const auto generation=++requested_generation_;
+  const auto source_identity=source_identity_;
+  exact_requested_source_epoch_=source_identity.source_epoch;
   auto surface_cache=std::move(surface_cache_);
   cancellation_=std::stop_source{};
   const auto token=cancellation_.get_token();
   const auto executor=executor_;
   auto directory=std::make_unique<tetra::WorldCutDirectory>(*directory_);
   future_=std::async(std::launch::async,
-      [profile,field,camera,generation,token,volume_pins,hierarchy_demand,
+      [profile,field,camera,generation,source_identity,token,volume_pins,
+       hierarchy_demand,
        detail_working_set,
        atmosphere_shadow_request,
        executor,
        surface_cache=std::move(surface_cache),
        directory=std::move(directory)]() mutable {
     return build_publication(
-        profile,field,camera,generation,std::move(surface_cache),
+        profile,field,camera,generation,source_identity,
+        std::move(surface_cache),
         hierarchy_demand,detail_working_set,atmosphere_shadow_request,
         volume_pins,token,
         executor.get(),std::move(directory));
@@ -2811,8 +2825,28 @@ void BlockedTerrainRuntime::submit() {
   demand_pending_=false;diagnostics_.converged=false;
 }
 
+void BlockedTerrainRuntime::set_source_identity(
+    const TerrainSourceIdentity& source) {
+  if(!source.valid())
+    throw std::invalid_argument("terrain source identity must be valid");
+  if(source.source_epoch<source_identity_.source_epoch)
+    throw std::invalid_argument("terrain source epoch cannot move backwards");
+  if(source.source_epoch==source_identity_.source_epoch&&
+     source!=source_identity_)
+    throw std::invalid_argument(
+        "one terrain source epoch cannot identify two sources");
+  if(source.field_signature!=terrain_field_signature(field_))
+    throw std::invalid_argument(
+        "terrain source identity does not match the runtime field");
+  source_identity_=source;
+}
+
 void BlockedTerrainRuntime::set_camera(
     const tetra::Camera& camera,bool interactive) {
+  if(source_identity_.source_epoch>published_source_identity_.source_epoch&&
+     source_identity_.camera_signature!=terrain_camera_signature(camera))
+    throw std::invalid_argument(
+        "terrain camera does not match its pending source identity");
   const auto delta=camera.position-last_requested_camera_.position;
   const double distance_squared=
       delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
@@ -2934,6 +2968,15 @@ void BlockedTerrainRuntime::set_camera(
   camera_interactive_=interactive;
   demand_pending_=demand_pending_||demand_changed||
       (interaction_ended&&settled_pose_changed);
+  // A source epoch may advance even though the exact cut remains fully valid
+  // (for example, motion below the exact LOD threshold). Retag that accepted
+  // front immediately so a preview for the same source does not wait forever
+  // for an exact build that is intentionally unnecessary.
+  if(!future_.valid()&&!demand_pending_&&
+     source_identity_.source_epoch>published_source_identity_.source_epoch){
+    published_source_identity_=source_identity_;
+    diagnostics_.exact_published_source_epoch=source_identity_.source_epoch;
+  }
   // Interactive camera input is an unbounded stream. Canceling the active
   // publication for every new pose can starve publication forever while the
   // player walks. Keep the complete in-flight front, coalesce all newer poses
@@ -3132,6 +3175,7 @@ bool BlockedTerrainRuntime::update() {
         previous_resources.upload_bytes>published_resources.upload_bytes
             ?previous_resources.upload_bytes-published_resources.upload_bytes:0U};
     scene_=std::move(publication.scene);
+    published_source_identity_=publication.source_identity;
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
     hierarchy_demand_=std::move(publication.hierarchy_demand);
@@ -3160,6 +3204,11 @@ bool BlockedTerrainRuntime::update() {
         cumulative.work_high_water,diagnostics_.work_units);
     diagnostics_.upload_high_water_bytes=std::max(
         cumulative.upload_high_water_bytes,diagnostics_.uploaded_render_bytes);
+    if(!demand_pending_&&
+       source_identity_.source_epoch>published_source_identity_.source_epoch){
+      published_source_identity_=source_identity_;
+      diagnostics_.exact_published_source_epoch=source_identity_.source_epoch;
+    }
     active_superseded_=false;
     diagnostics_.reused_hierarchy_blocks=
         publication.hierarchy_update.metrics.reused_blocks;

@@ -387,10 +387,12 @@ still-image appearance alone.
       [`progressive-world-preview.md`](progressive-world-preview.md).
   - [x] Add the immutable preview snapshot and cold welded geometry-clipmap
         oracle without placing preview data in `WorldCutDirectory`.
-  - [ ] Add a pure front coordinator with one shared source-view epoch for exact
-        and preview products, camera-aware chart support, typed failure paths,
-        exact coverage compatibility, and transition tests for stale,
-        canceled, rejected, failed-upload, and out-of-order completions.
+  - [x] Add a pure front coordinator with one shared source-view epoch for exact
+        and preview products, exact coverage compatibility, and transition
+        tests for stale, canceled, rejected, failed-upload, and out-of-order
+        completions.
+  - [ ] Add camera-aware planetary chart support and typed preview failure paths
+        that retain the last exact display for unsupported camera positions.
   - [ ] Add one persistent coalescing preview worker with cooperative cold-build
         cancellation and bounded scratch ownership; prove submission remains
         below 2 ms without starving the independent exact worker.

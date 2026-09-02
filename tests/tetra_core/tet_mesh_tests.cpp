@@ -20,6 +20,7 @@
 #include "tetra_viewer/image_oracle.hpp"
 #include "tetra_viewer/mesh_update_worker.hpp"
 #include "tetra_viewer/projection.hpp"
+#include "tetra_viewer/preview_surface.hpp"
 #include "tetra_viewer/scene_preparation_worker.hpp"
 #include "tetra_viewer/shadow_cascades.hpp"
 #include "tetra_viewer/terrain_runtime.hpp"
@@ -2803,6 +2804,9 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   const auto initial=runtime.diagnostics();
   REQUIRE(initial.converged);
   REQUIRE(initial.scene_generation>0U);
+  CHECK(initial.exact_requested_source_epoch==1U);
+  CHECK(initial.exact_published_source_epoch==1U);
+  CHECK(runtime.published_source_identity().source_epoch==1U);
   CHECK(initial.published_camera_position.x==0.5);
   CHECK(initial.published_camera_position.y==0.72);
   CHECK(initial.published_camera_position.z==0.78);
@@ -3278,6 +3282,10 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   camera.position.x=runtime.diagnostics().published_camera_position.x+0.001;
   camera.position.y=runtime.diagnostics().published_camera_position.y;
   camera.position.z=runtime.diagnostics().published_camera_position.z;
+  const auto exact_source=tetra_viewer::make_terrain_source_identity(
+      2U,1U,tetra_viewer::preview_surface_field_signature(runtime.field()),
+      camera);
+  runtime.set_source_identity(exact_source);
   runtime.set_camera(camera,false);
   static_cast<void>(runtime.update());
   CHECK(runtime.diagnostics().submitted_builds==submitted+1U);
@@ -3285,6 +3293,16 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   CHECK(runtime.diagnostics().published_camera_position.x==camera.position.x);
   CHECK(runtime.diagnostics().published_camera_position.y==camera.position.y);
   CHECK(runtime.diagnostics().published_camera_position.z==camera.position.z);
+  CHECK(runtime.diagnostics().exact_requested_source_epoch==2U);
+  CHECK(runtime.diagnostics().exact_published_source_epoch==2U);
+  CHECK(runtime.published_source_identity()==exact_source);
+  auto wrong_field=exact_source;
+  ++wrong_field.source_epoch;
+  ++wrong_field.field_signature;
+  CHECK_THROWS_AS(runtime.set_source_identity(wrong_field),std::invalid_argument);
+  auto old_source=exact_source;
+  --old_source.source_epoch;
+  CHECK_THROWS_AS(runtime.set_source_identity(old_source),std::invalid_argument);
   const auto settled_submissions=runtime.diagnostics().submitted_builds;
   const auto final_generation=runtime.diagnostics().scene_generation;
   const auto final_position=runtime.diagnostics().published_camera_position;
@@ -3297,6 +3315,19 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   CHECK_FALSE(runtime.diagnostics().busy);
   CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
   CHECK(runtime.diagnostics().scene_generation==final_generation);
+
+  camera.position=final_position;
+  camera.position.x+=1.0e-10;
+  const auto compatible_source=tetra_viewer::make_terrain_source_identity(
+      3U,1U,tetra_viewer::terrain_field_signature(runtime.field()),camera);
+  runtime.set_source_identity(compatible_source);
+  runtime.set_camera(camera,false);
+  CHECK_FALSE(runtime.update());
+  CHECK_FALSE(runtime.diagnostics().busy);
+  CHECK(runtime.diagnostics().submitted_builds==settled_submissions);
+  CHECK(runtime.diagnostics().scene_generation==final_generation);
+  CHECK(runtime.diagnostics().exact_published_source_epoch==3U);
+  CHECK(runtime.published_source_identity()==compatible_source);
 }
 
 TEST_CASE("blocked world builds its first front for the requested startup camera") {

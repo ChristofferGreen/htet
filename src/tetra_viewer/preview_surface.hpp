@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_core/implicit_surface.hpp"
+#include "tetra_viewer/terrain_front_coordinator.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -54,9 +55,8 @@ struct PreviewSurfaceConfiguration {
 };
 
 struct PreviewSurfaceRequest {
-  std::uint64_t generation{};
+  TerrainSourceIdentity source;
   tetra::Camera camera;
-  std::uint64_t field_revision{};
 };
 
 // A complete preview publication is a read-only value. Construction is only
@@ -69,17 +69,20 @@ class PreviewSurfaceFront final {
   PreviewSurfaceFront(PreviewSurfaceFront&&)=delete;
   PreviewSurfaceFront& operator=(PreviewSurfaceFront&&)=delete;
 
+  [[nodiscard]] const TerrainSourceIdentity& source_identity() const noexcept {
+    return source_identity_;
+  }
   [[nodiscard]] std::uint64_t request_generation() const noexcept {
-    return request_generation_;
+    return source_identity_.source_epoch;
   }
   [[nodiscard]] const tetra::Camera& source_camera() const noexcept {
     return source_camera_;
   }
   [[nodiscard]] std::uint64_t field_revision() const noexcept {
-    return field_revision_;
+    return source_identity_.field_revision;
   }
   [[nodiscard]] std::uint64_t field_signature() const noexcept {
-    return field_signature_;
+    return source_identity_.field_signature;
   }
   [[nodiscard]] std::span<const PreviewSurfaceLevelOrigin> level_origins()
       const noexcept { return level_origins_; }
@@ -104,10 +107,8 @@ class PreviewSurfaceFront final {
                               const tetra::Sphere&,
                               PreviewSurfaceConfiguration);
 
-  std::uint64_t request_generation_{};
+  TerrainSourceIdentity source_identity_;
   tetra::Camera source_camera_;
-  std::uint64_t field_revision_{};
-  std::uint64_t field_signature_{};
   std::vector<PreviewSurfaceLevelOrigin> level_origins_;
   std::vector<PreviewSurfaceVertex> vertices_;
   std::vector<std::uint32_t> indices_;

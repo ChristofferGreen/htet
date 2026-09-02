@@ -34,6 +34,17 @@ tetra::Sphere planetary_production_field() {
   return field;
 }
 
+tetra_viewer::PreviewSurfaceRequest preview_request(
+    std::uint64_t epoch,tetra::Vec3 position,const tetra::Sphere& field,
+    std::uint64_t field_revision) {
+  tetra_viewer::PreviewSurfaceRequest request;
+  request.camera.position=position;
+  request.source=tetra_viewer::make_terrain_source_identity(
+      epoch,field_revision,
+      tetra_viewer::preview_surface_field_signature(field),request.camera);
+  return request;
+}
+
 double dot(tetra::Vec3 first,tetra::Vec3 second) {
   return first.x*second.x+first.y*second.y+first.z*second.z;
 }
@@ -51,8 +62,7 @@ static_assert(!std::is_move_assignable_v<tetra_viewer::PreviewSurfaceFront>);
 
 TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
   const auto field=planar_production_field();
-  tetra_viewer::PreviewSurfaceRequest request{
-      .generation=7U,.camera={.position={-2.31,4.0,-1.19}},.field_revision=19U};
+  const auto request=preview_request(7U,{-2.31,4.0,-1.19},field,19U);
   const auto front=tetra_viewer::build_preview_surface_front(request,field);
   REQUIRE(front);
   CHECK(front->request_generation()==7U);
@@ -66,6 +76,15 @@ TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
   CHECK(front->diagnostics().boundary_edge_count==64U);
   CHECK(front->diagnostics().cpu_bytes<64U*1024U*1024U);
   CHECK(front->diagnostics().upload_bytes<16U*1024U*1024U);
+
+  auto stale_camera=request;
+  stale_camera.camera.position.x+=1.0;
+  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
+                      stale_camera,field),std::invalid_argument);
+  auto changed_field=field;
+  changed_field.terrain.height_offset+=1.0;
+  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
+                      request,changed_field),std::invalid_argument);
 
   std::set<std::pair<std::int64_t,std::int64_t>> coordinates;
   for(const auto& vertex:front->vertices())
@@ -86,8 +105,7 @@ TEST_CASE("cold preview clipmap is welded and two manifold across ring seams") {
 
 TEST_CASE("preview winding and analytic terrain normals survive negative origins") {
   const auto field=planar_production_field();
-  tetra_viewer::PreviewSurfaceRequest request{
-      .generation=1U,.camera={.position={-19.93,3.0,-11.87}},.field_revision=2U};
+  const auto request=preview_request(1U,{-19.93,3.0,-11.87},field,2U);
   const auto front=tetra_viewer::build_preview_surface_front(request,field);
   REQUIRE(front->level_origins()[0].sample_x<0);
   REQUIRE(front->level_origins()[0].sample_z<0);
@@ -114,10 +132,8 @@ TEST_CASE("preview winding and analytic terrain normals survive negative origins
 
 TEST_CASE("preview origin is stable within a snapped finest cell and hashes deterministically") {
   const auto field=planar_production_field();
-  tetra_viewer::PreviewSurfaceRequest first_request{
-      .generation=3U,.camera={.position={-0.24,2.0,0.26}},.field_revision=4U};
-  auto second_request=first_request;
-  second_request.camera.position={-0.14,7.0,0.34};
+  const auto first_request=preview_request(3U,{-0.24,2.0,0.26},field,4U);
+  auto second_request=preview_request(4U,{-0.14,7.0,0.34},field,4U);
   const auto first=tetra_viewer::build_preview_surface_front(first_request,field);
   const auto repeated=tetra_viewer::build_preview_surface_front(first_request,field);
   const auto within=tetra_viewer::build_preview_surface_front(second_request,field);
@@ -126,22 +142,23 @@ TEST_CASE("preview origin is stable within a snapped finest cell and hashes dete
   CHECK(std::ranges::equal(first->level_origins(),within->level_origins(),{},
       [](const auto& value){return std::tuple{value.level,value.sample_x,value.sample_z};},
       [](const auto& value){return std::tuple{value.level,value.sample_x,value.sample_z};}));
-  second_request.camera.position.x=-0.26;
+  second_request=preview_request(5U,{-0.26,7.0,0.34},field,4U);
   const auto shifted=tetra_viewer::build_preview_surface_front(second_request,field);
   CHECK(first->diagnostics().geometry_hash!=shifted->diagnostics().geometry_hash);
   CHECK(first->level_origins()[0].sample_x!=shifted->level_origins()[0].sample_x);
   auto changed_field=field;
   changed_field.terrain.height_offset+=0.25;
+  const auto changed_request=preview_request(
+      6U,first_request.camera.position,changed_field,5U);
   const auto changed=tetra_viewer::build_preview_surface_front(
-      first_request,changed_field);
+      changed_request,changed_field);
   CHECK(first->field_signature()!=changed->field_signature());
   CHECK(first->diagnostics().geometry_hash!=changed->diagnostics().geometry_hash);
 }
 
 TEST_CASE("preview supports production planetary terrain and rejects non terrain shapes") {
   const auto field=planetary_production_field();
-  tetra_viewer::PreviewSurfaceRequest request{
-      .generation=5U,.camera={.position={0.5,3.0,0.5}},.field_revision=6U};
+  const auto request=preview_request(5U,{0.5,3.0,0.5},field,6U);
   const auto front=tetra_viewer::build_preview_surface_front(request,field);
   REQUIRE(front);
   CHECK(front->diagnostics().maximum_edge_incidence==2U);
@@ -181,7 +198,10 @@ TEST_CASE("preview supports production planetary terrain and rejects non terrain
   }
   auto sphere=field;sphere.kind=tetra::ImplicitShapeKind::sphere;
   CHECK_FALSE(tetra_viewer::preview_surface_supported(sphere));
-  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(request,sphere),
+  const auto sphere_request=preview_request(
+      6U,request.camera.position,sphere,6U);
+  CHECK_THROWS_AS((void)tetra_viewer::build_preview_surface_front(
+                      sphere_request,sphere),
                   std::invalid_argument);
 
   auto ridge=field;
@@ -210,8 +230,7 @@ TEST_CASE("preview construction cannot mutate exact world authority") {
   for(const auto& block:checkpoint.blocks)
     block_hashes.push_back(tetra::hierarchy_block_canonical_hash(block));
   const auto front=tetra_viewer::build_preview_surface_front(
-      {.generation=11U,.camera={.position={-1.0,2.0,-1.0}},.field_revision=9U},
-      field);
+      preview_request(11U,{-1.0,2.0,-1.0},field,9U),field);
   REQUIRE(front);
   CHECK(directory.canonical_cut_hash()==cut_hash);
   const auto after=directory.checkpoint();
@@ -220,4 +239,132 @@ TEST_CASE("preview construction cannot mutate exact world authority") {
   for(std::size_t index=0;index<after.blocks.size();++index)
     CHECK(tetra::hierarchy_block_canonical_hash(after.blocks[index])==
           block_hashes[index]);
+}
+
+TEST_CASE("terrain front coordinator allocates shared source epochs and deduplicates identity") {
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra::Camera camera;
+  camera.position={1.0,2.0,3.0};
+  const auto first=coordinator.observe_source(camera,4U,17U);
+  CHECK(first.source_epoch==1U);
+  CHECK(first.camera_signature==tetra_viewer::terrain_camera_signature(camera));
+  CHECK(coordinator.observe_source(camera,4U,17U)==first);
+  const tetra_viewer::TerrainFrontCoordinator restored(first);
+  CHECK(restored.state().current_source==first);
+  REQUIRE(restored.state().exact_published);
+  CHECK(*restored.state().exact_published==first);
+  REQUIRE(coordinator.request_preview(first));
+  REQUIRE(coordinator.complete_preview(
+      first,tetra_viewer::PreviewFrontOutcome::ready));
+  REQUIRE(coordinator.complete_preview_upload(first,91U,true));
+  REQUIRE(coordinator.state().preview_visible);
+
+  camera.position.x+=0.25;
+  const auto second=coordinator.observe_source(camera,4U,17U);
+  CHECK(second.source_epoch==2U);
+  CHECK_FALSE(coordinator.state().preview_visible);
+  CHECK(coordinator.state().preview_retirement_reason==
+        tetra_viewer::PreviewRetirementReason::source_changed);
+
+  const auto field_changed=coordinator.observe_source(camera,5U,23U);
+  CHECK(field_changed.source_epoch==3U);
+  CHECK(field_changed.field_revision==5U);
+  CHECK(field_changed.field_signature==23U);
+}
+
+TEST_CASE("terrain front coordinator rejects every non published preview outcome safely") {
+  const std::array outcomes{
+      tetra_viewer::PreviewFrontOutcome::superseded,
+      tetra_viewer::PreviewFrontOutcome::canceled,
+      tetra_viewer::PreviewFrontOutcome::unsupported,
+      tetra_viewer::PreviewFrontOutcome::resource_rejected,
+      tetra_viewer::PreviewFrontOutcome::failed};
+  for(const auto outcome:outcomes){
+    CAPTURE(outcome);
+    tetra_viewer::TerrainFrontCoordinator coordinator;
+    tetra::Camera camera;
+    const auto source=coordinator.observe_source(camera,2U,7U);
+    coordinator.publish_exact(
+        source,tetra_viewer::ExactPreviewCoverage::compatible);
+    REQUIRE(coordinator.request_preview(source));
+    CHECK_FALSE(coordinator.complete_preview(source,outcome));
+    REQUIRE(coordinator.state().exact_published);
+    CHECK(*coordinator.state().exact_published==source);
+    CHECK_FALSE(coordinator.state().preview_awaiting_upload);
+    CHECK_FALSE(coordinator.state().preview_visible);
+    REQUIRE(coordinator.state().last_preview_outcome);
+    CHECK(*coordinator.state().last_preview_outcome==outcome);
+  }
+}
+
+TEST_CASE("terrain front coordinator never exposes failed or stale uploads") {
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra::Camera camera;
+  const auto first=coordinator.observe_source(camera,2U,7U);
+  coordinator.publish_exact(first,tetra_viewer::ExactPreviewCoverage::compatible);
+  REQUIRE(coordinator.request_preview(first));
+  REQUIRE(coordinator.complete_preview(
+      first,tetra_viewer::PreviewFrontOutcome::ready));
+  CHECK_FALSE(coordinator.complete_preview_upload(first,31U,false));
+  CHECK_FALSE(coordinator.state().preview_visible);
+  REQUIRE(coordinator.state().last_preview_outcome);
+  CHECK(*coordinator.state().last_preview_outcome==
+        tetra_viewer::PreviewFrontOutcome::upload_failed);
+  REQUIRE(coordinator.state().exact_published);
+  CHECK(*coordinator.state().exact_published==first);
+
+  camera.position.x=1.0;
+  const auto second=coordinator.observe_source(camera,2U,7U);
+  REQUIRE(coordinator.request_preview(second));
+  CHECK_FALSE(coordinator.complete_preview(
+      first,tetra_viewer::PreviewFrontOutcome::ready));
+  CHECK_FALSE(coordinator.complete_preview_upload(first,32U,true));
+  CHECK_FALSE(coordinator.state().preview_visible);
+}
+
+TEST_CASE("terrain front coordinator retires preview only for compatible caught up exact coverage") {
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra::Camera camera;
+  const auto first=coordinator.observe_source(camera,3U,11U);
+  coordinator.publish_exact(first,tetra_viewer::ExactPreviewCoverage::compatible);
+  camera.position.z=2.0;
+  const auto second=coordinator.observe_source(camera,3U,11U);
+  REQUIRE(coordinator.request_preview(second));
+  REQUIRE(coordinator.complete_preview(
+      second,tetra_viewer::PreviewFrontOutcome::ready));
+  REQUIRE(coordinator.complete_preview_upload(second,44U,true));
+
+  coordinator.publish_exact(first,tetra_viewer::ExactPreviewCoverage::compatible);
+  REQUIRE(coordinator.state().preview_visible);
+  CHECK(coordinator.state().preview_visible->source==second);
+  REQUIRE(coordinator.state().exact_published);
+  CHECK(*coordinator.state().exact_published==first);
+
+  coordinator.publish_exact(second,tetra_viewer::ExactPreviewCoverage::incompatible);
+  REQUIRE(coordinator.state().preview_visible);
+  auto wrong_field=second;
+  ++wrong_field.field_revision;
+  coordinator.publish_exact(
+      wrong_field,tetra_viewer::ExactPreviewCoverage::compatible);
+  REQUIRE(coordinator.state().preview_visible);
+
+  coordinator.publish_exact(second,tetra_viewer::ExactPreviewCoverage::compatible);
+  CHECK_FALSE(coordinator.state().preview_visible);
+  CHECK(coordinator.state().preview_retirement_reason==
+        tetra_viewer::PreviewRetirementReason::exact_handoff);
+}
+
+TEST_CASE("caught up exact publication cancels a preview awaiting upload") {
+  tetra_viewer::TerrainFrontCoordinator coordinator;
+  tetra::Camera camera;
+  const auto source=coordinator.observe_source(camera,1U,5U);
+  REQUIRE(coordinator.request_preview(source));
+  REQUIRE(coordinator.complete_preview(
+      source,tetra_viewer::PreviewFrontOutcome::ready));
+  coordinator.publish_exact(source,tetra_viewer::ExactPreviewCoverage::compatible);
+  CHECK_FALSE(coordinator.state().preview_requested);
+  CHECK_FALSE(coordinator.state().preview_awaiting_upload);
+  CHECK_FALSE(coordinator.complete_preview_upload(source,8U,true));
+  CHECK(coordinator.state().preview_retirement_reason==
+        tetra_viewer::PreviewRetirementReason::exact_handoff);
 }
