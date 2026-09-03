@@ -260,6 +260,18 @@ because it is faster.
   - [x] Capture coherent detailed reference and RT-comparison render-smoke
         identities at a common 960x600/720x450/4x profile. Treat the two
         single samples as route evidence only, not as a performance promotion.
+  - [x] Add a fixed-identity, 300-completed-frame timing-profile harness with
+        stable, continuous-motion, forced-physical-refresh, preview,
+        exact-handoff, and RT classes. It reports median/p95/p99/max and its
+        timing/configuration identity, and excludes startup command buffers.
+  - [x] Record uncontended detailed distributions for stable, moving,
+        lookup-refresh, and preview classes at 1440x900/1008x630/2x/MetalFX.
+        Refresh (7.6154 ms median) and motion (6.8588 ms) exceed steady
+        rendering (5.5181 ms); do not rank a saving until exact-handoff and RT
+        distributions use the same completed-frame readiness rule.
+  - [ ] Make exact-handoff and RT timing-profile readiness bounded and prove
+        their 300-frame distributions before completing P2; then rank gains by
+        frequency, percentile, and bandwidth and retire immaterial work.
 - [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
       Sweep one table's resolution and samples at a time against its specific
       oracle, including the Hillaire 200x100 sky-view reference point. Compare

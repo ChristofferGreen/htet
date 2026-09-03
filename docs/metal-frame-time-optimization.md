@@ -280,6 +280,30 @@ set and different transport semantics are insufficient to promote a route or
 rank an optimization; retain it as evidence that P2 needs distributions rather
 than a single terminal-frame time.
 
+### P2 fixed-identity distribution harness
+
+The release executable now provides `--metal-timing-profile-smoke-test`.
+It collects exactly 300 completed command-buffer GPU intervals after terrain,
+preview, RT, and capture-readiness gates, then emits median, p95, p99, maximum,
+full configuration identity, and lookup/RT liveness.  Set
+`TETWORLD_METAL_TIMING_PROFILE` to `stable`, `moving`, `lookup-refresh`,
+`preview`, `exact-handoff`, or `ray-tracing`; the harness uses a fixed 0.70
+render scale so adaptive resolution cannot make workload classes incomparable.
+`lookup-refresh` deliberately changes a physical sun key for every retained
+frame, rather than hiding a refresh among cache hits.  Runs remain headless
+with `TETWORLD_METAL_BACKGROUND=1`.
+
+On 2026-09-03, detailed timestamp runs at 1440x900 output, 1008x630 internal,
+2x MSAA, MetalFX, transport 2, renderer 3 measured: stable 5.5181/6.1065/
+6.7196/20.7786 ms (median/p95/p99/max); continuous movement 6.8588/7.7553/
+8.6619/20.8958 ms; and forced physical lookup refresh 7.6154/10.3015/
+11.3194/22.1557 ms.  The latter issued 301 sky-view and irradiance lookups;
+the stable run issued one each. Preview measured 6.0360/6.8156/10.7095/
+12.2967 ms and published a 5.99 MB preview upload. These are initial evidence,
+not a promotion: the exact-handoff and RT classes still need a bounded
+readiness completion and uncontended distributions before P2 can rank or
+retire candidates.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

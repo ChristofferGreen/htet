@@ -41,6 +41,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <numeric>
 #include <optional>
@@ -1744,6 +1745,41 @@ struct MetalGpuStageTimings {
   std::atomic<bool> metalfx{};
 };
 
+// A profile sample is deliberately recorded by the command-buffer completion
+// handler, rather than by the producer loop.  This makes its GPU interval the
+// same completed interval used by the adaptive-resolution controller.
+struct MetalTimingProfileSamples {
+  mutable std::mutex mutex;
+  std::vector<double> gpu_milliseconds;
+
+  void add(double milliseconds) {
+    std::lock_guard lock(mutex);
+    // The producer can submit a few frames ahead of the completion handler.
+    // Cap at the declared sample count so a profile has a fixed, comparable
+    // population even while the main loop observes the terminal condition.
+    if(gpu_milliseconds.size()<300U)gpu_milliseconds.push_back(milliseconds);
+  }
+
+  [[nodiscard]] std::size_t size() const {
+    std::lock_guard lock(mutex);
+    return gpu_milliseconds.size();
+  }
+
+  [[nodiscard]] std::vector<double> ordered() const {
+    std::lock_guard lock(mutex);
+    auto result=gpu_milliseconds;
+    std::ranges::sort(result);
+    return result;
+  }
+};
+
+double timing_percentile(const std::vector<double>& ordered,double fraction) {
+  if(ordered.empty())return 0.0;
+  const auto index=static_cast<std::size_t>(std::ceil(
+      fraction*static_cast<double>(ordered.size()-1U)));
+  return ordered[std::min(index,ordered.size()-1U)];
+}
+
 constexpr NSUInteger gpu_base_timestamp_count=7U;
 constexpr NSUInteger gpu_timestamp_count=17U;
 constexpr std::size_t gpu_timestamp_flight_count=3U;
@@ -3024,6 +3060,34 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-metalfx-smoke-test")==0;
   const bool auto_resolution_test=argc==2&&
       std::strcmp(argv[1],"--metal-auto-resolution-smoke-test")==0;
+  const bool timing_profile_test=argc==2&&
+      std::strcmp(argv[1],"--metal-timing-profile-smoke-test")==0;
+  enum class TimingProfileClass { stable, moving, lookup_refresh, preview,
+                                  exact_handoff, ray_tracing };
+  TimingProfileClass timing_profile_class=TimingProfileClass::stable;
+  const char* timing_profile_class_name="stable";
+  if(timing_profile_test){
+    const char* requested=std::getenv("TETWORLD_METAL_TIMING_PROFILE");
+    if(requested!=nullptr&&requested[0]!='\0'){
+      if(std::strcmp(requested,"stable")==0){}
+      else if(std::strcmp(requested,"moving")==0)
+        timing_profile_class=TimingProfileClass::moving;
+      else if(std::strcmp(requested,"lookup-refresh")==0)
+        timing_profile_class=TimingProfileClass::lookup_refresh;
+      else if(std::strcmp(requested,"preview")==0)
+        timing_profile_class=TimingProfileClass::preview;
+      else if(std::strcmp(requested,"exact-handoff")==0)
+        timing_profile_class=TimingProfileClass::exact_handoff;
+      else if(std::strcmp(requested,"ray-tracing")==0)
+        timing_profile_class=TimingProfileClass::ray_tracing;
+      else {
+        std::fprintf(stderr,"TETWORLD_METAL_TIMING_PROFILE must be stable, "
+            "moving, lookup-refresh, preview, exact-handoff, or ray-tracing\\n");
+        return 2;
+      }
+      timing_profile_class_name=requested;
+    }
+  }
   const bool overlay_test=argc==2&&
       std::strcmp(argv[1],"--metal-overlay-smoke-test")==0;
   const bool shadow_test=argc==2&&
@@ -3056,11 +3120,12 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-validate-geometry")==0;
   const bool capture_test=write_capture||validation_test;
   const bool automated_test=smoke_test||motion_test||render_test||metalfx_test||
-      auto_resolution_test||overlay_test||shadow_test||capture_test||
+      auto_resolution_test||timing_profile_test||overlay_test||shadow_test||capture_test||
       any_atmosphere_frame_test||atmosphere_quality_test||terrain_ray_oracle_test;
   const bool profile_interactive_rendering=
-      (auto_resolution_test||render_test||atmosphere_capture)&&
-      std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr;
+      (auto_resolution_test||render_test||atmosphere_capture||timing_profile_test)&&
+      (std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr||
+       timing_profile_test);
   bool preview_enabled=!automated_test;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
@@ -3070,8 +3135,14 @@ int main(int argc,char** argv) {
       return 2;
     }
   }
+  if(timing_profile_test&&
+     (timing_profile_class==TimingProfileClass::preview||
+      timing_profile_class==TimingProfileClass::exact_handoff))
+    preview_enabled=true;
   const bool require_exact_handoff_capture=
-      std::getenv("TETWORLD_METAL_CAPTURE_EXACT_HANDOFF")!=nullptr;
+      std::getenv("TETWORLD_METAL_CAPTURE_EXACT_HANDOFF")!=nullptr||
+      (timing_profile_test&&
+       timing_profile_class==TimingProfileClass::exact_handoff);
   const bool visible_test_window=automated_test&&
       std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
   const bool background_requested=
@@ -3089,6 +3160,7 @@ int main(int argc,char** argv) {
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
      !motion_test&&!render_test&&!metalfx_test&&!auto_resolution_test&&
+     !timing_profile_test&&
      !overlay_test&&!shadow_test&&!capture_test){
     std::fprintf(stderr,"usage: %s [--metal-device-check|"
                         "--metal-ray-visibility-smoke-test|"
@@ -3110,6 +3182,7 @@ int main(int argc,char** argv) {
                         "--metal-render-smoke-test|"
                         "--metal-metalfx-smoke-test|"
                         "--metal-auto-resolution-smoke-test|"
+                        "--metal-timing-profile-smoke-test|"
                         "--metal-overlay-smoke-test|"
                         "--metal-shadow-smoke-test|"
                         "--script-help|--script <commands>|"
@@ -3517,6 +3590,9 @@ int main(int argc,char** argv) {
       }
       atmosphere_transport=static_cast<int>(value);
     }
+    if(timing_profile_test&&
+       timing_profile_class==TimingProfileClass::ray_tracing)
+      atmosphere_transport=1;
     // Metal defaults to the qualified temporal screen marcher. The legacy
     // current-qualified fragment path remains selectable for comparison, but
     // its coherent low-sun visibility bands are not suitable as production
@@ -3581,10 +3657,15 @@ int main(int argc,char** argv) {
     bool runtime_camera_interactive=false;
     // 0 native, 1 fixed, 2 automatic. Automated captures stay native and
     // single-sampled so their depth oracle remains pixel-aligned with Vulkan.
-    int render_resolution_mode=(auto_resolution_test||
-                                profile_interactive_rendering)?2:
-        (metalfx_test?1:(automated_test?0:2));
-    float fixed_render_scale=2.0F/3.0F;
+    // P2 profiles use a fixed 0.70 scale.  Allowing the controller to react
+    // to a deliberately expensive refresh/motion class changes the pixel
+    // population under measurement and makes its percentile incomparable to
+    // the steady class.
+    int render_resolution_mode=auto_resolution_test?2:
+        (timing_profile_test?1:
+         profile_interactive_rendering?2:
+        (metalfx_test?1:(automated_test?0:2)));
+    float fixed_render_scale=timing_profile_test?0.70F:2.0F/3.0F;
     float automatic_render_scale=auto_resolution_test?0.5F:2.0F/3.0F;
     float automatic_minimum_scale=1.0F/3.0F;
     float automatic_maximum_scale=1.0F;
@@ -3615,6 +3696,7 @@ int main(int argc,char** argv) {
     auto gpu_stage_timings=std::make_shared<MetalGpuStageTimings>();
     auto cpu_submission_milliseconds=
         std::make_shared<std::atomic<double>>(0.0);
+    auto timing_profile_samples=std::make_shared<MetalTimingProfileSamples>();
     std::uint64_t consumed_gpu_frame_sequence{};
     glfwSetInputMode(window,GLFW_CURSOR,pointer_captured?
                      GLFW_CURSOR_DISABLED:GLFW_CURSOR_NORMAL);
@@ -3867,7 +3949,11 @@ int main(int argc,char** argv) {
         // Exercise both halves of the application camera protocol: move long
         // enough to publish interactive work, then release input and wait for
         // the exact settled pose before completing the smoke test.
-        if(motion_test&&scene_vertex_count!=0U&&motion_rendered_frames<30U)
+        if((motion_test||
+            (timing_profile_test&&
+             timing_profile_class==TimingProfileClass::moving))&&
+           scene_vertex_count!=0U&&
+           (!timing_profile_test||timing_profile_samples->size()<300U))
           movement.forward=1.0;
         if(metalfx_test&&scene_vertex_count!=0U&&metalfx_test_frames<20U){
           movement.forward=1.0;
@@ -4257,6 +4343,13 @@ int main(int argc,char** argv) {
           sun_azimuth+=0.125F;
           lookup_invalidation_sun_changed=true;
         }
+        // The refresh class intentionally changes a physical lookup key every
+        // sampled frame.  It measures rebuild work, rather than accidentally
+        // reporting a mostly-cache-hit average with one startup refresh.
+        if(timing_profile_test&&
+           timing_profile_class==TimingProfileClass::lookup_refresh&&
+           scene_vertex_count!=0U&&timing_profile_samples->size()<300U)
+          sun_azimuth+=0.003F;
         id<CAMetalDrawable> drawable=[layer nextDrawable];
         if(drawable==nil)continue;
 
@@ -5916,6 +6009,7 @@ int main(int argc,char** argv) {
         const auto timing_destination=gpu_frame_milliseconds;
         const auto timing_sequence=gpu_frame_sequence;
         const auto stage_destination=gpu_stage_timings;
+        const auto profile_destination=timing_profile_samples;
         const auto acceleration_structure_milliseconds=
             terrain_acceleration_structure.last_build_milliseconds;
         const auto acceleration_structure_timing_valid=
@@ -5934,6 +6028,12 @@ int main(int argc,char** argv) {
             .transport=atmosphere_transport,
             .renderer=atmosphere_renderer,
             .metalfx=metalfx_temporal_active};
+        // Startup uploads and empty drawables are not representative rendered
+        // frames.  In particular, including them hid forced lookup refreshes
+        // behind the asynchronous terrain startup in early P2 runs.
+        const bool timing_profile_sample_eligible=timing_profile_test&&
+            scene_vertex_count!=0U&&requested_preview_capture_ready&&
+            requested_rt_capture_ready&&requested_profile_capture_ready;
         const bool timing_includes_metalfx=metalfx_temporal_active;
         id<MTLBuffer> stage_results=gpu_timestamp_results;
         const auto timestamp_flight_in_use=gpu_timestamp_flight==nullptr?
@@ -5945,6 +6045,9 @@ int main(int argc,char** argv) {
             timing_destination->store(
                 (completed.GPUEndTime-completed.GPUStartTime)*1000.0,
                 std::memory_order_relaxed);
+            if(timing_profile_sample_eligible)
+              profile_destination->add(
+                  (completed.GPUEndTime-completed.GPUStartTime)*1000.0);
             const std::uint64_t completed_sequence=
                 timing_sequence->fetch_add(1U,std::memory_order_relaxed)+1U;
             if(stage_results!=nil){
@@ -6120,6 +6223,7 @@ int main(int argc,char** argv) {
                              diagnostics.converged&&!diagnostics.busy))&&
             (!auto_resolution_test||auto_resolution_test_frames>=
                  (profile_interactive_rendering?300U:120U))&&
+            (!timing_profile_test||timing_profile_samples->size()>=300U)&&
             (!overlay_test||overlay_test_frames>=10U)&&
             (!shadow_test||shadow_test_frames>=3U)&&
             (!any_atmosphere_frame_test||atmosphere_test_frames>=12U);
@@ -6782,6 +6886,51 @@ int main(int argc,char** argv) {
                               terrain_display_front.render_generation),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.active_generation),
+                          passed?"true":"false");
+              if(!passed)result=1;
+            }else if(timing_profile_test){
+              const auto ordered=timing_profile_samples->ordered();
+              const bool all_positive=!ordered.empty()&&
+                  ordered.front()>0.0&&std::isfinite(ordered.back());
+              const bool exact_handoff_ready=
+                  timing_profile_class!=TimingProfileClass::exact_handoff||
+                  (terrain_display_front.preview_cpu==nullptr&&
+                   terrain_front_coordinator.state().preview_retirement_reason==
+                       tetra_viewer::PreviewRetirementReason::exact_handoff);
+              const bool ray_trace_ready=
+                  timing_profile_class!=TimingProfileClass::ray_tracing||
+                  (terrain_acceleration_structure.active!=nil&&
+                   terrain_acceleration_structure.build_count!=0U);
+              const bool passed=ordered.size()==300U&&all_positive&&
+                  exact_handoff_ready&&ray_trace_ready;
+              std::printf("{\"event\":\"metal_timing_profile\","
+                          "\"class\":\"%s\",\"samples\":%zu,"
+                          "\"median_ms\":%.4f,\"p95_ms\":%.4f,"
+                          "\"p99_ms\":%.4f,\"max_ms\":%.4f,"
+                          "\"stage_timestamps\":%s,"
+                          "\"drawable\":\"%dx%d\",\"internal\":\"%dx%d\","
+                          "\"samples_per_pixel\":%lu,\"transport\":%d,"
+                          "\"renderer\":%d,\"metalfx\":%s,"
+                          "\"preview\":%s,\"exact_handoff\":%s,"
+                          "\"rt_builds\":%llu,\"sky_view_dispatches\":%llu,"
+                          "\"irradiance_dispatches\":%llu,\"passed\":%s}\n",
+                          timing_profile_class_name,ordered.size(),
+                          timing_percentile(ordered,0.50),
+                          timing_percentile(ordered,0.95),
+                          timing_percentile(ordered,0.99),ordered.back(),
+                          gpu_stage_timestamps_enabled?"true":"false",
+                          width,height,render_width,render_height,
+                          static_cast<unsigned long>(allocated_samples),
+                          atmosphere_transport,atmosphere_renderer,
+                          metalfx_temporal_active?"true":"false",
+                          preview_enabled?"true":"false",
+                          exact_handoff_ready?"true":"false",
+                          static_cast<unsigned long long>(
+                              terrain_acceleration_structure.build_count),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[2]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[4]),
                           passed?"true":"false");
               if(!passed)result=1;
             }else if(auto_resolution_test){
