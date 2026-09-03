@@ -6,6 +6,14 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P4a final | command: `./scripts/compile.sh --release` after adding the opt-in legacy-scan control | failures: none | notes: all 472 tests passed; matched native 300-frame candidate/control profiles and paired mountain capture also passed.
+
+- 2026-09-03 local | pass | mode: release P4a full validation | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after native-offset packing; Metal shader translation compiled all 17 compute kernels, the reference kernel, and 11 graphics stages.
+
+- 2026-09-03 local | pass | mode: release P4a focused | command: `./scripts/compile.sh --release --skip-tests` followed by rebuilt `tetra_tests --test-case='atmosphere endpoint*'` | failures: none | notes: 190 assertions passed. The first shader build caught a missing reference-endpoint representative-coordinate declaration; it was corrected before the successful rebuild.
+
+- 2026-09-03 local | fail | mode: release P4a focused | command: `./scripts/compile.sh --release --skip-tests` | failures: `atmosphere_reference_hillaire.comp` | notes: representative native coordinate was referenced before the reference endpoint reducer retained it; corrected by recording the nearest source coordinate.
+
 - 2026-09-03 local | pass | mode: release Metal stabilization | command: `./scripts/compile.sh --release`; rebuilt hidden motion and terrain-ray-oracle smokes | failures: none | notes: all 471 tests passed in 410.86 s; motion now settles with zero pose error after a 0.00515666-unit protocol displacement and the published-terrain CPU/Metal ray oracle has 0/384 mismatches.
 
 - 2026-09-03 local | pass | mode: P3 native Metal 200x100 sky-view qualification | command: `bash scripts/qualify_metal_sky_view_reference.sh` after a fresh Release build | failures: none | notes: all paired back-lit mountain, direct-sun, flight, atmosphere-top, orbit, and nearby orbital-motion captures passed their native physical smoke; max candidate/control NRMS was 0.0008831 and orbital drift was 0.0087133 versus 0.0086921 control. Lookup refresh was 0.3893 ms versus 0.7947 ms; moving p95 was 6.3272 versus 6.6986 ms. Visual inspection found no foreground Mie cutout and a continuous blue limb.

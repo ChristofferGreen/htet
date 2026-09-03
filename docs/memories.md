@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Generated preview `SceneVertex` values must set `diagnostics[0]` to `-2.0F` and carry both flat geometric and analytic smooth normals so the shader selects connected-world rendering and receiver-plane shadow bias remains valid.
 - Evidence: Without the marker the scene shader applied its research cut plane and produced a rectangular 2D terrain cutout; release seam, cascade-shadow, and back-lit atmosphere captures passed after using the connected-world marker and separate normals.
 
+### metal-reconstructed-native-offset
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, reconstruction, performance
+- Fact: Reduced endpoint metadata packs sky as zero and an opaque representative native-depth offset as one plus its 4x4 row-major index, allowing integration to avoid a second depth-footprint scan.
+- Evidence: Exhaustive 1x--4x CPU pack/unpack coverage, native mountain/orbit captures, and a matched 300-frame profile measured 5.6530/6.8453 ms median/p95 versus the opt-in legacy scan's 6.4474/7.1798 ms.
+
 ### metal-shadow-profile
 - Updated: 2026-09-03
 - Tags: metal, atmosphere, profiling

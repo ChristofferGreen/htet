@@ -620,6 +620,15 @@ unpack helpers plus exhaustive divisor/offset tests. At the qualified 480x300
 atmosphere extent this avoids up to about 2.3 MB of repeated depth reads for a
 fully opaque 2x2 reduction, before cache effects.
 
+P4a promoted this handoff on 2026-09-03. Sky is encoded as zero; an opaque
+representative is one plus its 4x4 row-major offset, so all 1x--4x divisors
+fit exactly in the class lane while retaining the existing opaque threshold.
+Exhaustive CPU packing tests, native mountain/orbit captures, and the full
+472-test release gate passed. A matched 300-frame native profile at 1440x900
+output / 1008x630 internal resolution measured 5.6530/6.8453 ms median/p95
+for the packed path versus 6.4474/7.1798 ms for the opt-in legacy scan;
+paired mountain captures differed by 0.0000339 normalized RMSE.
+
 Integration also reads and rewrites `screen_endpoint` only to combine geometric
 transition confidence with shadow-transition confidence. The compositor ignores
 the alpha channels of screen radiance and transmittance. Test carrying the

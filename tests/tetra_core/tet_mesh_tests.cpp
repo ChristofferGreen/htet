@@ -899,6 +899,39 @@ TEST_CASE("atmosphere endpoint reduction conservatively retains foreground depth
       std::array<float,4>{0.0F,0.0F,0.0F,0.0F},0.0));
 }
 
+TEST_CASE("atmosphere endpoint native offsets preserve every supported footprint") {
+  using tetra_viewer::AtmosphereEndpointClass;
+  for(const std::uint32_t divisor:{1U,2U,3U,4U}){
+    const auto sky=tetra_viewer::pack_atmosphere_endpoint_native_offset(
+        AtmosphereEndpointClass::sky,divisor);
+    REQUIRE(sky);
+    CHECK(*sky==0U);
+    const auto decoded_sky=tetra_viewer::unpack_atmosphere_endpoint_native_offset(
+        *sky,divisor);
+    REQUIRE(decoded_sky);
+    CHECK(decoded_sky->classification==AtmosphereEndpointClass::sky);
+    for(std::uint32_t y=0U;y<divisor;++y)for(std::uint32_t x=0U;x<divisor;++x){
+      const auto packed=tetra_viewer::pack_atmosphere_endpoint_native_offset(
+          AtmosphereEndpointClass::opaque,divisor,x,y);
+      REQUIRE(packed);
+      const auto decoded=tetra_viewer::unpack_atmosphere_endpoint_native_offset(
+          *packed,divisor);
+      REQUIRE(decoded);
+      CHECK(decoded->classification==AtmosphereEndpointClass::opaque);
+      CHECK(decoded->x==x);
+      CHECK(decoded->y==y);
+    }
+  }
+  CHECK_FALSE(tetra_viewer::pack_atmosphere_endpoint_native_offset(
+      AtmosphereEndpointClass::opaque,0U));
+  CHECK_FALSE(tetra_viewer::pack_atmosphere_endpoint_native_offset(
+      AtmosphereEndpointClass::opaque,4U,4U,0U));
+  CHECK_FALSE(tetra_viewer::pack_atmosphere_endpoint_native_offset(
+      AtmosphereEndpointClass::sky,2U,1U,0U));
+  CHECK_FALSE(tetra_viewer::unpack_atmosphere_endpoint_native_offset(17U,4U));
+  CHECK_FALSE(tetra_viewer::unpack_atmosphere_endpoint_native_offset(16U,3U));
+}
+
 TEST_CASE("atmosphere reconstruction never mixes endpoint classes or distant depths") {
   using tetra_viewer::AtmosphereEndpointClass;
   using tetra_viewer::AtmosphereReducedEndpoint;

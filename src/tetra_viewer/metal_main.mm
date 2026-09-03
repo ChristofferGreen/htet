@@ -2198,7 +2198,8 @@ void encode_deterministic_screen_atmosphere(
     std::uint64_t terrain_generation,float terrain_ray_maximum_distance,
     bool ray_traced_visibility,
     std::uint32_t ray_query_count,bool temporal,
-    id<MTLCounterSampleBuffer> timestamp_samples=nil) {
+    id<MTLCounterSampleBuffer> timestamp_samples=nil,
+    bool legacy_native_depth_scan=false) {
   resources.history_present_valid=false;
   const bool reference=uniform[53]>=9.5F;
   if(resources.last_visibility_backend_ray_traced!=ray_traced_visibility)
@@ -2302,7 +2303,7 @@ void encode_deterministic_screen_atmosphere(
       use_ray_traced_visibility?ray_query_count:
       tetra_viewer::atmosphere_visibility_refresh_intervals(
           temporal,compatibility),
-      visibility_control};
+      visibility_control|(legacy_native_depth_scan?1024U:0U)};
   // Endpoint reconstruction establishes exactly the same camera ray and
   // maximum distance that the integration pass will use.  Query each of its
   // 32 radial sample positions directly against terrain before consuming it.
@@ -3312,6 +3313,8 @@ int main(int argc,char** argv) {
       return 2;
     }
   }
+  const bool legacy_native_depth_scan=
+      std::getenv("TETWORLD_METAL_LEGACY_NATIVE_DEPTH_SCAN")!=nullptr;
   // Automated runs must not steal focus or briefly flash a window. Keep an
   // explicit visible mode for debugging, and retain the old hidden variable
   // as a backwards-compatible no-op in the already-hidden default case.
@@ -5931,7 +5934,8 @@ int main(int argc,char** argv) {
               frame_visibility_plan.effective==
                   tetra_viewer::AtmosphereVisibilityBackend::ray_traced,
               frame_visibility_plan.rotating_queries_per_pixel,
-              atmosphere_renderer==3,gpu_timestamp_samples);
+              atmosphere_renderer==3,gpu_timestamp_samples,
+              legacy_native_depth_scan);
           reference_screen_integration_encoded_this_frame=
               atmosphere_transport==2;
         }

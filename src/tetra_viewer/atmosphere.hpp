@@ -550,6 +550,25 @@ struct AtmosphereReducedEndpoint {
   std::uint32_t generation{};
 };
 
+// A reduced endpoint stores this compact native coordinate in its class lane:
+// zero denotes sky, and opaque offsets are one plus their 4x4 row-major index.
+// The representation is deliberately independent of a particular reduction
+// divisor, so every 1x--4x footprint uses the same GPU-safe 0--16 range.
+struct AtmosphereEndpointNativeOffset {
+  AtmosphereEndpointClass classification{AtmosphereEndpointClass::sky};
+  std::uint32_t x{};
+  std::uint32_t y{};
+};
+
+[[nodiscard]] std::optional<std::uint32_t>
+pack_atmosphere_endpoint_native_offset(
+    AtmosphereEndpointClass classification,std::uint32_t divisor,
+    std::uint32_t x=0U,std::uint32_t y=0U) noexcept;
+
+[[nodiscard]] std::optional<AtmosphereEndpointNativeOffset>
+unpack_atmosphere_endpoint_native_offset(
+    std::uint32_t packed,std::uint32_t divisor) noexcept;
+
 // Conservatively represents a 2x2 native footprint with its nearest opaque
 // endpoint. An all-clear footprint remains sky. Invalid depth is rejected so
 // it cannot enter temporal history as apparently valid geometry.

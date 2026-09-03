@@ -406,13 +406,17 @@ void generate_endpoint(ivec2 coordinate) {
   float nearest_distance=1.0e30;
   float farthest_distance=0.0;
   int surface_count=0;
+  ivec2 representative=min(base,depth_size-1);
   for(int y=0;y<4;++y)for(int x=0;x<4;++x){
     if(x>=divisor||y>=divisor)continue;
-    const float distance=surface_endpoint_distance(
-        min(base+ivec2(x,y),depth_size-1),depth_size);
+    const ivec2 source=min(base+ivec2(x,y),depth_size-1);
+    const float distance=surface_endpoint_distance(source,depth_size);
     if(distance>0.0){
       ++surface_count;
-      nearest_distance=min(nearest_distance,distance);
+      if(distance<nearest_distance){
+        nearest_distance=distance;
+        representative=source;
+      }
       farthest_distance=max(farthest_distance,distance);
     }
   }
@@ -423,7 +427,8 @@ void generate_endpoint(ivec2 coordinate) {
   const float class_confidence=(surface_count==0||
       surface_count==divisor*divisor)?1.0:0.0;
   imageStore(screen_endpoint,coordinate,
-      vec4(linear_depth,opaque?1.0:0.0,
+      vec4(linear_depth,opaque?1.0+float((representative-base).y*4+
+               (representative-base).x):0.0,
            class_confidence*(1.0-clamp(depth_spread/0.05,0.0,1.0)),
            uintBitsToFloat(dispatch_mode.reserved0)));
 }
@@ -452,16 +457,18 @@ void generate_scattering(ivec2 coordinate) {
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
   const bool opaque=endpoint.y>0.5;
-  ivec2 representative=min(base,depth_size-1);
-  if(opaque){
+  const uint packed=uint(round(endpoint.y));
+  const uint offset=packed>0U?packed-1U:0U;
+  ivec2 representative=min(base+ivec2(int(offset&3U),int(offset>>2U)),
+      depth_size-1);
+  if(opaque&&(dispatch_mode.reserved2&1024U)!=0U){
     float nearest_distance=1.0e30;
     for(int y=0;y<4;++y)for(int x=0;x<4;++x){
       if(x>=divisor||y>=divisor)continue;
       const ivec2 source=min(base+ivec2(x,y),depth_size-1);
       const float distance=surface_endpoint_distance(source,depth_size);
       if(distance>0.0&&distance<nearest_distance){
-        nearest_distance=distance;
-        representative=source;
+        nearest_distance=distance;representative=source;
       }
     }
   }

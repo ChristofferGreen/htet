@@ -20,7 +20,7 @@ layout(set=0,binding=6) uniform sampler2DArray sun_shadow_map;
 layout(set=0,binding=12) uniform sampler2D scene_depth;
 layout(rgba16f,set=0,binding=13) uniform image2D screen_scattering;
 layout(rgba16f,set=0,binding=14) uniform image2D screen_transmittance;
-// x = linear endpoint depth, y = sky/opaque class, z = transition
+// x = linear endpoint depth, y = packed sky/opaque class plus native offset, z = transition
 // confidence, w = bit-preserving result-generation identity.
 layout(rgba32f,set=0,binding=15) uniform image2D screen_endpoint;
 layout(rgba16f,set=0,binding=16) uniform image2D history_scattering_0;
@@ -1665,6 +1665,20 @@ vec3 integrate_reconstructed_screen(vec3 origin,vec3 direction,
   return radiance;
 }
 
+float pack_reconstructed_endpoint_offset(bool opaque,ivec2 offset) {
+  return opaque?1.0+float(offset.y*4+offset.x):0.0;
+}
+
+bool reconstructed_endpoint_is_opaque(vec4 endpoint) {
+  return endpoint.y>0.5;
+}
+
+ivec2 unpack_reconstructed_endpoint_offset(vec4 endpoint) {
+  const uint packed=uint(round(endpoint.y));
+  const uint offset=packed>0U?packed-1U:0U;
+  return ivec2(int(offset&3U),int(offset>>2U));
+}
+
 void generate_reconstructed_endpoint(ivec2 coordinate) {
   const ivec2 output_size=active_screen_size();
   if(any(greaterThanEqual(coordinate,output_size)))return;
@@ -1698,7 +1712,8 @@ void generate_reconstructed_endpoint(ivec2 coordinate) {
   const float transition_confidence=class_confidence*
       (1.0-clamp(depth_spread/0.05,0.0,1.0));
   imageStore(screen_endpoint,coordinate,
-      vec4(linear_depth,opaque?1.0:0.0,transition_confidence,
+      vec4(linear_depth,pack_reconstructed_endpoint_offset(opaque,
+               representative-base),transition_confidence,
            uintBitsToFloat(dispatch_mode.reserved0)));
 }
 
@@ -1712,22 +1727,23 @@ void generate_reconstructed_scattering(ivec2 coordinate) {
   const int divisor=clamp(int(dispatch_mode.reserved0),1,4);
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
-  const bool opaque=endpoint.y>0.5;
-  ivec2 representative=min(base,depth_size-1);
-  if(opaque){
+  const bool opaque=reconstructed_endpoint_is_opaque(endpoint);
+  const ivec2 representative=min(base+unpack_reconstructed_endpoint_offset(
+      endpoint),depth_size-1);
+  // P4a's test-only control preserves the old scan for paired measurements.
+  // Production always uses the endpoint-selected native coordinate above.
+  ivec2 legacy_representative=representative;
+  if(opaque&&(dispatch_mode.reserved2&1024U)!=0U){
     float nearest_depth=0.0;
     for(int y=0;y<4;++y)for(int x=0;x<4;++x){
       if(x>=divisor||y>=divisor)continue;
       const ivec2 source=min(base+ivec2(x,y),depth_size-1);
       const float depth=texelFetch(scene_depth,source,0).r;
-      if(depth>nearest_depth){
-        nearest_depth=depth;
-        representative=source;
-      }
+      if(depth>nearest_depth){nearest_depth=depth;legacy_representative=source;}
     }
   }
   const vec2 uv=opaque?
-      (vec2(representative)+0.5)/vec2(depth_size):
+      (vec2(legacy_representative)+0.5)/vec2(depth_size):
       (vec2(base)+vec2(float(divisor)*0.5))/vec2(depth_size);
   ivec2 visibility_history_coordinate=coordinate;
   uint visibility_control=dispatch_mode.reserved2;

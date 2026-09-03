@@ -1173,6 +1173,28 @@ AtmosphereInvalidation atmosphere_invalidation(
           optical || albedo || phase || solar};
 }
 
+std::optional<std::uint32_t> pack_atmosphere_endpoint_native_offset(
+    AtmosphereEndpointClass classification,std::uint32_t divisor,
+    std::uint32_t x,std::uint32_t y) noexcept {
+  if(divisor==0U||divisor>4U||x>=divisor||y>=divisor)return std::nullopt;
+  if(classification==AtmosphereEndpointClass::sky)
+    return x==0U&&y==0U?std::optional<std::uint32_t>{0U}:std::nullopt;
+  return 1U+y*4U+x;
+}
+
+std::optional<AtmosphereEndpointNativeOffset>
+unpack_atmosphere_endpoint_native_offset(
+    std::uint32_t packed,std::uint32_t divisor) noexcept {
+  if(divisor==0U||divisor>4U)return std::nullopt;
+  if(packed==0U)return AtmosphereEndpointNativeOffset{};
+  if(packed>16U)return std::nullopt;
+  const std::uint32_t offset=packed-1U;
+  const std::uint32_t x=offset&3U;
+  const std::uint32_t y=offset>>2U;
+  if(x>=divisor||y>=divisor)return std::nullopt;
+  return AtmosphereEndpointNativeOffset{AtmosphereEndpointClass::opaque,x,y};
+}
+
 std::optional<AtmosphereReducedEndpoint> reduce_atmosphere_endpoint_2x2(
     const std::array<float,4>& reversed_depth,
     double near_plane_metres,std::uint32_t generation) noexcept {

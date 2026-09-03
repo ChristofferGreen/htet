@@ -299,21 +299,12 @@ because it is faster.
         0.7865/0.9445 ms at 384x216 and passed mountain/sun still captures
         (normalized RMS 0.000884/0.000424). Do not promote it until motion,
         surface-to-orbit, and numeric/oracle qualification pass.
-- [ ] Eliminate the resolved-history-to-screen publish copy by binding the
-      active history generation directly, but only after P1 proves temporal
-      accumulation under jitter and physical camera motion. Split the
-      all-`RGBA32Float` shared Metal atmosphere texture factory by semantic
-      role; test `RGBA16Float`
-      radiance/transmittance and private GPU storage before scalar
-      transmittance or pass fusion. Pack the representative native-depth offset
-      so integration does not search opaque depth blocks again, and propagate
-      shadow-transition confidence without rewriting the endpoint image. In
-      the reference temporal route, skip screen integration and coloured-
-      history filtering for true sky endpoints whose final consumer is the sky
-      LUT, while still updating endpoint history for transitions and retaining
-      full work in diagnostics.
-      Reject any candidate that fails the numeric, depth-class, disocclusion,
-      orbital, or low-sun visual oracle (P4).
+### P4 tracker — transport storage and bandwidth
+
+P1's temporal-identity gate is complete. The completed publish-copy and
+radiance-storage experiments below are historical evidence; the remaining P4
+work is deliberately split into independently closable leaves. Do not combine
+their measurements, since each changes a different representation or route.
   - [x] Bind the active temporal history generation directly for composition,
         removing the mode-15 screen scattering/transmittance publish encoder.
         Reference and 832-frame MetalFX smoke pass; a mountain capture differs
@@ -331,6 +322,40 @@ because it is faster.
   - [x] Test GPU-private storage for radiance textures only. Mountain and
         invalidation smoke pass, but 5.5430/6.4891 ms median/p95 is neutral at
         median and worse at p95 than shared storage. Reject it as default.
+  - [x] **P4a — Carry the selected native-depth offset through endpoint
+        reconstruction.** Scope: pack the 0--3 x/y offset selected by the
+        endpoint reduction alongside its opaque class, decode it in the
+        integration pass, and remove only the duplicate opaque-depth scan.
+        Acceptance: named pack/unpack helpers have exhaustive 1x--4x
+        divisor/offset tests; sky, edge-clamped opaque, depth-class,
+        disocclusion, low-sun, and surface-to-orbit native checks retain the
+        current image oracle; a paired isolated timing records the result.
+        Result: exhaustive 1x--4x packing tests, native mountain/orbit checks,
+        and a matched 300-frame profile passed. It measured 5.6530/6.8453 ms
+        median/p95 versus 6.4474/7.1798 ms for the opt-in legacy scan; paired
+        mountain output differed by 0.0000339 normalized RMSE.
+  - [ ] **P4b — Move shadow-transition confidence out of the endpoint
+        rewrite.** Scope: carry integration's confidence in otherwise
+        non-composited screen transport metadata while preserving endpoint
+        history semantics. Acceptance: history acceptance/rejection and
+        finite-range diagnostics match the endpoint-write control in native
+        motion, disocclusion, low-sun, and orbital captures. Stop rule: reject
+        if it changes endpoint identity or cannot prove equivalent history
+        decisions.
+  - [ ] **P4c — Elide discarded reference-temporal sky transport.** Scope:
+        bypass radiometric screen integration and colour-history filtering only
+        for true sky endpoints whose final consumer is the reference sky LUT;
+        continue writing endpoint history and retain full diagnostic and
+        non-reference paths. Acceptance: endpoint transitions, visible sun,
+        mountain occlusion, motion, and orbit remain qualified, with a
+        class-normalized timing. Stop rule: reject on any stale, missing, or
+        physically unoccluded sky/terrain result.
+  - [ ] **P4d — Qualify remaining transport format/storage candidates.**
+        Scope: test transmittance and screen/history precision or storage one
+        semantic role at a time against the coloured-transmittance oracle.
+        Acceptance: isolated measurements plus numeric, disocclusion,
+        low-sun, and orbital validation. Stop rule: retain the existing
+        float32/shared form when quality or coherent timing does not win.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular
