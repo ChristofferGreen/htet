@@ -249,7 +249,7 @@ because it is faster.
         passes the image gate.
   - [x] Re-run the min/max comparison consumer after lazy hierarchy routing;
         it materializes the hierarchy and passes its atmosphere image gate.
-- [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
+- [x] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).
   - [x] Record a paired, steady reference-temporal 300-frame profile at the
@@ -269,12 +269,12 @@ because it is faster.
         Refresh (7.6154 ms median) and motion (6.8588 ms) exceed steady
         rendering (5.5181 ms); do not rank a saving until exact-handoff and RT
         distributions use the same completed-frame readiness rule.
-  - [ ] Prove the exact-handoff distribution before completing P2. Its profile
-        route now latches the real coordinator handoff and freezes preview
-        reacquisition only after that event, with the normal 180-second
-        automation bound; it still needs an uncontended completed run. Then
-        rank gains by frequency, percentile, and bandwidth and retire
-        immaterial work.
+  - [x] Complete the exact-handoff 300-frame distribution: 6.2241/6.9113/
+        7.2513/14.5423 ms at the fixed identity, after a real coordinator
+        handoff and its 5.99 MB transition upload. The ray-tracing comparison
+        likewise completed at 7.4274/8.4875/8.7629/27.5685 ms. P2's documented
+        threshold and ranking retire generic preview/post-handoff steady-pass
+        rewrites and prioritize lookup specialization.
 - [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
       Sweep one table's resolution and samples at a time against its specific
       oracle, including the Hillaire 200x100 sky-view reference point. Compare

@@ -310,6 +310,35 @@ instead of demanding that a normal interactive state remain true for 300
 frames. It retains the standard 180-second automated-run bound and still
 requires a completed uncontended distribution.
 
+### P2 ranking and retirement decision
+
+For this fixed identity, a promoted steady-frame optimization must plausibly
+save at least 0.10 ms median and 0.25 ms p95: both are comfortably above the
+0.0125/0.0260 ms median/p95 detailed-timestamp increment measured above.
+The classified evidence ranks the next investigations as follows:
+
+1. Physical lookup refresh is the dominant production-path cost (+2.10 ms
+   median, +4.20 ms p95 over steady). It rebuilt the sky-view and irradiance
+   tables on all 301 relevant frames. P3 owns table-specific measurement and
+   specialization; no lookup resolution/sample reduction is promoted here.
+2. Continuous motion is +1.34/+1.65 ms. It likewise refreshed those camera-
+   dependent tables 301 times, so P3 must first separate truly camera-dependent
+   data from screen and temporal inputs without invalidating physical output.
+3. The faithful ray-visibility comparison is +1.91/+2.38 ms but has transport
+   1 rather than the qualified transport 2 semantics. It is not a production
+   replacement or a direct ranking against reference; P7 owns AS/update cost.
+4. Exact handoff is +0.71/+0.80 ms. Its one 5.99 MB preview-transition upload
+   is a burst, not a recurring steady-frame bandwidth cost. Retire generic
+   post-handoff steady-pass optimization; retain P7's explicit upload/AS
+   measurement.
+5. Preview is +0.52/+0.71 ms. Retire a generic preview-compositing rewrite
+   from the frame-time chain: it is below the lookup/motion priority and its
+   measured upload is transition work, not a stable per-frame transfer.
+
+This is a prioritization decision, not a visual or numerical qualification of
+any new rendering algorithm. The existing production reference transport,
+terrain occlusion, and temporal path remain unchanged.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were
