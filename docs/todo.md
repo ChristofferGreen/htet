@@ -323,6 +323,9 @@ because it is faster.
         screen/history precision. Still and invalidation checks pass and save
         1.35 MB, but the 5.8508/6.6179 ms median/p95 stable profile regresses
         from float32's 5.5533/6.3560 ms. Reject it as the default.
+  - [x] Test GPU-private storage for radiance textures only. Mountain and
+        invalidation smoke pass, but 5.5430/6.4891 ms median/p95 is neutral at
+        median and worse at p95 than shared storage. Reject it as default.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular

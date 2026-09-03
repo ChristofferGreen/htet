@@ -423,6 +423,16 @@ history baseline (5.5533/6.3560 ms). Reject it as the production default: the
 small residency saving does not offset the measured regression, and it has not
 yet cleared broad numeric/orbital qualification.
 
+### P4 rejected private-radiance storage experiment
+
+`TETWORLD_METAL_PRIVATE_RADIANCE=1` allocates only radiance-role textures in
+GPU-private storage; CPU-readback and screen/history roles stay shared. The
+mountain capture and physical-sun invalidation smoke passed. Its fixed profile
+was 5.5430/6.4891 ms median/p95, statistically neutral at the median and worse
+at p95 than the shared float32 baseline's 5.5533/6.3560 ms. It does not meet
+the declared promotion threshold, so shared storage remains default and this
+experiment is rejected pending a device-specific pressure result.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

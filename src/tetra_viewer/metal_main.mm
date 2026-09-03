@@ -1016,6 +1016,7 @@ id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
 
 enum class AtmosphereTextureRole { radiance, transmittance, screen };
 bool atmosphere_half_radiance_experiment{};
+bool atmosphere_private_radiance_experiment{};
 
 id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
                                        NSUInteger height,NSUInteger depth=1U,
@@ -1040,7 +1041,9 @@ id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
   descriptor.depth=depth;
   descriptor.textureType=depth>1U?MTLTextureType3D:MTLTextureType2D;
   descriptor.mipmapLevelCount=1U;
-  descriptor.storageMode=MTLStorageModeShared;
+  descriptor.storageMode=role==AtmosphereTextureRole::radiance&&
+      atmosphere_private_radiance_experiment?
+          MTLStorageModePrivate:MTLStorageModeShared;
   descriptor.usage=MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite;
   return [device newTextureWithDescriptor:descriptor];
 }
@@ -3196,6 +3199,15 @@ int main(int argc,char** argv) {
     else if(std::strcmp(value,"1")==0)atmosphere_half_radiance_experiment=true;
     else {
       std::fprintf(stderr,"TETWORLD_METAL_HALF_RADIANCE must be 0 or 1\n");
+      return 2;
+    }
+  }
+  if(const char* value=std::getenv("TETWORLD_METAL_PRIVATE_RADIANCE");
+     value!=nullptr){
+    if(std::strcmp(value,"0")==0)atmosphere_private_radiance_experiment=false;
+    else if(std::strcmp(value,"1")==0)atmosphere_private_radiance_experiment=true;
+    else {
+      std::fprintf(stderr,"TETWORLD_METAL_PRIVATE_RADIANCE must be 0 or 1\n");
       return 2;
     }
   }
