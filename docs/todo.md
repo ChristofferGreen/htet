@@ -236,6 +236,9 @@ because it is faster.
   - [x] Lazily allocate 32-cubed froxel volumes behind type-correct 1x1x1
         fallbacks. The reference and froxel smoke routes assert both sides of
         the residency contract and preserve qualified images.
+  - [x] Lazily allocate the long-shadow atlas behind a 1x1 fallback. The
+        default route proves the fallback is retained; the native faithful
+        marcher proves full allocation, dispatch, and occlusion when consumed.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

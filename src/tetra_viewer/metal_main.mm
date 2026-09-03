@@ -1371,6 +1371,7 @@ struct MetalAtmosphereResources {
   id<MTLTexture> sky_view=nil;
   id<MTLTexture> sky_irradiance=nil;
   id<MTLTexture> long_shadow=nil;
+  id<MTLTexture> dummy_long_shadow=nil;
   id<MTLTexture> aerial_scattering=nil;
   id<MTLTexture> aerial_transmittance=nil;
   id<MTLTexture> froxel_scattering=nil;
@@ -1417,6 +1418,8 @@ struct MetalAtmosphereResources {
   std::uint64_t minmax_scene_generation{};
   int minmax_kind{};
   std::uint32_t atmosphere_shadow_resolution{};
+  std::uint32_t long_shadow_width{};
+  std::uint32_t long_shadow_height{};
   std::size_t minmax_element_count{};
   std::uint64_t ray_visibility_dispatches{};
   std::uint32_t last_ray_visibility_query_count{};
@@ -1543,8 +1546,8 @@ MetalAtmosphereResources make_live_atmosphere_resources(
       device,settings.sky_width,settings.sky_height);
   resources.sky_irradiance=make_atmosphere_texture(
       device,settings.irradiance_width,settings.irradiance_height);
-  resources.long_shadow=make_atmosphere_texture(
-      device,settings.long_shadow_width,settings.long_shadow_height);
+  resources.long_shadow_width=settings.long_shadow_width;
+  resources.long_shadow_height=settings.long_shadow_height;
   resources.aerial_scattering=make_atmosphere_texture(
       device,settings.aerial_width,settings.aerial_height,settings.aerial_depth);
   resources.aerial_transmittance=make_atmosphere_texture(
@@ -1557,6 +1560,8 @@ MetalAtmosphereResources make_live_atmosphere_resources(
   resources.froxel_scattering=resources.dummy_froxel_scattering;
   resources.froxel_transmittance=resources.dummy_froxel_transmittance;
   resources.dummy_screen=make_atmosphere_texture(device,1U,1U);
+  resources.dummy_long_shadow=make_atmosphere_texture(device,1U,1U);
+  resources.long_shadow=resources.dummy_long_shadow;
   MTLTextureDescriptor* shadow=[MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                   width:1U height:1U mipmapped:NO];
@@ -1604,6 +1609,7 @@ bool live_atmosphere_resources_valid(const MetalAtmosphereResources& resources) 
       resources.faithful_composite_pipeline!=nil&&
       resources.multiple_scattering!=nil&&resources.sky_view!=nil&&
       resources.sky_irradiance!=nil&&resources.long_shadow!=nil&&
+      resources.dummy_long_shadow!=nil&&
       resources.aerial_scattering!=nil&&
       resources.aerial_transmittance!=nil&&resources.froxel_scattering!=nil&&
       resources.froxel_transmittance!=nil&&resources.dummy_froxel_scattering!=nil&&
@@ -1656,6 +1662,14 @@ bool ensure_shadowed_froxel_resources(id<MTLDevice> device,
   resources.froxel_scattering=make_atmosphere_texture(device,32U,32U,32U);
   resources.froxel_transmittance=make_atmosphere_texture(device,32U,32U,32U);
   return resources.froxel_scattering!=nil&&resources.froxel_transmittance!=nil;
+}
+
+bool ensure_long_shadow_resources(id<MTLDevice> device,
+                                  MetalAtmosphereResources& resources) {
+  if(resources.long_shadow!=resources.dummy_long_shadow)return true;
+  resources.long_shadow=make_atmosphere_texture(
+      device,resources.long_shadow_width,resources.long_shadow_height);
+  return resources.long_shadow!=nil;
 }
 
 struct MetalTimingIdentity {
@@ -2297,10 +2311,12 @@ void encode_shadowed_froxel_atmosphere(
 }
 
 void encode_long_shadow_atmosphere(
-    id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
+    id<MTLDevice> device,id<MTLCommandBuffer> command,
+    MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
     std::uint64_t scene_generation) {
+  if(!ensure_long_shadow_resources(device,resources))return;
   const bool unchanged=resources.long_shadow_ready&&
       resources.last_long_scene_generation==scene_generation&&
       std::equal(resources.last_long_uniform.begin(),
@@ -5498,7 +5514,7 @@ int main(int argc,char** argv) {
            atmosphere_transport!=0&&long_shadow_consumed&&
            scene_vertex_count!=0U)
           encode_long_shadow_atmosphere(
-              command_buffer,atmosphere_resources,
+              device,command_buffer,atmosphere_resources,
               stable_atmosphere_lookup_uniform,
               production_shadows,shadow_texture,
               terrain_display_front.render_generation);
@@ -6457,6 +6473,9 @@ int main(int argc,char** argv) {
                        atmosphere_resources.dummy_froxel_scattering&&
                    atmosphere_resources.froxel_transmittance==
                        atmosphere_resources.dummy_froxel_transmittance);
+              const bool long_shadow_resources_lazy=long_shadow_consumed||
+                  atmosphere_resources.long_shadow==
+                      atmosphere_resources.dummy_long_shadow;
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6472,7 +6491,8 @@ int main(int argc,char** argv) {
                     atmosphere_resources.last_ray_visibility_query_count==1U))&&
                   timing_passed&&temporal_accounting_passed&&
                   long_shadow_dispatch_passed&&lookup_invalidation_passed&&
-                  reference_visibility_resources_absent&&froxel_resources_lazy;
+                  reference_visibility_resources_absent&&froxel_resources_lazy&&
+                  long_shadow_resources_lazy;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6503,6 +6523,7 @@ int main(int argc,char** argv) {
                           "\"froxel_dispatches\":%llu,"
                           "\"reference_visibility_resources_absent\":%s,"
                           "\"froxel_resources_lazy\":%s,"
+                          "\"long_shadow_resources_lazy\":%s,"
                           "\"atmosphere_allocation_bytes\":%zu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
@@ -6548,6 +6569,7 @@ int main(int argc,char** argv) {
                               atmosphere_resources.dispatch_counts[16U]),
                           reference_visibility_resources_absent?"true":"false",
                           froxel_resources_lazy?"true":"false",
+                          long_shadow_resources_lazy?"true":"false",
                           live_atmosphere_allocation_bytes(atmosphere_resources),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),

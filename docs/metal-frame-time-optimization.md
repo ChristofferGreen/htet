@@ -217,6 +217,10 @@ change. Froxel storage now follows the same pattern: the default route retains
 two 1x1x1 type-correct fallbacks and allocates the full 32-cubed pair only for
 renderer 4. The reference smoke reports 41,071,724 bytes and the froxel smoke
 returns to 42,120,268 bytes; both assert the resource-residency contract.
+The long-shadow atlas now also remains a 1x1 fallback unless its proven
+consumer is selected. The default reference smoke reports 35,763,324 bytes;
+the native faithful marcher allocates the 768x432 atlas, reports one atlas
+dispatch, and passes its occlusion check.
 
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`
