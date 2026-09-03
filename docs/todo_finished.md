@@ -2,6 +2,13 @@
 
 ## 2026-09-03
 
+- [x] P10b numeric, parity, and live-resource final gate: fresh Release
+  transport/shadow/lookup/preview contracts passed 195 assertions, while the
+  native terrain oracle had 0/384 CPU/GPU mismatches. Reference and
+  invalidation smokes proved absent/inactive resources stayed unallocated and
+  undispatched. Native preview-off/on profiles both completed exact handoff on
+  the qualified MetalFX route.
+
 - [x] P10a native physical image and motion matrix: after a fresh Release
   rebuild, direct-output 0.5x/2x and 0.7x/2x passed mountain, visible-sun,
   flight, atmosphere-top, orbit, and paired orbital-motion captures (worst

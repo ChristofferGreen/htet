@@ -945,6 +945,19 @@ closes P10a's image and temporal-motion proof; P10c owns final isolated timing
 tails rather than treating these concurrently captured timings as promotion
 statistics.
 
+### P10b final numeric, preview, and resource gate
+
+Fresh Release focused tests passed all 195 transport, dense-shadow, lookup
+dependency, and preview-handoff assertions. The native terrain visibility
+oracle reported 0 CPU/GPU mismatches over 384 rays (207 blocked). Reference
+and lookup-invalidation atmosphere smokes passed while proving that the
+production route leaves froxel, aerial, long-shadow, min-max, and ray-
+visibility resources inactive when they are not consumed. Native 300-frame
+preview-disabled and preview-enabled profiles both passed with `exact_handoff`
+true, the qualified 2x MetalFX route, and one sky/irradiance lookup dispatch;
+the preview-enabled route additionally reported a successful preview upload.
+The profile times are route diagnostics only; P10c owns isolated tail evidence.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

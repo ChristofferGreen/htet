@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P10b final contracts | mode: fresh Release native and focused contracts | command: hidden `--metal-terrain-ray-oracle-smoke-test`, reference and lookup-invalidation smokes, preview-off/on `--metal-timing-profile-smoke-test`; focused Release transport/shadow/preview cases | failures: none | notes: terrain oracle was 0/384 mismatches; 195 focused assertions passed; production inactive resources remained absent/lazy; both preview states reached exact handoff.
+
 - 2026-09-03 local | pass, P10a Release validation | mode: freshly rebuilt optimized Metal and core Release suite | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed after the final native physical image/motion matrix.
 
 - 2026-09-03 local | pass, P10a native final matrix | mode: freshly rebuilt Release direct-output 0.5/2x versus 0.7/2x | command: `./scripts/compile.sh --release --skip-tests`; `scripts/qualify_metal_raster_profile.sh ... build/metal-p10a-native-fresh 0.5 2` | failures: none | notes: all seven captures and both motion/MetalFX smokes passed; worst NRMS 0.002352 and candidate orbital drift was only 0.000047 above control. The first run correctly failed its parser after identifying a stale executable; the rebuild resolved it.

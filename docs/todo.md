@@ -443,11 +443,6 @@ reaction to a transient maintenance frame.
 The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
-  - [ ] **P10b — Numeric, parity, and live-resource final gate.** Re-run the
-        numerical transport and terrain/shadow oracles plus preview
-        enabled/disabled parity and active-resource residency contracts from a
-        fresh Release binary. Require exact contract/oracle success and no
-        inactive production allocation or dispatch.
   - [ ] **P10c — Long-session and tail-distribution final gate.** Record two
         300-frame steady/moving native profiles for both qualified fixed
         profiles and a 1,200-frame hidden Auto session. Record median/p95/p99/
