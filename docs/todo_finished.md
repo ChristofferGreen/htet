@@ -2,6 +2,17 @@
 
 ## 2026-09-03
 
+- [x] P4d-c private screen-transmittance storage qualification: tested
+  `TETWORLD_METAL_PRIVATE_SCREEN_TRANSMITTANCE=1` for only the current and
+  temporal-history screen-transmittance family, with the shared half-float
+  format as capture-compatible control. Native mountain, directly visible sun,
+  flight, and orbit captures passed (maximum 0.000032 NRMS); the expected
+  temporal 12/10/2 attempt/compatible/invalidation counts remained intact.
+  The candidate's 300-frame moving profile was statistically neutral at
+  5.2263/5.9455 versus 5.2709/5.9340 ms median/p95, but its stable profile
+  regressed materially from 5.1365/5.8396 to 5.4581/6.3416 ms. Private
+  storage is therefore rejected; no experimental source remains.
+
 - [x] P4d-b2 screen-transmittance half-precision qualification and promotion:
   made the current and two temporal-history coloured-transmittance textures
   `RGBA16Float`, while retaining screen scattering and endpoint histories as

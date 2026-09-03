@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P4d-c final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after restoring the shared production storage path.
+
+- 2026-09-03 local | pass, P4d-c rejected | mode: native Metal private screen-transmittance storage qualification | command: hidden paired mountain/direct-sun/flight/orbit captures and 300-frame stable/moving profiles | failures: none in physical or temporal smoke | notes: maximum NRMS 0.000032 and expected 12/10/2 history counters; moving 5.2263/5.9455 vs 5.2709/5.9340 ms was neutral, while stable regressed 5.1365/5.8396 to 5.4581/6.3416; experimental code removed.
+
 - 2026-09-03 16:53 CEST | pass | mode: release P4d-b2 final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after promoting only current/history screen-transmittance storage to half float.
 
 - 2026-09-03 16:53 CEST | pass, P4d-b2 promoted | mode: native Metal screen-transmittance half-float qualification | command: hidden paired mountain/direct-sun/flight/orbit captures and two reverse-order 300-frame stable/moving profile pairs | failures: none in physical or temporal smoke | notes: maximum capture NRMS 0.000322; expected 12/10/2 history attempts/compatible/invalidations; allocation fell 21,343,212 to 17,887,212 bytes; aggregate stable 5.0723/5.9510 vs 5.3648/6.1913 and moving 5.2917/5.9730 vs 5.3029/6.0366 ms median/p95, candidate/control.

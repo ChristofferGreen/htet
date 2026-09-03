@@ -521,6 +521,19 @@ moving 5.2917/5.9730 versus 5.3029/6.0366 ms for float32. The result is a
 coherent residency and frame-time win, so half precision is promoted only for
 this semantic texture family.
 
+### P4d-c rejected private screen-transmittance storage
+
+`TETWORLD_METAL_PRIVATE_SCREEN_TRANSMITTANCE=1` was tested only for the
+current and temporal-history screen-transmittance family. The shared
+half-float family remained the capture-compatible control, and all other
+atmosphere textures retained their existing storage modes. Mountain, visible
+sun, flight, and orbit captures passed with at most 0.000032 normalized RMS;
+the expected 12 attempts, 10 compatible samples, and two invalidations held.
+The 300-frame moving profile was neutral (5.2263/5.9455 versus
+5.2709/5.9340 ms median/p95), but private storage materially regressed the
+stable profile from 5.1365/5.8396 to 5.4581/6.3416 ms. The candidate is
+rejected and no private-screen-transmittance source path remains.
+
 ## P5 conservative planet-umbra work elimination
 
 The reference Hillaire marcher now evaluates spherical planet visibility before

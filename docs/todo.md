@@ -385,12 +385,6 @@ their measurements, since each changes a different representation or route.
         rule: retain float32/shared on any temporal or physical mismatch.
         Result: rejected. Captures stayed within 0.000156 NRMS but the stable
         p95 regressed from 5.9521 to 6.2176 ms; no production code remains.
-  - [ ] **P4d-c — Qualify storage mode after precision is settled.** Scope:
-        test private storage for one non-readback semantic texture family at a
-        time, retaining a capture-compatible control. Acceptance: native
-        readback, physical captures, and matched timing with the same drawable
-        and internal extent. Stop rule: reject neutral/worse timing or any
-        capture/readback incompatibility.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular

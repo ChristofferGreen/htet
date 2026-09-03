@@ -52,6 +52,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Current and temporal-history coloured screen-transmittance are `RGBA16Float` by default, while scattering and endpoint textures remain shared float32 and `TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE=0` is the paired control.
 - Evidence: Native mountain/sun/flight/orbit captures stayed within 0.000322 NRMS with expected temporal counters; reverse-order 300-frame pairs lowered aggregate stable and moving frame times while saving 3,456,000 bytes.
 
+### metal-p4d-screen-transmittance-storage
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, storage, temporal, performance
+- Fact: GPU-private screen-transmittance storage is capture-compatible but regresses stable frames, so the promoted half-float screen-transmittance family must remain shared.
+- Evidence: Private storage kept four physical captures within 0.000032 NRMS and 12/10/2 temporal counters but changed stable median/p95 from 5.1365/5.8396 to 5.4581/6.3416 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation
