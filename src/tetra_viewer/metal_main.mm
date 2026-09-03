@@ -2199,7 +2199,8 @@ void encode_deterministic_screen_atmosphere(
     bool ray_traced_visibility,
     std::uint32_t ray_query_count,bool temporal,
     id<MTLCounterSampleBuffer> timestamp_samples=nil,
-    bool legacy_native_depth_scan=false) {
+    bool legacy_native_depth_scan=false,
+    bool elide_reference_sky_transport=false) {
   resources.history_present_valid=false;
   const bool reference=uniform[53]>=9.5F;
   if(resources.last_visibility_backend_ray_traced!=ray_traced_visibility)
@@ -2303,7 +2304,8 @@ void encode_deterministic_screen_atmosphere(
       use_ray_traced_visibility?ray_query_count:
       tetra_viewer::atmosphere_visibility_refresh_intervals(
           temporal,compatibility),
-      visibility_control|(legacy_native_depth_scan?1024U:0U)};
+      visibility_control|(legacy_native_depth_scan?1024U:0U)|
+      (elide_reference_sky_transport?2048U:0U)};
   // Endpoint reconstruction establishes exactly the same camera ray and
   // maximum distance that the integration pass will use.  Query each of its
   // 32 radial sample positions directly against terrain before consuming it.
@@ -2371,7 +2373,8 @@ void encode_deterministic_screen_atmosphere(
   if(!temporal)return;
 
   const std::array<std::uint32_t,4> temporal_control{
-      14U,previous_index,output_index,0U};
+      14U,previous_index,output_index,
+      elide_reference_sky_transport?2048U:0U};
   id<MTLComputeCommandEncoder> accumulate=timestamped_compute_encoder(
       command,timestamp_samples,11U,12U);
   [accumulate setComputePipelineState:resources.pipelines[14]];
@@ -3315,6 +3318,13 @@ int main(int argc,char** argv) {
   }
   const bool legacy_native_depth_scan=
       std::getenv("TETWORLD_METAL_LEGACY_NATIVE_DEPTH_SCAN")!=nullptr;
+  // P4c's production route elides only reference-temporal true-sky transport;
+  // diagnostics and non-reference renderers retain their full screen work.
+  // Keep the old complete integration as an explicit paired-test control.
+  const bool legacy_reference_sky_transport=
+      std::getenv("TETWORLD_METAL_LEGACY_REFERENCE_SKY_TRANSPORT")!=nullptr;
+  const bool elide_reference_sky_transport=
+      !legacy_reference_sky_transport;
   // Automated runs must not steal focus or briefly flash a window. Keep an
   // explicit visible mode for debugging, and retain the old hidden variable
   // as a backwards-compatible no-op in the already-hidden default case.
@@ -5935,7 +5945,9 @@ int main(int argc,char** argv) {
                   tetra_viewer::AtmosphereVisibilityBackend::ray_traced,
               frame_visibility_plan.rotating_queries_per_pixel,
               atmosphere_renderer==3,gpu_timestamp_samples,
-              legacy_native_depth_scan);
+              legacy_native_depth_scan,
+              atmosphere_transport==2&&atmosphere_renderer==3&&
+              atmosphere_debug_view==0&&elide_reference_sky_transport);
           reference_screen_integration_encoded_this_frame=
               atmosphere_transport==2;
         }

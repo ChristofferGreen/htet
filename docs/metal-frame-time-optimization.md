@@ -779,6 +779,27 @@ larger sky fraction; ground-facing and terrain-filled views establish the
 lower-bound gain. This is consumer-driven work elimination, not a reduction in
 the sample count of any visible transport result.
 
+P4c promoted this reference-only elision on 2026-09-03. Integration returns
+before the reference screen marcher writes either transport texture for a true
+sky endpoint; temporal resolve writes that endpoint history and returns before
+colour-history reads, neighbourhood clamping, or colour-history writes. The
+reference sky-view lookup and finite solar-disc path remain the sole sky
+consumer. The flag is passed only for reference transport, temporal renderer
+3, and normal composition view; diagnostics and non-reference transport retain
+the full path. `TETWORLD_METAL_LEGACY_REFERENCE_SKY_TRANSPORT=1` restores the
+old path for paired qualification.
+
+Native mountain, directly visible-sun, flight, orbit, and nearby orbital-motion
+captures were zero-NRMS candidate/control comparisons before promotion; the
+promoted default mountain capture was 0.0000339 NRMS from control. The
+non-reference route, where the flag is absent, differed by 0.0000917 NRMS from
+run-to-run asynchronous visibility variation. The moving orbital-pair drift was
+identical at 0.008713264. Most importantly, matched 300-frame profiles at a
+1440x900 drawable and 1008x630 internal extent improved from 5.3802/5.9348 to
+4.9991/5.6293 ms median/p95 while stable, and from 5.9037/6.5074 to
+5.4086/6.2459 ms while continuously moving. The optimization is therefore a
+coherent work reduction, not merely a residency claim.
+
 ### Tenth-pass temporal-identity correction
 
 The Metal temporal history contract is currently inconsistent with the shared

@@ -34,6 +34,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Moving shadow-transition confidence from the endpoint write into unused scattering alpha is image/temporal-state equivalent to the old path but is not a coherent performance win, so it must remain rejected.
 - Evidence: Native mountain, sun, flight, orbit, orbital-motion, and non-reference captures were zero-NRMS with matching history state; matched moving p95 regressed from 6.6119 to 7.0725 ms.
 
+### metal-p4c-reference-sky-elision
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, temporal, performance
+- Fact: The normal reference-temporal renderer can skip true-sky reconstructed transport and colour history because composition uses only the sky-view LUT and solar disc, provided endpoint history remains written for sky-to-terrain transitions.
+- Evidence: Native physical captures preserved the mountain shadow and visible sun while matched 300-frame profiles improved by 0.38 ms stable median and 0.50 ms moving median; the legacy transport control remains opt-in.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

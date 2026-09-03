@@ -1801,17 +1801,21 @@ vec4 history_endpoint_load(uint index,ivec2 coordinate) {
       imageLoad(history_endpoint_1,coordinate);
 }
 
+void history_endpoint_store(uint index,ivec2 coordinate,vec4 endpoint) {
+  if(index==0U)imageStore(history_endpoint_0,coordinate,endpoint);
+  else imageStore(history_endpoint_1,coordinate,endpoint);
+}
+
 void history_store(uint index,ivec2 coordinate,vec4 scattering,
                    vec4 transmittance,vec4 endpoint) {
   if(index==0U){
     imageStore(history_scattering_0,coordinate,scattering);
     imageStore(history_transmittance_0,coordinate,transmittance);
-    imageStore(history_endpoint_0,coordinate,endpoint);
   }else{
     imageStore(history_scattering_1,coordinate,scattering);
     imageStore(history_transmittance_1,coordinate,transmittance);
-    imageStore(history_endpoint_1,coordinate,endpoint);
   }
+  history_endpoint_store(index,coordinate,endpoint);
 }
 
 bool previous_history_coordinate(vec2 uv,vec4 endpoint,
@@ -1847,6 +1851,14 @@ void resolve_reconstructed_history(ivec2 coordinate) {
   const uint previous_index=dispatch_mode.reserved0;
   const uint output_index=dispatch_mode.reserved1;
   const vec4 current_endpoint=imageLoad(screen_endpoint,coordinate);
+  // Reference composition never samples reconstructed transport for true sky;
+  // it samples the sky-view LUT and adds the finite solar disc instead. Keep
+  // only endpoint history so class/depth transitions still reject stale
+  // terrain history on a subsequent frame.
+  if((dispatch_mode.reserved2&2048U)!=0U&&current_endpoint.y<=0.5){
+    history_endpoint_store(output_index,coordinate,current_endpoint);
+    return;
+  }
   vec4 resolved_scattering=imageLoad(screen_scattering,coordinate);
   vec4 resolved_transmittance=imageLoad(screen_transmittance,coordinate);
   bool accept=atmosphere.temporal_control.x>0.5&&

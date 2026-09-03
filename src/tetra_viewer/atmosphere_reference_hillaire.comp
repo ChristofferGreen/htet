@@ -457,6 +457,12 @@ void generate_scattering(ivec2 coordinate) {
   const ivec2 base=coordinate*divisor;
   const vec4 endpoint=imageLoad(screen_endpoint,coordinate);
   const bool opaque=endpoint.y>0.5;
+  // The reference compositor obtains true sky, including the visible solar
+  // disc, from sky_view_lut.  With temporal resolve also retaining the
+  // endpoint below, no reconstructed colour is a consumer for this class.
+  // Keep this opt-in while P4c is qualified; diagnostics and other transport
+  // families deliberately retain their complete screen integration.
+  if(!opaque&&(dispatch_mode.reserved2&2048U)!=0U)return;
   const uint packed=uint(round(endpoint.y));
   const uint offset=packed>0U?packed-1U:0U;
   ivec2 representative=min(base+ivec2(int(offset&3U),int(offset>>2U)),

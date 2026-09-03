@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P4c final | command: `./scripts/compile.sh --release` after reference-sky transport elision | failures: none | notes: all 472 tests passed in 387.26 s, including temporal history, physical atmosphere/shadow, and translated-Metal-shader coverage.
+
+- 2026-09-03 local | pass | mode: P4c native Metal reference-sky transport elision | command: hidden paired mountain/direct-sun/flight/orbit/orbital-motion captures, non-reference and diagnostic controls, plus matched 300-frame stable/moving timing profiles | failures: none | notes: reference candidate/control captures were zero-NRMS before promotion and default mountain/control was 0.0000339; physical sun and terrain occlusion stayed correct, diagnostic/non-reference routes retained full transport, and timing improved from 5.3802/5.9348 to 4.9991/5.6293 ms stable and 5.9037/6.5074 to 5.4086/6.2459 ms moving.
+
 - 2026-09-03 local | pass, P4b rejected | mode: native Metal endpoint-confidence handoff qualification | command: hidden paired `--metal-atmosphere-capture` mountain/direct-sun/flight/orbit/orbit-motion and non-reference temporal runs; paired 300-frame stable/moving timing profiles | failures: none in image or temporal identity checks | notes: all six reference capture pairs and the non-reference capture were zero-NRMS with matching history state, but stationary timing was 5.5280/6.2939 ms versus control 5.5552/6.5217 while moving timing regressed to 5.8961/7.0725 versus 5.8770/6.6119; production handoff code was removed rather than promoted.
 
 - 2026-09-03 local | pass | mode: release P4a final | command: `./scripts/compile.sh --release` after adding the opt-in legacy-scan control | failures: none | notes: all 472 tests passed; matched native 300-frame candidate/control profiles and paired mountain capture also passed.

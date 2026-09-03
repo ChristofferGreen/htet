@@ -348,14 +348,23 @@ their measurements, since each changes a different representation or route.
         its 300-frame stable profile improved from 5.5552/6.5217 to
         5.5280/6.2939 ms median/p95, but its matched moving profile regressed
         from 5.8770/6.6119 to 5.8961/7.0725 ms. No production code remains.
-  - [ ] **P4c — Elide discarded reference-temporal sky transport.** Scope:
+  - [x] **P4c — Elide discarded reference-temporal sky transport.** Scope:
         bypass radiometric screen integration and colour-history filtering only
         for true sky endpoints whose final consumer is the reference sky LUT;
         continue writing endpoint history and retain full diagnostic and
         non-reference paths. Acceptance: endpoint transitions, visible sun,
         mountain occlusion, motion, and orbit remain qualified, with a
         class-normalized timing. Stop rule: reject on any stale, missing, or
-        physically unoccluded sky/terrain result.
+        physically unoccluded sky/terrain result. Result: promoted for the
+        normal reference-temporal route, with
+        `TETWORLD_METAL_LEGACY_REFERENCE_SKY_TRANSPORT=1` retained only as a
+        paired control. Native mountain, direct-sun, flight, orbit, and
+        orbital-motion captures were zero-NRMS in the opt-in comparison; the
+        promoted default mountain readback was 0.0000339 NRMS, and the
+        intentionally unaffected non-reference route was 0.0000917 NRMS.
+        Matched 300-frame profiles improved from 5.3802/5.9348 to
+        4.9991/5.6293 ms stationary and from 5.9037/6.5074 to
+        5.4086/6.2459 ms moving (median/p95).
   - [ ] **P4d — Qualify remaining transport format/storage candidates.**
         Scope: test transmittance and screen/history precision or storage one
         semantic role at a time against the coloured-transmittance oracle.
