@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P9b Release validation | mode: full optimized Metal and core Release suite | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed after the native direct-output raster matrix and hidden Auto long-session qualification.
+
+- 2026-09-03 local | pass, P9b promoted | mode: direct-output 0.5/2x versus 0.7/2x native matrix and hidden Auto long session | command: `scripts/qualify_metal_raster_profile.sh ... 0.5 2`; hidden `TETWORLD_METAL_AUTO_LONG_SESSION=1 --metal-auto-resolution-smoke-test` | failures: none | notes: seven capture matrix worst NRMS 0.002352, both MetalFX/motion tests passed, repeated profiles showed useful separation, and the 1,200-frame session made one stable upgrade to 0.70/2x.
+
 - 2026-09-03 local | pass | mode: full Release validation of P9a discrete controller | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed, including the deterministic controller trace and translated Metal shaders.
 
 - 2026-09-03 local | pass, P9a focused | mode: fresh Release target build, deterministic controller trace, hidden native Auto smoke | command: `cmake --build build/release --target tetra_tests tetra_world_metal -j 8`; `tetra_tests --test-case='Metal quality controller uses qualified discrete hysteretic ladder'`; hidden `--metal-auto-resolution-smoke-test` | failures: none | notes: 665 trace assertions passed; Auto reported exactly one upgrade to profile 1 / 0.70 scale after 240 frames while preserving 2x MSAA.

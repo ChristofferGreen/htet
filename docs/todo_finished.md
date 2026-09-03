@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- [x] P9b adaptive mode qualification: retained Auto after the direct-output
+  0.5x/0.7x, 2x matrix passed all seven native captures (worst 0.002352
+  NRMS), motion and MetalFX smokes, and repeated 300-frame profiles. The
+  deterministic trace covers moving overload and maintenance exclusion; a
+  hidden 1,200-frame Auto session made one upgrade and remained stable.
+
 - [x] P9a discrete Metal quality controller: replaced the former continuous
   auto-scale prediction with a 0.5x/0.7x, 2x-MSAA qualified ladder, separate
   steady/moving p95 windows, 180-frame dwell, asymmetric thresholds, and

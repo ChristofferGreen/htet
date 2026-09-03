@@ -134,7 +134,7 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Updated: 2026-09-03
 - Tags: metal, quality, temporal, performance
 - Fact: Metal Auto quality is restricted to the P6-qualified 0.5x/0.7x 2x-MSAA profiles and excludes refresh/upload/AS-maintenance frames from its separate steady/moving p95 decisions.
-- Evidence: Deterministic trace coverage verifies asymmetric hysteresis and 180-frame dwell; the native hidden Auto smoke reported one upgrade to the 0.70x profile.
+- Evidence: Deterministic trace coverage verifies asymmetric hysteresis and 180-frame dwell; direct-output native captures requalified both profiles and a 1,200-frame Auto session reported one stable upgrade to 0.70x.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03

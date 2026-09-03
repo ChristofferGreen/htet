@@ -4062,6 +4062,9 @@ int main(int argc,char** argv) {
     NSUInteger metalfx_motion_probe_row_bytes{};
     NSUInteger metalfx_reactive_probe_row_bytes{};
     std::size_t auto_resolution_test_frames{};
+    const std::size_t auto_resolution_required_frames=
+        std::getenv("TETWORLD_METAL_AUTO_LONG_SESSION")!=nullptr?1200U:
+        (profile_interactive_rendering?300U:240U);
     std::size_t overlay_test_frames{};
     std::size_t shadow_test_frames{};
     std::uint64_t wireframe_draws{};
@@ -6692,7 +6695,7 @@ int main(int argc,char** argv) {
             (!metalfx_test||(metalfx_test_frames>=45U&&
                              diagnostics.converged&&!diagnostics.busy))&&
             (!auto_resolution_test||auto_resolution_test_frames>=
-                 (profile_interactive_rendering?300U:240U))&&
+                 auto_resolution_required_frames)&&
             (!timing_profile_test||timing_profile_samples->size()>=300U)&&
             (!overlay_test||overlay_test_frames>=10U)&&
             (!shadow_test||shadow_test_frames>=3U)&&

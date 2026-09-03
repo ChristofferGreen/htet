@@ -919,6 +919,19 @@ upgrade, and the pure controller trace proves the same upgrade/downgrade
 sequence on replay. P9b still owns final-image and long-session qualification
 of the active changes.
 
+### P9b native adaptive-mode qualification
+
+The post-P8c direct-presentation matrix requalified both controller profiles
+at 1440x900 output: 0.5x/2x passed against the 0.7x/2x control across mountain,
+visible sun, flight, atmosphere-top, orbit, and two orbital-motion captures
+with worst 0.002352 NRMS and no increased orbital drift. Two repeat 300-frame
+profiles measured 0.7x stable/moving 6.2189/8.0616 and 7.5691/10.3313 ms versus
+0.5x 4.4437/6.4601 and 6.1525/7.6252 ms median/p95, establishing useful cost
+separation. The pure trace covers a sustained moving overload and excludes a
+maintenance spike; the hidden 1,200-frame Auto session made one reported
+upgrade to 0.70x, retained 2x MSAA, and did not oscillate. Auto is retained;
+it changes no physical atmosphere/shadow setting.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

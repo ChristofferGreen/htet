@@ -431,11 +431,13 @@ reaction to a transient maintenance frame.
         trace coverage plus native Auto-smoke diagnostics for profile index,
         count, and last change. The smoke upgraded once to 0.7× after 240
         frames, preserving 2× MSAA and all physical renderer selections.
-  - [ ] **P9b — Adaptive-mode image and long-session qualification.** Re-run
-        the full native mountain/sun/flight/orbit capture matrix at both direct
-        presentation profiles, exercise sustained moving and maintenance-spike
-        traces, and retain Auto only if profile changes have no physical or
-        temporal artifact and stable/moving CPU and GPU tails remain bounded.
+  - [x] **P9b — Adaptive-mode image and long-session qualification.** The
+        direct-output 0.5×/0.7× 2× matrix passed all seven native captures
+        (worst 0.002352 NRMS), MetalFX temporal/motion smokes, and two-repeat
+        300-frame profiles. The deterministic trace verifies moving overload
+        and maintenance-frame exclusion; a hidden 1,200-frame Auto session
+        made one upgrade, stayed at 0.7×/2×, and retained every physical and
+        temporal contract. Auto is therefore retained.
 - [ ] Re-run the full release, numeric, visual, motion, parity, resource, and
       long-session gates; document final median/p95/p99/max results and rejected
       alternatives before changing the Default (P10).
