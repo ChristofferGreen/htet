@@ -1729,6 +1729,8 @@ struct MetalGpuStageTimings {
   std::atomic<double> screen_integration_milliseconds{};
   std::atomic<double> temporal_reconstruction_milliseconds{};
   std::atomic<double> metalfx_milliseconds{};
+  std::atomic<double> sky_view_lookup_milliseconds{};
+  std::atomic<double> irradiance_lookup_milliseconds{};
   std::atomic<bool> valid{};
   std::atomic<bool> screen_stages_valid{};
   std::atomic<bool> metalfx_valid{};
@@ -1781,7 +1783,7 @@ double timing_percentile(const std::vector<double>& ordered,double fraction) {
 }
 
 constexpr NSUInteger gpu_base_timestamp_count=7U;
-constexpr NSUInteger gpu_timestamp_count=17U;
+constexpr NSUInteger gpu_timestamp_count=21U;
 constexpr std::size_t gpu_timestamp_flight_count=3U;
 
 struct MetalTimestampFlight {
@@ -2611,7 +2613,8 @@ void encode_reference_sky_lookup(
     id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
-    std::uint64_t terrain_generation) {
+    std::uint64_t terrain_generation,
+    id<MTLCounterSampleBuffer> timestamp_samples) {
   ++resources.reference_lookup_attempts;
   const bool unchanged=resources.reference_lookup_ready&&
       resources.last_reference_lookup_uniform==uniform&&
@@ -2623,7 +2626,8 @@ void encode_reference_sky_lookup(
     return;
   }
   const std::array<std::uint32_t,4> control{2U,0U,0U,0U};
-  id<MTLComputeCommandEncoder> sky=[command computeCommandEncoder];
+  id<MTLComputeCommandEncoder> sky=timestamped_compute_encoder(
+      command,timestamp_samples,17U,18U);
   [sky setComputePipelineState:resources.reference_pipeline];
   [sky setBytes:uniform.data() length:uniform.size()*sizeof(float) atIndex:0];
   [sky setBytes:&shadows length:sizeof(shadows) atIndex:1];
@@ -2645,7 +2649,8 @@ void encode_reference_sky_lookup(
       threadsPerThreadgroup:MTLSizeMake(8U,8U,1U)];
   [sky endEncoding];
   ++resources.dispatch_counts[2];
-  id<MTLComputeCommandEncoder> irradiance=[command computeCommandEncoder];
+  id<MTLComputeCommandEncoder> irradiance=timestamped_compute_encoder(
+      command,timestamp_samples,19U,20U);
   [irradiance setComputePipelineState:resources.pipelines[4]];
   [irradiance setBytes:uniform.data() length:uniform.size()*sizeof(float)
                  atIndex:0];
@@ -5493,7 +5498,8 @@ int main(int argc,char** argv) {
           encode_reference_sky_lookup(
               command_buffer,atmosphere_resources,
               stable_atmosphere_lookup_uniform,production_shadows,
-              shadow_texture,terrain_display_front.render_generation);
+              shadow_texture,terrain_display_front.render_generation,
+              gpu_timestamp_samples);
         encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
                                 gpu_timestamp_scratch,3U);
         id<MTLRenderCommandEncoder> scene_encoder=
@@ -6198,6 +6204,17 @@ int main(int argc,char** argv) {
                     timing_identity.renderer,std::memory_order_relaxed);
                 stage_destination->metalfx.store(
                     timing_identity.metalfx,std::memory_order_relaxed);
+                const bool lookup_timing_valid=usable_sample(17U)&&
+                    usable_sample(18U)&&usable_sample(19U)&&
+                    usable_sample(20U)&&
+                    timestamps[18U].timestamp>=timestamps[17U].timestamp&&
+                    timestamps[20U].timestamp>=timestamps[19U].timestamp;
+                if(lookup_timing_valid){
+                  stage_destination->sky_view_lookup_milliseconds.store(
+                      milliseconds(17U,18U),std::memory_order_relaxed);
+                  stage_destination->irradiance_lookup_milliseconds.store(
+                      milliseconds(19U,20U),std::memory_order_relaxed);
+                }
                 stage_destination->frame_sequence.store(
                     completed_sequence,std::memory_order_release);
                 stage_destination->valid.store(true,std::memory_order_release);
@@ -6927,6 +6944,8 @@ int main(int argc,char** argv) {
                           "\"samples_per_pixel\":%lu,\"transport\":%d,"
                           "\"renderer\":%d,\"metalfx\":%s,"
                           "\"preview\":%s,\"exact_handoff\":%s,"
+                          "\"sky_view_lookup_ms\":%.4f,"
+                          "\"irradiance_lookup_ms\":%.4f,"
                           "\"rt_builds\":%llu,\"sky_view_dispatches\":%llu,"
                           "\"irradiance_dispatches\":%llu,\"passed\":%s}\n",
                           timing_profile_class_name,ordered.size(),
@@ -6940,6 +6959,10 @@ int main(int argc,char** argv) {
                           metalfx_temporal_active?"true":"false",
                           preview_enabled?"true":"false",
                           exact_handoff_ready?"true":"false",
+                          gpu_stage_timings->sky_view_lookup_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->irradiance_lookup_milliseconds.load(
+                              std::memory_order_relaxed),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.build_count),
                           static_cast<unsigned long long>(

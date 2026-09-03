@@ -281,6 +281,11 @@ because it is faster.
       exact manual, depth-gather, and comparison-sampler PCF; skip or lazily
       allocate resources not consumed by the active renderer. Do not time-slice
       a visible physical change (P3).
+  - [x] Add opt-in independent reference sky-view and irradiance timestamp
+        boundaries. A forced-refresh profile measured 0.6314 ms sky view and
+        0.0436 ms irradiance at the P2 fixed identity; retain this as a
+        one-frame attribution until distributions and remaining lookup families
+        are measured.
 - [ ] Eliminate the resolved-history-to-screen publish copy by binding the
       active history generation directly, but only after P1 proves temporal
       accumulation under jitter and physical camera motion. Split the

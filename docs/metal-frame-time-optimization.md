@@ -339,6 +339,19 @@ This is a prioritization decision, not a visual or numerical qualification of
 any new rendering algorithm. The existing production reference transport,
 terrain occlusion, and temporal path remain unchanged.
 
+## P3 lookup isolation: reference sky and irradiance
+
+The opt-in Metal timestamp pool now reserves four additional markers around
+the reference sky-view and irradiance encoders. They are reported separately
+by the timing-profile JSON only when both encoder-boundary samples are valid;
+they do not affect normal timing or the lookup identity. An uncontended forced
+physical-refresh distribution on 2026-09-03 reported 0.6314 ms for sky view
+and 0.0436 ms for irradiance on its final valid frame (1440x900 output,
+1008x630 internal, 2x MSAA, MetalFX, transport 2). This confirms that P3
+should first focus on the Hillaire sky-view table rather than reducing the
+small irradiance table. Optical, aerial, and shadow lookup isolation remains
+required before any specialization is promoted.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were
