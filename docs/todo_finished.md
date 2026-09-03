@@ -2,6 +2,15 @@
 
 ## 2026-09-03
 
+- [x] P5c angular-domain decision: retired the viewport-independent angular
+  domain. The screen-aligned reference target remains the simpler exact
+  opaque-depth correspondence; P5a's target experiment and interactive Auto
+  smoke found no remaining scaling bottleneck that clears its motion gate.
+  More importantly, the project’s earlier cubemap and screen-space sky-resolve
+  experiments increased sampling stalls, and a cube domain would add seam,
+  disocclusion, and depth-mismatch risk without a measured payoff. No angular
+  domain source path is added.
+
 - [x] P5b analytic planet-umbra direct-light partition qualification: retained
   the conservative per-sample spherical-umbra guard, which skips only four
   terrain-visibility queries and the solar-transmittance lookup when its

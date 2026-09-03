@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P5c final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after retiring the unsupported angular-domain alternative.
+
+- 2026-09-03 local | pass, P5c retired | mode: plan/evidence audit | command: reviewed P5a native-scale and interactive Auto qualifications plus documented angular/cubemap experiments | failures: none | notes: no residual screen-aligned scaling bottleneck passed the motion gate; earlier cubemap/screen resolve paths increased sampling stalls, so no new angular-domain source was justified.
+
 - 2026-09-03 local | pass | mode: release P5b final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed with the planet-umbra work-elision control and terminator timing fixture compiled into the native Metal executable.
 
 - 2026-09-03 local | pass, P5b promoted | mode: native Metal planet-umbra direct-work qualification | command: hidden byte-paired terminator/mountain/direct-sun/flight/orbit captures, motion smoke, and reverse-order 300-frame terminator profiles | failures: none | notes: all five capture pairs were zero NRMS; motion passed; aggregate terminator median/p95 improved 5.5508/6.2342 to 5.0935/5.9880 ms while fixed 32 intervals, lit/penumbra terrain visibility, and unshadowed multiple scattering remained unchanged.

@@ -549,6 +549,15 @@ control, and motion plus interactive Auto-scale smoke passed. At a native
 increased p95 from 5.8812/5.8827 to 6.2520/6.1755 ms. The inconsistent motion
 tail fails the gate; the target override and mapping code were removed.
 
+### P5c retired angular-domain alternative
+
+The screen-aligned target retains exact correspondence with opaque terrain
+depth, while P5a and the interactive Auto-scale smoke found no remaining
+scaling bottleneck that clears the motion gate. The earlier project cubemap and
+screen-space sky-resolve experiments also increased sampling stalls. An angular
+domain would add cube seams, depth mismatch, and disocclusion reconstruction
+risk without a measured benefit, so it is retired rather than reintroduced.
+
 The reference Hillaire marcher evaluates spherical planet visibility before the
 four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any

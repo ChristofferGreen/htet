@@ -70,6 +70,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The reference marcher skips terrain visibility and solar transmittance only when spherical planet visibility is exactly zero; its terminator profile proves the work removal is image-identical and beneficial without altering 32 intervals or unshadowed multiple scattering.
 - Evidence: The legacy dead-work control was zero-NRMS across five native captures, while reverse-order terminator pairs improved aggregate median/p95 from 5.5508/6.2342 to 5.0935/5.9880 ms.
 
+### metal-p5c-angular-domain
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, architecture, performance
+- Fact: Do not reintroduce a cube/angular atmosphere domain unless a new screen-aligned scaling bottleneck is measured, because the project’s prior cubemap/screen-resolve experiments increased sampling stalls.
+- Evidence: P5a and interactive Auto-scale qualification supplied no motion-safe need for the extra domain, and the prior experiment is documented in `planetary-atmosphere.md`.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation
