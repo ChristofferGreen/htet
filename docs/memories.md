@@ -106,6 +106,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: CPU cascade caster culling is not worthwhile for the current immutable display front because full shadow rendering is only 0.0695 ms.
 - Evidence: Shadow smoke would require 629,082 vertex/cascade classifications per refresh, far exceeding a plausible payback.
 
+### metal-p7c-as-refit
+- Updated: 2026-09-03
+- Tags: metal, ray-tracing, correctness
+- Fact: AS refit is incompatible with immutable terrain display generations because their buffer identities and primitive counts can change.
+- Evidence: Metal documents refit as a potential quality tradeoff, while the native front replaces exact/preview indexed buffers per generation.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

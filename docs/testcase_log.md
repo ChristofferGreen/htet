@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P7c retired | mode: Metal API/source contract audit | command: inspected `MTLAccelerationStructureUsageRefit` and native immutable display-front/AS code | failures: none | notes: refit permits reduced quality but production changes buffers and primitive counts per generation, so no topology-safe refit candidate exists.
+
 - 2026-09-03 local | pass, P7b retired | mode: native Metal shadow/counter smoke | command: hidden `--metal-shadow-smoke-test` plus serialized `--metal-render-smoke-test` | failures: none | notes: full shadow pass was 0.0695 ms; conservative CPU classification would inspect 629,082 vertex/cascade pairs, so no culling source was justified.
 
 - 2026-09-03 local | pass, P7a AS timing audit | mode: native Metal stage timestamps | command: hidden `TETWORLD_METAL_STAGE_TIMESTAMPS=1 TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS=1 tetra_world_metal --metal-render-smoke-test` | failures: none | notes: independent AS encoder interval was valid at 12.8221 ms; frame interval was separately 1.1560 ms with generation-coherent RT structure.

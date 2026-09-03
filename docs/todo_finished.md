@@ -2,6 +2,13 @@
 
 ## 2026-09-03
 
+- [x] P7c generation-coherent AS update/refit policy: retired. Metal's refit
+  usage explicitly permits reduced AS quality, while every display generation
+  owns replacement exact/preview buffers whose indexed primitive counts may
+  change. Refit therefore cannot retain the application's immutable front and
+  stale-visibility contract. The separately timed full rebuild remains the
+  only safe policy.
+
 - [x] P7b conservative cascade caster culling: retired. Native shadow smoke
   found 6/1,547/243,621/383,908 conservative vertex candidates across the
   four cascades, but the complete shadow pass costs only 0.0695 ms. CPU

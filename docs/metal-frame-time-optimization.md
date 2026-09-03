@@ -856,6 +856,13 @@ time, while the diagnostics distinguish the one-off AS spike from steady
 raster or atmosphere cost. P7 now needs only conservative caster culling and
 an immutable-rebuild versus supported update/refit comparison.
 
+P7c rejects refit. Metal documents `MTLAccelerationStructureUsageRefit` as a
+quality tradeoff, and the display front deliberately replaces exact and preview
+buffers (including indexed primitive counts) on every terrain generation. A
+refit cannot both accommodate that topology change and preserve the invariant
+that ray visibility consumes precisely the immutable displayed generation.
+The separate full-build interval remains the safe, measurable policy.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that
