@@ -136,6 +136,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Metal Auto quality is restricted to the P6-qualified 0.5x/0.7x 2x-MSAA profiles and excludes refresh/upload/AS-maintenance frames from its separate steady/moving p95 decisions.
 - Evidence: Deterministic trace coverage verifies asymmetric hysteresis and 180-frame dwell; direct-output native captures requalified both profiles and a 1,200-frame Auto session reported one stable upgrade to 0.70x.
 
+### metal-qualification-fresh-binary
+- Updated: 2026-09-03
+- Tags: metal, qualification, build
+- Fact: Native Metal qualification must rebuild the Release app immediately before collecting evidence, because the bundle executable can otherwise retain an earlier JSON diagnostic contract than the checked-in source.
+- Evidence: The first P10a raster matrix stopped when its stale executable emitted `latest_ms` while the committed parser required `median_ms`; rebuilding regenerated the bundle and the complete matrix passed.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

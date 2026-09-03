@@ -932,6 +932,19 @@ maintenance spike; the hidden 1,200-frame Auto session made one reported
 upgrade to 0.70x, retained 2x MSAA, and did not oscillate. Auto is retained;
 it changes no physical atmosphere/shadow setting.
 
+### P10a final native physical image and motion matrix
+
+Freshly rebuilding the Release bundle before the final native matrix corrected
+the stale executable detected on its first attempt. The rebuilt direct-output
+0.5x/2x candidate passed all seven mountain, visible-sun, flight,
+atmosphere-top, orbit, and paired orbital-motion captures against 0.7x/2x;
+worst NRMS was 0.00235168. Both profile-specific continuous-motion and MetalFX
+temporal smokes passed. Candidate orbital drift was 0.00709755 against
+0.00705062 control, an increase of 0.00004692—well below the 0.002 limit. This
+closes P10a's image and temporal-motion proof; P10c owns final isolated timing
+tails rather than treating these concurrently captured timings as promotion
+statistics.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

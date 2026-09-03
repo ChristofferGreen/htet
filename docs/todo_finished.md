@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- [x] P10a native physical image and motion matrix: after a fresh Release
+  rebuild, direct-output 0.5x/2x and 0.7x/2x passed mountain, visible-sun,
+  flight, atmosphere-top, orbit, and paired orbital-motion captures (worst
+  0.002352 NRMS). Both MetalFX temporal and continuous-motion smokes passed;
+  candidate orbital drift was only 0.000047 above control.
+
 - [x] P9b adaptive mode qualification: retained Auto after the direct-output
   0.5x/0.7x, 2x matrix passed all seven native captures (worst 0.002352
   NRMS), motion and MetalFX smokes, and repeated 300-frame profiles. The

@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P10a Release validation | mode: freshly rebuilt optimized Metal and core Release suite | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed after the final native physical image/motion matrix.
+
+- 2026-09-03 local | pass, P10a native final matrix | mode: freshly rebuilt Release direct-output 0.5/2x versus 0.7/2x | command: `./scripts/compile.sh --release --skip-tests`; `scripts/qualify_metal_raster_profile.sh ... build/metal-p10a-native-fresh 0.5 2` | failures: none | notes: all seven captures and both motion/MetalFX smokes passed; worst NRMS 0.002352 and candidate orbital drift was only 0.000047 above control. The first run correctly failed its parser after identifying a stale executable; the rebuild resolved it.
+
 - 2026-09-03 local | pass, P9b Release validation | mode: full optimized Metal and core Release suite | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed after the native direct-output raster matrix and hidden Auto long-session qualification.
 
 - 2026-09-03 local | pass, P9b promoted | mode: direct-output 0.5/2x versus 0.7/2x native matrix and hidden Auto long session | command: `scripts/qualify_metal_raster_profile.sh ... 0.5 2`; hidden `TETWORLD_METAL_AUTO_LONG_SESSION=1 --metal-auto-resolution-smoke-test` | failures: none | notes: seven capture matrix worst NRMS 0.002352, both MetalFX/motion tests passed, repeated profiles showed useful separation, and the 1,200-frame session made one stable upgrade to 0.70/2x.

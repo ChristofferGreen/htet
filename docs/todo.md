@@ -438,9 +438,24 @@ reaction to a transient maintenance frame.
         and maintenance-frame exclusion; a hidden 1,200-frame Auto session
         made one upgrade, stayed at 0.7×/2×, and retained every physical and
         temporal contract. Auto is therefore retained.
-- [ ] Re-run the full release, numeric, visual, motion, parity, resource, and
-      long-session gates; document final median/p95/p99/max results and rejected
-      alternatives before changing the Default (P10).
+### P10 tracker — final promotion evidence
+
+The final promotion is split so each independent proof has a reproducible
+artifact and a bounded acceptance condition. No Default change is permitted
+until every leaf is complete.
+  - [ ] **P10b — Numeric, parity, and live-resource final gate.** Re-run the
+        numerical transport and terrain/shadow oracles plus preview
+        enabled/disabled parity and active-resource residency contracts from a
+        fresh Release binary. Require exact contract/oracle success and no
+        inactive production allocation or dispatch.
+  - [ ] **P10c — Long-session and tail-distribution final gate.** Record two
+        300-frame steady/moving native profiles for both qualified fixed
+        profiles and a 1,200-frame hidden Auto session. Record median/p95/p99/
+        max, bounded quality changes, and final allocation/residency evidence.
+  - [ ] **P10d — Promotion audit and Default decision.** Audit P0–P10 against
+        the source and final artifacts, consolidate image/performance/memory
+        evidence and rejected alternatives, then change the Default only if
+        every physical, temporal, release, and resource requirement is proven.
 
 ## Active chain: bounded camera publication
 
