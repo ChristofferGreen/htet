@@ -641,6 +641,25 @@ linear endpoint depth at full precision and removes about 2.3 MB of nominal
 `RGBA32Float` writes at 480x300; it changes metadata traffic, not the physical
 transport.
 
+### P4b rejected endpoint-confidence handoff
+
+The candidate carried the combined geometric/shadow confidence in the unused
+scattering alpha and consumed it only in temporal resolve, leaving the endpoint
+written by geometric reduction immutable. A qualification-only control restored
+the former integration endpoint write. The two paths were zero-NRMS identical
+in native back-lit-mountain, directly visible-sun, flight, orbit, and nearby
+orbital-motion captures, with matching temporal compatibility/invalidation
+counters; the non-reference ray-visibility route also produced a zero-NRMS
+capture with matching temporal state.
+
+Despite that semantic result, it is rejected rather than promoted. Matched
+300-frame profiles at a 1440x900 drawable and 1008x630 internal extent measured
+5.5280/6.2939 ms median/p95 for the candidate versus 5.5552/6.5217 ms for the
+endpoint-write control while stationary, but 5.8961/7.0725 versus
+5.8770/6.6119 ms while moving. The moving p95 regression prevents a coherent
+frame-time claim. The temporary control and handoff implementation were removed;
+P4c must not assume this metadata channel is available.
+
 ### Seventh-pass default-route accounting
 
 The normal Metal configuration is not a generic combination of all selectable

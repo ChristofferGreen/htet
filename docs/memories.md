@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The Metal motion smoke needs an explicit settled request after interaction; its default front requires at least 168,306 hierarchy blocks and 52.43M work units to publish exactly.
 - Evidence: The prior 147,456/50M caps left the old front visible, while the 176,000/64M bounds passed the native zero-pose-error smoke and full release suite.
 
+### metal-p4b-confidence-handoff
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, temporal, performance
+- Fact: Moving shadow-transition confidence from the endpoint write into unused scattering alpha is image/temporal-state equivalent to the old path but is not a coherent performance win, so it must remain rejected.
+- Evidence: Native mountain, sun, flight, orbit, orbital-motion, and non-reference captures were zero-NRMS with matching history state; matched moving p95 regressed from 6.6119 to 7.0725 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

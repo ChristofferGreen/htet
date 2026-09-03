@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P4b rejected | mode: native Metal endpoint-confidence handoff qualification | command: hidden paired `--metal-atmosphere-capture` mountain/direct-sun/flight/orbit/orbit-motion and non-reference temporal runs; paired 300-frame stable/moving timing profiles | failures: none in image or temporal identity checks | notes: all six reference capture pairs and the non-reference capture were zero-NRMS with matching history state, but stationary timing was 5.5280/6.2939 ms versus control 5.5552/6.5217 while moving timing regressed to 5.8961/7.0725 versus 5.8770/6.6119; production handoff code was removed rather than promoted.
+
 - 2026-09-03 local | pass | mode: release P4a final | command: `./scripts/compile.sh --release` after adding the opt-in legacy-scan control | failures: none | notes: all 472 tests passed; matched native 300-frame candidate/control profiles and paired mountain capture also passed.
 
 - 2026-09-03 local | pass | mode: release P4a full validation | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after native-offset packing; Metal shader translation compiled all 17 compute kernels, the reference kernel, and 11 graphics stages.

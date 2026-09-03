@@ -334,14 +334,20 @@ their measurements, since each changes a different representation or route.
         and a matched 300-frame profile passed. It measured 5.6530/6.8453 ms
         median/p95 versus 6.4474/7.1798 ms for the opt-in legacy scan; paired
         mountain output differed by 0.0000339 normalized RMSE.
-  - [ ] **P4b — Move shadow-transition confidence out of the endpoint
+  - [x] **P4b — Move shadow-transition confidence out of the endpoint
         rewrite.** Scope: carry integration's confidence in otherwise
         non-composited screen transport metadata while preserving endpoint
         history semantics. Acceptance: history acceptance/rejection and
         finite-range diagnostics match the endpoint-write control in native
         motion, disocclusion, low-sun, and orbital captures. Stop rule: reject
         if it changes endpoint identity or cannot prove equivalent history
-        decisions.
+        decisions. Result: the candidate was image-identical to the explicit
+        endpoint-write control (zero NRMS in mountain, direct-sun, flight,
+        orbit, and two orbital-motion captures), and matching history counters
+        also held in the non-reference ray-visibility route. It was rejected:
+        its 300-frame stable profile improved from 5.5552/6.5217 to
+        5.5280/6.2939 ms median/p95, but its matched moving profile regressed
+        from 5.8770/6.6119 to 5.8961/7.0725 ms. No production code remains.
   - [ ] **P4c — Elide discarded reference-temporal sky transport.** Scope:
         bypass radiometric screen integration and colour-history filtering only
         for true sky endpoints whose final consumer is the reference sky LUT;
