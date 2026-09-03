@@ -601,6 +601,15 @@ nevertheless rejected: two paired 300-frame profiles improved stable
 5.7410 to 5.8321 ms. Production retains private resolve sources; all resolved
 textures remain private and sampleable for atmosphere and MetalFX consumers.
 
+## P7b cascade-culling result
+
+Native shadow smoke measured only 0.0695 ms for the full terrain shadow pass.
+Although conservative candidates varied from 6 in the innermost cascade to
+383,908 in the outer cascade, CPU culling would classify 629,082
+vertex/cascade pairs at every refresh. That CPU work and its additional
+generation bookkeeping cannot plausibly pay back a sub-0.07 ms GPU pass, so
+the full immutable display front remains the caster source.
+
 The reference Hillaire marcher evaluates spherical planet visibility before the
 four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any

@@ -2,6 +2,13 @@
 
 ## 2026-09-03
 
+- [x] P7b conservative cascade caster culling: retired. Native shadow smoke
+  found 6/1,547/243,621/383,908 conservative vertex candidates across the
+  four cascades, but the complete shadow pass costs only 0.0695 ms. CPU
+  classification would inspect 629,082 vertex/cascade pairs per refresh,
+  making it an implausible net improvement before any image-equivalence risk.
+  The immutable full display front remains the caster source.
+
 - [x] P7a acceleration-structure timing: confirmed the existing Metal
   acceleration-structure encoder has its own timestamp interval (sample slots
   15/16), rather than reporting its enclosing command buffer. A hidden native

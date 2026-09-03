@@ -390,11 +390,6 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] **P7b — Qualify conservative per-cascade caster culling.** Scope:
-      measure each cascade's submitted terrain and test a conservative cull
-      against the current full-front shadow draw. Acceptance: identical shadow
-      coverage/capture probes and a measured refresh-time reduction. Stop rule:
-      retain the full front if culling is neutral or misses any caster.
 - [ ] **P7c — Qualify generation-coherent AS build policy.** Scope: compare
       immutable-generation rebuild against supported update/refit policy,
       with separately bracketed AS timing. Acceptance: no stale visibility or

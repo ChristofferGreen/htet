@@ -100,6 +100,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: AS builds are independently bracketed by Metal counter samples 15/16, not inferred from the enclosing frame interval.
 - Evidence: Native stage-timestamp smoke measured a 12.8221 ms build alongside a separate 1.1560 ms frame.
 
+### metal-p7b-caster-culling
+- Updated: 2026-09-03
+- Tags: metal, shadow, performance
+- Fact: CPU cascade caster culling is not worthwhile for the current immutable display front because full shadow rendering is only 0.0695 ms.
+- Evidence: Shadow smoke would require 629,082 vertex/cascade classifications per refresh, far exceeding a plausible payback.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation
