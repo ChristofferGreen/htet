@@ -299,10 +299,6 @@ because it is faster.
         0.7865/0.9445 ms at 384x216 and passed mountain/sun still captures
         (normalized RMS 0.000884/0.000424). Do not promote it until motion,
         surface-to-orbit, and numeric/oracle qualification pass.
-  - [ ] Complete the Hillaire 200x100 candidate's native low-sun,
-        surface-to-orbit, numerical, and continuous-motion qualification
-        matrix before deciding whether its measured refresh saving is safe to
-        promote.
 - [ ] Eliminate the resolved-history-to-screen publish copy by binding the
       active history generation directly, but only after P1 proves temporal
       accumulation under jitter and physical camera motion. Split the

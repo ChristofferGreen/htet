@@ -405,30 +405,34 @@ integration-only interval without adding work to normal frames.
 
 ### P3 Hillaire 200x100 sky-view reference experiment
 
-`TETWORLD_METAL_SKY_VIEW_REFERENCE=1` replaces only the runtime sky-view
-texture with Hillaire's 200x100 reference resolution; standard production
-resources remain 384x216. In the same forced-refresh profile, 200x100 reduced
-sky-view lookup timing to 0.3779 ms median / 0.3962 ms p95 (27 valid pooled
-samples), from 0.7865/0.9445 ms at 384x216. The full-frame distribution was
-7.6055/10.3790 ms, so the time saved by that encoder does not directly predict
-the enclosing frame under its other refresh costs.
+Hillaire's 200x100 sky-view LUT is now the qualified production default.
+`TETWORLD_METAL_SKY_VIEW_REFERENCE=0` retains the former 384x216 table only as
+the explicit paired-test control (the default and `=1` select 200x100). The
+native [`qualify_metal_sky_view_reference.sh`](../scripts/qualify_metal_sky_view_reference.sh)
+matrix drives the actual reference-temporal Metal executable, rather than a
+Vulkan proxy, at a back-lit mountain, directly visible solar disc, flight,
+atmosphere top, orbit, and two nearby orbital poses. It also requires every
+capture's existing physical/liveness smoke to pass, compares every candidate
+image to 384x216 with per-pose normalized RMS at most 0.004, and rejects an
+orbital-motion drift more than 0.002 above the 384x216 control.
 
-Native 960x600 occluded-mountain and visible-sun captures both passed all
-existing physical/liveness smoke gates at both resolutions. Side-by-side
-inspection found no foreground Mie cutout behind the mountain and retained a
-compact direct solar disc. ImageMagick normalized RMS differences from the
-384x216 captures were 0.000884 (mountain) and 0.000424 (sun). This is useful
-but insufficient for promotion: the surface-to-orbit and numerical/oracle
-matrices still need a 200x100 run.
+The 2026-09-03 native run passed all seven paired captures. The worst
+candidate/control normalized RMS was 0.0008831 (back-lit mountain); direct
+sun, flight, atmosphere-top, orbit, and the two orbital-motion poses measured
+0.0004221, 0.0002819, 0.0003840, 0.0006051, 0.0006069, and 0.0006051. Visual
+inspection confirms that the mountain remains an opaque direct-Mie occluder,
+the clear disc remains compact, and the ascent sequence reaches a continuous
+blue orbital limb without a screen-space cutout. Nearby orbital motion was
+0.0086921 RMS at 384x216 and 0.0087133 at 200x100, well inside the drift gate.
 
-The candidate also passed the reference-cache and physical-sun-invalidation
-smokes: the static route performed one lookup plus eleven skips, while the sun
-change rebuilt exactly once (two lookups, ten skips). Its bounded continuous-
-motion profile completed 300 frames at 6.8994/8.1660 ms median/p95. That is
-effectively level with the 384x216 motion profile (6.8588/7.7553 ms), so this
-experiment must not be marketed as a general motion-frame saving. It remains a
-refresh-cost candidate pending the broader physical/orbital qualification
-matrix.
+The same run measured an independently timestamped lookup refresh at
+0.3893 ms for 200x100 versus 0.7947 ms for 384x216. Its normal asynchronous
+300-frame moving distribution was 5.7178/6.3272 ms median/p95 versus
+6.1717/6.6986 ms for the control; the qualification rule only requires that
+the candidate not add more than 1 ms p95, so this supports the refresh saving
+without claiming a general motion-frame win. Candidate atmosphere allocation
+is 21,343,212 bytes versus 22,350,316 bytes for the control. The default was
+therefore promoted with the control route and qualification harness retained.
 
 ## P4 direct temporal-history presentation
 

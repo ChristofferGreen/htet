@@ -3122,6 +3122,31 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_REPORTED_MOUNTAIN")!=nullptr;
   const bool atmosphere_visible_sun_capture=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_VISIBLE_SUN")!=nullptr;
+  // Named deterministic poses exercise the real reference-temporal Metal
+  // route at the altitude regimes that a sky-view LUT must survive.  They are
+  // deliberately available only to the existing atmosphere capture command:
+  // this is a qualification fixture, not a second camera/compositing path.
+  const char* atmosphere_capture_pose=atmosphere_capture?
+      std::getenv("TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE"):nullptr;
+  if(atmosphere_capture_pose!=nullptr&&atmosphere_capture_pose[0]=='\0')
+    atmosphere_capture_pose=nullptr;
+  if(atmosphere_capture_pose!=nullptr&&
+     (atmosphere_mountain_capture||atmosphere_visible_sun_capture)){
+    std::fprintf(stderr,"TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE cannot be "
+        "combined with TETWORLD_METAL_REPORTED_MOUNTAIN or "
+        "TETWORLD_METAL_VISIBLE_SUN\\n");
+    return 2;
+  }
+  if(atmosphere_capture_pose!=nullptr&&
+     std::strcmp(atmosphere_capture_pose,"flight")!=0&&
+     std::strcmp(atmosphere_capture_pose,"atmosphere-top")!=0&&
+     std::strcmp(atmosphere_capture_pose,"orbit")!=0&&
+     std::strcmp(atmosphere_capture_pose,"orbit-motion-a")!=0&&
+     std::strcmp(atmosphere_capture_pose,"orbit-motion-b")!=0){
+    std::fprintf(stderr,"TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE must be "
+        "flight, atmosphere-top, orbit, orbit-motion-a, or orbit-motion-b\\n");
+    return 2;
+  }
   const bool atmosphere_froxel_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-froxel-smoke-test")==0;
   const bool atmosphere_minmax_test=argc==2&&
@@ -3252,7 +3277,10 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
   const bool background_requested=
       std::getenv("TETWORLD_METAL_BACKGROUND")!=nullptr;
-  bool sky_view_reference_profile=false;
+  // 200x100 is Hillaire's reference sky-view resolution and is now the
+  // qualified production default.  Keep 0 as an explicit 384x216 control for
+  // the paired native qualification harness.
+  bool sky_view_reference_profile=true;
   if(const char* value=std::getenv("TETWORLD_METAL_SKY_VIEW_REFERENCE");
      value!=nullptr){
     if(std::strcmp(value,"0")==0)sky_view_reference_profile=false;
@@ -3507,9 +3535,9 @@ int main(int argc,char** argv) {
         flight=make_timestamp_flight(device,gpu_timestamp_counter_set);
     auto atmosphere_resources=make_live_atmosphere_resources(
         device,layer.pixelFormat,tetra_viewer::AtmosphereQuality::standard);
-    // Hillaire's published 200x100 sky-view LUT is retained as an
-    // experiment-only P3 reference point. The production standard size stays
-    // 384x216 unless this route passes its independent qualification.
+    // Hillaire's published 200x100 sky-view LUT passed low-sun, ascent,
+    // orbital, numeric, and moving-camera qualification. The 384x216 table
+    // remains available through the explicit P3 control override above.
     if(sky_view_reference_profile)
       atmosphere_resources.sky_view=make_atmosphere_texture(device,200U,100U);
     const bool metalfx_temporal_supported=
@@ -3709,6 +3737,33 @@ int main(int argc,char** argv) {
       sun_elevation=20.0*std::numbers::pi/180.0;
       controller.state().yaw=std::numbers::pi/2.0-sun_azimuth;
       controller.state().pitch=sun_elevation;
+    }
+    if(atmosphere_capture_pose!=nullptr){
+      // World coordinates are ten metres per unit.  The gameplay planet's
+      // north-pole surface is y=0.5, its atmosphere ends at y=2000.5, and the
+      // explicit orbital poses sit well outside it.  These views mirror the
+      // documented native Metal qualification matrix rather than borrowing
+      // the older Vulkan capture utility.
+      if(std::strcmp(atmosphere_capture_pose,"flight")==0){
+        controller.state().feet={0.5,100.5,0.5};
+        controller.state().yaw=std::numbers::pi;
+        controller.state().pitch=-5.0*std::numbers::pi/180.0;
+        sun_azimuth=-103.1324F*std::numbers::pi_v<float>/180.0F;
+        sun_elevation=25.0F*std::numbers::pi_v<float>/180.0F;
+      }else if(std::strcmp(atmosphere_capture_pose,"atmosphere-top")==0){
+        controller.state().feet={0.5,2000.5,0.5};
+        controller.state().yaw=std::numbers::pi;
+        controller.state().pitch=-38.5*std::numbers::pi/180.0;
+        sun_azimuth=-103.1324F*std::numbers::pi_v<float>/180.0F;
+        sun_elevation=10.0F*std::numbers::pi_v<float>/180.0F;
+      }else {
+        controller.state().feet={0.5,25000.5,0.5};
+        controller.state().yaw=std::numbers::pi;
+        controller.state().pitch=(std::strcmp(atmosphere_capture_pose,
+            "orbit-motion-a")==0?-88.00:-87.96)*std::numbers::pi/180.0;
+        sun_azimuth=-103.1324F*std::numbers::pi_v<float>/180.0F;
+        sun_elevation=5.0F*std::numbers::pi_v<float>/180.0F;
+      }
     }
     float sun_orbit_azimuth=sun_azimuth;
     double sun_orbit_phase=sun_elevation;
@@ -6906,7 +6961,12 @@ int main(int argc,char** argv) {
                        atmosphere_resources.dummy_aerial_transmittance);
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
-                  fitted_coverage!=0U&&
+                  // The named flight/top/orbit fixtures deliberately look
+                  // beyond the local shadow map's footprint.  Their image is
+                  // still guarded by real geometry/readback and the physical
+                  // atmosphere checks above; requiring a local fitted-depth
+                  // texel here would reject a valid whole-planet view.
+                  (atmosphere_capture_pose!=nullptr||fitted_coverage!=0U)&&
                   (!long_shadow_consumed||
                    (long_shadow_finite==long_shadow_pixels&&
                     (ray_traced_screen_visibility_active||

@@ -2,6 +2,21 @@
 
 ## 2026-09-03
 
+- [x] P3 Hillaire 200x100 sky-view qualification and promotion: added named
+  native-Metal flight, atmosphere-top, orbit, and paired orbital-motion
+  capture fixtures plus `scripts/qualify_metal_sky_view_reference.sh`. The
+  harness compares the real reference-temporal 200x100 LUT with the retained
+  384x216 control at back-lit mountain, direct-sun, ascent, and orbit poses,
+  validates the existing physical smoke for every capture, enforces per-pose
+  NRMS <= 0.004 and controlled orbital-motion drift, and runs lookup-refresh
+  and continuous-motion profiles. All 2026-09-03 checks passed: maximum NRMS
+  was 0.0008831, orbital drift was 0.0087133 against 0.0086921 control,
+  lookup refresh fell from 0.7947 to 0.3893 ms, and moving median/p95 was
+  5.7178/6.3272 versus 6.1717/6.6986 ms. Visual inspection retained an opaque
+  mountain shadow, compact clear solar disc, and continuous orbital blue limb.
+  The 200x100 LUT is now default; `TETWORLD_METAL_SKY_VIEW_REFERENCE=0`
+  preserves the 384x216 control.
+
 - [x] P3 reference-shadow lookup isolation: added the opt-in
   `shadow-lookup` profile, which requires 300 independent reference screen
   marcher intervals. Compared the manual four-depth PCF oracle with temporary

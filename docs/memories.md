@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `shadow-lookup` requires 300 independent reference screen-march timestamp intervals and accepts its ordered interval without requiring a composable enclosing MetalFX stage partition.
 - Evidence: The first attempt incorrectly recorded zero samples under MetalFX; the corrected independent interval completed 300 samples and the restored manual-PCF path passed the full Release suite.
 
+### metal-sky-view-reference
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, lookup, qualification
+- Fact: The reference-temporal Metal renderer defaults to Hillaire's 200x100 sky-view LUT, while `TETWORLD_METAL_SKY_VIEW_REFERENCE=0` selects the 384x216 paired-test control.
+- Evidence: The native low-sun, flight, atmosphere-top, orbital, and orbital-motion matrix passed with at most 0.0008831 control NRMS and reduced independently timestamped sky-view refresh from 0.7947 to 0.3893 ms.
+
 ### release-validation-entry-point
 - Updated: 2026-08-24
 - Tags: build, cmake, tests

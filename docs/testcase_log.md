@@ -7,6 +7,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: P3 native Metal 200x100 sky-view qualification | command: `bash scripts/qualify_metal_sky_view_reference.sh` after a fresh Release build | failures: none | notes: all paired back-lit mountain, direct-sun, flight, atmosphere-top, orbit, and nearby orbital-motion captures passed their native physical smoke; max candidate/control NRMS was 0.0008831 and orbital drift was 0.0087133 versus 0.0086921 control. Lookup refresh was 0.3893 ms versus 0.7947 ms; moving p95 was 6.3272 versus 6.6986 ms. Visual inspection found no foreground Mie cutout and a continuous blue limb.
+
+- 2026-09-03 local | pass | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 471 tests passed after adding native altitude capture fixtures; the known manual Metal smoke qualifications listed above remain separately tracked.
+
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
