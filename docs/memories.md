@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The normal reference-temporal renderer can skip true-sky reconstructed transport and colour history because composition uses only the sky-view LUT and solar disc, provided endpoint history remains written for sky-to-terrain transitions.
 - Evidence: Native physical captures preserved the mountain shadow and visible sun while matched 300-frame profiles improved by 0.38 ms stable median and 0.50 ms moving median; the legacy transport control remains opt-in.
 
+### metal-p4d-half-transmittance
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, texture-format, performance
+- Fact: Half precision for only the lookup-transmittance texture saves 128 KiB but has conflicting stable and moving timing, so float32 remains the production oracle.
+- Evidence: Four native physical captures stayed within 0.000459 NRMS, but the stable profile regressed by 0.3568 ms at median while the moving profile improved by 0.2133 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

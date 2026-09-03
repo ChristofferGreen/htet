@@ -485,6 +485,20 @@ at p95 than the shared float32 baseline's 5.5533/6.3560 ms. It does not meet
 the declared promotion threshold, so shared storage remains default and this
 experiment is rejected pending a device-specific pressure result.
 
+### P4d-a rejected lookup-transmittance half precision
+
+`RGBA16Float` was tested only for the semantic lookup-transmittance role; the
+screen transport, histories, and linear-depth endpoint remained float32/shared.
+Native mountain, visible-sun, flight, and orbit captures remained within
+0.000459 normalized RMS of the float32 control and reduced reported live
+atmosphere allocation by 131,072 bytes. It is nevertheless rejected. Matched
+300-frame profiles at a 1440x900 drawable / 1008x630 internal extent regressed
+from 5.0875/5.8655 to 5.4443/6.0109 ms median/p95 while stationary, even though
+the moving profile improved from 5.4516/6.3409 to 5.2383/6.1669 ms. This is not
+a coherent frame-time benefit and does not warrant reducing coloured
+transmittance precision. The experiment switch and half-float allocation path
+were removed; P4d-b must begin from the unchanged float32 oracle.
+
 ## P5 conservative planet-umbra work elimination
 
 The reference Hillaire marcher now evaluates spherical planet visibility before

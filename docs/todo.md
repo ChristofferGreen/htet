@@ -365,12 +365,30 @@ their measurements, since each changes a different representation or route.
         Matched 300-frame profiles improved from 5.3802/5.9348 to
         4.9991/5.6293 ms stationary and from 5.9037/6.5074 to
         5.4086/6.2459 ms moving (median/p95).
-  - [ ] **P4d — Qualify remaining transport format/storage candidates.**
-        Scope: test transmittance and screen/history precision or storage one
-        semantic role at a time against the coloured-transmittance oracle.
-        Acceptance: isolated measurements plus numeric, disocclusion,
-        low-sun, and orbital validation. Stop rule: retain the existing
-        float32/shared form when quality or coherent timing does not win.
+  - [x] **P4d-a — Qualify lookup-transmittance half precision.** Scope:
+        change only the semantic `transmittance` role to `RGBA16Float`, leaving
+        screen transport, histories, and endpoint depth float32/shared.
+        Acceptance: coloured-transmittance numeric oracle, low-sun,
+        disocclusion, and orbital captures plus matched timing. Stop rule:
+        retain float32 when either the coloured oracle or coherent timing does
+        not win. Result: rejected. Mountain, direct-sun, flight, and orbit
+        captures remained within 0.000459 NRMS and saved 131,072 bytes, but
+        the stable profile regressed from 5.0875/5.8655 to 5.4443/6.0109 ms
+        while the moving profile improved from 5.4516/6.3409 to
+        5.2383/6.1669. The inconsistent result does not justify a precision
+        reduction; no production code remains.
+  - [ ] **P4d-b — Qualify screen transport precision separately from endpoint
+        history.** Scope: test scattering/transmittance current and history
+        textures one role at a time, never reducing endpoint linear-depth
+        precision. Acceptance: temporal acceptance/rejection, visible sun,
+        mountain, motion, and orbit comparisons plus matched timing. Stop
+        rule: retain float32/shared on any temporal or physical mismatch.
+  - [ ] **P4d-c — Qualify storage mode after precision is settled.** Scope:
+        test private storage for one non-readback semantic texture family at a
+        time, retaining a capture-compatible control. Acceptance: native
+        readback, physical captures, and matched timing with the same drawable
+        and internal extent. Stop rule: reject neutral/worse timing or any
+        capture/readback incompatibility.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular

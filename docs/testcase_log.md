@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P4d-a final | command: `./scripts/compile.sh --release` after restoring float32 lookup transmittance | failures: none | notes: all 472 tests passed in 363.76 s; the half-float candidate was rejected and no production format change remains.
+
+- 2026-09-03 local | pass, P4d-a rejected | mode: native Metal lookup-transmittance half-float qualification | command: hidden paired mountain/direct-sun/flight/orbit captures and 300-frame stable/moving profiles | failures: none in physical smoke | notes: maximum capture NRMS was 0.000459 with a 131,072-byte allocation saving, but stable median/p95 regressed from 5.0875/5.8655 to 5.4443/6.0109 ms while moving improved from 5.4516/6.3409 to 5.2383/6.1669; the inconsistent result was rejected and production remains float32.
+
 - 2026-09-03 local | pass | mode: release P4c final | command: `./scripts/compile.sh --release` after reference-sky transport elision | failures: none | notes: all 472 tests passed in 387.26 s, including temporal history, physical atmosphere/shadow, and translated-Metal-shader coverage.
 
 - 2026-09-03 local | pass | mode: P4c native Metal reference-sky transport elision | command: hidden paired mountain/direct-sun/flight/orbit/orbital-motion captures, non-reference and diagnostic controls, plus matched 300-frame stable/moving timing profiles | failures: none | notes: reference candidate/control captures were zero-NRMS before promotion and default mountain/control was 0.0000339; physical sun and terrain occlusion stayed correct, diagnostic/non-reference routes retained full transport, and timing improved from 5.3802/5.9348 to 4.9991/5.6293 ms stable and 5.9037/6.5074 to 5.4086/6.2459 ms moving.
