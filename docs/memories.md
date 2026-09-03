@@ -10,6 +10,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: BCC logical-owner derived-cell slices are not guaranteed to be address-sorted, so consumers with sorted-range contracts must sort their flat scratch slice explicitly.
 - Evidence: The depth-10 sphere four-hexahedra benchmark threw `invalid four-hexahedra owner cell range` until `SceneCache` sorted each derived-cell slice; the production-depth regression then passed all 25 rows.
 
+### metal-aerial-profile
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, profiling
+- Fact: `aerial-refresh` is an opt-in timing profile that selects debug view 4 and requires 300 new mode-3 aerial-dispatch timestamp samples, while ordinary reference-temporal frames retain aerial fallback textures.
+- Evidence: The final Release profile emitted 300 aerial samples and passed after the default reference smoke verified its lazy resource contract.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

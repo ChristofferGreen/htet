@@ -1756,6 +1756,7 @@ struct MetalGpuStageTimings {
   std::atomic<double> optical_lookup_milliseconds{};
   std::atomic<double> sky_view_lookup_milliseconds{};
   std::atomic<double> irradiance_lookup_milliseconds{};
+  std::atomic<double> aerial_lookup_milliseconds{};
   std::atomic<bool> valid{};
   std::atomic<bool> screen_stages_valid{};
   std::atomic<bool> metalfx_valid{};
@@ -1781,6 +1782,7 @@ struct MetalTimingProfileSamples {
   std::vector<double> optical_lookup_milliseconds;
   std::vector<double> sky_view_lookup_milliseconds;
   std::vector<double> irradiance_lookup_milliseconds;
+  std::vector<double> aerial_lookup_milliseconds;
 
   void add(double milliseconds) {
     std::lock_guard lock(mutex);
@@ -1820,16 +1822,25 @@ struct MetalTimingProfileSamples {
       irradiance_lookup_milliseconds.push_back(irradiance);
   }
 
-  [[nodiscard]] std::array<std::vector<double>,3U>
+  void add_aerial_lookup(double aerial) {
+    std::lock_guard lock(mutex);
+    if(aerial_lookup_milliseconds.size()<300U)
+      aerial_lookup_milliseconds.push_back(aerial);
+  }
+
+  [[nodiscard]] std::array<std::vector<double>,4U>
   ordered_lookups() const {
     std::lock_guard lock(mutex);
     auto optical=optical_lookup_milliseconds;
     auto sky=sky_view_lookup_milliseconds;
     auto irradiance=irradiance_lookup_milliseconds;
+    auto aerial=aerial_lookup_milliseconds;
     std::ranges::sort(optical);
     std::ranges::sort(sky);
     std::ranges::sort(irradiance);
-    return {std::move(optical),std::move(sky),std::move(irradiance)};
+    std::ranges::sort(aerial);
+    return {std::move(optical),std::move(sky),std::move(irradiance),
+            std::move(aerial)};
   }
 };
 
@@ -1841,7 +1852,7 @@ double timing_percentile(const std::vector<double>& ordered,double fraction) {
 }
 
 constexpr NSUInteger gpu_base_timestamp_count=7U;
-constexpr NSUInteger gpu_timestamp_count=23U;
+constexpr NSUInteger gpu_timestamp_count=25U;
 constexpr std::size_t gpu_timestamp_flight_count=3U;
 
 struct MetalTimestampFlight {
@@ -2653,7 +2664,7 @@ bool encode_live_atmosphere_lookups(
         dispatch(4U,resources.sky_irradiance);
       }
       if(aerial_consumed&&ensure_aerial_resources(device,resources))
-        dispatch(3U,resources.aerial_scattering);
+        dispatch(3U,resources.aerial_scattering,23U,24U);
       std::copy_n(uniform.begin(),resources.last_view_uniform.size(),
                   resources.last_view_uniform.begin());
       resources.view_ready=true;
@@ -2672,7 +2683,7 @@ bool encode_live_atmosphere_lookups(
       dispatch(4U,resources.sky_irradiance);
     }
     if(aerial_consumed&&ensure_aerial_resources(device,resources))
-      dispatch(3U,resources.aerial_scattering);
+      dispatch(3U,resources.aerial_scattering,23U,24U);
     std::copy_n(uniform.begin(),resources.last_view_uniform.size(),
                 resources.last_view_uniform.begin());
     resources.view_ready=true;
@@ -3140,8 +3151,8 @@ int main(int argc,char** argv) {
   const bool timing_profile_test=argc==2&&
       std::strcmp(argv[1],"--metal-timing-profile-smoke-test")==0;
   enum class TimingProfileClass { stable, moving, lookup_refresh,
-                                  optical_refresh, preview, exact_handoff,
-                                  ray_tracing };
+                                  optical_refresh, aerial_refresh, preview,
+                                  exact_handoff, ray_tracing };
   TimingProfileClass timing_profile_class=TimingProfileClass::stable;
   const char* timing_profile_class_name="stable";
   if(timing_profile_test){
@@ -3154,6 +3165,8 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::lookup_refresh;
       else if(std::strcmp(requested,"optical-refresh")==0)
         timing_profile_class=TimingProfileClass::optical_refresh;
+      else if(std::strcmp(requested,"aerial-refresh")==0)
+        timing_profile_class=TimingProfileClass::aerial_refresh;
       else if(std::strcmp(requested,"preview")==0)
         timing_profile_class=TimingProfileClass::preview;
       else if(std::strcmp(requested,"exact-handoff")==0)
@@ -3162,7 +3175,7 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::ray_tracing;
       else {
         std::fprintf(stderr,"TETWORLD_METAL_TIMING_PROFILE must be stable, "
-            "moving, lookup-refresh, optical-refresh, preview, exact-handoff, "
+            "moving, lookup-refresh, optical-refresh, aerial-refresh, preview, exact-handoff, "
             "or ray-tracing\\n");
         return 2;
       }
@@ -3746,6 +3759,13 @@ int main(int argc,char** argv) {
       }
       atmosphere_debug_view=static_cast<int>(value);
     }
+    // The aerial volume has no normal reference-temporal consumer. This
+    // profile deliberately selects the existing aerial diagnostic so it times
+    // allocation and refresh of a real sampled resource without making that
+    // work part of ordinary reference frames.
+    if(timing_profile_test&&
+       timing_profile_class==TimingProfileClass::aerial_refresh)
+      atmosphere_debug_view=4;
     int shadow_integration=atmosphere_epipolar_test?5:
         (atmosphere_minmax_test?2:0);
     int shadow_bias=1;
@@ -4490,6 +4510,14 @@ int main(int argc,char** argv) {
            timing_profile_class==TimingProfileClass::optical_refresh&&
            scene_vertex_count!=0U&&timing_profile_samples->size()<300U)
           atmosphere_optical_dirty=true;
+        // Aerial lookup identity includes the physical view/sun uniform. Move
+        // that real input only in the diagnostic profile so the active aerial
+        // view refreshes once per retained sample; optical tables remain
+        // cached and their cost cannot be attributed to the aerial interval.
+        if(timing_profile_test&&
+           timing_profile_class==TimingProfileClass::aerial_refresh&&
+           scene_vertex_count!=0U&&timing_profile_samples->size()<300U)
+          sun_azimuth+=0.003F;
         id<CAMetalDrawable> drawable=[layer nextDrawable];
         if(drawable==nil)continue;
 
@@ -5169,6 +5197,7 @@ int main(int argc,char** argv) {
         command_buffer.label=@"TetWorld frame";
         bool optical_lookup_encoded_this_frame=false;
         bool reference_lookup_encoded_this_frame=false;
+        bool aerial_lookup_encoded_this_frame=false;
         MetalTimestampFlight* gpu_timestamp_flight=nullptr;
         for(auto& flight:gpu_timestamp_flights){
           bool available=false;
@@ -5442,11 +5471,16 @@ int main(int argc,char** argv) {
           if(atmosphere_enabled){
             const bool aerial_lookup_consumed=atmosphere_transport!=2||
                 atmosphere_debug_view==4||atmosphere_debug_view==5;
+            const auto aerial_dispatches_before=
+                atmosphere_resources.dispatch_counts[3U];
             optical_lookup_encoded_this_frame=
                 encode_live_atmosphere_lookups(
                     device,command_buffer,atmosphere_resources,
                     stable_atmosphere_lookup_uniform,atmosphere_optical_dirty,
                     aerial_lookup_consumed,gpu_timestamp_samples);
+            aerial_lookup_encoded_this_frame=
+                atmosphere_resources.dispatch_counts[3U]!=
+                aerial_dispatches_before;
             atmosphere_optical_dirty=false;
           }
         }
@@ -6260,6 +6294,17 @@ int main(int argc,char** argv) {
                 if(timing_profile_sample_eligible)
                   profile_destination->add_irradiance_lookup(
                       sampled_milliseconds(19U,20U));
+              }
+              const bool aerial_lookup_timing_valid=usable_sample(23U)&&
+                  usable_sample(24U)&&
+                  timestamps[24U].timestamp>=timestamps[23U].timestamp;
+              if(aerial_lookup_encoded_this_frame&&
+                 aerial_lookup_timing_valid){
+                stage_destination->aerial_lookup_milliseconds.store(
+                    sampled_milliseconds(23U,24U),std::memory_order_relaxed);
+                if(timing_profile_sample_eligible)
+                  profile_destination->add_aerial_lookup(
+                      sampled_milliseconds(23U,24U));
               }
               bool valid=true;
               for(NSUInteger index=0U;index<gpu_base_timestamp_count;++index)
@@ -7090,7 +7135,8 @@ int main(int argc,char** argv) {
               if(!passed)result=1;
             }else if(timing_profile_test){
               const auto ordered=timing_profile_samples->ordered();
-              const auto [ordered_optical,ordered_sky,ordered_irradiance]=
+              const auto [ordered_optical,ordered_sky,ordered_irradiance,
+                          ordered_aerial]=
                   timing_profile_samples->ordered_lookups();
               const bool all_positive=!ordered.empty()&&
                   ordered.front()>0.0&&std::isfinite(ordered.back());
@@ -7101,8 +7147,11 @@ int main(int argc,char** argv) {
                   timing_profile_class!=TimingProfileClass::ray_tracing||
                   (terrain_acceleration_structure.active!=nil&&
                    terrain_acceleration_structure.build_count!=0U);
+              const bool aerial_profile_ready=
+                  timing_profile_class!=TimingProfileClass::aerial_refresh||
+                  ordered_aerial.size()==300U;
               const bool passed=ordered.size()==300U&&all_positive&&
-                  exact_handoff_ready&&ray_trace_ready;
+                  exact_handoff_ready&&ray_trace_ready&&aerial_profile_ready;
               std::printf("{\"event\":\"metal_timing_profile\","
                           "\"class\":\"%s\",\"samples\":%zu,"
                           "\"median_ms\":%.4f,\"p95_ms\":%.4f,"
@@ -7121,6 +7170,9 @@ int main(int argc,char** argv) {
                           "\"irradiance_lookup_ms\":%.4f,"
                           "\"sky_view_lookup_p95_ms\":%.4f,"
                           "\"irradiance_lookup_p95_ms\":%.4f,"
+                          "\"aerial_lookup_samples\":%zu,"
+                          "\"aerial_lookup_ms\":%.4f,"
+                          "\"aerial_lookup_p95_ms\":%.4f,"
                           "\"rt_builds\":%llu,\"sky_view_dispatches\":%llu,"
                           "\"irradiance_dispatches\":%llu,\"passed\":%s}\n",
                           timing_profile_class_name,ordered.size(),
@@ -7144,6 +7196,9 @@ int main(int argc,char** argv) {
                           timing_percentile(ordered_irradiance,0.50),
                           timing_percentile(ordered_sky,0.95),
                           timing_percentile(ordered_irradiance,0.95),
+                          ordered_aerial.size(),
+                          timing_percentile(ordered_aerial,0.50),
+                          timing_percentile(ordered_aerial,0.95),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.build_count),
                           static_cast<unsigned long long>(

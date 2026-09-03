@@ -5,6 +5,10 @@
 - `tetra_world_metal --metal-motion-smoke-test` reaches its automation timeout at the default mountain pose on this machine with the cold preview both enabled and disabled; the preview integration is not the discriminator.
 - `tetra_world_metal --metal-terrain-ray-oracle-smoke-test` currently reports 6 preview-enabled and 7 preview-disabled CPU/GPU oracle mismatches on this machine. The independent Metal ray-visibility smoke and the actual ray-traced atmospheric visibility path pass, so this remains an oracle-tolerance investigation rather than evidence of preview-only geometry failure.
 
+## Recent Test Runs
+
+- 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
+
 ## Resolved Failures
 
 - [x] `blocked world resource rejection preserves the complete published front` | resolved: 2026-09-03 12:47 local | validating command: `./scripts/compile.sh --release` | notes: relaxing resource budgets now requeues a previously rejected camera demand; the focused 53-assertion test and fresh 471/471 release run pass.

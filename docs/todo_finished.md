@@ -1,5 +1,16 @@
 # Finished TODO Items
 
+## 2026-09-03
+
+- [x] P3 aerial lookup isolation: added an opt-in `aerial-refresh` timing
+  profile that selects the existing aerial diagnostic view, changes only its
+  real physical view/sun lookup input, and timestamps the dispatched aerial
+  volume independently. The reference-temporal route remains lazy. At
+  1440x900 output, 1008x630 internal, 2x MSAA and MetalFX, 300 serialized
+  samples measured 1.6165 ms median and 2.2015 ms p95. The active diagnostic
+  raised nominal atmosphere residency from 22,350,316 to 32,967,116 bytes;
+  this confirms the lazy default avoids a material optional allocation.
+
 ## 2026-08-24
 
 - [x] CPU-G4-5 draw-front strategy comparison and selection: implemented a

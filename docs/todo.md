@@ -290,10 +290,6 @@ because it is faster.
         state profile. The opt-in serial counter route collected 300 current
         dispatch samples at 0.7501/0.7976 ms median/p95; it also prevents
         cached counter values from being reported as new lookup work.
-  - [ ] Isolate the default-inactive aerial lookup and determine whether an
-        active diagnostic consumer makes its allocation or refresh cost
-        material. Keep the reference-temporal default lazy unless evidence
-        proves an active route needs it.
   - [ ] Isolate the active shadow lookup/filter family and compare equivalent
         manual, depth-gather, and comparison-sampler PCF against the physical
         shadow oracle before considering a sampling change.

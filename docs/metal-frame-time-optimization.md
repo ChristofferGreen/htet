@@ -365,6 +365,19 @@ also tags dispatches per frame, so retained values in a pooled counter buffer
 cannot be mistaken for a cached lookup's new work. This measures a meaningful
 but secondary rebuild cost; sky view remains the largest measured P3 lookup.
 
+The default reference-temporal route deliberately neither allocates nor
+dispatches the aerial volume. A new opt-in `aerial-refresh` timing profile
+selects the existing aerial diagnostic (view 4), changes its real physical
+view/sun identity each retained frame, and brackets only its mode-3 dispatch.
+It does not force an optical-table rebuild. With serial counter collection,
+the 300-sample 1440x900 output / 1008x630 internal / 2x MSAA / MetalFX run
+measured 1.6165 ms median and 2.2015 ms p95 for aerial refresh. The active
+diagnostic frame smoke reported 32,967,116 nominal atmosphere bytes, versus
+the 22,350,316-byte default reference route: the optional pair costs
+10,616,800 bytes here. Keep that residency and refresh work lazy; this is a
+measurement result, not a reason to add aerial work to the physical reference
+renderer.
+
 ### P3 Hillaire 200x100 sky-view reference experiment
 
 `TETWORLD_METAL_SKY_VIEW_REFERENCE=1` replaces only the runtime sky-view
