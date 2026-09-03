@@ -385,12 +385,6 @@ their measurements, since each changes a different representation or route.
         rule: retain float32/shared on any temporal or physical mismatch.
         Result: rejected. Captures stayed within 0.000156 NRMS but the stable
         p95 regressed from 5.9521 to 6.2176 ms; no production code remains.
-  - [ ] **P4d-b2 — Qualify screen-transmittance precision.** Scope: after
-        P4d-b1, change only current and temporal-history coloured
-        transmittance textures, keeping scattering and endpoint histories
-        float32/shared. Acceptance: coloured-transmittance oracle, visible
-        sun, mountain, motion, orbit, and matched timing. Stop rule: retain
-        float32/shared on any physical or temporal mismatch.
   - [ ] **P4d-c — Qualify storage mode after precision is settled.** Scope:
         test private storage for one non-readback semantic texture family at a
         time, retaining a capture-compatible control. Acceptance: native

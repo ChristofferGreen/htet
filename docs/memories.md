@@ -46,6 +46,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Half precision for only the lookup-transmittance texture saves 128 KiB but has conflicting stable and moving timing, so float32 remains the production oracle.
 - Evidence: Four native physical captures stayed within 0.000459 NRMS, but the stable profile regressed by 0.3568 ms at median while the moving profile improved by 0.2133 ms.
 
+### metal-p4d-screen-transmittance
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, texture-format, temporal, performance
+- Fact: Current and temporal-history coloured screen-transmittance are `RGBA16Float` by default, while scattering and endpoint textures remain shared float32 and `TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE=0` is the paired control.
+- Evidence: Native mountain/sun/flight/orbit captures stayed within 0.000322 NRMS with expected temporal counters; reverse-order 300-frame pairs lowered aggregate stable and moving frame times while saving 3,456,000 bytes.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

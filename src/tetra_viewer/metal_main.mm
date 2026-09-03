@@ -1017,9 +1017,18 @@ id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
   return library;
 }
 
-enum class AtmosphereTextureRole { radiance, transmittance, screen };
+enum class AtmosphereTextureRole {
+  radiance,
+  transmittance,
+  screen,
+  screen_transmittance
+};
 bool atmosphere_half_radiance_experiment{};
 bool atmosphere_private_radiance_experiment{};
+// P4d-b2: the qualified production format for reconstructed coloured
+// transmittance.  Setting the environment switch to 0 retains the float32
+// control for paired native qualification.
+bool atmosphere_half_screen_transmittance_experiment{true};
 
 id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
                                        NSUInteger height,NSUInteger depth=1U,
@@ -1037,6 +1046,10 @@ id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
     case AtmosphereTextureRole::transmittance:
     case AtmosphereTextureRole::screen:
       descriptor.pixelFormat=MTLPixelFormatRGBA32Float;
+      break;
+    case AtmosphereTextureRole::screen_transmittance:
+      descriptor.pixelFormat=atmosphere_half_screen_transmittance_experiment?
+          MTLPixelFormatRGBA16Float:MTLPixelFormatRGBA32Float;
       break;
   }
   descriptor.width=width;
@@ -1662,6 +1675,7 @@ std::size_t atmosphere_texture_bytes(id<MTLTexture> texture) {
   std::size_t bytes_per_pixel{};
   switch(texture.pixelFormat){
     case MTLPixelFormatRGBA32Float:bytes_per_pixel=16U;break;
+    case MTLPixelFormatRGBA16Float:bytes_per_pixel=8U;break;
     case MTLPixelFormatRG32Uint:bytes_per_pixel=8U;break;
     case MTLPixelFormatR8Uint:bytes_per_pixel=1U;break;
     case MTLPixelFormatDepth32Float:bytes_per_pixel=4U;break;
@@ -2032,7 +2046,7 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
   resources.screen_scattering=make_atmosphere_texture(
       device,width,height,1U,AtmosphereTextureRole::screen);
   resources.screen_transmittance=make_atmosphere_texture(
-      device,width,height,1U,AtmosphereTextureRole::screen);
+      device,width,height,1U,AtmosphereTextureRole::screen_transmittance);
   // The qualified reference route evaluates terrain visibility in its own
   // screen integration and never binds this 3D query volume or its packed
   // binary histories.  Allocate the family only once a non-reference route
@@ -2052,7 +2066,8 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
     resources.history_scattering[index]=make_atmosphere_texture(
         device,width,height,1U,AtmosphereTextureRole::screen);
     resources.history_transmittance[index]=make_atmosphere_texture(
-        device,width,height,1U,AtmosphereTextureRole::screen);
+        device,width,height,1U,
+        AtmosphereTextureRole::screen_transmittance);
     resources.history_endpoint[index]=make_atmosphere_texture(
         device,width,height,1U,AtmosphereTextureRole::screen);
   }
@@ -3313,6 +3328,18 @@ int main(int argc,char** argv) {
     else if(std::strcmp(value,"1")==0)atmosphere_private_radiance_experiment=true;
     else {
       std::fprintf(stderr,"TETWORLD_METAL_PRIVATE_RADIANCE must be 0 or 1\n");
+      return 2;
+    }
+  }
+  if(const char* value=std::getenv("TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE");
+     value!=nullptr){
+    if(std::strcmp(value,"0")==0)
+      atmosphere_half_screen_transmittance_experiment=false;
+    else if(std::strcmp(value,"1")==0)
+      atmosphere_half_screen_transmittance_experiment=true;
+    else {
+      std::fprintf(stderr,
+          "TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE must be 0 or 1\n");
       return 2;
     }
   }

@@ -2,6 +2,21 @@
 
 ## 2026-09-03
 
+- [x] P4d-b2 screen-transmittance half-precision qualification and promotion:
+  made the current and two temporal-history coloured-transmittance textures
+  `RGBA16Float`, while retaining screen scattering and endpoint histories as
+  shared float32. `TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE=0` is the paired
+  float32 control, and allocation accounting now recognises `RGBA16Float`.
+  Native mountain, directly visible sun, flight, and orbit captures remained
+  within 0.000322 NRMS of the control; temporal counters remained 12 attempts,
+  10 compatible samples, and two expected invalidations. Visual inspection
+  retained terrain-occluded direct Mie and the physical solar disc. The
+  candidate reduced live atmosphere allocation by 3,456,000 bytes (21,343,212
+  to 17,887,212) and two reverse-order 300-frame profile pairs at 1440x900 /
+  1008x630 / 2x / MetalFX showed aggregate stable median/p95 of
+  5.0723/5.9510 versus 5.3648/6.1913 ms and moving 5.2917/5.9730 versus
+  5.3029/6.0366 ms. It is therefore the production default.
+
 - [x] P3 Hillaire 200x100 sky-view qualification and promotion: added named
   native-Metal flight, atmosphere-top, orbit, and paired orbital-motion
   capture fixtures plus `scripts/qualify_metal_sky_view_reference.sh`. The

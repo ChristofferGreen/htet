@@ -499,6 +499,28 @@ a coherent frame-time benefit and does not warrant reducing coloured
 transmittance precision. The experiment switch and half-float allocation path
 were removed; P4d-b must begin from the unchanged float32 oracle.
 
+### P4d-b2 promoted screen-transmittance half precision
+
+The current reconstructed coloured-transmittance texture and its two temporal
+history textures now use `RGBA16Float`; screen scattering and endpoint
+metadata remain shared `RGBA32Float`. This keeps the physical direct-Mie
+shadowing and temporal identity mechanisms out of the format change. The
+production default is half precision, with
+`TETWORLD_METAL_HALF_SCREEN_TRANSMITTANCE=0` retaining the float32 paired
+control for native qualification.
+
+Native mountain, visible-sun, flight, and orbit captures differed from that
+control by at most 0.000322 normalized RMS. The candidate retained the
+expected 12 temporal attempts, 10 compatible samples, and two invalidations;
+the back-lit mountain remained free of foreground direct Mie and the visible
+sun capture retained its disc. Live atmosphere allocation fell by 3,456,000
+bytes, from 21,343,212 to 17,887,212 bytes. Two reverse-order 300-frame pairs
+at the identical 1440x900 drawable / 1008x630 internal / 2x / MetalFX setting
+gave aggregate stable median/p95 5.0723/5.9510 versus 5.3648/6.1913 ms and
+moving 5.2917/5.9730 versus 5.3029/6.0366 ms for float32. The result is a
+coherent residency and frame-time win, so half precision is promoted only for
+this semantic texture family.
+
 ## P5 conservative planet-umbra work elimination
 
 The reference Hillaire marcher now evaluates spherical planet visibility before
