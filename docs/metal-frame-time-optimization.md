@@ -212,7 +212,11 @@ interactive route switch rather than destroyed every frame; any further
 residency trimming must be measured independently from this allocation win.
 At the 480x300 reference screen extent, this avoids 6,912,000 nominal bytes
 (a 32-slice R8 visibility volume plus two RG32Uint histories); the qualified
-reference smoke reports 42,120,268 total atmosphere bytes after the change.
+reference smoke initially reported 42,120,268 total atmosphere bytes after the
+change. Froxel storage now follows the same pattern: the default route retains
+two 1x1x1 type-correct fallbacks and allocates the full 32-cubed pair only for
+renderer 4. The reference smoke reports 41,071,724 bytes and the froxel smoke
+returns to 42,120,268 bytes; both assert the resource-residency contract.
 
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`

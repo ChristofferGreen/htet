@@ -233,6 +233,9 @@ because it is faster.
         visibility histories. The reference smoke proves they remain absent;
         non-reference routes allocate them before binding and retain them
         across switches to avoid allocation churn.
+  - [x] Lazily allocate 32-cubed froxel volumes behind type-correct 1x1x1
+        fallbacks. The reference and froxel smoke routes assert both sides of
+        the residency contract and preserve qualified images.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

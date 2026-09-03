@@ -1375,6 +1375,8 @@ struct MetalAtmosphereResources {
   id<MTLTexture> aerial_transmittance=nil;
   id<MTLTexture> froxel_scattering=nil;
   id<MTLTexture> froxel_transmittance=nil;
+  id<MTLTexture> dummy_froxel_scattering=nil;
+  id<MTLTexture> dummy_froxel_transmittance=nil;
   id<MTLTexture> dummy_screen=nil;
   id<MTLTexture> screen_endpoint=nil;
   id<MTLTexture> screen_scattering=nil;
@@ -1547,8 +1549,13 @@ MetalAtmosphereResources make_live_atmosphere_resources(
       device,settings.aerial_width,settings.aerial_height,settings.aerial_depth);
   resources.aerial_transmittance=make_atmosphere_texture(
       device,settings.aerial_width,settings.aerial_height,settings.aerial_depth);
-  resources.froxel_scattering=make_atmosphere_texture(device,32U,32U,32U);
-  resources.froxel_transmittance=make_atmosphere_texture(device,32U,32U,32U);
+  // Most routes bind but never sample froxel volumes. Keep a type-correct
+  // writable fallback for those translated entry points and materialize the
+  // full 32^3 pair only for renderer 4.
+  resources.dummy_froxel_scattering=make_atmosphere_texture(device,1U,1U,1U);
+  resources.dummy_froxel_transmittance=make_atmosphere_texture(device,1U,1U,1U);
+  resources.froxel_scattering=resources.dummy_froxel_scattering;
+  resources.froxel_transmittance=resources.dummy_froxel_transmittance;
   resources.dummy_screen=make_atmosphere_texture(device,1U,1U);
   MTLTextureDescriptor* shadow=[MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
@@ -1599,7 +1606,8 @@ bool live_atmosphere_resources_valid(const MetalAtmosphereResources& resources) 
       resources.sky_irradiance!=nil&&resources.long_shadow!=nil&&
       resources.aerial_scattering!=nil&&
       resources.aerial_transmittance!=nil&&resources.froxel_scattering!=nil&&
-      resources.froxel_transmittance!=nil&&resources.dummy_screen!=nil&&
+      resources.froxel_transmittance!=nil&&resources.dummy_froxel_scattering!=nil&&
+      resources.dummy_froxel_transmittance!=nil&&resources.dummy_screen!=nil&&
       resources.dummy_shadow!=nil&&resources.shadow_uniform!=nil&&
       resources.minmax!=nil&&resources.sampler!=nil;
 }
@@ -1638,6 +1646,16 @@ std::size_t live_atmosphere_allocation_bytes(
     for(id<MTLTexture> texture:textures)
       total+=atmosphere_texture_bytes(texture);
   return total;
+}
+
+bool ensure_shadowed_froxel_resources(id<MTLDevice> device,
+                                      MetalAtmosphereResources& resources) {
+  if(resources.froxel_scattering!=resources.dummy_froxel_scattering&&
+     resources.froxel_transmittance!=resources.dummy_froxel_transmittance)
+    return true;
+  resources.froxel_scattering=make_atmosphere_texture(device,32U,32U,32U);
+  resources.froxel_transmittance=make_atmosphere_texture(device,32U,32U,32U);
+  return resources.froxel_scattering!=nil&&resources.froxel_transmittance!=nil;
 }
 
 struct MetalTimingIdentity {
@@ -2238,10 +2256,12 @@ void encode_deterministic_screen_atmosphere(
 }
 
 void encode_shadowed_froxel_atmosphere(
-    id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
+    id<MTLDevice> device,id<MTLCommandBuffer> command,
+    MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
     id<MTLTexture> scene_depth) {
+  if(!ensure_shadowed_froxel_resources(device,resources))return;
   const bool reference=uniform[53]>=9.5F;
   id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
   [encoder setComputePipelineState:reference?resources.reference_pipeline:
@@ -5513,7 +5533,7 @@ int main(int argc,char** argv) {
         if(atmosphere_enabled&&atmosphere_renderer==4&&
            scene_vertex_count!=0U)
           encode_shadowed_froxel_atmosphere(
-              command_buffer,atmosphere_resources,atmosphere_uniform,
+              device,command_buffer,atmosphere_resources,atmosphere_uniform,
               production_shadows,shadow_texture,depth_texture);
         encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
                                 gpu_timestamp_scratch,5U);
@@ -6432,6 +6452,11 @@ int main(int argc,char** argv) {
                   (atmosphere_resources.terrain_ray_visibility==nil&&
                    atmosphere_resources.history_visibility[0]==nil&&
                    atmosphere_resources.history_visibility[1]==nil);
+              const bool froxel_resources_lazy=atmosphere_renderer==4||
+                  (atmosphere_resources.froxel_scattering==
+                       atmosphere_resources.dummy_froxel_scattering&&
+                   atmosphere_resources.froxel_transmittance==
+                       atmosphere_resources.dummy_froxel_transmittance);
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6447,7 +6472,7 @@ int main(int argc,char** argv) {
                     atmosphere_resources.last_ray_visibility_query_count==1U))&&
                   timing_passed&&temporal_accounting_passed&&
                   long_shadow_dispatch_passed&&lookup_invalidation_passed&&
-                  reference_visibility_resources_absent;
+                  reference_visibility_resources_absent&&froxel_resources_lazy;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6477,6 +6502,7 @@ int main(int argc,char** argv) {
                           "\"aerial_scattering_dispatches\":%llu,"
                           "\"froxel_dispatches\":%llu,"
                           "\"reference_visibility_resources_absent\":%s,"
+                          "\"froxel_resources_lazy\":%s,"
                           "\"atmosphere_allocation_bytes\":%zu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
@@ -6521,6 +6547,7 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long long>(
                               atmosphere_resources.dispatch_counts[16U]),
                           reference_visibility_resources_absent?"true":"false",
+                          froxel_resources_lazy?"true":"false",
                           live_atmosphere_allocation_bytes(atmosphere_resources),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),
