@@ -1400,6 +1400,8 @@ struct MetalAtmosphereResources {
   std::uint64_t ray_visibility_scene_generation{};
   std::array<tetra_viewer::AtmosphereScreenHistoryIdentity,2>
       history_identities{};
+  std::uint32_t history_present_index{};
+  bool history_present_valid{};
   bool last_visibility_backend_ray_traced{};
   bool history_valid{};
   std::array<float,16> last_temporal_camera{};
@@ -2136,6 +2138,7 @@ void encode_deterministic_screen_atmosphere(
     bool ray_traced_visibility,
     std::uint32_t ray_query_count,bool temporal,
     id<MTLCounterSampleBuffer> timestamp_samples=nil) {
+  resources.history_present_valid=false;
   const bool reference=uniform[53]>=9.5F;
   if(resources.last_visibility_backend_ray_traced!=ray_traced_visibility)
     current_identity.valid=false;
@@ -2308,7 +2311,7 @@ void encode_deterministic_screen_atmosphere(
   const std::array<std::uint32_t,4> temporal_control{
       14U,previous_index,output_index,0U};
   id<MTLComputeCommandEncoder> accumulate=timestamped_compute_encoder(
-      command,timestamp_samples,11U,MTLCounterDontSample);
+      command,timestamp_samples,11U,12U);
   [accumulate setComputePipelineState:resources.pipelines[14]];
   [accumulate setBytes:uniform.data() length:uniform.size()*sizeof(float)
                   atIndex:0];
@@ -2329,29 +2332,11 @@ void encode_deterministic_screen_atmosphere(
   [accumulate endEncoding];
   ++resources.dispatch_counts[14];
 
-  const std::array<std::uint32_t,4> publish_control{
-      15U,output_index,0U,0U};
-  id<MTLComputeCommandEncoder> publish=timestamped_compute_encoder(
-      command,timestamp_samples,MTLCounterDontSample,12U);
-  [publish setComputePipelineState:resources.pipelines[15]];
-  [publish setBytes:uniform.data() length:uniform.size()*sizeof(float)
-               atIndex:0];
-  [publish setBytes:publish_control.data() length:sizeof(publish_control)
-               atIndex:1];
-  [publish setTexture:resources.history_scattering[0] atIndex:0];
-  [publish setTexture:resources.history_scattering[1] atIndex:1];
-  [publish setTexture:resources.history_transmittance[0] atIndex:2];
-  [publish setTexture:resources.history_transmittance[1] atIndex:3];
-  [publish setTexture:resources.history_endpoint[0] atIndex:4];
-  [publish setTexture:resources.history_endpoint[1] atIndex:5];
-  [publish setTexture:resources.screen_scattering atIndex:6];
-  [publish setTexture:resources.screen_transmittance atIndex:7];
-  [publish setTexture:resources.screen_endpoint atIndex:8];
-  [publish dispatchThreads:MTLSizeMake(resources.screen_width,
-                                       resources.screen_height,1U)
-      threadsPerThreadgroup:MTLSizeMake(8U,8U,1U)];
-  [publish endEncoding];
-  ++resources.dispatch_counts[15];
+  // The accumulation output is already the generation the composite needs.
+  // Bind it directly instead of copying two full screen textures solely for
+  // presentation.
+  resources.history_present_index=output_index;
+  resources.history_present_valid=true;
   resources.last_temporal_camera=current_camera;
   resources.history_sample_count=history_compatible&&!camera_changed?
       std::min(resources.history_sample_count+1U,8U):1U;
@@ -5773,6 +5758,16 @@ int main(int argc,char** argv) {
         [composite_encoder setFragmentTexture:depth_texture atIndex:1];
         [composite_encoder setFragmentTexture:atmosphere_resources.sky_view
                                        atIndex:2];
+        const bool direct_history_presentation=atmosphere_renderer==3&&
+            atmosphere_resources.history_present_valid;
+        id<MTLTexture> composite_scattering=direct_history_presentation?
+            atmosphere_resources.history_scattering[
+                atmosphere_resources.history_present_index]:
+            atmosphere_resources.screen_scattering;
+        id<MTLTexture> composite_transmittance=direct_history_presentation?
+            atmosphere_resources.history_transmittance[
+                atmosphere_resources.history_present_index]:
+            atmosphere_resources.screen_transmittance;
         if(faithful_composite){
           [composite_encoder setFragmentTexture:atmosphere_resources.long_shadow
                                          atIndex:3];
@@ -5789,9 +5784,9 @@ int main(int argc,char** argv) {
                                          atIndex:9];
           [composite_encoder setFragmentTexture:atmosphere_resources.screen_endpoint
                                          atIndex:10];
-          [composite_encoder setFragmentTexture:atmosphere_resources.screen_scattering
+          [composite_encoder setFragmentTexture:composite_scattering
                                          atIndex:11];
-          [composite_encoder setFragmentTexture:atmosphere_resources.screen_transmittance
+          [composite_encoder setFragmentTexture:composite_transmittance
                                          atIndex:12];
           [composite_encoder setFragmentTexture:atmosphere_resources.aerial_scattering
                                          atIndex:13];
@@ -5812,9 +5807,9 @@ int main(int argc,char** argv) {
                                          atIndex:7];
           [composite_encoder setFragmentTexture:atmosphere_resources.screen_endpoint
                                          atIndex:8];
-          [composite_encoder setFragmentTexture:atmosphere_resources.screen_scattering
+          [composite_encoder setFragmentTexture:composite_scattering
                                          atIndex:9];
-          [composite_encoder setFragmentTexture:atmosphere_resources.screen_transmittance
+          [composite_encoder setFragmentTexture:composite_transmittance
                                          atIndex:10];
           [composite_encoder setFragmentTexture:atmosphere_resources.aerial_scattering
                                          atIndex:11];
@@ -6651,7 +6646,7 @@ int main(int argc,char** argv) {
                   atmosphere_resources.dispatch_counts[12]!=0U&&
                   atmosphere_resources.dispatch_counts[13]!=0U&&
                   atmosphere_resources.dispatch_counts[14]!=0U&&
-                  atmosphere_resources.dispatch_counts[15]!=0U;
+                  atmosphere_resources.dispatch_counts[15]==0U;
               const bool timing_passed=atmosphere_renderer==4?
                   atmosphere_resources.dispatch_counts[16]!=0U:
                   (reference_screen_dispatched||

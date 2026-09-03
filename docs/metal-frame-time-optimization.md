@@ -382,6 +382,25 @@ experiment must not be marketed as a general motion-frame saving. It remains a
 refresh-cost candidate pending the broader physical/orbital qualification
 matrix.
 
+## P4 direct temporal-history presentation
+
+The temporal accumulation pass writes its selected history generation, then
+the composite now binds that exact scattering/transmittance pair directly.
+The former mode-15 publish encoder, which copied both full screen textures
+back to transient targets solely for presentation, is no longer encoded. The
+history generation is stored only after accumulation and the pass end timestamp
+now measures the accumulation boundary itself.
+
+Reference atmosphere smoke and the 832-frame MetalFX temporal/motion smoke
+passed after this change, including history invalidation accounting and finite
+motion probes. A fresh occluded-mountain capture passed its physical checks and
+had normalized RMS 0.0000343 against the pre-change image; visual inspection
+retained the fully shadowed foreground ridge. The fixed stable profile measured
+5.5533/6.3560 ms median/p95 versus the earlier 5.5181/6.1065 ms sample, so no
+frame-time reduction is claimed amid run variation. It is promoted only as a
+correctness-qualified removal of a full-screen copy and an encoder; later P4
+format/storage experiments must independently clear the same oracles.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

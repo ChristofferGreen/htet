@@ -309,6 +309,12 @@ because it is faster.
       full work in diagnostics.
       Reject any candidate that fails the numeric, depth-class, disocclusion,
       orbital, or low-sun visual oracle (P4).
+  - [x] Bind the active temporal history generation directly for composition,
+        removing the mode-15 screen scattering/transmittance publish encoder.
+        Reference and 832-frame MetalFX smoke pass; a mountain capture differs
+        by normalized RMS 0.0000343. The stable timing is unchanged within run
+        variation, so this is an encoder/bandwidth reduction, not a claimed
+        frame-time win.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular
