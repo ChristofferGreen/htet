@@ -230,6 +230,12 @@ until a legacy transport or aerial diagnostic selects them. The default
 reference smoke reports 22,350,316 bytes after this change and asserts that
 all inactive family fallbacks remain in place.
 
+The inverse diagnostic route was also exercised on 2026-09-03:
+`TETWORLD_METAL_ATMOSPHERE_DEBUG_VIEW=11` materialized the atlas, issued one
+long-shadow dispatch, found 113,792 occluded atlas pixels, and passed its image
+gate. This proves the liveness guards are consumer-specific rather than a
+blanket suppression of terrain-shadow diagnostics.
+
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`
 arguments even when a runtime route bypasses their samples. A subsequent lazy
