@@ -390,9 +390,16 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] Measure and, only where material, implement compact preview GPU data,
-      conservative per-cascade caster culling, and generation-coherent
-      acceleration-structure update/refit policy (P7).
+- [ ] **P7b — Qualify conservative per-cascade caster culling.** Scope:
+      measure each cascade's submitted terrain and test a conservative cull
+      against the current full-front shadow draw. Acceptance: identical shadow
+      coverage/capture probes and a measured refresh-time reduction. Stop rule:
+      retain the full front if culling is neutral or misses any caster.
+- [ ] **P7c — Qualify generation-coherent AS build policy.** Scope: compare
+      immutable-generation rebuild against supported update/refit policy,
+      with separately bracketed AS timing. Acceptance: no stale visibility or
+      generation mismatch and a repeatable build-time win. Stop rule: retain
+      immutable rebuilds if update/refit is unsupported or neutral.
 - [ ] Remove measured encoder, attachment-store, per-frame allocation, and
       diagnostic-readback overhead. Test a MetalFX composition variant that
       writes colour, motion, and reactive targets together, and separately test

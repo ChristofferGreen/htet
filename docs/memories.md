@@ -94,6 +94,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Memoryless transient MSAA resolve sources are supported on the M3 Pro but remain rejected because their moving median timing regressed.
 - Evidence: Native captures stayed within 0.000615 NRMS and temporal/orbital checks passed, but paired moving median rose from 5.7410 to 5.8321 ms.
 
+### metal-p7a-as-timing
+- Updated: 2026-09-03
+- Tags: metal, ray-tracing, timing
+- Fact: AS builds are independently bracketed by Metal counter samples 15/16, not inferred from the enclosing frame interval.
+- Evidence: Native stage-timestamp smoke measured a 12.8221 ms build alongside a separate 1.1560 ms frame.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

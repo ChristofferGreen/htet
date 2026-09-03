@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P7a AS timing audit | mode: native Metal stage timestamps | command: hidden `TETWORLD_METAL_STAGE_TIMESTAMPS=1 TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS=1 tetra_world_metal --metal-render-smoke-test` | failures: none | notes: independent AS encoder interval was valid at 12.8221 ms; frame interval was separately 1.1560 ms with generation-coherent RT structure.
+
 - 2026-09-03 local | pass, P6c rejected | mode: native Metal memoryless MSAA qualification | command: hidden paired 0.5/2x final-drawable mountain/sun/flight/top/orbit captures, temporal smokes, and two repeat timing profiles | failures: none | notes: memoryless storage allocated and captures stayed within 0.000615 NRMS, but moving median regressed 5.7410 to 5.8321 ms; experimental source removed and private MSAA sources retained.
 
 - 2026-09-03 local | pass, P6b final | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after promoting fixed 0.5-scale / 2x-MSAA / MetalFX interactive rendering; the native 1440x900 candidate passed seven physical captures, motion, temporal MetalFX, and repeated timing profiles.

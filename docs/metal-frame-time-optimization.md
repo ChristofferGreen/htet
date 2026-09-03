@@ -838,16 +838,14 @@ pass this project's oracle.
 
 ### Eighth-pass measurement and Metal-target findings
 
-The acceleration-structure diagnostic named `last_build_milliseconds` is not a
-build interval. Its completion handler stores `GPUEndTime-GPUStartTime` from
-the frame command buffer that contains the build, and the ordinary stage
-timestamp sequence starts only *after* acceleration-structure encoding. Thus
-the current value is an enclosing frame duration while the detailed stage
-breakdown excludes the build. Rename or replace this measurement before P2/P7:
-give acceleration-structure work its own coherent interval and record whether
-the frame built, reused, or promoted a structure. Automatic resolution may
-continue to use total frame time, but diagnostics must identify an AS spike so
-it is not mistaken for steady raster or atmosphere cost.
+The acceleration-structure diagnostic now has an independent encoder interval:
+the AS encoder uses timestamp samples 15/16, while the ordinary frame
+partition begins afterward. A hidden native stage-timestamp render smoke on
+2026-09-03 measured one generation-coherent AS build at 12.8221 ms alongside
+a separate 1.1560 ms frame. Automatic resolution continues to use full frame
+time, while the diagnostics distinguish the one-off AS spike from steady
+raster or atmosphere cost. P7 now needs only conservative caster culling and
+an immutable-rebuild versus supported update/refit comparison.
 
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already

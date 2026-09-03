@@ -2,6 +2,14 @@
 
 ## 2026-09-03
 
+- [x] P7a acceleration-structure timing: confirmed the existing Metal
+  acceleration-structure encoder has its own timestamp interval (sample slots
+  15/16), rather than reporting its enclosing command buffer. A hidden native
+  stage-timestamp render smoke recorded one 12.8221 ms AS build alongside a
+  separate 1.1560 ms frame interval and generation-coherent active structure.
+  The stale plan claim was corrected; P7b/P7c retain only culling and
+  rebuild-versus-update policy decisions.
+
 - [x] P6c memoryless MSAA resolve-source qualification: rejected on the M3
   Pro. The 0.5/2x memoryless colour/depth resolve sources allocated and passed
   all seven native final-drawable captures (worst 0.000615 NRMS), temporal
