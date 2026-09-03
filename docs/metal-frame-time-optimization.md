@@ -401,6 +401,16 @@ frame-time reduction is claimed amid run variation. It is promoted only as a
 correctness-qualified removal of a full-screen copy and an encoder; later P4
 format/storage experiments must independently clear the same oracles.
 
+### P4 semantic texture-factory split
+
+The former undifferentiated `RGBA32Float` atmosphere texture factory now
+requires a semantic role (radiance, coloured transmittance, or screen/history)
+at each relevant allocation. All roles deliberately remain float32/shared in
+the default. This neutral split passed reference and sun-invalidation smoke;
+it is preparatory infrastructure, not a precision or storage optimization.
+Any `RGBA16Float` or private-storage experiment must select a role explicitly
+and pass the same physical, temporal, and numeric gates.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

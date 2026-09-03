@@ -315,6 +315,10 @@ because it is faster.
         by normalized RMS 0.0000343. The stable timing is unchanged within run
         variation, so this is an encoder/bandwidth reduction, not a claimed
         frame-time win.
+  - [x] Split the shared float32 texture factory by radiance, transmittance,
+        and screen/history role without changing default format or storage.
+        Reference and invalidation smoke pass; half precision and private
+        storage remain separately unqualified experiments.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular

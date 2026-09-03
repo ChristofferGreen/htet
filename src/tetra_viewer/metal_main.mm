@@ -1014,10 +1014,23 @@ id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
   return library;
 }
 
+enum class AtmosphereTextureRole { radiance, transmittance, screen };
+
 id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
-                                       NSUInteger height,NSUInteger depth=1U) {
+                                       NSUInteger height,NSUInteger depth=1U,
+                                       AtmosphereTextureRole role=
+                                           AtmosphereTextureRole::radiance) {
   MTLTextureDescriptor* descriptor=[MTLTextureDescriptor new];
-  descriptor.pixelFormat=MTLPixelFormatRGBA32Float;
+  // Roles are intentionally explicit even while all default to float32. A
+  // future format experiment must opt in per physical meaning rather than
+  // accidentally changing endpoint/history precision with a LUT trial.
+  switch(role){
+    case AtmosphereTextureRole::radiance:
+    case AtmosphereTextureRole::transmittance:
+    case AtmosphereTextureRole::screen:
+      descriptor.pixelFormat=MTLPixelFormatRGBA32Float;
+      break;
+  }
   descriptor.width=width;
   descriptor.height=height;
   descriptor.depth=depth;
@@ -1549,7 +1562,8 @@ MetalAtmosphereResources make_live_atmosphere_resources(
   resources.atmosphere_shadow_resolution=
       settings.atmosphere_shadow_resolution;
   resources.transmittance=make_atmosphere_texture(
-      device,settings.transmittance_width,settings.transmittance_height);
+      device,settings.transmittance_width,settings.transmittance_height,1U,
+      AtmosphereTextureRole::transmittance);
   resources.multiple_scattering=make_atmosphere_texture(
       device,settings.multiple_scattering_size,settings.multiple_scattering_size);
   resources.sky_view=make_atmosphere_texture(
@@ -1969,9 +1983,12 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
        resources.history_visibility[0]!=nil&&
        resources.history_visibility[1]!=nil)))
     return true;
-  resources.screen_endpoint=make_atmosphere_texture(device,width,height);
-  resources.screen_scattering=make_atmosphere_texture(device,width,height);
-  resources.screen_transmittance=make_atmosphere_texture(device,width,height);
+  resources.screen_endpoint=make_atmosphere_texture(
+      device,width,height,1U,AtmosphereTextureRole::screen);
+  resources.screen_scattering=make_atmosphere_texture(
+      device,width,height,1U,AtmosphereTextureRole::screen);
+  resources.screen_transmittance=make_atmosphere_texture(
+      device,width,height,1U,AtmosphereTextureRole::screen);
   // The qualified reference route evaluates terrain visibility in its own
   // screen integration and never binds this 3D query volume or its packed
   // binary histories.  Allocate the family only once a non-reference route
@@ -1989,11 +2006,11 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
   }
   for(std::size_t index=0;index<2U;++index){
     resources.history_scattering[index]=make_atmosphere_texture(
-        device,width,height);
+        device,width,height,1U,AtmosphereTextureRole::screen);
     resources.history_transmittance[index]=make_atmosphere_texture(
-        device,width,height);
+        device,width,height,1U,AtmosphereTextureRole::screen);
     resources.history_endpoint[index]=make_atmosphere_texture(
-        device,width,height);
+        device,width,height,1U,AtmosphereTextureRole::screen);
   }
   resources.screen_width=width;
   resources.screen_height=height;
