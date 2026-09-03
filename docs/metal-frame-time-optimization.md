@@ -198,6 +198,11 @@ evaluate the qualified reference visibility in its screen integration) while
 correctly issuing zero atlas dispatches; this is required to preserve mountain
 occlusion rather than an indication that shadows were removed.
 
+`--metal-atmosphere-lookup-invalidation-smoke-test` changes the sun once in a
+12-frame otherwise-static reference run. It requires exactly two sky-view and
+two irradiance dispatches with ten cache skips, proving that a physical lookup
+change invalidates the cache while the other ten frames remain stable.
+
 Apply the same distinction to residency. The current live-resource constructor
 eagerly allocates aerial, froxel, long-shadow, hierarchy, and screen families
 before the selected renderer is known. After dispatch liveness is correct,

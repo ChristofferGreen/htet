@@ -2904,6 +2904,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-atmosphere-epipolar-smoke-test")==0;
   const bool atmosphere_reference_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-reference-smoke-test")==0;
+  const bool atmosphere_lookup_invalidation_test=argc==2&&
+      std::strcmp(argv[1],"--metal-atmosphere-lookup-invalidation-smoke-test")==0;
   const bool atmosphere_quarter_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-quarter-smoke-test")==0;
   const bool atmosphere_fallback_test=argc==2&&
@@ -2916,6 +2918,7 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-atmosphere-frame-smoke-test")==0)||
       atmosphere_capture||atmosphere_froxel_test||atmosphere_minmax_test||
       atmosphere_epipolar_test||atmosphere_reference_test||
+      atmosphere_lookup_invalidation_test||
       atmosphere_fallback_test||atmosphere_60_degree_test;
   const bool any_atmosphere_frame_test=atmosphere_frame_test||
       atmosphere_quarter_test;
@@ -3005,6 +3008,7 @@ int main(int argc,char** argv) {
                         "--metal-atmosphere-minmax-smoke-test|"
                         "--metal-atmosphere-epipolar-smoke-test|"
                         "--metal-atmosphere-reference-smoke-test|"
+                        "--metal-atmosphere-lookup-invalidation-smoke-test|"
                         "--metal-atmosphere-quarter-smoke-test|"
                         "--metal-atmosphere-fallback-smoke-test|"
                         "--metal-atmosphere-60deg-smoke-test|"
@@ -3550,6 +3554,7 @@ int main(int argc,char** argv) {
     std::size_t shadow_test_frames{};
     std::uint64_t wireframe_draws{};
     std::size_t atmosphere_test_frames{};
+    bool lookup_invalidation_sun_changed{};
     std::size_t atmosphere_quality_test_frames{};
     bool atmosphere_quality_switches_ok=true;
     std::size_t low_atmosphere_allocation{};
@@ -4149,6 +4154,15 @@ int main(int argc,char** argv) {
             default_atmosphere_allocation=
                 live_atmosphere_allocation_bytes(atmosphere_resources);
           }
+        }
+        // Change a true physical lookup dependency midway through an otherwise
+        // static reference run.  The unjittered cache identity must rebuild
+        // sky view and irradiance exactly once more; MetalFX-style jitter
+        // alone must not cause that work.
+        if(atmosphere_lookup_invalidation_test&&
+           atmosphere_test_frames==5U&&!lookup_invalidation_sun_changed){
+          sun_azimuth+=0.125F;
+          lookup_invalidation_sun_changed=true;
         }
         id<CAMetalDrawable> drawable=[layer nextDrawable];
         if(drawable==nil)continue;
@@ -6387,6 +6401,13 @@ int main(int argc,char** argv) {
                   long_shadow_dispatch_required?
                       atmosphere_resources.dispatch_counts[6U]!=0U:
                       atmosphere_resources.dispatch_counts[6U]==0U;
+              const bool lookup_invalidation_passed=
+                  !atmosphere_lookup_invalidation_test||
+                  (lookup_invalidation_sun_changed&&
+                   atmosphere_resources.dispatch_counts[2U]==2U&&
+                   atmosphere_resources.dispatch_counts[4U]==2U&&
+                   atmosphere_resources.reference_lookup_attempts==12U&&
+                   atmosphere_resources.reference_lookup_skips==10U);
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6401,7 +6422,7 @@ int main(int argc,char** argv) {
                    (atmosphere_resources.screen_divisor==4U&&
                     atmosphere_resources.last_ray_visibility_query_count==1U))&&
                   timing_passed&&temporal_accounting_passed&&
-                  long_shadow_dispatch_passed;
+                  long_shadow_dispatch_passed&&lookup_invalidation_passed;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6425,6 +6446,7 @@ int main(int argc,char** argv) {
                           "\"sky_irradiance_dispatches\":%llu,"
                           "\"sky_lookup_attempts\":%llu,"
                           "\"sky_lookup_skips\":%llu,"
+                          "\"lookup_invalidation_sun_changed\":%s,"
                           "\"long_shadow_dispatches\":%llu,"
                           "\"long_shadow_dispatch_required\":%s,"
                           "\"aerial_scattering_dispatches\":%llu,"
@@ -6463,6 +6485,7 @@ int main(int argc,char** argv) {
                               atmosphere_resources.reference_lookup_attempts),
                           static_cast<unsigned long long>(
                               atmosphere_resources.reference_lookup_skips),
+                          lookup_invalidation_sun_changed?"true":"false",
                           static_cast<unsigned long long>(
                               atmosphere_resources.dispatch_counts[6U]),
                           long_shadow_dispatch_required?"true":"false",

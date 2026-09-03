@@ -217,6 +217,9 @@ because it is faster.
         unjittered physical uniform, complete production shadow state, and
         terrain generation. Static smoke now performs one refresh and eleven
         skips while both static-atmosphere and continuous-motion checks pass.
+  - [x] Add a physical lookup-invalidation smoke: one deterministic sun change
+        in twelve otherwise-static reference frames produces exactly two
+        sky-view/irradiance refreshes and ten stable-cache skips.
   - [x] Stop aerial-volume dispatch in the default reference temporal route;
         retain it for non-reference renderers and explicit aerial diagnostics.
   - [x] Stop long-shadow-atlas dispatch in the default reference temporal route;
