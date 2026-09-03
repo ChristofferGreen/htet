@@ -82,6 +82,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `scripts/qualify_metal_msaa_matrix.sh` provides the native 1x/2x/4x by 0.5/0.7/1.0 scale stable/moving timing matrix and rejects configuration-identity mismatches.
 - Evidence: Its initial 18-row 1440x900 run passed, but non-monotonic sub-millisecond timings require P6b visual and repeat profiling before a default is selected.
 
+### metal-p6b-raster-profile
+- Updated: 2026-09-03
+- Tags: metal, msaa, metalfx, profiling, quality
+- Fact: Fixed 0.5-scale rendering with 2x MSAA and MetalFX is the qualified interactive default; `qualify_metal_raster_profile.sh` validates it through native final-drawable captures, temporal smokes, orbital drift, and repeated timing.
+- Evidence: Seven physical captures stayed below 0.002353 NRMS versus 0.7/2x, motion passed, and repeated stable/moving median/p95 improved from 6.1592/9.6423 and 6.7159/9.5137 to 4.7580/5.9723 and 5.4023/6.8567 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

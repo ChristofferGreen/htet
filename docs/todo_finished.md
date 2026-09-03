@@ -2,6 +2,18 @@
 
 ## 2026-09-03
 
+- [x] P6b fixed raster-profile selection: promoted fixed 0.5 render scale
+  with 2x terrain MSAA and MetalFX as the interactive default. A hidden native
+  qualification route rendered the actual final drawable at 1440x900 and
+  compared it to the 0.7/2x control across back-lit mountain, visible sun,
+  flight, atmosphere-top, orbit, and two nearby orbit positions, plus motion
+  and MetalFX temporal smokes. Every image stayed below 0.002353 NRMS and
+  orbital motion was within 0.000047 control drift. Two repeat 300-frame
+  profiles gave candidate/control 4.7580/5.9723 versus 6.1592/9.6423 ms stable
+  and 5.4023/6.8567 versus 6.7159/9.5137 ms moving. The same-scale 4x option
+  passed image gates but was slower while moving (5.9002/7.2626 ms), so it was
+  not selected.
+
 - [x] P6a native MSAA × MetalFX timing matrix: added
   `scripts/qualify_metal_msaa_matrix.sh` plus hidden profile-only fixed-scale
   and MSAA controls. The harness collected 18 fresh 300-frame profiles across

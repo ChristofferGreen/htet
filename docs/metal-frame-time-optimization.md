@@ -575,6 +575,21 @@ example, stable/moving 1x/2x/4x at 0.7 were 5.0777/5.1589,
 new default; P6b must repeat only plausible candidates with still/motion image
 gates before claiming a quality/cost winner.
 
+## P6b fixed raster-profile selection
+
+The interactive default is now fixed 0.5-scale rendering with 2x terrain MSAA
+and MetalFX. `scripts/qualify_metal_raster_profile.sh` drives the exact final
+drawable at 1440x900 under an automation-only fixed-raster override, so capture
+fixtures do not silently revert to their normal native single-sample contract.
+The selected profile passed mountain, visible-sun, flight, atmosphere-top,
+orbit, and two orbital-motion captures (worst 0.002353 NRMS versus the 0.7/2x
+control), both temporal smokes, and the orbital-drift gate. Two repeat
+300-frame profiles improved stable timing from 6.1592/9.6423 to 4.7580/5.9723
+ms and moving timing from 6.7159/9.5137 to 5.4023/6.8567 ms (median/p95).
+At the same scale, 4x MSAA passed visual checks but was worse during motion, so
+the two-sample profile is the evidence-backed selection rather than a nominal
+sample-count preference.
+
 The reference Hillaire marcher evaluates spherical planet visibility before the
 four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any

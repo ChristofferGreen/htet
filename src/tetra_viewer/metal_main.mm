@@ -3278,10 +3278,23 @@ int main(int argc,char** argv) {
   const bool automated_test=smoke_test||motion_test||render_test||metalfx_test||
       auto_resolution_test||timing_profile_test||overlay_test||shadow_test||capture_test||
       any_atmosphere_frame_test||atmosphere_quality_test||terrain_ray_oracle_test;
+  // P6b uses the same profile knobs as the timing matrix for native captures
+  // and temporal smokes.  Keep them opt-in and automation-only: interactive
+  // resolution/MSAA policy must remain independent until a row passes every
+  // physical and motion gate.
+  const bool raster_profile_qualification=
+      std::getenv("TETWORLD_METAL_RASTER_PROFILE_QUALIFICATION")!=nullptr;
+  if(raster_profile_qualification&&
+     !(atmosphere_capture||motion_test||metalfx_test)){
+    std::fprintf(stderr,"TETWORLD_METAL_RASTER_PROFILE_QUALIFICATION requires "
+                        "a Metal atmosphere capture, motion, or MetalFX smoke\\n");
+    return 2;
+  }
   const bool profile_interactive_rendering=
-      (auto_resolution_test||render_test||atmosphere_capture||timing_profile_test)&&
+      (auto_resolution_test||render_test||atmosphere_capture||timing_profile_test||
+       (raster_profile_qualification&&(motion_test||metalfx_test)))&&
       (std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr||
-       timing_profile_test);
+       timing_profile_test||raster_profile_qualification);
   bool preview_enabled=!automated_test;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
@@ -3920,17 +3933,21 @@ int main(int argc,char** argv) {
     bool force_runtime_camera=false;
     bool runtime_camera_interactive=false;
     // 0 native, 1 fixed, 2 automatic. Automated captures stay native and
-    // single-sampled so their depth oracle remains pixel-aligned with Vulkan.
+    // single-sampled so their depth oracle remains pixel-aligned with Vulkan,
+    // except the explicit P6b final-drawable raster qualification.
     // P2 profiles use a fixed 0.70 scale.  Allowing the controller to react
     // to a deliberately expensive refresh/motion class changes the pixel
     // population under measurement and makes its percentile incomparable to
     // the steady class.
     int render_resolution_mode=auto_resolution_test?2:
-        (timing_profile_test?1:
+        ((timing_profile_test||raster_profile_qualification)?1:
          profile_interactive_rendering?2:
-        (metalfx_test?1:(automated_test?0:2)));
-    float fixed_render_scale=timing_profile_test?0.70F:2.0F/3.0F;
-    if(timing_profile_test){
+        (metalfx_test?1:(automated_test?0:1)));
+    // P6b selected this fixed profile after native image, temporal, orbital,
+    // and repeated timing qualification against the former 0.70/2x control.
+    float fixed_render_scale=(timing_profile_test||raster_profile_qualification)?
+        0.70F:0.50F;
+    if(timing_profile_test||raster_profile_qualification){
       if(const char* value=std::getenv("TETWORLD_METAL_TIMING_PROFILE_SCALE");
          value!=nullptr&&value[0]!='\0'){
         char* end=nullptr;
@@ -3964,7 +3981,7 @@ int main(int argc,char** argv) {
                       scene_pipeline_4!=nil;
     int terrain_sample_count=scene_pipeline_2!=nil?2:
                              (scene_pipeline_4!=nil?4:1);
-    if(timing_profile_test){
+    if(timing_profile_test||raster_profile_qualification){
       if(const char* value=std::getenv("TETWORLD_METAL_TIMING_PROFILE_MSAA");
          value!=nullptr&&value[0]!='\0'){
         char* end=nullptr;
@@ -6279,6 +6296,7 @@ int main(int argc,char** argv) {
                  terrain_display_front.render_generation);
         const bool requested_profile_capture_ready=
             !profile_interactive_rendering||!atmosphere_capture||
+            raster_profile_qualification||
             (automatic_stable_frames>=60U&&
              automatic_render_scale<=automatic_minimum_scale+0.001F);
         if((capture_test||any_atmosphere_frame_test||metalfx_test)&&
@@ -7129,6 +7147,9 @@ int main(int argc,char** argv) {
                           "\"history_invalidations\":%llu,"
                           "\"camera_visibility_refreshes\":%llu,"
                           "\"screen_divisor\":%u,"
+                          "\"render_scale\":%.3f,"
+                          "\"terrain_samples\":%lu,"
+                          "\"metalfx\":%s,"
                           "\"rt_visibility_owner\":%s,"
                           "\"passed\":%s}\n",
                           atmosphere_capture?argv[2]:"",atmosphere_test_frames,
@@ -7182,6 +7203,9 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long long>(
                               atmosphere_resources.temporal_camera_refreshes),
                           atmosphere_resources.screen_divisor,
+                          active_render_scale,
+                          static_cast<unsigned long>(active_samples),
+                          metalfx_temporal_active?"true":"false",
                           ray_traced_screen_visibility_active?"true":"false",
                           passed?"true":"false");
               if(!passed)result=1;

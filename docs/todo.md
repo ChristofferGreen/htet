@@ -390,11 +390,6 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] **P6b — Select a fixed raster profile from the P6a matrix.** Scope:
-      promote only the lowest-cost row that passes mountain silhouette,
-      visible-sun, temporal motion, and surface-to-orbit checks. Acceptance:
-      paired captures and repeated profiles demonstrate a coherent win. Stop
-      rule: retain the current 2x Auto profile if no row dominates it.
 - [ ] **P6c — Qualify memoryless MSAA resolve sources separately.** Scope:
       compare private with supported memoryless colour/depth resolve-source
       attachments for selected P6b sample counts. Acceptance: equivalent
