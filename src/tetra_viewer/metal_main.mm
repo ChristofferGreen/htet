@@ -1402,6 +1402,7 @@ struct MetalAtmosphereResources {
   id<MTLTexture> dummy_shadow=nil;
   id<MTLBuffer> shadow_uniform=nil;
   id<MTLBuffer> minmax=nil;
+  id<MTLBuffer> dummy_minmax=nil;
   id<MTLSamplerState> sampler=nil;
   bool optical_ready{};
   bool view_ready{};
@@ -1586,9 +1587,9 @@ MetalAtmosphereResources make_live_atmosphere_resources(
       settings.atmosphere_shadow_resolution);
   resources.minmax_element_count=std::max(square_elements,
                                            epipolar.element_count)+2U;
-  resources.minmax=[device newBufferWithLength:
-      resources.minmax_element_count*sizeof(std::uint32_t)*2U
+  resources.dummy_minmax=[device newBufferWithLength:sizeof(std::uint32_t)*2U
       options:MTLResourceStorageModeShared];
+  resources.minmax=resources.dummy_minmax;
   MTLSamplerDescriptor* sampler=[MTLSamplerDescriptor new];
   sampler.minFilter=MTLSamplerMinMagFilterLinear;
   sampler.magFilter=MTLSamplerMinMagFilterLinear;
@@ -1615,7 +1616,7 @@ bool live_atmosphere_resources_valid(const MetalAtmosphereResources& resources) 
       resources.froxel_transmittance!=nil&&resources.dummy_froxel_scattering!=nil&&
       resources.dummy_froxel_transmittance!=nil&&resources.dummy_screen!=nil&&
       resources.dummy_shadow!=nil&&resources.shadow_uniform!=nil&&
-      resources.minmax!=nil&&resources.sampler!=nil;
+      resources.minmax!=nil&&resources.dummy_minmax!=nil&&resources.sampler!=nil;
 }
 
 std::size_t atmosphere_texture_bytes(id<MTLTexture> texture) {
@@ -1670,6 +1671,15 @@ bool ensure_long_shadow_resources(id<MTLDevice> device,
   resources.long_shadow=make_atmosphere_texture(
       device,resources.long_shadow_width,resources.long_shadow_height);
   return resources.long_shadow!=nil;
+}
+
+bool ensure_shadow_minmax_resources(id<MTLDevice> device,
+                                    MetalAtmosphereResources& resources) {
+  if(resources.minmax!=resources.dummy_minmax)return true;
+  resources.minmax=[device newBufferWithLength:
+      resources.minmax_element_count*sizeof(std::uint32_t)*2U
+      options:MTLResourceStorageModeShared];
+  return resources.minmax!=nil;
 }
 
 struct MetalTimingIdentity {
@@ -2316,7 +2326,8 @@ void encode_long_shadow_atmosphere(
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
     std::uint64_t scene_generation) {
-  if(!ensure_long_shadow_resources(device,resources))return;
+  if(!ensure_long_shadow_resources(device,resources)||
+     !ensure_shadow_minmax_resources(device,resources))return;
   const bool unchanged=resources.long_shadow_ready&&
       resources.last_long_scene_generation==scene_generation&&
       std::equal(resources.last_long_uniform.begin(),
@@ -2351,8 +2362,10 @@ void encode_long_shadow_atmosphere(
 }
 
 void encode_shadow_minmax_hierarchy(
-    id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
+    id<MTLDevice> device,id<MTLCommandBuffer> command,
+    MetalAtmosphereResources& resources,
     id<MTLTexture> sun_shadows,std::uint64_t scene_generation) {
+  if(!ensure_shadow_minmax_resources(device,resources))return;
   if(resources.minmax_scene_generation==scene_generation&&
      resources.minmax_kind==1)return;
   std::uint32_t level_size=resources.atmosphere_shadow_resolution;
@@ -2380,10 +2393,12 @@ void encode_shadow_minmax_hierarchy(
 }
 
 void encode_shadow_epipolar_hierarchy(
-    id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
+    id<MTLDevice> device,id<MTLCommandBuffer> command,
+    MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
     std::uint64_t scene_generation) {
+  if(!ensure_shadow_minmax_resources(device,resources))return;
   if(resources.minmax_scene_generation==scene_generation&&
      resources.minmax_kind==2)return;
   const auto layout=tetra_viewer::atmosphere_epipolar_layout(
@@ -5489,13 +5504,13 @@ int main(int argc,char** argv) {
            (shadow_integration==2||shadow_integration==4)&&
            scene_vertex_count!=0U)
           encode_shadow_minmax_hierarchy(
-              command_buffer,atmosphere_resources,shadow_texture,
+              device,command_buffer,atmosphere_resources,shadow_texture,
               terrain_display_front.render_generation);
         if(atmosphere_enabled&&!ray_traced_screen_visibility_active&&
            shadow_integration==5&&
            scene_vertex_count!=0U)
           encode_shadow_epipolar_hierarchy(
-              command_buffer,atmosphere_resources,atmosphere_uniform,
+              device,command_buffer,atmosphere_resources,atmosphere_uniform,
               production_shadows,shadow_texture,
               terrain_display_front.render_generation);
         // The faithful screen renderers return their reconstructed transport
@@ -6476,6 +6491,10 @@ int main(int argc,char** argv) {
               const bool long_shadow_resources_lazy=long_shadow_consumed||
                   atmosphere_resources.long_shadow==
                       atmosphere_resources.dummy_long_shadow;
+              const bool minmax_resources_lazy=long_shadow_consumed||
+                  shadow_integration==2||shadow_integration==4||
+                  shadow_integration==5||atmosphere_resources.minmax==
+                      atmosphere_resources.dummy_minmax;
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6492,7 +6511,7 @@ int main(int argc,char** argv) {
                   timing_passed&&temporal_accounting_passed&&
                   long_shadow_dispatch_passed&&lookup_invalidation_passed&&
                   reference_visibility_resources_absent&&froxel_resources_lazy&&
-                  long_shadow_resources_lazy;
+                  long_shadow_resources_lazy&&minmax_resources_lazy;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6524,6 +6543,7 @@ int main(int argc,char** argv) {
                           "\"reference_visibility_resources_absent\":%s,"
                           "\"froxel_resources_lazy\":%s,"
                           "\"long_shadow_resources_lazy\":%s,"
+                          "\"minmax_resources_lazy\":%s,"
                           "\"atmosphere_allocation_bytes\":%zu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
@@ -6570,6 +6590,7 @@ int main(int argc,char** argv) {
                           reference_visibility_resources_absent?"true":"false",
                           froxel_resources_lazy?"true":"false",
                           long_shadow_resources_lazy?"true":"false",
+                          minmax_resources_lazy?"true":"false",
                           live_atmosphere_allocation_bytes(atmosphere_resources),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),

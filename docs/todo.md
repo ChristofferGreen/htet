@@ -239,6 +239,8 @@ because it is faster.
   - [x] Lazily allocate the long-shadow atlas behind a 1x1 fallback. The
         default route proves the fallback is retained; the native faithful
         marcher proves full allocation, dispatch, and occlusion when consumed.
+  - [x] Lazily allocate the min/max hierarchy behind a minimal valid buffer;
+        materialize it only for long-shadow, min-max, or epipolar consumers.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

@@ -221,6 +221,10 @@ The long-shadow atlas now also remains a 1x1 fallback unless its proven
 consumer is selected. The default reference smoke reports 35,763,324 bytes;
 the native faithful marcher allocates the 768x432 atlas, reports one atlas
 dispatch, and passes its occlusion check.
+The min/max hierarchy buffer now follows the same scheme: a minimal valid
+buffer is retained until a long-shadow, min-max, or epipolar consumer is
+selected. The default reference route reports 32,967,116 bytes, while the
+native faithful route materializes the full hierarchy before its atlas pass.
 
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`
