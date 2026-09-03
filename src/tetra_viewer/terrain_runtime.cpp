@@ -1926,7 +1926,24 @@ void BlockedTerrainRuntime::set_resource_budgets(WorldResourceBudgets budgets){
   if(budgets.maximum_cpu_bytes==0U||budgets.maximum_triangles==0U||
      budgets.maximum_work_units==0U||budgets.maximum_upload_bytes==0U)
     throw std::invalid_argument("world resource budgets must be positive");
+  if(profile_.budgets.maximum_cpu_bytes==budgets.maximum_cpu_bytes&&
+     profile_.budgets.maximum_triangles==budgets.maximum_triangles&&
+     profile_.budgets.maximum_work_units==budgets.maximum_work_units&&
+     profile_.budgets.maximum_upload_bytes==budgets.maximum_upload_bytes)
+    return;
   profile_.budgets=budgets;
+  // A rejected publication clears demand_pending_. Relaxing its admission
+  // limits must requeue that same camera demand even if its follow-up camera
+  // change falls below the normal scheduling threshold.
+  demand_pending_=true;
+  diagnostics_.converged=false;
+  diagnostics_.budget_exceeded=false;
+  if(future_.valid()&&!active_superseded_){
+    cancellation_.request_stop();
+    active_superseded_=true;
+    superseded_at_=std::chrono::steady_clock::now();
+    ++diagnostics_.superseded_builds;
+  }
 }
 
 void BlockedTerrainRuntime::set_hierarchy_block_budget(

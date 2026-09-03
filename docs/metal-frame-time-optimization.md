@@ -343,7 +343,7 @@ terrain occlusion, and temporal path remain unchanged.
 
 The opt-in Metal timestamp pool now reserves four additional markers around
 the reference sky-view and irradiance encoders. They are reported separately
-by the timing-profile JSON only when both encoder-boundary samples are valid;
+by the timing-profile JSON when their own encoder-boundary samples are valid;
 they do not affect normal timing or the lookup identity. An uncontended forced
 physical-refresh distribution on 2026-09-03 reported 0.6314 ms for sky view
 and 0.0436 ms for irradiance on its final valid frame. The distribution-aware
@@ -354,6 +354,16 @@ internal, 2x MSAA, MetalFX, transport 2. This confirms that P3 should first
 focus on the Hillaire sky-view table rather than reducing the small irradiance
 table. Optical, aerial, and shadow lookup isolation remains required before
 any specialization is promoted.
+
+The optical family is now independently bracketed as the ordered
+transmittance followed by multiple-scattering rebuild. Its opt-in
+`optical-refresh` timing profile retains the physical uniform while forcing
+only that lookup family dirty. With `TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS=1`
+to obtain one completed counter flight per diagnostic frame, it collected 300
+current-dispatch samples at 0.7501 ms median and 0.7976 ms p95. The profile
+also tags dispatches per frame, so retained values in a pooled counter buffer
+cannot be mistaken for a cached lookup's new work. This measures a meaningful
+but secondary rebuild cost; sky view remains the largest measured P3 lookup.
 
 ### P3 Hillaire 200x100 sky-view reference experiment
 

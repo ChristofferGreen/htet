@@ -1753,6 +1753,7 @@ struct MetalGpuStageTimings {
   std::atomic<double> screen_integration_milliseconds{};
   std::atomic<double> temporal_reconstruction_milliseconds{};
   std::atomic<double> metalfx_milliseconds{};
+  std::atomic<double> optical_lookup_milliseconds{};
   std::atomic<double> sky_view_lookup_milliseconds{};
   std::atomic<double> irradiance_lookup_milliseconds{};
   std::atomic<bool> valid{};
@@ -1777,6 +1778,7 @@ struct MetalGpuStageTimings {
 struct MetalTimingProfileSamples {
   mutable std::mutex mutex;
   std::vector<double> gpu_milliseconds;
+  std::vector<double> optical_lookup_milliseconds;
   std::vector<double> sky_view_lookup_milliseconds;
   std::vector<double> irradiance_lookup_milliseconds;
 
@@ -1800,22 +1802,34 @@ struct MetalTimingProfileSamples {
     return result;
   }
 
-  void add_lookup(double sky_view,double irradiance) {
+  void add_optical_lookup(double optical) {
     std::lock_guard lock(mutex);
-    if(sky_view_lookup_milliseconds.size()<300U){
-      sky_view_lookup_milliseconds.push_back(sky_view);
-      irradiance_lookup_milliseconds.push_back(irradiance);
-    }
+    if(optical_lookup_milliseconds.size()<300U)
+      optical_lookup_milliseconds.push_back(optical);
   }
 
-  [[nodiscard]] std::pair<std::vector<double>,std::vector<double>>
+  void add_sky_view_lookup(double sky_view) {
+    std::lock_guard lock(mutex);
+    if(sky_view_lookup_milliseconds.size()<300U)
+      sky_view_lookup_milliseconds.push_back(sky_view);
+  }
+
+  void add_irradiance_lookup(double irradiance) {
+    std::lock_guard lock(mutex);
+    if(irradiance_lookup_milliseconds.size()<300U)
+      irradiance_lookup_milliseconds.push_back(irradiance);
+  }
+
+  [[nodiscard]] std::array<std::vector<double>,3U>
   ordered_lookups() const {
     std::lock_guard lock(mutex);
+    auto optical=optical_lookup_milliseconds;
     auto sky=sky_view_lookup_milliseconds;
     auto irradiance=irradiance_lookup_milliseconds;
+    std::ranges::sort(optical);
     std::ranges::sort(sky);
     std::ranges::sort(irradiance);
-    return {std::move(sky),std::move(irradiance)};
+    return {std::move(optical),std::move(sky),std::move(irradiance)};
   }
 };
 
@@ -1827,7 +1841,7 @@ double timing_percentile(const std::vector<double>& ordered,double fraction) {
 }
 
 constexpr NSUInteger gpu_base_timestamp_count=7U;
-constexpr NSUInteger gpu_timestamp_count=21U;
+constexpr NSUInteger gpu_timestamp_count=23U;
 constexpr std::size_t gpu_timestamp_flight_count=3U;
 
 struct MetalTimestampFlight {
@@ -2544,11 +2558,11 @@ void encode_shadow_epipolar_hierarchy(
   resources.long_shadow_ready=false;
 }
 
-void encode_live_atmosphere_lookups(
+bool encode_live_atmosphere_lookups(
     id<MTLDevice> device,id<MTLCommandBuffer> command,
     MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,bool rebuild_optical,
-    bool aerial_consumed=true) {
+    bool aerial_consumed=true,id<MTLCounterSampleBuffer> timestamp_samples=nil) {
   const bool reference=uniform[53]>=9.5F;
   if(!resources.dummy_shadow_cleared){
     for(NSUInteger slice=0;slice<5U;++slice){
@@ -2564,8 +2578,11 @@ void encode_live_atmosphere_lookups(
     }
     resources.dummy_shadow_cleared=true;
   }
-  const auto dispatch=[&](std::size_t mode,id<MTLTexture> output){
-    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  const auto dispatch=[&](std::size_t mode,id<MTLTexture> output,
+                          NSUInteger start=MTLCounterDontSample,
+                          NSUInteger end=MTLCounterDontSample){
+    id<MTLComputeCommandEncoder> encoder=timestamped_compute_encoder(
+        command,timestamp_samples,start,end);
     [encoder setComputePipelineState:reference&&mode==2U?
         resources.reference_pipeline:resources.pipelines[mode]];
     [encoder setBytes:uniform.data() length:uniform.size()*sizeof(float)
@@ -2615,10 +2632,33 @@ void encode_live_atmosphere_lookups(
     ++resources.dispatch_counts[mode];
   };
   if(rebuild_optical||!resources.optical_ready){
-    dispatch(0U,resources.transmittance);
-    dispatch(1U,resources.multiple_scattering);
+    // The two optical LUTs are one dependency-ordered lookup family. Sample
+    // their complete rebuild interval without perturbing their scheduling.
+    dispatch(0U,resources.transmittance,21U,MTLCounterDontSample);
+    dispatch(1U,resources.multiple_scattering,MTLCounterDontSample,22U);
     resources.optical_ready=true;
     resources.history_valid=false;
+    // The timestamp consumer must distinguish this frame's new counter values
+    // from retained results in a reused sample buffer.
+    const bool optical_rebuilt=true;
+    const bool view_changed=rebuild_optical||!resources.view_ready||
+        !std::equal(resources.last_view_uniform.begin(),
+                    resources.last_view_uniform.end(),uniform.begin());
+    if(view_changed){
+      // The reference transport needs the fitted terrain shadow, which is not
+      // available until later in the frame. Its sky and irradiance passes are
+      // encoded by encode_reference_sky_lookup with the real shadow state.
+      if(!reference){
+        dispatch(2U,resources.sky_view);
+        dispatch(4U,resources.sky_irradiance);
+      }
+      if(aerial_consumed&&ensure_aerial_resources(device,resources))
+        dispatch(3U,resources.aerial_scattering);
+      std::copy_n(uniform.begin(),resources.last_view_uniform.size(),
+                  resources.last_view_uniform.begin());
+      resources.view_ready=true;
+    }
+    return optical_rebuilt;
   }
   const bool view_changed=rebuild_optical||!resources.view_ready||
       !std::equal(resources.last_view_uniform.begin(),
@@ -2637,9 +2677,10 @@ void encode_live_atmosphere_lookups(
                 resources.last_view_uniform.begin());
     resources.view_ready=true;
   }
+  return false;
 }
 
-void encode_reference_sky_lookup(
+bool encode_reference_sky_lookup(
     id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
     const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
@@ -2653,7 +2694,7 @@ void encode_reference_sky_lookup(
       resources.last_reference_lookup_generation==terrain_generation;
   if(unchanged){
     ++resources.reference_lookup_skips;
-    return;
+    return false;
   }
   const std::array<std::uint32_t,4> control{2U,0U,0U,0U};
   id<MTLComputeCommandEncoder> sky=timestamped_compute_encoder(
@@ -2695,6 +2736,7 @@ void encode_reference_sky_lookup(
   resources.last_reference_lookup_shadows=shadows;
   resources.last_reference_lookup_generation=terrain_generation;
   resources.reference_lookup_ready=true;
+  return true;
 }
 
 MTLVertexDescriptor* make_scene_vertex_descriptor() {
@@ -3097,8 +3139,9 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-auto-resolution-smoke-test")==0;
   const bool timing_profile_test=argc==2&&
       std::strcmp(argv[1],"--metal-timing-profile-smoke-test")==0;
-  enum class TimingProfileClass { stable, moving, lookup_refresh, preview,
-                                  exact_handoff, ray_tracing };
+  enum class TimingProfileClass { stable, moving, lookup_refresh,
+                                  optical_refresh, preview, exact_handoff,
+                                  ray_tracing };
   TimingProfileClass timing_profile_class=TimingProfileClass::stable;
   const char* timing_profile_class_name="stable";
   if(timing_profile_test){
@@ -3109,6 +3152,8 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::moving;
       else if(std::strcmp(requested,"lookup-refresh")==0)
         timing_profile_class=TimingProfileClass::lookup_refresh;
+      else if(std::strcmp(requested,"optical-refresh")==0)
+        timing_profile_class=TimingProfileClass::optical_refresh;
       else if(std::strcmp(requested,"preview")==0)
         timing_profile_class=TimingProfileClass::preview;
       else if(std::strcmp(requested,"exact-handoff")==0)
@@ -3117,7 +3162,8 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::ray_tracing;
       else {
         std::fprintf(stderr,"TETWORLD_METAL_TIMING_PROFILE must be stable, "
-            "moving, lookup-refresh, preview, exact-handoff, or ray-tracing\\n");
+            "moving, lookup-refresh, optical-refresh, preview, exact-handoff, "
+            "or ray-tracing\\n");
         return 2;
       }
       timing_profile_class_name=requested;
@@ -3425,6 +3471,11 @@ int main(int argc,char** argv) {
       const char* value=std::getenv("TETWORLD_METAL_STAGE_TIMESTAMPS");
       return value!=nullptr&&std::strcmp(value,"0")!=0;
     }();
+    // Diagnostic-only serialization gives a stage study one valid counter
+    // flight per rendered frame. It is intentionally opt-in: normal timing
+    // profiles retain their production-style asynchronous submission.
+    const bool serial_timestamp_profile=timing_profile_test&&
+        std::getenv("TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS")!=nullptr;
     std::array<MetalTimestampFlight,gpu_timestamp_flight_count>
         gpu_timestamp_flights{};
     if(gpu_stage_timestamps_enabled)
@@ -4433,6 +4484,12 @@ int main(int argc,char** argv) {
            timing_profile_class==TimingProfileClass::lookup_refresh&&
            scene_vertex_count!=0U&&timing_profile_samples->size()<300U)
           sun_azimuth+=0.003F;
+        // Keep the physical state fixed: this measures only the ordered
+        // transmittance/multiple-scattering rebuild, not sky-view refresh.
+        if(timing_profile_test&&
+           timing_profile_class==TimingProfileClass::optical_refresh&&
+           scene_vertex_count!=0U&&timing_profile_samples->size()<300U)
+          atmosphere_optical_dirty=true;
         id<CAMetalDrawable> drawable=[layer nextDrawable];
         if(drawable==nil)continue;
 
@@ -5110,6 +5167,8 @@ int main(int argc,char** argv) {
 
         id<MTLCommandBuffer> command_buffer=[command_queue commandBuffer];
         command_buffer.label=@"TetWorld frame";
+        bool optical_lookup_encoded_this_frame=false;
+        bool reference_lookup_encoded_this_frame=false;
         MetalTimestampFlight* gpu_timestamp_flight=nullptr;
         for(auto& flight:gpu_timestamp_flights){
           bool available=false;
@@ -5383,11 +5442,11 @@ int main(int argc,char** argv) {
           if(atmosphere_enabled){
             const bool aerial_lookup_consumed=atmosphere_transport!=2||
                 atmosphere_debug_view==4||atmosphere_debug_view==5;
-            encode_live_atmosphere_lookups(device,command_buffer,
-                                            atmosphere_resources,
-                                            stable_atmosphere_lookup_uniform,
-                                            atmosphere_optical_dirty,
-                                            aerial_lookup_consumed);
+            optical_lookup_encoded_this_frame=
+                encode_live_atmosphere_lookups(
+                    device,command_buffer,atmosphere_resources,
+                    stable_atmosphere_lookup_uniform,atmosphere_optical_dirty,
+                    aerial_lookup_consumed,gpu_timestamp_samples);
             atmosphere_optical_dirty=false;
           }
         }
@@ -5559,7 +5618,7 @@ int main(int argc,char** argv) {
                 shadow_texture_resolution);
         if(atmosphere_enabled&&atmosphere_transport==2&&
            scene_vertex_count!=0U)
-          encode_reference_sky_lookup(
+          reference_lookup_encoded_this_frame=encode_reference_sky_lookup(
               command_buffer,atmosphere_resources,
               stable_atmosphere_lookup_uniform,production_shadows,
               shadow_texture,terrain_display_front.render_generation,
@@ -6159,6 +6218,49 @@ int main(int argc,char** argv) {
                     timestamps[index].timestamp!=
                         std::numeric_limits<std::uint64_t>::max();
               };
+              // Lookup encoders are independent timing intervals. Keep their
+              // evidence even when the coarse frame partition cannot be
+              // composed on this counter flight (for example around MetalFX
+              // driver-owned work).
+              const auto sampled_milliseconds=[&](NSUInteger first,
+                                                   NSUInteger second){
+                return static_cast<double>(
+                    timestamps[second].timestamp-timestamps[first].timestamp)*
+                    counter_timestamp_milliseconds;
+              };
+              const bool optical_lookup_timing_valid=usable_sample(21U)&&
+                  usable_sample(22U)&&
+                  timestamps[22U].timestamp>=timestamps[21U].timestamp;
+              if(optical_lookup_encoded_this_frame&&
+                 optical_lookup_timing_valid){
+                stage_destination->optical_lookup_milliseconds.store(
+                    sampled_milliseconds(21U,22U),std::memory_order_relaxed);
+                if(timing_profile_sample_eligible)
+                  profile_destination->add_optical_lookup(
+                      sampled_milliseconds(21U,22U));
+              }
+              const bool sky_view_lookup_timing_valid=usable_sample(17U)&&
+                  usable_sample(18U)&&
+                  timestamps[18U].timestamp>=timestamps[17U].timestamp;
+              if(reference_lookup_encoded_this_frame&&
+                 sky_view_lookup_timing_valid){
+                stage_destination->sky_view_lookup_milliseconds.store(
+                    sampled_milliseconds(17U,18U),std::memory_order_relaxed);
+                if(timing_profile_sample_eligible)
+                  profile_destination->add_sky_view_lookup(
+                      sampled_milliseconds(17U,18U));
+              }
+              const bool irradiance_lookup_timing_valid=usable_sample(19U)&&
+                  usable_sample(20U)&&
+                  timestamps[20U].timestamp>=timestamps[19U].timestamp;
+              if(reference_lookup_encoded_this_frame&&
+                 irradiance_lookup_timing_valid){
+                stage_destination->irradiance_lookup_milliseconds.store(
+                    sampled_milliseconds(19U,20U),std::memory_order_relaxed);
+                if(timing_profile_sample_eligible)
+                  profile_destination->add_irradiance_lookup(
+                      sampled_milliseconds(19U,20U));
+              }
               bool valid=true;
               for(NSUInteger index=0U;index<gpu_base_timestamp_count;++index)
                 valid=valid&&usable_sample(index);
@@ -6278,20 +6380,6 @@ int main(int argc,char** argv) {
                     timing_identity.renderer,std::memory_order_relaxed);
                 stage_destination->metalfx.store(
                     timing_identity.metalfx,std::memory_order_relaxed);
-                const bool lookup_timing_valid=usable_sample(17U)&&
-                    usable_sample(18U)&&usable_sample(19U)&&
-                    usable_sample(20U)&&
-                    timestamps[18U].timestamp>=timestamps[17U].timestamp&&
-                    timestamps[20U].timestamp>=timestamps[19U].timestamp;
-                if(lookup_timing_valid){
-                  stage_destination->sky_view_lookup_milliseconds.store(
-                      milliseconds(17U,18U),std::memory_order_relaxed);
-                  stage_destination->irradiance_lookup_milliseconds.store(
-                      milliseconds(19U,20U),std::memory_order_relaxed);
-                  if(timing_profile_sample_eligible)
-                    profile_destination->add_lookup(milliseconds(17U,18U),
-                                                    milliseconds(19U,20U));
-                }
                 stage_destination->frame_sequence.store(
                     completed_sequence,std::memory_order_release);
                 stage_destination->valid.store(true,std::memory_order_release);
@@ -6308,6 +6396,7 @@ int main(int argc,char** argv) {
             std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-submission_started).count(),
             std::memory_order_relaxed);
+        if(serial_timestamp_profile)[command_buffer waitUntilCompleted];
         if(motion_test&&scene_vertex_count!=0U)++motion_rendered_frames;
         if(render_test&&scene_vertex_count!=0U)++render_test_frames;
         if(metalfx_test&&scene_vertex_count!=0U&&capture_buffer!=nil)
@@ -7001,7 +7090,7 @@ int main(int argc,char** argv) {
               if(!passed)result=1;
             }else if(timing_profile_test){
               const auto ordered=timing_profile_samples->ordered();
-              const auto [ordered_sky,ordered_irradiance]=
+              const auto [ordered_optical,ordered_sky,ordered_irradiance]=
                   timing_profile_samples->ordered_lookups();
               const bool all_positive=!ordered.empty()&&
                   ordered.front()>0.0&&std::isfinite(ordered.back());
@@ -7024,6 +7113,9 @@ int main(int argc,char** argv) {
                           "\"renderer\":%d,\"metalfx\":%s,"
                           "\"sky_view\":\"%lux%lu\","
                           "\"preview\":%s,\"exact_handoff\":%s,"
+                          "\"optical_lookup_samples\":%zu,"
+                          "\"optical_lookup_ms\":%.4f,"
+                          "\"optical_lookup_p95_ms\":%.4f,"
                           "\"lookup_samples\":%zu,"
                           "\"sky_view_lookup_ms\":%.4f,"
                           "\"irradiance_lookup_ms\":%.4f,"
@@ -7044,6 +7136,9 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long>(atmosphere_resources.sky_view.height),
                           preview_enabled?"true":"false",
                           exact_handoff_ready?"true":"false",
+                          ordered_optical.size(),
+                          timing_percentile(ordered_optical,0.50),
+                          timing_percentile(ordered_optical,0.95),
                           ordered_sky.size(),
                           timing_percentile(ordered_sky,0.50),
                           timing_percentile(ordered_irradiance,0.50),

@@ -285,6 +285,18 @@ because it is faster.
         boundaries. A forced-refresh profile's 31 valid pooled-counter samples
         measured sky view at 0.7865/0.9445 ms median/p95 and irradiance at
         0.0467/0.0939 ms. Retain the remaining lookup families as unmeasured.
+  - [x] Isolate the dependency-ordered transmittance plus multiple-scattering
+        optical rebuild with its own timestamp interval and fixed-physical-
+        state profile. The opt-in serial counter route collected 300 current
+        dispatch samples at 0.7501/0.7976 ms median/p95; it also prevents
+        cached counter values from being reported as new lookup work.
+  - [ ] Isolate the default-inactive aerial lookup and determine whether an
+        active diagnostic consumer makes its allocation or refresh cost
+        material. Keep the reference-temporal default lazy unless evidence
+        proves an active route needs it.
+  - [ ] Isolate the active shadow lookup/filter family and compare equivalent
+        manual, depth-gather, and comparison-sampler PCF against the physical
+        shadow oracle before considering a sampling change.
   - [x] Run the 200x100 candidate through static/invalidation reference smoke
         and bounded continuous movement. Both passed; moving frames were
         6.8994/8.1660 ms median/p95, so retain the candidate only for lookup
@@ -294,6 +306,10 @@ because it is faster.
         0.7865/0.9445 ms at 384x216 and passed mountain/sun still captures
         (normalized RMS 0.000884/0.000424). Do not promote it until motion,
         surface-to-orbit, and numeric/oracle qualification pass.
+  - [ ] Complete the Hillaire 200x100 candidate's native low-sun,
+        surface-to-orbit, numerical, and continuous-motion qualification
+        matrix before deciding whether its measured refresh saving is safe to
+        promote.
 - [ ] Eliminate the resolved-history-to-screen publish copy by binding the
       active history generation directly, but only after P1 proves temporal
       accumulation under jitter and physical camera motion. Split the
