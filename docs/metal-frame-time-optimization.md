@@ -214,6 +214,14 @@ At the 480x300 reference screen extent, this avoids 6,912,000 nominal bytes
 (a 32-slice R8 visibility volume plus two RG32Uint histories); the qualified
 reference smoke reports 42,120,268 total atmosphere bytes after the change.
 
+The remaining optional aerial/froxel families cannot safely be replaced with a
+nil binding: the translated Metal entry points declare typed `texture3d<float>`
+arguments even when a runtime route bypasses their samples. A subsequent lazy
+allocation change must supply a type-correct 1x1x1 fallback and prove every
+mode switch before it can claim the remaining residency saving. This is a
+deliberate deferred implementation, not evidence that nil resource binding is
+valid on Metal.
+
 ## P2 initial comparable steady-frame profile
 
 On 2026-09-03, after terminating the separately launched hidden interactive
