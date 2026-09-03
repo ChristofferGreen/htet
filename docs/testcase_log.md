@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P10c isolated final tails | mode: hidden 1440x900 MetalFX 0.5/2x and 0.7/2x repeats plus Auto long session | command: two reverse-order 300-frame stable/moving timing-profile repeats and `TETWORLD_METAL_AUTO_LONG_SESSION=1 --metal-auto-resolution-smoke-test` | failures: none | notes: background automated apps were paused/restarted around profiles; 0.5x retained median savings and the 1,200-frame Auto session made exactly one upgrade to 0.70/2x with no inactive lookup/shadow dispatch.
+
 - 2026-09-03 local | pass, P10b final contracts | mode: fresh Release native and focused contracts | command: hidden `--metal-terrain-ray-oracle-smoke-test`, reference and lookup-invalidation smokes, preview-off/on `--metal-timing-profile-smoke-test`; focused Release transport/shadow/preview cases | failures: none | notes: terrain oracle was 0/384 mismatches; 195 focused assertions passed; production inactive resources remained absent/lazy; both preview states reached exact handoff.
 
 - 2026-09-03 local | pass, P10a Release validation | mode: freshly rebuilt optimized Metal and core Release suite | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed after the final native physical image/motion matrix.

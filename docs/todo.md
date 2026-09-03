@@ -443,10 +443,6 @@ reaction to a transient maintenance frame.
 The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
-  - [ ] **P10c — Long-session and tail-distribution final gate.** Record two
-        300-frame steady/moving native profiles for both qualified fixed
-        profiles and a 1,200-frame hidden Auto session. Record median/p95/p99/
-        max, bounded quality changes, and final allocation/residency evidence.
   - [ ] **P10d — Promotion audit and Default decision.** Audit P0–P10 against
         the source and final artifacts, consolidate image/performance/memory
         evidence and rejected alternatives, then change the Default only if

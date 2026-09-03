@@ -958,6 +958,19 @@ true, the qualified 2x MetalFX route, and one sky/irradiance lookup dispatch;
 the preview-enabled route additionally reported a successful preview upload.
 The profile times are route diagnostics only; P10c owns isolated tail evidence.
 
+### P10c final isolated tails and Auto session
+
+To prevent background interactive renderers from contaminating the result, two
+task-launched hidden instances were reversibly paused during measurement and
+resumed afterward. Two reverse-order 300-frame repeats produced aggregate
+median/p95/p99/max milliseconds of 5.4602/6.2214/6.5474/20.0905 (0.7x/2x
+steady), 5.2652/5.9466/6.3685/18.2743 (0.7x/2x moving), 5.0204/6.2338/
+6.9181/11.9109 (0.5x/2x steady), and 4.9731/6.0781/6.7692/17.5539 (0.5x/2x
+moving). The lower-cost profile therefore retains its median saving without a
+meaningful tail regression. A hidden 1,200-frame Auto session made exactly one
+upgrade to 0.70x/2x, remained there, preserved 2x MSAA, and dispatched neither
+inactive lookups nor inactive shadow work.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

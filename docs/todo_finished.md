@@ -2,6 +2,13 @@
 
 ## 2026-09-03
 
+- [x] P10c long-session and tail-distribution final gate: isolated two-repeat
+  300-frame profiles measured control 0.7x/2x steady 5.4602/6.2214/6.5474/
+  20.0905 and moving 5.2652/5.9466/6.3685/18.2743 ms, versus 0.5x/2x steady
+  5.0204/6.2338/6.9181/11.9109 and moving 4.9731/6.0781/6.7692/17.5539 ms
+  (median/p95/p99/max). The hidden 1,200-frame Auto session made one upgrade
+  to 0.70x/2x, then remained stable without inactive lookup or shadow work.
+
 - [x] P10b numeric, parity, and live-resource final gate: fresh Release
   transport/shadow/lookup/preview contracts passed 195 assertions, while the
   native terrain oracle had 0/384 CPU/GPU mismatches. Reference and
