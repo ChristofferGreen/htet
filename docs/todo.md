@@ -282,10 +282,9 @@ because it is faster.
       allocate resources not consumed by the active renderer. Do not time-slice
       a visible physical change (P3).
   - [x] Add opt-in independent reference sky-view and irradiance timestamp
-        boundaries. A forced-refresh profile measured 0.6314 ms sky view and
-        0.0436 ms irradiance at the P2 fixed identity; retain this as a
-        one-frame attribution until distributions and remaining lookup families
-        are measured.
+        boundaries. A forced-refresh profile's 31 valid pooled-counter samples
+        measured sky view at 0.7865/0.9445 ms median/p95 and irradiance at
+        0.0467/0.0939 ms. Retain the remaining lookup families as unmeasured.
 - [ ] Eliminate the resolved-history-to-screen publish copy by binding the
       active history generation directly, but only after P1 proves temporal
       accumulation under jitter and physical camera motion. Split the

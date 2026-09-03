@@ -346,11 +346,14 @@ the reference sky-view and irradiance encoders. They are reported separately
 by the timing-profile JSON only when both encoder-boundary samples are valid;
 they do not affect normal timing or the lookup identity. An uncontended forced
 physical-refresh distribution on 2026-09-03 reported 0.6314 ms for sky view
-and 0.0436 ms for irradiance on its final valid frame (1440x900 output,
-1008x630 internal, 2x MSAA, MetalFX, transport 2). This confirms that P3
-should first focus on the Hillaire sky-view table rather than reducing the
-small irradiance table. Optical, aerial, and shadow lookup isolation remains
-required before any specialization is promoted.
+and 0.0436 ms for irradiance on its final valid frame. The distribution-aware
+run subsequently obtained 31 valid pooled-counter samples (not 300: detailed
+stage sampling is intentionally opportunistic): sky view 0.7865 ms median /
+0.9445 ms p95, irradiance 0.0467/0.0939 ms at 1440x900 output, 1008x630
+internal, 2x MSAA, MetalFX, transport 2. This confirms that P3 should first
+focus on the Hillaire sky-view table rather than reducing the small irradiance
+table. Optical, aerial, and shadow lookup isolation remains required before
+any specialization is promoted.
 
 ## Native visual preflight evidence
 

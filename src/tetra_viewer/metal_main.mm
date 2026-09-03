@@ -47,6 +47,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1753,6 +1754,8 @@ struct MetalGpuStageTimings {
 struct MetalTimingProfileSamples {
   mutable std::mutex mutex;
   std::vector<double> gpu_milliseconds;
+  std::vector<double> sky_view_lookup_milliseconds;
+  std::vector<double> irradiance_lookup_milliseconds;
 
   void add(double milliseconds) {
     std::lock_guard lock(mutex);
@@ -1772,6 +1775,24 @@ struct MetalTimingProfileSamples {
     auto result=gpu_milliseconds;
     std::ranges::sort(result);
     return result;
+  }
+
+  void add_lookup(double sky_view,double irradiance) {
+    std::lock_guard lock(mutex);
+    if(sky_view_lookup_milliseconds.size()<300U){
+      sky_view_lookup_milliseconds.push_back(sky_view);
+      irradiance_lookup_milliseconds.push_back(irradiance);
+    }
+  }
+
+  [[nodiscard]] std::pair<std::vector<double>,std::vector<double>>
+  ordered_lookups() const {
+    std::lock_guard lock(mutex);
+    auto sky=sky_view_lookup_milliseconds;
+    auto irradiance=irradiance_lookup_milliseconds;
+    std::ranges::sort(sky);
+    std::ranges::sort(irradiance);
+    return {std::move(sky),std::move(irradiance)};
   }
 };
 
@@ -6214,6 +6235,9 @@ int main(int argc,char** argv) {
                       milliseconds(17U,18U),std::memory_order_relaxed);
                   stage_destination->irradiance_lookup_milliseconds.store(
                       milliseconds(19U,20U),std::memory_order_relaxed);
+                  if(timing_profile_sample_eligible)
+                    profile_destination->add_lookup(milliseconds(17U,18U),
+                                                    milliseconds(19U,20U));
                 }
                 stage_destination->frame_sequence.store(
                     completed_sequence,std::memory_order_release);
@@ -6924,6 +6948,8 @@ int main(int argc,char** argv) {
               if(!passed)result=1;
             }else if(timing_profile_test){
               const auto ordered=timing_profile_samples->ordered();
+              const auto [ordered_sky,ordered_irradiance]=
+                  timing_profile_samples->ordered_lookups();
               const bool all_positive=!ordered.empty()&&
                   ordered.front()>0.0&&std::isfinite(ordered.back());
               const bool exact_handoff_ready=
@@ -6944,8 +6970,11 @@ int main(int argc,char** argv) {
                           "\"samples_per_pixel\":%lu,\"transport\":%d,"
                           "\"renderer\":%d,\"metalfx\":%s,"
                           "\"preview\":%s,\"exact_handoff\":%s,"
+                          "\"lookup_samples\":%zu,"
                           "\"sky_view_lookup_ms\":%.4f,"
                           "\"irradiance_lookup_ms\":%.4f,"
+                          "\"sky_view_lookup_p95_ms\":%.4f,"
+                          "\"irradiance_lookup_p95_ms\":%.4f,"
                           "\"rt_builds\":%llu,\"sky_view_dispatches\":%llu,"
                           "\"irradiance_dispatches\":%llu,\"passed\":%s}\n",
                           timing_profile_class_name,ordered.size(),
@@ -6959,10 +6988,11 @@ int main(int argc,char** argv) {
                           metalfx_temporal_active?"true":"false",
                           preview_enabled?"true":"false",
                           exact_handoff_ready?"true":"false",
-                          gpu_stage_timings->sky_view_lookup_milliseconds.load(
-                              std::memory_order_relaxed),
-                          gpu_stage_timings->irradiance_lookup_milliseconds.load(
-                              std::memory_order_relaxed),
+                          ordered_sky.size(),
+                          timing_percentile(ordered_sky,0.50),
+                          timing_percentile(ordered_irradiance,0.50),
+                          timing_percentile(ordered_sky,0.95),
+                          timing_percentile(ordered_irradiance,0.95),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.build_count),
                           static_cast<unsigned long long>(
