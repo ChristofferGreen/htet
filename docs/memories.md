@@ -76,6 +76,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Do not reintroduce a cube/angular atmosphere domain unless a new screen-aligned scaling bottleneck is measured, because the project’s prior cubemap/screen-resolve experiments increased sampling stalls.
 - Evidence: P5a and interactive Auto-scale qualification supplied no motion-safe need for the extra domain, and the prior experiment is documented in `planetary-atmosphere.md`.
 
+### metal-p6a-msaa-matrix
+- Updated: 2026-09-03
+- Tags: metal, msaa, metalfx, profiling
+- Fact: `scripts/qualify_metal_msaa_matrix.sh` provides the native 1x/2x/4x by 0.5/0.7/1.0 scale stable/moving timing matrix and rejects configuration-identity mismatches.
+- Evidence: Its initial 18-row 1440x900 run passed, but non-monotonic sub-millisecond timings require P6b visual and repeat profiling before a default is selected.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

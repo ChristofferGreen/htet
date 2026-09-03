@@ -558,6 +558,23 @@ screen-space sky-resolve experiments also increased sampling stalls. An angular
 domain would add cube seams, depth mismatch, and disocclusion reconstruction
 risk without a measured benefit, so it is retired rather than reintroduced.
 
+## P6a native MSAA × MetalFX matrix
+
+`scripts/qualify_metal_msaa_matrix.sh` drives 18 hidden, fresh 300-frame
+native Metal profiles: 1x, 2x, and 4x terrain MSAA at fixed 0.5, 0.7, and 1.0
+render scales, for both stable and continuous-motion classes. The app accepts
+the fixed-scale and MSAA overrides only for this timing profile and each JSON
+row records/validates its drawable, internal extent, sample count, and MetalFX
+state. This prevents Auto resolution from silently changing the population.
+
+All rows passed at 1440x900. Scale 0.5 used 720x450 with MetalFX, scale 0.7
+used 1008x630 with MetalFX, and native scale used 1440x900 without MetalFX.
+The one-pass distributions were non-monotonic at sub-millisecond scale (for
+example, stable/moving 1x/2x/4x at 0.7 were 5.0777/5.1589,
+5.8706/5.3117, and 5.1492/5.1333 ms median). Therefore P6a does not select a
+new default; P6b must repeat only plausible candidates with still/motion image
+gates before claiming a quality/cost winner.
+
 The reference Hillaire marcher evaluates spherical planet visibility before the
 four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any

@@ -390,10 +390,16 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] Benchmark the complete 1x/2x/4x MSAA by MetalFX-scale matrix and retain
-      the lowest-cost fixed profile that passes still and motion image gates.
-      For MSAA modes, also compare private with supported memoryless colour and
-      depth resolve-source attachments (P6).
+- [ ] **P6b — Select a fixed raster profile from the P6a matrix.** Scope:
+      promote only the lowest-cost row that passes mountain silhouette,
+      visible-sun, temporal motion, and surface-to-orbit checks. Acceptance:
+      paired captures and repeated profiles demonstrate a coherent win. Stop
+      rule: retain the current 2x Auto profile if no row dominates it.
+- [ ] **P6c — Qualify memoryless MSAA resolve sources separately.** Scope:
+      compare private with supported memoryless colour/depth resolve-source
+      attachments for selected P6b sample counts. Acceptance: equivalent
+      resolved colour/coverage/depth probes and matched timing. Stop rule:
+      retain private on unsupported hardware or neutral/worse timing.
 - [ ] Measure and, only where material, implement compact preview GPU data,
       conservative per-cascade caster culling, and generation-coherent
       acceleration-structure update/refit policy (P7).

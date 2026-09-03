@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass, P6a final | mode: release | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after adding the hidden 1x/2x/4x MSAA and 0.5/0.7/1.0 timing-profile overrides plus the 18-row native matrix driver.
+
+- 2026-09-03 local | pass, P6a matrix | mode: native Metal MSAA/MetalFX timing qualification | command: `scripts/qualify_metal_msaa_matrix.sh` after a fresh Release build | failures: none | notes: all 18 300-frame stable/moving rows for scale 0.5/0.7/1.0 and MSAA 1x/2x/4x passed identity validation at 1440x900; the result is timing evidence only pending P6b image/motion selection.
+
 - 2026-09-03 local | pass | mode: release P5c final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after retiring the unsupported angular-domain alternative.
 
 - 2026-09-03 local | pass, P5c retired | mode: plan/evidence audit | command: reviewed P5a native-scale and interactive Auto qualifications plus documented angular/cubemap experiments | failures: none | notes: no residual screen-aligned scaling bottleneck passed the motion gate; earlier cubemap/screen resolve paths increased sampling stalls, so no new angular-domain source was justified.

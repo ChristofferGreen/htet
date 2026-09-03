@@ -2,6 +2,17 @@
 
 ## 2026-09-03
 
+- [x] P6a native MSAA × MetalFX timing matrix: added
+  `scripts/qualify_metal_msaa_matrix.sh` plus hidden profile-only fixed-scale
+  and MSAA controls. The harness collected 18 fresh 300-frame profiles across
+  0.5/0.7/1.0 render scale, 1x/2x/4x MSAA, and stable/moving classes, and
+  rejects any row whose internal extent, sample count, or MetalFX state differs
+  from its requested identity. All rows passed at 1440x900: scales 0.5 and 0.7
+  had MetalFX active at 720x450 and 1008x630; native scale disabled MetalFX at
+  1440x900. The distributions do not yet establish a visual winner—the
+  non-monotonic sub-millisecond differences require P6b's candidate-specific
+  still and motion gates before any default changes.
+
 - [x] P5c angular-domain decision: retired the viewport-independent angular
   domain. The screen-aligned reference target remains the simpler exact
   opaque-depth correspondence; P5a's target experiment and interactive Auto

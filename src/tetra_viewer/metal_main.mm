@@ -3930,6 +3930,20 @@ int main(int argc,char** argv) {
          profile_interactive_rendering?2:
         (metalfx_test?1:(automated_test?0:2)));
     float fixed_render_scale=timing_profile_test?0.70F:2.0F/3.0F;
+    if(timing_profile_test){
+      if(const char* value=std::getenv("TETWORLD_METAL_TIMING_PROFILE_SCALE");
+         value!=nullptr&&value[0]!='\0'){
+        char* end=nullptr;
+        const float parsed=std::strtof(value,&end);
+        if(end==value||*end!='\0'||!std::isfinite(parsed)||
+           parsed<1.0F/3.0F||parsed>1.0F){
+          std::fprintf(stderr,
+              "TETWORLD_METAL_TIMING_PROFILE_SCALE must be 0.333..1\n");
+          glfwDestroyWindow(window);glfwTerminate();return 2;
+        }
+        fixed_render_scale=parsed;
+      }
+    }
     float automatic_render_scale=auto_resolution_test?0.5F:2.0F/3.0F;
     float automatic_minimum_scale=1.0F/3.0F;
     float automatic_maximum_scale=1.0F;
@@ -3950,6 +3964,22 @@ int main(int argc,char** argv) {
                       scene_pipeline_4!=nil;
     int terrain_sample_count=scene_pipeline_2!=nil?2:
                              (scene_pipeline_4!=nil?4:1);
+    if(timing_profile_test){
+      if(const char* value=std::getenv("TETWORLD_METAL_TIMING_PROFILE_MSAA");
+         value!=nullptr&&value[0]!='\0'){
+        char* end=nullptr;
+        const long samples=std::strtol(value,&end,10);
+        if(end==value||*end!='\0'||(samples!=1L&&samples!=2L&&samples!=4L)||
+           (samples==2L&&scene_pipeline_2==nil)||
+           (samples==4L&&scene_pipeline_4==nil)){
+          std::fprintf(stderr,
+              "TETWORLD_METAL_TIMING_PROFILE_MSAA must be supported 1, 2, or 4\n");
+          glfwDestroyWindow(window);glfwTerminate();return 2;
+        }
+        terrain_msaa=samples>1L;
+        terrain_sample_count=static_cast<int>(samples);
+      }
+    }
     std::size_t automatic_stable_frames{};
     std::vector<double> automatic_gpu_samples;
     double automatic_gpu_median_milliseconds{};
