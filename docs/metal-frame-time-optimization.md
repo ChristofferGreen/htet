@@ -245,6 +245,19 @@ set and different transport semantics are insufficient to promote a route or
 rank an optimization; retain it as evidence that P2 needs distributions rather
 than a single terminal-frame time.
 
+## Native visual preflight evidence
+
+On 2026-09-03, fresh 960x600 captures from the release executable were
+inspected after the P1 liveness changes. The reported back-lit mountain pose
+(`TETWORLD_METAL_REPORTED_MOUNTAIN=1`) retained a dark foreground ridge and
+limited the warm scattering halo to the occluded sun-side gap; it showed no
+screen-space foreground Mie cutout. The deterministic clear-sky pose
+(`TETWORLD_METAL_VISIBLE_SUN=1`) showed a compact, directly visible solar disc
+above the terrain. Both capture runs passed their native atmosphere smoke
+checks, including zero reference-route ray-visibility and long-shadow atlas
+dispatches. These are preflight captures: the final P10 gate still requires
+the full still/motion/orbit capture matrix after all promoted changes.
+
 Apply the same distinction to residency. The current live-resource constructor
 eagerly allocates aerial, froxel, long-shadow, hierarchy, and screen families
 before the selected renderer is known. After dispatch liveness is correct,
