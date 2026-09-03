@@ -452,13 +452,19 @@ still-image appearance alone.
         fallback, shadows, atmospheric occlusion, and preview-disabled parity.
         Leave comprehensive latency, cadence, memory, exact-starvation, and
         convergence qualification to the following milestone. Apple M3 Pro
-        release evidence publishes 53,632 preview triangles plus 182,662
-        selected exact triangles in a 14,420,040-byte candidate, passes basic,
+        release evidence publishes 16,640 preview triangles plus 182,662
+        selected exact triangles in a 5,985,864-byte candidate, passes basic,
         local-shadow, raster-atmosphere, and ray-traced-atmosphere smokes, and
         hands off to an exact-only scene generation 2/display generation 3.
         Neighboring overhead and back-lit mountain captures show continuous
         opaque terrain, stable seams, correct solar occlusion, and no 2D Mie
         cutout; the disabled control remains exact-only.
+        A five-level, 32-cell layout preserves the outer preview extent and
+        finest spacing while cutting cold construction to about 9.5 ms. The
+        interactive performance smoke keeps temporal jitter out of physical
+        atmosphere lookup identities, uses 2x MSAA, and permits one-third Auto
+        resolution; the full stack measures 1.61 ms median and 4.01 ms p95
+        instead of 21.85 ms, with clean 2880x1800 visual evidence.
   - [ ] Qualify the cold path below 100 ms normally and 250 ms in the worst
         release case, with at most one-cell lag, exact convergence below 2
         seconds, 64 MiB preview CPU memory, 16 MiB uploads, failure fallback,

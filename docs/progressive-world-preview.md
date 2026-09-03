@@ -460,9 +460,10 @@ visual failures can be tied to the exact coordinator state.
       and preview-disabled parity. This milestone proves coherent visible
       integration; the following milestone retains the full latency, cadence,
       memory, starvation, and convergence qualification. Release evidence on
-      Apple M3 Pro publishes 53,632 preview triangles with 182,662 selected
-      exact triangles as one 14,420,040-byte candidate; observed cold builds
-      were 36--65 ms and composition 2.6--8.1 ms. The preview-enabled basic and
+      Apple M3 Pro publishes 16,640 preview triangles with 182,662 selected
+      exact triangles as one 5,985,864-byte candidate; the five-level,
+      32-cell layout preserves the prior outer extent and finest spacing while
+      reducing observed cold builds to 9.4--9.9 ms. The preview-enabled basic and
       four-cascade shadow smokes pass, the alternate ray-traced atmospheric
       path owns visibility and dispatches against the same display generation,
       and exact handoff reaches scene generation 2/display generation 3 with
@@ -470,6 +471,12 @@ visual failures can be tied to the exact coordinator state.
       moat, hole, or cutout; the reported back-lit mountain has an occluded sun
       and dark foreground air rather than the former 2D Mie sheet. The
       preview-disabled control retains the original exact-only cold front.
+      Interactive profiling also keeps MetalFX jitter out of the physical
+      view-lookup cache key, so sky, aerial, irradiance, and long-shadow atlases
+      dispatch once for a stationary pose. With 2x MSAA and Auto allowed to
+      reach one-third internal scale, the full preview/atmosphere stack measures
+      1.61 ms median and 4.01 ms p95 instead of 21.85 ms on the same M3 Pro;
+      a 2880x1800 back-lit capture retains the qualified appearance.
 - [ ] Qualify the cold path end to end: visual captures, useful-preview
       latency, cell lag, publication cadence, upload and memory caps, exact
       convergence under load, failure fallback, and enabled/disabled exact

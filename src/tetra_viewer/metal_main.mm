@@ -2771,6 +2771,9 @@ int main(int argc,char** argv) {
   const bool automated_test=smoke_test||motion_test||render_test||metalfx_test||
       auto_resolution_test||overlay_test||shadow_test||capture_test||
       any_atmosphere_frame_test||atmosphere_quality_test||terrain_ray_oracle_test;
+  const bool profile_interactive_rendering=
+      (auto_resolution_test||render_test||atmosphere_capture)&&
+      std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr;
   bool preview_enabled=!automated_test;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
@@ -3043,7 +3046,7 @@ int main(int argc,char** argv) {
     tetra_viewer::TerrainFrontCoordinator terrain_front_coordinator;
     tetra_viewer::PreviewSurfaceWorker preview_surface_worker;
     const tetra_viewer::PreviewSurfaceConfiguration preview_configuration{
-        .level_count=4U,.cells_per_side=64U,.finest_spacing=0.125};
+        .level_count=5U,.cells_per_side=32U,.finest_spacing=0.125};
     tetra_viewer::TerrainDisplayPublicationPlanner terrain_display_planner;
     MetalTerrainDisplayFront terrain_display_front;
     std::size_t peak_terrain_display_transition_bytes{};
@@ -3182,7 +3185,7 @@ int main(int argc,char** argv) {
     double sun_cycle_seconds=tetra_viewer::default_world_sun_cycle_seconds;
     double exposure_ev=-0.62;
     bool atmosphere_enabled=!automated_test||any_atmosphere_frame_test||
-                            metalfx_test||
+                            metalfx_test||profile_interactive_rendering||
                             atmosphere_quality_test;
     // The independent Hillaire 2020 screen marcher is the qualified
     // production transport. It evaluates terrain visibility four times in
@@ -3260,31 +3263,35 @@ int main(int argc,char** argv) {
         atmosphere_parameters,maximum_terrain_relief_metres);
     bool atmosphere_optical_dirty=true;
     std::array<float,96> atmosphere_uniform{};
+    std::array<float,96> stable_atmosphere_lookup_uniform{};
     bool force_runtime_camera=false;
     bool runtime_camera_interactive=false;
     // 0 native, 1 fixed, 2 automatic. Automated captures stay native and
     // single-sampled so their depth oracle remains pixel-aligned with Vulkan.
-    int render_resolution_mode=auto_resolution_test?2:
+    int render_resolution_mode=(auto_resolution_test||
+                                profile_interactive_rendering)?2:
         (metalfx_test?1:(automated_test?0:2));
     float fixed_render_scale=2.0F/3.0F;
     float automatic_render_scale=auto_resolution_test?0.5F:2.0F/3.0F;
-    float automatic_minimum_scale=0.5F;
+    float automatic_minimum_scale=1.0F/3.0F;
     float automatic_maximum_scale=1.0F;
     int display_refresh_hz=std::max(1,static_cast<int>(
         native_window.screen.maximumFramesPerSecond));
     bool automatic_target_display=true;
     int automatic_target_fps=display_refresh_hz;
     float upscale_sharpening=0.2F;
-    bool metalfx_temporal_enabled=(!automated_test||metalfx_test)&&
+    bool metalfx_temporal_enabled=
+        (!automated_test||metalfx_test||profile_interactive_rendering)&&
                                   metalfx_temporal_supported;
     std::optional<tetra_viewer::CameraProjection> previous_temporal_projection;
     std::optional<std::uint64_t> previous_temporal_visual_signature;
     tetra::Vec3 previous_temporal_render_origin{};
     std::uint64_t previous_temporal_scene_generation{};
     std::uint64_t metalfx_frame_index{};
-    bool terrain_msaa=!automated_test&&scene_pipeline_4!=nil;
-    int terrain_sample_count=scene_pipeline_4!=nil?4:
-                             (scene_pipeline_2!=nil?2:1);
+    bool terrain_msaa=(!automated_test||profile_interactive_rendering)&&
+                      scene_pipeline_4!=nil;
+    int terrain_sample_count=scene_pipeline_2!=nil?2:
+                             (scene_pipeline_4!=nil?4:1);
     std::size_t automatic_stable_frames{};
     std::vector<double> automatic_gpu_samples;
     double automatic_gpu_median_milliseconds{};
@@ -4744,6 +4751,21 @@ int main(int argc,char** argv) {
               atmosphere_renderer,shadow_filter,shadow_integration,
               atmosphere_screen_divisor,atmosphere_enabled,
               render_width,render_height);
+          // Sky, aerial, irradiance, and long-shadow lookup atlases are
+          // parameterized by the physical camera pose, not by MetalFX's
+          // subpixel screen jitter. A jittered cache key forced every expensive
+          // view lookup to rebuild each frame for a stationary camera.
+          stable_atmosphere_lookup_uniform=make_live_atmosphere_uniform(
+              atmosphere_parameters,frame_projection->camera_relative,
+              planet_centre_relative,frame_projection->right,
+              frame_projection->up,frame_projection->forward,sun,
+              frame_projection->tangent,frame_projection->aspect_ratio,
+              atmosphere_aerial_range,
+              static_cast<float>(std::exp2(exposure_ev)),
+              atmosphere_debug_view,atmosphere_transport,
+              atmosphere_renderer,shadow_filter,shadow_integration,
+              atmosphere_screen_divisor,atmosphere_enabled,
+              render_width,render_height);
           temporal_visual_signature=1469598103934665603ULL;
           const auto signature_value=[&](std::uint32_t value){
             temporal_visual_signature^=value;
@@ -4837,7 +4859,7 @@ int main(int argc,char** argv) {
               static_cast<float>(origin_delta.z),0.0F};
           if(atmosphere_enabled){
             encode_live_atmosphere_lookups(command_buffer,atmosphere_resources,
-                                            atmosphere_uniform,
+                                            stable_atmosphere_lookup_uniform,
                                             atmosphere_optical_dirty);
             atmosphere_optical_dirty=false;
           }
@@ -5171,7 +5193,8 @@ int main(int argc,char** argv) {
            atmosphere_transport!=0&&
            scene_vertex_count!=0U)
           encode_long_shadow_atmosphere(
-              command_buffer,atmosphere_resources,atmosphere_uniform,
+              command_buffer,atmosphere_resources,
+              stable_atmosphere_lookup_uniform,
               production_shadows,shadow_texture,
               terrain_display_front.render_generation);
         if(atmosphere_enabled&&
@@ -5438,8 +5461,13 @@ int main(int argc,char** argv) {
             (terrain_acceleration_structure.active!=nil&&
              terrain_acceleration_structure.active_generation==
                  terrain_display_front.render_generation);
+        const bool requested_profile_capture_ready=
+            !profile_interactive_rendering||!atmosphere_capture||
+            (automatic_stable_frames>=60U&&
+             automatic_render_scale<=automatic_minimum_scale+0.001F);
         if((capture_test||any_atmosphere_frame_test||metalfx_test)&&
-           scene_vertex_count!=0U&&requested_preview_capture_ready){
+           scene_vertex_count!=0U&&requested_preview_capture_ready&&
+           requested_profile_capture_ready){
           capture_row_bytes=(static_cast<NSUInteger>(width)*4U+255U)&~255U;
           capture_buffer=[device
               newBufferWithLength:capture_row_bytes*static_cast<NSUInteger>(height)
@@ -5641,6 +5669,7 @@ int main(int argc,char** argv) {
         const bool automated_frame_complete=scene_vertex_count!=0U&&
             requested_preview_capture_ready&&
             requested_rt_capture_ready&&
+            requested_profile_capture_ready&&
             (!capture_test||capture_buffer!=nil)&&
             (!terrain_ray_oracle_test||terrain_ray_oracle_encoded)&&
             (!motion_test||(motion_rendered_frames>=30U&&
@@ -5649,7 +5678,8 @@ int main(int argc,char** argv) {
             (!render_test||render_test_frames>=40U)&&
             (!metalfx_test||(metalfx_test_frames>=45U&&
                              diagnostics.converged&&!diagnostics.busy))&&
-            (!auto_resolution_test||auto_resolution_test_frames>=120U)&&
+            (!auto_resolution_test||auto_resolution_test_frames>=
+                 (profile_interactive_rendering?300U:120U))&&
             (!overlay_test||overlay_test_frames>=10U)&&
             (!shadow_test||shadow_test_frames>=3U)&&
             (!any_atmosphere_frame_test||atmosphere_test_frames>=12U);
@@ -6102,6 +6132,10 @@ int main(int argc,char** argv) {
                           "\"stage_timing_valid\":%s,"
                           "\"shadow_ms\":%.4f,\"atmosphere_ms\":%.4f,"
                           "\"terrain_ms\":%.4f,\"composite_ms\":%.4f,"
+                          "\"depth_ms\":%.4f,\"integration_ms\":%.4f,"
+                          "\"temporal_ms\":%.4f,\"metalfx_ms\":%.4f,"
+                          "\"rt_builds\":%llu,\"rt_build_ms\":%.4f,"
+                          "\"display_generation\":%llu,\"rt_generation\":%llu,"
                           "\"passed\":%s}\n",
                           render_test_frames,width,height,render_width,
                           render_height,static_cast<unsigned long>(
@@ -6117,22 +6151,58 @@ int main(int argc,char** argv) {
                               std::memory_order_relaxed),
                           gpu_stage_timings->composite_milliseconds.load(
                               std::memory_order_relaxed),
+                          gpu_stage_timings->depth_reduction_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->screen_integration_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->temporal_reconstruction_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->metalfx_milliseconds.load(
+                              std::memory_order_relaxed),
+                          static_cast<unsigned long long>(
+                              terrain_acceleration_structure.build_count),
+                          terrain_acceleration_structure.last_build_milliseconds->load(
+                              std::memory_order_relaxed),
+                          static_cast<unsigned long long>(
+                              terrain_display_front.render_generation),
+                          static_cast<unsigned long long>(
+                              terrain_acceleration_structure.active_generation),
                           passed?"true":"false");
               if(!passed)result=1;
             }else if(auto_resolution_test){
               const bool passed=automatic_gpu_median_milliseconds>0.0&&
                   automatic_gpu_percentile_95_milliseconds>0.0&&
-                  automatic_render_scale>0.5F&&render_width<=width&&
+                  (automatic_render_scale>0.5F||
+                   profile_interactive_rendering)&&render_width<=width&&
                   render_height<=height;
               std::printf("{\"event\":\"metal_auto_resolution_smoke\","
                           "\"rendered_frames\":%zu,\"display_hz\":%d,"
                           "\"scale\":%.2f,\"internal\":\"%dx%d\","
                           "\"median_ms\":%.4f,\"p95_ms\":%.4f,"
+                          "\"profile_interactive\":%s,"
+                          "\"shadow_ms\":%.4f,\"atmosphere_ms\":%.4f,"
+                          "\"terrain_ms\":%.4f,\"composite_ms\":%.4f,"
+                          "\"samples\":%lu,\"view_lookup_dispatches\":%llu,"
+                          "\"long_shadow_dispatches\":%llu,"
                           "\"stable_frames\":%zu,\"passed\":%s}\n",
                           auto_resolution_test_frames,display_refresh_hz,
                           automatic_render_scale,render_width,render_height,
                           automatic_gpu_median_milliseconds,
                           automatic_gpu_percentile_95_milliseconds,
+                          profile_interactive_rendering?"true":"false",
+                          gpu_stage_timings->shadows_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->atmosphere_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->terrain_milliseconds.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->composite_milliseconds.load(
+                              std::memory_order_relaxed),
+                          static_cast<unsigned long>(allocated_samples),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[3]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[6]),
                           automatic_stable_frames,passed?"true":"false");
               if(!passed)result=1;
             }else if(atmosphere_quality_test){
