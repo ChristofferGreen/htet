@@ -536,6 +536,19 @@ rejected and no private-screen-transmittance source path remains.
 
 ## P5 conservative planet-umbra work elimination
 
+### P5a rejected MetalFX-independent reference-atmosphere target
+
+An opt-in candidate held the reference atmosphere target at 35% of the
+drawable while terrain resolution changed under MetalFX, mapping each target
+texel to its exact scene-depth footprint. Its mountain, visible-sun, flight,
+and orbit captures stayed within 0.001129 normalized RMS of the coupled
+control, and motion plus interactive Auto-scale smoke passed. At a native
+1440x900 terrain target, its stable median improved in both reverse-order
+300-frame runs (5.7122/6.3722 and 5.5754/6.2733 to 4.8040/6.1729 and
+4.8403/6.0555 ms median/p95). However, both equally matched moving runs
+increased p95 from 5.8812/5.8827 to 6.2520/6.1755 ms. The inconsistent motion
+tail fails the gate; the target override and mapping code were removed.
+
 The reference Hillaire marcher now evaluates spherical planet visibility before
 the four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any

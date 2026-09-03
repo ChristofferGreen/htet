@@ -2,6 +2,17 @@
 
 ## 2026-09-03
 
+- [x] P5a MetalFX-independent reference-atmosphere target qualification:
+  tested an opt-in drawable-relative 35% atmosphere target and exact
+  source-depth footprint mapping, so its target did not resize when MetalFX
+  changed terrain resolution. Mountain, visible-sun, flight, and orbit output
+  stayed within 0.001129 NRMS, continuous motion and interactive Auto scale
+  smoke passed, and at native terrain resolution the two stable runs improved
+  from 5.7122/6.3722 and 5.5754/6.2733 to 4.8040/6.1729 and 4.8403/6.0555 ms.
+  It is rejected nevertheless: both moving native-resolution runs increased
+  p95 from 5.8812/5.8827 to 6.2520/6.1755 ms despite lower medians. No target
+  override, footprint-mapping, or profiling source remains.
+
 - [x] P4d-c private screen-transmittance storage qualification: tested
   `TETWORLD_METAL_PRIVATE_SCREEN_TRANSMITTANCE=1` for only the current and
   temporal-history screen-transmittance family, with the shared half-float

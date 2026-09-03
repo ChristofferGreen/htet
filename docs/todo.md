@@ -385,11 +385,18 @@ their measurements, since each changes a different representation or route.
         rule: retain float32/shared on any temporal or physical mismatch.
         Result: rejected. Captures stayed within 0.000156 NRMS but the stable
         p95 regressed from 5.9521 to 6.2176 ms; no production code remains.
-- [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
-      deterministic Breyer-Zirr experiment that removes analytically planet-
-      shadowed direct-light work near the terminator. Consider a stable angular
-      domain only if screen-aligned scaling remains material; do not reduce the
-      qualified 32 intervals through an unproven distance heuristic (P5).
+- [ ] **P5b — Qualify analytic planet-umbra direct-light partitioning.**
+      Scope: derive conservative spherical-umbra interval boundaries and skip
+      only proven-zero direct work; retain the 32 radiometric intervals,
+      terrain visibility for every lit/penumbra sample, and unshadowed multiple
+      scattering. Acceptance: direct/Mie, low-sun, motion, and orbit oracles
+      plus a terminator-specific work/time measurement. Stop rule: reject any
+      foreground direct light behind terrain or unproven terminator benefit.
+- [ ] **P5c — Consider an angular atmosphere domain only after P5a/P5b.**
+      Scope: assess a stable angular domain only if the screen-aligned path
+      still has a measured scaling bottleneck. Acceptance: explicit cube-seam,
+      opaque-depth mismatch, disocclusion, and reconstruction checks. Stop
+      rule: retire it if the simpler screen target is sufficient.
   - [x] Guard exactly planet-shadowed direct samples before their four terrain
         visibility queries and transmittance lookup; retain terrain checks for
         every positive penumbra sample and unshadowed multiple scattering.
