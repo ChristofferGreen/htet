@@ -16,6 +16,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `aerial-refresh` is an opt-in timing profile that selects debug view 4 and requires 300 new mode-3 aerial-dispatch timestamp samples, while ordinary reference-temporal frames retain aerial fallback textures.
 - Evidence: The final Release profile emitted 300 aerial samples and passed after the default reference smoke verified its lazy resource contract.
 
+### metal-background-launch
+- Updated: 2026-09-03
+- Tags: macos, metal, automation
+- Fact: The Metal app can be launched without a visible or activating window using `TETWORLD_METAL_BACKGROUND=1 open -g -j -n build/release/src/tetra_viewer/TetWorldMetal.app`.
+- Evidence: The running `TetWorldMetal` process had zero macOS windows when queried through System Events.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation
@@ -28,11 +34,11 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Generated preview `SceneVertex` values must set `diagnostics[0]` to `-2.0F` and carry both flat geometric and analytic smooth normals so the shader selects connected-world rendering and receiver-plane shadow bias remains valid.
 - Evidence: Without the marker the scene shader applied its research cut plane and produced a rectangular 2D terrain cutout; release seam, cascade-shadow, and back-lit atmosphere captures passed after using the connected-world marker and separate normals.
 
-### metal-background-launch
+### metal-shadow-profile
 - Updated: 2026-09-03
-- Tags: macos, metal, automation
-- Fact: The Metal app can be launched without a visible or activating window using `TETWORLD_METAL_BACKGROUND=1 open -g -j -n build/release/src/tetra_viewer/TetWorldMetal.app`.
-- Evidence: The running `TetWorldMetal` process had zero macOS windows when queried through System Events.
+- Tags: metal, atmosphere, profiling
+- Fact: `shadow-lookup` requires 300 independent reference screen-march timestamp intervals and accepts its ordered interval without requiring a composable enclosing MetalFX stage partition.
+- Evidence: The first attempt incorrectly recorded zero samples under MetalFX; the corrected independent interval completed 300 samples and the restored manual-PCF path passed the full Release suite.
 
 ### release-validation-entry-point
 - Updated: 2026-08-24

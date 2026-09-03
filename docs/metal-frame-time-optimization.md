@@ -378,6 +378,31 @@ the 22,350,316-byte default reference route: the optional pair costs
 measurement result, not a reason to add aerial work to the physical reference
 renderer.
 
+### P3 reference-shadow lookup/filter comparison
+
+The active reference screen marcher now has an opt-in `shadow-lookup` profile
+that independently collects its ordered integration interval, even when a
+MetalFX-owned encoder layout prevents the coarser frame partition from being
+composed. It requires 300 current intervals, rather than mislabelling stale
+counter values as fresh work.
+
+At 1440x900 output, 1008x630 internal, 2x MSAA and MetalFX, the physical
+manual four-depth PCF oracle measured 1.2613/1.6825 ms median/p95. Temporary
+like-for-like depth gather and hardware comparison-sampler forms measured
+1.1623/1.5901 and 1.1145/1.7358 ms respectively. Four deterministic manual
+captures confirmed the capture harness is byte-stable; at the back-lit
+mountain, each alternative differed from manual by no more than one 8-bit
+channel level, with 248 aggregate channel-level differences for gather and 72
+for comparison.
+
+Do not promote either alternative. The modest median gains have no robust p95
+win (the comparison sampler regresses it), and one-level edge/equality
+differences are insufficient evidence to replace the physical oracle without a
+complete UV, clamp, cascade, bias, and equality matrix. The experimental
+shader branches and their extra texture/sampler binding were removed after
+measurement. The retained profile gives future candidates a correct
+integration-only interval without adding work to normal frames.
+
 ### P3 Hillaire 200x100 sky-view reference experiment
 
 `TETWORLD_METAL_SKY_VIEW_REFERENCE=1` replaces only the runtime sky-view

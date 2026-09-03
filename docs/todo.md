@@ -290,9 +290,6 @@ because it is faster.
         state profile. The opt-in serial counter route collected 300 current
         dispatch samples at 0.7501/0.7976 ms median/p95; it also prevents
         cached counter values from being reported as new lookup work.
-  - [ ] Isolate the active shadow lookup/filter family and compare equivalent
-        manual, depth-gather, and comparison-sampler PCF against the physical
-        shadow oracle before considering a sampling change.
   - [x] Run the 200x100 candidate through static/invalidation reference smoke
         and bounded continuous movement. Both passed; moving frames were
         6.8994/8.1660 ms median/p95, so retain the candidate only for lookup

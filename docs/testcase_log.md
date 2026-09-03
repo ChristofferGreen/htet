@@ -11,6 +11,8 @@
 
 ## Resolved Failures
 
+- [x] `tetra_world_metal --metal-timing-profile-smoke-test` | resolved: 2026-09-03 local | validating command: hidden serialized `TETWORLD_METAL_TIMING_PROFILE=shadow-lookup` profile and `./scripts/compile.sh --release` | notes: the independent reference integration interval now bypasses only the unrelated coarse MetalFX partition gate; 300 samples pass. A duplicate stage-field build error was also removed before the passing profile, and the final restored-default release gate passed all 471 tests in 401.14 s.
+
 - [x] `blocked world resource rejection preserves the complete published front` | resolved: 2026-09-03 12:47 local | validating command: `./scripts/compile.sh --release` | notes: relaxing resource budgets now requeues a previously rejected camera demand; the focused 53-assertion test and fresh 471/471 release run pass.
 
 - 2026-09-03 local | pass | mode: P5 conservative planet-umbra guard release validation | command: `./scripts/compile.sh --release` | failures: none | notes: repeat gate passed all 471 tests in 483.18 s after the reference marcher began skipping terrain visibility and transmittance work only for exactly planet-shadowed direct samples. The first attempt reported one unrelated transient failure in `blocked world resource rejection preserves the complete published front`; its fresh focused rerun passed 53 assertions, and it passed in the repeated full run in 50.32 s.

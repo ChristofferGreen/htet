@@ -2,6 +2,18 @@
 
 ## 2026-09-03
 
+- [x] P3 reference-shadow lookup isolation: added the opt-in
+  `shadow-lookup` profile, which requires 300 independent reference screen
+  marcher intervals. Compared the manual four-depth PCF oracle with temporary
+  depth-gather and hardware comparison-sampler forms at identical 1440x900 /
+  1008x630 / 2x / MetalFX settings. Gather measured 1.1623/1.5901 ms
+  median/p95 versus manual 1.2613/1.6825; comparison measured 1.1145/1.7358.
+  Repeated back-lit mountain captures showed both alternatives differed by at
+  most one 8-bit level from manual, but neither had sufficient p95 margin or
+  exact edge/equality proof for promotion. Both experimental forms and their
+  extra resource binding were removed; the physical manual oracle remains the
+  shipping implementation.
+
 - [x] P3 aerial lookup isolation: added an opt-in `aerial-refresh` timing
   profile that selects the existing aerial diagnostic view, changes only its
   real physical view/sun lookup input, and timestamps the dispatched aerial

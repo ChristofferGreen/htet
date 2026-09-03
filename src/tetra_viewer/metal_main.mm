@@ -1783,6 +1783,7 @@ struct MetalTimingProfileSamples {
   std::vector<double> sky_view_lookup_milliseconds;
   std::vector<double> irradiance_lookup_milliseconds;
   std::vector<double> aerial_lookup_milliseconds;
+  std::vector<double> screen_integration_milliseconds;
 
   void add(double milliseconds) {
     std::lock_guard lock(mutex);
@@ -1828,19 +1829,27 @@ struct MetalTimingProfileSamples {
       aerial_lookup_milliseconds.push_back(aerial);
   }
 
-  [[nodiscard]] std::array<std::vector<double>,4U>
+  void add_screen_integration(double integration) {
+    std::lock_guard lock(mutex);
+    if(screen_integration_milliseconds.size()<300U)
+      screen_integration_milliseconds.push_back(integration);
+  }
+
+  [[nodiscard]] std::array<std::vector<double>,5U>
   ordered_lookups() const {
     std::lock_guard lock(mutex);
     auto optical=optical_lookup_milliseconds;
     auto sky=sky_view_lookup_milliseconds;
     auto irradiance=irradiance_lookup_milliseconds;
     auto aerial=aerial_lookup_milliseconds;
+    auto integration=screen_integration_milliseconds;
     std::ranges::sort(optical);
     std::ranges::sort(sky);
     std::ranges::sort(irradiance);
     std::ranges::sort(aerial);
+    std::ranges::sort(integration);
     return {std::move(optical),std::move(sky),std::move(irradiance),
-            std::move(aerial)};
+            std::move(aerial),std::move(integration)};
   }
 };
 
@@ -3152,7 +3161,7 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-timing-profile-smoke-test")==0;
   enum class TimingProfileClass { stable, moving, lookup_refresh,
                                   optical_refresh, aerial_refresh, preview,
-                                  exact_handoff, ray_tracing };
+                                  exact_handoff, ray_tracing, shadow_lookup };
   TimingProfileClass timing_profile_class=TimingProfileClass::stable;
   const char* timing_profile_class_name="stable";
   if(timing_profile_test){
@@ -3173,10 +3182,12 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::exact_handoff;
       else if(std::strcmp(requested,"ray-tracing")==0)
         timing_profile_class=TimingProfileClass::ray_tracing;
+      else if(std::strcmp(requested,"shadow-lookup")==0)
+        timing_profile_class=TimingProfileClass::shadow_lookup;
       else {
         std::fprintf(stderr,"TETWORLD_METAL_TIMING_PROFILE must be stable, "
             "moving, lookup-refresh, optical-refresh, aerial-refresh, preview, exact-handoff, "
-            "or ray-tracing\\n");
+            "ray-tracing, or shadow-lookup\\n");
         return 2;
       }
       timing_profile_class_name=requested;
@@ -5198,6 +5209,7 @@ int main(int argc,char** argv) {
         bool optical_lookup_encoded_this_frame=false;
         bool reference_lookup_encoded_this_frame=false;
         bool aerial_lookup_encoded_this_frame=false;
+        bool reference_screen_integration_encoded_this_frame=false;
         MetalTimestampFlight* gpu_timestamp_flight=nullptr;
         for(auto& flight:gpu_timestamp_flights){
           bool available=false;
@@ -5857,6 +5869,8 @@ int main(int argc,char** argv) {
                   tetra_viewer::AtmosphereVisibilityBackend::ray_traced,
               frame_visibility_plan.rotating_queries_per_pixel,
               atmosphere_renderer==3,gpu_timestamp_samples);
+          reference_screen_integration_encoded_this_frame=
+              atmosphere_transport==2;
         }
         if(atmosphere_enabled&&atmosphere_renderer==4&&
            scene_vertex_count!=0U)
@@ -6306,6 +6320,18 @@ int main(int argc,char** argv) {
                   profile_destination->add_aerial_lookup(
                       sampled_milliseconds(23U,24U));
               }
+              // Like the lookup encoders, the reference screen marcher has an
+              // independently bracketed interval. MetalFX may make the
+              // surrounding coarse partition non-composable, which must not
+              // discard an otherwise valid, current integration sample.
+              const bool screen_integration_timing_valid=usable_sample(9U)&&
+                  usable_sample(10U)&&
+                  timestamps[10U].timestamp>=timestamps[9U].timestamp;
+              if(timing_profile_sample_eligible&&
+                 reference_screen_integration_encoded_this_frame&&
+                 screen_integration_timing_valid)
+                profile_destination->add_screen_integration(
+                    sampled_milliseconds(9U,10U));
               bool valid=true;
               for(NSUInteger index=0U;index<gpu_base_timestamp_count;++index)
                 valid=valid&&usable_sample(index);
@@ -7136,7 +7162,7 @@ int main(int argc,char** argv) {
             }else if(timing_profile_test){
               const auto ordered=timing_profile_samples->ordered();
               const auto [ordered_optical,ordered_sky,ordered_irradiance,
-                          ordered_aerial]=
+                          ordered_aerial,ordered_screen_integration]=
                   timing_profile_samples->ordered_lookups();
               const bool all_positive=!ordered.empty()&&
                   ordered.front()>0.0&&std::isfinite(ordered.back());
@@ -7150,8 +7176,12 @@ int main(int argc,char** argv) {
               const bool aerial_profile_ready=
                   timing_profile_class!=TimingProfileClass::aerial_refresh||
                   ordered_aerial.size()==300U;
+              const bool shadow_profile_ready=
+                  timing_profile_class!=TimingProfileClass::shadow_lookup||
+                  ordered_screen_integration.size()==300U;
               const bool passed=ordered.size()==300U&&all_positive&&
-                  exact_handoff_ready&&ray_trace_ready&&aerial_profile_ready;
+                  exact_handoff_ready&&ray_trace_ready&&aerial_profile_ready&&
+                  shadow_profile_ready;
               std::printf("{\"event\":\"metal_timing_profile\","
                           "\"class\":\"%s\",\"samples\":%zu,"
                           "\"median_ms\":%.4f,\"p95_ms\":%.4f,"
@@ -7173,6 +7203,9 @@ int main(int argc,char** argv) {
                           "\"aerial_lookup_samples\":%zu,"
                           "\"aerial_lookup_ms\":%.4f,"
                           "\"aerial_lookup_p95_ms\":%.4f,"
+                          "\"screen_integration_samples\":%zu,"
+                          "\"screen_integration_ms\":%.4f,"
+                          "\"screen_integration_p95_ms\":%.4f,"
                           "\"rt_builds\":%llu,\"sky_view_dispatches\":%llu,"
                           "\"irradiance_dispatches\":%llu,\"passed\":%s}\n",
                           timing_profile_class_name,ordered.size(),
@@ -7199,6 +7232,9 @@ int main(int argc,char** argv) {
                           ordered_aerial.size(),
                           timing_percentile(ordered_aerial,0.50),
                           timing_percentile(ordered_aerial,0.95),
+                          ordered_screen_integration.size(),
+                          timing_percentile(ordered_screen_integration,0.50),
+                          timing_percentile(ordered_screen_integration,0.95),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.build_count),
                           static_cast<unsigned long long>(
