@@ -225,6 +225,10 @@ The min/max hierarchy buffer now follows the same scheme: a minimal valid
 buffer is retained until a long-shadow, min-max, or epipolar consumer is
 selected. The default reference route reports 32,967,116 bytes, while the
 native faithful route materializes the full hierarchy before its atlas pass.
+Finally, aerial scattering and transmittance use type-correct 1x1x1 fallbacks
+until a legacy transport or aerial diagnostic selects them. The default
+reference smoke reports 22,350,316 bytes after this change and asserts that
+all inactive family fallbacks remain in place.
 
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`

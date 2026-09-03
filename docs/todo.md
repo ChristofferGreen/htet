@@ -241,6 +241,9 @@ because it is faster.
         marcher proves full allocation, dispatch, and occlusion when consumed.
   - [x] Lazily allocate the min/max hierarchy behind a minimal valid buffer;
         materialize it only for long-shadow, min-max, or epipolar consumers.
+  - [x] Lazily allocate aerial scattering/transmittance behind type-correct
+        1x1x1 fallbacks; materialize the full pair for legacy/aerial-diagnostic
+        consumers only.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

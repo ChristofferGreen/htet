@@ -1374,6 +1374,8 @@ struct MetalAtmosphereResources {
   id<MTLTexture> dummy_long_shadow=nil;
   id<MTLTexture> aerial_scattering=nil;
   id<MTLTexture> aerial_transmittance=nil;
+  id<MTLTexture> dummy_aerial_scattering=nil;
+  id<MTLTexture> dummy_aerial_transmittance=nil;
   id<MTLTexture> froxel_scattering=nil;
   id<MTLTexture> froxel_transmittance=nil;
   id<MTLTexture> dummy_froxel_scattering=nil;
@@ -1421,6 +1423,9 @@ struct MetalAtmosphereResources {
   std::uint32_t atmosphere_shadow_resolution{};
   std::uint32_t long_shadow_width{};
   std::uint32_t long_shadow_height{};
+  std::uint32_t aerial_width{};
+  std::uint32_t aerial_height{};
+  std::uint32_t aerial_depth{};
   std::size_t minmax_element_count{};
   std::uint64_t ray_visibility_dispatches{};
   std::uint32_t last_ray_visibility_query_count{};
@@ -1549,10 +1554,13 @@ MetalAtmosphereResources make_live_atmosphere_resources(
       device,settings.irradiance_width,settings.irradiance_height);
   resources.long_shadow_width=settings.long_shadow_width;
   resources.long_shadow_height=settings.long_shadow_height;
-  resources.aerial_scattering=make_atmosphere_texture(
-      device,settings.aerial_width,settings.aerial_height,settings.aerial_depth);
-  resources.aerial_transmittance=make_atmosphere_texture(
-      device,settings.aerial_width,settings.aerial_height,settings.aerial_depth);
+  resources.aerial_width=settings.aerial_width;
+  resources.aerial_height=settings.aerial_height;
+  resources.aerial_depth=settings.aerial_depth;
+  resources.dummy_aerial_scattering=make_atmosphere_texture(device,1U,1U,1U);
+  resources.dummy_aerial_transmittance=make_atmosphere_texture(device,1U,1U,1U);
+  resources.aerial_scattering=resources.dummy_aerial_scattering;
+  resources.aerial_transmittance=resources.dummy_aerial_transmittance;
   // Most routes bind but never sample froxel volumes. Keep a type-correct
   // writable fallback for those translated entry points and materialize the
   // full 32^3 pair only for renderer 4.
@@ -1613,6 +1621,8 @@ bool live_atmosphere_resources_valid(const MetalAtmosphereResources& resources) 
       resources.dummy_long_shadow!=nil&&
       resources.aerial_scattering!=nil&&
       resources.aerial_transmittance!=nil&&resources.froxel_scattering!=nil&&
+      resources.dummy_aerial_scattering!=nil&&
+      resources.dummy_aerial_transmittance!=nil&&
       resources.froxel_transmittance!=nil&&resources.dummy_froxel_scattering!=nil&&
       resources.dummy_froxel_transmittance!=nil&&resources.dummy_screen!=nil&&
       resources.dummy_shadow!=nil&&resources.shadow_uniform!=nil&&
@@ -1663,6 +1673,20 @@ bool ensure_shadowed_froxel_resources(id<MTLDevice> device,
   resources.froxel_scattering=make_atmosphere_texture(device,32U,32U,32U);
   resources.froxel_transmittance=make_atmosphere_texture(device,32U,32U,32U);
   return resources.froxel_scattering!=nil&&resources.froxel_transmittance!=nil;
+}
+
+bool ensure_aerial_resources(id<MTLDevice> device,
+                             MetalAtmosphereResources& resources) {
+  if(resources.aerial_scattering!=resources.dummy_aerial_scattering&&
+     resources.aerial_transmittance!=resources.dummy_aerial_transmittance)
+    return true;
+  resources.aerial_scattering=make_atmosphere_texture(
+      device,resources.aerial_width,resources.aerial_height,
+      resources.aerial_depth);
+  resources.aerial_transmittance=make_atmosphere_texture(
+      device,resources.aerial_width,resources.aerial_height,
+      resources.aerial_depth);
+  return resources.aerial_scattering!=nil&&resources.aerial_transmittance!=nil;
 }
 
 bool ensure_long_shadow_resources(id<MTLDevice> device,
@@ -2453,7 +2477,8 @@ void encode_shadow_epipolar_hierarchy(
 }
 
 void encode_live_atmosphere_lookups(
-    id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
+    id<MTLDevice> device,id<MTLCommandBuffer> command,
+    MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,bool rebuild_optical,
     bool aerial_consumed=true) {
   const bool reference=uniform[53]>=9.5F;
@@ -2538,7 +2563,8 @@ void encode_live_atmosphere_lookups(
       dispatch(2U,resources.sky_view);
       dispatch(4U,resources.sky_irradiance);
     }
-    if(aerial_consumed)dispatch(3U,resources.aerial_scattering);
+    if(aerial_consumed&&ensure_aerial_resources(device,resources))
+      dispatch(3U,resources.aerial_scattering);
     std::copy_n(uniform.begin(),resources.last_view_uniform.size(),
                 resources.last_view_uniform.begin());
     resources.view_ready=true;
@@ -5181,7 +5207,8 @@ int main(int argc,char** argv) {
           if(atmosphere_enabled){
             const bool aerial_lookup_consumed=atmosphere_transport!=2||
                 atmosphere_debug_view==4||atmosphere_debug_view==5;
-            encode_live_atmosphere_lookups(command_buffer,atmosphere_resources,
+            encode_live_atmosphere_lookups(device,command_buffer,
+                                            atmosphere_resources,
                                             stable_atmosphere_lookup_uniform,
                                             atmosphere_optical_dirty,
                                             aerial_lookup_consumed);
@@ -6495,6 +6522,13 @@ int main(int argc,char** argv) {
                   shadow_integration==2||shadow_integration==4||
                   shadow_integration==5||atmosphere_resources.minmax==
                       atmosphere_resources.dummy_minmax;
+              const bool aerial_resources_lazy=
+                  atmosphere_transport!=2||atmosphere_debug_view==4||
+                  atmosphere_debug_view==5||
+                  (atmosphere_resources.aerial_scattering==
+                       atmosphere_resources.dummy_aerial_scattering&&
+                   atmosphere_resources.aerial_transmittance==
+                       atmosphere_resources.dummy_aerial_transmittance);
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6511,7 +6545,8 @@ int main(int argc,char** argv) {
                   timing_passed&&temporal_accounting_passed&&
                   long_shadow_dispatch_passed&&lookup_invalidation_passed&&
                   reference_visibility_resources_absent&&froxel_resources_lazy&&
-                  long_shadow_resources_lazy&&minmax_resources_lazy;
+                  long_shadow_resources_lazy&&minmax_resources_lazy&&
+                  aerial_resources_lazy;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6544,6 +6579,7 @@ int main(int argc,char** argv) {
                           "\"froxel_resources_lazy\":%s,"
                           "\"long_shadow_resources_lazy\":%s,"
                           "\"minmax_resources_lazy\":%s,"
+                          "\"aerial_resources_lazy\":%s,"
                           "\"atmosphere_allocation_bytes\":%zu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
@@ -6591,6 +6627,7 @@ int main(int argc,char** argv) {
                           froxel_resources_lazy?"true":"false",
                           long_shadow_resources_lazy?"true":"false",
                           minmax_resources_lazy?"true":"false",
+                          aerial_resources_lazy?"true":"false",
                           live_atmosphere_allocation_bytes(atmosphere_resources),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),
