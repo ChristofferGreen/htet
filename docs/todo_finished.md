@@ -2,6 +2,14 @@
 
 ## 2026-09-03
 
+- [x] P6c memoryless MSAA resolve-source qualification: rejected on the M3
+  Pro. The 0.5/2x memoryless colour/depth resolve sources allocated and passed
+  all seven native final-drawable captures (worst 0.000615 NRMS), temporal
+  smokes, and orbital drift. But repeated moving median timing regressed from
+  5.7410 to 5.8321 ms, despite stable 5.4631/8.2364 to 5.2992/6.8632 ms
+  median/p95 improvement. The experimental source was removed; private MSAA
+  resolve sources remain the predictable production route.
+
 - [x] P6b fixed raster-profile selection: promoted fixed 0.5 render scale
   with 2x terrain MSAA and MetalFX as the interactive default. A hidden native
   qualification route rendered the actual final drawable at 1440x900 and

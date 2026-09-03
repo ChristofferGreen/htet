@@ -390,11 +390,6 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] **P6c — Qualify memoryless MSAA resolve sources separately.** Scope:
-      compare private with supported memoryless colour/depth resolve-source
-      attachments for selected P6b sample counts. Acceptance: equivalent
-      resolved colour/coverage/depth probes and matched timing. Stop rule:
-      retain private on unsupported hardware or neutral/worse timing.
 - [ ] Measure and, only where material, implement compact preview GPU data,
       conservative per-cascade caster culling, and generation-coherent
       acceleration-structure update/refit policy (P7).

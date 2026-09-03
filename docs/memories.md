@@ -88,6 +88,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Fixed 0.5-scale rendering with 2x MSAA and MetalFX is the qualified interactive default; `qualify_metal_raster_profile.sh` validates it through native final-drawable captures, temporal smokes, orbital drift, and repeated timing.
 - Evidence: Seven physical captures stayed below 0.002353 NRMS versus 0.7/2x, motion passed, and repeated stable/moving median/p95 improved from 6.1592/9.6423 and 6.7159/9.5137 to 4.7580/5.9723 and 5.4023/6.8567 ms.
 
+### metal-p6c-memoryless-msaa
+- Updated: 2026-09-03
+- Tags: metal, msaa, memoryless, profiling
+- Fact: Memoryless transient MSAA resolve sources are supported on the M3 Pro but remain rejected because their moving median timing regressed.
+- Evidence: Native captures stayed within 0.000615 NRMS and temporal/orbital checks passed, but paired moving median rose from 5.7410 to 5.8321 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

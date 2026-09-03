@@ -590,6 +590,17 @@ At the same scale, 4x MSAA passed visual checks but was worse during motion, so
 the two-sample profile is the evidence-backed selection rather than a nominal
 sample-count preference.
 
+## P6c memoryless resolve-source result
+
+The selected 0.5-scale/2x profile was also tested with only its transient
+multisample colour and depth resolve sources in memoryless storage. The M3 Pro
+accepted the allocation and all seven final-drawable captures, temporal smokes,
+and orbital-drift checks passed (worst 0.000615 NRMS versus private). It is
+nevertheless rejected: two paired 300-frame profiles improved stable
+5.4631/8.2364 to 5.2992/6.8632 ms median/p95 but worsened moving median from
+5.7410 to 5.8321 ms. Production retains private resolve sources; all resolved
+textures remain private and sampleable for atmosphere and MetalFX consumers.
+
 The reference Hillaire marcher evaluates spherical planet visibility before the
 four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any
