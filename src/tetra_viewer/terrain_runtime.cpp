@@ -2961,15 +2961,6 @@ void BlockedTerrainRuntime::set_camera(
       directional_lod&&orientation_moved&&!retained_orientation;
   const bool demand_changed=distance_squared>0.02*0.02||
       orientation_requires_detail||projection_changed;
-  constexpr double settled_position_epsilon=1.0e-9;
-  constexpr double settled_orientation_epsilon=1.0e-12;
-  const bool settled_pose_changed=
-      distance_squared>settled_position_epsilon*settled_position_epsilon||
-      (orientation_requires_detail&&
-       (forward_delta_squared>settled_orientation_epsilon*
-            settled_orientation_epsilon||
-        up_delta_squared>settled_orientation_epsilon*
-            settled_orientation_epsilon))||projection_changed;
   camera_=camera;
   // Interactive physics supplies a new floating-point pose every simulation
   // step. Treating every bit-level change as exact terrain demand can leave an
@@ -2982,8 +2973,12 @@ void BlockedTerrainRuntime::set_camera(
   // every publication.
   const bool interaction_ended=camera_interactive_&&!interactive;
   camera_interactive_=interactive;
-  demand_pending_=demand_pending_||demand_changed||
-      (interaction_ended&&settled_pose_changed);
+  // The intent transition itself is a real request.  The most recent
+  // interactive submission may already carry the exact final pose, in which
+  // case a position-only test would suppress the settled publication forever
+  // and leave consumers waiting for an interactive front that can never be
+  // declared converged.
+  demand_pending_=demand_pending_||demand_changed||interaction_ended;
   // A view epoch may advance even though the exact cut remains fully valid
   // (for example, motion below the exact LOD threshold). Retag that accepted
   // front immediately so a preview for the same view does not wait forever

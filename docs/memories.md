@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The Metal app can be launched without a visible or activating window using `TETWORLD_METAL_BACKGROUND=1 open -g -j -n build/release/src/tetra_viewer/TetWorldMetal.app`.
 - Evidence: The running `TetWorldMetal` process had zero macOS windows when queried through System Events.
 
+### metal-motion-publication
+- Updated: 2026-09-03
+- Tags: metal, terrain, automation
+- Fact: The Metal motion smoke needs an explicit settled request after interaction; its default front requires at least 168,306 hierarchy blocks and 52.43M work units to publish exactly.
+- Evidence: The prior 147,456/50M caps left the old front visible, while the 176,000/64M bounds passed the native zero-pose-error smoke and full release suite.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

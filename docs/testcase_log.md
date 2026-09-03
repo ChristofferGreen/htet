@@ -2,10 +2,11 @@
 
 ## Current Known Failures
 
-- `tetra_world_metal --metal-motion-smoke-test` reaches its automation timeout at the default mountain pose on this machine with the cold preview both enabled and disabled; the preview integration is not the discriminator.
-- `tetra_world_metal --metal-terrain-ray-oracle-smoke-test` currently reports 6 preview-enabled and 7 preview-disabled CPU/GPU oracle mismatches on this machine. The independent Metal ray-visibility smoke and the actual ray-traced atmospheric visibility path pass, so this remains an oracle-tolerance investigation rather than evidence of preview-only geometry failure.
+- none
 
 ## Recent Test Runs
+
+- 2026-09-03 local | pass | mode: release Metal stabilization | command: `./scripts/compile.sh --release`; rebuilt hidden motion and terrain-ray-oracle smokes | failures: none | notes: all 471 tests passed in 410.86 s; motion now settles with zero pose error after a 0.00515666-unit protocol displacement and the published-terrain CPU/Metal ray oracle has 0/384 mismatches.
 
 - 2026-09-03 local | pass | mode: P3 native Metal 200x100 sky-view qualification | command: `bash scripts/qualify_metal_sky_view_reference.sh` after a fresh Release build | failures: none | notes: all paired back-lit mountain, direct-sun, flight, atmosphere-top, orbit, and nearby orbital-motion captures passed their native physical smoke; max candidate/control NRMS was 0.0008831 and orbital drift was 0.0087133 versus 0.0086921 control. Lookup refresh was 0.3893 ms versus 0.7947 ms; moving p95 was 6.3272 versus 6.6986 ms. Visual inspection found no foreground Mie cutout and a continuous blue limb.
 
@@ -14,6 +15,10 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] `tetra_world_metal --metal-motion-smoke-test` | resolved: 2026-09-03 local | validating command: rebuilt hidden native Metal smoke | notes: exact settled motion required 168,306 hierarchy blocks and 52.43M work units; the bounded production caps now admit the front, and the smoke passed with zero published-pose error.
+
+- [x] `tetra_world_metal --metal-terrain-ray-oracle-smoke-test` | resolved: 2026-09-03 local | validating command: rebuilt hidden native Metal oracle smoke | notes: lowering the CPU Moller--Trumbore near-degenerate determinant cutoff from 1e-7 to 1e-12 matches Metal's valid shallow-hit convention; 384 published-terrain rays now have zero mismatches.
 
 - [x] `tetra_world_metal --metal-timing-profile-smoke-test` | resolved: 2026-09-03 local | validating command: hidden serialized `TETWORLD_METAL_TIMING_PROFILE=shadow-lookup` profile and `./scripts/compile.sh --release` | notes: the independent reference integration interval now bypasses only the unrelated coarse MetalFX partition gate; 300 samples pass. A duplicate stage-field build error was also removed before the passing profile, and the final restored-default release gate passed all 471 tests in 401.14 s.
 
