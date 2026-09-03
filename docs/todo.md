@@ -443,10 +443,6 @@ reaction to a transient maintenance frame.
 The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
-  - [ ] **P10d — Promotion audit and Default decision.** Audit P0–P10 against
-        the source and final artifacts, consolidate image/performance/memory
-        evidence and rejected alternatives, then change the Default only if
-        every physical, temporal, release, and resource requirement is proven.
 
 ## Active chain: bounded camera publication
 

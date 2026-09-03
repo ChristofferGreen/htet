@@ -2,6 +2,14 @@
 
 ## 2026-09-03
 
+- [x] P10d final promotion audit and Default decision: P0--P9 source,
+  performance, and rejection records plus P10a--c fresh Release/native
+  artifacts prove temporal identity, physical terrain occlusion, numerical
+  transport, resource liveness, motion, surface-to-orbit images, and bounded
+  Auto behavior. The qualified direct-output 0.5x/2x default is retained;
+  0.7x/2x remains Auto's only higher-quality profile. No physical atmosphere,
+  shadow coverage, or MSAA selection is adaptively weakened.
+
 - [x] P10c long-session and tail-distribution final gate: isolated two-repeat
   300-frame profiles measured control 0.7x/2x steady 5.4602/6.2214/6.5474/
   20.0905 and moving 5.2652/5.9466/6.3685/18.2743 ms, versus 0.5x/2x steady

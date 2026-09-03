@@ -971,6 +971,29 @@ meaningful tail regression. A hidden 1,200-frame Auto session made exactly one
 upgrade to 0.70x/2x, remained there, preserved 2x MSAA, and dispatched neither
 inactive lookups nor inactive shadow work.
 
+### P10d final promotion audit and Default decision
+
+The final audit maps every chain requirement to current evidence. P0's
+identity-bearing timing and temporal observability, P1's physical lookup key
+and inactive-resource liveness, and P2's classified distributions establish
+the measurement basis. P3 lookup specialization, P4 direct temporal history
+and qualified storage, P5 conservative umbra work, P6's raster matrix, P7's
+geometry-cost retirements, and P8's promoted direct drawable all retain
+physical transport and terrain-shadow ownership; the rejected alternatives are
+recorded beside their measured regressions. P9 limits Auto to the two
+native-qualified 2x-MSAA profiles, with maintenance exclusion, hysteresis, and
+dwell proven in its trace.
+
+P10a re-ran final native mountain, visible-sun, flight, atmosphere-top, orbit,
+and orbital-motion evidence; P10b re-ran numeric transport, terrain/shadow,
+preview, and liveness proofs; P10c supplied uncontended tail distributions and
+a 1,200-frame Auto session; and a fresh Release suite passed 473/473 after
+the final native matrix. The Default therefore remains the qualified direct-
+output 0.5x/2x MetalFX profile. Auto may select only 0.7x/2x after its bounded
+controller criteria are met. This decision changes no physical atmosphere
+parameter, visibility/shadow coverage, or multisample count in response to a
+frame-time spike.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that
