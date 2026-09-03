@@ -293,6 +293,14 @@ checks, including zero reference-route ray-visibility and long-shadow atlas
 dispatches. These are preflight captures: the final P10 gate still requires
 the full still/motion/orbit capture matrix after all promoted changes.
 
+## Post-P1 release validation
+
+The complete `./scripts/compile.sh --release` validation was run after the
+lazy-resource changes on 2026-09-03. All 471 tests passed in 528.17 seconds,
+including the atmosphere-shadow, transition, terrain-occlusion, and temporal
+visibility-history checks. This validates P1's resource-lifetime changes; it
+does not substitute for the later P2-P10 measurement and promotion gates.
+
 Apply the same distinction to residency. The current live-resource constructor
 eagerly allocates aerial, froxel, long-shadow, hierarchy, and screen families
 before the selected renderer is known. After dispatch liveness is correct,
