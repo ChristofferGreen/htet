@@ -433,6 +433,15 @@ at p95 than the shared float32 baseline's 5.5533/6.3560 ms. It does not meet
 the declared promotion threshold, so shared storage remains default and this
 experiment is rejected pending a device-specific pressure result.
 
+### Post-P4 release validation
+
+After the direct-history presentation change, semantic texture split, and both
+rejected format/storage experiments, `./scripts/compile.sh --release` passed
+all 471 tests on 2026-09-03 in 443.24 seconds. The suite includes the terrain-
+shadow temporal-history, physical atmosphere, numerical transport, and Metal
+translated-shader gates. This validates the accumulated P2--P4 default-path
+changes; it does not qualify either opt-in experimental setting as production.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were
