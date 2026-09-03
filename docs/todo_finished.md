@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- [x] P8a diagnostic allocation/readback audit: retired as already satisfied.
+  Normal frames have no detailed-counter marker or resolve work; the three
+  pooled timestamp flights are opt-in, and final-drawable/depth/shadow/motion/
+  reactive readback allocation is restricted to terminating qualification
+  frames. P8b and P8c remain independent presentation experiments.
+
 - [x] P7c generation-coherent AS update/refit policy: retired. Metal's refit
   usage explicitly permits reduced AS quality, while every display generation
   owns replacement exact/preview buffers whose indexed primitive counts may

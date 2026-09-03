@@ -863,6 +863,19 @@ refit cannot both accommodate that topology change and preserve the invariant
 that ray visibility consumes precisely the immutable displayed generation.
 The separate full-build interval remains the safe, measurable policy.
 
+### P8a diagnostic-isolation audit
+
+The current production frame does not contain the diagnostic overhead targeted
+by P8. `MetalTimestampFlight` owns three fixed sample/result/scratch triples,
+but they are created only under the explicit `TETWORLD_METAL_STAGE_TIMESTAMPS`
+diagnostic switch and are recycled only after their command buffer completes.
+Normal interactive timing uses the enclosing command-buffer interval and emits
+neither timestamp marker nor counter-resolve blit encoder. Final-drawable,
+depth, shadow, motion, and reactive readbacks are likewise restricted to
+terminating test/capture frames. Therefore no production per-frame allocation
+or synchronous diagnostic readback remains to remove; P8b and P8c must be
+measured independently rather than attributing test-only work to them.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

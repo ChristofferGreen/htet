@@ -112,6 +112,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: AS refit is incompatible with immutable terrain display generations because their buffer identities and primitive counts can change.
 - Evidence: Metal documents refit as a potential quality tradeoff, while the native front replaces exact/preview indexed buffers per generation.
 
+### metal-p8-diagnostic-isolation
+- Updated: 2026-09-03
+- Tags: metal, profiling, diagnostics
+- Fact: Ordinary interactive Metal frames have no timestamp-counter allocation, timestamp resolve, capture readback, or synchronous diagnostic wait.
+- Evidence: Stage timing uses three fixed flights only when explicitly enabled, and every capture/probe allocation is guarded by a terminating test mode.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

@@ -390,12 +390,30 @@ their measurements, since each changes a different representation or route.
         every positive penumbra sample and unshadowed multiple scattering.
         Reference, mountain, and visible-sun smoke pass. This is groundwork,
         not a measured analytic-interval promotion.
-- [ ] Remove measured encoder, attachment-store, per-frame allocation, and
-      diagnostic-readback overhead. Test a MetalFX composition variant that
-      writes colour, motion, and reactive targets together, and separately test
-      direct scaler output to an eligible drawable. Include framebuffer-only
-      policy cost; require identical probes and an end-to-end GPU or CPU-tail
-      win, not a cost moved to another queue or frame (P8).
+### P8 tracker — submission and presentation scheduling
+
+Keep profiling and capture-only work out of ordinary interactive frames.  The
+remaining presentation experiments are independent: neither may borrow the
+other's timing or image evidence.
+  - [x] **P8a — Diagnostic allocation/readback audit.** Stage timestamps use
+        a bounded three-flight pool only when explicitly enabled; normal
+        frames use command-buffer timing without timestamp markers or counter
+        resolution. Final-drawable, depth, shadow, motion, and reactive
+        readbacks are test-only and allocate only for their terminating
+        qualification frame. The audit found no per-frame diagnostic allocation
+        or synchronous readback in the production interactive path.
+  - [ ] **P8b — MetalFX composition MRT experiment.** Test a dedicated
+        composition pipeline that writes scaler colour, motion, and reactive
+        targets together, against the current separate motion/reactive pass.
+        Preserve temporal history identity, centre and neighbour depth tests,
+        and MetalFX contracts; require identical motion/reactive probes and
+        final-drawable captures plus a coherent GPU or CPU-tail win.
+  - [ ] **P8c — MetalFX direct-to-drawable experiment.** Test scaler output
+        directly to an eligible non-framebuffer-only drawable followed by a
+        load-preserving UI pass, against the intermediate-and-present route.
+        Measure normal interactive framebuffer-only policy separately from
+        capture mode and retain the existing path unless end-to-end timing and
+        final-drawable evidence both improve.
 - [ ] Add stage-aware automatic quality selection only if at least two fully
       qualified modes have useful cost separation; require hysteresis, dwell
       time, trace replay, and explicit mode-change diagnostics (P9).
