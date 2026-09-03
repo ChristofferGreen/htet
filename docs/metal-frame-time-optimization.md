@@ -203,6 +203,37 @@ occlusion rather than an indication that shadows were removed.
 two irradiance dispatches with ten cache skips, proving that a physical lookup
 change invalidates the cache while the other ten frames remain stable.
 
+## P2 initial comparable steady-frame profile
+
+On 2026-09-03, after terminating the separately launched hidden interactive
+instance (which otherwise competed for the same GPU), paired 300-frame release
+auto-resolution runs at 120 Hz both converged to scale 0.70 and a 1008x630
+internal extent. The minimal policy reported 6.0514 ms median / 6.3523 ms p95;
+the detailed timestamp policy reported 6.0639 ms / 6.3783 ms. The corresponding
+observed detailed-capture increment was 0.0125 ms median / 0.0260 ms p95 in
+this configuration. This is a steady reference-temporal profile, not a
+universal instrumentation cost: it must not be compared to the earlier 1123x702
+baseline or to a moving/refresh/RT frame.
+
+Both runs refreshed sky view and irradiance once and issued zero aerial and
+long-shadow dispatches. The detailed sample attributed 0.0603 ms to shadows,
+0.0548 ms to atmosphere, 0.0080 ms to terrain, and 4.9627 ms to the composite
+span. These components are useful ranking evidence only under the exact same
+configuration identity; P2 still needs separately classified moving,
+lookup-refresh, preview-upload, exact-handoff, and ray-visibility captures.
+
+Two detailed 40-frame render-smoke samples at 960x600 drawable, 720x450
+internal, 4x MSAA, and divisor 2 were also captured with coherent identities.
+The qualified reference route (transport 2 / renderer 3) reported 2.7547 ms
+enclosing GPU time and 0.5400 ms in the marked atmosphere span. The
+ray-visibility faithful temporal comparison route (transport 1 / renderer 3)
+reported 2.1603 ms and 0.0192 ms respectively, with a valid 12.9926 ms
+one-off AS build sample. These routes are not radiometrically interchangeable:
+the reference route remains the production physical choice. The small sample
+set and different transport semantics are insufficient to promote a route or
+rank an optimization; retain it as evidence that P2 needs distributions rather
+than a single terminal-frame time.
+
 Apply the same distinction to residency. The current live-resource constructor
 eagerly allocates aerial, froxel, long-shadow, hierarchy, and screen families
 before the selected renderer is known. After dispatch liveness is correct,

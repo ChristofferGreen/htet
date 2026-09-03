@@ -232,6 +232,14 @@ because it is faster.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).
+  - [x] Record a paired, steady reference-temporal 300-frame profile at the
+        same 1008x630 / 0.70-scale configuration after removing a competing
+        background renderer: 6.0514/6.3523 ms median/p95 minimal and
+        6.0639/6.3783 ms detailed. Keep its scope separate from moving,
+        refresh, upload, handoff, and RT classifications.
+  - [x] Capture coherent detailed reference and RT-comparison render-smoke
+        identities at a common 960x600/720x450/4x profile. Treat the two
+        single samples as route evidence only, not as a performance promotion.
 - [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
       Sweep one table's resolution and samples at a time against its specific
       oracle, including the Hillaire 200x100 sky-view reference point. Compare
