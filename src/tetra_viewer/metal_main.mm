@@ -844,6 +844,8 @@ struct MetalTerrainAccelerationStructure {
   float maximum_vertex_radius_world{};
   std::shared_ptr<std::atomic<double>> last_build_milliseconds=
       std::make_shared<std::atomic<double>>(0.0);
+  std::shared_ptr<std::atomic<bool>> last_build_timing_valid=
+      std::make_shared<std::atomic<bool>>(false);
   std::shared_ptr<std::atomic<std::uint64_t>> completed_generation=
       std::make_shared<std::atomic<std::uint64_t>>(0U);
 };
@@ -902,7 +904,9 @@ bool encode_terrain_acceleration_structure_build(
     id<MTLBuffer> exact_indices,
     std::size_t exact_index_count,id<MTLBuffer> preview_vertices,
     std::size_t preview_vertex_count,id<MTLBuffer> preview_indices,
-    std::size_t preview_index_count,std::uint64_t generation) {
+    std::size_t preview_index_count,std::uint64_t generation,
+    id<MTLCounterSampleBuffer> timestamp_samples,bool& build_encoded) {
+  build_encoded=false;
   promote_completed_terrain_acceleration_structure(structures);
   if(vertices==nil||vertex_count==0U||vertex_count%3U!=0U||generation==0U||
      (indexed_exact_selection&&exact_index_count%3U!=0U)||
@@ -950,8 +954,20 @@ bool encode_terrain_acceleration_structure_build(
   id<MTLBuffer> scratch=[device newBufferWithLength:sizes.buildScratchBufferSize
       options:MTLResourceStorageModePrivate];
   if(candidate==nil||scratch==nil)return false;
-  id<MTLAccelerationStructureCommandEncoder> encoder=
-      [command accelerationStructureCommandEncoder];
+  id<MTLAccelerationStructureCommandEncoder> encoder=nil;
+  if(timestamp_samples!=nil){
+    if(@available(macOS 13.0,*)){
+      MTLAccelerationStructurePassDescriptor* pass=
+          [MTLAccelerationStructurePassDescriptor
+              accelerationStructurePassDescriptor];
+      auto* attachment=pass.sampleBufferAttachments[0];
+      attachment.sampleBuffer=timestamp_samples;
+      attachment.startOfEncoderSampleIndex=15U;
+      attachment.endOfEncoderSampleIndex=16U;
+      encoder=[command accelerationStructureCommandEncoderWithDescriptor:pass];
+    }
+  }
+  if(encoder==nil)encoder=[command accelerationStructureCommandEncoder];
   [encoder buildAccelerationStructure:candidate descriptor:descriptor
                        scratchBuffer:scratch scratchBufferOffset:0U];
   [encoder endEncoding];
@@ -964,13 +980,11 @@ bool encode_terrain_acceleration_structure_build(
   structures.pending_generation=generation;
   structures.resident_bytes=sizes.accelerationStructureSize;
   ++structures.build_count;
+  build_encoded=true;
+  structures.last_build_timing_valid->store(false,std::memory_order_relaxed);
   const auto completed=structures.completed_generation;
-  const auto build_milliseconds=structures.last_build_milliseconds;
   [command addCompletedHandler:^(id<MTLCommandBuffer> finished){
     if(finished.status==MTLCommandBufferStatusCompleted){
-      const double elapsed=finished.GPUEndTime-finished.GPUStartTime;
-      if(std::isfinite(elapsed)&&elapsed>=0.0)
-        build_milliseconds->store(elapsed*1000.0,std::memory_order_relaxed);
       completed->store(generation,std::memory_order_release);
     }
   }];
@@ -1375,11 +1389,10 @@ struct MetalAtmosphereResources {
   std::uint32_t screen_divisor{2U};
   std::uint32_t history_write_index{};
   std::uint32_t history_sequence{};
-  std::uint32_t history_generation{};
   std::uint32_t history_sample_count{};
   std::uint64_t ray_visibility_scene_generation{};
-  std::array<float,64> ray_visibility_dependencies{};
-  bool ray_visibility_dependencies_valid{};
+  std::array<tetra_viewer::AtmosphereScreenHistoryIdentity,2>
+      history_identities{};
   bool last_visibility_backend_ray_traced{};
   bool history_valid{};
   std::array<float,16> last_temporal_camera{};
@@ -1389,9 +1402,13 @@ struct MetalAtmosphereResources {
   id<MTLSamplerState> sampler=nil;
   bool optical_ready{};
   bool view_ready{};
+  bool reference_lookup_ready{};
   bool long_shadow_ready{};
   bool dummy_shadow_cleared{};
   std::array<float,64> last_view_uniform{};
+  std::array<float,96> last_reference_lookup_uniform{};
+  ProductionShadowUniforms last_reference_lookup_shadows{};
+  std::uint64_t last_reference_lookup_generation{};
   std::array<float,64> last_long_uniform{};
   ProductionShadowUniforms last_long_shadows{};
   std::uint64_t last_long_scene_generation{};
@@ -1401,8 +1418,93 @@ struct MetalAtmosphereResources {
   std::size_t minmax_element_count{};
   std::uint64_t ray_visibility_dispatches{};
   std::uint32_t last_ray_visibility_query_count{};
+  std::uint64_t temporal_history_attempts{};
+  std::uint64_t temporal_history_compatible{};
+  std::uint64_t temporal_history_invalidations{};
+  std::uint64_t temporal_camera_refreshes{};
+  std::array<std::uint64_t,9> temporal_invalidation_reasons{};
+  std::uint64_t reference_lookup_attempts{};
+  std::uint64_t reference_lookup_skips{};
   std::array<std::uint64_t,17> dispatch_counts{};
 };
+
+void hash_metal_history_scalar(std::uint64_t& hash,double value) {
+  constexpr std::uint64_t prime=1099511628211ULL;
+  const auto bits=std::bit_cast<std::uint64_t>(value);
+  for(unsigned byte=0;byte<8U;++byte){
+    hash^=(bits>>(byte*8U))&0xffU;
+    hash*=prime;
+  }
+}
+
+std::uint64_t hash_metal_history_values(
+    std::initializer_list<double> values) {
+  std::uint64_t hash=1469598103934665603ULL;
+  for(const double value:values)hash_metal_history_scalar(hash,value);
+  return hash;
+}
+
+tetra_viewer::AtmosphereScreenHistoryIdentity
+make_metal_atmosphere_history_identity(
+    const std::array<float,96>& stable_uniform,
+    const tetra_viewer::AtmosphereParameters& parameters,
+    std::uint64_t terrain_generation,const tetra::Vec3& render_origin,
+    std::uint32_t width,std::uint32_t height,std::uint32_t divisor,
+    int transport,int rendering_method,bool valid) {
+  const tetra::Vec3 camera_from_centre{
+      stable_uniform[28],stable_uniform[29],stable_uniform[30]};
+  const auto vector_hash=[](std::initializer_list<tetra::Vec3> vectors,
+                            std::initializer_list<double> scalars={}){
+    std::uint64_t hash=1469598103934665603ULL;
+    for(const auto& vector:vectors){
+      hash_metal_history_scalar(hash,vector.x);
+      hash_metal_history_scalar(hash,vector.y);
+      hash_metal_history_scalar(hash,vector.z);
+    }
+    for(const double scalar:scalars)hash_metal_history_scalar(hash,scalar);
+    return hash;
+  };
+  const tetra::Vec3 right{stable_uniform[32],stable_uniform[33],
+                          stable_uniform[34]};
+  const tetra::Vec3 down{stable_uniform[36],stable_uniform[37],
+                         stable_uniform[38]};
+  const tetra::Vec3 forward{stable_uniform[40],stable_uniform[41],
+                            stable_uniform[42]};
+  const tetra::Vec3 sun{stable_uniform[44],stable_uniform[45],
+                        stable_uniform[46]};
+  const auto optical=tetra_viewer::atmosphere_optical_hash(parameters);
+  const auto scattering=tetra_viewer::atmosphere_scattering_hash(parameters);
+  const std::uint64_t result_generation=vector_hash(
+      {camera_from_centre,right,down,forward,sun,render_origin},
+      {stable_uniform[35],stable_uniform[39],
+       static_cast<double>(terrain_generation),
+       static_cast<double>(optical),static_cast<double>(scattering)});
+  return {
+      .revisions={
+          .optical={optical},
+          .scattering={scattering},
+          .sun={vector_hash({sun})},
+          .camera_position={vector_hash({camera_from_centre})},
+          .sky_position=tetra_viewer::atmosphere_sky_position_revision(
+              camera_from_centre,parameters),
+          .camera_orientation={vector_hash(
+              {right,down,forward},{stable_uniform[35],stable_uniform[39]})},
+          .shadow_integrator={static_cast<std::uint64_t>(
+              std::max(0,static_cast<int>(stable_uniform[55])))+1U},
+          .shadow={hash_metal_history_values(
+              {static_cast<double>(terrain_generation),
+               static_cast<double>(stable_uniform[54])})},
+          .render_origin={vector_hash({render_origin})}},
+      .terrain_generation=terrain_generation,
+      .result_generation=result_generation,
+      .width=width,.height=height,
+      .linear_resolution_divisor=divisor,
+      .sample_count=rendering_method==3?2U:32U,
+      .transport=static_cast<tetra_viewer::AtmosphereTransport>(transport),
+      .rendering_method=
+          static_cast<tetra_viewer::AtmosphereRenderingMethod>(rendering_method),
+      .valid=valid};
+}
 
 MetalAtmosphereResources make_live_atmosphere_resources(
     id<MTLDevice> device,MTLPixelFormat display_format,
@@ -1538,6 +1640,19 @@ std::size_t live_atmosphere_allocation_bytes(
   return total;
 }
 
+struct MetalTimingIdentity {
+  std::uint64_t terrain_generation{};
+  std::uint32_t output_width{};
+  std::uint32_t output_height{};
+  std::uint32_t render_width{};
+  std::uint32_t render_height{};
+  std::uint32_t atmosphere_divisor{};
+  std::uint32_t samples{};
+  std::int32_t transport{};
+  std::int32_t renderer{};
+  bool metalfx{};
+};
+
 struct MetalGpuStageTimings {
   std::atomic<double> shadows_milliseconds{};
   std::atomic<double> atmosphere_milliseconds{};
@@ -1550,7 +1665,35 @@ struct MetalGpuStageTimings {
   std::atomic<bool> valid{};
   std::atomic<bool> screen_stages_valid{};
   std::atomic<bool> metalfx_valid{};
+  std::atomic<std::uint64_t> frame_sequence{};
+  std::atomic<std::uint64_t> terrain_generation{};
+  std::atomic<std::uint32_t> output_width{};
+  std::atomic<std::uint32_t> output_height{};
+  std::atomic<std::uint32_t> render_width{};
+  std::atomic<std::uint32_t> render_height{};
+  std::atomic<std::uint32_t> atmosphere_divisor{};
+  std::atomic<std::uint32_t> samples{};
+  std::atomic<std::int32_t> transport{};
+  std::atomic<std::int32_t> renderer{};
+  std::atomic<bool> metalfx{};
 };
+
+constexpr NSUInteger gpu_base_timestamp_count=7U;
+constexpr NSUInteger gpu_timestamp_count=17U;
+constexpr std::size_t gpu_timestamp_flight_count=3U;
+
+struct MetalTimestampFlight {
+  id<MTLCounterSampleBuffer> samples=nil;
+  id<MTLBuffer> results=nil;
+  id<MTLBuffer> scratch=nil;
+  std::shared_ptr<std::atomic<bool>> in_use=
+      std::make_shared<std::atomic<bool>>(false);
+};
+
+// MTLCounterResultTimestamp values are expressed in nanoseconds.  They use a
+// different clock representation from MTLDevice sampleTimestamps, so they
+// must not be calibrated through the latter's GPU tick frequency.
+constexpr double counter_timestamp_milliseconds=1.0e-6;
 
 id<MTLCounterSet> timestamp_counter_set(id<MTLDevice> device) {
   if(![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
@@ -1572,6 +1715,26 @@ id<MTLCounterSampleBuffer> make_timestamp_sample_buffer(
   descriptor.sampleCount=count;
   NSError* error=nil;
   return [device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+}
+
+MetalTimestampFlight make_timestamp_flight(
+    id<MTLDevice> device,id<MTLCounterSet> counter_set) {
+  MetalTimestampFlight flight;
+  flight.samples=make_timestamp_sample_buffer(
+      device,counter_set,gpu_timestamp_count);
+  if(flight.samples!=nil){
+    flight.results=[device newBufferWithLength:
+        gpu_timestamp_count*sizeof(MTLCounterResultTimestamp)
+                                  options:MTLResourceStorageModeShared];
+    flight.scratch=[device newBufferWithLength:4U
+                                       options:MTLResourceStorageModeShared];
+  }
+  if(flight.results==nil||flight.scratch==nil){
+    flight.samples=nil;
+    flight.results=nil;
+    flight.scratch=nil;
+  }
+  return flight;
 }
 
 void encode_timestamp_marker(id<MTLCommandBuffer> command,
@@ -1609,7 +1772,7 @@ ProductionShadowUniforms make_production_shadow_uniforms(
     bool fitted_initialized,double fitted_receiver_distance,
     const tetra_viewer::AtmosphereQualitySettings& quality,
     std::size_t minmax_element_count,NSUInteger shadow_resolution) {
-  ProductionShadowUniforms result;
+  ProductionShadowUniforms result{};
   for(std::size_t index=0;index<tetra_viewer::shadow_cascade_count;++index)
     result.matrices[index]=local.matrices[index];
   if(fitted)result.matrices[4]=fitted->matrix;
@@ -1696,8 +1859,8 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
   resources.history_valid=false;
   resources.history_write_index=0U;
   resources.history_sequence=0U;
-  resources.history_generation=0U;
   resources.history_sample_count=0U;
+  resources.history_identities={};
   return resources.screen_endpoint!=nil&&resources.screen_scattering!=nil&&
       resources.screen_transmittance!=nil&&
       resources.terrain_ray_visibility!=nil&&
@@ -1825,6 +1988,7 @@ std::array<float,96> make_live_atmosphere_uniform(
 void encode_deterministic_screen_atmosphere(
     id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
     std::array<float,96> uniform,
+    tetra_viewer::AtmosphereScreenHistoryIdentity current_identity,
     const ProductionShadowUniforms& shadows,id<MTLTexture> scene_depth,
     id<MTLTexture> sun_shadows,id<MTLAccelerationStructure> terrain,
     std::uint64_t terrain_generation,float terrain_ray_maximum_distance,
@@ -1832,43 +1996,51 @@ void encode_deterministic_screen_atmosphere(
     std::uint32_t ray_query_count,bool temporal,
     id<MTLCounterSampleBuffer> timestamp_samples=nil) {
   const bool reference=uniform[53]>=9.5F;
-  std::array<float,64> visibility_dependencies{};
-  std::copy_n(uniform.begin(),visibility_dependencies.size(),
-              visibility_dependencies.begin());
-  if(!resources.ray_visibility_dependencies_valid||
-     resources.last_visibility_backend_ray_traced!=ray_traced_visibility||
-     resources.ray_visibility_dependencies!=visibility_dependencies){
-    resources.history_valid=false;
-    resources.ray_visibility_dependencies=visibility_dependencies;
-    resources.ray_visibility_dependencies_valid=true;
-    resources.last_visibility_backend_ray_traced=ray_traced_visibility;
-  }
+  if(resources.last_visibility_backend_ray_traced!=ray_traced_visibility)
+    current_identity.valid=false;
+  resources.last_visibility_backend_ray_traced=ray_traced_visibility;
   if(ray_traced_visibility&&terrain_generation!=0U&&
      resources.ray_visibility_scene_generation!=terrain_generation){
-    resources.history_valid=false;
+    current_identity.valid=false;
     resources.ray_visibility_scene_generation=terrain_generation;
   }
   const std::uint32_t output_index=resources.history_write_index;
   const std::uint32_t previous_index=output_index^1U;
+  const auto compatibility=tetra_viewer::atmosphere_screen_history_compatibility(
+      resources.history_identities[previous_index],current_identity);
+  if(temporal){
+    ++resources.temporal_history_attempts;
+    if(compatibility.compatible())++resources.temporal_history_compatible;
+    else{
+      ++resources.temporal_history_invalidations;
+      for(std::size_t reason=0;
+          reason<resources.temporal_invalidation_reasons.size();++reason)
+        if((compatibility.invalidation_mask&(1U<<reason))!=0U)
+          ++resources.temporal_invalidation_reasons[reason];
+    }
+    if(compatibility.camera_changed||compatibility.render_origin_changed)
+      ++resources.temporal_camera_refreshes;
+  }
   std::array<float,16> current_camera{};
   std::copy_n(uniform.begin()+28U,current_camera.size(),current_camera.begin());
-  const bool camera_changed=resources.history_valid&&
-      current_camera!=resources.last_temporal_camera;
-  if(!resources.history_valid||camera_changed)
-    ++resources.history_generation;
+  const bool history_compatible=temporal&&compatibility.compatible();
+  const bool camera_changed=history_compatible&&
+      (compatibility.camera_changed||compatibility.render_origin_changed);
   if(temporal){
-    if(resources.history_valid)
+    if(history_compatible)
       std::copy(resources.last_temporal_camera.begin(),
                 resources.last_temporal_camera.end(),uniform.begin()+64U);
     else std::copy_n(uniform.begin()+28U,16U,uniform.begin()+64U);
-    const std::uint32_t sample_count=resources.history_valid?
+    const std::uint32_t sample_count=history_compatible&&!camera_changed?
         std::min(resources.history_sample_count+1U,8U):1U;
-    uniform[80]=resources.history_valid?1.0F:0.0F;
-    uniform[81]=std::bit_cast<float>(resources.history_generation);
+    uniform[80]=history_compatible?1.0F:0.0F;
+    uniform[81]=std::bit_cast<float>(static_cast<std::uint32_t>(
+        resources.history_identities[previous_index].result_generation));
     uniform[82]=static_cast<float>(sample_count-1U)/sample_count;
   }
   const std::array<std::uint32_t,4> endpoint_control{
-      12U,resources.history_generation,resources.screen_divisor,0U};
+      12U,static_cast<std::uint32_t>(current_identity.result_generation),
+      resources.screen_divisor,0U};
   id<MTLComputeCommandEncoder> endpoint=timestamped_compute_encoder(
       command,timestamp_samples,7U,8U);
   [endpoint setComputePipelineState:reference?resources.reference_pipeline:
@@ -1911,19 +2083,20 @@ void encode_deterministic_screen_atmosphere(
   // sunlight. A full physical refresh is required once; steady frames then
   // follow the two-/one-ray desktop/iOS rotating schedule.
   if(use_ray_traced_visibility&&
-     (!temporal||!resources.history_valid||camera_changed))
+     (!temporal||!history_compatible||camera_changed))
     ray_query_count=32U;
   const std::uint32_t visibility_phase=ray_traced_visibility?
       ((resources.history_sequence+1U)&(32U/ray_query_count-1U)):
       (((resources.history_sequence/2U)+1U)&15U);
   const std::uint32_t visibility_control=temporal?
       visibility_phase|(previous_index<<5U)|
-      (output_index<<6U)|(resources.history_valid?128U:0U)|256U|
+      (output_index<<6U)|(history_compatible?128U:0U)|256U|
       (camera_changed?512U:0U):0U;
   const std::array<std::uint32_t,4> integration_control{
       13U,resources.screen_divisor,
       use_ray_traced_visibility?ray_query_count:
-      (temporal&&resources.history_valid&&!camera_changed?2U:32U),
+      tetra_viewer::atmosphere_visibility_refresh_intervals(
+          temporal,compatibility),
       visibility_control};
   // Endpoint reconstruction establishes exactly the same camera ray and
   // maximum distance that the integration pass will use.  Query each of its
@@ -2039,8 +2212,10 @@ void encode_deterministic_screen_atmosphere(
   [publish endEncoding];
   ++resources.dispatch_counts[15];
   resources.last_temporal_camera=current_camera;
-  resources.history_sample_count=resources.history_valid?
+  resources.history_sample_count=history_compatible&&!camera_changed?
       std::min(resources.history_sample_count+1U,8U):1U;
+  current_identity.valid=true;
+  resources.history_identities[output_index]=current_identity;
   resources.history_valid=true;
   ++resources.history_sequence;
   resources.history_write_index=previous_index;
@@ -2212,7 +2387,8 @@ void encode_shadow_epipolar_hierarchy(
 
 void encode_live_atmosphere_lookups(
     id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
-    const std::array<float,96>& uniform,bool rebuild_optical) {
+    const std::array<float,96>& uniform,bool rebuild_optical,
+    bool aerial_consumed=true) {
   const bool reference=uniform[53]>=9.5F;
   if(!resources.dummy_shadow_cleared){
     for(NSUInteger slice=0;slice<5U;++slice){
@@ -2295,7 +2471,7 @@ void encode_live_atmosphere_lookups(
       dispatch(2U,resources.sky_view);
       dispatch(4U,resources.sky_irradiance);
     }
-    dispatch(3U,resources.aerial_scattering);
+    if(aerial_consumed)dispatch(3U,resources.aerial_scattering);
     std::copy_n(uniform.begin(),resources.last_view_uniform.size(),
                 resources.last_view_uniform.begin());
     resources.view_ready=true;
@@ -2305,7 +2481,18 @@ void encode_live_atmosphere_lookups(
 void encode_reference_sky_lookup(
     id<MTLCommandBuffer> command,MetalAtmosphereResources& resources,
     const std::array<float,96>& uniform,
-    const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows) {
+    const ProductionShadowUniforms& shadows,id<MTLTexture> sun_shadows,
+    std::uint64_t terrain_generation) {
+  ++resources.reference_lookup_attempts;
+  const bool unchanged=resources.reference_lookup_ready&&
+      resources.last_reference_lookup_uniform==uniform&&
+      std::memcmp(&resources.last_reference_lookup_shadows,&shadows,
+                  sizeof(shadows))==0&&
+      resources.last_reference_lookup_generation==terrain_generation;
+  if(unchanged){
+    ++resources.reference_lookup_skips;
+    return;
+  }
   const std::array<std::uint32_t,4> control{2U,0U,0U,0U};
   id<MTLComputeCommandEncoder> sky=[command computeCommandEncoder];
   [sky setComputePipelineState:resources.reference_pipeline];
@@ -2340,6 +2527,10 @@ void encode_reference_sky_lookup(
       threadsPerThreadgroup:MTLSizeMake(8U,8U,1U)];
   [irradiance endEncoding];
   ++resources.dispatch_counts[4];
+  resources.last_reference_lookup_uniform=uniform;
+  resources.last_reference_lookup_shadows=shadows;
+  resources.last_reference_lookup_generation=terrain_generation;
+  resources.reference_lookup_ready=true;
 }
 
 MTLVertexDescriptor* make_scene_vertex_descriptor() {
@@ -2785,7 +2976,15 @@ int main(int argc,char** argv) {
   }
   const bool require_exact_handoff_capture=
       std::getenv("TETWORLD_METAL_CAPTURE_EXACT_HANDOFF")!=nullptr;
-  const bool hidden_window=automated_test&&
+  const bool visible_test_window=automated_test&&
+      std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
+  const bool background_requested=
+      std::getenv("TETWORLD_METAL_BACKGROUND")!=nullptr;
+  // Automated runs must not steal focus or briefly flash a window. Keep an
+  // explicit visible mode for debugging, and retain the old hidden variable
+  // as a backwards-compatible no-op in the already-hidden default case.
+  const bool hidden_window=background_requested||
+      (automated_test&&!visible_test_window)||
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
@@ -2900,6 +3099,10 @@ int main(int argc,char** argv) {
       return 0;
     }
 
+    if(hidden_window){
+      [NSApplication sharedApplication];
+      [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    }
     glfwSetErrorCallback(glfw_error_callback);
     if(!glfwInit())return 1;
     glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API);
@@ -2918,6 +3121,10 @@ int main(int argc,char** argv) {
     if(window==nullptr){glfwTerminate();return 1;}
 
     NSWindow* native_window=glfwGetCocoaWindow(window);
+    if(hidden_window){
+      [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+      [native_window orderOut:nil];
+    }
     CAMetalLayer* layer=[CAMetalLayer layer];
     layer.device=device;
     layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
@@ -2980,6 +3187,15 @@ int main(int argc,char** argv) {
     NSUInteger shadow_texture_resolution=tetra_viewer::shadow_map_resolution;
     id<MTLCommandQueue> command_queue=[device newCommandQueue];
     id<MTLCounterSet> gpu_timestamp_counter_set=timestamp_counter_set(device);
+    const bool gpu_stage_timestamps_enabled=[] {
+      const char* value=std::getenv("TETWORLD_METAL_STAGE_TIMESTAMPS");
+      return value!=nullptr&&std::strcmp(value,"0")!=0;
+    }();
+    std::array<MetalTimestampFlight,gpu_timestamp_flight_count>
+        gpu_timestamp_flights{};
+    if(gpu_stage_timestamps_enabled)
+      for(auto& flight:gpu_timestamp_flights)
+        flight=make_timestamp_flight(device,gpu_timestamp_counter_set);
     auto atmosphere_resources=make_live_atmosphere_resources(
         device,layer.pixelFormat,tetra_viewer::AtmosphereQuality::standard);
     const bool metalfx_temporal_supported=
@@ -3300,6 +3516,8 @@ int main(int argc,char** argv) {
         std::make_shared<std::atomic<double>>(0.0);
     auto gpu_frame_sequence=std::make_shared<std::atomic<std::uint64_t>>(0U);
     auto gpu_stage_timings=std::make_shared<MetalGpuStageTimings>();
+    auto cpu_submission_milliseconds=
+        std::make_shared<std::atomic<double>>(0.0);
     std::uint64_t consumed_gpu_frame_sequence{};
     glfwSetInputMode(window,GLFW_CURSOR,pointer_captured?
                      GLFW_CURSOR_DISABLED:GLFW_CURSOR_NORMAL);
@@ -4128,10 +4346,16 @@ int main(int argc,char** argv) {
                   terrain_acceleration_structure.active_generation),
               static_cast<double>(terrain_acceleration_structure.resident_bytes)/
                   (1024.0*1024.0));
-          ImGui::TextDisabled("RT builds %llu   last %.3f ms",
-              static_cast<unsigned long long>(terrain_acceleration_structure.build_count),
-              terrain_acceleration_structure.last_build_milliseconds->load(
-                  std::memory_order_relaxed));
+          if(terrain_acceleration_structure.last_build_timing_valid->load(
+                 std::memory_order_acquire))
+            ImGui::TextDisabled("RT builds %llu   last sampled %.3f ms",
+                static_cast<unsigned long long>(
+                    terrain_acceleration_structure.build_count),
+                terrain_acceleration_structure.last_build_milliseconds->load(
+                    std::memory_order_relaxed));
+          else ImGui::TextDisabled("RT builds %llu   timing unavailable",
+              static_cast<unsigned long long>(
+                  terrain_acceleration_structure.build_count));
           ImGui::Text("Blocks %zu   surface blocks %zu",
                       diagnostics.hierarchy_blocks,diagnostics.surface_blocks);
         }
@@ -4513,6 +4737,16 @@ int main(int argc,char** argv) {
               static_cast<unsigned long long>(dispatches[14]),
               static_cast<unsigned long long>(dispatches[15]),
               static_cast<unsigned long long>(dispatches[16]));
+          ImGui::Text("Temporal attempts %llu  compatible %llu  invalid %llu",
+              static_cast<unsigned long long>(
+                  atmosphere_resources.temporal_history_attempts),
+              static_cast<unsigned long long>(
+                  atmosphere_resources.temporal_history_compatible),
+              static_cast<unsigned long long>(
+                  atmosphere_resources.temporal_history_invalidations));
+          ImGui::Text("Temporal camera visibility refreshes %llu",
+              static_cast<unsigned long long>(
+                  atmosphere_resources.temporal_camera_refreshes));
           ImGui::Text("Shadow hierarchy 2D %llu  epipolar %llu/%llu/%llu",
               static_cast<unsigned long long>(dispatches[8]),
               static_cast<unsigned long long>(dispatches[9]),
@@ -4593,6 +4827,22 @@ int main(int argc,char** argv) {
 
         id<MTLCommandBuffer> command_buffer=[command_queue commandBuffer];
         command_buffer.label=@"TetWorld frame";
+        MetalTimestampFlight* gpu_timestamp_flight=nullptr;
+        for(auto& flight:gpu_timestamp_flights){
+          bool available=false;
+          if(flight.samples!=nil&&flight.in_use->compare_exchange_strong(
+                 available,true,std::memory_order_acq_rel)){
+            gpu_timestamp_flight=&flight;
+            break;
+          }
+        }
+        id<MTLCounterSampleBuffer> gpu_timestamp_samples=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->samples;
+        id<MTLBuffer> gpu_timestamp_results=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->results;
+        id<MTLBuffer> gpu_timestamp_scratch=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->scratch;
+        bool acceleration_structure_build_encoded=false;
         if(metal_ray_tracing_supported&&terrain_display_front.ready())
           static_cast<void>(encode_terrain_acceleration_structure_build(
               device,command_buffer,terrain_acceleration_structure,
@@ -4605,7 +4855,8 @@ int main(int argc,char** argv) {
               terrain_display_front.preview_vertex_count,
               terrain_display_front.preview_indices,
               terrain_display_front.preview_index_count,
-              terrain_display_front.render_generation));
+              terrain_display_front.render_generation,gpu_timestamp_samples,
+              acceleration_structure_build_encoded));
         // This qualification deliberately uses the currently published terrain
         // buffer.  It samples real triangle centroids on both sides of the
         // solar half-ray and compares Metal traversal against an independent
@@ -4684,17 +4935,6 @@ int main(int argc,char** argv) {
             terrain_ray_oracle_encoded=true;
           }
         }
-        constexpr NSUInteger gpu_base_timestamp_count=7U;
-        constexpr NSUInteger gpu_timestamp_count=15U;
-        id<MTLCounterSampleBuffer> gpu_timestamp_samples=
-            make_timestamp_sample_buffer(
-                device,gpu_timestamp_counter_set,gpu_timestamp_count);
-        id<MTLBuffer> gpu_timestamp_results=gpu_timestamp_samples==nil?nil:
-            [device newBufferWithLength:
-                gpu_timestamp_count*sizeof(MTLCounterResultTimestamp)
-                             options:MTLResourceStorageModeShared];
-        id<MTLBuffer> gpu_timestamp_scratch=gpu_timestamp_samples==nil?nil:
-            [device newBufferWithLength:4U options:MTLResourceStorageModeShared];
         encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
                                 gpu_timestamp_scratch,0U);
         std::optional<tetra_viewer::CameraProjection>
@@ -4858,9 +5098,12 @@ int main(int argc,char** argv) {
               static_cast<float>(origin_delta.y),
               static_cast<float>(origin_delta.z),0.0F};
           if(atmosphere_enabled){
+            const bool aerial_lookup_consumed=atmosphere_transport!=2||
+                atmosphere_debug_view==4||atmosphere_debug_view==5;
             encode_live_atmosphere_lookups(command_buffer,atmosphere_resources,
                                             stable_atmosphere_lookup_uniform,
-                                            atmosphere_optical_dirty);
+                                            atmosphere_optical_dirty,
+                                            aerial_lookup_consumed);
             atmosphere_optical_dirty=false;
           }
         }
@@ -5033,16 +5276,11 @@ int main(int argc,char** argv) {
         if(atmosphere_enabled&&atmosphere_transport==2&&
            scene_vertex_count!=0U)
           encode_reference_sky_lookup(
-              command_buffer,atmosphere_resources,atmosphere_uniform,
-              production_shadows,shadow_texture);
-        if(gpu_timestamp_samples!=nil){
-          auto* attachment=scene_pass.sampleBufferAttachments[0];
-          attachment.sampleBuffer=gpu_timestamp_samples;
-          attachment.startOfVertexSampleIndex=3U;
-          attachment.endOfVertexSampleIndex=MTLCounterDontSample;
-          attachment.startOfFragmentSampleIndex=MTLCounterDontSample;
-          attachment.endOfFragmentSampleIndex=4U;
-        }
+              command_buffer,atmosphere_resources,
+              stable_atmosphere_lookup_uniform,production_shadows,
+              shadow_texture,terrain_display_front.render_generation);
+        encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                gpu_timestamp_scratch,3U);
         id<MTLRenderCommandEncoder> scene_encoder=
             [command_buffer renderCommandEncoderWithDescriptor:scene_pass];
         if(scene_vertices!=nil&&scene_vertex_count!=0U&&runtime){
@@ -5129,6 +5367,8 @@ int main(int argc,char** argv) {
           [scene_encoder setDepthBias:0.0F slopeScale:0.0F clamp:0.0F];
         }
         [scene_encoder endEncoding];
+        encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                gpu_timestamp_scratch,4U);
         const auto frame_visibility_plan=
             tetra_viewer::resolve_atmosphere_visibility_plan(
                 {.requested=static_cast<tetra_viewer::AtmosphereVisibilityBackend>(
@@ -5189,8 +5429,20 @@ int main(int argc,char** argv) {
               command_buffer,atmosphere_resources,atmosphere_uniform,
               production_shadows,shadow_texture,
               terrain_display_front.render_generation);
+        // The faithful screen renderers return their reconstructed transport
+        // before the FAITHFUL_SHADOW_SPLIT lookup is reached.  Refreshing the
+        // directional atlas for those paths was therefore entirely dead work:
+        // their per-ray terrain visibility already owns the direct-light term.
+        // The native faithful marcher still consumes it, as do the explicit
+        // long-shadow comparison and diagnostic views.
+        const bool long_shadow_diagnostic=
+            (atmosphere_debug_view>=11&&atmosphere_debug_view<=14)||
+            (atmosphere_debug_view>=22&&atmosphere_debug_view<=24);
+        const bool long_shadow_consumed=long_shadow_diagnostic||
+            (atmosphere_transport==1&&
+             (atmosphere_renderer==0||atmosphere_renderer==1));
         if(atmosphere_enabled&&!ray_traced_screen_visibility_active&&
-           atmosphere_transport!=0&&
+           atmosphere_transport!=0&&long_shadow_consumed&&
            scene_vertex_count!=0U)
           encode_long_shadow_atmosphere(
               command_buffer,atmosphere_resources,
@@ -5200,8 +5452,17 @@ int main(int argc,char** argv) {
         if(atmosphere_enabled&&
            (atmosphere_renderer==2||atmosphere_renderer==3)&&
            scene_vertex_count!=0U){
+          const auto history_identity=make_metal_atmosphere_history_identity(
+              stable_atmosphere_lookup_uniform,atmosphere_parameters,
+              terrain_display_front.render_generation,
+              terrain_display_front.identity.render_origin,
+              static_cast<std::uint32_t>(render_width),
+              static_cast<std::uint32_t>(render_height),
+              atmosphere_screen_divisor,atmosphere_transport,
+              atmosphere_renderer,true);
           encode_deterministic_screen_atmosphere(
               command_buffer,atmosphere_resources,atmosphere_uniform,
+              history_identity,
               production_shadows,depth_texture,shadow_texture,
               terrain_acceleration_structure.active,
               terrain_acceleration_structure.active_generation,
@@ -5221,14 +5482,8 @@ int main(int argc,char** argv) {
           encode_shadowed_froxel_atmosphere(
               command_buffer,atmosphere_resources,atmosphere_uniform,
               production_shadows,shadow_texture,depth_texture);
-        if(gpu_timestamp_samples!=nil){
-          auto* attachment=display_pass.sampleBufferAttachments[0];
-          attachment.sampleBuffer=gpu_timestamp_samples;
-          attachment.startOfVertexSampleIndex=5U;
-          attachment.endOfVertexSampleIndex=MTLCounterDontSample;
-          attachment.startOfFragmentSampleIndex=MTLCounterDontSample;
-          attachment.endOfFragmentSampleIndex=6U;
-        }
+        encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                gpu_timestamp_scratch,5U);
         MTLRenderPassDescriptor* composite_pass=display_pass;
         if(metalfx_temporal_active){
           composite_pass=[MTLRenderPassDescriptor renderPassDescriptor];
@@ -5435,6 +5690,8 @@ int main(int argc,char** argv) {
           previous_temporal_scene_generation=0U;
           metalfx_frame_index=0U;
         }
+        encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                gpu_timestamp_scratch,6U);
         if(gpu_timestamp_samples!=nil){
           id<MTLBlitCommandEncoder> timestamp_resolve=
               [command_buffer blitCommandEncoder];
@@ -5548,52 +5805,64 @@ int main(int argc,char** argv) {
         const auto timing_destination=gpu_frame_milliseconds;
         const auto timing_sequence=gpu_frame_sequence;
         const auto stage_destination=gpu_stage_timings;
+        const auto acceleration_structure_milliseconds=
+            terrain_acceleration_structure.last_build_milliseconds;
+        const auto acceleration_structure_timing_valid=
+            terrain_acceleration_structure.last_build_timing_valid;
+        const bool timing_includes_acceleration_structure=
+            acceleration_structure_build_encoded;
+        const MetalTimingIdentity timing_identity{
+            .terrain_generation=terrain_display_front.render_generation,
+            .output_width=static_cast<std::uint32_t>(width),
+            .output_height=static_cast<std::uint32_t>(height),
+            .render_width=static_cast<std::uint32_t>(render_width),
+            .render_height=static_cast<std::uint32_t>(render_height),
+            .atmosphere_divisor=static_cast<std::uint32_t>(
+                atmosphere_screen_divisor),
+            .samples=static_cast<std::uint32_t>(active_samples),
+            .transport=atmosphere_transport,
+            .renderer=atmosphere_renderer,
+            .metalfx=metalfx_temporal_active};
         const bool timing_includes_metalfx=metalfx_temporal_active;
         id<MTLBuffer> stage_results=gpu_timestamp_results;
+        const auto timestamp_flight_in_use=gpu_timestamp_flight==nullptr?
+            std::shared_ptr<std::atomic<bool>>{}:
+            gpu_timestamp_flight->in_use;
         [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed){
           if(completed.status==MTLCommandBufferStatusCompleted&&
              completed.GPUEndTime>=completed.GPUStartTime){
             timing_destination->store(
                 (completed.GPUEndTime-completed.GPUStartTime)*1000.0,
                 std::memory_order_relaxed);
-            timing_sequence->fetch_add(1U,std::memory_order_relaxed);
+            const std::uint64_t completed_sequence=
+                timing_sequence->fetch_add(1U,std::memory_order_relaxed)+1U;
             if(stage_results!=nil){
+              // Counter samples can be unavailable on a frame. Preserve the
+              // most recent coherent sample rather than relabelling it with
+              // an incoherent successor; consumers must treat it as a
+              // sampled breakdown, not a per-frame timer.
               const auto* timestamps=static_cast<const MTLCounterResultTimestamp*>(
                   stage_results.contents);
+              const auto usable_sample=[&](NSUInteger index){
+                return timestamps[index].timestamp!=0U&&
+                    timestamps[index].timestamp!=
+                        std::numeric_limits<std::uint64_t>::max();
+              };
               bool valid=true;
               for(NSUInteger index=0U;index<gpu_base_timestamp_count;++index)
-                valid=valid&&timestamps[index].timestamp!=
-                    std::numeric_limits<std::uint64_t>::max();
-              valid=valid&&timestamps[2].timestamp>=timestamps[1].timestamp&&
-                  timestamps[4].timestamp>=timestamps[3].timestamp&&
-                  timestamps[6].timestamp>=timestamps[5].timestamp;
-              const NSUInteger calibration_timestamp_count=
-                  timing_includes_metalfx?gpu_timestamp_count:
-                                         gpu_base_timestamp_count;
-              std::uint64_t minimum_timestamp=timestamps[0].timestamp;
-              std::uint64_t maximum_timestamp=timestamps[0].timestamp;
-              for(NSUInteger index=1U;index<calibration_timestamp_count;
-                  ++index){
-                if(timestamps[index].timestamp==0U||
-                   timestamps[index].timestamp==
-                       std::numeric_limits<std::uint64_t>::max())
-                  continue;
-                minimum_timestamp=std::min(
-                    minimum_timestamp,timestamps[index].timestamp);
-                maximum_timestamp=std::max(
-                    maximum_timestamp,timestamps[index].timestamp);
-              }
-              valid=valid&&maximum_timestamp>minimum_timestamp;
+                valid=valid&&usable_sample(index);
+              for(NSUInteger index=1U;index<gpu_base_timestamp_count;++index)
+                valid=valid&&timestamps[index].timestamp>=
+                    timestamps[index-1U].timestamp;
               if(valid){
                 const double frame_milliseconds=
                     (completed.GPUEndTime-completed.GPUStartTime)*1000.0;
-                const double tick_milliseconds=frame_milliseconds/
-                    static_cast<double>(maximum_timestamp-minimum_timestamp);
                 const auto milliseconds=[&](NSUInteger first,
                                              NSUInteger second){
                   return static_cast<double>(
                       timestamps[second].timestamp-
-                      timestamps[first].timestamp)*tick_milliseconds;
+                      timestamps[first].timestamp)*
+                      counter_timestamp_milliseconds;
                 };
                 const auto ordered_milliseconds=[&](NSUInteger first,
                                                      NSUInteger second){
@@ -5607,6 +5876,30 @@ int main(int argc,char** argv) {
                 const double atmosphere=ordered_milliseconds(0U,1U)+
                     ordered_milliseconds(2U,3U)+
                     ordered_milliseconds(4U,5U);
+                const double consistency_tolerance=
+                    std::max(0.02,frame_milliseconds*0.01);
+                valid=atmosphere+shadows+terrain+composite<=
+                    frame_milliseconds+consistency_tolerance;
+                if(!valid){
+                  if(timestamp_flight_in_use)
+                    timestamp_flight_in_use->store(
+                        false,std::memory_order_release);
+                  return;
+                }
+                if(timing_includes_acceleration_structure&&
+                   usable_sample(15U)&&usable_sample(16U)&&
+                   timestamps[16].timestamp>=timestamps[15].timestamp){
+                  const double acceleration_structure_milliseconds_value=
+                      milliseconds(15U,16U);
+                  if(acceleration_structure_milliseconds_value<=
+                     frame_milliseconds+consistency_tolerance){
+                    acceleration_structure_milliseconds->store(
+                        acceleration_structure_milliseconds_value,
+                        std::memory_order_relaxed);
+                    acceleration_structure_timing_valid->store(
+                        true,std::memory_order_release);
+                  }
+                }
                 stage_destination->atmosphere_milliseconds.store(
                     atmosphere,std::memory_order_relaxed);
                 stage_destination->shadows_milliseconds.store(
@@ -5615,45 +5908,81 @@ int main(int argc,char** argv) {
                     terrain,std::memory_order_relaxed);
                 stage_destination->composite_milliseconds.store(
                     composite,std::memory_order_relaxed);
-                stage_destination->valid.store(true,std::memory_order_relaxed);
-                const auto usable_sample=[&](NSUInteger index){
-                  return timestamps[index].timestamp!=0U&&
-                      timestamps[index].timestamp!=
-                          std::numeric_limits<std::uint64_t>::max();
-                };
                 const bool screen_valid=usable_sample(7U)&&usable_sample(8U)&&
                     usable_sample(9U)&&usable_sample(10U)&&
+                    timestamps[7].timestamp>=timestamps[4].timestamp&&
                     timestamps[8].timestamp>=timestamps[7].timestamp&&
+                    timestamps[9].timestamp>=timestamps[8].timestamp&&
                     timestamps[10].timestamp>=timestamps[9].timestamp;
-                if(screen_valid){
+                const bool temporal_valid=usable_sample(11U)&&
+                    usable_sample(12U)&&
+                    timestamps[11].timestamp>=timestamps[10].timestamp&&
+                    timestamps[12].timestamp>=timestamps[11].timestamp&&
+                    timestamps[12].timestamp<=timestamps[5].timestamp;
+                const double screen_sum=screen_valid?
+                    milliseconds(7U,8U)+milliseconds(9U,10U)+
+                        (temporal_valid?milliseconds(11U,12U):0.0):0.0;
+                const bool screen_consistent=screen_valid&&valid&&
+                    screen_sum<=ordered_milliseconds(4U,5U)+
+                        consistency_tolerance;
+                if(screen_consistent){
                   stage_destination->depth_reduction_milliseconds.store(
                       milliseconds(7U,8U),std::memory_order_relaxed);
                   stage_destination->screen_integration_milliseconds.store(
                       milliseconds(9U,10U),std::memory_order_relaxed);
-                  const bool temporal_valid=usable_sample(11U)&&
-                      usable_sample(12U)&&
-                      timestamps[12].timestamp>=timestamps[11].timestamp;
-                  stage_destination->temporal_reconstruction_milliseconds.store(
-                      temporal_valid?milliseconds(11U,12U):0.0,
-                      std::memory_order_relaxed);
+                stage_destination->temporal_reconstruction_milliseconds.store(
+                    temporal_valid?milliseconds(11U,12U):0.0,
+                    std::memory_order_relaxed);
                 }
                 stage_destination->screen_stages_valid.store(
-                    screen_valid,std::memory_order_relaxed);
-                const bool metalfx_valid=usable_sample(13U)&&
+                    screen_consistent,std::memory_order_relaxed);
+                const bool metalfx_valid=valid&&usable_sample(13U)&&
                     usable_sample(14U)&&
-                    timestamps[14].timestamp>=timestamps[13].timestamp;
+                    timestamps[14].timestamp>=timestamps[13].timestamp&&
+                    milliseconds(13U,14U)<=frame_milliseconds+
+                        consistency_tolerance;
                 if(metalfx_valid){
                   stage_destination->metalfx_milliseconds.store(
                       milliseconds(13U,14U),std::memory_order_relaxed);
                   stage_destination->metalfx_valid.store(
                       true,std::memory_order_relaxed);
                 }
+                stage_destination->terrain_generation.store(
+                    timing_identity.terrain_generation,std::memory_order_relaxed);
+                stage_destination->output_width.store(
+                    timing_identity.output_width,std::memory_order_relaxed);
+                stage_destination->output_height.store(
+                    timing_identity.output_height,std::memory_order_relaxed);
+                stage_destination->render_width.store(
+                    timing_identity.render_width,std::memory_order_relaxed);
+                stage_destination->render_height.store(
+                    timing_identity.render_height,std::memory_order_relaxed);
+                stage_destination->atmosphere_divisor.store(
+                    timing_identity.atmosphere_divisor,std::memory_order_relaxed);
+                stage_destination->samples.store(
+                    timing_identity.samples,std::memory_order_relaxed);
+                stage_destination->transport.store(
+                    timing_identity.transport,std::memory_order_relaxed);
+                stage_destination->renderer.store(
+                    timing_identity.renderer,std::memory_order_relaxed);
+                stage_destination->metalfx.store(
+                    timing_identity.metalfx,std::memory_order_relaxed);
+                stage_destination->frame_sequence.store(
+                    completed_sequence,std::memory_order_release);
+                stage_destination->valid.store(true,std::memory_order_release);
               }
             }
           }
+          if(timestamp_flight_in_use)
+            timestamp_flight_in_use->store(false,std::memory_order_release);
         }];
         [command_buffer presentDrawable:drawable];
+        const auto submission_started=std::chrono::steady_clock::now();
         [command_buffer commit];
+        cpu_submission_milliseconds->store(
+            std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-submission_started).count(),
+            std::memory_order_relaxed);
         if(motion_test&&scene_vertex_count!=0U)++motion_rendered_frames;
         if(render_test&&scene_vertex_count!=0U)++render_test_frames;
         if(metalfx_test&&scene_vertex_count!=0U&&capture_buffer!=nil)
@@ -5890,9 +6219,14 @@ int main(int argc,char** argv) {
                   reactive_pixels!=0U&&
                   metalfx_generation_changes!=0U&&
                   metalfx_capture_written&&
-                  (!metal_ray_tracing_supported||
-                   atmosphere_resources.ray_visibility_dispatches!=0U)&&
-                  (gpu_timestamp_counter_set==nil||
+                  atmosphere_resources.temporal_history_attempts>1U&&
+                  atmosphere_resources.temporal_history_compatible!=0U&&
+                  (atmosphere_transport==2?
+                       atmosphere_resources.ray_visibility_dispatches==0U:
+                       (!metal_ray_tracing_supported||
+                        atmosphere_resources.ray_visibility_dispatches!=0U))&&
+                  (!gpu_stage_timestamps_enabled||
+                   gpu_timestamp_counter_set==nil||
                    (gpu_stage_timings->metalfx_valid.load(
                         std::memory_order_relaxed)&&
                     gpu_stage_timings->metalfx_milliseconds.load(
@@ -5911,6 +6245,10 @@ int main(int argc,char** argv) {
                           "\"exposure\":\"manual_unity_after_tonemap\","
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
+                          "\"atmosphere_history_attempts\":%llu,"
+                          "\"atmosphere_history_compatible\":%llu,"
+                          "\"atmosphere_history_invalidations\":%llu,"
+                          "\"atmosphere_camera_refreshes\":%llu,"
                           "\"gpu_ms\":%.4f,\"metalfx_gpu_ms\":%.4f,"
                           "\"luminance_mean\":%.6f,"
                           "\"luminance_stddev\":%.6f,\"passed\":%s}\n",
@@ -5926,6 +6264,14 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),
                           atmosphere_resources.last_ray_visibility_query_count,
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_attempts),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_compatible),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_invalidations),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_camera_refreshes),
                           gpu_frame_milliseconds->load(
                               std::memory_order_relaxed),
                           gpu_stage_timings->metalfx_milliseconds.load(
@@ -5951,6 +6297,20 @@ int main(int argc,char** argv) {
               const auto analysis=converted?
                   tetra_viewer::analyse_rgb8_image(image):
                   tetra_viewer::Rgb8ImageAnalysis{};
+              std::vector<float> endpoint_values(
+                  atmosphere_resources.screen_width*
+                  atmosphere_resources.screen_height*4U);
+              [atmosphere_resources.screen_endpoint getBytes:endpoint_values.data()
+                  bytesPerRow:atmosphere_resources.screen_width*4U*sizeof(float)
+                   fromRegion:MTLRegionMake2D(
+                       0U,0U,atmosphere_resources.screen_width,
+                       atmosphere_resources.screen_height)
+                  mipmapLevel:0U];
+              std::size_t endpoint_sky_pixels{};
+              std::size_t endpoint_surface_pixels{};
+              for(std::size_t pixel=0U;pixel<endpoint_values.size()/4U;++pixel)
+                if(endpoint_values[pixel*4U+1U]>0.5F)++endpoint_surface_pixels;
+                else ++endpoint_sky_pixels;
               std::size_t fitted_coverage{};
               if(fitted_shadow_probe_buffer!=nil){
                 const auto* depths=static_cast<const float*>(
@@ -6006,24 +6366,42 @@ int main(int argc,char** argv) {
               const bool timing_passed=atmosphere_renderer==4?
                   atmosphere_resources.dispatch_counts[16]!=0U:
                   (reference_screen_dispatched||
+                   !gpu_stage_timestamps_enabled||
                    gpu_timestamp_counter_set==nil||
                    (stage_timing_valid&&screen_stage_timing_valid&&
                     atmosphere_gpu_milliseconds>0.0)||
                    gpu_frame_milliseconds->load(std::memory_order_relaxed)>
                        0.0);
+              const bool temporal_accounting_passed=atmosphere_renderer!=3||
+                  (atmosphere_resources.temporal_history_attempts>1U&&
+                   atmosphere_resources.temporal_history_compatible!=0U);
+              // This smoke is deliberately parameterised by the public
+              // transport/renderer/debug environment controls.  Keep the
+              // liveness assertion next to the image qualification so each
+              // route proves that an inactive atlas was not merely ignored by
+              // its shader after being encoded.
+              const bool long_shadow_dispatch_required=long_shadow_consumed&&
+                  !ray_traced_screen_visibility_active&&
+                  atmosphere_transport!=0&&scene_vertex_count!=0U;
+              const bool long_shadow_dispatch_passed=
+                  long_shadow_dispatch_required?
+                      atmosphere_resources.dispatch_counts[6U]!=0U:
+                      atmosphere_resources.dispatch_counts[6U]==0U;
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
-                  long_shadow_finite==long_shadow_pixels&&
-                  (ray_traced_screen_visibility_active||
-                   long_shadow_occluded!=0U)&&
+                  (!long_shadow_consumed||
+                   (long_shadow_finite==long_shadow_pixels&&
+                    (ray_traced_screen_visibility_active||
+                     long_shadow_occluded!=0U)))&&
                   (ray_traced_screen_visibility_active?
                       atmosphere_resources.ray_visibility_dispatches!=0U:
                       atmosphere_resources.ray_visibility_dispatches==0U)&&
                   (!atmosphere_quarter_test||
                    (atmosphere_resources.screen_divisor==4U&&
                     atmosphere_resources.last_ray_visibility_query_count==1U))&&
-                  timing_passed;
+                  timing_passed&&temporal_accounting_passed&&
+                  long_shadow_dispatch_passed;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6041,8 +6419,22 @@ int main(int argc,char** argv) {
                           "\"atmosphere_gpu_ms\":%.4f,"
                           "\"depth_gpu_ms\":%.4f,\"integration_gpu_ms\":%.4f,"
                           "\"temporal_gpu_ms\":%.4f,"
+                          "\"endpoint_sky_pixels\":%zu,"
+                          "\"endpoint_surface_pixels\":%zu,"
+                          "\"sky_view_dispatches\":%llu,"
+                          "\"sky_irradiance_dispatches\":%llu,"
+                          "\"sky_lookup_attempts\":%llu,"
+                          "\"sky_lookup_skips\":%llu,"
+                          "\"long_shadow_dispatches\":%llu,"
+                          "\"long_shadow_dispatch_required\":%s,"
+                          "\"aerial_scattering_dispatches\":%llu,"
+                          "\"froxel_dispatches\":%llu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
+                          "\"history_attempts\":%llu,"
+                          "\"history_compatible\":%llu,"
+                          "\"history_invalidations\":%llu,"
+                          "\"camera_visibility_refreshes\":%llu,"
                           "\"screen_divisor\":%u,"
                           "\"rt_visibility_owner\":%s,"
                           "\"passed\":%s}\n",
@@ -6062,9 +6454,33 @@ int main(int argc,char** argv) {
                               std::memory_order_relaxed),
                           gpu_stage_timings->temporal_reconstruction_milliseconds.load(
                               std::memory_order_relaxed),
+                          endpoint_sky_pixels,endpoint_surface_pixels,
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[2]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[4]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.reference_lookup_attempts),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.reference_lookup_skips),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[6U]),
+                          long_shadow_dispatch_required?"true":"false",
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[3U]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[16U]),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),
                           atmosphere_resources.last_ray_visibility_query_count,
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_attempts),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_compatible),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_history_invalidations),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.temporal_camera_refreshes),
                           atmosphere_resources.screen_divisor,
                           ray_traced_screen_visibility_active?"true":"false",
                           passed?"true":"false");
@@ -6121,20 +6537,34 @@ int main(int argc,char** argv) {
               if(!passed)result=1;
             }else if(render_test){
               const bool stage_timing_valid=gpu_stage_timings->valid.load(
-                  std::memory_order_relaxed);
+                  std::memory_order_acquire);
+              const auto stage_sequence=gpu_stage_timings->frame_sequence.load(
+                  std::memory_order_acquire);
               const bool passed=gpu_frame_milliseconds->load(
                   std::memory_order_relaxed)>0.0&&
-                  (gpu_timestamp_counter_set==nil||stage_timing_valid);
+                  (!gpu_stage_timestamps_enabled||
+                   gpu_timestamp_counter_set==nil||stage_timing_valid);
               std::printf("{\"event\":\"metal_render_smoke\","
                           "\"rendered_frames\":%zu,\"drawable\":\"%dx%d\","
                           "\"internal\":\"%dx%d\",\"samples\":%lu,"
                           "\"gpu_milliseconds\":%.4f,"
+                          "\"cpu_submission_ms\":%.4f,"
                           "\"stage_timing_valid\":%s,"
+                          "\"stage_sequence\":%llu,"
+                          "\"stage_generation\":%llu,"
+                          "\"stage_output\":\"%ux%u\","
+                          "\"stage_internal\":\"%ux%u\","
+                          "\"stage_samples\":%u,"
+                          "\"stage_transport\":%d,"
+                          "\"stage_renderer\":%d,"
+                          "\"stage_divisor\":%u,"
+                          "\"stage_metalfx\":%s,"
                           "\"shadow_ms\":%.4f,\"atmosphere_ms\":%.4f,"
                           "\"terrain_ms\":%.4f,\"composite_ms\":%.4f,"
                           "\"depth_ms\":%.4f,\"integration_ms\":%.4f,"
                           "\"temporal_ms\":%.4f,\"metalfx_ms\":%.4f,"
                           "\"rt_builds\":%llu,\"rt_build_ms\":%.4f,"
+                          "\"rt_build_timing_valid\":%s,"
                           "\"display_generation\":%llu,\"rt_generation\":%llu,"
                           "\"passed\":%s}\n",
                           render_test_frames,width,height,render_width,
@@ -6142,7 +6572,31 @@ int main(int argc,char** argv) {
                               allocated_samples),
                           gpu_frame_milliseconds->load(
                               std::memory_order_relaxed),
+                          cpu_submission_milliseconds->load(
+                              std::memory_order_relaxed),
                           stage_timing_valid?"true":"false",
+                          static_cast<unsigned long long>(stage_sequence),
+                          static_cast<unsigned long long>(
+                              gpu_stage_timings->terrain_generation.load(
+                                  std::memory_order_relaxed)),
+                          gpu_stage_timings->output_width.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->output_height.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->render_width.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->render_height.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->samples.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->transport.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->renderer.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->atmosphere_divisor.load(
+                              std::memory_order_relaxed),
+                          gpu_stage_timings->metalfx.load(
+                              std::memory_order_relaxed)?"true":"false",
                           gpu_stage_timings->shadows_milliseconds.load(
                               std::memory_order_relaxed),
                           gpu_stage_timings->atmosphere_milliseconds.load(
@@ -6163,6 +6617,8 @@ int main(int argc,char** argv) {
                               terrain_acceleration_structure.build_count),
                           terrain_acceleration_structure.last_build_milliseconds->load(
                               std::memory_order_relaxed),
+                          terrain_acceleration_structure.last_build_timing_valid->load(
+                              std::memory_order_acquire)?"true":"false",
                           static_cast<unsigned long long>(
                               terrain_display_front.render_generation),
                           static_cast<unsigned long long>(
@@ -6183,6 +6639,8 @@ int main(int argc,char** argv) {
                           "\"shadow_ms\":%.4f,\"atmosphere_ms\":%.4f,"
                           "\"terrain_ms\":%.4f,\"composite_ms\":%.4f,"
                           "\"samples\":%lu,\"view_lookup_dispatches\":%llu,"
+                          "\"irradiance_lookup_dispatches\":%llu,"
+                          "\"aerial_dispatches\":%llu,"
                           "\"long_shadow_dispatches\":%llu,"
                           "\"stable_frames\":%zu,\"passed\":%s}\n",
                           auto_resolution_test_frames,display_refresh_hz,
@@ -6199,6 +6657,10 @@ int main(int argc,char** argv) {
                           gpu_stage_timings->composite_milliseconds.load(
                               std::memory_order_relaxed),
                           static_cast<unsigned long>(allocated_samples),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[2]),
+                          static_cast<unsigned long long>(
+                              atmosphere_resources.dispatch_counts[4]),
                           static_cast<unsigned long long>(
                               atmosphere_resources.dispatch_counts[3]),
                           static_cast<unsigned long long>(

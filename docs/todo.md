@@ -163,6 +163,118 @@ still-image appearance alone.
         image, motion, orbital, release-performance, and Vulkan-validation
         suite passes (A15).
 
+## Active chain: Metal frame-time optimization
+
+Follow the evidence-gated investigation in
+[`metal-frame-time-optimization.md`](metal-frame-time-optimization.md). Preserve
+the qualified terrain-shadowed atmosphere, coherent preview/exact display
+front, and native visual oracle. Do not promote a lower-quality path solely
+because it is faster.
+
+- [ ] Make GPU timings frame-coherent and configuration-identifiable; include
+      enclosing GPU intervals, CPU submission time, encoder transitions, and
+      steady-versus-refresh classification. Pool per-flight counter resources,
+      quantify timestamp instrumentation overhead, and record both instrumented
+      and minimally instrumented release baselines. Replace the current whole-
+      command-buffer value labeled as acceleration-structure build time with a
+      real AS interval included in frame accounting, and record reference
+      endpoint sky/surface counts for comparable view profiles. Add temporal
+      attempted/accepted and rejection-reason counters, and resolve the current
+      source-versus-test-log discrepancy over whether reference sky and
+      irradiance dispatch on every stable frame (P0).
+  - [x] Pool three per-flight counter sample/result/scratch sets; keep stage
+        counters opt-in with `TETWORLD_METAL_STAGE_TIMESTAMPS=1`, use the
+        enclosing GPU interval for ordinary runs, reject incoherent counter
+        intervals, and attach each retained stage sample's completed-frame
+        sequence and immutable renderer configuration.
+  - [x] Record paired release auto-resolution baselines at the same 1123x702
+        profile: 1.4579 ms median / 2.0657 ms p95 without detailed counters;
+        2.3075 ms / 3.0350 ms with them. See
+        `metal-frame-time-optimization.md` for the measurement contract.
+  - [x] Report CPU queue-submission time separately from encoding and GPU work;
+        replace the falsely named AS frame duration with an opt-in,
+        stage-boundary AS interval that is explicitly invalid when unavailable.
+  - [x] Expose reference sky-view and sky-irradiance dispatches in the static
+        atmosphere smoke. Twelve identical frames produced twelve of each,
+        proving the current reference path lacks a stable-pose guard.
+  - [x] Add test-only reconstructed endpoint sky/surface counts; the reference
+        480x300 smoke frame reports 72,852 sky and 71,148 surface endpoints.
+- [ ] Audit every atmosphere, shadow, display-front, preview-upload, and
+      ray-tracing cache identity and build an active-renderer consumer matrix.
+      First replace Metal's raw camera/uniform history comparisons with the
+      shared typed screen-history compatibility model, pass the previous slot's
+      generation during reprojection, and prove that MetalFX jitter accumulates,
+      camera motion refreshes binary visibility while valid radiance reprojects,
+      and sun/terrain/material changes reject old transport. Prove reference
+      sky/irradiance uses stable physical identity; stop
+      inactive aerial, froxel, long-shadow, hierarchy, and comparison resources
+      from dispatching; add renderer/debug-view dispatch-count tests; test that
+      physical changes still rebuild every resource that is actually consumed;
+      then measure lazy allocation independently. Start with the confirmed
+      default-inactive ray-visibility, packed-visibility-history, and min/max
+      resources as well as the unused renderer families (P1).
+  - [x] Key reference sky-view and sky-irradiance lookup dispatches to the
+        unjittered physical uniform, complete production shadow state, and
+        terrain generation. Static smoke now performs one refresh and eleven
+        skips while both static-atmosphere and continuous-motion checks pass.
+  - [x] Stop aerial-volume dispatch in the default reference temporal route;
+        retain it for non-reference renderers and explicit aerial diagnostics.
+  - [x] Stop long-shadow-atlas dispatch in the default reference temporal route;
+        retain it for non-reference transports and long-shadow diagnostics.
+  - [x] Stop long-shadow-atlas dispatch in faithful temporal and deterministic
+        screen routes too. They return screen-integrated transport before the
+        atlas can be sampled; retain the atlas only for the native faithful
+        marcher and explicit long-shadow diagnostics/comparisons. The
+        parameterised atmosphere smoke asserts and reports this contract.
+- [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
+      exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
+      gain is below the declared measurement threshold (P2).
+- [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
+      Sweep one table's resolution and samples at a time against its specific
+      oracle, including the Hillaire 200x100 sky-view reference point. Compare
+      exact manual, depth-gather, and comparison-sampler PCF; skip or lazily
+      allocate resources not consumed by the active renderer. Do not time-slice
+      a visible physical change (P3).
+- [ ] Eliminate the resolved-history-to-screen publish copy by binding the
+      active history generation directly, but only after P1 proves temporal
+      accumulation under jitter and physical camera motion. Split the
+      all-`RGBA32Float` shared Metal atmosphere texture factory by semantic
+      role; test `RGBA16Float`
+      radiance/transmittance and private GPU storage before scalar
+      transmittance or pass fusion. Pack the representative native-depth offset
+      so integration does not search opaque depth blocks again, and propagate
+      shadow-transition confidence without rewriting the endpoint image. In
+      the reference temporal route, skip screen integration and coloured-
+      history filtering for true sky endpoints whose final consumer is the sky
+      LUT, while still updating endpoint history for transitions and retaining
+      full work in diagnostics.
+      Reject any candidate that fails the numeric, depth-class, disocclusion,
+      orbital, or low-sun visual oracle (P4).
+- [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
+      deterministic Breyer-Zirr experiment that removes analytically planet-
+      shadowed direct-light work near the terminator. Consider a stable angular
+      domain only if screen-aligned scaling remains material; do not reduce the
+      qualified 32 intervals through an unproven distance heuristic (P5).
+- [ ] Benchmark the complete 1x/2x/4x MSAA by MetalFX-scale matrix and retain
+      the lowest-cost fixed profile that passes still and motion image gates.
+      For MSAA modes, also compare private with supported memoryless colour and
+      depth resolve-source attachments (P6).
+- [ ] Measure and, only where material, implement compact preview GPU data,
+      conservative per-cascade caster culling, and generation-coherent
+      acceleration-structure update/refit policy (P7).
+- [ ] Remove measured encoder, attachment-store, per-frame allocation, and
+      diagnostic-readback overhead. Test a MetalFX composition variant that
+      writes colour, motion, and reactive targets together, and separately test
+      direct scaler output to an eligible drawable. Include framebuffer-only
+      policy cost; require identical probes and an end-to-end GPU or CPU-tail
+      win, not a cost moved to another queue or frame (P8).
+- [ ] Add stage-aware automatic quality selection only if at least two fully
+      qualified modes have useful cost separation; require hysteresis, dwell
+      time, trace replay, and explicit mode-change diagnostics (P9).
+- [ ] Re-run the full release, numeric, visual, motion, parity, resource, and
+      long-session gates; document final median/p95/p99/max results and rejected
+      alternatives before changing the Default (P10).
+
 ## Active chain: bounded camera publication
 
 - [x] Add end-to-end and surface-substage timings to the production world
