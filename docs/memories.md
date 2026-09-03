@@ -130,6 +130,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Direct MetalFX output to a non-framebuffer-only drawable is the production presentation route, with a load-preserving UI pass and the old intermediate path available through `TETWORLD_METAL_DIRECT_DRAWABLE=0`.
 - Evidence: Seven native captures stayed within 0.0000317 NRMS and reverse-order 300-frame pairs reduced aggregate stable and moving median/p95.
 
+### metal-p9-discrete-auto-quality
+- Updated: 2026-09-03
+- Tags: metal, quality, temporal, performance
+- Fact: Metal Auto quality is restricted to the P6-qualified 0.5x/0.7x 2x-MSAA profiles and excludes refresh/upload/AS-maintenance frames from its separate steady/moving p95 decisions.
+- Evidence: Deterministic trace coverage verifies asymmetric hysteresis and 180-frame dwell; the native hidden Auto smoke reported one upgrade to the 0.70x profile.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

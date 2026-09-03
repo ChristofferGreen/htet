@@ -2182,6 +2182,84 @@ double atmosphere_shadow_filter_visibility(
   return 1.0+(filtered-1.0)*footprint_fade;
 }
 
+MetalQualityController::MetalQualityController(
+    std::vector<MetalRasterQualityProfile> profiles,
+    std::size_t initial_profile,double target_milliseconds)
+    : profiles_(std::move(profiles)),target_milliseconds_(target_milliseconds) {
+  std::erase_if(profiles_,[](const MetalRasterQualityProfile& profile){
+    return !std::isfinite(profile.render_scale)||profile.render_scale<=0.0F||
+        profile.terrain_samples==0U;
+  });
+  std::ranges::sort(profiles_,[](const auto& left,const auto& right){
+    return left.render_scale<right.render_scale;
+  });
+  if(profiles_.empty())profiles_.push_back({.render_scale=0.5F,
+                                             .terrain_samples=2U});
+  profile_index_=std::min(initial_profile,profiles_.size()-1U);
+  if(!std::isfinite(target_milliseconds_)||target_milliseconds_<=0.0)
+    target_milliseconds_=1000.0/60.0;
+}
+
+const MetalRasterQualityProfile& MetalQualityController::profile() const noexcept {
+  return profiles_[profile_index_];
+}
+
+std::size_t MetalQualityController::profile_index() const noexcept {
+  return profile_index_;
+}
+
+void MetalQualityController::set_target_milliseconds(
+    double target_milliseconds) noexcept {
+  if(!std::isfinite(target_milliseconds)||target_milliseconds<=0.0)return;
+  if(target_milliseconds_==target_milliseconds)return;
+  target_milliseconds_=target_milliseconds;
+  dwell_frames_=0U;
+  samples_[0].clear();
+  samples_[1].clear();
+}
+
+MetalQualityDecision MetalQualityController::observe(double gpu_milliseconds,
+    MetalQualityFrameClass frame_class,bool maintenance_frame) {
+  MetalQualityDecision decision{.profile_index=profile_index_,
+                                .dwell_frames=dwell_frames_};
+  if(maintenance_frame||!std::isfinite(gpu_milliseconds)||gpu_milliseconds<=0.0)
+    return decision;
+  ++dwell_frames_;
+  auto& samples=samples_[frame_class==MetalQualityFrameClass::moving?1U:0U];
+  samples.push_back(gpu_milliseconds);
+  constexpr std::size_t evaluation_frames=60U;
+  constexpr std::size_t minimum_dwell_frames=180U;
+  if(samples.size()<evaluation_frames)return decision;
+  auto ordered=samples;
+  std::ranges::sort(ordered);
+  decision.percentile_95_milliseconds=ordered[(ordered.size()-1U)*19U/20U];
+  samples.clear();
+  if(dwell_frames_<minimum_dwell_frames)return decision;
+  // Keep an intentionally wide neutral band. A moving view needs more
+  // surplus than a settled view before it gains quality, avoiding changes as
+  // ordinary input begins and ends; either class can shed quality at 90%.
+  const double upgrade_fraction=frame_class==MetalQualityFrameClass::moving?
+      0.58:0.64;
+  if(decision.percentile_95_milliseconds>target_milliseconds_*0.90&&
+     profile_index_>0U){
+    --profile_index_;
+    decision.change=MetalQualityChange::downgrade;
+  }else if(decision.percentile_95_milliseconds<
+               target_milliseconds_*upgrade_fraction&&
+           profile_index_+1U<profiles_.size()){
+    ++profile_index_;
+    decision.change=MetalQualityChange::upgrade;
+  }
+  if(decision.change!=MetalQualityChange::none){
+    dwell_frames_=0U;
+    samples_[0].clear();
+    samples_[1].clear();
+  }
+  decision.profile_index=profile_index_;
+  decision.dwell_frames=dwell_frames_;
+  return decision;
+}
+
 int run_atmosphere_check(AtmospherePreset preset, double camera_altitude,
                          double view_zenith_degrees,
                          double sun_zenith_degrees, std::ostream& output,

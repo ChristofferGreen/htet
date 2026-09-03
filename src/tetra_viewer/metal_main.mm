@@ -3978,13 +3978,18 @@ int main(int argc,char** argv) {
         fixed_render_scale=parsed;
       }
     }
-    float automatic_render_scale=auto_resolution_test?0.5F:2.0F/3.0F;
-    float automatic_minimum_scale=1.0F/3.0F;
-    float automatic_maximum_scale=1.0F;
+    // P9 consumes only the two P6-qualified MetalFX/2x profiles.  It never
+    // changes atmosphere sampling, shadow coverage, or MSAA dynamically.
+    const std::vector<tetra_viewer::MetalRasterQualityProfile>
+        automatic_quality_profiles{{0.5F,2U},{0.7F,2U}};
+    float automatic_render_scale=0.5F;
     int display_refresh_hz=std::max(1,static_cast<int>(
         native_window.screen.maximumFramesPerSecond));
     bool automatic_target_display=true;
     int automatic_target_fps=display_refresh_hz;
+    tetra_viewer::MetalQualityController automatic_quality_controller(
+        automatic_quality_profiles,0U,
+        1000.0/static_cast<double>(automatic_target_fps));
     float upscale_sharpening=0.2F;
     bool metalfx_temporal_enabled=
         (!automated_test||metalfx_test||profile_interactive_rendering)&&
@@ -4015,12 +4020,16 @@ int main(int argc,char** argv) {
       }
     }
     std::size_t automatic_stable_frames{};
-    std::vector<double> automatic_gpu_samples;
+    std::uint64_t automatic_quality_changes{};
+    tetra_viewer::MetalQualityChange automatic_last_change=
+        tetra_viewer::MetalQualityChange::none;
     double automatic_gpu_median_milliseconds{};
     double automatic_gpu_percentile_95_milliseconds{};
     auto gpu_frame_milliseconds=
         std::make_shared<std::atomic<double>>(0.0);
     auto gpu_frame_sequence=std::make_shared<std::atomic<std::uint64_t>>(0U);
+    auto gpu_frame_maintenance=std::make_shared<std::atomic<bool>>(false);
+    auto gpu_frame_moving=std::make_shared<std::atomic<bool>>(false);
     auto gpu_stage_timings=std::make_shared<MetalGpuStageTimings>();
     auto cpu_submission_milliseconds=
         std::make_shared<std::atomic<double>>(0.0);
@@ -4569,7 +4578,8 @@ int main(int argc,char** argv) {
             native_window.screen.maximumFramesPerSecond));
         if(automatic_target_display&&detected_refresh!=automatic_target_fps){
           automatic_target_fps=detected_refresh;
-          automatic_gpu_samples.clear();
+          automatic_quality_controller.set_target_milliseconds(
+              1000.0/static_cast<double>(automatic_target_fps));
         }
         display_refresh_hz=detected_refresh;
         const double gpu_milliseconds=gpu_frame_milliseconds->load(
@@ -4580,40 +4590,29 @@ int main(int argc,char** argv) {
            completed_gpu_frame!=consumed_gpu_frame_sequence&&
            automatic_stable_frames>=30U){
           consumed_gpu_frame_sequence=completed_gpu_frame;
-          const double budget=1000.0/std::max(automatic_target_fps,1);
-          if(gpu_milliseconds>budget*0.95&&
-             automatic_render_scale>automatic_minimum_scale+0.001F){
-            automatic_render_scale=std::max(
-                automatic_minimum_scale,automatic_render_scale-0.05F);
-            automatic_gpu_samples.clear();
-            automatic_stable_frames=0U;
-          }
-          automatic_gpu_samples.push_back(gpu_milliseconds);
-          constexpr std::size_t evaluation_frames=60U;
-          if(automatic_gpu_samples.size()>=evaluation_frames){
-            auto ordered=automatic_gpu_samples;
-            std::ranges::sort(ordered);
-            automatic_gpu_median_milliseconds=ordered[ordered.size()/2U];
+          const auto decision=automatic_quality_controller.observe(
+              gpu_milliseconds,gpu_frame_moving->load(std::memory_order_relaxed)?
+                  tetra_viewer::MetalQualityFrameClass::moving:
+                  tetra_viewer::MetalQualityFrameClass::steady,
+              gpu_frame_maintenance->load(std::memory_order_relaxed));
+          if(decision.percentile_95_milliseconds>0.0){
             automatic_gpu_percentile_95_milliseconds=
-                ordered[(ordered.size()-1U)*19U/20U];
-            float next_scale=automatic_render_scale;
-            if(automatic_gpu_percentile_95_milliseconds>budget*0.82||
-               automatic_gpu_percentile_95_milliseconds<budget*0.68){
-              const float predicted=automatic_render_scale*static_cast<float>(
-                  std::sqrt(budget*0.72/
-                            automatic_gpu_percentile_95_milliseconds));
-              next_scale=std::clamp(predicted,
-                  automatic_render_scale-0.05F,
-                  automatic_render_scale+0.02F);
-              next_scale=std::round(next_scale*100.0F)/100.0F;
-              next_scale=std::clamp(next_scale,automatic_minimum_scale,
-                                    automatic_maximum_scale);
-            }
-            if(next_scale!=automatic_render_scale)
-              automatic_stable_frames=0U;
-            automatic_render_scale=next_scale;
-            automatic_gpu_samples.clear();
+                decision.percentile_95_milliseconds;
+            // The controller currently uses one p95 window; retain the
+            // established diagnostic field rather than presenting an invented
+            // mean as a second statistic.
+            automatic_gpu_median_milliseconds=gpu_milliseconds;
           }
+          if(decision.change!=tetra_viewer::MetalQualityChange::none){
+            ++automatic_quality_changes;
+            automatic_last_change=decision.change;
+          }
+          const float next_scale=automatic_quality_controller.profile().render_scale;
+          if(next_scale!=automatic_render_scale)automatic_stable_frames=0U;
+          automatic_render_scale=next_scale;
+          terrain_msaa=automatic_quality_controller.profile().terrain_samples>1U;
+          terrain_sample_count=static_cast<int>(
+              automatic_quality_controller.profile().terrain_samples);
         }
         const float active_render_scale=render_resolution_mode==0?1.0F:
             (render_resolution_mode==1?fixed_render_scale:
@@ -4782,7 +4781,10 @@ int main(int argc,char** argv) {
           ImGui::SetNextItemWidth(120.0F);
           if(ImGui::Combo("Mode",&render_resolution_mode,modes.data(),
                           modes.size())){
-            automatic_gpu_samples.clear();
+            automatic_quality_controller=tetra_viewer::MetalQualityController(
+                automatic_quality_profiles,0U,
+                1000.0/static_cast<double>(automatic_target_fps));
+            automatic_render_scale=automatic_quality_controller.profile().render_scale;
             automatic_stable_frames=0U;
           }
           constexpr std::array<float,4> scale_values{
@@ -4824,23 +4826,12 @@ int main(int argc,char** argv) {
               automatic_target_fps=automatic_target_display?
                   display_refresh_hz:(selected_target==1?60:
                   (selected_target==2?90:120));
-              automatic_gpu_samples.clear();
+              automatic_quality_controller.set_target_milliseconds(
+                  1000.0/static_cast<double>(automatic_target_fps));
               automatic_stable_frames=0U;
             }
-            if(scale_combo("Minimum",automatic_minimum_scale)){
-              automatic_maximum_scale=std::max(
-                  automatic_maximum_scale,automatic_minimum_scale);
-              automatic_render_scale=std::clamp(automatic_render_scale,
-                  automatic_minimum_scale,automatic_maximum_scale);
-              automatic_gpu_samples.clear();
-            }
-            if(scale_combo("Maximum",automatic_maximum_scale)){
-              automatic_minimum_scale=std::min(
-                  automatic_minimum_scale,automatic_maximum_scale);
-              automatic_render_scale=std::clamp(automatic_render_scale,
-                  automatic_minimum_scale,automatic_maximum_scale);
-              automatic_gpu_samples.clear();
-            }
+            ImGui::TextDisabled("Qualified ladder: 50%% / 70%%, 2x MSAA");
+            ImGui::TextDisabled("60-frame p95, 180-frame dwell");
           }
           if(!metalfx_temporal_supported)ImGui::BeginDisabled();
           if(ImGui::Checkbox("MetalFX temporal",&metalfx_temporal_enabled)){
@@ -4883,10 +4874,16 @@ int main(int argc,char** argv) {
           if(gpu_milliseconds>0.0)
             ImGui::Text("GPU %.2f ms",gpu_milliseconds);
           if(render_resolution_mode==2)
-            ImGui::TextDisabled("Auto median %.2f ms  p95 %.2f ms  stable %zu",
+            ImGui::TextDisabled("Auto latest %.2f ms  p95 %.2f ms  stable %zu",
                 automatic_gpu_median_milliseconds,
                 automatic_gpu_percentile_95_milliseconds,
                 automatic_stable_frames);
+            ImGui::TextDisabled("Mode changes %llu (%s)",
+                static_cast<unsigned long long>(automatic_quality_changes),
+                automatic_last_change==tetra_viewer::MetalQualityChange::upgrade?
+                    "upgrade":(automatic_last_change==
+                    tetra_viewer::MetalQualityChange::downgrade?
+                        "downgrade":"none"));
         }
 
         if(!runtime)ImGui::TextUnformatted("Terrain loading...");
@@ -6321,7 +6318,7 @@ int main(int argc,char** argv) {
             !profile_interactive_rendering||!atmosphere_capture||
             raster_profile_qualification||
             (automatic_stable_frames>=60U&&
-             automatic_render_scale<=automatic_minimum_scale+0.001F);
+             automatic_render_scale<=0.501F);
         if((capture_test||any_atmosphere_frame_test||metalfx_test)&&
            scene_vertex_count!=0U&&requested_preview_capture_ready&&
            requested_profile_capture_ready){
@@ -6404,6 +6401,8 @@ int main(int argc,char** argv) {
         }
         const auto timing_destination=gpu_frame_milliseconds;
         const auto timing_sequence=gpu_frame_sequence;
+        const auto maintenance_destination=gpu_frame_maintenance;
+        const auto moving_destination=gpu_frame_moving;
         const auto stage_destination=gpu_stage_timings;
         const auto profile_destination=timing_profile_samples;
         const auto acceleration_structure_milliseconds=
@@ -6431,6 +6430,10 @@ int main(int argc,char** argv) {
             scene_vertex_count!=0U&&requested_preview_capture_ready&&
             requested_rt_capture_ready&&requested_profile_capture_ready;
         const bool timing_includes_metalfx=metalfx_temporal_active;
+        const bool timing_maintenance_frame=acceleration_structure_build_encoded||
+            optical_lookup_encoded_this_frame||reference_lookup_encoded_this_frame||
+            aerial_lookup_encoded_this_frame;
+        const bool timing_moving_frame=runtime_camera_interactive;
         id<MTLBuffer> stage_results=gpu_timestamp_results;
         const auto timestamp_flight_in_use=gpu_timestamp_flight==nullptr?
             std::shared_ptr<std::atomic<bool>>{}:
@@ -6441,6 +6444,10 @@ int main(int argc,char** argv) {
             timing_destination->store(
                 (completed.GPUEndTime-completed.GPUStartTime)*1000.0,
                 std::memory_order_relaxed);
+            maintenance_destination->store(timing_maintenance_frame,
+                                           std::memory_order_relaxed);
+            moving_destination->store(timing_moving_frame,
+                                      std::memory_order_relaxed);
             if(timing_profile_sample_eligible)
               profile_destination->add(
                   (completed.GPUEndTime-completed.GPUStartTime)*1000.0);
@@ -6685,7 +6692,7 @@ int main(int argc,char** argv) {
             (!metalfx_test||(metalfx_test_frames>=45U&&
                              diagnostics.converged&&!diagnostics.busy))&&
             (!auto_resolution_test||auto_resolution_test_frames>=
-                 (profile_interactive_rendering?300U:120U))&&
+                 (profile_interactive_rendering?300U:240U))&&
             (!timing_profile_test||timing_profile_samples->size()>=300U)&&
             (!overlay_test||overlay_test_frames>=10U)&&
             (!shadow_test||shadow_test_frames>=3U)&&
@@ -7461,7 +7468,8 @@ int main(int argc,char** argv) {
                   automatic_gpu_percentile_95_milliseconds>0.0&&
                   (automatic_render_scale>0.5F||
                    profile_interactive_rendering)&&render_width<=width&&
-                  render_height<=height;
+                  render_height<=height&&
+                  (profile_interactive_rendering||automatic_quality_changes!=0U);
               std::printf("{\"event\":\"metal_auto_resolution_smoke\","
                           "\"rendered_frames\":%zu,\"display_hz\":%d,"
                           "\"scale\":%.2f,\"internal\":\"%dx%d\","
@@ -7473,7 +7481,9 @@ int main(int argc,char** argv) {
                           "\"irradiance_lookup_dispatches\":%llu,"
                           "\"aerial_dispatches\":%llu,"
                           "\"long_shadow_dispatches\":%llu,"
-                          "\"stable_frames\":%zu,\"passed\":%s}\n",
+                          "\"stable_frames\":%zu,\"quality_profile\":%zu,"
+                          "\"quality_changes\":%llu,\"last_change\":\"%s\","
+                          "\"passed\":%s}\n",
                           auto_resolution_test_frames,display_refresh_hz,
                           automatic_render_scale,render_width,render_height,
                           automatic_gpu_median_milliseconds,
@@ -7496,7 +7506,14 @@ int main(int argc,char** argv) {
                               atmosphere_resources.dispatch_counts[3]),
                           static_cast<unsigned long long>(
                               atmosphere_resources.dispatch_counts[6]),
-                          automatic_stable_frames,passed?"true":"false");
+                          automatic_stable_frames,
+                          automatic_quality_controller.profile_index(),
+                          static_cast<unsigned long long>(automatic_quality_changes),
+                          automatic_last_change==tetra_viewer::MetalQualityChange::upgrade?
+                              "upgrade":(automatic_last_change==
+                              tetra_viewer::MetalQualityChange::downgrade?
+                                  "downgrade":"none"),
+                          passed?"true":"false");
               if(!passed)result=1;
             }else if(atmosphere_quality_test){
               const bool passed=atmosphere_quality_switches_ok&&

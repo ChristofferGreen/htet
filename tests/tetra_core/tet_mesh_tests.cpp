@@ -15829,6 +15829,49 @@ TEST_CASE("atmosphere quality profiles are ordered and default stays budgeted") 
   CHECK(default_shadow_bytes<64U*1024U*1024U);
 }
 
+TEST_CASE("Metal quality controller uses qualified discrete hysteretic ladder") {
+  const std::vector<tetra_viewer::MetalRasterQualityProfile> profiles{{0.5F,2U},
+                                                                        {0.7F,2U}};
+  tetra_viewer::MetalQualityController controller(profiles,0U,16.0);
+  CHECK(controller.profile().render_scale==doctest::Approx(0.5F));
+  // Maintenance spikes are classified rather than consuming dwell or causing
+  // a quality drop.
+  for(std::size_t index=0U;index<300U;++index)
+    CHECK(controller.observe(100.0,tetra_viewer::MetalQualityFrameClass::steady,
+                             true).change==tetra_viewer::MetalQualityChange::none);
+  for(std::size_t index=0U;index<179U;++index)
+    CHECK(controller.observe(4.0,tetra_viewer::MetalQualityFrameClass::steady)
+              .change==tetra_viewer::MetalQualityChange::none);
+  const auto upgrade=controller.observe(
+      4.0,tetra_viewer::MetalQualityFrameClass::steady);
+  CHECK(upgrade.change==tetra_viewer::MetalQualityChange::upgrade);
+  CHECK(upgrade.profile_index==1U);
+  CHECK(controller.profile().terrain_samples==2U);
+  // The dwell interval prevents a one-window reversal immediately after the
+  // upgrade; a sustained moving overload then returns to the safe profile.
+  for(std::size_t index=0U;index<179U;++index)
+    CHECK(controller.observe(15.0,tetra_viewer::MetalQualityFrameClass::moving)
+              .change==tetra_viewer::MetalQualityChange::none);
+  const auto downgrade=controller.observe(
+      15.0,tetra_viewer::MetalQualityFrameClass::moving);
+  CHECK(downgrade.change==tetra_viewer::MetalQualityChange::downgrade);
+  CHECK(downgrade.profile_index==0U);
+
+  const auto trace=[] {
+    tetra_viewer::MetalQualityController replay(
+        {{0.5F,2U},{0.7F,2U}},0U,16.0);
+    std::vector<tetra_viewer::MetalQualityChange> result;
+    for(std::size_t index=0U;index<180U;++index)
+      result.push_back(replay.observe(4.0,
+          tetra_viewer::MetalQualityFrameClass::steady).change);
+    for(std::size_t index=0U;index<180U;++index)
+      result.push_back(replay.observe(15.0,
+          tetra_viewer::MetalQualityFrameClass::moving).change);
+    return result;
+  };
+  CHECK(trace()==trace());
+}
+
 TEST_CASE("atmosphere transport defaults to reference with older paths available") {
   using tetra_viewer::AtmosphereTransport;
   CHECK(tetra_viewer::default_atmosphere_transport==

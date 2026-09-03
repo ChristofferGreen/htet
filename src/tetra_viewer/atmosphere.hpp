@@ -37,6 +37,48 @@ enum class AtmosphereQuality {
   high
 };
 
+// P9's renderer-facing quality controller owns only a discrete, already
+// qualified raster-profile ladder. It deliberately has no atmospheric or
+// shadow quality knob: physical sampling and occlusion remain invariant while
+// a renderer decides whether a completed frame has enough headroom to change
+// its internal raster scale.
+struct MetalRasterQualityProfile {
+  float render_scale{};
+  std::uint32_t terrain_samples{};
+};
+
+enum class MetalQualityFrameClass { steady, moving };
+enum class MetalQualityChange { none, upgrade, downgrade };
+
+struct MetalQualityDecision {
+  std::size_t profile_index{};
+  MetalQualityChange change{MetalQualityChange::none};
+  double percentile_95_milliseconds{};
+  std::size_t dwell_frames{};
+};
+
+class MetalQualityController {
+ public:
+  explicit MetalQualityController(
+      std::vector<MetalRasterQualityProfile> profiles,
+      std::size_t initial_profile=0U,double target_milliseconds=1000.0/60.0);
+
+  // Maintenance frames (lookup refreshes, uploads, and AS builds) are
+  // deliberately classified out instead of causing a quality reaction.
+  [[nodiscard]] MetalQualityDecision observe(double gpu_milliseconds,
+      MetalQualityFrameClass frame_class,bool maintenance_frame=false);
+  void set_target_milliseconds(double target_milliseconds) noexcept;
+  [[nodiscard]] const MetalRasterQualityProfile& profile() const noexcept;
+  [[nodiscard]] std::size_t profile_index() const noexcept;
+
+ private:
+  std::vector<MetalRasterQualityProfile> profiles_;
+  std::array<std::vector<double>,2U> samples_;
+  std::size_t profile_index_{};
+  std::size_t dwell_frames_{};
+  double target_milliseconds_{};
+};
+
 // Keep earlier transports selectable so reference-path regressions can be
 // compared directly without reverting renderer work.
 enum class AtmosphereTransport {

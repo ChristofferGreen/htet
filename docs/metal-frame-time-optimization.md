@@ -905,6 +905,20 @@ smoke also retained finite motion, nonzero reactive coverage, generation
 resets, and temporal history accounting. This is a configuration-specific
 presentation win; capture-only paths remain separately non-framebuffer-only.
 
+### P9a qualified discrete Auto controller
+
+The previous Auto controller predicted arbitrary raster scales from one timing
+window. It is replaced by a deterministic two-profile ladder containing only
+the P6-qualified 0.5x and 0.7x render scales, both with 2x terrain MSAA and
+MetalFX. It keeps independent steady/moving 60-frame p95 windows, waits 180
+non-maintenance completed frames after every change, drops lookup-refresh,
+upload, and AS-maintenance frames, and uses a wide neutral band: either class
+downgrades above 90% of budget while settled/moving upgrades require less than
+64%/58%. The native Auto smoke reached profile 1 (0.70x) after one reported
+upgrade, and the pure controller trace proves the same upgrade/downgrade
+sequence on replay. P9b still owns final-image and long-session qualification
+of the active changes.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

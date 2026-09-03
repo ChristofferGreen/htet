@@ -419,9 +419,23 @@ other's timing or image evidence.
         300-frame profiles improved aggregate stable 5.2153/6.3927 to
         4.7514/6.0995 ms and moving 5.0797/6.3023 to 4.7455/6.0272 ms
         median/p95 at the fixed 1440x900 / 720x450 / 2x profile.
-- [ ] Add stage-aware automatic quality selection only if at least two fully
-      qualified modes have useful cost separation; require hysteresis, dwell
-      time, trace replay, and explicit mode-change diagnostics (P9).
+### P9 tracker — qualified adaptive raster modes
+
+Only P6-qualified raster profiles may enter the controller. Atmosphere
+transport, shadow coverage, visibility, and MSAA must never be changed as a
+reaction to a transient maintenance frame.
+  - [x] **P9a — Discrete controller and trace.** Replace continuous scale
+        prediction with the 0.5×/0.7×, 2×-MSAA ladder, separate steady and
+        moving 60-frame p95 windows, asymmetric upgrade thresholds, a 180-frame
+        dwell interval, and maintenance-frame exclusion. Add deterministic
+        trace coverage plus native Auto-smoke diagnostics for profile index,
+        count, and last change. The smoke upgraded once to 0.7× after 240
+        frames, preserving 2× MSAA and all physical renderer selections.
+  - [ ] **P9b — Adaptive-mode image and long-session qualification.** Re-run
+        the full native mountain/sun/flight/orbit capture matrix at both direct
+        presentation profiles, exercise sustained moving and maintenance-spike
+        traces, and retain Auto only if profile changes have no physical or
+        temporal artifact and stable/moving CPU and GPU tails remain bounded.
 - [ ] Re-run the full release, numeric, visual, motion, parity, resource, and
       long-session gates; document final median/p95/p99/max results and rejected
       alternatives before changing the Default (P10).

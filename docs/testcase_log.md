@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: full Release validation of P9a discrete controller | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed, including the deterministic controller trace and translated Metal shaders.
+
+- 2026-09-03 local | pass, P9a focused | mode: fresh Release target build, deterministic controller trace, hidden native Auto smoke | command: `cmake --build build/release --target tetra_tests tetra_world_metal -j 8`; `tetra_tests --test-case='Metal quality controller uses qualified discrete hysteretic ladder'`; hidden `--metal-auto-resolution-smoke-test` | failures: none | notes: 665 trace assertions passed; Auto reported exactly one upgrade to profile 1 / 0.70 scale after 240 frames while preserving 2x MSAA.
+
 - 2026-09-03 local | pass | mode: full Release validation of promoted P8c default | command: `./scripts/compile.sh --release` | failures: none | notes: all 472/472 tests passed, including translated Metal shaders and the atmosphere, shadow, and temporal contracts.
 
 - 2026-09-03 local | pass, P8c promoted | mode: hidden native MetalFX smoke, seven final-drawable captures, reverse-order 300-frame timing profiles | command: default direct drawable versus `TETWORLD_METAL_DIRECT_DRAWABLE=0` at fixed 0.5/2x | failures: none | notes: worst capture difference was 0.0000317 NRMS; aggregate stable 5.2153/6.3927→4.7514/6.0995 ms and moving 5.0797/6.3023→4.7455/6.0272 ms median/p95.

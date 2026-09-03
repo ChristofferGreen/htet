@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- [x] P9a discrete Metal quality controller: replaced the former continuous
+  auto-scale prediction with a 0.5x/0.7x, 2x-MSAA qualified ladder, separate
+  steady/moving p95 windows, 180-frame dwell, asymmetric thresholds, and
+  maintenance-frame exclusion. Deterministic trace coverage passed and the
+  hidden native Auto smoke made one reported upgrade to profile 1 at 0.70x.
+
 - [x] P8c MetalFX direct drawable output: promoted. The scaler now writes to
   the non-framebuffer-only drawable and UI uses a load-preserving pass, with
   the former intermediate route retained through `TETWORLD_METAL_DIRECT_DRAWABLE=0`.
