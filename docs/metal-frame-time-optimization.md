@@ -236,6 +236,11 @@ long-shadow dispatch, found 113,792 occluded atlas pixels, and passed its image
 gate. This proves the liveness guards are consumer-specific rather than a
 blanket suppression of terrain-shadow diagnostics.
 
+The min/max comparison smoke was also re-run after lazy hierarchy allocation.
+It passed with 25,146,524 bytes resident, versus the 22,350,316-byte default
+reference route, demonstrating that the hierarchy is added by its actual
+consumer rather than omitted from the test path.
+
 The remaining optional aerial/froxel families cannot safely be replaced with a
 nil binding: the translated Metal entry points declare typed `texture3d<float>`
 arguments even when a runtime route bypasses their samples. A subsequent lazy

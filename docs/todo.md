@@ -247,6 +247,8 @@ because it is faster.
   - [x] Exercise the inverse long-shadow diagnostic route after lazy routing:
         it materializes the atlas, reports a dispatch and occluded samples, and
         passes the image gate.
+  - [x] Re-run the min/max comparison consumer after lazy hierarchy routing;
+        it materializes the hierarchy and passes its atmosphere image gate.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).
