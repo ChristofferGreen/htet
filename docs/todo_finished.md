@@ -2,6 +2,12 @@
 
 ## 2026-09-03
 
+- [x] P8c MetalFX direct drawable output: promoted. The scaler now writes to
+  the non-framebuffer-only drawable and UI uses a load-preserving pass, with
+  the former intermediate route retained through `TETWORLD_METAL_DIRECT_DRAWABLE=0`.
+  Seven native captures passed within 0.0000317 NRMS and paired profiles
+  improved stable and moving median/p95.
+
 - [x] P8b MetalFX composition/motion/reactive MRT: rejected. The opt-in
   fused encoder passed the native temporal, final-drawable, finite-motion, and
   reactive-mask checks, but reverse-order matched profiles regressed both

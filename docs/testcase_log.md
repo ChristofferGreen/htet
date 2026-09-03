@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: full Release validation of promoted P8c default | command: `./scripts/compile.sh --release` | failures: none | notes: all 472/472 tests passed, including translated Metal shaders and the atmosphere, shadow, and temporal contracts.
+
+- 2026-09-03 local | pass, P8c promoted | mode: hidden native MetalFX smoke, seven final-drawable captures, reverse-order 300-frame timing profiles | command: default direct drawable versus `TETWORLD_METAL_DIRECT_DRAWABLE=0` at fixed 0.5/2x | failures: none | notes: worst capture difference was 0.0000317 NRMS; aggregate stable 5.2153/6.3927→4.7514/6.0995 ms and moving 5.0797/6.3023→4.7455/6.0272 ms median/p95.
+
 - 2026-09-03 local | pass | mode: full Release validation after P8b rejection | command: `./scripts/compile.sh --release` | failures: none | notes: all 472/472 tests passed, including Metal translated-shader compilation and atmosphere/shadow/temporal contracts.
 
 - 2026-09-03 local | pass, P8b rejected | mode: hidden native MetalFX MRT smoke and reverse-order 300-frame timing profiles | command: `TETWORLD_METAL_COMPOSITION_MRT=1` MetalFX smoke plus fixed 0.5/2x stable/moving control/candidate profiles | failures: none | notes: fused colour/motion/reactive MRT passed temporal/final-image probes but regressed stable 4.7324/6.1618 to 5.1492/6.5869 ms and moving 4.6538/6.1162 to 5.3905/6.5799 ms median/p95.

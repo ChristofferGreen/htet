@@ -570,6 +570,7 @@ struct MetalFxTemporalResources {
   int input_height{};
   int output_width{};
   int output_height{};
+  bool direct_output{};
   bool history_valid{};
   std::uint64_t encoded_frames{};
   std::uint64_t history_resets{};
@@ -2921,11 +2922,13 @@ id<MTLRenderPipelineState> make_temporal_present_pipeline(
 
 bool ensure_metal_fx_temporal_resources(
     id<MTLDevice> device,MetalFxTemporalResources& resources,
-    int input_width,int input_height,int output_width,int output_height) {
+    int input_width,int input_height,int output_width,int output_height,
+    bool direct_output) {
   if(resources.scaler!=nil&&resources.input_width==input_width&&
      resources.input_height==input_height&&
      resources.output_width==output_width&&
-     resources.output_height==output_height)
+     resources.output_height==output_height&&
+     resources.direct_output==direct_output)
     return true;
   resources=MetalFxTemporalResources{};
   if(input_width<=0||input_height<=0||output_width<=0||output_height<=0||
@@ -2969,9 +2972,10 @@ bool ensure_metal_fx_temporal_resources(
       MTLTextureUsageRenderTarget|resources.scaler.motionTextureUsage);
   resources.reactive=texture(MTLPixelFormatR8Unorm,input_width,input_height,
       MTLTextureUsageRenderTarget|resources.scaler.reactiveTextureUsage);
-  resources.output_colour=texture(MTLPixelFormatBGRA8Unorm,output_width,
-      output_height,MTLTextureUsageShaderRead|
-          resources.scaler.outputTextureUsage);
+  if(!direct_output)
+    resources.output_colour=texture(MTLPixelFormatBGRA8Unorm,output_width,
+        output_height,MTLTextureUsageShaderRead|
+            resources.scaler.outputTextureUsage);
   MTLTextureDescriptor* exposure_descriptor=[MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatR16Float
                                   width:1U height:1U mipmapped:NO];
@@ -2982,7 +2986,7 @@ bool ensure_metal_fx_temporal_resources(
   [resources.exposure replaceRegion:MTLRegionMake2D(0U,0U,1U,1U)
                         mipmapLevel:0U withBytes:&half_one bytesPerRow:2U];
   if(resources.input_colour==nil||resources.motion==nil||
-     resources.reactive==nil||resources.output_colour==nil||
+     resources.reactive==nil||(!direct_output&&resources.output_colour==nil)||
      resources.exposure==nil){
     resources.failure="MetalFX temporal texture allocation failed";
     resources.scaler=nil;
@@ -2992,6 +2996,7 @@ bool ensure_metal_fx_temporal_resources(
   resources.input_height=input_height;
   resources.output_width=output_width;
   resources.output_height=output_height;
+  resources.direct_output=direct_output;
   resources.history_valid=false;
   return true;
 }
@@ -3316,6 +3321,18 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
   const bool background_requested=
       std::getenv("TETWORLD_METAL_BACKGROUND")!=nullptr;
+  // P8c: MetalFX writes the final result directly to a non-framebuffer-only
+  // drawable, avoiding the persistent output texture and presentation draw.
+  // Keep the former path as an explicit paired qualification control.
+  bool metalfx_direct_drawable=true;
+  if(const char* value=std::getenv("TETWORLD_METAL_DIRECT_DRAWABLE");
+     value!=nullptr){
+    if(std::strcmp(value,"0")==0)metalfx_direct_drawable=false;
+    else if(std::strcmp(value,"1")!=0){
+      std::fprintf(stderr,"TETWORLD_METAL_DIRECT_DRAWABLE must be 0 or 1\n");
+      return 2;
+    }
+  }
   // 200x100 is Hillaire's reference sky-view resolution and is now the
   // qualified production default.  Keep 0 as an explicit 384x216 control for
   // the paired native qualification harness.
@@ -3525,7 +3542,7 @@ int main(int argc,char** argv) {
     layer.device=device;
     layer.pixelFormat=MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly=(capture_test||any_atmosphere_frame_test||
-                           metalfx_test)?NO:YES;
+                           metalfx_test||metalfx_direct_drawable)?NO:YES;
     layer.maximumDrawableCount=3;
     layer.displaySyncEnabled=YES;
     native_window.contentView.layer=layer;
@@ -4611,7 +4628,8 @@ int main(int argc,char** argv) {
         const bool metalfx_temporal_active=metalfx_requested&&
             ensure_metal_fx_temporal_resources(
                 device,metalfx_resources,desired_render_width,
-                desired_render_height,width,height);
+                desired_render_height,width,height,
+                metalfx_direct_drawable);
         if(render_width==desired_render_width&&
            render_height==desired_render_height)
           ++automatic_stable_frames;
@@ -6215,7 +6233,8 @@ int main(int argc,char** argv) {
           scaler.depthTexture=depth_texture;
           scaler.motionTexture=metalfx_resources.motion;
           scaler.reactiveMaskTexture=metalfx_resources.reactive;
-          scaler.outputTexture=metalfx_resources.output_colour;
+          scaler.outputTexture=metalfx_resources.direct_output?
+              drawable.texture:metalfx_resources.output_colour;
           scaler.exposureTexture=metalfx_resources.exposure;
           scaler.preExposure=1.0F;
           scaler.jitterOffsetX=temporal_jitter_x;
@@ -6234,13 +6253,17 @@ int main(int argc,char** argv) {
           metalfx_resources.history_valid=true;
           ++metalfx_resources.encoded_frames;
 
+          if(metalfx_resources.direct_output)
+            display_pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
           id<MTLRenderCommandEncoder> display_encoder=
               [command_buffer renderCommandEncoderWithDescriptor:display_pass];
-          [display_encoder setRenderPipelineState:temporal_present_pipeline];
-          [display_encoder setFragmentTexture:metalfx_resources.output_colour
-                                       atIndex:0];
-          [display_encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                              vertexStart:0 vertexCount:3];
+          if(!metalfx_resources.direct_output){
+            [display_encoder setRenderPipelineState:temporal_present_pipeline];
+            [display_encoder setFragmentTexture:metalfx_resources.output_colour
+                                         atIndex:0];
+            [display_encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                                vertexStart:0 vertexCount:3];
+          }
           if(!capture_test&&!any_atmosphere_frame_test)
             ImGui_ImplMetal_RenderDrawData(
                 ImGui::GetDrawData(),command_buffer,display_encoder);

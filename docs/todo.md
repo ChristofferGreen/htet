@@ -410,12 +410,15 @@ other's timing or image evidence.
         instead regressed from 4.7324/6.1618 and 4.6538/6.1162 ms to
         5.1492/6.5869 and 5.3905/6.5799 ms stable/moving median/p95; retain
         the separate motion pass and remove the experiment.
-  - [ ] **P8c — MetalFX direct-to-drawable experiment.** Test scaler output
-        directly to an eligible non-framebuffer-only drawable followed by a
-        load-preserving UI pass, against the intermediate-and-present route.
-        Measure normal interactive framebuffer-only policy separately from
-        capture mode and retain the existing path unless end-to-end timing and
-        final-drawable evidence both improve.
+  - [x] **P8c — MetalFX direct-to-drawable experiment.** Promoted. The
+        scaler writes to the non-framebuffer-only drawable and the UI pass
+        loads it, eliminating the persistent output texture and presentation
+        draw; `TETWORLD_METAL_DIRECT_DRAWABLE=0` retains the prior paired
+        control. Seven native final-drawable captures passed (worst 0.0000317
+        NRMS), including the occluded mountain and visible sun. Reverse-order
+        300-frame profiles improved aggregate stable 5.2153/6.3927 to
+        4.7514/6.0995 ms and moving 5.0797/6.3023 to 4.7455/6.0272 ms
+        median/p95 at the fixed 1440x900 / 720x450 / 2x profile.
 - [ ] Add stage-aware automatic quality selection only if at least two fully
       qualified modes have useful cost separation; require hysteresis, dwell
       time, trace replay, and explicit mode-change diagnostics (P9).

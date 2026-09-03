@@ -124,6 +124,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Fusing MetalFX composition, motion, and reactive-mask writes into an MRT encoder regresses both stable and moving frame profiles, so the separate motion pass remains production.
 - Evidence: The fused route passed native final-image and temporal probes but reverse-order 300-frame profiles rose from 4.7324/6.1618 and 4.6538/6.1162 to 5.1492/6.5869 and 5.3905/6.5799 ms median/p95.
 
+### metal-p8c-direct-drawable
+- Updated: 2026-09-03
+- Tags: metal, metalfx, presentation, performance
+- Fact: Direct MetalFX output to a non-framebuffer-only drawable is the production presentation route, with a load-preserving UI pass and the old intermediate path available through `TETWORLD_METAL_DIRECT_DRAWABLE=0`.
+- Evidence: Seven native captures stayed within 0.0000317 NRMS and reverse-order 300-frame pairs reduced aggregate stable and moving median/p95.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

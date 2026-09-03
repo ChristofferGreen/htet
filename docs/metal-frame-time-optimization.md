@@ -889,6 +889,22 @@ MRT 5.1492/6.5869 and 5.3905/6.5799 ms. The added colour attachments and fused
 fragment work cost more than the removed encoder, so the distinct motion pass
 remains the production route.
 
+### P8c direct MetalFX drawable result
+
+MetalFX output is now written directly to the non-framebuffer-only drawable;
+the following UI pass uses `MTLLoadActionLoad`. This removes the persistent
+full-resolution output texture and its final presentation triangle. The former
+route remains available as the paired `TETWORLD_METAL_DIRECT_DRAWABLE=0`
+control. At the fixed 1440x900 drawable / 720x450 internal / 2x profile,
+reverse-order 300-frame pairs improved aggregate stable median/p95 from
+5.2153/6.3927 to 4.7514/6.0995 ms and moving from 5.0797/6.3023 to
+4.7455/6.0272 ms. Seven native final-drawable captures passed: mountain was
+0.0000317 NRMS versus the control and visible-sun, flight, atmosphere-top,
+orbit, and orbital-motion captures were byte-identical. The native MetalFX
+smoke also retained finite motion, nonzero reactive coverage, generation
+resets, and temporal history accounting. This is a configuration-specific
+presentation win; capture-only paths remain separately non-framebuffer-only.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that
