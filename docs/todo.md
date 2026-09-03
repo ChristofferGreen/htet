@@ -269,9 +269,12 @@ because it is faster.
         Refresh (7.6154 ms median) and motion (6.8588 ms) exceed steady
         rendering (5.5181 ms); do not rank a saving until exact-handoff and RT
         distributions use the same completed-frame readiness rule.
-  - [ ] Make exact-handoff and RT timing-profile readiness bounded and prove
-        their 300-frame distributions before completing P2; then rank gains by
-        frequency, percentile, and bandwidth and retire immaterial work.
+  - [ ] Prove the exact-handoff distribution before completing P2. Its profile
+        route now latches the real coordinator handoff and freezes preview
+        reacquisition only after that event, with the normal 180-second
+        automation bound; it still needs an uncontended completed run. Then
+        rank gains by frequency, percentile, and bandwidth and retire
+        immaterial work.
 - [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
       Sweep one table's resolution and samples at a time against its specific
       oracle, including the Hillaire 200x100 sky-view reference point. Compare

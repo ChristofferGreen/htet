@@ -302,7 +302,13 @@ the stable run issued one each. Preview measured 6.0360/6.8156/10.7095/
 12.2967 ms and published a 5.99 MB preview upload. These are initial evidence,
 not a promotion: the exact-handoff and RT classes still need a bounded
 readiness completion and uncontended distributions before P2 can rank or
-retire candidates.
+retire candidates. The RT class subsequently passed at 7.4274/8.4875/
+8.7629/27.5685 ms, with one valid AS build, at that same identity. Exact
+handoff is now treated as the transient coordinator event it is: the test
+latches that event and freezes only its own subsequent preview reacquisition,
+instead of demanding that a normal interactive state remain true for 300
+frames. It retains the standard 180-second automated-run bound and still
+requires a completed uncontended distribution.
 
 ## Native visual preflight evidence
 

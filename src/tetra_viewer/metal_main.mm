@@ -3713,7 +3713,7 @@ int main(int argc,char** argv) {
     constexpr int basic_automation_timeout_seconds=180;
 #endif
     const auto smoke_deadline=previous_time+std::chrono::seconds(
-        any_atmosphere_frame_test||metalfx_test?180:
+        any_atmosphere_frame_test||metalfx_test||timing_profile_test?180:
         basic_automation_timeout_seconds);
     const auto motion_start=controller.state().feet;
     std::size_t motion_rendered_frames{};
@@ -3735,6 +3735,10 @@ int main(int argc,char** argv) {
     std::size_t low_atmosphere_allocation{};
     std::size_t default_atmosphere_allocation{};
     std::size_t high_atmosphere_allocation{};
+    // Exact handoff is an event, not a durable coordinator state: normal
+    // interactive use is allowed to request the next preview immediately.
+    // A timing profile instead needs a stable post-handoff population.
+    bool timing_profile_exact_handoff_observed{};
 
     const auto apply_atmosphere_quality=[&](int quality_index){
       auto replacement=make_live_atmosphere_resources(
@@ -4116,6 +4120,16 @@ int main(int argc,char** argv) {
                   terrain_front_coordinator.complete_preview(
                       request,result.outcome()));
             }
+          }
+          if(timing_profile_test&&
+             timing_profile_class==TimingProfileClass::exact_handoff&&
+             terrain_display_front.preview_cpu==nullptr&&
+             terrain_front_coordinator.state().preview_retirement_reason==
+                 tetra_viewer::PreviewRetirementReason::exact_handoff){
+            timing_profile_exact_handoff_observed=true;
+            // Preserve the exact front after the event. This is test-only;
+            // normal interactive preview reacquisition remains unchanged.
+            preview_enabled=false;
           }
         }
         single_step=false;
@@ -5912,9 +5926,12 @@ int main(int argc,char** argv) {
         NSUInteger capture_row_bytes{};
         const bool requested_preview_capture_ready=!preview_enabled||
             !automated_test||(require_exact_handoff_capture?
-                (terrain_display_front.preview_cpu==nullptr&&
-                 terrain_front_coordinator.state().preview_retirement_reason==
-                     tetra_viewer::PreviewRetirementReason::exact_handoff):
+                (timing_profile_test&&
+                 timing_profile_class==TimingProfileClass::exact_handoff?
+                     timing_profile_exact_handoff_observed:
+                 (terrain_display_front.preview_cpu==nullptr&&
+                  terrain_front_coordinator.state().preview_retirement_reason==
+                      tetra_viewer::PreviewRetirementReason::exact_handoff)):
                 terrain_display_front.preview_cpu!=nullptr);
         const bool requested_rt_capture_ready=
             !(any_atmosphere_frame_test&&atmosphere_transport!=2&&
@@ -6894,9 +6911,7 @@ int main(int argc,char** argv) {
                   ordered.front()>0.0&&std::isfinite(ordered.back());
               const bool exact_handoff_ready=
                   timing_profile_class!=TimingProfileClass::exact_handoff||
-                  (terrain_display_front.preview_cpu==nullptr&&
-                   terrain_front_coordinator.state().preview_retirement_reason==
-                       tetra_viewer::PreviewRetirementReason::exact_handoff);
+                  timing_profile_exact_handoff_observed;
               const bool ray_trace_ready=
                   timing_profile_class!=TimingProfileClass::ray_tracing||
                   (terrain_acceleration_structure.active!=nil&&
