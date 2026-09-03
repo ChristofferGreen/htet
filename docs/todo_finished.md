@@ -2,6 +2,11 @@
 
 ## 2026-09-03
 
+- [x] P8b MetalFX composition/motion/reactive MRT: rejected. The opt-in
+  fused encoder passed the native temporal, final-drawable, finite-motion, and
+  reactive-mask checks, but reverse-order matched profiles regressed both
+  stable and moving median/p95. The separate motion pass remains production.
+
 - [x] P8a diagnostic allocation/readback audit: retired as already satisfied.
   Normal frames have no detailed-counter marker or resolve work; the three
   pooled timestamp flights are opt-in, and final-drawable/depth/shadow/motion/

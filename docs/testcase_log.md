@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: full Release validation after P8b rejection | command: `./scripts/compile.sh --release` | failures: none | notes: all 472/472 tests passed, including Metal translated-shader compilation and atmosphere/shadow/temporal contracts.
+
+- 2026-09-03 local | pass, P8b rejected | mode: hidden native MetalFX MRT smoke and reverse-order 300-frame timing profiles | command: `TETWORLD_METAL_COMPOSITION_MRT=1` MetalFX smoke plus fixed 0.5/2x stable/moving control/candidate profiles | failures: none | notes: fused colour/motion/reactive MRT passed temporal/final-image probes but regressed stable 4.7324/6.1618 to 5.1492/6.5869 ms and moving 4.6538/6.1162 to 5.3905/6.5799 ms median/p95.
+
 - 2026-09-03 local | pass, P8a retired | mode: Metal source/resource-lifetime audit | command: inspected timestamp-flight selection and all capture/probe allocation sites in `metal_main.mm` | failures: none | notes: ordinary frames have no stage-counter allocation, marker, resolve, capture, or synchronous readback; three timestamp flights and all readbacks are explicit diagnostic/test resources.
 
 - 2026-09-03 local | pass, P7c retired | mode: Metal API/source contract audit | command: inspected `MTLAccelerationStructureUsageRefit` and native immutable display-front/AS code | failures: none | notes: refit permits reduced quality but production changes buffers and primitive counts per generation, so no topology-safe refit candidate exists.

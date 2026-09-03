@@ -876,6 +876,19 @@ terminating test/capture frames. Therefore no production per-frame allocation
 or synchronous diagnostic readback remains to remove; P8b and P8c must be
 measured independently rather than attributing test-only work to them.
 
+### P8b MetalFX composition MRT result
+
+An opt-in translated composition variant emitted colour, pixel-space motion,
+and the conservative five-by-five depth-discontinuity reactive mask in one MRT
+encoder. Its hidden native MetalFX smoke passed, including finite motion,
+nonzero reactive coverage, generation reset, reference-history accounting, and
+the final drawable. It is nevertheless rejected. With the background renderer
+stopped, matched 300-frame 1440x900 / 720x450 / 2x / MetalFX profiles recorded
+control stable/moving median/p95 of 4.7324/6.1618 and 4.6538/6.1162 ms versus
+MRT 5.1492/6.5869 and 5.3905/6.5799 ms. The added colour attachments and fused
+fragment work cost more than the removed encoder, so the distinct motion pass
+remains the production route.
+
 The multisample scene colour and depth textures are resolve sources only. They
 are never sampled after the terrain pass, and their store actions already
 request resolve without retaining the multisample surfaces. On Apple GPUs that

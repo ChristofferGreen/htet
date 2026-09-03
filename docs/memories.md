@@ -118,6 +118,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Ordinary interactive Metal frames have no timestamp-counter allocation, timestamp resolve, capture readback, or synchronous diagnostic wait.
 - Evidence: Stage timing uses three fixed flights only when explicitly enabled, and every capture/probe allocation is guarded by a terminating test mode.
 
+### metal-p8b-composition-mrt
+- Updated: 2026-09-03
+- Tags: metal, metalfx, performance, rejection
+- Fact: Fusing MetalFX composition, motion, and reactive-mask writes into an MRT encoder regresses both stable and moving frame profiles, so the separate motion pass remains production.
+- Evidence: The fused route passed native final-image and temporal probes but reverse-order 300-frame profiles rose from 4.7324/6.1618 and 4.6538/6.1162 to 5.1492/6.5869 and 5.3905/6.5799 ms median/p95.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

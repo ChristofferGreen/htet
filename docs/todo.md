@@ -402,12 +402,14 @@ other's timing or image evidence.
         readbacks are test-only and allocate only for their terminating
         qualification frame. The audit found no per-frame diagnostic allocation
         or synchronous readback in the production interactive path.
-  - [ ] **P8b — MetalFX composition MRT experiment.** Test a dedicated
-        composition pipeline that writes scaler colour, motion, and reactive
-        targets together, against the current separate motion/reactive pass.
-        Preserve temporal history identity, centre and neighbour depth tests,
-        and MetalFX contracts; require identical motion/reactive probes and
-        final-drawable captures plus a coherent GPU or CPU-tail win.
+  - [x] **P8b — MetalFX composition MRT experiment.** Rejected. The opt-in
+        translated composition variant wrote scaler colour, motion, and
+        reactive targets in one encoder and passed native MetalFX temporal,
+        finite-motion, reactive-mask, and final-drawable checks. With the
+        hidden background renderer stopped, reverse-order 300-frame profiles
+        instead regressed from 4.7324/6.1618 and 4.6538/6.1162 ms to
+        5.1492/6.5869 and 5.3905/6.5799 ms stable/moving median/p95; retain
+        the separate motion pass and remove the experiment.
   - [ ] **P8c — MetalFX direct-to-drawable experiment.** Test scaler output
         directly to an eligible non-framebuffer-only drawable followed by a
         load-preserving UI pass, against the intermediate-and-present route.
