@@ -1830,21 +1830,36 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
                                         MetalAtmosphereResources& resources,
                                         NSUInteger render_width,
                                         NSUInteger render_height,
-                                        std::uint32_t divisor=2U) {
+                                        std::uint32_t divisor=2U,
+                                        bool needs_visibility_history=false) {
   divisor=std::clamp(divisor,1U,4U);
   const NSUInteger width=(render_width+divisor-1U)/divisor;
   const NSUInteger height=(render_height+divisor-1U)/divisor;
   if(resources.screen_width==width&&resources.screen_height==height&&
-     resources.screen_divisor==divisor&&resources.screen_endpoint!=nil)
+     resources.screen_divisor==divisor&&resources.screen_endpoint!=nil&&
+     (!needs_visibility_history||
+      (resources.terrain_ray_visibility!=nil&&
+       resources.history_visibility[0]!=nil&&
+       resources.history_visibility[1]!=nil)))
     return true;
   resources.screen_endpoint=make_atmosphere_texture(device,width,height);
   resources.screen_scattering=make_atmosphere_texture(device,width,height);
   resources.screen_transmittance=make_atmosphere_texture(device,width,height);
-  resources.terrain_ray_visibility=make_ray_visibility_texture(device,width,height);
-  resources.history_visibility[0]=make_uint_atmosphere_texture(
-      device,width,height);
-  resources.history_visibility[1]=make_uint_atmosphere_texture(
-      device,width,height);
+  // The qualified reference route evaluates terrain visibility in its own
+  // screen integration and never binds this 3D query volume or its packed
+  // binary histories.  Allocate the family only once a non-reference route
+  // can consume it; a mode switch calls this routine before encoding.
+  if(needs_visibility_history){
+    resources.terrain_ray_visibility=make_ray_visibility_texture(
+        device,width,height);
+    resources.history_visibility[0]=make_uint_atmosphere_texture(
+        device,width,height);
+    resources.history_visibility[1]=make_uint_atmosphere_texture(
+        device,width,height);
+  }else{
+    resources.terrain_ray_visibility=nil;
+    resources.history_visibility={};
+  }
   for(std::size_t index=0;index<2U;++index){
     resources.history_scattering[index]=make_atmosphere_texture(
         device,width,height);
@@ -1863,9 +1878,10 @@ bool ensure_screen_atmosphere_resources(id<MTLDevice> device,
   resources.history_identities={};
   return resources.screen_endpoint!=nil&&resources.screen_scattering!=nil&&
       resources.screen_transmittance!=nil&&
-      resources.terrain_ray_visibility!=nil&&
-      resources.history_visibility[0]!=nil&&
-      resources.history_visibility[1]!=nil&&
+      (!needs_visibility_history||
+       (resources.terrain_ray_visibility!=nil&&
+        resources.history_visibility[0]!=nil&&
+        resources.history_visibility[1]!=nil))&&
       std::ranges::all_of(resources.history_scattering,
           [](id<MTLTexture> texture){return texture!=nil;})&&
       std::ranges::all_of(resources.history_transmittance,
@@ -3578,7 +3594,7 @@ int main(int argc,char** argv) {
       if(render_width>0&&render_height>0&&
          !ensure_screen_atmosphere_resources(
              device,atmosphere_resources,render_width,render_height,
-             atmosphere_screen_divisor))
+             atmosphere_screen_divisor,atmosphere_transport!=2))
         return false;
       atmosphere_optical_dirty=true;
       return shadow_texture!=nil;
@@ -3596,7 +3612,7 @@ int main(int argc,char** argv) {
       atmosphere_screen_divisor=plan.screen_divisor;
       return ensure_screen_atmosphere_resources(
           device,atmosphere_resources,render_width,render_height,
-          atmosphere_screen_divisor);
+          atmosphere_screen_divisor,atmosphere_transport!=2);
     };
 
     const auto publish_terrain_display=[&](
@@ -4134,7 +4150,7 @@ int main(int argc,char** argv) {
                   depth_format,active_samples,MTLTextureUsageRenderTarget):nil;
           if(!ensure_screen_atmosphere_resources(
                  device,atmosphere_resources,render_width,render_height,
-                 atmosphere_screen_divisor)){
+                 atmosphere_screen_divisor,atmosphere_transport!=2)){
             std::fprintf(stderr,"Unable to allocate screen atmosphere targets.\n");
             result=1;
             glfwSetWindowShouldClose(window,GLFW_TRUE);
@@ -4660,7 +4676,7 @@ int main(int argc,char** argv) {
             atmosphere_screen_divisor=integration_index+1;
             static_cast<void>(ensure_screen_atmosphere_resources(
                 device,atmosphere_resources,render_width,render_height,
-                atmosphere_screen_divisor));
+                atmosphere_screen_divisor,atmosphere_transport!=2));
           }
           if(integration_locked)ImGui::EndDisabled();
           constexpr double minimum_aerial_range=10'000.0;
@@ -5407,11 +5423,14 @@ int main(int argc,char** argv) {
             ray_traced_screen_visibility_active?
                 frame_visibility_plan.screen_divisor:
                 (ios_performance_mode?4U:2U);
-        if(atmosphere_screen_divisor!=desired_screen_divisor){
+        const bool needs_visibility_history=atmosphere_transport!=2;
+        if(atmosphere_screen_divisor!=desired_screen_divisor||
+           (needs_visibility_history&&
+            atmosphere_resources.terrain_ray_visibility==nil)){
           atmosphere_screen_divisor=desired_screen_divisor;
           if(!ensure_screen_atmosphere_resources(
                  device,atmosphere_resources,render_width,render_height,
-                 atmosphere_screen_divisor)){
+                 atmosphere_screen_divisor,needs_visibility_history)){
             std::fprintf(stderr,
                 "Unable to allocate atmosphere visibility resources.\n");
             result=1;
@@ -6408,6 +6427,11 @@ int main(int argc,char** argv) {
                    atmosphere_resources.dispatch_counts[4U]==2U&&
                    atmosphere_resources.reference_lookup_attempts==12U&&
                    atmosphere_resources.reference_lookup_skips==10U);
+              const bool reference_visibility_resources_absent=
+                  atmosphere_transport!=2||
+                  (atmosphere_resources.terrain_ray_visibility==nil&&
+                   atmosphere_resources.history_visibility[0]==nil&&
+                   atmosphere_resources.history_visibility[1]==nil);
               const bool passed=converted&&analysis.luminance_mean>0.01&&
                   analysis.luminance_standard_deviation>0.005&&
                   fitted_coverage!=0U&&
@@ -6422,7 +6446,8 @@ int main(int argc,char** argv) {
                    (atmosphere_resources.screen_divisor==4U&&
                     atmosphere_resources.last_ray_visibility_query_count==1U))&&
                   timing_passed&&temporal_accounting_passed&&
-                  long_shadow_dispatch_passed&&lookup_invalidation_passed;
+                  long_shadow_dispatch_passed&&lookup_invalidation_passed&&
+                  reference_visibility_resources_absent;
               if(atmosphere_capture&&converted&&
                  !tetra_viewer::write_ppm(argv[2],image,error)){
                 std::fprintf(stderr,"Metal atmosphere capture failed: %s\n",
@@ -6451,6 +6476,8 @@ int main(int argc,char** argv) {
                           "\"long_shadow_dispatch_required\":%s,"
                           "\"aerial_scattering_dispatches\":%llu,"
                           "\"froxel_dispatches\":%llu,"
+                          "\"reference_visibility_resources_absent\":%s,"
+                          "\"atmosphere_allocation_bytes\":%zu,"
                           "\"ray_visibility_dispatches\":%llu,"
                           "\"ray_visibility_queries_per_pixel\":%u,"
                           "\"history_attempts\":%llu,"
@@ -6493,6 +6520,8 @@ int main(int argc,char** argv) {
                               atmosphere_resources.dispatch_counts[3U]),
                           static_cast<unsigned long long>(
                               atmosphere_resources.dispatch_counts[16U]),
+                          reference_visibility_resources_absent?"true":"false",
+                          live_atmosphere_allocation_bytes(atmosphere_resources),
                           static_cast<unsigned long long>(
                               atmosphere_resources.ray_visibility_dispatches),
                           atmosphere_resources.last_ray_visibility_query_count,

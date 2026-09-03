@@ -229,6 +229,10 @@ because it is faster.
         atlas can be sampled; retain the atlas only for the native faithful
         marcher and explicit long-shadow diagnostics/comparisons. The
         parameterised atmosphere smoke asserts and reports this contract.
+  - [x] Lazily allocate the default-inactive ray-visibility volume and packed
+        visibility histories. The reference smoke proves they remain absent;
+        non-reference routes allocate them before binding and retain them
+        across switches to avoid allocation churn.
 - [ ] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

@@ -203,6 +203,17 @@ occlusion rather than an indication that shadows were removed.
 two irradiance dispatches with ten cache skips, proving that a physical lookup
 change invalidates the cache while the other ten frames remain stable.
 
+The packed ray-visibility volume and its two binary history textures are now
+lazily allocated. The qualified reference route leaves all three absent;
+non-reference routes request them before their first encoder can bind them.
+The atmosphere smoke reports total allocation bytes and asserts the absence
+contract for reference transport. Resources are deliberately retained after an
+interactive route switch rather than destroyed every frame; any further
+residency trimming must be measured independently from this allocation win.
+At the 480x300 reference screen extent, this avoids 6,912,000 nominal bytes
+(a 32-slice R8 visibility volume plus two RG32Uint histories); the qualified
+reference smoke reports 42,120,268 total atmosphere bytes after the change.
+
 ## P2 initial comparable steady-frame profile
 
 On 2026-09-03, after terminating the separately launched hidden interactive
