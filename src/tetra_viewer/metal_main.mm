@@ -1025,6 +1025,7 @@ enum class AtmosphereTextureRole {
 };
 bool atmosphere_half_radiance_experiment{};
 bool atmosphere_private_radiance_experiment{};
+bool atmosphere_legacy_planet_umbra_work{};
 // P4d-b2: the qualified production format for reconstructed coloured
 // transmittance.  Setting the environment switch to 0 retains the float32
 // control for paired native qualification.
@@ -2320,7 +2321,8 @@ void encode_deterministic_screen_atmosphere(
       tetra_viewer::atmosphere_visibility_refresh_intervals(
           temporal,compatibility),
       visibility_control|(legacy_native_depth_scan?1024U:0U)|
-      (elide_reference_sky_transport?2048U:0U)};
+      (elide_reference_sky_transport?2048U:0U)|
+      (atmosphere_legacy_planet_umbra_work?4096U:0U)};
   // Endpoint reconstruction establishes exactly the same camera ray and
   // maximum distance that the integration pass will use.  Query each of its
   // 32 radial sample positions directly against terrain before consuming it.
@@ -3206,7 +3208,7 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-auto-resolution-smoke-test")==0;
   const bool timing_profile_test=argc==2&&
       std::strcmp(argv[1],"--metal-timing-profile-smoke-test")==0;
-  enum class TimingProfileClass { stable, moving, lookup_refresh,
+  enum class TimingProfileClass { stable, moving, terminator, lookup_refresh,
                                   optical_refresh, aerial_refresh, preview,
                                   exact_handoff, ray_tracing, shadow_lookup };
   TimingProfileClass timing_profile_class=TimingProfileClass::stable;
@@ -3217,6 +3219,8 @@ int main(int argc,char** argv) {
       if(std::strcmp(requested,"stable")==0){}
       else if(std::strcmp(requested,"moving")==0)
         timing_profile_class=TimingProfileClass::moving;
+      else if(std::strcmp(requested,"terminator")==0)
+        timing_profile_class=TimingProfileClass::terminator;
       else if(std::strcmp(requested,"lookup-refresh")==0)
         timing_profile_class=TimingProfileClass::lookup_refresh;
       else if(std::strcmp(requested,"optical-refresh")==0)
@@ -3233,7 +3237,7 @@ int main(int argc,char** argv) {
         timing_profile_class=TimingProfileClass::shadow_lookup;
       else {
         std::fprintf(stderr,"TETWORLD_METAL_TIMING_PROFILE must be stable, "
-            "moving, lookup-refresh, optical-refresh, aerial-refresh, preview, exact-handoff, "
+        "moving, terminator, lookup-refresh, optical-refresh, aerial-refresh, preview, exact-handoff, "
             "ray-tracing, or shadow-lookup\\n");
         return 2;
       }
@@ -3345,6 +3349,10 @@ int main(int argc,char** argv) {
   }
   const bool legacy_native_depth_scan=
       std::getenv("TETWORLD_METAL_LEGACY_NATIVE_DEPTH_SCAN")!=nullptr;
+  // P5b qualification control: retain direct-light work that has already
+  // been proven radiometrically zero by the solid-planet umbra.
+  atmosphere_legacy_planet_umbra_work=
+      std::getenv("TETWORLD_METAL_LEGACY_PLANET_UMBRA_WORK")!=nullptr;
   // P4c's production route elides only reference-temporal true-sky transport;
   // diagnostics and non-reference renderers retain their full screen work.
   // Keep the old complete integration as an explicit paired-test control.
@@ -3701,6 +3709,13 @@ int main(int argc,char** argv) {
     float sun_elevation=atmosphere_60_degree_test?
         60.0F*std::numbers::pi_v<float>/180.0F:
         tetra_viewer::default_world_sun_elevation_radians;
+    if(timing_profile_test&&
+       timing_profile_class==TimingProfileClass::terminator){
+      // Deterministic below-horizon fixture for P5b. It preserves the normal
+      // screen marcher, but gives the solid-planet umbra enough coverage to
+      // measure direct-light work that is mathematically zero.
+      sun_elevation=-8.0F*std::numbers::pi_v<float>/180.0F;
+    }
     if(atmosphere_mountain_capture){
       // The originally reported back-lit mountain pose.  Capture diagnostics
       // use this fixed camera/sun pair, while ordinary interactive startup is

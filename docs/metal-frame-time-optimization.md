@@ -549,16 +549,23 @@ control, and motion plus interactive Auto-scale smoke passed. At a native
 increased p95 from 5.8812/5.8827 to 6.2520/6.1755 ms. The inconsistent motion
 tail fails the gate; the target override and mapping code were removed.
 
-The reference Hillaire marcher now evaluates spherical planet visibility before
-the four terrain-shadow samples and direct-sun transmittance lookup. When that
+The reference Hillaire marcher evaluates spherical planet visibility before the
+four terrain-shadow samples and direct-sun transmittance lookup. When that
 visibility is exactly zero it skips only the zero direct contribution; any
 positive penumbra value retains all four terrain samples, and multiple
-scattering remains unshadowed. Reference smoke plus occluded-mountain and
-visible-sun captures pass with no foreground direct-Mie leak. This is the safe
-first Breyer--Zirr-aligned condition, but it is not yet the full analytic
-interval remapping experiment and ground captures do not show a measurable
-terminator benefit. It remains unpromoted until low-sun/orbital measurement
-proves removed work and preserves the physical oracle.
+scattering remains unshadowed. This is the conservative deterministic part of
+the Breyer--Zirr transfer: it does not remap the fixed 32 radiometric intervals
+or try to represent mountain shadows using the spherical planet.
+
+P5b adds a hidden `terminator` timing fixture and
+`TETWORLD_METAL_LEGACY_PLANET_UMBRA_WORK=1` paired control, which retains the
+otherwise dead terrain/transmittance work without changing the resulting direct
+radiance. Terminator, mountain, visible-sun, flight, and orbit captures are
+byte-identical between the control and default, and continuous motion passes.
+Two matched 300-frame terminator runs at 1440x900 / 1008x630 / 2x / MetalFX
+improved aggregate median/p95 from 5.5508/6.2342 to 5.0935/5.9880 ms. The
+guard is therefore promoted; an optical-depth interval remap is explicitly out
+of scope because it would alter the qualified fixed-32 integration rule.
 
 The full release gate was repeated after this P5 change on 2026-09-03. It
 passed all 471 tests in 483.18 seconds. One first-pass failure in the unrelated

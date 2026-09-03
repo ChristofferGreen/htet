@@ -373,7 +373,8 @@ vec3 integrate_scattered_luminance(vec3 origin,vec3 direction,
     // scattering remains unshadowed as required by the transport model.
     const float planetary_visibility=planet_visibility(point,sun_direction);
     vec3 direct_source=vec3(0.0);
-    if(planetary_visibility>0.0){
+    if(planetary_visibility>0.0||
+       (dispatch_mode.reserved2&4096U)!=0U){
       float terrain_visibility_average=0.0;
       for(int visibility_sample=0;visibility_sample<4;++visibility_sample){
         const float fraction=(float(visibility_sample)+visibility_jitter)*0.25;

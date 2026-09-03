@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P5b final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed with the planet-umbra work-elision control and terminator timing fixture compiled into the native Metal executable.
+
+- 2026-09-03 local | pass, P5b promoted | mode: native Metal planet-umbra direct-work qualification | command: hidden byte-paired terminator/mountain/direct-sun/flight/orbit captures, motion smoke, and reverse-order 300-frame terminator profiles | failures: none | notes: all five capture pairs were zero NRMS; motion passed; aggregate terminator median/p95 improved 5.5508/6.2342 to 5.0935/5.9880 ms while fixed 32 intervals, lit/penumbra terrain visibility, and unshadowed multiple scattering remained unchanged.
+
 - 2026-09-03 local | pass | mode: release P5a final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed after restoring the coupled production atmosphere target.
 
 - 2026-09-03 local | pass, P5a rejected | mode: native Metal MetalFX-independent reference-atmosphere target qualification | command: hidden mountain/direct-sun/flight/orbit captures, motion and interactive Auto smoke, plus reverse-order native-scale 300-frame profiles | failures: none in physical or temporal smoke | notes: captures max 0.001129 NRMS; stable improved in both pairs but moving p95 regressed 5.8812/5.8827 to 6.2520/6.1755 ms, so all candidate source was removed.

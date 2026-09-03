@@ -2,6 +2,18 @@
 
 ## 2026-09-03
 
+- [x] P5b analytic planet-umbra direct-light partition qualification: retained
+  the conservative per-sample spherical-umbra guard, which skips only four
+  terrain-visibility queries and the solar-transmittance lookup when its
+  direct contribution is exactly zero. Added the hidden `terminator` timing
+  profile and `TETWORLD_METAL_LEGACY_PLANET_UMBRA_WORK=1` paired control that
+  deliberately retains that dead work. Terminator, mountain, visible-sun,
+  flight, and orbit captures were byte-identical; continuous motion passed.
+  At identical 1440x900 / 1008x630 / 2x / MetalFX settings, two 300-frame
+  terminator pairs improved aggregate median/p95 from 5.5508/6.2342 to
+  5.0935/5.9880 ms. The full 32 radiometric intervals and unshadowed multiple
+  scattering remain intact; this promotes only the proven-zero direct path.
+
 - [x] P5a MetalFX-independent reference-atmosphere target qualification:
   tested an opt-in drawable-relative 35% atmosphere target and exact
   source-depth footprint mapping, so its target did not resize when MetalFX

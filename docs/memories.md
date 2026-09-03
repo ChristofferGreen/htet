@@ -64,6 +64,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: A drawable-relative fixed reference-atmosphere target has correct source-depth mapping but causes repeatable moving p95 regressions, so the atmosphere target remains coupled to terrain resolution.
 - Evidence: Native physical and Auto-scale smoke passed, but both reverse-order moving profiles rose from 5.8812/5.8827 to 6.2520/6.1755 ms p95.
 
+### metal-p5b-planet-umbra-work
+- Updated: 2026-09-03
+- Tags: metal, atmosphere, shadows, performance
+- Fact: The reference marcher skips terrain visibility and solar transmittance only when spherical planet visibility is exactly zero; its terminator profile proves the work removal is image-identical and beneficial without altering 32 intervals or unshadowed multiple scattering.
+- Evidence: The legacy dead-work control was zero-NRMS across five native captures, while reverse-order terminator pairs improved aggregate median/p95 from 5.5508/6.2342 to 5.0935/5.9880 ms.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation
