@@ -370,8 +370,17 @@ existing physical/liveness smoke gates at both resolutions. Side-by-side
 inspection found no foreground Mie cutout behind the mountain and retained a
 compact direct solar disc. ImageMagick normalized RMS differences from the
 384x216 captures were 0.000884 (mountain) and 0.000424 (sun). This is useful
-but insufficient for promotion: continuous camera motion, surface-to-orbit,
-and the existing numerical/oracle matrix still need a 200x100 run.
+but insufficient for promotion: the surface-to-orbit and numerical/oracle
+matrices still need a 200x100 run.
+
+The candidate also passed the reference-cache and physical-sun-invalidation
+smokes: the static route performed one lookup plus eleven skips, while the sun
+change rebuilt exactly once (two lookups, ten skips). Its bounded continuous-
+motion profile completed 300 frames at 6.8994/8.1660 ms median/p95. That is
+effectively level with the 384x216 motion profile (6.8588/7.7553 ms), so this
+experiment must not be marketed as a general motion-frame saving. It remains a
+refresh-cost candidate pending the broader physical/orbital qualification
+matrix.
 
 ## Native visual preflight evidence
 
