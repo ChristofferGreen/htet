@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-03 local | pass | mode: release P4d-b1 final | command: `./scripts/compile.sh --release` | failures: none | notes: all 472 tests passed in 364.53 s after restoring float32 screen scattering.
+
+- 2026-09-03 local | pass, P4d-b1 rejected | mode: native Metal screen-scattering half-float qualification | command: paired mountain/sun/flight/orbit captures and 300-frame stable/moving profiles | failures: none in captures | notes: max NRMS 0.000156; stable 5.2241/5.9521 vs 5.1323/6.2176 and moving 5.2754/6.1722 vs 5.2155/5.9694 ms; rejected for the stable p95 regression.
+
 - 2026-09-03 local | pass | mode: release P4d-a final | command: `./scripts/compile.sh --release` after restoring float32 lookup transmittance | failures: none | notes: all 472 tests passed in 363.76 s; the half-float candidate was rejected and no production format change remains.
 
 - 2026-09-03 local | pass, P4d-a rejected | mode: native Metal lookup-transmittance half-float qualification | command: hidden paired mountain/direct-sun/flight/orbit captures and 300-frame stable/moving profiles | failures: none in physical smoke | notes: maximum capture NRMS was 0.000459 with a 131,072-byte allocation saving, but stable median/p95 regressed from 5.0875/5.8655 to 5.4443/6.0109 ms while moving improved from 5.4516/6.3409 to 5.2383/6.1669; the inconsistent result was rejected and production remains float32.
