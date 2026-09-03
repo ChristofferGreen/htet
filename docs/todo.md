@@ -319,6 +319,10 @@ because it is faster.
         and screen/history role without changing default format or storage.
         Reference and invalidation smoke pass; half precision and private
         storage remain separately unqualified experiments.
+  - [x] Test radiance-only `RGBA16Float` without changing transmittance or
+        screen/history precision. Still and invalidation checks pass and save
+        1.35 MB, but the 5.8508/6.6179 ms median/p95 stable profile regresses
+        from float32's 5.5533/6.3560 ms. Reject it as the default.
 - [ ] Decouple atmosphere resolution from terrain/MetalFX resolution and add a
       deterministic Breyer-Zirr experiment that removes analytically planet-
       shadowed direct-light work near the terminator. Consider a stable angular

@@ -411,6 +411,18 @@ it is preparatory infrastructure, not a precision or storage optimization.
 Any `RGBA16Float` or private-storage experiment must select a role explicitly
 and pass the same physical, temporal, and numeric gates.
 
+### P4 rejected radiance-only half-float experiment
+
+`TETWORLD_METAL_HALF_RADIANCE=1` changes radiance-role textures only to
+`RGBA16Float`; coloured transmittance and all screen/history resources remain
+float32. The opt-in trial passed mountain and direct-sun captures (normalized
+RMS 0.000294 and 0.000437) and physical-sun invalidation, while reducing live
+atmosphere allocation from 22.35 MB to 21.00 MB. Its fixed 300-frame stable
+profile was slower at 5.8508/6.6179 ms median/p95 than the float32 direct-
+history baseline (5.5533/6.3560 ms). Reject it as the production default: the
+small residency saving does not offset the measured regression, and it has not
+yet cleared broad numeric/orbital qualification.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

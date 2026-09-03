@@ -1015,6 +1015,7 @@ id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
 }
 
 enum class AtmosphereTextureRole { radiance, transmittance, screen };
+bool atmosphere_half_radiance_experiment{};
 
 id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
                                        NSUInteger height,NSUInteger depth=1U,
@@ -1026,6 +1027,9 @@ id<MTLTexture> make_atmosphere_texture(id<MTLDevice> device,NSUInteger width,
   // accidentally changing endpoint/history precision with a LUT trial.
   switch(role){
     case AtmosphereTextureRole::radiance:
+      descriptor.pixelFormat=atmosphere_half_radiance_experiment?
+          MTLPixelFormatRGBA16Float:MTLPixelFormatRGBA32Float;
+      break;
     case AtmosphereTextureRole::transmittance:
     case AtmosphereTextureRole::screen:
       descriptor.pixelFormat=MTLPixelFormatRGBA32Float;
@@ -3183,6 +3187,15 @@ int main(int argc,char** argv) {
     else {
       std::fprintf(stderr,
           "TETWORLD_METAL_SKY_VIEW_REFERENCE must be 0 or 1\n");
+      return 2;
+    }
+  }
+  if(const char* value=std::getenv("TETWORLD_METAL_HALF_RADIANCE");
+     value!=nullptr){
+    if(std::strcmp(value,"0")==0)atmosphere_half_radiance_experiment=false;
+    else if(std::strcmp(value,"1")==0)atmosphere_half_radiance_experiment=true;
+    else {
+      std::fprintf(stderr,"TETWORLD_METAL_HALF_RADIANCE must be 0 or 1\n");
       return 2;
     }
   }
