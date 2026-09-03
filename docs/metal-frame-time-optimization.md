@@ -446,6 +446,14 @@ interval remapping experiment and ground captures do not show a measurable
 terminator benefit. It remains unpromoted until low-sun/orbital measurement
 proves removed work and preserves the physical oracle.
 
+The full release gate was repeated after this P5 change on 2026-09-03. It
+passed all 471 tests in 483.18 seconds. One first-pass failure in the unrelated
+blocked-world resource-rejection test passed on its focused 53-assertion rerun
+and in the repeated complete sequence (50.32 seconds), so it is not attributed
+to the atmospheric shader. This confirms the conservative guard compiles and
+preserves the project's broad regression suite; it still does not prove a
+terminator-speed benefit or qualify the unimplemented interval remapping.
+
 ### Post-P4 release validation
 
 After the direct-history presentation change, semantic texture split, and both

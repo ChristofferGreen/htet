@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Generated preview `SceneVertex` values must set `diagnostics[0]` to `-2.0F` and carry both flat geometric and analytic smooth normals so the shader selects connected-world rendering and receiver-plane shadow bias remains valid.
 - Evidence: Without the marker the scene shader applied its research cut plane and produced a rectangular 2D terrain cutout; release seam, cascade-shadow, and back-lit atmosphere captures passed after using the connected-world marker and separate normals.
 
+### metal-background-launch
+- Updated: 2026-09-03
+- Tags: macos, metal, automation
+- Fact: The Metal app can be launched without a visible or activating window using `TETWORLD_METAL_BACKGROUND=1 open -g -j -n build/release/src/tetra_viewer/TetWorldMetal.app`.
+- Evidence: The running `TetWorldMetal` process had zero macOS windows when queried through System Events.
+
 ### release-validation-entry-point
 - Updated: 2026-08-24
 - Tags: build, cmake, tests
