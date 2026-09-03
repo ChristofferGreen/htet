@@ -331,6 +331,11 @@ because it is faster.
       shadowed direct-light work near the terminator. Consider a stable angular
       domain only if screen-aligned scaling remains material; do not reduce the
       qualified 32 intervals through an unproven distance heuristic (P5).
+  - [x] Guard exactly planet-shadowed direct samples before their four terrain
+        visibility queries and transmittance lookup; retain terrain checks for
+        every positive penumbra sample and unshadowed multiple scattering.
+        Reference, mountain, and visible-sun smoke pass. This is groundwork,
+        not a measured analytic-interval promotion.
 - [ ] Benchmark the complete 1x/2x/4x MSAA by MetalFX-scale matrix and retain
       the lowest-cost fixed profile that passes still and motion image gates.
       For MSAA modes, also compare private with supported memoryless colour and

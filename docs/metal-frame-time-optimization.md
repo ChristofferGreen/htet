@@ -433,6 +433,19 @@ at p95 than the shared float32 baseline's 5.5533/6.3560 ms. It does not meet
 the declared promotion threshold, so shared storage remains default and this
 experiment is rejected pending a device-specific pressure result.
 
+## P5 conservative planet-umbra work elimination
+
+The reference Hillaire marcher now evaluates spherical planet visibility before
+the four terrain-shadow samples and direct-sun transmittance lookup. When that
+visibility is exactly zero it skips only the zero direct contribution; any
+positive penumbra value retains all four terrain samples, and multiple
+scattering remains unshadowed. Reference smoke plus occluded-mountain and
+visible-sun captures pass with no foreground direct-Mie leak. This is the safe
+first Breyer--Zirr-aligned condition, but it is not yet the full analytic
+interval remapping experiment and ground captures do not show a measurable
+terminator benefit. It remains unpromoted until low-sun/orbital measurement
+proves removed work and preserves the physical oracle.
+
 ### Post-P4 release validation
 
 After the direct-history presentation change, semantic texture split, and both

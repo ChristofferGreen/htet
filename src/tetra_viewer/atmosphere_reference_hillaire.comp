@@ -367,18 +367,25 @@ vec3 integrate_scattered_luminance(vec3 origin,vec3 direction,
     const vec3 phase_times_scattering=
         atmosphere.rayleigh_ground_radius.rgb*density.x*phase_rayleigh+
         atmosphere.mie_scattering_top_radius.rgb*density.y*phase_mie;
-    float terrain_visibility_average=0.0;
-    for(int visibility_sample=0;visibility_sample<4;++visibility_sample){
-      const float fraction=(float(visibility_sample)+visibility_jitter)*0.25;
-      terrain_visibility_average+=terrain_visibility(
-          origin+direction*mix(distance0,distance1,fraction));
+    // A solid-planet umbra has exactly zero direct source.  Do not spend four
+    // terrain-shadow samples (or a sun transmittance lookup) there; terrain
+    // remains evaluated at every retained lit/penumbra sample and multiple
+    // scattering remains unshadowed as required by the transport model.
+    const float planetary_visibility=planet_visibility(point,sun_direction);
+    vec3 direct_source=vec3(0.0);
+    if(planetary_visibility>0.0){
+      float terrain_visibility_average=0.0;
+      for(int visibility_sample=0;visibility_sample<4;++visibility_sample){
+        const float fraction=(float(visibility_sample)+visibility_jitter)*0.25;
+        terrain_visibility_average+=terrain_visibility(
+            origin+direction*mix(distance0,distance1,fraction));
+      }
+      terrain_visibility_average*=0.25;
+      const float visibility=planetary_visibility*terrain_visibility_average;
+      direct_source=atmosphere.solar_absorption_peak.rgb*
+          visibility*transmittance_to_sun(point,sun_direction)*
+          phase_times_scattering;
     }
-    terrain_visibility_average*=0.25;
-    const float visibility=planet_visibility(point,sun_direction)*
-        terrain_visibility_average;
-    const vec3 direct_source=atmosphere.solar_absorption_peak.rgb*
-        visibility*transmittance_to_sun(point,sun_direction)*
-        phase_times_scattering;
     const vec3 source=direct_source+
         multiple_scattering_source(point,sun_direction,density);
     const vec3 integral=(vec3(1.0)-segment_transmittance)/
