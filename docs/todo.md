@@ -285,6 +285,11 @@ because it is faster.
         boundaries. A forced-refresh profile's 31 valid pooled-counter samples
         measured sky view at 0.7865/0.9445 ms median/p95 and irradiance at
         0.0467/0.0939 ms. Retain the remaining lookup families as unmeasured.
+  - [x] Add the Hillaire 200x100 sky-view point as an experiment-only resource
+        override. It measured 0.3779/0.3962 ms median/p95 versus
+        0.7865/0.9445 ms at 384x216 and passed mountain/sun still captures
+        (normalized RMS 0.000884/0.000424). Do not promote it until motion,
+        surface-to-orbit, and numeric/oracle qualification pass.
 - [ ] Eliminate the resolved-history-to-screen publish copy by binding the
       active history generation directly, but only after P1 proves temporal
       accumulation under jitter and physical camera motion. Split the

@@ -355,6 +355,24 @@ focus on the Hillaire sky-view table rather than reducing the small irradiance
 table. Optical, aerial, and shadow lookup isolation remains required before
 any specialization is promoted.
 
+### P3 Hillaire 200x100 sky-view reference experiment
+
+`TETWORLD_METAL_SKY_VIEW_REFERENCE=1` replaces only the runtime sky-view
+texture with Hillaire's 200x100 reference resolution; standard production
+resources remain 384x216. In the same forced-refresh profile, 200x100 reduced
+sky-view lookup timing to 0.3779 ms median / 0.3962 ms p95 (27 valid pooled
+samples), from 0.7865/0.9445 ms at 384x216. The full-frame distribution was
+7.6055/10.3790 ms, so the time saved by that encoder does not directly predict
+the enclosing frame under its other refresh costs.
+
+Native 960x600 occluded-mountain and visible-sun captures both passed all
+existing physical/liveness smoke gates at both resolutions. Side-by-side
+inspection found no foreground Mie cutout behind the mountain and retained a
+compact direct solar disc. ImageMagick normalized RMS differences from the
+384x216 captures were 0.000884 (mountain) and 0.000424 (sun). This is useful
+but insufficient for promotion: continuous camera motion, surface-to-orbit,
+and the existing numerical/oracle matrix still need a 200x100 run.
+
 ## Native visual preflight evidence
 
 On 2026-09-03, fresh 960x600 captures from the release executable were

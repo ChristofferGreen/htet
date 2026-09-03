@@ -3173,6 +3173,17 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
   const bool background_requested=
       std::getenv("TETWORLD_METAL_BACKGROUND")!=nullptr;
+  bool sky_view_reference_profile=false;
+  if(const char* value=std::getenv("TETWORLD_METAL_SKY_VIEW_REFERENCE");
+     value!=nullptr){
+    if(std::strcmp(value,"0")==0)sky_view_reference_profile=false;
+    else if(std::strcmp(value,"1")==0)sky_view_reference_profile=true;
+    else {
+      std::fprintf(stderr,
+          "TETWORLD_METAL_SKY_VIEW_REFERENCE must be 0 or 1\n");
+      return 2;
+    }
+  }
   // Automated runs must not steal focus or briefly flash a window. Keep an
   // explicit visible mode for debugging, and retain the old hidden variable
   // as a backwards-compatible no-op in the already-hidden default case.
@@ -3394,6 +3405,11 @@ int main(int argc,char** argv) {
         flight=make_timestamp_flight(device,gpu_timestamp_counter_set);
     auto atmosphere_resources=make_live_atmosphere_resources(
         device,layer.pixelFormat,tetra_viewer::AtmosphereQuality::standard);
+    // Hillaire's published 200x100 sky-view LUT is retained as an
+    // experiment-only P3 reference point. The production standard size stays
+    // 384x216 unless this route passes its independent qualification.
+    if(sky_view_reference_profile)
+      atmosphere_resources.sky_view=make_atmosphere_texture(device,200U,100U);
     const bool metalfx_temporal_supported=
         [MTLFXTemporalScalerDescriptor supportsDevice:device]&&
         temporal_motion_pipeline!=nil&&temporal_present_pipeline!=nil&&
@@ -6969,6 +6985,7 @@ int main(int argc,char** argv) {
                           "\"drawable\":\"%dx%d\",\"internal\":\"%dx%d\","
                           "\"samples_per_pixel\":%lu,\"transport\":%d,"
                           "\"renderer\":%d,\"metalfx\":%s,"
+                          "\"sky_view\":\"%lux%lu\","
                           "\"preview\":%s,\"exact_handoff\":%s,"
                           "\"lookup_samples\":%zu,"
                           "\"sky_view_lookup_ms\":%.4f,"
@@ -6986,6 +7003,8 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long>(allocated_samples),
                           atmosphere_transport,atmosphere_renderer,
                           metalfx_temporal_active?"true":"false",
+                          static_cast<unsigned long>(atmosphere_resources.sky_view.width),
+                          static_cast<unsigned long>(atmosphere_resources.sky_view.height),
                           preview_enabled?"true":"false",
                           exact_handoff_ready?"true":"false",
                           ordered_sky.size(),
