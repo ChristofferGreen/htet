@@ -171,56 +171,6 @@ the qualified terrain-shadowed atmosphere, coherent preview/exact display
 front, and native visual oracle. Do not promote a lower-quality path solely
 because it is faster.
 
-- [ ] Audit every atmosphere, shadow, display-front, preview-upload, and
-      ray-tracing cache identity and build an active-renderer consumer matrix.
-      First replace Metal's raw camera/uniform history comparisons with the
-      shared typed screen-history compatibility model, pass the previous slot's
-      generation during reprojection, and prove that MetalFX jitter accumulates,
-      camera motion refreshes binary visibility while valid radiance reprojects,
-      and sun/terrain/material changes reject old transport. Prove reference
-      sky/irradiance uses stable physical identity; stop
-      inactive aerial, froxel, long-shadow, hierarchy, and comparison resources
-      from dispatching; add renderer/debug-view dispatch-count tests; test that
-      physical changes still rebuild every resource that is actually consumed;
-      then measure lazy allocation independently. Start with the confirmed
-      default-inactive ray-visibility, packed-visibility-history, and min/max
-      resources as well as the unused renderer families (P1).
-  - [x] Key reference sky-view and sky-irradiance lookup dispatches to the
-        unjittered physical uniform, complete production shadow state, and
-        terrain generation. Static smoke now performs one refresh and eleven
-        skips while both static-atmosphere and continuous-motion checks pass.
-  - [x] Add a physical lookup-invalidation smoke: one deterministic sun change
-        in twelve otherwise-static reference frames produces exactly two
-        sky-view/irradiance refreshes and ten stable-cache skips.
-  - [x] Stop aerial-volume dispatch in the default reference temporal route;
-        retain it for non-reference renderers and explicit aerial diagnostics.
-  - [x] Stop long-shadow-atlas dispatch in the default reference temporal route;
-        retain it for non-reference transports and long-shadow diagnostics.
-  - [x] Stop long-shadow-atlas dispatch in faithful temporal and deterministic
-        screen routes too. They return screen-integrated transport before the
-        atlas can be sampled; retain the atlas only for the native faithful
-        marcher and explicit long-shadow diagnostics/comparisons. The
-        parameterised atmosphere smoke asserts and reports this contract.
-  - [x] Lazily allocate the default-inactive ray-visibility volume and packed
-        visibility histories. The reference smoke proves they remain absent;
-        non-reference routes allocate them before binding and retain them
-        across switches to avoid allocation churn.
-  - [x] Lazily allocate 32-cubed froxel volumes behind type-correct 1x1x1
-        fallbacks. The reference and froxel smoke routes assert both sides of
-        the residency contract and preserve qualified images.
-  - [x] Lazily allocate the long-shadow atlas behind a 1x1 fallback. The
-        default route proves the fallback is retained; the native faithful
-        marcher proves full allocation, dispatch, and occlusion when consumed.
-  - [x] Lazily allocate the min/max hierarchy behind a minimal valid buffer;
-        materialize it only for long-shadow, min-max, or epipolar consumers.
-  - [x] Lazily allocate aerial scattering/transmittance behind type-correct
-        1x1x1 fallbacks; materialize the full pair for legacy/aerial-diagnostic
-        consumers only.
-  - [x] Exercise the inverse long-shadow diagnostic route after lazy routing:
-        it materializes the atlas, reports a dispatch and occluded samples, and
-        passes the image gate.
-  - [x] Re-run the min/max comparison consumer after lazy hierarchy routing;
-        it materializes the hierarchy and passes its atmosphere image gate.
 - [x] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

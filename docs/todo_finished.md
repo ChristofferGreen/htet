@@ -2,6 +2,15 @@
 
 ## 2026-09-04
 
+- [x] Complete P1, Metal invalidation and liveness audit. Metal now shares the
+  typed screen-history compatibility model, retains reprojectable radiance over
+  presentation jitter and camera motion, refreshes binary visibility as needed,
+  and rejects transport changes by explicit reason. The consumer matrix limits
+  aerial, long-shadow, froxel, ray-visibility, packed-history, and min/max
+  allocation/dispatch to real consumers with type-correct fallbacks otherwise.
+  Fresh MetalFX, physical sun-invalidation, froxel, and min/max smokes passed,
+  as did the full 477-test Release suite.
+
 - [x] Complete P0, coherent Metal profiling and temporal observability. The
   source audit confirms pooled per-flight timestamp resources, frame/configuration
   identities, coherent enclosing intervals, CPU submission timing, a separately

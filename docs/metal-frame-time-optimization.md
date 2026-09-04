@@ -1430,7 +1430,7 @@ earlier measurement shows that the opportunity is immaterial.
    reference transport dispatched sky view and irradiance once over twelve
    frames (eleven skips); a single sun change dispatched each twice. The prior
    twelve-dispatch observation is historical, before P1's stable physical key.
-2. **P1 — Invalidation and liveness audit.** Enumerate every atmosphere,
+2. **P1 — Invalidation and liveness audit (complete).** Enumerate every atmosphere,
    shadow, display, preview-upload, and ray-tracing cache dependency and build
    the active-renderer consumer matrix. Add invalidation tests, prove reference
    sky/irradiance uses stable physical identity, and stop inactive aerial,
@@ -1442,6 +1442,11 @@ earlier measurement shows that the opportunity is immaterial.
    separately from dispatch removal. Continue with the confirmed
    default-inactive aerial, long-shadow, froxel, ray-visibility, packed-
    visibility-history, and min/max resources.
+   The final fresh audit on 2026-09-04 confirmed the shared typed identity,
+   stable lookup key, consumer matrix, and lazy fallback routes. Native
+   MetalFX, sun-invalidation, froxel, and min/max smokes pass; inactive
+   reference-route families remain undispatched while each explicit consumer
+   materializes and validates its resource.
 3. **P2 — Bottleneck ranking.** Capture stable, moving, lookup-refresh,
    preview-upload, exact-handoff, and ray-tracing frames. Rank opportunities by
    median, p95, bandwidth, and frequency. Retire any item whose plausible gain
