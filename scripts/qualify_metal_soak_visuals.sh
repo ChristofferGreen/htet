@@ -20,5 +20,12 @@ for name in ('ground','flight','atmosphere-top','orbit'):
     value=math.sqrt(sum((x-y)**2 for x,y in zip(a,b))/len(a))/255.0
     if value > limit: raise SystemExit(f'{name}: NRMS {value:.7f} exceeds {limit:.7f}')
     print(f'{name}: NRMS {value:.7f}')
+# Prove this gate is capable of rejecting a material visual regression rather
+# than merely reporting a permissive threshold.  A uniform +16 channel shift
+# is deliberately much larger than the observed fresh-run Metal variation.
+altered=bytes(min(255, value+16) for value in a)
+negative=math.sqrt(sum((x-y)**2 for x,y in zip(a,altered))/len(a))/255.0
+if negative <= limit: raise SystemExit('visual negative control did not exceed NRMS limit')
+print(f'negative control: NRMS {negative:.7f} (rejected)')
 print(f'metal soak visual baselines passed: {out}')
 PY
