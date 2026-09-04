@@ -2,6 +2,19 @@
 
 ## 2026-09-04
 
+- [x] Profile and optimize the atomic unsliced exact background front after
+  cold-preview qualification. Two fresh isolated Release replays converge on
+  every stationary, walking, rapid-turn, near, far, reversal, and teleport
+  route with identical hierarchy, conforming-volume, connected-surface, render,
+  and field hashes. Cold closure was the measured dominant stage, so the
+  dedicated background publication caller now helps consume its queued bounded
+  work rather than idling. Relative to the isolated baseline, the two replays
+  reduce aggregate end-to-end time by 2.3% and 2.9%, and closure time by 3.9%
+  and 4.7%, without weakening the sector-union cold-reset boundary. Focused
+  supersession, continuous-publication, and background-runtime tests plus the
+  complete 475-test Release suite pass, preserving the existing two-second
+  cancellation/settled-convergence contract.
+
 - [x] Qualify the cold render-only terrain preview. A freshly rebuilt Release
   app measured 10.4--18.2 ms cold construction and a 5,985,864-byte candidate
   upload, below the 100 ms/250 ms latency and 16 MiB upload gates. The welded

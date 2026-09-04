@@ -3240,7 +3240,10 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
               work(worker,begin,end);
           });
         }
-        executor->wait(group);cancel();return;
+        // The blocked runtime invokes closure from its dedicated background
+        // publication caller. When configured for it, let that caller consume
+        // a queued partition instead of idling while the fixed point waits.
+        executor->wait_and_help(group);cancel();return;
       }
       std::vector<std::thread> workers;
       workers.reserve(worker_count);

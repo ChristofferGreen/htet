@@ -184,6 +184,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The canonical validation command is `./scripts/compile.sh --release`, and discovered doctest cases must run with the repository root as their working directory because visual baselines use repository-relative paths.
 - Evidence: The first complete CTest run failed only because it ran from `build/release`; setting `WORKING_DIRECTORY` to the source root produced a clean 166-test release run.
 
+### unsliced-cold-closure-help
+- Updated: 2026-09-04
+- Tags: terrain, closure, executor, performance
+- Fact: The dedicated `BlockedTerrainRuntime` publication caller may safely help its own queued cold-closure partitions, reducing isolated aggregate exact-background route time by 2.3--2.9% while preserving all exact hashes.
+- Evidence: Two uncontended fresh Release benchmark replays converged stationary, walking, rapid-turn, near, far, reversal, and teleport with matching hierarchy, volume, surface, render, and field hashes; the full 475-test Release gate passed.
+
 ## Maintenance Notes
 - Keep entries sorted by slug within the section.
 - Delete wrong entries instead of leaving contradictory facts behind.

@@ -1825,7 +1825,10 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
         tetra::GeometryExecutorConfiguration{
             .worker_count=tetra::default_geometry_worker_count(),
             .blocks_per_worker=4U,
-            .external_callers_may_participate=false})) {
+            // Publication runs on this runtime's dedicated background caller,
+            // not the presentation thread. Let that otherwise-idle caller
+            // help the cold closure's bounded worker group.
+            .external_callers_may_participate=true})) {
   if(profile_.budgets.maximum_cpu_bytes==0U||
      profile_.budgets.maximum_triangles==0U||
      profile_.budgets.maximum_work_units==0U||

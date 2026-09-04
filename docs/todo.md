@@ -779,11 +779,6 @@ until every leaf is complete.
         the occluding mountain. The existing resource-limit tests preserve the
         64 MiB CPU cap, and preview construction remains excluded from exact
         hierarchy, surface, and render hashes.
-  - [ ] Profile the atomic unsliced exact background front only after the cold
-        preview passes. Optimize only the measured dominant settled-convergence
-        work; preserve exact hierarchy, surface, and render hashes plus the
-        existing two-second settled gate. Reject any change without a
-        repeatable end-to-end benefit.
   - [ ] Add retained row/column updates only after the cold path passes and they
         match the cold oracle byte-for-byte.
   - [ ] Repeat every latency, resource, starvation, hash, and visual gate with

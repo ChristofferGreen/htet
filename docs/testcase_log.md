@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 13:00 CEST | pass, full Release gate after exact-background closure scheduling change | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 475 tests passed. Focused Release checks also passed for newest-pose supersession (22 assertions), continuous front publication (95), and background boundary/refine/simplify work (104). Two uncontended `tetra_world --runtime-benchmark` replays converged all routes with identical exact hashes; aggregate end-to-end time improved 2.3% and 2.9% against the isolated baseline.
+
 - 2026-09-04 local | pass, isolated unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` after stopping two orphaned background TetWorldMetal test processes | failures: none | notes: every route, including reversal, converged. The previous reversal timeout was host CPU starvation, not a deterministic runtime failure. Full cold closure and surface topology/extraction dominate complete-front time, while the isolated 32-operation atomic transaction was 265.7 ms; any optimization must target retained/full-front work rather than publication.
 
 - 2026-09-04 12:35 CEST | fail, unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` | failures: reversal convergence | notes: exit 1 after successful stationary/walking-speed/rapid-turn/near/far records; the benchmark reported `world runtime did not converge for reversal`. Captured stage data identifies closure and surface topology/extraction as dominant but is not a basis for a performance change while the final-pose convergence contract fails.

@@ -498,11 +498,6 @@ visual failures can be tied to the exact coordinator state.
       continuous, with no seam, moat, hole, cutout, or foreground Mie through
       the occluding mountain. Preview remains excluded from exact hashes and
       authoritative world state.
-- [ ] Profile the atomic unsliced exact background front after cold-preview
-      qualification. Optimize only repeatably dominant settled-convergence
-      work while preserving exact hierarchy, surface, and render hashes and the
-      existing two-second settled gate; reject changes without a repeatable
-      end-to-end gain.
 - [ ] Add retained row/column updates only after the cold path passes. Verify
       byte equality with the cold oracle for every shifted origin before making
       retained construction the default.
