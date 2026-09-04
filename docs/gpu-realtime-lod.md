@@ -819,9 +819,12 @@ blocking upload does not meet the goal.
 
 ## Implementation chain
 
-- [ ] Add a release-mode benchmark that records the current CPU camera-update
+- [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
-  camera paths.
+  camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
+  orbit, near/far, teleport, reversal, and revisit paths; the focused test
+  repeats both standard and persistent-scheduler runs and checks authoritative
+  conformity, hashes, counts, upload cost, and latency fields.
 - [ ] Define the supported first method tuple and its exact CPU reference
   output, including mixed-depth boundary ownership and surface edges.
 - [ ] Define packed, shader-visible hierarchy records and document alignment,
