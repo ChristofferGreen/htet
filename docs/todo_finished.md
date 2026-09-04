@@ -2,6 +2,17 @@
 
 ## 2026-09-04
 
+- [x] Add retained row/column preview updates after cold-path qualification.
+  The serial builder retains only canonical terrain samples from its immediately
+  preceding compatible front; each shifted request still reconstructs vertices,
+  indices, coverage, and diagnostics in the cold builder's canonical order.
+  X- and Z-shift regressions prove every vertex component, index, and geometry
+  hash matches a new cold build, while showing that the overlapping region is
+  reused and only entering samples are evaluated. Field/configuration changes
+  invalidate the private cache, cancellation discards its partial generation,
+  and the retained allocation remains inside the established preview CPU cap.
+  The full 476-test Release suite and hidden native preview timing smoke pass.
+
 - [x] Profile and optimize the atomic unsliced exact background front after
   cold-preview qualification. Two fresh isolated Release replays converge on
   every stationary, walking, rapid-turn, near, far, reversal, and teleport

@@ -43,6 +43,11 @@ struct PreviewSurfaceDiagnostics {
   double build_milliseconds{};
   std::size_t vertex_count{};
   std::size_t triangle_count{};
+  // Samples reused from the immediately preceding compatible preview front.
+  // Geometry is still rebuilt in canonical order, so this is purely a cold
+  // oracle-equivalent construction optimization.
+  std::size_t reused_sample_count{};
+  std::size_t sampled_vertex_count{};
   std::size_t boundary_edge_count{};
   std::size_t maximum_edge_incidence{};
   std::size_t cpu_bytes{};

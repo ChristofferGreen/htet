@@ -378,6 +378,87 @@ TEST_CASE("preview origin is stable within a snapped finest cell and hashes dete
   CHECK(first->diagnostics().geometry_hash!=changed->diagnostics().geometry_hash);
 }
 
+TEST_CASE("retained preview samples rebuild shifted clipmaps byte-identically") {
+  const auto field=planar_production_field();
+  const tetra_viewer::PreviewSurfaceConfiguration configuration{
+      .level_count=4U,.cells_per_side=64U,.finest_spacing=0.125};
+  const auto first_request=preview_request(
+      1U,{0.01,2.0,0.01},field,4U,configuration);
+  const auto shifted_request=preview_request(
+      2U,{0.14,2.0,0.01},field,4U,configuration);
+  const auto shifted_z_request=preview_request(
+      3U,{0.14,2.0,0.14},field,4U,configuration);
+  tetra_viewer::PreviewSurfaceBuildScratch scratch;
+  const auto first=tetra_viewer::build_preview_surface(
+      first_request,field,configuration,{},std::stop_token{},&scratch);
+  REQUIRE(first.ready());
+  REQUIRE(first.front());
+  CHECK(first.front()->diagnostics().reused_sample_count==0U);
+  CHECK(first.front()->diagnostics().sampled_vertex_count==
+        first.front()->diagnostics().vertex_count);
+
+  const auto retained=tetra_viewer::build_preview_surface(
+      shifted_request,field,configuration,{},std::stop_token{},&scratch);
+  const auto cold=tetra_viewer::build_preview_surface(
+      shifted_request,field,configuration);
+  REQUIRE(retained.ready());
+  REQUIRE(cold.ready());
+  REQUIRE(retained.front());
+  REQUIRE(cold.front());
+  CHECK(retained.front()->diagnostics().reused_sample_count>0U);
+  CHECK(retained.front()->diagnostics().sampled_vertex_count<
+        retained.front()->diagnostics().vertex_count);
+  CHECK(retained.front()->diagnostics().geometry_hash==
+        cold.front()->diagnostics().geometry_hash);
+  CHECK(retained.front()->vertices().size()==cold.front()->vertices().size());
+  CHECK(std::ranges::equal(
+      retained.front()->indices(),cold.front()->indices()));
+  for(std::size_t index=0U;index<retained.front()->vertices().size();++index){
+    const auto& actual=retained.front()->vertices()[index];
+    const auto& expected=cold.front()->vertices()[index];
+    CHECK(actual.sample_x==expected.sample_x);
+    CHECK(actual.sample_z==expected.sample_z);
+    CHECK(actual.position.x==expected.position.x);
+    CHECK(actual.position.y==expected.position.y);
+    CHECK(actual.position.z==expected.position.z);
+    CHECK(actual.normal.x==expected.normal.x);
+    CHECK(actual.normal.y==expected.normal.y);
+    CHECK(actual.normal.z==expected.normal.z);
+  }
+
+  const auto retained_z=tetra_viewer::build_preview_surface(
+      shifted_z_request,field,configuration,{},std::stop_token{},&scratch);
+  const auto cold_z=tetra_viewer::build_preview_surface(
+      shifted_z_request,field,configuration);
+  REQUIRE(retained_z.ready());
+  REQUIRE(cold_z.ready());
+  REQUIRE(retained_z.front());
+  REQUIRE(cold_z.front());
+  CHECK(retained_z.front()->diagnostics().reused_sample_count>0U);
+  CHECK(retained_z.front()->diagnostics().sampled_vertex_count<
+        retained_z.front()->diagnostics().vertex_count);
+  CHECK(retained_z.front()->diagnostics().geometry_hash==
+        cold_z.front()->diagnostics().geometry_hash);
+
+  auto changed_field=field;
+  changed_field.terrain.height_offset+=0.25;
+  const auto changed_request=preview_request(
+      4U,shifted_z_request.camera.position,changed_field,5U,configuration);
+  const auto retained_changed=tetra_viewer::build_preview_surface(
+      changed_request,changed_field,configuration,{},std::stop_token{},&scratch);
+  const auto cold_changed=tetra_viewer::build_preview_surface(
+      changed_request,changed_field,configuration);
+  REQUIRE(retained_changed.ready());
+  REQUIRE(cold_changed.ready());
+  REQUIRE(retained_changed.front());
+  REQUIRE(cold_changed.front());
+  CHECK(retained_changed.front()->diagnostics().reused_sample_count==0U);
+  CHECK(retained_changed.front()->diagnostics().sampled_vertex_count==
+        retained_changed.front()->diagnostics().vertex_count);
+  CHECK(retained_changed.front()->diagnostics().geometry_hash==
+        cold_changed.front()->diagnostics().geometry_hash);
+}
+
 TEST_CASE("preview supports production planetary terrain and rejects non terrain shapes") {
   const auto field=planetary_production_field();
   const auto request=preview_request(5U,{0.5,3.0,0.5},field,6U);
@@ -965,7 +1046,10 @@ TEST_CASE("preview cold builder cancellation is typed and retains bounded scratc
       request,field,configuration,{},std::stop_token{},&scratch);
   REQUIRE(ready.ready());
   REQUIRE(ready.front());
-  CHECK(scratch.retained_bytes()<ready.front()->diagnostics().cpu_bytes);
+  // A ready build retains its canonical samples for the next shifted origin.
+  // The cache is bounded by the same explicit preview CPU contract.
+  CHECK(scratch.retained_bytes()<=
+        tetra_viewer::PreviewSurfaceResourceLimits{}.maximum_cpu_bytes);
 }
 
 TEST_CASE("preview worker coalesces only the exact coordinator request") {

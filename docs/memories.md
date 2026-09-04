@@ -190,6 +190,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The dedicated `BlockedTerrainRuntime` publication caller may safely help its own queued cold-closure partitions, reducing isolated aggregate exact-background route time by 2.3--2.9% while preserving all exact hashes.
 - Evidence: Two uncontended fresh Release benchmark replays converged stationary, walking, rapid-turn, near, far, reversal, and teleport with matching hierarchy, volume, surface, render, and field hashes; the full 475-test Release gate passed.
 
+### preview-sample-cache
+- Updated: 2026-09-04
+- Tags: terrain, preview, cache, correctness
+- Fact: The preview builder may retain only previous compatible terrain samples, provided every replacement still rebuilds canonical vertices and indices and invalidates its private cache on field or configuration identity changes.
+- Evidence: Fresh X- and Z-shift builds matched the cold oracle byte-for-byte and by geometry hash while reusing overlapping samples; cancellation, worker, and full 476-test Release validation passed.
+
 ## Maintenance Notes
 - Keep entries sorted by slug within the section.
 - Delete wrong entries instead of leaving contradictory facts behind.

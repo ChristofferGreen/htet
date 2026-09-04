@@ -779,8 +779,6 @@ until every leaf is complete.
         the occluding mountain. The existing resource-limit tests preserve the
         64 MiB CPU cap, and preview construction remains excluded from exact
         hierarchy, surface, and render hashes.
-  - [ ] Add retained row/column updates only after the cold path passes and they
-        match the cold oracle byte-for-byte.
   - [ ] Repeat every latency, resource, starvation, hash, and visual gate with
         retained preview construction enabled; keep the cold path as the test
         oracle.

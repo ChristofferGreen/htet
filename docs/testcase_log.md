@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 13:26 CEST | pass, retained preview sample cache Release gate | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 476 tests passed, including the new X/Z shifted preview byte-equivalence oracle (215,587 assertions) plus cancellation and worker-coalescing coverage. Hidden native background preview profiling passed with a 10.211083 ms cold build and the normal 300-frame profile contract.
+
 - 2026-09-04 13:00 CEST | pass, full Release gate after exact-background closure scheduling change | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 475 tests passed. Focused Release checks also passed for newest-pose supersession (22 assertions), continuous front publication (95), and background boundary/refine/simplify work (104). Two uncontended `tetra_world --runtime-benchmark` replays converged all routes with identical exact hashes; aggregate end-to-end time improved 2.3% and 2.9% against the isolated baseline.
 
 - 2026-09-04 local | pass, isolated unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` after stopping two orphaned background TetWorldMetal test processes | failures: none | notes: every route, including reversal, converged. The previous reversal timeout was host CPU starvation, not a deterministic runtime failure. Full cold closure and surface topology/extraction dominate complete-front time, while the isolated 32-operation atomic transaction was 265.7 ms; any optimization must target retained/full-front work rather than publication.

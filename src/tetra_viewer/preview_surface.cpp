@@ -127,14 +127,16 @@ PreviewSurfaceResourceEstimate compute_preview_resource_estimate(
       sizeof(PreviewLevelOriginGuard));
   // std::map node layout is implementation-defined. Six pointers covers tree
   // links, colour/alignment, and allocator bookkeeping conservatively. The
-  // vertex directory is released before incidence analysis, so admission pays
-  // for the larger map rather than charging two non-overlapping phases.
-  const std::size_t vertex_map_scratch=vertices*(sizeof(SampleKey)+
-      sizeof(std::uint32_t)+6U*sizeof(void*));
+  // retained sample cache coexists with incidence validation, so admission
+  // charges both rather than treating their storage as interchangeable.
+  const std::size_t sample_cache=vertices*(sizeof(SampleKey)+
+      sizeof(PreviewSurfaceVertex)+sizeof(std::uint32_t)+
+      sizeof(std::uint64_t)+6U*sizeof(void*));
   const std::size_t incidence_map_scratch=indices*(sizeof(EdgeKey)+
       sizeof(std::size_t)+6U*sizeof(void*));
-  const std::size_t map_scratch=std::max(
-      vertex_map_scratch,incidence_map_scratch);
+  // The retained sample cache survives after a front is transferred, while
+  // incidence validation temporarily coexists with it during the next build.
+  const std::size_t map_scratch=sample_cache+incidence_map_scratch;
   return {cells,vertices,indices,
           geometry+coverage+metadata+map_scratch,geometry+coverage};
 }
@@ -179,12 +181,23 @@ bool preview_surface_supported(const tetra::Sphere& field) noexcept {
 }
 
 struct PreviewSurfaceBuildScratch::Storage {
+  struct SampleCacheEntry {
+    PreviewSurfaceVertex vertex;
+    std::uint32_t index{};
+    std::uint64_t generation{};
+  };
+
   std::vector<PreviewSurfaceLevelOrigin> level_origins;
   std::vector<PreviewSurfaceVertex> vertices;
   std::vector<std::uint32_t> indices;
   std::vector<PreviewSurfaceDrawRange> draw_ranges;
   std::vector<PreviewCoverageCell> covered_cells;
   std::vector<PreviewLevelOriginGuard> guarded_level_origins;
+  std::map<SampleKey,SampleCacheEntry> sample_cache;
+  std::uint64_t sample_cache_generation{};
+  std::uint64_t sample_cache_field_revision{};
+  std::uint64_t sample_cache_field_signature{};
+  std::uint64_t sample_cache_configuration_signature{};
 
   [[nodiscard]] std::size_t retained_bytes() const noexcept {
     return level_origins.capacity()*sizeof(PreviewSurfaceLevelOrigin)+
@@ -192,7 +205,9 @@ struct PreviewSurfaceBuildScratch::Storage {
         indices.capacity()*sizeof(std::uint32_t)+
         draw_ranges.capacity()*sizeof(PreviewSurfaceDrawRange)+
         covered_cells.capacity()*sizeof(PreviewCoverageCell)+
-        guarded_level_origins.capacity()*sizeof(PreviewLevelOriginGuard);
+        guarded_level_origins.capacity()*sizeof(PreviewLevelOriginGuard)+
+        sample_cache.size()*(sizeof(SampleKey)+sizeof(SampleCacheEntry)+
+                             6U*sizeof(void*));
   }
 
   void clear() noexcept {
@@ -202,6 +217,35 @@ struct PreviewSurfaceBuildScratch::Storage {
 
   void release() noexcept {
     *this={};
+  }
+
+  std::uint64_t begin_sample_generation(
+      std::uint64_t field_revision,std::uint64_t field_signature,
+      std::uint64_t configuration_signature) {
+    if(sample_cache_field_revision!=field_revision||
+       sample_cache_field_signature!=field_signature||
+       sample_cache_configuration_signature!=configuration_signature){
+      sample_cache.clear();sample_cache_generation=0U;
+      sample_cache_field_revision=field_revision;
+      sample_cache_field_signature=field_signature;
+      sample_cache_configuration_signature=configuration_signature;
+    }
+    if(sample_cache_generation==std::numeric_limits<std::uint64_t>::max()){
+      sample_cache.clear();sample_cache_generation=0U;
+    }
+    return ++sample_cache_generation;
+  }
+
+  void discard_sample_generation(std::uint64_t generation) {
+    std::erase_if(sample_cache,[generation](const auto& item){
+      return item.second.generation==generation;
+    });
+  }
+
+  void retain_sample_generation(std::uint64_t generation) {
+    std::erase_if(sample_cache,[generation](const auto& item){
+      return item.second.generation!=generation;
+    });
   }
 };
 
@@ -329,23 +373,48 @@ PreviewSurfaceBuildResult build_preview_surface(
            level_origin.sample_z+guard_lattice_cells});
     }
 
-    std::map<SampleKey,std::uint32_t> vertex_directory;
+    const auto sample_generation=staging.begin_sample_generation(
+        spatial_key.field_revision,spatial_key.field_signature,
+        spatial_key.configuration_signature);
+    std::size_t reused_sample_count{};
+    std::size_t sampled_vertex_count{};
     const auto vertex=[&](SampleKey key){
-      if(const auto found=vertex_directory.find(key);
-         found!=vertex_directory.end())return found->second;
+      const auto found=staging.sample_cache.find(key);
+      if(found!=staging.sample_cache.end()&&
+         found->second.generation==sample_generation)return found->second.index;
       if(staging.vertices.size()>=std::numeric_limits<std::uint32_t>::max())
         throw std::length_error("preview vertex index exceeds 32-bit range");
       const auto index=static_cast<std::uint32_t>(staging.vertices.size());
+      if(found!=staging.sample_cache.end()){
+        found->second.index=index;
+        found->second.generation=sample_generation;
+        staging.vertices.push_back(found->second.vertex);
+        ++reused_sample_count;
+        return index;
+      }
       const auto sampled=sample_vertex(field,key,half_spacing);
       const double values[]{sampled.position.x,sampled.position.y,
           sampled.position.z,sampled.normal.x,sampled.normal.y,sampled.normal.z};
       if(!std::ranges::all_of(values,[](double value){
            return std::isfinite(value);
-         }))
+      }))
         throw std::runtime_error("preview terrain sample is non-finite");
       staging.vertices.push_back(sampled);
-      vertex_directory.emplace(key,index);
+      staging.sample_cache.emplace(
+          key,PreviewSurfaceBuildScratch::Storage::SampleCacheEntry{
+              sampled,index,sample_generation});
+      ++sampled_vertex_count;
       return index;
+    };
+    const auto has_current_vertex=[&](SampleKey key){
+      const auto found=staging.sample_cache.find(key);
+      return found!=staging.sample_cache.end()&&
+          found->second.generation==sample_generation;
+    };
+
+    const auto canceled=[&]{
+      staging.discard_sample_generation(sample_generation);
+      return PreviewSurfaceBuildResult{PreviewFrontOutcome::canceled,nullptr};
     };
 
     std::vector<SampleKey> polygon;
@@ -354,14 +423,14 @@ PreviewSurfaceBuildResult build_preview_surface(
         static_cast<std::int64_t>(configuration.cells_per_side/2U);
     for(std::uint32_t level=0;level<configuration.level_count;++level){
       if(cancellation.stop_requested())
-        return {PreviewFrontOutcome::canceled,nullptr};
+        return canceled();
       const std::int64_t step=std::int64_t{2}<<level;
       staging.level_origins.push_back({level,origin.x,origin.z,
           std::ldexp(configuration.finest_spacing,static_cast<int>(level))});
       const auto first_index=static_cast<std::uint32_t>(staging.indices.size());
       for(std::int64_t row=-half_cells;row<half_cells;++row){
         if(cancellation.stop_requested())
-          return {PreviewFrontOutcome::canceled,nullptr};
+          return canceled();
         for(std::int64_t column=-half_cells;column<half_cells;++column){
           if(level>0U){
             const std::int64_t inner=half_cells*step/2;
@@ -384,7 +453,7 @@ PreviewSurfaceBuildResult build_preview_surface(
             polygon.push_back(first);
             const SampleKey midpoint{
                 (first.x+second.x)/2,(first.z+second.z)/2};
-            if(vertex_directory.contains(midpoint))polygon.push_back(midpoint);
+            if(has_current_vertex(midpoint))polygon.push_back(midpoint);
           }
           const SampleKey centre{
               origin.x+column*step+step/2,
@@ -406,16 +475,16 @@ PreviewSurfaceBuildResult build_preview_surface(
     }
 
     if(cancellation.stop_requested())
-      return {PreviewFrontOutcome::canceled,nullptr};
+      return canceled();
     if(staging.vertices.empty())
       throw std::logic_error("preview surface is empty");
-    vertex_directory.clear();
+    staging.retain_sample_generation(sample_generation);
     const double infinity=std::numeric_limits<double>::infinity();
     PreviewSurfaceBounds bounds{{infinity,infinity,infinity},
                                 {-infinity,-infinity,-infinity}};
     for(std::size_t index=0;index<staging.vertices.size();++index){
       if((index&4095U)==0U&&cancellation.stop_requested())
-        return {PreviewFrontOutcome::canceled,nullptr};
+        return canceled();
       const auto& item=staging.vertices[index];
       bounds.minimum.x=std::min(bounds.minimum.x,item.position.x);
       bounds.minimum.y=std::min(bounds.minimum.y,item.position.y);
@@ -427,7 +496,7 @@ PreviewSurfaceBuildResult build_preview_surface(
     std::map<EdgeKey,std::size_t> incidence;
     for(std::size_t index=0;index<staging.indices.size();index+=3U){
       if((index&4095U)==0U&&cancellation.stop_requested())
-        return {PreviewFrontOutcome::canceled,nullptr};
+        return canceled();
       for(std::size_t edge=0;edge<3U;++edge){
         auto first=staging.indices[index+edge];
         auto second=staging.indices[index+(edge+1U)%3U];
@@ -444,6 +513,8 @@ PreviewSurfaceBuildResult build_preview_surface(
     }
     diagnostics.vertex_count=staging.vertices.size();
     diagnostics.triangle_count=staging.indices.size()/3U;
+    diagnostics.reused_sample_count=reused_sample_count;
+    diagnostics.sampled_vertex_count=sampled_vertex_count;
     diagnostics.cpu_bytes=
         staging.vertices.size()*sizeof(PreviewSurfaceVertex)+
         staging.indices.size()*sizeof(std::uint32_t)+
@@ -462,7 +533,7 @@ PreviewSurfaceBuildResult build_preview_surface(
         std::chrono::duration<double,std::milli>(
             std::chrono::steady_clock::now()-started).count();
     if(cancellation.stop_requested())
-      return {PreviewFrontOutcome::canceled,nullptr};
+      return canceled();
 
     auto front=std::shared_ptr<PreviewSurfaceFront>(new PreviewSurfaceFront);
     front->requested_view_=request.requested_view;
