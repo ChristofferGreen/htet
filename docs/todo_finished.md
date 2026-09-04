@@ -2,6 +2,17 @@
 
 ## 2026-09-04
 
+- [x] Define the first GPU render-only terrain method tuple and its CPU
+  reference output. The static-Perlin selector is explicitly bound to one
+  immutable CPU-published hierarchy/field/camera/render-origin/surface-method
+  tuple; CPU BCC closure and authoritative volume consumers remain unchanged.
+  The documented oracle records logical/conforming hashes, selected owners,
+  surface and edge-incidence hashes, and the deterministic finest-depth then
+  lowest-address mixed-depth ownership rule. Unsupported, stale, unavailable,
+  and overflow cases fall back to the current CPU prepared surface. This is a
+  contract only: GPU hierarchy upload, traversal, and extraction remain open
+  implementation leaves.
+
 - [x] Add the native Metal five-minute ground-to-orbit-and-back soak. The
   hidden production-profile route retains preview/exact handoffs, reports
   completed-frame timing and temporal accounting, and finishes only on a

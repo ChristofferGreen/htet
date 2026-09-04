@@ -819,14 +819,59 @@ blocking upload does not meet the goal.
 
 ## Implementation chain
 
+### First supported GPU method tuple and CPU oracle
+
+**Scope.** The first GPU path is a render-only, on-demand selector for the
+static Perlin terrain workload.  It consumes exactly one immutable,
+CPU-published hierarchy revision, represented by `WorldCutDirectory` through
+`ReadOnlyHierarchyAccess` and its `HierarchyBlockSnapshot` records.  The
+tuple is `(hierarchy revision, field revision, camera/LOD parameters, render
+origin, surface method)`.  A dispatch may use the tuple only while every
+member still identifies the same published snapshot; a newer tuple makes its
+output stale and it must be discarded rather than patched or read back.
+
+The CPU remains authoritative for the logical cut, BCC red/green conformity,
+`WorldBlockedConformingVolume`, collision, cutaway, export, and validation.
+The GPU method initially selects only resident logical cells for ordinary
+opaque rendering.  It does not mutate hierarchy state, perform BCC closure,
+read results back during camera motion, or claim GPU surface extraction.  The
+normal fallback is the existing CPU prepared surface whenever the tuple is
+unsupported, stale, unavailable, or over capacity.
+
+**Reference output.** For a supported tuple, the CPU oracle is built from the
+same immutable revision and records: the canonical logical-cut hash; the
+canonical conforming-volume hash; the ordered selected logical-owner
+addresses and count; the current connected/standalone surface hash; and
+`SurfaceGeometryHashes` (oriented triangle hash/count, unique edge hash/count,
+edge-incidence hash/count, and submitted wire-edge hash/count).  This makes
+selection, later extraction, and wire output independently comparable rather
+than treating a plausible image as proof of topology.  Floating-point
+selection uses the specified tolerance band; outside it GPU and CPU selection
+must agree exactly.
+
+**Mixed-depth and boundary ownership.** The oracle always derives its surface
+from the CPU conforming volume, including red owners and their green transition
+cells.  For any valid mixed-depth incident star, the finest logical owner
+wins; ties at that depth are owned by the lowest global address.  Open,
+degenerate, non-manifold, or malformed stars are rejected deterministically.
+The same canonical ownership governs a shared surface edge, so a later GPU
+extractor must emit it once in the opaque topology and once in the wire stream;
+every retained triangle contributes its three incidence records.  This is a
+reference rule, not a license to approximate mixed-depth extraction in the
+first selector.
+
+**Acceptance and stop rule.** This leaf is complete when the tuple, immutable
+inputs, supported/fallback behaviour, oracle fields, ownership rule, and
+explicit exclusions above are documented and grounded in the existing CPU
+contracts.  Stop here: do not add shader layouts, upload code, GPU traversal,
+or extraction until their separate checklist leaves are selected.
+
 - [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
   camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Define the supported first method tuple and its exact CPU reference
-  output, including mixed-depth boundary ownership and surface edges.
 - [ ] Define packed, shader-visible hierarchy records and document alignment,
   capacities, address decoding, refinement templates, and revision ownership.
 - [ ] Separate GPU topology/index buffers from classification, geometry,
