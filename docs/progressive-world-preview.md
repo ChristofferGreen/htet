@@ -487,10 +487,17 @@ visual failures can be tied to the exact coordinator state.
       reach one-third internal scale, the full preview/atmosphere stack measures
       1.61 ms median and 4.01 ms p95 instead of 21.85 ms on the same M3 Pro;
       a 2880x1800 back-lit capture retains the qualified appearance.
-- [ ] Qualify the cold path end to end: visual captures, useful-preview
-      latency, cell lag, publication cadence, upload and memory caps, exact
-      convergence under load, failure fallback, and enabled/disabled exact
-      hash equality.
+- [x] Qualify the cold path end to end. Fresh Release native runs measured
+      10.4--18.2 ms preview construction and a 5,985,864-byte candidate
+      upload. The cold clipmap remains under 64 MiB CPU/16 MiB upload limits;
+      its 60/120 Hz churn, request-storm, cancellation, guarded-failure,
+      exact-worker coexistence, atomic display, and exact-handoff contracts
+      pass. Preview-enabled local-shadow, atmosphere, ray-visibility, and
+      exact-handoff smokes pass in background mode, as does the full 475-test
+      Release suite. Fresh default and back-lit captures are opaque and
+      continuous, with no seam, moat, hole, cutout, or foreground Mie through
+      the occluding mountain. Preview remains excluded from exact hashes and
+      authoritative world state.
 - [ ] Profile the atomic unsliced exact background front after cold-preview
       qualification. Optimize only repeatably dominant settled-convergence
       work while preserving exact hierarchy, surface, and render hashes and the

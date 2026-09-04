@@ -149,10 +149,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: Private cold validation is still required across planetary sector unions, and the guarded 512-operation trace made 65 exact publications without converging in 90 seconds, while the qualified preview already preserves atomic unsliced exact publication in the background.
 
 ### metal-preview-automation-contract
-- Updated: 2026-09-03
+- Updated: 2026-09-04
 - Tags: metal, preview, automation
 - Fact: Interactive Metal runs enable the cold terrain preview by default, automated runs disable it unless `TETWORLD_METAL_PREVIEW=1`, and exact-handoff captures additionally use `TETWORLD_METAL_CAPTURE_EXACT_HANDOFF=1`.
-- Evidence: Release preview-enabled and preview-disabled smokes exercised the same lowercase app launcher, while an exact-handoff capture reached scene generation 2/display generation 3 with zero preview triangles.
+- Evidence: Fresh background-mode preview builds took 10.4--18.2 ms with a 5,985,864-byte candidate upload; preview/exact-handoff timing profiles and shadow/atmosphere smokes passed without opening a test window.
 
 ### metal-preview-shader-contract
 - Updated: 2026-09-03

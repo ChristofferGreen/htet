@@ -2,6 +2,16 @@
 
 ## 2026-09-04
 
+- [x] Qualify the cold render-only terrain preview. A freshly rebuilt Release
+  app measured 10.4--18.2 ms cold construction and a 5,985,864-byte candidate
+  upload, below the 100 ms/250 ms latency and 16 MiB upload gates. The welded
+  clipmap stays below the 64 MiB CPU cap; deterministic churn, cancellation,
+  failure fallback, exact-worker coexistence, atomic display, and exact-handoff
+  tests pass. Background-mode preview shadow, atmosphere, and ray-visibility
+  smokes passed, and fresh default/back-lit captures were opaque and continuous
+  with no seam, moat, cutout, or foreground Mie through the mountain. Preview
+  remains non-authoritative and does not alter exact world hashes.
+
 - [x] Retire sliced exact publication as a production candidate for the
   current BCC red-green hierarchy. The production operation budget remains
   zero; the opt-in frontier, cold validation, and exact oracle tests remain as

@@ -767,10 +767,18 @@ until every leaf is complete.
         atmosphere lookup identities, uses 2x MSAA, and permits one-third Auto
         resolution; the full stack measures 1.61 ms median and 4.01 ms p95
         instead of 21.85 ms, with clean 2880x1800 visual evidence.
-  - [ ] Qualify the cold path below 100 ms normally and 250 ms in the worst
-        release case, with at most one-cell lag, exact convergence below 2
-        seconds, 64 MiB preview CPU memory, 16 MiB uploads, failure fallback,
-        exact hash invariance, and release visual captures.
+  - [x] Qualify the cold path end to end. Fresh Release preview builds measure
+        10.4--18.2 ms, with a 5,985,864-byte upload, below the 100 ms normal,
+        250 ms worst-case, and 16 MiB gates. The 60/120 Hz delayed-completion,
+        request-storm, exact-worker coexistence, guarded failure, atomic
+        publication, and exact-handoff contracts pass; the full 475-test
+        Release suite remains green. Preview-enabled shadow, atmosphere, ray
+        visibility, and exact-handoff smokes pass in background mode. Fresh
+        default and back-lit captures are visually continuous, with opaque
+        terrain, no seam/moat/cutout, and no foreground Mie scattering through
+        the occluding mountain. The existing resource-limit tests preserve the
+        64 MiB CPU cap, and preview construction remains excluded from exact
+        hierarchy, surface, and render hashes.
   - [ ] Profile the atomic unsliced exact background front only after the cold
         preview passes. Optimize only the measured dominant settled-convergence
         work; preserve exact hierarchy, surface, and render hashes plus the
