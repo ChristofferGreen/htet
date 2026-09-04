@@ -23,10 +23,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: The running `TetWorldMetal` process had zero macOS windows when queried through System Events.
 
 ### metal-motion-publication
-- Updated: 2026-09-03
+- Updated: 2026-09-04
 - Tags: metal, terrain, automation
-- Fact: The Metal motion smoke needs an explicit settled request after interaction; its default front requires at least 168,306 hierarchy blocks and 52.43M work units to publish exactly.
-- Evidence: The prior 147,456/50M caps left the old front visible, while the 176,000/64M bounds passed the native zero-pose-error smoke and full release suite.
+- Fact: An interaction-end request must remain pending across publication of an older front so a sub-threshold final camera tail is built and published exactly.
+- Evidence: The new active-front tail regression and preview-on/off hidden motion smokes settle at zero pose error; the fresh 477-test Release suite passed.
 
 ### metal-p4b-confidence-handoff
 - Updated: 2026-09-03
@@ -151,8 +151,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### metal-preview-automation-contract
 - Updated: 2026-09-04
 - Tags: metal, preview, automation
-- Fact: Interactive Metal runs enable the cold terrain preview by default, automated runs disable it unless `TETWORLD_METAL_PREVIEW=1`, and exact-handoff captures additionally use `TETWORLD_METAL_CAPTURE_EXACT_HANDOFF=1`.
-- Evidence: Fresh background-mode preview builds took 10.4--18.2 ms with a 5,985,864-byte candidate upload; preview/exact-handoff timing profiles and shadow/atmosphere smokes passed without opening a test window.
+- Fact: Interactive Metal runs enable the cold terrain preview by default, automated runs disable it unless `TETWORLD_METAL_PREVIEW=1`, and motion/MetalFX tests must accept the exact-handoff state because it intentionally retires the preview.
+- Evidence: Fresh preview-on motion and MetalFX smokes passed after separating their exact-settled completion condition from preview-image gates; the retained preview timing profile was 4.8818/5.8157 ms median/p95.
 
 ### metal-preview-shader-contract
 - Updated: 2026-09-03

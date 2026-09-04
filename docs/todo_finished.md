@@ -2,6 +2,18 @@
 
 ## 2026-09-04
 
+- [x] Repeat every latency, resource, starvation, hash, and visual gate with
+  retained preview construction enabled, while preserving cold construction as
+  the oracle. A queued sub-threshold settled pose is no longer overwritten when
+  an older exact front publishes; the new in-flight-tail regression covers that
+  scheduler boundary. The hidden motion and MetalFX tests now correctly accept
+  an exact handoff, rather than requiring a preview that handoff intentionally
+  retires. Fresh preview-on/off motion tests settle at zero pose error, both
+  MetalFX paths pass, the retained preview profile passes at 4.8818/5.8157 ms
+  median/p95, and the full 477-test Release suite passes. Fresh default and
+  back-lit captures are visually continuous; the direct sun is present when
+  visible and the mountain occludes foreground Mie as required.
+
 - [x] Add retained row/column preview updates after cold-path qualification.
   The serial builder retains only canonical terrain samples from its immediately
   preceding compatible front; each shifted request still reconstructs vertices,

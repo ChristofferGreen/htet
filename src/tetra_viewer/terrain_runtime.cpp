@@ -3290,7 +3290,12 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.exact_published_view_epoch=view_identity_.view_epoch;
     }
     active_superseded_=false;
-    demand_pending_=!publication.target_converged;
+    // Keep a request accumulated while this candidate was in flight.  In
+    // particular, the interactive-to-settled transition can be the only
+    // indication of a sub-threshold final camera tail; replacing it with the
+    // completed candidate's local convergence would incorrectly declare the
+    // older camera pose settled.
+    demand_pending_=demand_pending_||!publication.target_converged;
     diagnostics_.reused_hierarchy_blocks=
         publication.hierarchy_update.metrics.reused_blocks;
     diagnostics_.rebuilt_hierarchy_blocks=

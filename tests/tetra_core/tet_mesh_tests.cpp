@@ -3467,6 +3467,37 @@ TEST_CASE("blocked world publishes fronts during continuous interactive movement
   CHECK(runtime.published_view_identity()==compatible_view);
 }
 
+TEST_CASE("blocked world publishes a sub-threshold settled tail behind an active front") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=256.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  tetra::Camera camera;
+  camera.position={0.60,0.72,0.75};camera.forward={0.0,-0.2,-1.0};
+  runtime.set_camera(camera,true);
+  CHECK_FALSE(runtime.update());
+  REQUIRE(runtime.diagnostics().busy);
+
+  // The final change is deliberately below the normal 0.02-unit spatial
+  // threshold.  The settled intent transition must preserve it while the
+  // preceding front is still being built.
+  camera.position.x+=0.005;
+  runtime.set_camera(camera,true);
+  runtime.set_camera(camera,false);
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(20);
+  while(std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime.update());
+    const auto diagnostics=runtime.diagnostics();
+    if(!diagnostics.busy&&diagnostics.converged)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto settled=runtime.diagnostics();
+  REQUIRE_FALSE(settled.busy);
+  REQUIRE(settled.converged);
+  CHECK(settled.published_camera_position.x==camera.position.x);
+  CHECK(settled.published_camera_position.y==camera.position.y);
+  CHECK(settled.published_camera_position.z==camera.position.z);
+}
+
 TEST_CASE("blocked world builds its first front for the requested startup camera") {
   auto profile=tetra_viewer::production_world_profile();
   profile.background_red_depth=3U;

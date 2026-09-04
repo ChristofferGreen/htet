@@ -779,9 +779,6 @@ until every leaf is complete.
         the occluding mountain. The existing resource-limit tests preserve the
         64 MiB CPU cap, and preview construction remains excluded from exact
         hierarchy, surface, and render hashes.
-  - [ ] Repeat every latency, resource, starvation, hash, and visual gate with
-        retained preview construction enabled; keep the cold path as the test
-        oracle.
 
 ### Research trigger: progressive exact geometry
 

@@ -498,5 +498,10 @@ visual failures can be tied to the exact coordinator state.
       continuous, with no seam, moat, hole, cutout, or foreground Mie through
       the occluding mountain. Preview remains excluded from exact hashes and
       authoritative world state.
-- [ ] Repeat all latency, resource, starvation, hash, and visual gates with the
+- [x] Repeat all latency, resource, starvation, hash, and visual gates with the
       retained path enabled; keep the cold path available as a test oracle.
+      The complete 477-test Release suite passes. Preview-on/off motion settles
+      at the same exact final pose, and both MetalFX variants pass; the retained
+      route's 300-frame profile measures 4.8818/5.8157 ms median/p95. Fresh
+      default and reported-mountain captures remain continuous, with the sun
+      visible when unoccluded and no direct Mie scattering through the mountain.

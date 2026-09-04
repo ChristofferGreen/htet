@@ -4345,7 +4345,8 @@ int main(int argc,char** argv) {
           }
           controller.state().velocity={};
           controller.state().grounded=false;
-        }else if(runtime){
+        }else if(runtime&&!(motion_test&&scene_vertex_count!=0U&&
+                             motion_rendered_frames>=30U)){
           const auto previous_feet=controller.state().feet;
           controller.advance(elapsed,movement,runtime->field());
           camera_changed=camera_changed||
@@ -4400,6 +4401,15 @@ int main(int argc,char** argv) {
           if(runtime_started_this_frame){
             runtime->set_camera(camera,false);
             runtime_camera_interactive=false;
+          }else if(motion_test&&scene_vertex_count!=0U&&
+                   motion_rendered_frames>=30U){
+            // A hidden test window can run vastly faster than wall-clock
+            // physics.  Hold the scripted final pose and state its settled
+            // intent explicitly, rather than treating numerical contact
+            // updates as continuing user input forever.
+            runtime->set_camera(camera,false);
+            runtime_camera_interactive=false;
+            force_runtime_camera=false;
           }else if(request_interactive_camera){
             runtime->set_camera(camera,true);
             runtime_camera_interactive=true;
@@ -6302,8 +6312,15 @@ int main(int argc,char** argv) {
         id<MTLBuffer> shadow_probe_buffer=nil;
         id<MTLBuffer> fitted_shadow_probe_buffer=nil;
         NSUInteger capture_row_bytes{};
+        // Motion and MetalFX finish only after the exact world settles.  That
+        // deliberately retires a compatible preview, so requiring one at the
+        // same instant would make their preview-enabled completion condition
+        // unreachable. Preview image gates still require a visible preview;
+        // exact-handoff timing keeps its stronger explicit event check.
+        const bool accepts_exact_preview_handoff=motion_test||metalfx_test;
         const bool requested_preview_capture_ready=!preview_enabled||
-            !automated_test||(require_exact_handoff_capture?
+            !automated_test||accepts_exact_preview_handoff||
+            (require_exact_handoff_capture?
                 (timing_profile_test&&
                  timing_profile_class==TimingProfileClass::exact_handoff?
                      timing_profile_exact_handoff_observed:
@@ -7577,7 +7594,7 @@ int main(int argc,char** argv) {
               "submitted=%zu canceled=%zu budget_exceeded=%s "
               "rejected_cpu=%zu rejected_triangles=%zu rejected_work=%zu "
               "rejected_upload=%zu rejected_hierarchy=%zu rejected_volume=%zu "
-              "busy=%s converged=%s "
+              "busy=%s converged=%s interactive=%s "
               "motion_frames=%zu).\n",
               static_cast<unsigned long long>(diagnostics.scene_generation),
               static_cast<unsigned long long>(
@@ -7593,7 +7610,8 @@ int main(int argc,char** argv) {
               diagnostics.rejected_proposed_hierarchy_blocks,
               diagnostics.rejected_proposed_volume_blocks,
               diagnostics.busy?"true":"false",
-              diagnostics.converged?"true":"false",motion_rendered_frames);
+              diagnostics.converged?"true":"false",
+              runtime_camera_interactive?"true":"false",motion_rendered_frames);
           result=1;
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }

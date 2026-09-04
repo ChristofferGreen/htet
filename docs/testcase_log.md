@@ -2,10 +2,11 @@
 
 ## Current Known Failures
 
-- [ ] Metal hidden motion smoke | mode: fresh Release, background native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_PREVIEW=0 TetWorldMetal --metal-motion-smoke-test` | first_seen: 2026-09-04 13:31 CEST | last_seen: 2026-09-04 13:32 CEST | next: inspect the runtime's sub-threshold settled-pose diagnostic and rerun preview off/on | notes: three uncontended preview-disabled replays converged but report the initial exact front as `published_camera_position`, yielding a 0.00508 pose error and exit 1; this prevents the retained-preview motion gate from passing and is not introduced by the sample cache.
-- [ ] MetalFX retained-preview smoke | mode: fresh Release, background native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_PREVIEW=1 TetWorldMetal --metal-metalfx-smoke-test` | first_seen: 2026-09-04 13:33 CEST | last_seen: 2026-09-04 13:36 CEST | next: reproduce against preview-disabled control after resolving the motion diagnostic | notes: nine valid preview candidates were published before the 180-second automation deadline; no terminal MetalFX smoke event was emitted. This cannot yet be attributed to retained samples because the preview-off control has not run.
+- none
 
 ## Recent Test Runs
+
+- 2026-09-04 14:28 CEST | pass, retained-preview qualification completion | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; preview-on/off motion and MetalFX; preview-on basic, shadow, reference-atmosphere, terrain-ray-oracle, preview timing, default, and reported-mountain captures | failures: none | notes: all 477 Release tests passed in 477.34 s. The queued settled-pose request now survives an older in-flight publication; preview-on/off motion has zero pose error. Motion and MetalFX now accept the intended exact-handoff state rather than requiring a retired preview simultaneously. Preview MetalFX passed (830 frames), preview timing passed (4.8818/5.8157 ms median/p95), and visual captures retained continuous terrain, a visible direct sun, and physically occluded back-lit foreground air.
 
 - 2026-09-04 13:36 CEST | fail, retained preview qualification matrix | mode: fresh Release, hidden native Metal | command: preview-enabled basic, shadow, reference-atmosphere, ray-oracle, motion, and MetalFX smokes | failures: motion and MetalFX terminal gates | notes: basic, shadow, reference-atmosphere, and ray-oracle gates passed. Motion failed identically with preview enabled and disabled in four total uncontended replays; MetalFX preview-on reached the automation deadline after nine valid candidate publications. Continue from the two current failures above.
 
@@ -138,6 +139,10 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] Metal hidden motion smoke | resolved: 2026-09-04 14:28 CEST | validating command: fresh Release preview-off and preview-on `TetWorldMetal --metal-motion-smoke-test` | notes: an older publication no longer clears the queued interaction-end request, and the hidden harness holds its scripted final pose; both paths report zero pose error.
+
+- [x] MetalFX retained-preview smoke | resolved: 2026-09-04 14:28 CEST | validating command: fresh Release preview-off and preview-on `TetWorldMetal --metal-metalfx-smoke-test` | notes: motion and MetalFX now accept an exact handoff instead of requiring a preview that exact publication deliberately retires; both paths emitted passing terminal events.
 
 - [x] `tetra_world_metal --metal-motion-smoke-test` | resolved: 2026-09-03 local | validating command: rebuilt hidden native Metal smoke | notes: exact settled motion required 168,306 hierarchy blocks and 52.43M work units; the bounded production caps now admit the front, and the smoke passed with zero published-pose error.
 
