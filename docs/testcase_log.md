@@ -2,9 +2,11 @@
 
 ## Current Known Failures
 
-- [ ] unsliced world runtime benchmark reversal convergence | mode: release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` after `./scripts/compile.sh --release --skip-tests` | first_seen: 2026-09-04 12:35 CEST | last_seen: 2026-09-04 12:35 CEST | next: `rebuild Release and rerun the reversal route with runtime diagnostics; localize why the atomic exact worker misses the benchmark convergence deadline` | notes: stationary, walking-speed, rapid-turn, near, and far records completed, but the deterministic benchmark exited 1 with `world runtime did not converge for reversal`. The measured dominant work before failure is complete unsliced closure (about 5.0--9.3 s) plus surface build (about 3.0--10.0 s, chiefly topology/extraction), so no optimization is authorized until correctness/convergence is restored.
+- none
 
 ## Recent Test Runs
+
+- 2026-09-04 local | pass, isolated unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` after stopping two orphaned background TetWorldMetal test processes | failures: none | notes: every route, including reversal, converged. The previous reversal timeout was host CPU starvation, not a deterministic runtime failure. Full cold closure and surface topology/extraction dominate complete-front time, while the isolated 32-operation atomic transaction was 265.7 ms; any optimization must target retained/full-front work rather than publication.
 
 - 2026-09-04 12:35 CEST | fail, unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` | failures: reversal convergence | notes: exit 1 after successful stationary/walking-speed/rapid-turn/near/far records; the benchmark reported `world runtime did not converge for reversal`. Captured stage data identifies closure and surface topology/extraction as dominant but is not a basis for a performance change while the final-pose convergence contract fails.
 
