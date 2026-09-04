@@ -145,8 +145,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### persistent-camera-frontier
 - Updated: 2026-09-04
 - Tags: camera, lod, scheduler, correctness
-- Fact: Planetary sliced frontiers must retain the raw requested transaction for recovery and cold-validate each private closure before publication until the retained proof graph tracks deepest-witness changes through mask promotion across sector unions.
-- Evidence: A raw 4,096-operation union slice missed 27 promotions (2,900 versus 2,927 cold); bounded search expansions still missed five on slice four, while cold validation restored all exact hashes and the 512-operation trace made 65 complete publications without converging in 90 seconds.
+- Fact: Planetary sliced frontiers must retain the raw requested transaction for recovery and cold-validate each private closure before publication until the retained proof graph tracks changed green-edge derivations through masks and promotions across sector unions.
+- Evidence: A raw 4,096-operation union slice missed 27 promotions (2,900 versus 2,927 cold); a fresh proof epoch repaired that initial transition but still diverged on retained slice three, while cold validation restored all exact hashes and the 512-operation trace made 65 complete publications without converging in 90 seconds.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
