@@ -1007,14 +1007,50 @@ the later field/geometric-error leaf supplies tighter field relevance.
 hierarchy API and exhaustive containment proof above. Stop before embedding
 field summaries or using the bound in GPU traversal.
 
+### Combined screen and field/geometric error criterion
+
+The supported static-Perlin CPU reference already supplies the first combined
+criterion. A node is refined when it is relevant to the camera and any of the
+following conservative projected errors exceeds its matching threshold:
+
+```text
+max(projected tetrahedron edge / edge threshold,
+    projected terrain field error / field threshold,
+    projected planetary limb sagitta / limb threshold) > 1
+```
+
+The edge term is the conservative projected diameter (including the guarded
+planetary sector bound); the field term is the Perlin Lipschitz bound times
+the node's longest edge, projected from the conservative enclosing sphere; and
+the limb term is the minimum-radius chord sagitta projected at the same camera
+distance. A camera inside the enclosing sphere uses the full viewport diagonal
+as a conservative error. The retained cut gets the existing merge hysteresis
+ratio; maximum depth records an explicit exception instead of silently
+accepting excess error.
+
+`AdaptationSummaryLayer` provides the matching per-node CPU oracle for
+hierarchy-bounds traversal: canonical address, spatial AABB, signed field
+minimum/maximum from the Lipschitz ball, geometric error bound, and deepest
+resident/active depth. Its summaries rebuild only when the field, resident
+revision, or pinned revision changes; camera movement reprojects them. The
+planetary render selector independently applies the same three-term criterion
+to immutable world-address geometry, which is the exact reference a later
+GPU upload must reproduce. Release tests already prove finite positive
+geometric summaries, conservative distance ordering, and visible field/limb
+split accounting for the production planet.
+
+**Acceptance and stop rule.** This leaf is complete because the selected
+Perlin reference has a defined combined criterion, conservative node summary
+fields, invalidation identity, and CPU regressions. Stop before serializing
+these summaries or consuming them on the GPU; the immutable-upload leaf owns
+that work.
+
 - [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
   camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Define the combined screen-size and field/geometric error criterion and
-  generate conservative per-node summaries for the supported implicit shape.
 - [ ] Upload an immutable hierarchy snapshot and verify shader-side address and
   geometry reconstruction against CPU test vectors.
 - [ ] Implement GPU on-demand traversal with frustum, depth, projected-size,

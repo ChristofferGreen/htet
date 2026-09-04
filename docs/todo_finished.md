@@ -2,6 +2,15 @@
 
 ## 2026-09-04
 
+- [x] Define the combined screen-size and field/geometric-error criterion and
+  conservative per-node summaries. The existing CPU oracle refines on the
+  maximum normalized projected edge, Perlin field, and planetary-limb errors,
+  with guarded relevance, inside-cell conservatism, and explicit maximum-depth
+  exceptions. `AdaptationSummaryLayer` already retains canonical spatial,
+  field-range, geometric-error, and depth summaries with field/residency/pin
+  invalidation; production tests cover their conservatism and split accounting.
+  GPU serialization and consumption remain separate implementation work.
+
 - [x] Derive and validate conservative BCC red-descendant bounds. Added the
   normalized root-local tetrahedron AABB API; red children contain only parent
   vertices and midpoints, so it encloses the full descendant subtree. Release
