@@ -2157,6 +2157,23 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   selection.owners=tetra::close_world_conforming_cut(
       selection.owners,&surface_cache.closure,cancellation,3U,executor);
+  // A sector-union replacement can invalidate a retained proof through a
+  // broader ancestry change than the bounded frontier normally carries.
+  // Never expose such a cache artifact downstream: retry the identical raw
+  // transaction from a cold cache before directory/surface publication.
+  if(std::ranges::any_of(surface_cache.closure.green_masks,
+                         [](std::uint8_t mask){return mask==63U;})){
+    const auto maximum_entries=surface_cache.closure.maximum_entries;
+    const auto fingerprint_bits=surface_cache.closure.dependency_fingerprint_bits;
+    surface_cache.closure={};
+    surface_cache.closure.maximum_entries=maximum_entries;
+    surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
+    selection.owners=tetra::close_world_conforming_cut(
+        selection.owners,&surface_cache.closure,cancellation,3U,executor);
+    if(std::ranges::any_of(surface_cache.closure.green_masks,
+                           [](std::uint8_t mask){return mask==63U;}))
+      throw std::logic_error("cold world closure retained a red-split owner");
+  }
   capture_world_closure_metrics(selection,surface_cache.closure);
   selection.metrics.closure_milliseconds=
       std::chrono::duration<double,std::milli>(

@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 local | pass, retained-closure recovery | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 474/474 tests passed in 427.28 s; a red-split retained-mask invariant now cold-retries the identical private transaction before any directory or surface consumer sees it.
+
 - 2026-09-04 local | pass, disabled-default slice-boundary regression | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 474/474 tests passed in 472.54 s after restoring the unsliced planetary closure-reset boundary; the opt-in multi-sector sliced candidate remains an explicitly logged correctness failure.
 
 - 2026-09-04 local | pass, runtime frontier wiring release gate | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 474/474 tests passed in 503.10 s, including the new retained-frontier runtime equivalence test and existing production, cancellation, resource, and atomic-publication paths.
