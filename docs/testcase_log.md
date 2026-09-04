@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 19:02 CEST | pass, GPU buffer-domain contract | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 515.52 s after documenting the independent topology/index, classification, geometry, ownership, and diagnostic buffer lifetimes and failure rules.
+
 - 2026-09-04 18:34 CEST | pass, GPU hierarchy-record contract | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 586.34 s after defining the documentation-only 32-byte shader-visible hierarchy record and immutable snapshot publication contract.
 
 - 2026-09-04 17:55 CEST | pass, GPU LOD method-tuple contract baseline | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 483.80 s. The existing deterministic CPU camera benchmark and surface geometry hash contracts remain the reference evidence for the new documentation-only GPU selector tuple.

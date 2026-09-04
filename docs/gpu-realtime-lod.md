@@ -933,14 +933,64 @@ record, address decoding, template source, capacities, and immutable revision
 ownership are defined above.  Stop before adding a C++ GPU mirror, allocating
 Vulkan buffers, or uploading any data; those are the next separate leaves.
 
+### GPU buffer-domain separation
+
+**Scope.** Future GPU data is divided into five independently versioned buffer
+families.  No buffer may carry overloaded state from another family merely to
+save a binding: that would let camera classification mutate topology, make an
+output vertex a hidden owner key, or turn diagnostic readback into a rendering
+dependency.  This is a lifetime and interface contract only; no GPU resources
+are allocated by this leaf.
+
+| domain | contents | writer and lifetime | never contains |
+| --- | --- | --- | --- |
+| Topology | immutable `GpuHierarchyRecord`s, block/header tables, root/face/refinement templates, and immutable source index ranges | CPU snapshot encoder; one immutable hierarchy/field revision | camera decisions, output positions, counters |
+| Index streams | selected record indices, optional compact draw records, and future opaque/wire index streams | compute pass that owns that stream; discarded with its tuple/frame slot | vertex coordinates, canonical owner payload, diagnostic counters |
+| Classification | per-record cull/error/field-range state, selection flags, and work-list prefixes | compute for one camera/field tuple; transient and never authoritative | child topology, generated geometry, ownership decisions |
+| Geometry | future surface vertices, triangle-index targets, and edge endpoints | extractor for one selected set and frame slot | hierarchy addresses, selection flags, validity/error bits |
+| Ownership and diagnostics | ownership: primitive-to-logical-owner and canonical edge/face keys; diagnostics: counts, overflow, rejection reason, and optional timestamps | ownership is extractor output; diagnostics are append-only per dispatch and optional CPU readback after completion | render positions/indices or mutable hierarchy data |
+
+Topology is the only source of address ancestry and child connectivity.
+Index streams refer only to zero-based records or geometry entries in their
+declared companion buffer; an index is never a persistent world identity.
+Geometry is consumable directly by opaque and wire draws, while ownership is a
+parallel sidecar used only for validation, duplicate suppression, and future
+mixed-depth rules.  This preserves a fast draw path with no owner-key fetch
+and avoids using floating-point vertex equality as topology.
+
+**Revision and invalidation.** A topology snapshot is immutable for its
+`(hierarchy revision, field revision, block width, format version)` identity.
+Camera or render-origin changes may replace classification and all dependent
+index/geometry/ownership streams, but retain compatible topology.  A field
+revision change invalidates classification and all derived streams; it also
+requires a new topology snapshot when field summaries are embedded there.
+Any hierarchy, format, or block-width change invalidates every domain and
+publishes a distinct frame slot.  Diagnostic records carry the tuple identity
+they observed and are ignored if it is no longer current; they never keep a
+stale visual result alive.
+
+**Publication and failure.** Each domain has its own capacity, live count,
+and overflow bit in the snapshot header or its diagnostic sidecar.  A producer
+may write only its designated output family after its inputs are immutable and
+its output range has been reserved.  Consumers require matching tuple identity
+and completed producer generation.  A bad cross-domain index, capacity
+exhaustion, stale tuple, or malformed owner key abandons the whole derived GPU
+result for that tuple and leaves the last compatible/CPU fallback presentation
+intact.  Normal rendering neither maps diagnostic buffers nor waits for their
+readback; test and profiling modes may inspect compact completed diagnostics.
+
+**Acceptance and stop rule.** This leaf is complete when future topology,
+index, classification, geometry, ownership, and diagnostics have disjoint
+contents, writers, lifetimes, and invalidation/failure rules.  Stop before
+defining descendant bounds, adding GPU structs, allocating buffers, or
+implementing extraction.
+
 - [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
   camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Separate GPU topology/index buffers from classification, geometry,
-  ownership, and diagnostic sidecars.
 - [ ] Derive conservative descendant bounds for the selected hierarchy and
   validate containment exhaustively over all resident descendants.
 - [ ] Define the combined screen-size and field/geometric error criterion and

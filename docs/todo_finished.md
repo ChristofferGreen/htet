@@ -2,6 +2,14 @@
 
 ## 2026-09-04
 
+- [x] Separate the future GPU topology/index, classification, geometry,
+  ownership, and diagnostic buffer domains. The documented contract fixes
+  disjoint contents, writers, capacities, tuple identities, lifetimes,
+  invalidation, and failure behavior: immutable topology never carries camera
+  decisions, geometry never substitutes for canonical ownership, and optional
+  diagnostics never block rendering. This is an interface contract only; it
+  does not allocate GPU resources or implement selection/extraction.
+
 - [x] Define packed shader-visible hierarchy records. The documented future
   `GpuHierarchyRecord` is a portable, 16-byte-aligned 32-byte record with a
   four-lane exact world address, packed child range/mask, canonical ownership
