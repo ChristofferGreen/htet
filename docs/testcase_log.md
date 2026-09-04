@@ -2,9 +2,11 @@
 
 ## Current Known Failures
 
-- none
+- [ ] unsliced world runtime benchmark reversal convergence | mode: release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` after `./scripts/compile.sh --release --skip-tests` | first_seen: 2026-09-04 12:35 CEST | last_seen: 2026-09-04 12:35 CEST | next: `rebuild Release and rerun the reversal route with runtime diagnostics; localize why the atomic exact worker misses the benchmark convergence deadline` | notes: stationary, walking-speed, rapid-turn, near, and far records completed, but the deterministic benchmark exited 1 with `world runtime did not converge for reversal`. The measured dominant work before failure is complete unsliced closure (about 5.0--9.3 s) plus surface build (about 3.0--10.0 s, chiefly topology/extraction), so no optimization is authorized until correctness/convergence is restored.
 
 ## Recent Test Runs
+
+- 2026-09-04 12:35 CEST | fail, unsliced exact-background profile | mode: freshly rebuilt Release | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` | failures: reversal convergence | notes: exit 1 after successful stationary/walking-speed/rapid-turn/near/far records; the benchmark reported `world runtime did not converge for reversal`. Captured stage data identifies closure and surface topology/extraction as dominant but is not a basis for a performance change while the final-pose convergence contract fails.
 
 - 2026-09-04 12:32 CEST | pass, cold-preview qualification | mode: fresh Release build, focused contracts, and hidden native Metal | command: `./scripts/compile.sh --release --skip-tests`; focused preview tests; background preview timing/exact-handoff/shadow/atmosphere/ray smokes and default/back-lit captures | failures: none | notes: cold preview construction measured 10.4--18.2 ms; candidate upload was 5,985,864 bytes; 300-frame preview and exact-handoff profiles, local-shadow, atmosphere, and ray-visibility smokes passed. Focused topology, resource, failure, atomicity, churn, and exact-worker contracts passed. Fresh captures were visually continuous and physically occluded; the preceding full 475/475 Release gate remains green.
 
