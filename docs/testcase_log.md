@@ -2,9 +2,12 @@
 
 ## Current Known Failures
 
-- none
+- [ ] Metal hidden motion smoke | mode: fresh Release, background native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_PREVIEW=0 TetWorldMetal --metal-motion-smoke-test` | first_seen: 2026-09-04 13:31 CEST | last_seen: 2026-09-04 13:32 CEST | next: inspect the runtime's sub-threshold settled-pose diagnostic and rerun preview off/on | notes: three uncontended preview-disabled replays converged but report the initial exact front as `published_camera_position`, yielding a 0.00508 pose error and exit 1; this prevents the retained-preview motion gate from passing and is not introduced by the sample cache.
+- [ ] MetalFX retained-preview smoke | mode: fresh Release, background native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_PREVIEW=1 TetWorldMetal --metal-metalfx-smoke-test` | first_seen: 2026-09-04 13:33 CEST | last_seen: 2026-09-04 13:36 CEST | next: reproduce against preview-disabled control after resolving the motion diagnostic | notes: nine valid preview candidates were published before the 180-second automation deadline; no terminal MetalFX smoke event was emitted. This cannot yet be attributed to retained samples because the preview-off control has not run.
 
 ## Recent Test Runs
+
+- 2026-09-04 13:36 CEST | fail, retained preview qualification matrix | mode: fresh Release, hidden native Metal | command: preview-enabled basic, shadow, reference-atmosphere, ray-oracle, motion, and MetalFX smokes | failures: motion and MetalFX terminal gates | notes: basic, shadow, reference-atmosphere, and ray-oracle gates passed. Motion failed identically with preview enabled and disabled in four total uncontended replays; MetalFX preview-on reached the automation deadline after nine valid candidate publications. Continue from the two current failures above.
 
 - 2026-09-04 13:26 CEST | pass, retained preview sample cache Release gate | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 476 tests passed, including the new X/Z shifted preview byte-equivalence oracle (215,587 assertions) plus cancellation and worker-coalescing coverage. Hidden native background preview profiling passed with a 10.211083 ms cold build and the normal 300-frame profile contract.
 
