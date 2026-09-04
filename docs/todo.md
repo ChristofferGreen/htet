@@ -171,34 +171,6 @@ the qualified terrain-shadowed atmosphere, coherent preview/exact display
 front, and native visual oracle. Do not promote a lower-quality path solely
 because it is faster.
 
-- [ ] Make GPU timings frame-coherent and configuration-identifiable; include
-      enclosing GPU intervals, CPU submission time, encoder transitions, and
-      steady-versus-refresh classification. Pool per-flight counter resources,
-      quantify timestamp instrumentation overhead, and record both instrumented
-      and minimally instrumented release baselines. Replace the current whole-
-      command-buffer value labeled as acceleration-structure build time with a
-      real AS interval included in frame accounting, and record reference
-      endpoint sky/surface counts for comparable view profiles. Add temporal
-      attempted/accepted and rejection-reason counters, and resolve the current
-      source-versus-test-log discrepancy over whether reference sky and
-      irradiance dispatch on every stable frame (P0).
-  - [x] Pool three per-flight counter sample/result/scratch sets; keep stage
-        counters opt-in with `TETWORLD_METAL_STAGE_TIMESTAMPS=1`, use the
-        enclosing GPU interval for ordinary runs, reject incoherent counter
-        intervals, and attach each retained stage sample's completed-frame
-        sequence and immutable renderer configuration.
-  - [x] Record paired release auto-resolution baselines at the same 1123x702
-        profile: 1.4579 ms median / 2.0657 ms p95 without detailed counters;
-        2.3075 ms / 3.0350 ms with them. See
-        `metal-frame-time-optimization.md` for the measurement contract.
-  - [x] Report CPU queue-submission time separately from encoding and GPU work;
-        replace the falsely named AS frame duration with an opt-in,
-        stage-boundary AS interval that is explicitly invalid when unavailable.
-  - [x] Expose reference sky-view and sky-irradiance dispatches in the static
-        atmosphere smoke. Twelve identical frames produced twelve of each,
-        proving the current reference path lacks a stable-pose guard.
-  - [x] Add test-only reconstructed endpoint sky/surface counts; the reference
-        480x300 smoke frame reports 72,852 sky and 71,148 surface endpoints.
 - [ ] Audit every atmosphere, shadow, display-front, preview-upload, and
       ray-tracing cache identity and build an active-renderer consumer matrix.
       First replace Metal's raw camera/uniform history comparisons with the

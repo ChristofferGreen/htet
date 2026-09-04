@@ -2,6 +2,16 @@
 
 ## 2026-09-04
 
+- [x] Complete P0, coherent Metal profiling and temporal observability. The
+  source audit confirms pooled per-flight timestamp resources, frame/configuration
+  identities, coherent enclosing intervals, CPU submission timing, a separately
+  bracketed acceleration-structure interval, endpoint counts, and temporal
+  acceptance/invalidation counters. A fresh native stage-timestamp render smoke
+  passed with coherent configuration identity; twelve static reference frames
+  dispatched sky view and irradiance once each with eleven skips, while one sun
+  change produced exactly two of each. The old every-frame lookup observation
+  was pre-P1 history, not a current discrepancy.
+
 - [x] Repeat every latency, resource, starvation, hash, and visual gate with
   retained preview construction enabled, while preserving cold construction as
   the oracle. A queued sub-threshold settled pose is no longer overwritten when

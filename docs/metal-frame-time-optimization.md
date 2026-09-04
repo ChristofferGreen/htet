@@ -1413,7 +1413,7 @@ must be visible in diagnostics and deterministic in a recorded timing trace.
 The chain is deliberately evidence-first. Later gates may be skipped when an
 earlier measurement shows that the opportunity is immaterial.
 
-1. **P0 — Coherent profiling and temporal observability.** Attach frame and
+1. **P0 — Coherent profiling and temporal observability (complete).** Attach frame and
    configuration identities to every Metal timing result; add enclosing
    intervals, CPU submission timing,
    transition counts, and steady-versus-refresh classification. Prove interval
@@ -1425,6 +1425,11 @@ earlier measurement shows that the opportunity is immaterial.
    be normalized across views. Add temporal attempted/accepted and rejection-
    reason counters, and explicitly verify the source-versus-test-log question
    of whether reference sky and irradiance dispatch on every stable frame.
+   The final fresh audit on 2026-09-04 confirmed the three-flight,
+   configuration-tagged counter pool and separate CPU/AS measurements. Static
+   reference transport dispatched sky view and irradiance once over twelve
+   frames (eleven skips); a single sun change dispatched each twice. The prior
+   twelve-dispatch observation is historical, before P1's stable physical key.
 2. **P1 — Invalidation and liveness audit.** Enumerate every atmosphere,
    shadow, display, preview-upload, and ray-tracing cache dependency and build
    the active-renderer consumer matrix. Add invalidation tests, prove reference
