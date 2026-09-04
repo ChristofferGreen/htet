@@ -985,14 +985,34 @@ contents, writers, lifetimes, and invalidation/failure rules.  Stop before
 defining descendant bounds, adding GPU structs, allocating buffers, or
 implementing extraction.
 
+### Conservative red-descendant bounds
+
+`world_tetrahedron_descendant_bounds(address)` is the first supported bound
+for the BCC red hierarchy: the coordinate-wise AABB of the address's four
+exact root-local tetrahedron vertices. Every red child has only parent
+vertices or edge midpoints, so induction makes this AABB conservative for the
+address and every descendant, at every supported depth. The bound is purposely
+topological and field-independent; it is safe for frustum/depth rejection but
+is not a scalar-field range, terrain-relief envelope, or a claim that green
+transition cells are GPU materialized.
+
+The Release regression exhaustively enumerates every red descendant through
+five generations below each of the twelve BCC roots, checks every vertex
+against its root bound, and checks every child at each level of deterministic
+paths through the maximum supported red depth. Future shader vectors must
+match this normalized AABB bit-for-bit at representable dyadic coordinates;
+the later field/geometric-error leaf supplies tighter field relevance.
+
+**Acceptance and stop rule.** This leaf is complete with the conservative
+hierarchy API and exhaustive containment proof above. Stop before embedding
+field summaries or using the bound in GPU traversal.
+
 - [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
   camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Derive conservative descendant bounds for the selected hierarchy and
-  validate containment exhaustively over all resident descendants.
 - [ ] Define the combined screen-size and field/geometric error criterion and
   generate conservative per-node summaries for the supported implicit shape.
 - [ ] Upload an immutable hierarchy snapshot and verify shader-side address and

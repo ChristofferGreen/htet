@@ -4,6 +4,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 
 ## Active Memories
 
+### bcc-descendant-bounds
+- Updated: 2026-09-04
+- Tags: bcc, hierarchy, gpu-lod, correctness
+- Fact: `world_tetrahedron_descendant_bounds` is the normalized AABB of a red address's tetrahedron and conservatively encloses every red descendant because child vertices are parent vertices or midpoints.
+- Evidence: The Release regression exhaustively checked 1,812,144 descendant-vertex containments across all BCC roots through depth five and deterministic paths through the maximum depth.
+
 ### logical-derived-address-order
 - Updated: 2026-08-24
 - Tags: bcc, surface-cache, ordering

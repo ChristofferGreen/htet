@@ -360,6 +360,21 @@ WorldTetrahedronGeometry world_tetrahedron_geometry(WorldTetAddress address) {
   return geometry;
 }
 
+WorldDescendantBounds world_tetrahedron_descendant_bounds(
+    WorldTetAddress address) {
+  const auto geometry=world_tetrahedron_geometry(address);
+  WorldDescendantBounds result{geometry.front(),geometry.front()};
+  for(const auto vertex:geometry){
+    result.minimum.x=std::min(result.minimum.x,vertex.x);
+    result.minimum.y=std::min(result.minimum.y,vertex.y);
+    result.minimum.z=std::min(result.minimum.z,vertex.z);
+    result.maximum.x=std::max(result.maximum.x,vertex.x);
+    result.maximum.y=std::max(result.maximum.y,vertex.y);
+    result.maximum.z=std::max(result.maximum.z,vertex.z);
+  }
+  return result;
+}
+
 std::array<WorldTetrahedronGeometry,8> world_tetrahedron_red_children(
     const WorldTetrahedronGeometry& parent) {
   constexpr std::array<std::array<std::size_t,2>,6> edges{{

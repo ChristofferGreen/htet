@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 19:37 CEST | pass, GPU descendant-bound closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 478/478 tests passed in 604.39 s. The focused new descendant-bound regression passed 1,812,144 containment assertions after a fresh Release rebuild.
+
 - 2026-09-04 19:02 CEST | pass, GPU buffer-domain contract | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 515.52 s after documenting the independent topology/index, classification, geometry, ownership, and diagnostic buffer lifetimes and failure rules.
 
 - 2026-09-04 18:34 CEST | pass, GPU hierarchy-record contract | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 586.34 s after defining the documentation-only 32-byte shader-visible hierarchy record and immutable snapshot publication contract.

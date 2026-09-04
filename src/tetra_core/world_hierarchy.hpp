@@ -39,6 +39,15 @@ inline constexpr unsigned int maximum_world_red_depth=world_address_path_bits/3U
 
 using WorldTetrahedronGeometry=std::array<Vec3,4>;
 
+// Axis-aligned bound of an address and every red descendant below it. Red
+// bisection constructs each child vertex from a parent vertex or midpoint, so
+// the parent tetrahedron's coordinate-wise extent is a conservative bound for
+// the entire descendant subtree. Coordinates remain normalized root-local.
+struct WorldDescendantBounds {
+  Vec3 minimum{};
+  Vec3 maximum{};
+};
+
 struct WorldVertexKey {
   std::int64_t x{};
   std::int64_t y{};
@@ -130,6 +139,8 @@ inline constexpr std::size_t bcc_root_tetrahedron_count=12U;
 [[nodiscard]] WorldTetrahedronGeometry world_tetrahedron_geometry(
     const TetMesh& root_complex,WorldTetAddress address);
 [[nodiscard]] WorldTetrahedronGeometry world_tetrahedron_geometry(
+    WorldTetAddress address);
+[[nodiscard]] WorldDescendantBounds world_tetrahedron_descendant_bounds(
     WorldTetAddress address);
 // Produces the same deterministic shortest-diagonal red children as appending
 // each child digit to the address, while allowing hierarchy traversals to

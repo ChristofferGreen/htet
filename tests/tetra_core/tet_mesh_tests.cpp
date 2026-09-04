@@ -4948,6 +4948,39 @@ TEST_CASE("carried red child geometry matches exact address reconstruction") {
   }
 }
 
+TEST_CASE("world descendant bounds contain every enumerated red descendant") {
+  constexpr double epsilon=1.0e-15;
+  const auto contains=[&](const tetra::WorldDescendantBounds& bounds,
+                          tetra::Vec3 point){
+    return point.x>=bounds.minimum.x-epsilon&&point.x<=bounds.maximum.x+epsilon&&
+           point.y>=bounds.minimum.y-epsilon&&point.y<=bounds.maximum.y+epsilon&&
+           point.z>=bounds.minimum.z-epsilon&&point.z<=bounds.maximum.z+epsilon;
+  };
+  const auto check_subtree=[&](auto&& self,tetra::WorldTetAddress address,
+                               unsigned int remaining,const auto& bounds)->void {
+    for(const auto vertex:tetra::world_tetrahedron_geometry(address))
+      CHECK(contains(bounds,vertex));
+    if(remaining==0U)return;
+    for(std::uint8_t child=0U;child<8U;++child)
+      self(self,address.child(child),remaining-1U,bounds);
+  };
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    const auto address=tetra::WorldTetAddress::root(root);
+    const auto bounds=tetra::world_tetrahedron_descendant_bounds(address);
+    check_subtree(check_subtree,address,5U,bounds);
+  }
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root){
+    auto address=tetra::WorldTetAddress::root(root);
+    for(unsigned int depth=0;depth<tetra::maximum_world_red_depth;++depth){
+      const auto bounds=tetra::world_tetrahedron_descendant_bounds(address);
+      for(std::uint8_t child=0U;child<8U;++child)
+        for(const auto vertex:tetra::world_tetrahedron_geometry(address.child(child)))
+          CHECK(contains(bounds,vertex));
+      address=address.child(static_cast<std::uint8_t>((root+depth*5U)%8U));
+    }
+  }
+}
+
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

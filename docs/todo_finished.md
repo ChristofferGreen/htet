@@ -2,6 +2,14 @@
 
 ## 2026-09-04
 
+- [x] Derive and validate conservative BCC red-descendant bounds. Added the
+  normalized root-local tetrahedron AABB API; red children contain only parent
+  vertices and midpoints, so it encloses the full descendant subtree. Release
+  coverage exhaustively checks all twelve root subtrees through five red
+  generations and every child on deterministic paths through maximum depth.
+  It is deliberately a hierarchy bound only, not a terrain-field bound or a
+  GPU traversal implementation.
+
 - [x] Separate the future GPU topology/index, classification, geometry,
   ownership, and diagnostic buffer domains. The documented contract fixes
   disjoint contents, writers, capacities, tuple identities, lifetimes,
