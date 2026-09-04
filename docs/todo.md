@@ -171,6 +171,7 @@ the qualified terrain-shadowed atmosphere, coherent preview/exact display
 front, and native visual oracle. Do not promote a lower-quality path solely
 because it is faster.
 
+
 - [x] Capture and rank stable, moving, lookup-refresh, preview-upload,
       exact-handoff, and ray-tracing costs. Retire opportunities whose plausible
       gain is below the declared measurement threshold (P2).

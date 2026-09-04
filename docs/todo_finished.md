@@ -2,6 +2,12 @@
 
 ## 2026-09-04
 
+- [x] Add the native Metal five-minute ground-to-orbit-and-back soak. The
+  hidden production-profile route retains preview/exact handoffs, reports
+  completed-frame timing and temporal accounting, and finishes only on a
+  settled exact front. Its fresh run passed with 6.4660/8.0440/11.7542 ms
+  median/p95/p99 and 1,907 compatible temporal reuses.
+
 - [x] Complete P3, Metal lookup specialization. Independent timestamp
   profiles measured optical, sky-view, irradiance, aerial, and screen-shadow
   work without treating retained timestamp values as fresh dispatches. Hillaire

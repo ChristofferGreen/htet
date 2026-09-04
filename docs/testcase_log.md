@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 16:24 CEST | pass, native Metal five-minute soak | mode: hidden production interactive profile | command: `--metal-soak-smoke-test` | failures: none | notes: 300 simulated seconds completed with 6.4660/8.0440/11.7542 ms median/p95/p99, 1,919 history attempts, 1,907 compatible reuses, 12 expected route invalidations, and a settled final exact front. The fresh Release suite passed 477/477.
+
 - 2026-09-04 15:18 CEST | pass, P3 lookup-specialization closure audit | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; serial `aerial-refresh` and `shadow-lookup` timing profiles | failures: none | notes: all 477 Release tests passed. Both native profiles collected 300 valid independent intervals: aerial 1.5121/1.7472 ms and screen integration 2.6145/2.7030 ms median/p95 at the current 2880x1800 drawable / 2016x1260 internal 2x-MSAA configuration.
 
 - 2026-09-04 15:07 CEST | pass, P1 invalidation/liveness closure audit | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; MetalFX, reference sun-invalidation, froxel, and min/max smokes | failures: none | notes: all 477 Release tests passed in 495.65 s. The chained native consumer controls all returned success: MetalFX temporal reuse, physical lookup invalidation, and lazy froxel/min-max activation remain correct.
