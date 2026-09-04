@@ -2,6 +2,19 @@
 
 ## 2026-09-04
 
+- [x] Encode and validate an immutable GPU hierarchy snapshot against CPU
+  vectors. `GpuHierarchyRecord` is now a real, byte-stable 32-byte/16-byte
+  aligned core representation with the documented four-lane world address,
+  child mask/range, ownership flag, and block index. The host-only encoder
+  builds immutable header, block, root-geometry, record, and logical-owner
+  side tables from one `WorldCutDirectory` revision. Shader-equivalent
+  32-bit-lane child/parent arithmetic and carried red-child reconstruction
+  match the CPU world geometry at all roots and through the maximum depth,
+  including the 64-bit lane carry. Validation rejects malformed header,
+  block, record, child, and logical-owner data. This does not allocate a GPU
+  buffer, perform a transfer, dispatch a shader, or alter rendering; those
+  remain separate leaves.
+
 - [x] Define the combined screen-size and field/geometric-error criterion and
   conservative per-node summaries. The existing CPU oracle refines on the
   maximum normalized projected edge, Perlin field, and planetary-limb errors,

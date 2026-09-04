@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 20:45 CEST | pass, immutable GPU hierarchy snapshot closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 481/481 tests passed in 449.77 s; the three new focused snapshot tests cover exact record/geometry reconstruction, all-root maximum-depth lane carry, and malformed header/block/record/owner rejection.
+
+- 2026-09-04 20:35 CEST | fail, immutable GPU hierarchy snapshot implementation | mode: fresh Release build | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp`, `tetra_tests` | notes: initial block side-table size assertion was 80 rather than declared 64 bytes, and new tests passed `TetMesh` where the sparse checkpoint API requires world-address spans; correcting both before focused rerun.
+
 - 2026-09-04 20:01 CEST | pass, GPU LOD error-criterion closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 478/478 tests passed in 549.71 s after documenting the existing combined projected edge, Perlin field, and planetary-limb error criterion and retained per-node CPU summaries.
 
 - 2026-09-04 19:37 CEST | pass, GPU descendant-bound closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 478/478 tests passed in 604.39 s. The focused new descendant-bound regression passed 1,812,144 containment assertions after a fresh Release rebuild.

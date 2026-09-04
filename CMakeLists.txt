@@ -28,6 +28,7 @@ add_library(tetra_core
   src/tetra_core/four_hexahedra.cpp
   src/tetra_core/geometry_executor.cpp
   src/tetra_core/green_templates.cpp
+  src/tetra_core/gpu_hierarchy_snapshot.cpp
   src/tetra_core/layer_storage.cpp
   src/tetra_core/mixed_depth_dual.cpp
   src/tetra_core/parallel_commit.cpp

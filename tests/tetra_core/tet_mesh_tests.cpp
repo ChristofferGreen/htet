@@ -6,6 +6,7 @@
 #include "tetra_core/four_hexahedra.hpp"
 #include "tetra_core/geometry_executor.hpp"
 #include "tetra_core/green_templates.hpp"
+#include "tetra_core/gpu_hierarchy_snapshot.hpp"
 #include "tetra_core/layer_storage.hpp"
 #include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/parallel_commit.hpp"
@@ -4979,6 +4980,84 @@ TEST_CASE("world descendant bounds contain every enumerated red descendant") {
       address=address.child(static_cast<std::uint8_t>((root+depth*5U)%8U));
     }
   }
+}
+
+TEST_CASE("GPU hierarchy snapshots preserve exact addresses and geometry") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<6U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,17U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,29U);
+  CHECK(snapshot.header.source_world_revision==17U);
+  CHECK(snapshot.header.field_revision==29U);
+  CHECK(snapshot.header.record_count==snapshot.records.size());
+  CHECK(snapshot.header.record_stride==sizeof(tetra::GpuHierarchyRecord));
+  CHECK(snapshot.header.record_alignment==alignof(tetra::GpuHierarchyRecord));
+  CHECK(snapshot.header.canonical_directory_hash==directory.canonical_cut_hash());
+  CHECK(snapshot.header.block_count==snapshot.blocks.size());
+  CHECK_FALSE(snapshot.records.empty());
+  CHECK_FALSE(snapshot.logical_owner_records.empty());
+  CHECK_NOTHROW(tetra::validate_gpu_hierarchy_snapshot(snapshot));
+  for(const auto& record:snapshot.records) {
+    const auto address=tetra::gpu_hierarchy_address_from_lanes(record.address);
+    CHECK(tetra::gpu_hierarchy_address_valid(record.address));
+    const auto exact=tetra::world_tetrahedron_geometry(address);
+    const auto reconstructed=tetra::gpu_hierarchy_geometry(record.address);
+    for(std::size_t corner=0;corner<4U;++corner) {
+      CHECK(reconstructed[corner].x==exact[corner].x);
+      CHECK(reconstructed[corner].y==exact[corner].y);
+      CHECK(reconstructed[corner].z==exact[corner].z);
+    }
+    const auto mask=record.child_mask_flags&0xffU;
+    for(std::uint8_t child=0;child<8U;++child)if(mask&(1U<<child)) {
+      const auto child_index=record.child_base+
+          std::popcount(mask&((1U<<child)-1U));
+      CHECK(snapshot.records[child_index].address==
+            tetra::gpu_hierarchy_child(record.address,child));
+    }
+  }
+}
+
+TEST_CASE("GPU hierarchy lane arithmetic carries across 64-bit boundaries") {
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root) {
+    auto address=tetra::WorldTetAddress::root(root);
+    for(unsigned int depth=0;depth<tetra::maximum_world_red_depth;++depth) {
+      const auto child=static_cast<std::uint8_t>((root+depth*7U)%8U);
+      const auto lanes=tetra::gpu_hierarchy_address_lanes(address);
+      CHECK(tetra::gpu_hierarchy_address_from_lanes(lanes)==address);
+      CHECK(tetra::gpu_hierarchy_child(lanes,child)==
+            tetra::gpu_hierarchy_address_lanes(address.child(child)));
+      address=address.child(child);
+    }
+    CHECK(tetra::gpu_hierarchy_parent(tetra::gpu_hierarchy_address_lanes(address))==
+          tetra::gpu_hierarchy_address_lanes(address.parent()));
+  }
+  auto malformed=tetra::gpu_hierarchy_address_lanes(tetra::WorldTetAddress::root(0U));
+  malformed[1]|=0x00100000U; // depth 1 but no corresponding path digit is still valid.
+  malformed[1]=0xfc000000U|(63U<<20U); // invalid depth field.
+  CHECK_FALSE(tetra::gpu_hierarchy_address_valid(malformed));
+  CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_child(malformed,0U)),
+                  std::invalid_argument);
+}
+
+TEST_CASE("GPU hierarchy snapshot validation rejects malformed records") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,5U,tetra::HierarchyResidencyTier::surface));
+  const auto source=tetra::make_gpu_hierarchy_snapshot(directory);
+  auto bad_header=source;bad_header.header.record_stride=4U;
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_header),std::invalid_argument);
+  auto bad_record=source;bad_record.records.front().reserved=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_record),std::invalid_argument);
+  auto bad_block=source;bad_block.blocks.front().record_count++;
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_block),std::invalid_argument);
+  auto bad_owner=source;bad_owner.logical_owner_records.front()=
+      bad_owner.logical_owner_records.back();
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_owner),std::invalid_argument);
 }
 
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {

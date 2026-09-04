@@ -10,6 +10,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `world_tetrahedron_descendant_bounds` is the normalized AABB of a red address's tetrahedron and conservatively encloses every red descendant because child vertices are parent vertices or midpoints.
 - Evidence: The Release regression exhaustively checked 1,812,144 descendant-vertex containments across all BCC roots through depth five and deterministic paths through the maximum depth.
 
+### gpu-hierarchy-snapshot
+- Updated: 2026-09-04
+- Tags: bcc, gpu-lod, hierarchy, serialization
+- Fact: `GpuHierarchySnapshot` is a host-only immutable core encoding of one `WorldCutDirectory` revision; its 32-byte records use four 32-bit address lanes and deterministic breadth-first per-block child packing, but it does not allocate or upload a device buffer.
+- Evidence: Release tests reconstruct exact CPU BCC geometry, exercise address carry through the 64-bit boundary to maximum depth for every root, and reject malformed snapshot fields.
+
 ### logical-derived-address-order
 - Updated: 2026-08-24
 - Tags: bcc, surface-cache, ordering

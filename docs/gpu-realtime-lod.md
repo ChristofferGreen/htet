@@ -905,8 +905,10 @@ geometry.
 **Block and template side tables.** The snapshot has a separate, aligned
 block table with each `HierarchyBlockId` prefix in the same four-lane form,
 `block_generations`, record range, logical-owner range, source revision, and
-canonical block hash.  Records and block entries are sorted by their existing
-canonical address/block order.  Geometry comes from immutable side tables:
+canonical block hash. Block entries are sorted by canonical block address.
+Within each block, records use a deterministic breadth-first hierarchy order:
+each parent is emitted before a contiguous increasing-child-index group, so
+the packed child range is directly addressable. Geometry comes from immutable side tables:
 the 12 root tetrahedron corner tuples, the root-face adjacency table, and the
 three shortest-diagonal / eight-red-child templates used by
 `world_tetrahedron_red_children`.  The encoder supplies these exact integer
@@ -1051,8 +1053,6 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Upload an immutable hierarchy snapshot and verify shader-side address and
-  geometry reconstruction against CPU test vectors.
 - [ ] Implement GPU on-demand traversal with frustum, depth, projected-size,
   and conservative field-range termination.
 - [ ] Implement device-local selection counters, overflow detection, and
