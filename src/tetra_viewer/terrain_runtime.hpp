@@ -737,6 +737,9 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     WorldHierarchyDemandState hierarchy_demand;
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     TerrainDetailWorkingSet detail_working_set;
+    // False schedules the next complete bounded transaction toward the same
+    // retained raw target after this revision publishes.
+    bool target_converged{true};
     bool canceled{};
     bool resource_budget_exceeded{};
     bool residency_budget_exceeded{};

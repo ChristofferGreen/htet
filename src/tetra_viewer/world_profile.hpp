@@ -101,6 +101,11 @@ struct WorldProfile {
   std::uint32_t hierarchy_recent_retention_epochs{8U};
   double view_distance{5.0};
   double pixel_threshold{128.0};
+  // A complete published front may advance toward an already selected target
+  // by this many disjoint raw red split/merge families. Zero retains the
+  // single-publication behaviour until the production latency qualification
+  // proves that a bounded slice can converge within its responsiveness gate.
+  std::size_t sliced_publication_operations{};
   // Previously refined owners merge only below this fraction of each split
   // threshold. One half corresponds to one ideal dyadic refinement level.
   double lod_merge_threshold_ratio{0.5};

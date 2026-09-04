@@ -2129,17 +2129,19 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   update_terrain_detail_working_set(
       detail_working_set,profile,field,camera,std::move(selection.owners),
       generation,selection.metrics);
-  selection.owners=detail_working_set.combined_requested_cut;
+  const auto& target_requested_cut=detail_working_set.combined_requested_cut;
+  bool target_converged=true;
+  selection.owners=target_requested_cut;
+  if(profile.sliced_publication_operations>0U&&
+     !surface_cache.closure.requested_owners.empty()&&
+     surface_cache.closure.requested_owners!=target_requested_cut){
+    selection.owners=advance_world_requested_frontier(
+        surface_cache.closure.requested_owners,target_requested_cut,
+        profile.domain,camera,profile.sliced_publication_operations);
+    target_converged=selection.owners==target_requested_cut;
+  }
   selection.metrics.logical_owners_before_closure=selection.owners.size();
   const auto closure_started=std::chrono::steady_clock::now();
-  if(field.terrain.planet_radius>0.0){
-    const auto maximum_entries=surface_cache.closure.maximum_entries;
-    const auto fingerprint_bits=
-        surface_cache.closure.dependency_fingerprint_bits;
-    surface_cache.closure={};
-    surface_cache.closure.maximum_entries=maximum_entries;
-    surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
-  }
   selection.owners=tetra::close_world_conforming_cut(
       selection.owners,&surface_cache.closure,cancellation,3U,executor);
   capture_world_closure_metrics(selection,surface_cache.closure);
@@ -2329,15 +2331,10 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       sector.retained_surface_blocks.clear();
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
-  if(field.terrain.planet_radius>0.0){
-    // Planetary view changes currently rebuild the conformity proof graph
-    // from the requested cut (see select_world_lod_cut_impl). Retaining that
-    // graph here only consumes hundreds of megabytes: the next request clears
-    // it before use. The directory, conforming surface blocks, intersections,
-    // optimizer dependencies, and render blocks remain retained.
-    surface_cache.closure={};
-    surface_cache.closure_source_hierarchy_revision=0U;
-  }
+  // Keep the closure's requested cut, green masks, causal proofs and immutable
+  // dependency blocks with the private surface transaction. The next bounded
+  // publication consumes its exact changed-owner/block manifest; dropping this
+  // state would turn every planetary frontier slice into a cold whole-cut pass.
   // The production renderer retains derived snapshots in surface_cache and
   // publishes their prepared render blocks atomically with this Publication.
   // Mirroring them into the topology directory is redundant and can make a
@@ -2713,7 +2710,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-started).count();
   diagnostics.positive_volumes=true;diagnostics.conforming_faces=true;
-  diagnostics.converged=true;diagnostics.busy=false;
+  diagnostics.converged=target_converged;diagnostics.busy=false;
   constexpr std::uint64_t offset=1469598103934665603ULL;
   constexpr std::uint64_t prime=1099511628211ULL;
   diagnostics.conforming_volume_hash=surface.metrics.conforming_volume_hash;
@@ -2739,7 +2736,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
           std::move(scene),diagnostics,
           std::move(surface_cache),std::move(hierarchy_plan.state),
           std::move(atmosphere_shadow_front),std::move(detail_working_set),
-          false,false,false,false};
+          target_converged,false,false,false,false};
   }catch(const std::runtime_error&){
     if(!cancellation.stop_requested())throw;
     Publication canceled;
@@ -3221,6 +3218,7 @@ bool BlockedTerrainRuntime::update() {
       diagnostics_.exact_published_view_epoch=view_identity_.view_epoch;
     }
     active_superseded_=false;
+    demand_pending_=!publication.target_converged;
     diagnostics_.reused_hierarchy_blocks=
         publication.hierarchy_update.metrics.reused_blocks;
     diagnostics_.rebuilt_hierarchy_blocks=

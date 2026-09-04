@@ -2,6 +2,17 @@
 
 ## 2026-09-04
 
+- [x] Wire retained raw-frontier slices through the production runtime as an
+  opt-in profile control. The runtime now retains the closure's requested cut,
+  green masks, causal proofs, and immutable dependency blocks across atomic
+  intermediate publications, and consumes their exact changed-block manifests
+  throughout directory, conforming-volume, certificate, topology, optimizer,
+  snapshot, and render-block regeneration. A focused Release fixture publishes
+  multiple slices and reaches exact unsliced hierarchy, conforming-volume,
+  surface, and render hashes. The 32-family production candidate exceeded the
+  established convergence waits, so the default remains disabled until the
+  end-to-end latency gate is met; the remaining qualification leaf stays open.
+
 - [x] Retain the bounded camera target and priority queues between slices:
   `persistent_split_merge_queues` already seeds the active cut once, retains
   split/merge membership and priorities, incrementally updates only committed

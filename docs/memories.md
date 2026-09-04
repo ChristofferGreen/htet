@@ -145,8 +145,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### persistent-camera-frontier
 - Updated: 2026-09-04
 - Tags: camera, lod, scheduler, correctness
-- Fact: The persistent split/merge scheduler retains its active-front queues across ordinary camera updates and increments them only from committed and conformity deltas, but sliced publication remains disabled until downstream closure and surface work are similarly range-local.
-- Evidence: Current `AdaptationPlanningCache` retains both queues and memberships; fresh Release tests cover seed-once, teleport/stale reseed, delta maintenance, and 100-update streamed-hash equivalence, while the production-slice benchmark records the unresolved downstream bottleneck.
+- Fact: The persistent split/merge scheduler and production runtime can retain and publish range-local closure/surface transactions, but sliced publication remains disabled by default until its end-to-end responsiveness gate passes.
+- Evidence: `BlockedTerrainRuntime` now retains closure state and advances an opt-in bounded raw frontier through the existing changed-block consumers; a 474-test Release gate proves final hash equivalence, while the 32-family production candidate exceeded established convergence waits.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03

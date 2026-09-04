@@ -480,9 +480,20 @@ until every leaf is complete.
   - [x] Implement and cold-oracle-test distance-prioritized, allocation-checked
         split/merge batches over complete raw cuts. A production walking trace
         remains closure-exact at every 512-operation intermediate slice.
-  - [ ] Enable sliced publication only after closure and surface work consume
-        dirty ranges; the first integration took about 10.3 seconds over six
-        walking slices and timed out while coarsening the far view.
+  - [ ] Qualify and enable sliced production publication only when its complete
+        end-to-end latency and convergence gates pass. The first integration
+        took about 10.3 seconds over six walking slices and timed out while
+        coarsening the far view.
+    - [x] Wire retained raw-frontier slices through the production runtime as
+          an opt-in profile control. Preserve the closure's changed-owner/block
+          manifest through directory, conforming-volume, certificate, topology,
+          optimizer, snapshot, and render-block work; every intermediate front
+          is atomically published and hash-equivalent to the unsliced oracle.
+          The 32-family production candidate exceeded existing 10--30 second
+          convergence waits, so the default remains disabled pending the gate.
+    - [ ] Reduce end-to-end per-slice work enough to qualify the production
+          default, then measure walking, near/far, reversal, cancellation, and
+          no-op paths against the existing responsiveness and final-pose oracle.
     - [x] Add a release 512-operation production-slice benchmark after retained
           hierarchy adoption. One valid slice now takes about 1.06 s: 426 ms
           closure, 40 ms directory update, and 588 ms surface construction.

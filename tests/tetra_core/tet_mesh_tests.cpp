@@ -3050,6 +3050,51 @@ TEST_CASE("blocked world runtime spans old boundaries and refines and simplifies
   CHECK(reversed.recent_hierarchy_blocks>0U);
 }
 
+TEST_CASE("blocked world can publish retained frontier slices without changing its final front") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-15.5,-15.5,-15.5},.world_extent=32.0};
+  profile.background_red_depth=2U;
+  profile.near_red_depth=6U;
+  profile.maximum_depth=6U;
+  profile.view_distance=16.0;
+  profile.maximum_hierarchy_blocks=8192U;
+  profile.budgets.maximum_work_units=2'000'000U;
+  auto sliced_profile=profile;
+  sliced_profile.sliced_publication_operations=512U;
+  tetra_viewer::BlockedTerrainRuntime unsliced(profile);
+  tetra_viewer::BlockedTerrainRuntime sliced(sliced_profile);
+  tetra::Camera camera;
+  camera.position={2.0,0.72,0.78};camera.forward={0.0,-0.2,-1.0};
+  unsliced.set_camera(camera,false);sliced.set_camera(camera,false);
+  static_cast<void>(unsliced.update());static_cast<void>(sliced.update());
+  const auto settle=[](tetra_viewer::BlockedTerrainRuntime& runtime,
+                       std::chrono::seconds timeout,std::size_t& publications){
+    const auto deadline=std::chrono::steady_clock::now()+timeout;
+    while(std::chrono::steady_clock::now()<deadline){
+      if(runtime.update())++publications;
+      const auto diagnostics=runtime.diagnostics();
+      if(!diagnostics.busy&&diagnostics.converged)return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  std::size_t unsliced_publications{},sliced_publications{};
+  REQUIRE(settle(unsliced,std::chrono::seconds(10),unsliced_publications));
+  REQUIRE(settle(sliced,std::chrono::seconds(10),sliced_publications));
+  const auto expected=unsliced.diagnostics(),actual=sliced.diagnostics();
+  CHECK(unsliced_publications==1U);
+  CHECK(sliced_publications>1U);
+  CHECK(actual.hierarchy_hash==expected.hierarchy_hash);
+  CHECK(actual.conforming_volume_hash==expected.conforming_volume_hash);
+  CHECK(actual.connected_surface_hash==expected.connected_surface_hash);
+  CHECK(actual.render_hash==expected.render_hash);
+  CHECK(actual.positive_volumes);
+  CHECK(actual.conforming_faces);
+  CHECK(actual.closure_dependency_blocks_reused>0U);
+  CHECK(actual.reused_surface_blocks>0U);
+}
+
 TEST_CASE("blocked world resource rejection preserves the complete published front") {
   auto profile=tetra_viewer::production_world_profile();
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
