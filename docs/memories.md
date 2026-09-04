@@ -145,8 +145,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### persistent-camera-frontier
 - Updated: 2026-09-04
 - Tags: camera, lod, scheduler, correctness
-- Fact: The persistent split/merge scheduler and production runtime can retain and publish range-local closure/surface transactions, but sliced publication remains disabled by default until its end-to-end responsiveness gate passes.
-- Evidence: `BlockedTerrainRuntime` now retains closure state and advances an opt-in bounded raw frontier through the existing changed-block consumers; a 474-test Release gate proves final hash equivalence, while the 32-family production candidate exceeded established convergence waits.
+- Fact: The production runtime can retain range-local closure/surface transactions only across bounded raw-frontier steps; unsliced planetary sector-union replacements must retain the established cold closure-reset boundary.
+- Evidence: The opt-in planar slice fixture reaches exact unsliced hashes, but an opt-in planetary multi-sector transition produced `logical world owner is red-split`; restoring the zero-budget boundary passed the full 474-test Release gate.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03

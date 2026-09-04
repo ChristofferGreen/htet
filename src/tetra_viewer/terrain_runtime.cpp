@@ -2142,6 +2142,19 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   selection.metrics.logical_owners_before_closure=selection.owners.size();
   const auto closure_started=std::chrono::steady_clock::now();
+  if(profile.sliced_publication_operations==0U&&
+     field.terrain.planet_radius>0.0){
+    // The unsliced profile may replace a sector union wholesale. Keep its
+    // established cold closure boundary; only the retained-frontier profile
+    // has the bounded parent/child transaction invariant required by the
+    // incremental closure cache.
+    const auto maximum_entries=surface_cache.closure.maximum_entries;
+    const auto fingerprint_bits=
+        surface_cache.closure.dependency_fingerprint_bits;
+    surface_cache.closure={};
+    surface_cache.closure.maximum_entries=maximum_entries;
+    surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
+  }
   selection.owners=tetra::close_world_conforming_cut(
       selection.owners,&surface_cache.closure,cancellation,3U,executor);
   capture_world_closure_metrics(selection,surface_cache.closure);
@@ -2332,9 +2345,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
   // Keep the closure's requested cut, green masks, causal proofs and immutable
-  // dependency blocks with the private surface transaction. The next bounded
-  // publication consumes its exact changed-owner/block manifest; dropping this
-  // state would turn every planetary frontier slice into a cold whole-cut pass.
+  // dependency blocks only for a bounded-frontier transaction. The next slice
+  // consumes its exact changed-owner/block manifest; the unsliced profile may
+  // legally replace a sector union wholesale and therefore resets this cache.
+  if(profile.sliced_publication_operations==0U&&
+     field.terrain.planet_radius>0.0){
+    surface_cache.closure={};
+    surface_cache.closure_source_hierarchy_revision=0U;
+  }
   // The production renderer retains derived snapshots in surface_cache and
   // publishes their prepared render blocks atomically with this Publication.
   // Mirroring them into the topology directory is redundant and can make a

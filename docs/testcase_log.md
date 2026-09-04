@@ -2,9 +2,11 @@
 
 ## Current Known Failures
 
-- none
+- [ ] planetary multi-sector sliced publication | mode: release | command: `./scripts/compile.sh --release --skip-tests && cd build/release && ctest --output-on-failure -R 'blocked world runtime spans old boundaries and refines and simplifies in background|blocked world publishes fronts during continuous interactive movement|blocked world supersession cancels stale work and converges to newest pose|automated world captures require a fully converged terrain front'` with `sliced_publication_operations=512` | first_seen: 2026-09-04 local | last_seen: 2026-09-04 local | next: `reproduce the retained red-split closure state across sector-union changes, then rerun this Release selection` | notes: tests 101, 105, and 106 throw `logical world owner is red-split`; the bounded planar equivalence fixture passes, but planetary sector-union transitions are not yet a valid retained-frontier transaction.
 
 ## Recent Test Runs
+
+- 2026-09-04 local | pass, disabled-default slice-boundary regression | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 474/474 tests passed in 472.54 s after restoring the unsliced planetary closure-reset boundary; the opt-in multi-sector sliced candidate remains an explicitly logged correctness failure.
 
 - 2026-09-04 local | pass, runtime frontier wiring release gate | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 474/474 tests passed in 503.10 s, including the new retained-frontier runtime equivalence test and existing production, cancellation, resource, and atomic-publication paths.
 
