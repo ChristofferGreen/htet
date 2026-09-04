@@ -142,6 +142,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Native Metal qualification must rebuild the Release app immediately before collecting evidence, because the bundle executable can otherwise retain an earlier JSON diagnostic contract than the checked-in source.
 - Evidence: The first P10a raster matrix stopped when its stale executable emitted `latest_ms` while the committed parser required `median_ms`; rebuilding regenerated the bundle and the complete matrix passed.
 
+### persistent-camera-frontier
+- Updated: 2026-09-04
+- Tags: camera, lod, scheduler, correctness
+- Fact: The persistent split/merge scheduler retains its active-front queues across ordinary camera updates and increments them only from committed and conformity deltas, but sliced publication remains disabled until downstream closure and surface work are similarly range-local.
+- Evidence: Current `AdaptationPlanningCache` retains both queues and memberships; fresh Release tests cover seed-once, teleport/stale reseed, delta maintenance, and 100-update streamed-hash equivalence, while the production-slice benchmark records the unresolved downstream bottleneck.
+
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
 - Tags: metal, preview, automation

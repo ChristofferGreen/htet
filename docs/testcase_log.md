@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 local | pass, retained camera frontier baseline | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 473/473 tests passed in 622.97 s, including the retained split/merge scheduler's seed-once, incremental-maintenance, stale-recovery, reversal/teleport, and streamed-hash contracts. A prior foreground attempt was canceled by the tool timeout before test 76; the terminal-backed rerun completed.
+
+- 2026-09-04 local | canceled | mode: Release baseline for retained camera frontier | command: `./scripts/compile.sh --release` | failures: none observed | notes: the foreground tool's 30-second limit terminated CTest during test 76; `LastTestsFailed.log` lists the unrun remainder rather than identified assertion failures. Restart as a detached observed Release gate before implementation.
+
 - 2026-09-03 local | pass, P10 final audit | mode: final direct-output Metal promotion evidence | command: audited P0--P10 source/doc evidence, P10a native matrix, P10b contracts, P10c isolated profiles/Auto, and fresh `./scripts/compile.sh --release` | failures: none | notes: all required physical, temporal, numeric, visual/motion, resource, long-session, and Release gates have direct evidence; qualified 0.5/2x remains Default and Auto is limited to 0.5/2x or 0.7/2x.
 
 - 2026-09-03 local | pass, P10c isolated final tails | mode: hidden 1440x900 MetalFX 0.5/2x and 0.7/2x repeats plus Auto long session | command: two reverse-order 300-frame stable/moving timing-profile repeats and `TETWORLD_METAL_AUTO_LONG_SESSION=1 --metal-auto-resolution-smoke-test` | failures: none | notes: background automated apps were paused/restarted around profiles; 0.5x retained median savings and the 1,200-frame Auto session made exactly one upgrade to 0.70/2x with no inactive lookup/shadow dispatch.

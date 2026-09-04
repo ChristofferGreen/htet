@@ -480,8 +480,6 @@ until every leaf is complete.
   - [x] Implement and cold-oracle-test distance-prioritized, allocation-checked
         split/merge batches over complete raw cuts. A production walking trace
         remains closure-exact at every 512-operation intermediate slice.
-  - [ ] Retain the target and priority queue instead of rebuilding and scanning
-        both complete cuts for every slice.
   - [ ] Enable sliced publication only after closure and surface work consume
         dirty ranges; the first integration took about 10.3 seconds over six
         walking slices and timed out while coarsening the far view.

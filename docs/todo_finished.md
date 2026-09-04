@@ -1,5 +1,18 @@
 # Finished TODO Items
 
+## 2026-09-04
+
+- [x] Retain the bounded camera target and priority queues between slices:
+  `persistent_split_merge_queues` already seeds the active cut once, retains
+  split/merge membership and priorities, incrementally updates only committed
+  families and conformity neighbours, and reseeds only for teleport/stale
+  recovery. Fresh Release validation passed all 473 tests, including the
+  seed-once, incremental, stale-recovery, reversal/teleport, and 100-update
+  streamed-hash equivalence regressions. Existing benchmark evidence shows
+  that this retained scheduler is correctness-complete but does not yet make
+  sliced production publication viable because closure/surface work remains
+  global; that bounded integration remains the next open leaf.
+
 ## 2026-09-03
 
 - [x] P10d final promotion audit and Default decision: P0--P9 source,
