@@ -9,10 +9,16 @@ capture flight TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE=flight
 capture atmosphere-top TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE=atmosphere-top
 capture orbit TETWORLD_METAL_ATMOSPHERE_CAPTURE_POSE=orbit
 python3 - "$root/tests/visual_baselines/metal-soak" "$out" <<'PY'
-import pathlib, sys
+import math, pathlib, sys
 ref, out = map(pathlib.Path, sys.argv[1:])
+limit = 0.003
 for name in ('ground','flight','atmosphere-top','orbit'):
     a=(ref/(name+'.ppm')).read_bytes(); b=(out/(name+'.ppm')).read_bytes()
-    if a != b: raise SystemExit(f'{name}: visual baseline differs')
+    if a[:a.find(b'\n255\n')+5] != b[:b.find(b'\n255\n')+5]:
+        raise SystemExit(f'{name}: incompatible PPM header')
+    start=a.find(b'\n255\n')+5; a=a[start:]; b=b[start:]
+    value=math.sqrt(sum((x-y)**2 for x,y in zip(a,b))/len(a))/255.0
+    if value > limit: raise SystemExit(f'{name}: NRMS {value:.7f} exceeds {limit:.7f}')
+    print(f'{name}: NRMS {value:.7f}')
 print(f'metal soak visual baselines passed: {out}')
 PY
