@@ -24,6 +24,16 @@ latency. Root-local scheduling experiments also increased retained memory and
 made settled convergence worse. Further local CPU optimization remains useful,
 but it is not a credible route to the original latency contract.
 
+Sliced exact publication is therefore retired as a production candidate for
+the current BCC red-green hierarchy. Its opt-in implementation and exact oracle
+tests remain useful research evidence, but production keeps the slice operation
+budget at zero: planetary correctness still requires a private cold closure
+guard, and the guarded 512-operation trace made 65 complete atomic publications
+without converging after 90 seconds. Progressive exact publication should be
+revisited only if it becomes a hard product requirement, through a separate
+predefined dependency-closed diamond/longest-edge hierarchy design rather than
+another post-hoc closure-cache optimization.
+
 The new contract has two products:
 
 1. The **exact world front** remains the only authoritative tetrahedral cut.
@@ -481,6 +491,11 @@ visual failures can be tied to the exact coordinator state.
       latency, cell lag, publication cadence, upload and memory caps, exact
       convergence under load, failure fallback, and enabled/disabled exact
       hash equality.
+- [ ] Profile the atomic unsliced exact background front after cold-preview
+      qualification. Optimize only repeatably dominant settled-convergence
+      work while preserving exact hierarchy, surface, and render hashes and the
+      existing two-second settled gate; reject changes without a repeatable
+      end-to-end gain.
 - [ ] Add retained row/column updates only after the cold path passes. Verify
       byte equality with the cold oracle for every shifted origin before making
       retained construction the default.

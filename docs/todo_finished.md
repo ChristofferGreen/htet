@@ -2,6 +2,23 @@
 
 ## 2026-09-04
 
+- [x] Retire sliced exact publication as a production candidate for the
+  current BCC red-green hierarchy. The production operation budget remains
+  zero; the opt-in frontier, cold validation, and exact oracle tests remain as
+  research evidence. Planetary sector-union slices require a private cold
+  closure guard, and a 512-operation trace made 65 atomic publications without
+  converging after 90 seconds. Any future progressive exact geometry effort is
+  a separately justified dependency-closed diamond/longest-edge hierarchy
+  project, not another dynamic closure-cache optimization.
+
+- [x] Complete direct changed owner/mask propagation through certificate,
+  conforming-block, topology, optimizer, snapshot, and render-block work.
+  Immutable retained directories, exact changed-block manifests, stable
+  optimizer/surface data, and staged render blocks removed redundant global
+  scans and copies while preserving exact cold-oracle hashes. This completed
+  umbrella is historical optimization evidence; it is no longer an active
+  execution item.
+
 - [x] Wire retained raw-frontier slices through the production runtime as an
   opt-in profile control. The runtime now retains the closure's requested cut,
   green masks, causal proofs, and immutable dependency blocks across atomic

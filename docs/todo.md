@@ -444,7 +444,7 @@ The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
 
-## Active chain: bounded camera publication
+## Active chain: preview-first terrain response
 
 - [x] Add end-to-end and surface-substage timings to the production world
       benchmark. A representative walking update measured about 288 ms in
@@ -474,26 +474,30 @@ until every leaf is complete.
       executor while retaining serial deterministic split decisions. Preserve
       all production hashes and reduce walking/near selection from about
       465 ms to roughly 140--152 ms.
-- [ ] Replace root-to-leaf target-cut reconstruction with a persistent,
+- [x] Evaluate replacing root-to-leaf target-cut reconstruction with a persistent,
       priority-ordered split/merge frontier that commits a bounded conforming
       transaction from the currently published cut.
   - [x] Implement and cold-oracle-test distance-prioritized, allocation-checked
         split/merge batches over complete raw cuts. A production walking trace
         remains closure-exact at every 512-operation intermediate slice.
-  - [ ] Qualify and enable sliced production publication only when its complete
-        end-to-end latency and convergence gates pass. The first integration
-        took about 10.3 seconds over six walking slices and timed out while
-        coarsening the far view.
+  - [x] Retire sliced exact publication as a production candidate for the
+        current BCC red-green hierarchy. Keep the opt-in implementation and
+        exact oracle tests as research evidence, but keep the production
+        operation budget at zero: correctness still requires a private cold
+        closure guard, and a 512-operation planetary trace made 65 atomic
+        publications without converging after 90 seconds.
     - [x] Wire retained raw-frontier slices through the production runtime as
           an opt-in profile control. Preserve the closure's changed-owner/block
           manifest through directory, conforming-volume, certificate, topology,
           optimizer, snapshot, and render-block work; every intermediate front
           is atomically published and hash-equivalent to the unsliced oracle.
           The 32-family production candidate exceeded existing 10--30 second
-          convergence waits, so the default remains disabled pending the gate.
-    - [ ] Reduce end-to-end per-slice work enough to qualify the production
-          default, then measure walking, near/far, reversal, cancellation, and
-          no-op paths against the existing responsiveness and final-pose oracle.
+          convergence waits, so the default remains disabled and the candidate
+          is retained only as research evidence.
+    - [x] Stop further closure-cache and per-slice optimization on this path.
+          Progressive exact publication may be reconsidered only as a separate
+          dependency-closed diamond/longest-edge hierarchy project if it
+          becomes a hard product requirement.
     - [x] Add a release 512-operation production-slice benchmark after retained
           hierarchy adoption. One valid slice now takes about 1.06 s: 426 ms
           closure, 40 ms directory update, and 588 ms surface construction.
@@ -551,9 +555,9 @@ until every leaf is complete.
           against a cold proof graph before publication. A 4,096-operation
           multi-sector handoff now reaches exact hierarchy, conforming-volume,
           surface, and render hashes; 512 operations still requires 65
-          complete publications after 90 seconds, so the production default
-          remains disabled pending a genuinely retained exact proof path.
-- [ ] Feed the transaction's exact changed owner/mask ranges directly into
+          complete publications after 90 seconds, so this BCC production path
+          is retired rather than gated on another retained-proof optimization.
+- [x] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.
   - [x] Store field-crossing certificates in immutable hierarchy-block arrays
@@ -681,7 +685,7 @@ until every leaf is complete.
         fronts grew retained state beyond the 512 MiB admission limit.
         The complete scheduler was therefore rejected rather than made the
         production default.
-- [ ] Implement the render-only progressive terrain front specified in
+- Implement the render-only progressive terrain front specified in
       [`progressive-world-preview.md`](progressive-world-preview.md).
   - [x] Add the immutable preview snapshot and cold welded geometry-clipmap
         oracle without placing preview data in `WorldCutDirectory`.
@@ -767,21 +771,36 @@ until every leaf is complete.
         release case, with at most one-cell lag, exact convergence below 2
         seconds, 64 MiB preview CPU memory, 16 MiB uploads, failure fallback,
         exact hash invariance, and release visual captures.
+  - [ ] Profile the atomic unsliced exact background front only after the cold
+        preview passes. Optimize only the measured dominant settled-convergence
+        work; preserve exact hierarchy, surface, and render hashes plus the
+        existing two-second settled gate. Reject any change without a
+        repeatable end-to-end benefit.
   - [ ] Add retained row/column updates only after the cold path passes and they
-        match the cold oracle byte-for-byte, then repeat every performance,
-        resource, starvation, hash, and visual gate.
+        match the cold oracle byte-for-byte.
+  - [ ] Repeat every latency, resource, starvation, hash, and visual gate with
+        retained preview construction enabled; keep the cold path as the test
+        oracle.
 
-The active execution queue is the remaining gate sequence in
+### Research trigger: progressive exact geometry
+
+Do not put another sliced-exact closure-cache task in the active queue. If
+progressively published exact geometry becomes a hard product requirement,
+start a separate design project around a predefined dependency-closed
+diamond/longest-edge hierarchy, with complete diamonds as the atomic
+split/merge and publication unit. Until then, preserve the disabled BCC
+prototype and its tests only as research and oracle evidence.
+
+The older world-visualizer queue is the remaining exact-world sequence in
 [`world-visualizer.md`](world-visualizer.md). Gate 1's read-only blocked-view
 experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
 3 large-domain runtime adoption are complete. Gate 4's tiered volume residency,
 revisioned predictive hierarchy demand, bounded recent retention, independent
 hierarchy admission, and deterministic cold eviction are complete without
-changing the one authoritative logical cut. The next priority is Gate 4A:
-replace surface-only residency-after-full-reconstruction with genuinely
-surface-proportional construction. Address-range job prioritization follows
-that correction; scheduling avoidable full-volume work first would preserve
-the wrong cost model.
+changing the one authoritative logical cut. Gate 4A's surface-proportional
+construction is also complete. The current priority is the preview
+qualification chain above; exact-world work resumes only with its bounded,
+measurement-led background-front leaf.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity
@@ -803,12 +822,12 @@ match the monolithic surface exactly across widths and scheduling policies,
 survive mutation, eviction, and reload, and render directly from published
 snapshots. Deeper release measurements retain three generations as the
 bounded production width. Gate 2 and the residency portion of Gate 4 are
-complete; Gate 4A is the active correction described below.
+complete; Gate 4A is recorded as completed below.
 
 The CPU paper-integration plan is complete and remains historical evidence,
 not the active queue.
 
-## Active chain: surface-proportional construction
+## Completed chain: surface-proportional construction
 
 - [x] Capture production baselines for owners considered, range tests, green
       cells enumerated, cells materialized, field samples, candidate surface

@@ -145,8 +145,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### persistent-camera-frontier
 - Updated: 2026-09-04
 - Tags: camera, lod, scheduler, correctness
-- Fact: Planetary sliced frontiers must retain the raw requested transaction for recovery and cold-validate each private closure before publication until the retained proof graph tracks newly derived green edges through masks and promotions across sector unions.
-- Evidence: A raw 4,096-operation union slice missed 27 promotions (2,900 versus 2,927 cold); a fresh proof epoch repaired that initial transition but still diverged on retained slice three, and reverse-DAG seeding from invalidated proofs did not affect it, while cold validation restored all exact hashes and the 512-operation trace made 65 complete publications without converging in 90 seconds.
+- Fact: Keep BCC sliced exact publication disabled in production and use the render-only preview for immediate response; revisit progressive exact geometry only through a separate dependency-closed diamond/longest-edge hierarchy project.
+- Evidence: Private cold validation is still required across planetary sector unions, and the guarded 512-operation trace made 65 exact publications without converging in 90 seconds, while the qualified preview already preserves atomic unsliced exact publication in the background.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03
