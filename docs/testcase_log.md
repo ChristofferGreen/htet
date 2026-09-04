@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 15:18 CEST | pass, P3 lookup-specialization closure audit | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; serial `aerial-refresh` and `shadow-lookup` timing profiles | failures: none | notes: all 477 Release tests passed. Both native profiles collected 300 valid independent intervals: aerial 1.5121/1.7472 ms and screen integration 2.6145/2.7030 ms median/p95 at the current 2880x1800 drawable / 2016x1260 internal 2x-MSAA configuration.
+
 - 2026-09-04 15:07 CEST | pass, P1 invalidation/liveness closure audit | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; MetalFX, reference sun-invalidation, froxel, and min/max smokes | failures: none | notes: all 477 Release tests passed in 495.65 s. The chained native consumer controls all returned success: MetalFX temporal reuse, physical lookup invalidation, and lazy froxel/min-max activation remain correct.
 
 - 2026-09-04 14:40 CEST | pass, P0 profiling closure audit | mode: fresh Release, hidden native Metal | command: `./scripts/compile.sh --release`; serialized stage-timestamp render smoke; static and sun-invalidating reference-atmosphere smokes | failures: none | notes: all 477 Release tests passed in 488.27 s. The render smoke reported a coherent configuration-tagged stage sample and CPU submission timing. Static reference transport made one sky/irradiance dispatch with 11 skips; one sun change made two dispatches with 10 skips. Endpoint and temporal counters remained populated.

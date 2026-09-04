@@ -197,30 +197,6 @@ because it is faster.
         likewise completed at 7.4274/8.4875/8.7629/27.5685 ms. P2's documented
         threshold and ranking retire generic preview/post-handoff steady-pass
         rewrites and prioritize lookup specialization.
-- [ ] Measure optical, sky, irradiance, aerial, and shadow lookups separately.
-      Sweep one table's resolution and samples at a time against its specific
-      oracle, including the Hillaire 200x100 sky-view reference point. Compare
-      exact manual, depth-gather, and comparison-sampler PCF; skip or lazily
-      allocate resources not consumed by the active renderer. Do not time-slice
-      a visible physical change (P3).
-  - [x] Add opt-in independent reference sky-view and irradiance timestamp
-        boundaries. A forced-refresh profile's 31 valid pooled-counter samples
-        measured sky view at 0.7865/0.9445 ms median/p95 and irradiance at
-        0.0467/0.0939 ms. Retain the remaining lookup families as unmeasured.
-  - [x] Isolate the dependency-ordered transmittance plus multiple-scattering
-        optical rebuild with its own timestamp interval and fixed-physical-
-        state profile. The opt-in serial counter route collected 300 current
-        dispatch samples at 0.7501/0.7976 ms median/p95; it also prevents
-        cached counter values from being reported as new lookup work.
-  - [x] Run the 200x100 candidate through static/invalidation reference smoke
-        and bounded continuous movement. Both passed; moving frames were
-        6.8994/8.1660 ms median/p95, so retain the candidate only for lookup
-        refresh savings rather than claiming a general motion benefit.
-  - [x] Add the Hillaire 200x100 sky-view point as an experiment-only resource
-        override. It measured 0.3779/0.3962 ms median/p95 versus
-        0.7865/0.9445 ms at 384x216 and passed mountain/sun still captures
-        (normalized RMS 0.000884/0.000424). Do not promote it until motion,
-        surface-to-orbit, and numeric/oracle qualification pass.
 ### P4 tracker — transport storage and bandwidth
 
 P1's temporal-identity gate is complete. The completed publish-copy and

@@ -2,6 +2,16 @@
 
 ## 2026-09-04
 
+- [x] Complete P3, Metal lookup specialization. Independent timestamp
+  profiles measured optical, sky-view, irradiance, aerial, and screen-shadow
+  work without treating retained timestamp values as fresh dispatches. Hillaire
+  200x100 sky view is the qualified production default after physical image,
+  motion, orbit, and numeric checks. Aerial remains lazy outside its diagnostic
+  consumer; manual PCF remains the physical oracle after gather and comparison
+  sampler experiments failed to produce a robust tail-latency or equality win.
+  The fresh hidden native aerial and shadow profiles each collected 300 valid
+  independent samples, and the 477-test Release suite passed.
+
 - [x] Complete P1, Metal invalidation and liveness audit. Metal now shares the
   typed screen-history compatibility model, retains reprojectable radiance over
   presentation jitter and camera motion, refreshes binary visibility as needed,

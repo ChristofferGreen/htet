@@ -67,20 +67,17 @@ complete release frame.
 
 ### Second-pass implementation findings
 
-The paper architecture also suggests auditing *whether a representation is
-live*, not merely how compactly it is stored. Source inspection found two
-high-priority questions for P1-P3:
+The paper architecture also suggested auditing *whether a representation is
+live*, not merely how compactly it is stored. P1 and P3 closed the two
+high-priority questions:
 
-- `encode_reference_sky_lookup` is currently called on every atmosphere frame,
-  receives the jittered screen uniform, and has no unchanged-state guard. Key
-  it to the stable unjittered physical view, sun, atmosphere, terrain-shadow
-  generation, and resource layout. The high-frequency screen marcher continues
-  to receive jitter independently.
-- `encode_live_atmosphere_lookups` refreshes the aerial-scattering volume on a
-  view change even when the qualified temporal screen marcher is active. The
-  visible default path reads screen scattering/transmittance; aerial and
-  froxel resources remain useful for probes, debug views, and selectable
-  comparison modes. Build a consumer matrix and skip inactive dispatches.
+- `encode_reference_sky_lookup` is keyed to the stable unjittered physical
+  view, sun, atmosphere, terrain-shadow generation, and resource layout. The
+  high-frequency screen marcher continues to receive jitter independently.
+- The qualified temporal screen marcher reads screen
+  scattering/transmittance. Aerial and froxel resources remain lazy for probes,
+  debug views, and selectable comparison modes rather than refreshing on the
+  default path.
 
 The same consumer matrix should cover allocation, clearing, encoding, binding,
 and history invalidation for sky, irradiance, aerial, froxel, screen,
@@ -822,8 +819,9 @@ frame-time claim.
 The reference screen kernel performs 32 radiometric intervals, four jittered
 terrain-visibility evaluations per interval, and four manual depth comparisons
 per bilinear visibility evaluation: up to 512 shadow-depth comparisons per
-atmosphere pixel, or about 73.7 million at 480x300. The unconditionally refreshed
-384x216 reference sky view can add about 42.5 million more. These figures are
+atmosphere pixel, or about 73.7 million at 480x300. The formerly
+unconditionally refreshed 384x216 reference sky view could add about 42.5
+million more. These figures are
 upper-level operation counts rather than measured bandwidth, because adjacent
 samples can hit caches, but they identify the two passes P0/P2 must isolate.
 
@@ -837,13 +835,12 @@ have implementation-specific precision. Neither form reduces the underlying
 visibility sample count, so it does not repeat the rejected noisy-transport
 experiment.
 
-Hillaire's PC reference point is also more specific than the earlier plan
-stated: its sky-view table is 200x100 with 30 steps, while this default uses
-384x216 with 32 steps and additional terrain-visibility filtering. Include
-200x100 and the current 384x216 as named endpoints in the one-table P3 sweep,
-but do not infer equivalence from the paper's unshadowed timing. The compact
-planet, terrain silhouettes, strong Mie lobe, and full-sky mapping still have to
-pass this project's oracle.
+Hillaire's PC reference point is 200x100 with 30 steps. The P3 paired
+qualification compared it against the former 384x216/32-step control with this
+project's terrain-visibility filtering; 200x100 passed the project's physical
+image, motion, orbit, and numeric oracle and is now the default. This result is
+specific to the compact planet, terrain silhouettes, strong Mie lobe, and
+full-sky mapping; it was not inferred from the paper's unshadowed timing.
 
 ### Eighth-pass measurement and Metal-target findings
 
@@ -1451,12 +1448,15 @@ earlier measurement shows that the opportunity is immaterial.
    preview-upload, exact-handoff, and ray-tracing frames. Rank opportunities by
    median, p95, bandwidth, and frequency. Retire any item whose plausible gain
    is below the measurement threshold.
-4. **P3 — Lookup specialization.** Measure each optical, sky, irradiance,
+4. **P3 — Lookup specialization (complete).** Measure each optical, sky, irradiance,
    aerial, and shadow lookup independently. Sweep one table's resolution and
    samples at a time against its specific oracle; skip or lazily allocate
    resources not consumed by the selected production mode. Include the
    Hillaire 200x100 sky-view reference point and exact manual-versus-gather-
-   versus-comparison-sampler shadow filtering.
+   versus-comparison-sampler shadow filtering. Independent optical, sky,
+   irradiance, aerial, and shadow intervals are now available; 200x100 sky
+   view is qualified and promoted, while aerial remains lazy and manual PCF
+   remains the oracle after the alternatives did not show a robust benefit.
 5. **P4 — Transport storage and bandwidth.** Only after P1 proves temporal
    accumulation under jitter and camera motion, remove the resolved-history
    publish copy by binding the active history generation directly. Split the
