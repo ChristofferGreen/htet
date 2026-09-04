@@ -2,6 +2,16 @@
 
 ## 2026-09-04
 
+- [x] Define packed shader-visible hierarchy records. The documented future
+  `GpuHierarchyRecord` is a portable, 16-byte-aligned 32-byte record with a
+  four-lane exact world address, packed child range/mask, canonical ownership
+  flags, and block index. The companion immutable snapshot header/table fixes
+  format, capacity, revision, hash, ordering, and in-flight ownership, while
+  integer root/child templates make address reconstruction independent of
+  floating-point geometry. This remains an upload contract only: no GPU buffer
+  allocation, upload, traversal, or green-transition topology has been
+  implemented.
+
 - [x] Define the first GPU render-only terrain method tuple and its CPU
   reference output. The static-Perlin selector is explicitly bound to one
   immutable CPU-published hierarchy/field/camera/render-origin/surface-method

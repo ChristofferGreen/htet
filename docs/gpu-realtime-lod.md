@@ -866,14 +866,79 @@ explicit exclusions above are documented and grounded in the existing CPU
 contracts.  Stop here: do not add shader layouts, upload code, GPU traversal,
 or extraction until their separate checklist leaves are selected.
 
+### Packed shader-visible hierarchy record contract
+
+**Scope.** This specifies the future upload representation only.  It is not a
+claim that a GPU buffer, shader, or traversal exists yet.  The encoder will
+derive this representation from one immutable `WorldRevisionManifest`; it must
+never expose the host's `std::vector` layout or local allocation identifiers.
+
+**Record layout.** `GpuHierarchyRecord` is one 32-byte, 16-byte-aligned,
+eight-`uint32_t` record in storage-buffer layout.  Records are indexed by a
+zero-based `uint32_t`; `0xffffffff` is the only invalid record index.
+
+| word | field | contract |
+| --- | --- | --- |
+| 0--3 | `address_high_lo`, `address_high_hi`, `address_low_lo`, `address_low_hi` | The 128-bit `WorldTetAddress`, split into little-endian 32-bit lanes. |
+| 4 | `child_base` | Index of the first present red child, or `0xffffffff` for a leaf. |
+| 5 | `child_mask_flags` | Bits 0--7 are the present red-child mask; bits 8--9 are the residency tier; bit 10 marks a logical owner; all other bits are zero. |
+| 6 | `block_index` | Index into the immutable block table that owns this record. |
+| 7 | `reserved` | Must be zero; validation rejects any other value. |
+
+Present children are packed in increasing child-index order beginning at
+`child_base`; their actual record index is `child_base + popcount(mask &
+((1u << child) - 1u))`.  A leaf has a zero child mask and invalid `child_base`.
+A non-leaf has a nonzero mask and a valid range entirely inside the record
+capacity.  A logical owner is a leaf of the *logical cut*, not necessarily a
+leaf of the immutable resident hierarchy; the `logical-owner` flag therefore
+describes the directory's canonical fallback/child-shadowing result, not a
+GPU-created active front.
+
+`WorldTetAddress.high` occupies words 0--1 and `low` words 2--3, low word
+first within each 64-bit value.  Its bits 58--63 encode the BCC root, bits
+52--57 encode complete red depth, and the remaining 116 bits hold base-eight
+child digits.  Shader address helpers must use 32-bit shifts with explicit
+carry between lanes, reproduce `child()`/`parent()` exactly, reject root IDs
+outside 12 and depths above 38, and never recover an address from float
+geometry.
+
+**Block and template side tables.** The snapshot has a separate, aligned
+block table with each `HierarchyBlockId` prefix in the same four-lane form,
+`block_generations`, record range, logical-owner range, source revision, and
+canonical block hash.  Records and block entries are sorted by their existing
+canonical address/block order.  Geometry comes from immutable side tables:
+the 12 root tetrahedron corner tuples, the root-face adjacency table, and the
+three shortest-diagonal / eight-red-child templates used by
+`world_tetrahedron_red_children`.  The encoder supplies these exact integer
+templates; shaders must not choose a diagonal from floating-point lengths or
+invent BCC green cells.  Green transition grammar, neighbour repair, and
+surface topology stay CPU-authoritative until their own leaves.
+
+**Capacity, publication, and validation.** A `GpuHierarchySnapshotHeader`
+contains format version, record stride/alignment, record and block capacities,
+live counts, the source world revision, field revision, block width, and the
+canonical directory hash.  Counts may be below capacity but never exceed it;
+all unused records are zero.  One fully populated header plus its buffers is
+published atomically for a tuple, and remains immutable until its GPU work is
+retired.  A changed revision allocates or reuses a different frame slot; it
+cannot overwrite an in-flight slot.  Unsupported format/version, bad stride,
+out-of-range child/block index, malformed address, noncanonical ordering, or
+capacity exhaustion rejects the upload and selects the CPU fallback.  The
+later upload leaf must prove byte-level decoding, child traversal, template
+reconstruction, and rejection paths against CPU vectors before enabling the
+mode.
+
+**Acceptance and stop rule.** This leaf is complete when the portable 32-byte
+record, address decoding, template source, capacities, and immutable revision
+ownership are defined above.  Stop before adding a C++ GPU mirror, allocating
+Vulkan buffers, or uploading any data; those are the next separate leaves.
+
 - [x] Add a release-mode benchmark that records the current CPU camera-update
   latency, render latency, selected cell count, and surface hash for fixed
   camera paths. `benchmark-cpu-camera-paths` covers stationary, slow/rapid
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Define packed, shader-visible hierarchy records and document alignment,
-  capacities, address decoding, refinement templates, and revision ownership.
 - [ ] Separate GPU topology/index buffers from classification, geometry,
   ownership, and diagnostic sidecars.
 - [ ] Derive conservative descendant bounds for the selected hierarchy and

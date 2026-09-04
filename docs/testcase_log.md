@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-04 18:34 CEST | pass, GPU hierarchy-record contract | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 586.34 s after defining the documentation-only 32-byte shader-visible hierarchy record and immutable snapshot publication contract.
+
 - 2026-09-04 17:55 CEST | pass, GPU LOD method-tuple contract baseline | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 477/477 tests passed in 483.80 s. The existing deterministic CPU camera benchmark and surface geometry hash contracts remain the reference evidence for the new documentation-only GPU selector tuple.
 
 - 2026-09-04 16:24 CEST | pass, native Metal five-minute soak | mode: hidden production interactive profile | command: `--metal-soak-smoke-test` | failures: none | notes: 300 simulated seconds completed with 6.4660/8.0440/11.7542 ms median/p95/p99, 1,919 history attempts, 1,907 compatible reuses, 12 expected route invalidations, and a settled final exact front. The fresh Release suite passed 477/477.
