@@ -145,8 +145,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### persistent-camera-frontier
 - Updated: 2026-09-04
 - Tags: camera, lod, scheduler, correctness
-- Fact: The production runtime can retain range-local closure/surface transactions only across bounded raw-frontier steps; unsliced planetary sector-union replacements must retain the established cold closure-reset boundary.
-- Evidence: The opt-in planar slice fixture reaches exact unsliced hashes, but an opt-in planetary multi-sector transition produced `logical world owner is red-split`; restoring the zero-budget boundary passed the full 474-test Release gate.
+- Fact: Planetary sliced frontiers must retain the raw requested transaction for recovery and cold-validate each private closure before publication until the retained proof graph is exact across sector unions.
+- Evidence: A 4,096-operation sector-union handoff initially produced a different conforming-volume hash despite matching hierarchy and rendered surface; cold validation restored all exact hashes, while the 512-operation trace made 65 complete publications without converging in 90 seconds.
 
 ### metal-preview-automation-contract
 - Updated: 2026-09-03

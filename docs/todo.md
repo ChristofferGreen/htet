@@ -545,6 +545,14 @@ until every leaf is complete.
           blocks; it carries the exact effective owner count instead of
           rewalking the complete fallback hierarchy. Directory replacement
           falls from about 39 ms to 11 ms.
+    - [x] Fail closed for opt-in planetary slices: preserve the raw requested
+          transaction for recovery, reset retained closure state at a changed
+          sector-union target, and compare every private planetary closure
+          against a cold proof graph before publication. A 4,096-operation
+          multi-sector handoff now reaches exact hierarchy, conforming-volume,
+          surface, and render hashes; 512 operations still requires 65
+          complete publications after 90 seconds, so the production default
+          remains disabled pending a genuinely retained exact proof path.
 - [ ] Feed the transaction's exact changed owner/mask ranges directly into
       certificate, conforming-block, topology, optimizer, and render-block
       regeneration without scanning the complete active surface.

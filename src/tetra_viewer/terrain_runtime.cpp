@@ -2126,10 +2126,19 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
         retained_requested_cut);
     completed_work_units=selection.metrics.visited_owners;
   }
+  // A changed combined target means the resident sector union changed.  Its
+  // raw frontier can differ in many disjoint roots, which is not the bounded
+  // parent/child delta consumed by the retained closure proofs on subsequent
+  // slices of one target.  Start that first transaction cold; following
+  // slices retain the exact cache created for this new union.
+  const auto previous_target_requested_cut=
+      detail_working_set.combined_requested_cut;
   update_terrain_detail_working_set(
       detail_working_set,profile,field,camera,std::move(selection.owners),
       generation,selection.metrics);
   const auto& target_requested_cut=detail_working_set.combined_requested_cut;
+  const bool sector_union_changed=
+      previous_target_requested_cut!=target_requested_cut;
   bool target_converged=true;
   selection.owners=target_requested_cut;
   if(profile.sliced_publication_operations>0U&&
@@ -2142,12 +2151,11 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   selection.metrics.logical_owners_before_closure=selection.owners.size();
   const auto closure_started=std::chrono::steady_clock::now();
-  if(profile.sliced_publication_operations==0U&&
-     field.terrain.planet_radius>0.0){
+  if(field.terrain.planet_radius>0.0&&
+     (profile.sliced_publication_operations==0U||sector_union_changed)){
     // The unsliced profile may replace a sector union wholesale. Keep its
-    // established cold closure boundary; only the retained-frontier profile
-    // has the bounded parent/child transaction invariant required by the
-    // incremental closure cache.
+    // established cold closure boundary.  A sliced profile retains closure
+    // state only across further bounded advances toward the same union.
     const auto maximum_entries=surface_cache.closure.maximum_entries;
     const auto fingerprint_bits=
         surface_cache.closure.dependency_fingerprint_bits;
@@ -2155,8 +2163,13 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     surface_cache.closure.maximum_entries=maximum_entries;
     surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
   }
+  // Keep the logical transaction as the cold-recovery input.  The closure
+  // output may include promoted children, so feeding it back into a cold
+  // closure would validate a different transaction rather than retrying the
+  // requested split/merge frontier that exposed the retained-cache defect.
+  const auto requested_owners=selection.owners;
   selection.owners=tetra::close_world_conforming_cut(
-      selection.owners,&surface_cache.closure,cancellation,3U,executor);
+      requested_owners,&surface_cache.closure,cancellation,3U,executor);
   // A sector-union replacement can invalidate a retained proof through a
   // broader ancestry change than the bounded frontier normally carries.
   // Never expose such a cache artifact downstream: retry the identical raw
@@ -2169,10 +2182,31 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     surface_cache.closure.maximum_entries=maximum_entries;
     surface_cache.closure.dependency_fingerprint_bits=fingerprint_bits;
     selection.owners=tetra::close_world_conforming_cut(
-        selection.owners,&surface_cache.closure,cancellation,3U,executor);
+        requested_owners,&surface_cache.closure,cancellation,3U,executor);
     if(std::ranges::any_of(surface_cache.closure.green_masks,
                            [](std::uint8_t mask){return mask==63U;}))
       throw std::logic_error("cold world closure retained a red-split owner");
+  }
+  if(profile.sliced_publication_operations>0U&&
+     field.terrain.planet_radius>0.0){
+    // The planar retained-proof path is oracle-equivalent, but a planetary
+    // sector union can also leave apparently valid (non-63) green masks on
+    // owners whose proof ancestry changed in another root.  Validate the
+    // whole private transaction before any directory, volume, surface, or
+    // render consumer observes it.  This deliberately conservative path is
+    // opt-in only: production stays unsliced until retained proof invalidation
+    // is both exact and within the latency gate.
+    tetra::WorldConformingClosureCache cold_closure;
+    cold_closure.maximum_entries=surface_cache.closure.maximum_entries;
+    cold_closure.dependency_fingerprint_bits=
+        surface_cache.closure.dependency_fingerprint_bits;
+    const auto cold_owners=tetra::close_world_conforming_cut(
+        requested_owners,&cold_closure,cancellation,3U,executor);
+    if(cold_owners!=selection.owners||
+       cold_closure.green_masks!=surface_cache.closure.green_masks){
+      selection.owners=cold_owners;
+      surface_cache.closure=std::move(cold_closure);
+    }
   }
   capture_world_closure_metrics(selection,surface_cache.closure);
   selection.metrics.closure_milliseconds=

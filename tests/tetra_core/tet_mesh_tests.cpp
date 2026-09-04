@@ -3095,6 +3095,65 @@ TEST_CASE("blocked world can publish retained frontier slices without changing i
   CHECK(actual.reused_surface_blocks>0U);
 }
 
+TEST_CASE("planetary sliced frontier cold-recovers a sector-union transition") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.pixel_threshold=256.0;
+  auto sliced_profile=profile;
+  sliced_profile.sliced_publication_operations=4096U;
+  tetra_viewer::BlockedTerrainRuntime sliced(sliced_profile);
+  tetra_viewer::BlockedTerrainRuntime oracle(profile);
+  const auto settle=[](tetra_viewer::BlockedTerrainRuntime& runtime,
+                       std::chrono::seconds timeout){
+    const auto deadline=std::chrono::steady_clock::now()+timeout;
+    while(std::chrono::steady_clock::now()<deadline){
+      static_cast<void>(runtime.update());
+      const auto diagnostics=runtime.diagnostics();
+      if(!diagnostics.busy&&diagnostics.converged)return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  tetra::Camera camera;
+  camera.position={0.60,0.72,0.75};
+  camera.forward={0.0,-0.2,-1.0};
+  sliced.set_camera(camera,false);
+  oracle.set_camera(camera,false);
+  REQUIRE(settle(sliced,std::chrono::seconds(60)));
+  REQUIRE(settle(oracle,std::chrono::seconds(30)));
+
+  // This displacement leaves the initial sector's retained overlap and
+  // forces a combined sector-union replacement while the sliced runtime is
+  // still carrying closure proofs from the first front.
+  camera.position={1.15,0.72,0.67};
+  const auto target=tetra::Vec3{1.15,0.5,0.35}-camera.position;
+  const auto length=std::sqrt(
+      target.x*target.x+target.y*target.y+target.z*target.z);
+  camera.forward=target/length;
+  sliced.set_camera(camera,false);
+  oracle.set_camera(camera,false);
+  const bool sliced_settled=settle(sliced,std::chrono::seconds(90));
+  const auto stalled=sliced.diagnostics();
+  CAPTURE(stalled.busy);
+  CAPTURE(stalled.converged);
+  CAPTURE(stalled.budget_exceeded);
+  CAPTURE(stalled.submitted_builds);
+  CAPTURE(stalled.scene_generation);
+  CAPTURE(stalled.logical_cells);
+  CAPTURE(stalled.closure_requested_owners_scanned);
+  CAPTURE(stalled.cut_closure_milliseconds);
+  CAPTURE(stalled.surface_build_milliseconds);
+  REQUIRE(sliced_settled);
+  REQUIRE(settle(oracle,std::chrono::seconds(30)));
+  const auto actual=sliced.diagnostics(),expected=oracle.diagnostics();
+  CHECK_FALSE(actual.budget_exceeded);
+  CHECK(actual.hierarchy_hash==expected.hierarchy_hash);
+  CHECK(actual.conforming_volume_hash==expected.conforming_volume_hash);
+  CHECK(actual.connected_surface_hash==expected.connected_surface_hash);
+  CHECK(actual.render_hash==expected.render_hash);
+  CHECK(actual.positive_volumes);
+  CHECK(actual.conforming_faces);
+}
+
 TEST_CASE("blocked world resource rejection preserves the complete published front") {
   auto profile=tetra_viewer::production_world_profile();
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
