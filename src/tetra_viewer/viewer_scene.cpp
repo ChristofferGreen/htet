@@ -4501,12 +4501,14 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
     const tetra::Sphere& field,
     tetra::Vec3 render_origin) {
   std::vector<tetra::GpuTerrainCellRecord> result;
-  std::set<std::array<tetra::WorldDerivedVertexKey,3>> final_triangles;
+  using FinalTriangleKey=std::pair<tetra::WorldTetAddress,
+      std::array<tetra::WorldDerivedVertexKey,3>>;
+  std::set<FinalTriangleKey> final_triangles;
   for(const auto& snapshot:cache.snapshots)
     for(const auto& triangle:snapshot.triangles){
       auto canonical=triangle.vertices;
       std::ranges::sort(canonical);
-      final_triangles.insert(canonical);
+      final_triangles.emplace(triangle.owner,canonical);
     }
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
@@ -4637,7 +4639,7 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
               crossing_roots[first].key,crossing_roots[second].key,
               crossing_roots[third].key}};
           std::ranges::sort(canonical);
-          return final_triangles.contains(canonical);
+          return final_triangles.contains({certificate.owner,canonical});
         };
         std::uint32_t triangle_mask=triangle_present(0U,1U,2U)?1U:0U;
         if(crossing_root_count==4U&&triangle_present(0U,2U,3U))

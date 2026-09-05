@@ -1208,6 +1208,10 @@ count mismatch is deliberate rejection evidence: the retained CPU draw front
 contains 18,904 base triangles while its snapshot directory exposes only
 13,705. GPU indirect drawing cannot be considered until that ownership/front
 identity gap is closed.
+Owner-sensitive triangle identity produces the same result, ruling out
+duplicate ownership as the explanation; the diagnostic reports the maximum
+CPU/GPU bounds error (249.158 m after final-front filtering) for subsequent
+raw-block packet work.
 
 **P2 draw-topology alignment, 2026-09-05.** The compute extractor now emits
 the same one-to-four triangle subdivision required by the planetary CPU draw
