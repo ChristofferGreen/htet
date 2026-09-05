@@ -37,16 +37,14 @@ std::uint64_t hash_vectors(std::initializer_list<tetra::Vec3> vectors,
   return hash;
 }
 
-std::uint64_t canonical_position_normal_hash(std::span<const SceneVertex> vertices) {
+std::uint64_t canonical_position_normal_hash(
+    std::span<const std::array<float,6>> vertices) {
   std::vector<std::array<std::uint32_t,6>> values;
   values.reserve(vertices.size());
   for(const auto& vertex:vertices)values.push_back({
-      std::bit_cast<std::uint32_t>(vertex.position[0]),
-      std::bit_cast<std::uint32_t>(vertex.position[1]),
-      std::bit_cast<std::uint32_t>(vertex.position[2]),
-      static_cast<std::uint32_t>(std::lround(vertex.normal[0]*128.0F)),
-      static_cast<std::uint32_t>(std::lround(vertex.normal[1]*128.0F)),
-      static_cast<std::uint32_t>(std::lround(vertex.normal[2]*128.0F))});
+      std::bit_cast<std::uint32_t>(vertex[0]),std::bit_cast<std::uint32_t>(vertex[1]),
+      std::bit_cast<std::uint32_t>(vertex[2]),std::bit_cast<std::uint32_t>(vertex[3]),
+      std::bit_cast<std::uint32_t>(vertex[4]),std::bit_cast<std::uint32_t>(vertex[5])});
   std::ranges::sort(values);
   std::uint64_t hash=1469598103934665603ULL;
   for(const auto& value:values)for(const auto lane:value){
@@ -1702,7 +1700,8 @@ void SceneRenderer::stage_gpu_terrain_cells(
     std::span<const tetra::GpuTerrainCellRecord> cells,
     std::uint64_t source_revision,std::uint32_t expected_vertices,
     std::array<float,6> expected_position_bounds,
-    std::uint64_t expected_position_normal_hash,bool subdivide_triangles) {
+    std::vector<std::array<float,6>> expected_position_normals,
+    bool subdivide_triangles) {
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
   gpu_terrain_cells_.assign(cells.begin(),cells.end());
@@ -1717,7 +1716,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
   gpu_terrain_expected_position_bounds_=expected_position_bounds;
-  gpu_terrain_expected_position_normal_hash_=expected_position_normal_hash;
+  gpu_terrain_expected_position_normals_=std::move(expected_position_normals);
   gpu_terrain_subdivide_triangles_=subdivide_triangles;
   std::size_t linear_vertices{};
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
@@ -2127,10 +2126,27 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
               status.maximum_position_bounds_error,error);
           status.position_bounds_match_cpu&=error<=1.0e-3F;
         }
-        status.cpu_position_normal_hash=gpu_terrain_expected_position_normal_hash_;
-        status.gpu_position_normal_hash=canonical_position_normal_hash(vertices);
+        std::vector<std::array<float,6>> gpu_position_normals;
+        gpu_position_normals.reserve(vertices.size());
+        for(const auto& vertex:vertices)gpu_position_normals.push_back({
+            vertex.position[0],vertex.position[1],vertex.position[2],
+            vertex.normal[0],vertex.normal[1],vertex.normal[2]});
+        status.cpu_position_normal_hash=canonical_position_normal_hash(
+            gpu_terrain_expected_position_normals_);
+        status.gpu_position_normal_hash=canonical_position_normal_hash(gpu_position_normals);
         status.position_normal_hash_matches_cpu=
             status.gpu_position_normal_hash==status.cpu_position_normal_hash;
+        auto cpu=gpu_terrain_expected_position_normals_;
+        std::ranges::sort(cpu);std::ranges::sort(gpu_position_normals);
+        if(cpu.size()==gpu_position_normals.size())for(std::size_t index=0;
+            index<cpu.size();++index){
+          for(std::size_t normal=0;normal<3U;++normal){
+            const auto error=std::abs(cpu[index][normal+3U]-
+                                      gpu_position_normals[index][normal+3U]);
+            status.maximum_normal_error=std::max(status.maximum_normal_error,error);
+            if(error>1.0e-4F)++status.normal_mismatch_vertices;
+          }
+        }
       }
     }
     gpu_terrain_slot_pending_[image_index]=false;

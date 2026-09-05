@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain vertex-count parity is insufficient; completed slot output must match the actual retained CPU draw ranges' count and relative-position bounds at the identical render origin before indirect drawing is eligible. The planetary CPU draw path has one projected midpoint subdivision per extracted triangle.
 - Evidence: The GPU's 56,712 base vertices initially matched a pre-render metric but the retained CPU upload contains 226,848 vertices. Raw-block transport now refreshes roots from final optimized snapshots and projects their midpoints, producing exact count and bounds parity; orientation, incidence, depth, and colour remain required.
 
+### gpu-terrain-normal-gate
+- Updated: 2026-09-05
+- Tags: terrain, gpu, parity, normals
+- Fact: GPU terrain normals must be derived from the final camera-relative float positions using the CPU-selected outward side, rather than solely from world-space source geometry or GPU winding.
+- Evidence: The order-independent position/normal comparison initially found 291 differing components (maximum 0.0385886); float-space transport then matched all 226,848 retained CPU vertices exactly.
+
 ### gpu-terrain-final-front-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, retained-front

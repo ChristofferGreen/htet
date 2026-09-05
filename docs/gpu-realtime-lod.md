@@ -1229,15 +1229,15 @@ only count and position bounds. CPU rasterization remains mandatory while P2
 adds oriented triangle/normal, edge-incidence, depth, colour, stale-generation,
 and moving-camera image checks.
 
-**P2 normal transport, in progress.** The packet now also carries the CPU's
+**P2 normal transport, 2026-09-05.** The packet now also carries the CPU's
 oriented flat normal for each emitted one-to-four child triangle. This removes
 the compute shader's former assumption that raw winding alone decides outward
-lighting, while retaining CPU fallback. The next diagnostic must compare the
-read-back normal stream against the retained CPU upload before this is counted
-as a parity result. That order-independent position/normal signature is now
-implemented and rejects the current result despite exact position bounds, so
-normal parity remains an active correctness requirement rather than an
-assumption.
+lighting, while retaining CPU fallback. An order-independent CPU/GPU
+position-and-normal multiset now compares completed slot output against the
+retained draw; after matching the CPU's final float-space render-attribute
+calculation, the production off-screen diagnostic passed with zero mismatched
+components and zero maximum normal error. Index/edge incidence and actual
+indirect depth/colour capture remain required before display enablement.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

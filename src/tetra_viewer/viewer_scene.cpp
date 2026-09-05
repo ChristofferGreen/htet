@@ -4691,11 +4691,49 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
       for(std::size_t midpoint=0;midpoint<(root_count==3U?3U:6U);++midpoint)
         record.subdivision_midpoints[midpoint]=
             relative(source.subdivision_midpoints[midpoint]);
-      for(std::size_t normal=0;normal<source.subdivision_normals.size();++normal){
-        const auto& value=source.subdivision_normals[normal];
-        record.subdivision_normals[normal]={static_cast<float>(value.x),
-            static_cast<float>(value.y),static_cast<float>(value.z),1.0F};
-      }
+      // Match prepare_surface_render_attributes exactly: it derives the final
+      // flat normal from the submitted float positions, preserving only the
+      // CPU-selected outward side.  Doing it here avoids a double-world-space
+      // normal that can differ visibly on the smallest projected children.
+      const auto final_normal=[&](std::size_t destination,
+                                  const std::array<float,4>& a,
+                                  const std::array<float,4>& b,
+                                  const std::array<float,4>& c,
+                                  tetra::Vec3 supplied){
+        const tetra::Vec3 first{a[0],a[1],a[2]},second{b[0],b[1],b[2]},
+            third{c[0],c[1],c[2]};
+        auto normal=face_normal(first,second,third);
+        const auto dot=[](tetra::Vec3 left,tetra::Vec3 right){
+          return left.x*right.x+left.y*right.y+left.z*right.z;
+        };
+        if(dot(normal,supplied)<0.0)normal=normal*-1.0;
+        const auto magnitude=std::sqrt(dot(normal,normal));
+        normal=magnitude>1.0e-15?normal/magnitude:tetra::Vec3{};
+        record.subdivision_normals[destination]={static_cast<float>(normal.x),
+            static_cast<float>(normal.y),static_cast<float>(normal.z),1.0F};
+      };
+      const auto store_normals=[&](std::size_t destination,
+                                   const std::array<float,4>& a,
+                                   const std::array<float,4>& b,
+                                   const std::array<float,4>& c,
+                                   const std::array<float,4>& ab,
+                                   const std::array<float,4>& bc,
+                                   const std::array<float,4>& ca){
+        final_normal(destination,a,ab,ca,source.subdivision_normals[destination]);
+        final_normal(destination+1U,ab,b,bc,
+            source.subdivision_normals[destination+1U]);
+        final_normal(destination+2U,ca,bc,c,
+            source.subdivision_normals[destination+2U]);
+        final_normal(destination+3U,ab,bc,ca,
+            source.subdivision_normals[destination+3U]);
+      };
+      store_normals(0U,record.draw_roots[0],record.draw_roots[1],
+          record.draw_roots[2],record.subdivision_midpoints[0],
+          record.subdivision_midpoints[1],record.subdivision_midpoints[2]);
+      if(root_count==4U)store_normals(4U,record.draw_roots[0],
+          record.draw_roots[2],record.draw_roots[3],
+          record.subdivision_midpoints[3],record.subdivision_midpoints[4],
+          record.subdivision_midpoints[5]);
       result.push_back(record);
     }
     return result;
