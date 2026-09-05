@@ -2,6 +2,12 @@
 
 ## 2026-09-05
 
+- [x] Add encoded-hierarchy-versus-CPU oracle regressions. Repeated traversal
+  and exact-key extraction preserve triangle/edge counts; zero-capacity output
+  reports overflow without writing indices; and a completed stale tuple cannot
+  be consumed. These test the host reference path because no device dispatch
+  exists yet.
+
 - [x] Add the Realtime GPU surface LOD control. The World panel exposes an
   off-by-default checkbox and clearly identifies CPU fallback when requested,
   because no GPU terrain dispatch is available. This is user-visible capability

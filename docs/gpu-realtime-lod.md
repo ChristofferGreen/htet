@@ -1053,8 +1053,6 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Add scripted GPU-versus-CPU topology, triangle-hash, edge-incidence,
-  coarsening, stale-request, and overflow tests.
 - [ ] Benchmark still, moving, jumping, and revisited camera paths in the
   release build using GPU timestamps.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,

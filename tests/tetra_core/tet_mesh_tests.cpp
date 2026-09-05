@@ -5118,6 +5118,28 @@ TEST_CASE("GPU hierarchy frame ring never overwrites in-flight output") {
   CHECK_THROWS_AS(tetra::GpuHierarchyFrameRing(1U),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy oracle rejects stale work and preserves topology") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,3U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory);
+  tetra::GpuHierarchyTraversalParameters parameters;
+  const auto first=tetra::gpu_hierarchy_traverse(snapshot,parameters);
+  const auto second=tetra::gpu_hierarchy_traverse(snapshot,parameters);
+  const auto first_surface=tetra::gpu_hierarchy_extract_full_tetrahedra(snapshot,first.selected_records);
+  const auto second_surface=tetra::gpu_hierarchy_extract_full_tetrahedra(snapshot,second.selected_records);
+  CHECK(first_surface.triangles.size()==second_surface.triangles.size());
+  CHECK(first_surface.edges.size()==second_surface.edges.size());
+  const auto output=tetra::gpu_hierarchy_selection_output(first,0U);
+  CHECK(output.overflow==(first.metrics.selected>0U));
+  tetra::GpuHierarchyFrameRing ring(2U);
+  const auto slot=*ring.acquire(3U);ring.submit(slot);ring.complete(slot);
+  CHECK_FALSE(ring.consume_ready(4U).has_value());
+  CHECK(ring.consume_ready(3U)==slot);
+}
+
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();
