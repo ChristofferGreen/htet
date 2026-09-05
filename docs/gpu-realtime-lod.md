@@ -1163,7 +1163,8 @@ that work.
     through test-only launch arguments; explicit boundary synthesis and
     per-frame rebase accounting remain the next leaf.
   - [ ] **P4c1b2b2 — Boundary/rebase corpus accounting.** Add the explicit
-    render-origin rebase motion case, synthesize threshold values immediately
+    root-normalized selector-invariance case across a render-origin rebase,
+    synthesize threshold values immediately
     below, within, and above every term's boundary (including equal-max and
     two-term ties), and record tuple identity plus selected/visited/rejected,
     overflow, mismatch, and band counts for every frame. Outside the band,

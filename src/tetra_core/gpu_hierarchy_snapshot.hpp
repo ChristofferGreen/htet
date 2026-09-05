@@ -58,7 +58,8 @@ static_assert(sizeof(GpuHierarchySelectionRecord)==112U);
 static_assert(alignof(GpuHierarchySelectionRecord)==16U);
 
 // Camera- and field-dependent selector inputs are kept out of immutable
-// topology. All positions are render-origin relative to preserve precision.
+// topology. The current selector is root-normalized to match its immutable
+// sidecars; render-origin-relative positions belong to generated geometry.
 struct alignas(16) GpuHierarchySelectionTuple {
   std::array<float,4> camera_relative_viewport{};
   std::array<float,4> camera_forward_fov{};
