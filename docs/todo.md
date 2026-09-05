@@ -357,13 +357,21 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       translates and qualifies the selector. This tracker is deliberately
       split so static shader translation, buffer lifetime, and full rendered
       output cannot be mistaken for one another.
-  - [ ] **P5c — Qualify runtime-slot Metal extraction and fallback.** Drive P5b
-        through the actual completed CPU display revision with per-frame slot
-        ownership, command-buffer ordering, revision matching, and stale-work
-        rejection. Acceptance: hidden fixed and moving captures match the CPU
-        front byte-for-byte or retain CPU rendering; no stale or incomplete
-        Metal result is consumed. Stop rule: do not replace the 448-byte
-        CPU-precomputed payload or claim a speedup.
+  - [ ] **P5c1 — Capture one completed CPU front through Metal extraction.** In
+        a hidden headless runtime fixture, enable the existing CPU production
+        publication diagnostic, wait for one exact published display revision,
+        and dispatch P5b's kernel from its immutable legacy cells. Acceptance:
+        the completed command buffer's count, positions, normals, triangles,
+        and indices match that exact CPU scene, with a revision/origin mismatch
+        or overflow failing closed. Stop rule: no interactive renderer buffers
+        or GPU draw are introduced.
+  - [ ] **P5c2 — Qualify interactive runtime slots and fallback.** Drive P5c1
+        through actual per-frame slot ownership, command-buffer ordering,
+        revision matching, moving-camera stale-work rejection, and CPU fallback.
+        Acceptance: hidden fixed and moving captures equal the CPU front or
+        retain CPU rendering; no stale or incomplete Metal result is consumed.
+        Stop rule: do not replace the 448-byte CPU-precomputed payload or claim
+        a speedup.
 - [ ] **P6 — Specify and prove the BCC render-front conformity contract.** Use
       the existing 64 restricted-green edge-mask templates as the baseline,
       not a new surface authority. Define how the GPU derives globally

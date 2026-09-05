@@ -1420,12 +1420,19 @@ topology, and complete-frame gates.
     overflow bit without exceeding its backing buffers; a missing crossing
     root fails closed; an empty packet emits no payload. This test owns no
     interactive renderer resources.
-  - [ ] **P5c — Runtime-slot extraction and fallback qualification.** Submit
-    P5b's buffers from the actual display revision with command-buffer ordering,
-    revision matching, and stale rejection. Hidden fixed and moving captures
-    must equal the CPU front or retain CPU rendering. None of these leaves may
-    replace the legacy 448-byte payload or claim a speed improvement; P7 is
-    the separate GPU-native field/topology milestone.
+  - [ ] **P5c1 — Completed CPU-front runtime capture.** Use the existing
+    background CPU production publication runtime in a hidden fixture; wait for
+    one exact completed front, then dispatch P5b's legacy cells and compare the
+    completed command-buffer payload with that front at its immutable revision
+    and render origin. Mismatched identity or capacity must fail closed. This
+    leaf owns no interactive renderer buffers or draw.
+  - [ ] **P5c2 — Interactive slot and fallback qualification.** Connect P5c1's
+    capture contract to actual Metal per-frame slots, command ordering,
+    revision matching, and stale-work rejection under fixed and moving hidden
+    captures. A stale, incomplete, mismatched, or overflowing result retains
+    CPU rendering. Neither leaf may replace the legacy 448-byte payload or
+    claim a speed improvement; P7 is the separate GPU-native field/topology
+    milestone.
 - [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
   selected addresses as candidates and use the existing 64 restricted-green
   edge-mask templates as the baseline surface grammar. Define how GPU work
