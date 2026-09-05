@@ -2,6 +2,12 @@
 
 ## 2026-09-05
 
+- [x] Define bounded device-style selection output. The traversal result now
+  packs a capacity-limited selected-index stream, attempted count, overflow
+  bit, and standard indirect-draw arguments without a normal-frame readback.
+  Tests prove exact non-overflow output and deterministic clipping/overflow.
+  This remains a host-side model; actual GPU buffers and dispatch are separate.
+
 - [x] Implement the immutable hierarchy traversal oracle. The host-side
   shader-equivalent selector validates a single immutable snapshot, follows
   only its packed child links, uses the established exact tetrahedron frustum

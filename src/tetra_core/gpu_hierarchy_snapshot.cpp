@@ -318,4 +318,18 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
   return result;
 }
 
+GpuHierarchySelectionOutput gpu_hierarchy_selection_output(
+    const GpuHierarchyTraversalResult& traversal,std::uint32_t capacity) {
+  GpuHierarchySelectionOutput result;
+  if(traversal.selected_records.size()>std::numeric_limits<std::uint32_t>::max())
+    throw std::overflow_error("GPU hierarchy selection count overflow");
+  result.attempted_count=static_cast<std::uint32_t>(traversal.selected_records.size());
+  const auto count=std::min<std::size_t>(traversal.selected_records.size(),capacity);
+  result.indices.assign(traversal.selected_records.begin(),
+                        traversal.selected_records.begin()+static_cast<std::ptrdiff_t>(count));
+  result.overflow=result.attempted_count>capacity;
+  result.indirect={static_cast<std::uint32_t>(count),1U,0U,0U};
+  return result;
+}
+
 }  // namespace tetra

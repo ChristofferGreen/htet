@@ -86,6 +86,18 @@ struct GpuHierarchyTraversalResult {
   std::vector<std::uint32_t> selected_records;
   GpuHierarchyTraversalMetrics metrics{};
 };
+struct GpuHierarchyIndirectDraw {
+  std::uint32_t vertex_count{};
+  std::uint32_t instance_count{};
+  std::uint32_t first_vertex{};
+  std::uint32_t first_instance{};
+};
+struct GpuHierarchySelectionOutput {
+  std::vector<std::uint32_t> indices;
+  GpuHierarchyIndirectDraw indirect{};
+  std::uint32_t attempted_count{};
+  bool overflow{};
+};
 
 [[nodiscard]] std::array<std::uint32_t,4> gpu_hierarchy_address_lanes(
     WorldTetAddress address) noexcept;
@@ -106,5 +118,7 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
 [[nodiscard]] GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const GpuHierarchySnapshot& snapshot,
     const GpuHierarchyTraversalParameters& parameters);
+[[nodiscard]] GpuHierarchySelectionOutput gpu_hierarchy_selection_output(
+    const GpuHierarchyTraversalResult& traversal,std::uint32_t capacity);
 
 }  // namespace tetra
