@@ -1234,7 +1234,10 @@ oriented flat normal for each emitted one-to-four child triangle. This removes
 the compute shader's former assumption that raw winding alone decides outward
 lighting, while retaining CPU fallback. The next diagnostic must compare the
 read-back normal stream against the retained CPU upload before this is counted
-as a parity result.
+as a parity result. That order-independent position/normal signature is now
+implemented and rejects the current result despite exact position bounds, so
+normal parity remains an active correctness requirement rather than an
+assumption.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

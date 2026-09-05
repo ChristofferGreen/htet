@@ -36,6 +36,7 @@
 #include <stdlib.h>         // abort
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <charconv>
 #include <cmath>
@@ -4566,6 +4567,33 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                 }
                               else add(prepared_scene.triangle_vertices);
                               return bounds;
+                            }(),[&]{
+                              std::vector<std::array<std::uint32_t,6>> values;
+                              const auto add=[&](std::span<const tetra_viewer::SceneVertex> vertices){
+                                values.reserve(values.size()+vertices.size());
+                                for(const auto& vertex:vertices)values.push_back({
+                                    std::bit_cast<std::uint32_t>(vertex.position[0]),
+                                    std::bit_cast<std::uint32_t>(vertex.position[1]),
+                                    std::bit_cast<std::uint32_t>(vertex.position[2]),
+                                    static_cast<std::uint32_t>(std::lround(vertex.normal[0]*128.0F)),
+                                    static_cast<std::uint32_t>(std::lround(vertex.normal[1]*128.0F)),
+                                    static_cast<std::uint32_t>(std::lround(vertex.normal[2]*128.0F))});
+                              };
+                              if(const auto* retained=world_runtime->retained_surface())
+                                for(const auto& range:retained->ranges()){
+                                  const auto arena=retained->arena();
+                                  add(arena.subspan(range.triangle_vertex_begin,
+                                      range.triangle_vertex_count));
+                                }
+                              else add(prepared_scene.triangle_vertices);
+                              std::ranges::sort(values);
+                              std::uint64_t hash=1469598103934665603ULL;
+                              for(const auto& value:values)for(const auto lane:value)
+                                for(unsigned byte=0;byte<4U;++byte){
+                                  hash^=(lane>>(byte*8U))&0xffU;
+                                  hash*=1099511628211ULL;
+                                }
+                              return hash;
                             }(),world_runtime->field().terrain.planet_radius>0.0);
                         gpu_terrain_cells_render_origin=prepared_scene.render_origin;
                     }
@@ -5112,6 +5140,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(gpu_extract.position_bounds_match_cpu?"true":"false")
                         <<",\"maximum_position_bounds_error\":"
                         <<gpu_extract.maximum_position_bounds_error
+                        <<",\"position_normal_hash_matches_cpu\":"
+                        <<(gpu_extract.position_normal_hash_matches_cpu?"true":"false")
+                        <<",\"gpu_position_normal_hash\":"
+                        <<gpu_extract.gpu_position_normal_hash
+                        <<",\"cpu_position_normal_hash\":"
+                        <<gpu_extract.cpu_position_normal_hash
                         <<",\"gpu_position_bounds\":["
                         <<gpu_extract.gpu_position_bounds[0]<<','
                         <<gpu_extract.gpu_position_bounds[1]<<','

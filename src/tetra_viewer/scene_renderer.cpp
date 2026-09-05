@@ -37,6 +37,27 @@ std::uint64_t hash_vectors(std::initializer_list<tetra::Vec3> vectors,
   return hash;
 }
 
+std::uint64_t canonical_position_normal_hash(std::span<const SceneVertex> vertices) {
+  std::vector<std::array<std::uint32_t,6>> values;
+  values.reserve(vertices.size());
+  for(const auto& vertex:vertices)values.push_back({
+      std::bit_cast<std::uint32_t>(vertex.position[0]),
+      std::bit_cast<std::uint32_t>(vertex.position[1]),
+      std::bit_cast<std::uint32_t>(vertex.position[2]),
+      static_cast<std::uint32_t>(std::lround(vertex.normal[0]*128.0F)),
+      static_cast<std::uint32_t>(std::lround(vertex.normal[1]*128.0F)),
+      static_cast<std::uint32_t>(std::lround(vertex.normal[2]*128.0F))});
+  std::ranges::sort(values);
+  std::uint64_t hash=1469598103934665603ULL;
+  for(const auto& value:values)for(const auto lane:value){
+    for(unsigned byte=0;byte<4U;++byte){
+      hash^=(lane>>(byte*8U))&0xffU;
+      hash*=1099511628211ULL;
+    }
+  }
+  return hash;
+}
+
 VkCompareOp depth_compare(DepthConvention convention,bool overlay=false) {
   if(convention==DepthConvention::reversed_infinite)
     return overlay?VK_COMPARE_OP_GREATER_OR_EQUAL:VK_COMPARE_OP_GREATER;
@@ -1680,7 +1701,8 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
 void SceneRenderer::stage_gpu_terrain_cells(
     std::span<const tetra::GpuTerrainCellRecord> cells,
     std::uint64_t source_revision,std::uint32_t expected_vertices,
-    std::array<float,6> expected_position_bounds,bool subdivide_triangles) {
+    std::array<float,6> expected_position_bounds,
+    std::uint64_t expected_position_normal_hash,bool subdivide_triangles) {
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
   gpu_terrain_cells_.assign(cells.begin(),cells.end());
@@ -1695,6 +1717,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
   gpu_terrain_expected_position_bounds_=expected_position_bounds;
+  gpu_terrain_expected_position_normal_hash_=expected_position_normal_hash;
   gpu_terrain_subdivide_triangles_=subdivide_triangles;
   std::size_t linear_vertices{};
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
@@ -2104,6 +2127,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
               status.maximum_position_bounds_error,error);
           status.position_bounds_match_cpu&=error<=1.0e-3F;
         }
+        status.cpu_position_normal_hash=gpu_terrain_expected_position_normal_hash_;
+        status.gpu_position_normal_hash=canonical_position_normal_hash(vertices);
+        status.position_normal_hash_matches_cpu=
+            status.gpu_position_normal_hash==status.cpu_position_normal_hash;
       }
     }
     gpu_terrain_slot_pending_[image_index]=false;
