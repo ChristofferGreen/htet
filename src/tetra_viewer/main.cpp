@@ -1253,6 +1253,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     std::optional<double> world_pixel_threshold_override;
     std::optional<double> world_field_threshold_override;
     std::optional<double> world_limb_threshold_override;
+    bool world_gpu_lod_selector_rebase=false;
     std::optional<tetra_viewer::AtmosphereShadowFrontRequest>
         world_retained_atmosphere_shadow_request;
     bool world_gpu_atmosphere_resize_requested=false;
@@ -1327,6 +1328,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             "--terrain-field-pixel-threshold=";
         constexpr std::string_view terrain_limb_threshold_prefix=
             "--terrain-limb-pixel-threshold=";
+        constexpr std::string_view selector_rebase_prefix=
+            "--gpu-lod-selector-rebase";
         constexpr std::string_view render_resolution_prefix=
             "--render-resolution=";
         constexpr std::string_view render_scale_prefix="--render-scale=";
@@ -1492,6 +1495,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-lod-diagnostic"){
                 world_realtime_gpu_surface_lod=true;
+            }else if(value==selector_rebase_prefix){
+                world_realtime_gpu_surface_lod=true;
+                world_gpu_lod_selector_rebase=true;
             }else if(value=="--gpu-terrain-indirect-diagnostic"){
                 world_realtime_gpu_surface_lod=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
@@ -1801,10 +1807,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         // native resolution. The hysteretic controller raises quality after
         // it has measured sustained GPU headroom.
         world_auto_render_scale=world_auto_minimum_scale;
-        world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
+            world_gpu_automation_requested=world_gpu_atmosphere_benchmark||
             world_gpu_atmosphere_probe||
             world_gpu_shadow_projection_probe||
             !world_gpu_atmosphere_capture_path.empty()||
+            world_gpu_lod_selector_rebase||
             world_gpu_walk_steps!=0U||world_gpu_look_x!=0.0||
             world_gpu_look_y!=0.0||!world_gpu_yaw_sequence_degrees.empty();
         if(g_AtmosphereFrame.shadow_integrator==
@@ -1859,7 +1866,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             profile.view_distance=12.0;
             profile.pixel_threshold=48.0;
             profile.budgets.maximum_cpu_bytes=768U*1024U*1024U;
-            profile.budgets.maximum_upload_bytes=64U*1024U*1024U;
+            // The analytic-ridge replacement qualification retains a full
+            // 396k-triangle initial front (about 86 MiB). Its old 64 MiB cap
+            // rejected that valid bounded front before selector testing.
+            profile.budgets.maximum_upload_bytes=128U*1024U*1024U;
         }
         g_AtmosphereFrame.minimum_analytic_ground_distance_metres=
             profile.view_distance*
@@ -4570,10 +4580,29 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         auto selector_camera=camera;
                         selector_camera.position=profile.domain.to_root(
                             camera.position);
+                        // This is an explicit coordinate rebase of the
+                        // selector's root-normalized world, not camera
+                        // walking. Both origins are represented exactly in
+                        // double before the shared float packet is made.
+                        const bool selector_coordinate_rebased=
+                            world_gpu_lod_selector_rebase&&
+                            g_SceneRenderer.gpu_lod_dispatch_status().
+                                completed_dispatches>=2U&&
+                            (g_SceneRenderer.gpu_lod_dispatch_status().
+                                 completed_dispatches&1U)!=0U;
+                        const tetra::Vec3 selector_render_origin=
+                            selector_coordinate_rebased?
+                                tetra::Vec3{32.0,-64.0,128.0}:tetra::Vec3{};
+                        selector_camera.position=selector_camera.position+
+                            selector_render_origin;
+                        const auto selector_field_centre=
+                            profile.domain.to_root(field.centre)+
+                            selector_render_origin;
                         g_SceneRenderer.stage_gpu_lod_selection_tuple(
                             tetra::make_gpu_hierarchy_selection_tuple({
-                                .camera=selector_camera,.render_origin={},
-                                .field_centre=profile.domain.to_root(field.centre),
+                                .camera=selector_camera,
+                                .render_origin=selector_render_origin,
+                                .field_centre=selector_field_centre,
                                 .planet_radius=field.terrain.planet_radius/
                                     profile.domain.world_extent,
                                 .terrain_height_bound=tetra::terrain_height_magnitude_bound(field)/
@@ -4585,7 +4614,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                 .limb_threshold=profile.limb_error_pixel_threshold,
                                 .merge_ratio=profile.lod_merge_threshold_ratio,
                                 .source_revision=directory.revision(),
-                                .field_revision=directory.revision()}));
+                                .field_revision=directory.revision()}),
+                            selector_coordinate_rebased);
                     }
                     if(world_realtime_gpu_surface_lod)if(const auto gpu_cells=
                            world_runtime->world_surface_gpu_cells();
@@ -5027,6 +5057,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             wd->ClearValue.color.float32[3] = clear_color.w;
             FrameRender(wd, draw_data);
             FramePresent(wd);
+            // Drive both halves of the explicit root-normalized rebase
+            // sequence. This remains an off-screen selector diagnostic;
+            // neither the terrain front nor its rendering authority changes.
+            if(world_gpu_lod_selector_rebase&&world_runtime&&
+               g_SceneRenderer.gpu_lod_dispatch_status().completed_dispatches<7U)
+                upload_dirty=true;
             if(retained_upload_present_pending){
                 const auto& upload=g_SceneRenderer.surface_upload_metrics();
                 std::cout<<"{\"event\":\"vulkan_retained_upload\","
@@ -5198,8 +5234,48 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
                         <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<"\"gpu_lod_rebase_requested\":"
+                        <<(world_gpu_lod_selector_rebase?"true":"false")<<',';
+                    const auto gpu_lod_frames=g_SceneRenderer.gpu_lod_dispatch_history();
+                    bool gpu_lod_rebase_verified=false;
+                    std::vector<std::uint64_t> gpu_lod_unrebased_identities;
+                    for(const auto& frame:gpu_lod_frames){
+                        if(frame.tuple_identity==0U)continue;
+                        if(!frame.coordinate_rebased)
+                            gpu_lod_unrebased_identities.push_back(
+                                frame.tuple_identity);
+                        else if(std::ranges::find(
+                                    gpu_lod_unrebased_identities,
+                                    frame.tuple_identity)!=
+                                gpu_lod_unrebased_identities.end())
+                            gpu_lod_rebase_verified=true;
+                    }
+                    if(!world_gpu_lod_selector_rebase)
+                        gpu_lod_rebase_verified=false;
+                    std::cout<<"\"gpu_lod_rebase_verified\":"
+                        <<(gpu_lod_rebase_verified?"true":"false")<<','
+                        <<"\"gpu_lod_frames\":[";
+                    for(std::size_t frame_index=0;frame_index<gpu_lod_frames.size();++frame_index){
+                        if(frame_index!=0U)std::cout<<',';
+                        const auto& frame=gpu_lod_frames[frame_index];
+                        std::cout<<"{\"tuple_identity\":"<<frame.tuple_identity
+                            <<",\"coordinate_rebased\":"
+                            <<(frame.coordinate_rebased?"true":"false")
+                            <<",\"selected\":"<<frame.selected_records
+                            <<",\"visited\":"<<frame.visited_records
+                            <<",\"rejected\":"<<frame.rejected_records
+                            <<",\"edge_band\":"<<frame.edge_boundary_band_records
+                            <<",\"field_band\":"<<frame.field_boundary_band_records
+                            <<",\"limb_band\":"<<frame.limb_boundary_band_records
+                            <<",\"overflow\":"<<(frame.overflow?"true":"false")
+                            <<",\"oracle_mismatches\":"<<frame.oracle_mismatches<<'}';
+                    }
+                    std::cout<<"],";
+                    std::cout
                         <<"\"gpu_lod\":{\"source_revision\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().source_revision
+                        <<",\"tuple_identity\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().tuple_identity
                         <<",\"records\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().hierarchy_records
                         <<",\"selected\":"
@@ -5208,6 +5284,12 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.gpu_lod_dispatch_status().visited_records
                         <<",\"rejected\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().rejected_records
+                        <<",\"edge_boundary_band\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().edge_boundary_band_records
+                        <<",\"field_boundary_band\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().field_boundary_band_records
+                        <<",\"limb_boundary_band\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().limb_boundary_band_records
                         <<",\"oracle_mismatches\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().oracle_mismatches
                         <<",\"completed_dispatches\":"

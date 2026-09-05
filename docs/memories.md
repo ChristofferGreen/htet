@@ -13,8 +13,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization
-- Fact: `GpuHierarchySnapshot` is an immutable core encoding of one `WorldCutDirectory` revision with deterministic breadth-first per-block child packing; Vulkan uploads its 32-byte records to a diagnostic leaf-selector storage buffer, but CPU terrain remains authoritative until parity-qualified indirect drawing exists.
-- Evidence: Release tests reconstruct exact CPU BCC geometry, exercise maximum-depth lane carry, reject malformed snapshot fields, and check packed leaf masks; an off-screen Vulkan world run completed the storage-buffer selector without synchronization errors.
+- Fact: `GpuHierarchySnapshot` materializes every missing BCC ancestor once and uses a separate immutable child-index table, allowing its 32-byte records to form one globally traversable streamed-block hierarchy without parent/child overlap.
+- Evidence: The Release snapshot regression checks every non-root record has its parent and every packed child index resolves exactly; the eleven-case hidden Vulkan corpus passed the exclusive-front gate.
 
 ### gpu-hierarchy-selector-geometry
 - Updated: 2026-09-05
@@ -25,8 +25,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-hierarchy-selector-tuple
 - Updated: 2026-09-05
 - Tags: gpu-lod, vulkan, synchronization, fallback
-- Fact: GPU selection’s dynamic camera/field tuple is render-origin relative and per-swapchain-image, so it can only be uploaded after the owning fence and a missing, malformed, or stale tuple suppresses GPU selection in favour of CPU rendering.
-- Evidence: The tuple regression rejects invalid revisions and the 487-test Release gate plus off-screen Vulkan diagnostic passed with the slot-local binding and host-to-compute barrier.
+- Fact: GPU selection’s dynamic camera/field tuple is root-normalized and per-swapchain-image, so it can only be uploaded after the owning fence and a missing, malformed, or stale tuple suppresses GPU selection in favour of CPU rendering.
+- Evidence: Rebase construction preserves its exact tuple identity; the tuple regression rejects invalid revisions and the 489-test Release gate plus hidden Vulkan corpus passed with the slot-local binding and host-to-compute barrier.
 
 ### gpu-hierarchy-active-root-traversal
 - Updated: 2026-09-05

@@ -80,10 +80,15 @@ struct SceneGpuTimings {
 // retained surface remains the renderer's authority until a later parity gate.
 struct GpuLodDispatchStatus {
   std::uint64_t source_revision{};
+  std::uint64_t tuple_identity{};
+  bool coordinate_rebased{};
   std::uint32_t hierarchy_records{};
   std::uint32_t selected_records{};
   std::uint32_t visited_records{};
   std::uint32_t rejected_records{};
+  std::uint32_t edge_boundary_band_records{};
+  std::uint32_t field_boundary_band_records{};
+  std::uint32_t limb_boundary_band_records{};
   std::uint32_t oracle_mismatches{};
   std::uint32_t completed_dispatches{};
   std::uint32_t failed_dispatches{};
@@ -210,7 +215,8 @@ class SceneRenderer {
       std::span<const SceneVertex> hierarchy_line_vertices,
       std::span<const SceneVertex> editor_line_vertices);
   void upload_gpu_hierarchy_snapshot(const tetra::GpuHierarchySnapshot& snapshot);
-  void stage_gpu_lod_selection_tuple(const tetra::GpuHierarchySelectionTuple& tuple);
+  void stage_gpu_lod_selection_tuple(const tetra::GpuHierarchySelectionTuple& tuple,
+                                     bool coordinate_rebased=false);
   void stage_gpu_terrain_cells(
       std::span<const tetra::GpuTerrainCellRecord> cells,
       std::uint64_t source_revision,std::uint32_t expected_vertices,
@@ -234,6 +240,8 @@ class SceneRenderer {
   }
   [[nodiscard]] const GpuLodDispatchStatus& gpu_lod_dispatch_status() const
       noexcept { return gpu_lod_dispatch_status_; }
+  [[nodiscard]] std::span<const GpuLodDispatchStatus> gpu_lod_dispatch_history()
+      const noexcept { return gpu_lod_dispatch_history_; }
   [[nodiscard]] std::uint64_t gpu_lod_uploaded_revision() const noexcept {
     return gpu_lod_uploaded_revision_;
   }
@@ -357,6 +365,8 @@ class SceneRenderer {
     std::size_t capacity{};
     std::uint64_t revision{};
     std::uint32_t record_count{};
+    bool coordinate_rebased{};
+    std::optional<tetra::GpuHierarchySelectionTuple> submitted_selection_tuple;
     bool pending{};
   };
   [[nodiscard]] GpuLodBuffer allocate_gpu_lod_buffer(
@@ -369,6 +379,7 @@ class SceneRenderer {
   // on another swapchain image and never needs vkDeviceWaitIdle.
   void ensure_gpu_terrain_slot_capacity(std::uint32_t image_index);
   GpuLodBuffer gpu_lod_hierarchy_;
+  GpuLodBuffer gpu_lod_child_indices_;
   // Immutable geometry sidecar for the forthcoming three-term GPU selector.
   // It has a separate lifetime from compact topology records and terrain
   // extraction buffers, so selector inputs can evolve without changing draw
@@ -377,10 +388,15 @@ class SceneRenderer {
   std::vector<GpuLodBuffer> gpu_lod_selection_tuples_;
   std::vector<std::uint64_t> gpu_lod_tuple_slot_generations_;
   std::optional<tetra::GpuHierarchySelectionTuple> gpu_lod_selection_tuple_;
+  bool gpu_lod_selection_tuple_rebased_{};
   std::optional<tetra::GpuHierarchySnapshot> gpu_lod_snapshot_;
   std::uint64_t gpu_lod_selection_tuple_generation_{};
+  std::uint64_t gpu_lod_last_dispatched_tuple_generation_{};
   std::uint32_t gpu_lod_completed_dispatches_{};
   std::uint32_t gpu_lod_failed_dispatches_{};
+  // Bounded run-local diagnostic history. It is never a render input and is
+  // cleared with the renderer, so normal CPU terrain authority is unchanged.
+  std::vector<GpuLodDispatchStatus> gpu_lod_dispatch_history_;
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
   std::uint64_t gpu_lod_uploaded_revision_{};

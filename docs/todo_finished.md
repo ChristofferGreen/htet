@@ -2,6 +2,15 @@
 
 ## 2026-09-05
 
+- [x] **P4c1b2b2b — Boundary/rebase corpus accounting.** Added explicit
+  root-normalized coordinate-rebase qualification, frame-by-frame submitted
+  tuple ledger, term boundary-band counters, deterministic replay checks, and
+  synthesis coverage for every selector term plus equal/two-term ties. During
+  this work the structural gate found streamed-block parent/child overlap; the
+  snapshot now materializes the missing ancestors and uses an immutable global
+  child-index table, restoring one ancestor/descendant-exclusive Vulkan
+  frontier. CPU BCC closure and terrain rendering remain authoritative.
+
 - [x] **P4c1b2b2a — Cumulative Vulkan dispatch accounting.** The diagnostic
   now exposes completed and failed selector dispatch totals; any oracle
   mismatch or overflow increments the failure total. The hidden corpus requires

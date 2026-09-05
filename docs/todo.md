@@ -353,10 +353,11 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P4c — Hierarchical three-term selection parity.** This tracker is
-      deliberately split: a flat per-record classifier is not an acceptable
-      partial implementation, and Metal parity must follow a proven Vulkan
-      traversal rather than duplicate an unverified design.
+- [ ] **P4c — Hierarchical three-term selection parity.** The Vulkan traversal,
+      float-sidecar oracle, threshold rule, and repeatable/rebase-qualified
+      corpus are complete. A flat per-record classifier is not acceptable, and
+      Metal parity must now translate this proven traversal rather than
+      duplicate an unverified design.
   - [x] **P4c1a — Vulkan active-block traversal diagnostic.** Complete. Each
         Vulkan invocation now walks one immutable root/active-block tree using
         a bounded depth-first work list, rather than classifying a flat record
@@ -366,22 +367,18 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         are counted. The one-million-address diagnostic output fails closed on
         overflow, and CPU terrain remains authoritative. Release 487/487 and
         the hidden MoltenVK run passed.
-  - [x] **P4c1b1 — Shader-input CPU oracle and fixed parity readback.**
-        Complete. The CPU oracle reconstructs its camera, thresholds, field,
-        and limb values from the exact P4b float tuple and mirrors P4a
-        float-sidecar conservative sphere/frustum arithmetic. Diagnostic
-        readback canonicalizes the Vulkan address stream and reports mismatch
-        counts; the hidden fixed run selected 106,614 addresses with zero
-        mismatches and no overflow.
-  - [ ] **P4c1b2b2b — Boundary/rebase corpus accounting.** Synthesize
-        just-below/in-band/just-above boundaries for each term plus equal-
-        maximum/two-term ties, and prove frame-by-frame root-normalized selector
-        invariance across an explicit render-origin rebase. Record tuple
-        identity, selected/visited/rejected,
-        overflow, mismatch, and band counts. Outside the band selected addresses
-        must match exactly; in it split-wins must remain ancestor/descendant
-        exclusive and replay-deterministic. The result remains a bounded
-        candidate-address frontier, not a drawable surface.
+  - [x] **P4c1b — Vulkan oracle and corpus qualification.** Complete. The CPU
+        oracle reconstructs camera, thresholds, field, and limb values from the
+        exact float tuple and mirrors float-sidecar sphere/frustum arithmetic.
+        The selector uses one shared split-wins threshold band, and a hidden
+        corpus covers fixed, individual-term boundary, yaw, walking,
+        near-surface, orbital, terrain-replacement, and exact coordinate-rebase
+        cases. The per-dispatch ledger proves canonical selected-address parity,
+        tuple replay/rebase identity, no overflow, and an
+        ancestor/descendant-exclusive selected front. The snapshot materializes
+        missing ancestors once globally and follows a validated immutable
+        child-index table. This is diagnostic-only; CPU BCC closure and terrain
+        rendering remain authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate and run the
         proven selector through the existing SPIR-V-to-MSL path with the same
         immutable records, tuple revisions, capacities, barriers, overflow

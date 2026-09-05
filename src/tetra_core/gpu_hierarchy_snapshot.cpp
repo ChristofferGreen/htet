@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace tetra {
@@ -305,6 +306,18 @@ bool gpu_hierarchy_selector_refines(
   return false;
 }
 
+std::uint64_t gpu_hierarchy_selection_tuple_identity(
+    const GpuHierarchySelectionTuple& tuple) noexcept {
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t hash=offset;
+  const auto* bytes=reinterpret_cast<const unsigned char*>(&tuple);
+  for(std::size_t index=0;index<sizeof(tuple);++index) {
+    hash^=bytes[index];hash*=prime;
+  }
+  return hash;
+}
+
 GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision) {
   GpuHierarchySnapshot result;
@@ -321,6 +334,7 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
   const auto blocks=directory.hierarchy_blocks();
   if(blocks.size()>std::numeric_limits<std::uint32_t>::max())
     throw std::overflow_error("GPU hierarchy block capacity overflow");
+  std::set<WorldTetAddress> emitted_addresses;
   for(std::size_t block_index=0;block_index<blocks.size();++block_index) {
     const auto& source=*blocks[block_index];
     std::vector<WorldTetAddress> topology_records=source.resident_records;
@@ -330,51 +344,64 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     // address uniqueness.
     if(source.id.prefix.red_depth()==0U)
       topology_records.push_back(source.id.prefix);
+    // A streamed block may publish a deep record without carrying all of its
+    // ancestors. Materialize the missing immutable path once globally so a
+    // selector never has to choose an ancestor and an independent child root.
+    const auto published=topology_records;
+    for(auto address:published)
+      while(address.red_depth()>0U) {
+        address=address.parent();topology_records.push_back(address);
+      }
     const auto ordered=block_graph_order(topology_records);
     GpuHierarchyBlockRecord block{};
     block.prefix=gpu_hierarchy_address_lanes(source.id.prefix);
     block.block_generations=source.id.block_generations;
     block.residency=static_cast<std::uint32_t>(source.residency);
     block.record_first=static_cast<std::uint32_t>(result.records.size());
-    block.record_count=static_cast<std::uint32_t>(ordered.size());
+    block.record_count=0U;
     block.logical_owner_first=static_cast<std::uint32_t>(result.logical_owner_records.size());
     block.source_revision_low=low32(source.source_revision);
     block.source_revision_high=high32(source.source_revision);
     const auto hash=hierarchy_block_canonical_hash(source);
     block.canonical_hash_low=low32(hash);block.canonical_hash_high=high32(hash);
-    std::map<WorldTetAddress,std::uint32_t> indices;
     for(const auto address:ordered) {
+      if(!emitted_addresses.insert(address).second)continue;
       if(result.records.size()>=std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("GPU hierarchy record capacity overflow");
       const auto index=static_cast<std::uint32_t>(result.records.size());
-      indices.emplace(address,index);
       const bool owner=std::binary_search(owners.begin(),owners.end(),address);
       result.records.push_back({gpu_hierarchy_address_lanes(address),gpu_hierarchy_invalid_index,
           (static_cast<std::uint32_t>(source.residency)<<residency_shift)|
               (owner?logical_owner_bit:0U),static_cast<std::uint32_t>(block_index),0U});
       if(owner)result.logical_owner_records.push_back(index);
     }
+    block.record_count=static_cast<std::uint32_t>(result.records.size()-(
+        static_cast<std::size_t>(block.record_first)));
     block.logical_owner_count=static_cast<std::uint32_t>(
         result.logical_owner_records.size()-block.logical_owner_first);
-    for(const auto [address,index]:indices) {
-      std::uint32_t mask{};
-      if(address.red_depth()<maximum_world_red_depth)
-        for(std::uint8_t child=0;child<8U;++child)
-          if(indices.contains(address.child(child)))mask|=1U<<child;
-      if(mask==0U)continue;
-      auto& record=result.records[index];
-      for(std::uint8_t child=0;child<8U;++child)if(mask&(1U<<child)) {
-        record.child_base=indices.at(address.child(child));break;
-      }
-      record.child_mask_flags|=mask;
-    }
-    for(const auto [address,index]:indices) {
-      const bool parent_is_resident=address.red_depth()>0U&&
-          indices.contains(address.parent());
-      if(!parent_is_resident)
-        result.records[index].child_mask_flags|=active_root_bit;
-    }
     result.blocks.push_back(block);
+  }
+  std::map<WorldTetAddress,std::uint32_t> all_indices;
+  for(std::uint32_t index=0;index<result.records.size();++index)
+    all_indices.emplace(gpu_hierarchy_address_from_lanes(
+        result.records[index].address),index);
+  for(std::uint32_t index=0;index<result.records.size();++index) {
+    auto& record=result.records[index];
+    const auto address=gpu_hierarchy_address_from_lanes(record.address);
+    std::uint32_t mask{};
+    if(result.child_indices.size()>std::numeric_limits<std::uint32_t>::max())
+      throw std::overflow_error("GPU hierarchy child-index capacity overflow");
+    const auto child_base=static_cast<std::uint32_t>(result.child_indices.size());
+    for(std::uint8_t child=0;child<8U;++child)
+      if(const auto found=all_indices.find(address.child(child));
+         found!=all_indices.end()) {
+        mask|=1U<<child;result.child_indices.push_back(found->second);
+      }
+    if(mask!=0U)record.child_base=child_base;
+    const bool parent_is_resident=address.red_depth()>0U&&
+        all_indices.contains(address.parent());
+    record.child_mask_flags=(record.child_mask_flags&~(child_mask|active_root_bit))|
+        mask|(parent_is_resident?0U:active_root_bit);
   }
   result.header.record_count=static_cast<std::uint32_t>(result.records.size());
   result.header.record_capacity=result.header.record_count;
@@ -399,6 +426,12 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
      header.block_generations==0U||header.block_generations>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy snapshot header is malformed");
   std::vector<bool> record_covered(snapshot.records.size());
+  std::set<WorldTetAddress> resident_addresses;
+  for(const auto& record:snapshot.records) {
+    const auto address=gpu_hierarchy_address_from_lanes(record.address);
+    if(!resident_addresses.insert(address).second)
+      throw std::invalid_argument("GPU hierarchy records are not unique");
+  }
   for(std::size_t index=0;index<snapshot.blocks.size();++index) {
     const auto& block=snapshot.blocks[index];
     if(!gpu_hierarchy_address_valid(block.prefix)||
@@ -445,27 +478,22 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
     if((mask==0U)!=(record.child_base==gpu_hierarchy_invalid_index))
       throw std::invalid_argument("GPU hierarchy leaf encoding is malformed");
     const auto address=gpu_hierarchy_address_from_lanes(record.address);
-    bool parent_is_resident=false;
-    if(address.red_depth()>0U) {
-      const auto parent=address.parent();
-      const auto& block=snapshot.blocks[record.block_index];
-      for(std::uint32_t local=0;local<block.record_count;++local) {
-        const auto candidate=block.record_first+local;
-        if(gpu_hierarchy_address_from_lanes(snapshot.records[candidate].address)==parent) {
-          parent_is_resident=true;break;
-        }
-      }
-    }
+    const bool parent_is_resident=address.red_depth()>0U&&
+        resident_addresses.contains(address.parent());
     if(((record.child_mask_flags&active_root_bit)!=0U)==parent_is_resident)
       throw std::invalid_argument("GPU hierarchy active-root encoding is malformed");
     if(mask==0U)continue;
     const auto children=static_cast<std::uint32_t>(std::popcount(mask));
     if(record.child_base==gpu_hierarchy_invalid_index||
-       static_cast<std::size_t>(children)>snapshot.records.size()-record.child_base)
+       record.child_base>snapshot.child_indices.size()||
+       static_cast<std::size_t>(children)>snapshot.child_indices.size()-record.child_base)
       throw std::invalid_argument("GPU hierarchy child range is malformed");
     for(std::uint8_t child=0;child<8U;++child)if(mask&(1U<<child)) {
-      const auto child_index=record.child_base+static_cast<std::uint32_t>(
+      const auto child_slot=record.child_base+static_cast<std::uint32_t>(
           std::popcount(mask&((1U<<child)-1U)));
+      const auto child_index=snapshot.child_indices[child_slot];
+      if(child_index>=snapshot.records.size())
+        throw std::invalid_argument("GPU hierarchy child index is malformed");
       if(snapshot.records[child_index].address!=gpu_hierarchy_child(record.address,child))
         throw std::invalid_argument("GPU hierarchy child address is malformed");
     }
@@ -571,18 +599,29 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const float limb_error=parameters.planet_radius>0.0?
         (radius*radius/(2.0F*std::max(static_cast<float>(parameters.planet_radius),radius)))*
             focal/distance:0.0F;
-    if(!gpu_hierarchy_selector_refines({projected.diameter,field_error,limb_error},
-          {static_cast<float>(parameters.pixel_threshold),
-           static_cast<float>(parameters.field_threshold),
-           static_cast<float>(parameters.limb_threshold)})) {
+    const std::array<float,3> errors{projected.diameter,field_error,limb_error};
+    const std::array<float,3> thresholds{static_cast<float>(parameters.pixel_threshold),
+        static_cast<float>(parameters.field_threshold),
+        static_cast<float>(parameters.limb_threshold)};
+    const auto in_boundary_band=[](float error,float threshold) {
+      if(!std::isfinite(error)||!std::isfinite(threshold)||error<0.0F||
+         !(threshold>0.0F))return false;
+      const float normalized=error/threshold;
+      return std::isfinite(normalized)&&
+          std::abs(normalized-1.0F)<=gpu_hierarchy_selector_threshold_band(normalized);
+    };
+    result.metrics.edge_boundary_band+=in_boundary_band(errors[0],thresholds[0]);
+    result.metrics.field_boundary_band+=in_boundary_band(errors[1],thresholds[1]);
+    result.metrics.limb_boundary_band+=in_boundary_band(errors[2],thresholds[2]);
+    if(!gpu_hierarchy_selector_refines(errors,thresholds)) {
       ++result.metrics.projected_terminated;
       ++result.metrics.field_terminated;
       ++result.metrics.limb_terminated;
       result.selected_records.push_back(index);continue;
     }
     for(std::uint8_t digit=0;digit<8U;++digit)if(mask&(1U<<digit))
-      work.push_back(record.child_base+static_cast<std::uint32_t>(
-          std::popcount(mask&((1U<<digit)-1U))));
+      work.push_back(snapshot.child_indices[record.child_base+
+          static_cast<std::uint32_t>(std::popcount(mask&((1U<<digit)-1U)))]);
   }
   result.metrics.selected=result.selected_records.size();
   return result;

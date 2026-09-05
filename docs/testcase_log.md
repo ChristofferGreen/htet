@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 22:21 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` and `scripts/qualify_gpu_lod_selector.sh` | failures: none | notes: all 489 tests passed; the rebuilt eleven-case Vulkan corpus passed with global child-index traversal, ancestor/descendant exclusivity, deterministic tuple replay, explicit rebase qualification, and zero overflows/mismatches.
+
 - 2026-09-05 21:05 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 488 tests passed after cumulative Vulkan selector dispatch accounting.
 
 - 2026-09-05 20:55 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` and `scripts/qualify_gpu_lod_selector.sh` | failures: none | notes: all 488 tests passed; hidden Vulkan selector camera corpus completed ten fixed/motion/threshold/terrain cases with zero mismatches and no overflow.
@@ -219,6 +221,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] `scripts/qualify_gpu_lod_selector.sh` terrain-replacement | resolved: 2026-09-05 22:11 CEST | validating command: `scripts/qualify_gpu_lod_selector.sh` | notes: raised the analytic-ridge-only initial upload cap from 64 MiB to 128 MiB, admitting its certified 85,599,936-byte front and allowing the selector corpus to complete.
 
 - [x] Metal hidden motion smoke | resolved: 2026-09-04 14:28 CEST | validating command: fresh Release preview-off and preview-on `TetWorldMetal --metal-motion-smoke-test` | notes: an older publication no longer clears the queued interaction-end request, and the hidden harness holds its scripted final pose; both paths report zero pose error.
 

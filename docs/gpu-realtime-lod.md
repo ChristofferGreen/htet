@@ -899,16 +899,19 @@ zero-based `uint32_t`; `0xffffffff` is the only invalid record index.
 | word | field | contract |
 | --- | --- | --- |
 | 0--3 | `address_high_lo`, `address_high_hi`, `address_low_lo`, `address_low_hi` | The 128-bit `WorldTetAddress`, split into little-endian 32-bit lanes. |
-| 4 | `child_base` | Index of the first present red child, or `0xffffffff` for a leaf. |
+| 4 | `child_base` | Offset of the first present red child in the immutable child-index table, or `0xffffffff` for a leaf. |
 | 5 | `child_mask_flags` | Bits 0--7 are the present red-child mask; bits 8--9 are the residency tier; bit 10 marks a logical owner; all other bits are zero. |
 | 6 | `block_index` | Index into the immutable block table that owns this record. |
 | 7 | `reserved` | Must be zero; validation rejects any other value. |
 
 Present children are packed in increasing child-index order beginning at
-`child_base`; their actual record index is `child_base + popcount(mask &
-((1u << child) - 1u))`.  A leaf has a zero child mask and invalid `child_base`.
-A non-leaf has a nonzero mask and a valid range entirely inside the record
-capacity.  A logical owner is a leaf of the *logical cut*, not necessarily a
+`child_base`; their actual record index is `child_indices[child_base +
+popcount(mask & ((1u << child) - 1u))]`. The immutable `uint32_t`
+child-index table is a separate selector-topology buffer: it keeps a global
+tree connected when child records reside in another streamed block. A leaf has
+a zero child mask and invalid `child_base`. A non-leaf has a nonzero mask and a
+valid range entirely inside the child-index-table capacity. A logical owner is
+a leaf of the *logical cut*, not necessarily a
 leaf of the immutable resident hierarchy; the `logical-owner` flag therefore
 describes the directory's canonical fallback/child-shadowing result, not a
 GPU-created active front.
@@ -1162,7 +1165,7 @@ that work.
     overflow. The three tuple threshold terms are independently controllable
     through test-only launch arguments; explicit boundary synthesis and
     per-frame rebase accounting remain the next leaf.
-  - [ ] **P4c1b2b2 — Boundary/rebase corpus accounting.** Add the explicit
+  - [x] **P4c1b2b2 — Boundary/rebase corpus accounting.** Add the explicit
     root-normalized selector-invariance case across a render-origin rebase,
     synthesize threshold values immediately
     below, within, and above every term's boundary (including equal-max and
@@ -1171,7 +1174,15 @@ that work.
     selected addresses match exactly; in-band results obey split-wins, remain
     ancestor/descendant exclusive, and replay identically. The result remains a
     bounded candidate-address frontier, not a drawable surface; CPU BCC closure
-    remains authoritative.
+    remains authoritative. **Result:** the Vulkan snapshot now materializes
+    missing immutable ancestor paths and follows global child-index indirection
+    across streamed blocks, so the checked candidate stream is structurally
+    ancestor/descendant exclusive rather than merely count-equal. Completed
+    dispatches retain their submitted tuple, identity, term-band counts, and
+    selected/visited/rejected/mismatch/overflow ledger entry. The hidden corpus
+    replays each tuple deterministically and proves a paired coordinate rebase
+    has the same tuple identity; focused boundary synthesis covers each term
+    below/inside/above the band plus equal-max and two-term ties.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,

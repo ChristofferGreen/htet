@@ -9,6 +9,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -258,7 +259,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateDescriptorSetLayout(device_,&atmosphere_descriptor_layout,nullptr,
                                  &atmosphere_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create atmosphere descriptor layout");
-  std::array<VkDescriptorSetLayoutBinding,4> gpu_lod_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,5> gpu_lod_bindings{};
   for(std::uint32_t binding=0;binding<gpu_lod_bindings.size();++binding){
     gpu_lod_bindings[binding].binding=binding;
     gpu_lod_bindings[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -861,6 +862,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     buffer={};
   };
   destroy_gpu_lod_buffer(gpu_lod_hierarchy_);
+  destroy_gpu_lod_buffer(gpu_lod_child_indices_);
   destroy_gpu_lod_buffer(gpu_lod_selection_inputs_);
   for(auto& tuple:gpu_lod_selection_tuples_)destroy_gpu_lod_buffer(tuple);
   gpu_lod_selection_tuples_.clear();gpu_lod_tuple_slot_generations_.clear();
@@ -902,6 +904,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   // output truncation; overflow remains an explicit fail-closed condition.
   constexpr std::size_t gpu_lod_output_capacity=1048576U;
   gpu_lod_hierarchy_=allocate_gpu_lod_buffer(64U*1024U*1024U);
+  gpu_lod_child_indices_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_inputs_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_tuples_.clear();gpu_lod_selection_tuples_.reserve(image_count);
   for(std::uint32_t index=0;index<image_count;++index)
@@ -1303,12 +1306,13 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   if(vkAllocateDescriptorSets(device_,&allocate,gpu_lod_descriptor_sets_.data())!=VK_SUCCESS)
     throw std::runtime_error("unable to allocate GPU LOD descriptors");
   for(std::size_t index=0;index<gpu_lod_descriptor_sets_.size();++index){
-    const std::array<VkDescriptorBufferInfo,4> infos{{
+    const std::array<VkDescriptorBufferInfo,5> infos{{
         {gpu_lod_hierarchy_.buffer,0,VK_WHOLE_SIZE},
         {gpu_lod_outputs_[index].buffer,0,VK_WHOLE_SIZE},
         {gpu_lod_selection_inputs_.buffer,0,VK_WHOLE_SIZE},
-        {gpu_lod_selection_tuples_[index].buffer,0,VK_WHOLE_SIZE}}};
-    std::array<VkWriteDescriptorSet,4> writes{};
+        {gpu_lod_selection_tuples_[index].buffer,0,VK_WHOLE_SIZE},
+        {gpu_lod_child_indices_.buffer,0,VK_WHOLE_SIZE}}};
+    std::array<VkWriteDescriptorSet,5> writes{};
     for(std::uint32_t binding=0;binding<writes.size();++binding){
       writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[binding].dstSet=gpu_lod_descriptor_sets_[index];
@@ -1721,7 +1725,9 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
   const auto bytes=snapshot.records.size()*sizeof(tetra::GpuHierarchyRecord);
   const auto selection_bytes=snapshot.selection_records.size()*
       sizeof(tetra::GpuHierarchySelectionRecord);
+  const auto child_bytes=snapshot.child_indices.size()*sizeof(std::uint32_t);
   if(bytes>gpu_lod_hierarchy_.capacity||
+     child_bytes>gpu_lod_child_indices_.capacity||
      selection_bytes>gpu_lod_selection_inputs_.capacity)
     throw std::runtime_error("GPU LOD immutable hierarchy exceeds 64 MiB upload capacity");
   void* mapped{};
@@ -1729,6 +1735,12 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
     throw std::runtime_error("unable to map GPU LOD hierarchy upload");
   std::memcpy(mapped,snapshot.records.data(),bytes);
   vkUnmapMemory(device_,gpu_lod_hierarchy_.memory);
+  if(child_bytes!=0U) {
+    if(vkMapMemory(device_,gpu_lod_child_indices_.memory,0,child_bytes,0,&mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map GPU LOD child-index upload");
+    std::memcpy(mapped,snapshot.child_indices.data(),child_bytes);
+    vkUnmapMemory(device_,gpu_lod_child_indices_.memory);
+  }
   if(vkMapMemory(device_,gpu_lod_selection_inputs_.memory,0,selection_bytes,0,&mapped)!=VK_SUCCESS)
     throw std::runtime_error("unable to map GPU LOD selector-input upload");
   std::memcpy(mapped,snapshot.selection_records.data(),selection_bytes);
@@ -1742,7 +1754,7 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
 }
 
 void SceneRenderer::stage_gpu_lod_selection_tuple(
-    const tetra::GpuHierarchySelectionTuple& tuple) {
+    const tetra::GpuHierarchySelectionTuple& tuple,bool coordinate_rebased) {
   try { tetra::validate_gpu_hierarchy_selection_tuple(tuple); }
   catch(const std::invalid_argument&) {
     // A new malformed tuple must not leave an older GPU decision eligible.
@@ -1752,6 +1764,8 @@ void SceneRenderer::stage_gpu_lod_selection_tuple(
     return;
   }
   gpu_lod_selection_tuple_=tuple;
+  // Diagnostic-only corpus tag; it cannot affect selection or rendering.
+  gpu_lod_selection_tuple_rebased_=coordinate_rebased;
   if(++gpu_lod_selection_tuple_generation_==0U)++gpu_lod_selection_tuple_generation_;
 }
 
@@ -2094,9 +2108,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       const bool overflow=result[3]!=0U||result[0]>1048576U;
       std::uint32_t mismatches{};
       bool oracle_matches=false;
-      if(!overflow&&gpu_lod_snapshot_&&gpu_lod_selection_tuple_) {
+      if(!overflow&&gpu_lod_snapshot_&&gpu_lod_output.submitted_selection_tuple) {
         const auto oracle=tetra::gpu_hierarchy_traverse(*gpu_lod_snapshot_,
-            tetra::gpu_hierarchy_traversal_parameters(*gpu_lod_selection_tuple_));
+            tetra::gpu_hierarchy_traversal_parameters(
+                *gpu_lod_output.submitted_selection_tuple));
         std::vector<std::uint32_t> device(result[0]);
         if(!device.empty()) {
           if(vkMapMemory(device_,gpu_lod_output.memory,sizeof(result),
@@ -2105,6 +2120,25 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           std::memcpy(device.data(),mapped,device.size()*sizeof(std::uint32_t));
           vkUnmapMemory(device_,gpu_lod_output.memory);
         }
+        // The selected device frontier must never contain a parent and one of
+        // its descendants, even when its sorted address stream happens to
+        // agree in count with the oracle. This is a separate structural gate.
+        const auto ancestor_descendant_exclusive=[&]{
+          std::set<tetra::WorldTetAddress> addresses;
+          for(const auto index:device) {
+            if(index>=gpu_lod_snapshot_->records.size())return false;
+            addresses.insert(tetra::gpu_hierarchy_address_from_lanes(
+                gpu_lod_snapshot_->records[index].address));
+          }
+          if(addresses.size()!=device.size())return false;
+          for(auto address:addresses)
+            while(address.red_depth()>0U) {
+              address=address.parent();
+              if(addresses.contains(address))return false;
+            }
+          return true;
+        };
+        if(!ancestor_descendant_exclusive())++mismatches;
         auto expected=oracle.selected_records;
         std::ranges::sort(device);std::ranges::sort(expected);
         const auto common=std::min(device.size(),expected.size());
@@ -2116,10 +2150,27 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       }
       ++gpu_lod_completed_dispatches_;
       if(overflow||!oracle_matches)++gpu_lod_failed_dispatches_;
-      gpu_lod_dispatch_status_={gpu_lod_output.revision,gpu_lod_output.record_count,
-          std::min(result[0],1048576U),result[1],result[2],mismatches,
+      const auto metrics=(!overflow&&gpu_lod_snapshot_&&
+          gpu_lod_output.submitted_selection_tuple)?
+          tetra::gpu_hierarchy_traverse(*gpu_lod_snapshot_,
+              tetra::gpu_hierarchy_traversal_parameters(
+                  *gpu_lod_output.submitted_selection_tuple)).metrics:
+          tetra::GpuHierarchyTraversalMetrics{};
+      gpu_lod_dispatch_status_={gpu_lod_output.revision,
+          gpu_lod_output.submitted_selection_tuple?
+              tetra::gpu_hierarchy_selection_tuple_identity(
+                  *gpu_lod_output.submitted_selection_tuple):0U,
+          gpu_lod_output.coordinate_rebased,
+          gpu_lod_output.record_count,std::min(result[0],1048576U),result[1],result[2],
+          static_cast<std::uint32_t>(metrics.edge_boundary_band),
+          static_cast<std::uint32_t>(metrics.field_boundary_band),
+          static_cast<std::uint32_t>(metrics.limb_boundary_band),mismatches,
           gpu_lod_completed_dispatches_,gpu_lod_failed_dispatches_,true,
           overflow,oracle_matches};
+      constexpr std::size_t maximum_diagnostic_history=512U;
+      if(gpu_lod_dispatch_history_.size()==maximum_diagnostic_history)
+        gpu_lod_dispatch_history_.erase(gpu_lod_dispatch_history_.begin());
+      gpu_lod_dispatch_history_.push_back(gpu_lod_dispatch_status_);
     }
     gpu_lod_output.pending=false;
   }
@@ -2131,7 +2182,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     return revision==gpu_lod_uploaded_revision_;
   };
   if(gpu_lod_diagnostic_enabled_&&gpu_lod_uploaded_revision_!=0U&&
-     tuple_matches_hierarchy()){
+     tuple_matches_hierarchy()&&gpu_lod_selection_tuple_generation_!=
+         gpu_lod_last_dispatched_tuple_generation_){
     bool tuple_uploaded=false;
     if(gpu_lod_selection_tuple_&&gpu_lod_tuple_slot_generations_.at(image_index)!=gpu_lod_selection_tuple_generation_){
       auto& tuple=gpu_lod_selection_tuples_.at(image_index);void* mapped{};
@@ -2142,7 +2194,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     }
     if(tuple_uploaded){VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.buffer=gpu_lod_selection_tuples_.at(image_index).buffer;barrier.size=VK_WHOLE_SIZE;vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&barrier,0,nullptr);}
     if(gpu_lod_hierarchy_upload_pending_){
-      std::array<VkBufferMemoryBarrier,2> hierarchy_ready{};
+      std::array<VkBufferMemoryBarrier,3> hierarchy_ready{};
       for(auto& barrier:hierarchy_ready){
         barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         barrier.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;
@@ -2152,7 +2204,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         barrier.size=VK_WHOLE_SIZE;
       }
       hierarchy_ready[0].buffer=gpu_lod_hierarchy_.buffer;
-      hierarchy_ready[1].buffer=gpu_lod_selection_inputs_.buffer;
+      hierarchy_ready[1].buffer=gpu_lod_child_indices_.buffer;
+      hierarchy_ready[2].buffer=gpu_lod_selection_inputs_.buffer;
       vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,
           static_cast<std::uint32_t>(hierarchy_ready.size()),hierarchy_ready.data(),
@@ -2191,7 +2244,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&complete,0,nullptr);
     gpu_lod_output.revision=gpu_lod_uploaded_revision_;
     gpu_lod_output.record_count=push[0];
+    gpu_lod_output.coordinate_rebased=gpu_lod_selection_tuple_rebased_;
+    gpu_lod_output.submitted_selection_tuple=*gpu_lod_selection_tuple_;
     gpu_lod_output.pending=true;
+    gpu_lod_last_dispatched_tuple_generation_=
+        gpu_lod_selection_tuple_generation_;
   }
   if(gpu_terrain_slot_pending_.at(image_index)){
     std::array<std::uint32_t,8> result{};void* mapped{};

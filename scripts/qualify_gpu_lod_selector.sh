@@ -22,9 +22,30 @@ run_case() {
   line=$(printf '%s\n' "$output" | rg '"event":"gpu_atmosphere_benchmark"' | tail -n 1)
   if [[ -z "$line" ]] || ! grep -q '"oracle_matches":true' <<<"$line" ||
      ! grep -q '"overflow":false' <<<"$line" ||
-     ! grep -q '"failed_dispatches":0' <<<"$line"; then
+     ! grep -q '"failed_dispatches":0' <<<"$line" ||
+     { [[ "$name" == rebase ]] && ! grep -q '"gpu_lod_rebase_verified":true' <<<"$line"; }; then
     echo "GPU LOD parity failed: $name" >&2
     printf '%s\n' "$output" >&2
+    exit 1
+  fi
+  if ! python3 -c '
+import json, sys
+result = json.loads(sys.argv[1])
+frames = result.get("gpu_lod_frames", [])
+assert frames, "no completed selector frames"
+for frame in frames:
+    assert frame["tuple_identity"] != 0
+    assert not frame["overflow"]
+    assert frame["oracle_mismatches"] == 0
+replays = {}
+for frame in frames:
+    key = frame["tuple_identity"]
+    value = tuple(frame[field] for field in ("selected", "visited", "rejected", "edge_band", "field_band", "limb_band"))
+    assert replays.setdefault(key, value) == value, "non-deterministic tuple replay"
+if sys.argv[2] == "rebase":
+    assert result["gpu_lod_rebase_verified"]
+' "$line" "$name"; then
+    echo "GPU LOD frame accounting failed: $name" >&2
     exit 1
   fi
   printf '%s %s\n' "$name" "$line"
@@ -38,6 +59,7 @@ run_case field-sweep --terrain-field-pixel-threshold=16383.99
 run_case limb-sweep --terrain-limb-pixel-threshold=2.000001
 run_case yaw-motion --automation-yaw-sequence-degrees=1,-1,2,-2 --automation-look-frames=8
 run_case walking-rebase --automation-walk-steps=96
+run_case rebase --gpu-lod-selector-rebase
 run_case near-surface --camera-feet=0,1,0 --camera-yaw-degrees=0 --camera-pitch-degrees=-5
 run_case orbital --camera-feet=0,500000,0 --camera-yaw-degrees=0 --camera-pitch-degrees=-89
 run_case terrain-replacement --analytic-ridge --camera-feet=0,5,0

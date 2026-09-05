@@ -1,6 +1,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <set>
+
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/adjacency.hpp"
 #include "tetra_core/four_hexahedra.hpp"
@@ -5000,9 +5002,14 @@ TEST_CASE("GPU hierarchy snapshots preserve exact addresses and geometry") {
   CHECK_FALSE(snapshot.records.empty());
   CHECK_FALSE(snapshot.logical_owner_records.empty());
   CHECK_NOTHROW(tetra::validate_gpu_hierarchy_snapshot(snapshot));
+  std::set<tetra::WorldTetAddress> resident_addresses;
+  for(const auto& record:snapshot.records)
+    resident_addresses.insert(tetra::gpu_hierarchy_address_from_lanes(record.address));
   for(const auto& record:snapshot.records) {
     const auto address=tetra::gpu_hierarchy_address_from_lanes(record.address);
     CHECK(tetra::gpu_hierarchy_address_valid(record.address));
+    if(address.red_depth()>0U)
+      CHECK(resident_addresses.contains(address.parent()));
     const auto exact=tetra::world_tetrahedron_geometry(address);
     const auto reconstructed=tetra::gpu_hierarchy_geometry(record.address);
     for(std::size_t corner=0;corner<4U;++corner) {
@@ -5012,8 +5019,10 @@ TEST_CASE("GPU hierarchy snapshots preserve exact addresses and geometry") {
     }
     const auto mask=record.child_mask_flags&0xffU;
     for(std::uint8_t child=0;child<8U;++child)if(mask&(1U<<child)) {
-      const auto child_index=record.child_base+
+      const auto child_slot=record.child_base+
           std::popcount(mask&((1U<<child)-1U));
+      REQUIRE(child_slot<snapshot.child_indices.size());
+      const auto child_index=snapshot.child_indices[child_slot];
       CHECK(snapshot.records[child_index].address==
             tetra::gpu_hierarchy_child(record.address,child));
     }
@@ -5160,6 +5169,28 @@ TEST_CASE("GPU hierarchy selector tuple is revisioned and render-origin relative
   CHECK_THROWS_AS(tetra::make_gpu_hierarchy_selection_tuple(p),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy selector tuple is invariant across a coordinate rebase") {
+  tetra::GpuHierarchySelectionTupleParameters p;
+  p.camera.position={1000001.5,2000002.25,3000003.75};
+  p.camera.forward={0,0,-1};p.camera.up={0,1,0};
+  p.camera.viewport_height_pixels=900.0;p.camera.aspect_ratio=1.6;
+  p.render_origin={1000000.0,2000000.0,3000000.0};
+  p.field_centre=p.render_origin;p.planet_radius=1000.0;
+  p.terrain_height_bound=50.0;p.field_lipschitz=3.0;
+  p.edge_threshold=2.0;p.field_threshold=4.0;p.limb_threshold=1.0;
+  p.merge_ratio=0.5;p.source_revision=7U;p.field_revision=9U;
+  const auto original=tetra::make_gpu_hierarchy_selection_tuple(p);
+  const tetra::Vec3 rebase{32.0,-64.0,128.0};
+  p.camera.position=p.camera.position+rebase;
+  p.field_centre=p.field_centre+rebase;
+  p.render_origin=p.render_origin+rebase;
+  const auto rebased=tetra::make_gpu_hierarchy_selection_tuple(p);
+  CHECK(rebased.camera_relative_viewport==original.camera_relative_viewport);
+  CHECK(rebased.field_centre_radius==original.field_centre_radius);
+  CHECK(tetra::gpu_hierarchy_selection_tuple_identity(rebased)==
+        tetra::gpu_hierarchy_selection_tuple_identity(original));
+}
+
 TEST_CASE("GPU hierarchy selector threshold band conservatively splits ties") {
   constexpr float threshold=32.0F;
   const auto band=tetra::gpu_hierarchy_selector_threshold_band(1.0F);
@@ -5181,6 +5212,26 @@ TEST_CASE("GPU hierarchy selector threshold band conservatively splits ties") {
   CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(
       std::numeric_limits<float>::quiet_NaN(),threshold));
   CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(threshold,0.0F));
+
+  // Each shader tuple term is synthesized below, inside, and above its own
+  // band. The two tie cases prove that a maximum tied on any split-wins term
+  // cannot be accidentally rounded down by a combined comparison.
+  const std::array<float,3> thresholds{32.0F,128.0F,2.0F};
+  const auto below=[&](float t){return t*(1.0F-2.0F*band);};
+  const auto inside=[&](float t){return t*(1.0F-0.5F*band);};
+  const auto above=[&](float t){return t*(1.0F+2.0F*band);};
+  for(std::size_t term=0;term<thresholds.size();++term){
+    auto errors=thresholds;for(auto& error:errors)error=below(error);
+    CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(errors,thresholds));
+    errors[term]=inside(thresholds[term]);
+    CHECK(tetra::gpu_hierarchy_selector_refines(errors,thresholds));
+    errors[term]=above(thresholds[term]);
+    CHECK(tetra::gpu_hierarchy_selector_refines(errors,thresholds));
+  }
+  CHECK(tetra::gpu_hierarchy_selector_refines(
+      {below(thresholds[0]),thresholds[1],thresholds[2]},thresholds));
+  CHECK(tetra::gpu_hierarchy_selector_refines(
+      {below(thresholds[0]),thresholds[1],inside(thresholds[2])},thresholds));
 }
 
 TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminates") {

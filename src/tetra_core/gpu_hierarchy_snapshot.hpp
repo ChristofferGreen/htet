@@ -96,6 +96,10 @@ struct GpuHierarchySnapshotHeader {
 struct GpuHierarchySnapshot {
   GpuHierarchySnapshotHeader header{};
   std::vector<GpuHierarchyRecord> records;
+  // Child record indices are a separate immutable side table.  Streamed
+  // hierarchy blocks need not be adjacent in the record array, so a compact
+  // child ordinal cannot safely imply a contiguous record range.
+  std::vector<std::uint32_t> child_indices;
   std::vector<GpuHierarchyBlockRecord> blocks;
   std::vector<std::uint32_t> logical_owner_records;
   // One immutable normalized-space geometry sidecar per hierarchy record.
@@ -150,6 +154,11 @@ struct GpuHierarchyTraversalMetrics {
   std::size_t projected_terminated{};
   std::size_t field_terminated{};
   std::size_t limb_terminated{};
+  // Per-term observations inside the shared split-wins boundary band.  These
+  // are diagnostic evidence for shader/oracle qualification, not LOD policy.
+  std::size_t edge_boundary_band{};
+  std::size_t field_boundary_band{};
+  std::size_t limb_boundary_band{};
   std::size_t selected{};
 };
 struct GpuHierarchyTraversalResult {
@@ -166,6 +175,10 @@ struct GpuHierarchyTraversalResult {
 [[nodiscard]] bool gpu_hierarchy_selector_refines(
     std::array<float,3> projected_errors,
     std::array<float,3> thresholds) noexcept;
+// Stable FNV-1a identity of the exact 112-byte shader tuple.  It lets a
+// frame-ring diagnostic attribute a completed result to its submitted tuple.
+[[nodiscard]] std::uint64_t gpu_hierarchy_selection_tuple_identity(
+    const GpuHierarchySelectionTuple& tuple) noexcept;
 struct GpuHierarchyIndirectDraw {
   std::uint32_t vertex_count{};
   std::uint32_t instance_count{};

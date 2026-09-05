@@ -11,6 +11,9 @@ layout(std430,binding=1) buffer SelectionOutput { uint words[]; } output_buffer;
 // the descriptor contract before that traversal replaces the diagnostic.
 layout(std430,binding=2) readonly buffer SelectionInputs { vec4 values[]; } selection_inputs;
 layout(std430,binding=3) readonly buffer SelectionTuple { vec4 values[]; } selection_tuple;
+// Immutable child indirection keeps a global streamed hierarchy connected
+// even when direct children occupy different record blocks.
+layout(std430,binding=4) readonly buffer ChildIndices { uint values[]; } child_indices;
 
 layout(push_constant) uniform SelectorParameters {
   uint record_count;
@@ -40,7 +43,9 @@ bool selector_refines(float projected_error,float threshold) {
 
 uint child_index(uint record_index,uint child) {
   const uint flags=hierarchy.words[record_index*8u+5u];
-  return hierarchy.words[record_index*8u+4u]+bitCount((flags&child_mask)&((1u<<child)-1u));
+  const uint slot=hierarchy.words[record_index*8u+4u]+
+      bitCount((flags&child_mask)&((1u<<child)-1u));
+  return child_indices.values[slot];
 }
 
 float projected_diameter(uint record_index,vec3 camera,float focal) {
