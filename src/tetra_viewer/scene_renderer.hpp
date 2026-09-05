@@ -85,6 +85,16 @@ struct GpuLodDispatchStatus {
   bool dispatched{};
   bool overflow{};
 };
+struct GpuTerrainExtractStatus {
+  std::uint64_t source_revision{};
+  std::uint32_t cells{};
+  std::uint32_t vertices{};
+  double milliseconds{};
+  bool complete{};
+  bool input_overflow{};
+  bool overflow{};
+  bool vertex_count_matches_cpu{};
+};
 
 struct AtmosphereDispatchCounts {
   std::uint64_t transmittance{};
@@ -178,6 +188,9 @@ class SceneRenderer {
       std::span<const SceneVertex> hierarchy_line_vertices,
       std::span<const SceneVertex> editor_line_vertices);
   void upload_gpu_hierarchy_snapshot(const tetra::GpuHierarchySnapshot& snapshot);
+  void stage_gpu_terrain_cells(
+      std::span<const tetra::GpuTerrainCellRecord> cells,
+      std::uint64_t source_revision,std::uint32_t expected_vertices);
   void set_gpu_lod_diagnostic_enabled(bool enabled) noexcept {
     gpu_lod_diagnostic_enabled_=enabled;
   }
@@ -194,6 +207,11 @@ class SceneRenderer {
   [[nodiscard]] std::uint64_t gpu_lod_uploaded_revision() const noexcept {
     return gpu_lod_uploaded_revision_;
   }
+  [[nodiscard]] std::uint64_t gpu_terrain_cells_revision() const noexcept {
+    return gpu_terrain_cells_revision_;
+  }
+  [[nodiscard]] const GpuTerrainExtractStatus& gpu_terrain_extract_status()
+      const noexcept { return gpu_terrain_extract_status_; }
   [[nodiscard]] const SurfaceDrawVisibility& terrain_draw_visibility()
       const noexcept { return terrain_draw_visibility_; }
   [[nodiscard]] const AtmosphereDispatchCounts& atmosphere_dispatch_counts()
@@ -233,6 +251,7 @@ class SceneRenderer {
   VkDescriptorSetLayout composite_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout atmosphere_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gpu_lod_descriptor_set_layout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout gpu_terrain_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptor_pool_{VK_NULL_HANDLE};
   VkSampler shadow_sampler_{VK_NULL_HANDLE};
   VkSampler scene_sampler_{VK_NULL_HANDLE};
@@ -242,6 +261,7 @@ class SceneRenderer {
   VkPipelineLayout composite_pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout atmosphere_pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout gpu_lod_pipeline_layout_{VK_NULL_HANDLE};
+  VkPipelineLayout gpu_terrain_pipeline_layout_{VK_NULL_HANDLE};
   VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
   VkPipeline sky_pipeline_{VK_NULL_HANDLE};
   VkPipeline composite_pipeline_{VK_NULL_HANDLE};
@@ -250,6 +270,7 @@ class SceneRenderer {
   VkPipeline faithful_atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline reference_hillaire_atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline gpu_lod_pipeline_{VK_NULL_HANDLE};
+  VkPipeline gpu_terrain_extract_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
@@ -314,6 +335,19 @@ class SceneRenderer {
   std::uint64_t gpu_lod_uploaded_revision_{};
   bool gpu_lod_hierarchy_upload_pending_{};
   bool gpu_lod_diagnostic_enabled_{};
+  std::vector<tetra::GpuTerrainCellRecord> gpu_terrain_cells_;
+  std::uint64_t gpu_terrain_cells_revision_{};
+  std::uint64_t gpu_terrain_cells_generation_{};
+  std::uint32_t gpu_terrain_expected_vertices_{};
+  std::vector<GpuLodBuffer> gpu_terrain_cell_buffers_;
+  std::vector<GpuLodBuffer> gpu_terrain_output_buffers_;
+  std::vector<GpuLodBuffer> gpu_terrain_index_buffers_;
+  std::vector<VkDescriptorSet> gpu_terrain_descriptor_sets_;
+  std::vector<std::uint64_t> gpu_terrain_slot_revisions_;
+  std::vector<bool> gpu_terrain_slot_pending_;
+  std::vector<bool> gpu_terrain_timing_pending_;
+  std::vector<double> gpu_terrain_slot_milliseconds_;
+  GpuTerrainExtractStatus gpu_terrain_extract_status_{};
   SurfaceDeviceUploadPlanner surface_upload_planner_;
   SurfaceDrawVisibility terrain_draw_visibility_{};
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };

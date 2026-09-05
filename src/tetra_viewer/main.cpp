@@ -972,6 +972,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         std::numeric_limits<std::uint64_t>::max()};
     tetra_viewer::SurfaceDrawChunkStorage surface_draw_chunks;
     tetra_viewer::SurfaceHostStagingStorage surface_host_staging;
+    std::optional<tetra::Vec3> gpu_terrain_cells_render_origin;
     bool retained_surface_upload_ready=false;
     tetra::ImplicitValueCache implicit_value_cache;
     tetra::AdaptationPlanningCache adaptation_planning_cache;
@@ -3366,6 +3367,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     gpu_lod_status.selected_records,gpu_lod_status.hierarchy_records,
                     gpu_lod_status.overflow?" (capacity reached)":"");
             else ImGui::TextDisabled("GPU selector awaits an immutable terrain cut");
+            const auto gpu_extract=g_SceneRenderer.gpu_terrain_extract_status();
+            if(world_realtime_gpu_surface_lod&&gpu_extract.complete)
+                ImGui::TextDisabled("GPU extraction diagnostic: %u cells, %u vertices, %.3f ms%s",
+                    gpu_extract.cells,gpu_extract.vertices,gpu_extract.milliseconds,
+                    gpu_extract.overflow?" (capacity reached)":"");
+            if(world_realtime_gpu_surface_lod&&gpu_extract.input_overflow)
+                ImGui::TextDisabled("GPU extraction diagnostic: input exceeds its fixed capacity; CPU fallback retained");
+            if(world_realtime_gpu_surface_lod&&gpu_extract.complete)
+                ImGui::TextDisabled("GPU/CPU crossing-count parity: %s (CPU fallback retained)",
+                    gpu_extract.vertex_count_matches_cpu?"match":"mismatch");
             const auto apply_terrain_msaa=[&]{
                 if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
                     throw std::runtime_error(
@@ -4510,6 +4521,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         g_SceneRenderer.upload_gpu_hierarchy_snapshot(
                             tetra::make_gpu_hierarchy_snapshot(
                                 directory,directory.revision()));
+                    if(const auto* volume=world_runtime->world_conforming_volume();
+                       volume!=nullptr&&(g_SceneRenderer.gpu_terrain_cells_revision()!=
+                           directory.revision()||!gpu_terrain_cells_render_origin||
+                           gpu_terrain_cells_render_origin->x!=prepared_scene.render_origin.x||
+                           gpu_terrain_cells_render_origin->y!=prepared_scene.render_origin.y||
+                           gpu_terrain_cells_render_origin->z!=prepared_scene.render_origin.z)){
+                        g_SceneRenderer.stage_gpu_terrain_cells(
+                            tetra::make_gpu_terrain_cell_records(
+                                *volume,world_runtime->profile().domain,
+                                world_runtime->field(),prepared_scene.render_origin),
+                            directory.revision(),static_cast<std::uint32_t>(
+                                std::min<std::size_t>(
+                                    world_runtime->diagnostics().render_triangles*3U,
+                                    0xffffffffU)));
+                        gpu_terrain_cells_render_origin=prepared_scene.render_origin;
+                    }
                 }
                 if(retained_upload_check&&retained_surface_upload_ready)
                     retained_upload_present_pending=true;

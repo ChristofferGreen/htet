@@ -5037,6 +5037,32 @@ TEST_CASE("GPU hierarchy leaf selector contract uses only packed child masks") {
     CHECK(record.child_base!=tetra::gpu_hierarchy_invalid_index);
 }
 
+TEST_CASE("GPU terrain cell records preserve authoritative conforming corners") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,13U,tetra::HierarchyResidencyTier::surface));
+  tetra::WorldConformingClosureCache closure;
+  const auto closed=tetra::close_world_conforming_cut(leaves,&closure,{},1U);
+  CHECK(closed==leaves);
+  const auto volume=tetra::reconstruct_blocked_world_conforming_volume(directory,closure);
+  const tetra::Sphere field{{0.5,0.5,0.5},0.35};
+  const tetra::WorldStreamingDemand::Domain domain{};
+  const auto records=tetra::make_gpu_terrain_cell_records(
+      volume,domain,field,{0.5,0.5,0.5});
+  REQUIRE(records.size()==volume.cells);
+  REQUIRE_FALSE(records.empty());
+  const auto& source=volume.blocks.front()->cells.front();
+  for(std::size_t corner=0;corner<4U;++corner){
+    const auto world=domain.to_world(source.positions[corner]);
+    CHECK(records.front().corners[corner][0]==doctest::Approx(world.x-0.5));
+    CHECK(records.front().corners[corner][1]==doctest::Approx(world.y-0.5));
+    CHECK(records.front().corners[corner][2]==doctest::Approx(world.z-0.5));
+    CHECK(records.front().corners[corner][3]==doctest::Approx(field.signed_distance(world)));
+  }
+}
+
 TEST_CASE("GPU hierarchy lane arithmetic carries across 64-bit boundaries") {
   for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root) {
     auto address=tetra::WorldTetAddress::root(root);

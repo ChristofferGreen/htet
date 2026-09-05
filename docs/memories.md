@@ -16,6 +16,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `GpuHierarchySnapshot` is an immutable core encoding of one `WorldCutDirectory` revision with deterministic breadth-first per-block child packing; Vulkan uploads its 32-byte records to a diagnostic leaf-selector storage buffer, but CPU terrain remains authoritative until parity-qualified indirect drawing exists.
 - Evidence: Release tests reconstruct exact CPU BCC geometry, exercise maximum-depth lane carry, reject malformed snapshot fields, and check packed leaf masks; an off-screen Vulkan world run completed the storage-buffer selector without synchronization errors.
 
+### gpu-terrain-extraction-slots
+- Updated: 2026-09-05
+- Tags: vulkan, terrain, extraction, synchronization
+- Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, with a generation (not only terrain revision) invalidating output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier before any future draw.
+- Evidence: The 486-test Release gate and a headless MoltenVK smoke passed after adding bounded reservations, independent extraction timestamps, explicit overflow states, and shutdown/recreate cleanup.
+
 ### logical-derived-address-order
 - Updated: 2026-08-24
 - Tags: bcc, surface-cache, ordering

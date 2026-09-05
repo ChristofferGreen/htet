@@ -231,6 +231,20 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateDescriptorSetLayout(device_,&gpu_lod_layout,nullptr,
                                  &gpu_lod_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU LOD descriptor layout");
+  std::array<VkDescriptorSetLayoutBinding,3> gpu_terrain_bindings{};
+  for(std::uint32_t binding=0;binding<gpu_terrain_bindings.size();++binding){
+    gpu_terrain_bindings[binding].binding=binding;
+    gpu_terrain_bindings[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    gpu_terrain_bindings[binding].descriptorCount=1U;
+    gpu_terrain_bindings[binding].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo gpu_terrain_layout{
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  gpu_terrain_layout.bindingCount=static_cast<std::uint32_t>(gpu_terrain_bindings.size());
+  gpu_terrain_layout.pBindings=gpu_terrain_bindings.data();
+  if(vkCreateDescriptorSetLayout(device_,&gpu_terrain_layout,nullptr,
+                                 &gpu_terrain_descriptor_set_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU terrain descriptor layout");
 
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter=VK_FILTER_LINEAR;
@@ -297,6 +311,11 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreatePipelineLayout(device_,&gpu_lod_pipeline_layout,nullptr,
                             &gpu_lod_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU LOD pipeline layout");
+  gpu_lod_push.size=sizeof(std::uint32_t)*3U;
+  gpu_lod_pipeline_layout.pSetLayouts=&gpu_terrain_descriptor_set_layout_;
+  if(vkCreatePipelineLayout(device_,&gpu_lod_pipeline_layout,nullptr,
+                            &gpu_terrain_pipeline_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU terrain pipeline layout");
 
   const auto vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.vert.spv");
   const auto fragment_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.frag.spv");
@@ -323,6 +342,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
           "/atmosphere_reference_hillaire.comp.spv");
   const auto gpu_lod_compute_shader=shader_module(
       device_,TETRA_VIEWER_SHADER_DIR "/gpu_lod.comp.spv");
+  const auto gpu_terrain_extract_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/gpu_terrain_extract.comp.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -528,6 +549,10 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
                               nullptr,&gpu_lod_pipeline_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU LOD compute pipeline");
+  atmosphere_pipeline.stage.module=gpu_terrain_extract_shader;
+  if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
+                              nullptr,&gpu_terrain_extract_pipeline_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU terrain extract pipeline");
 
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
@@ -591,6 +616,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(
       device_,reference_hillaire_atmosphere_compute_shader,nullptr);
   vkDestroyShaderModule(device_,gpu_lod_compute_shader,nullptr);
+  vkDestroyShaderModule(device_,gpu_terrain_extract_shader,nullptr);
 }
 
 void SceneRenderer::destroy_terrain_msaa_targets() {
@@ -771,6 +797,20 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     vkDestroyBuffer(device_,capture.depth_buffer,nullptr);
     vkFreeMemory(device_,capture.depth_buffer_memory,nullptr);
   }
+  const auto destroy_gpu_buffer=[this](GpuLodBuffer& buffer){
+    if(buffer.buffer!=VK_NULL_HANDLE)vkDestroyBuffer(device_,buffer.buffer,nullptr);
+    if(buffer.memory!=VK_NULL_HANDLE)vkFreeMemory(device_,buffer.memory,nullptr);
+    buffer={};
+  };
+  destroy_gpu_buffer(gpu_lod_hierarchy_);
+  for(auto& buffer:gpu_lod_outputs_)destroy_gpu_buffer(buffer);
+  for(auto& buffer:gpu_terrain_cell_buffers_)destroy_gpu_buffer(buffer);
+  for(auto& buffer:gpu_terrain_output_buffers_)destroy_gpu_buffer(buffer);
+  for(auto& buffer:gpu_terrain_index_buffers_)destroy_gpu_buffer(buffer);
+  gpu_lod_outputs_.clear();
+  gpu_terrain_cell_buffers_.clear();
+  gpu_terrain_output_buffers_.clear();
+  gpu_terrain_index_buffers_.clear();
   atmosphere_frames_.clear();
   capture_frames_.clear();
   const auto destroy_gpu_lod_buffer=[this](GpuLodBuffer& buffer){
@@ -780,17 +820,23 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   };
   destroy_gpu_lod_buffer(gpu_lod_hierarchy_);
   for(auto& output:gpu_lod_outputs_)destroy_gpu_lod_buffer(output);
+  for(auto& input:gpu_terrain_cell_buffers_)destroy_gpu_lod_buffer(input);
+  for(auto& output:gpu_terrain_output_buffers_)destroy_gpu_lod_buffer(output);
+  for(auto& index:gpu_terrain_index_buffers_)destroy_gpu_lod_buffer(index);
   gpu_lod_outputs_.clear();
+  gpu_terrain_cell_buffers_.clear();gpu_terrain_output_buffers_.clear();gpu_terrain_index_buffers_.clear();
+  gpu_terrain_slot_revisions_.clear();gpu_terrain_descriptor_sets_.clear();
   gpu_lod_descriptor_sets_.clear();
   gpu_lod_uploaded_revision_=0U;
   gpu_lod_hierarchy_upload_pending_=false;
   gpu_lod_dispatch_status_={};
-  const auto allocate_gpu_lod_buffer=[this](std::size_t bytes){
+  const auto allocate_gpu_lod_buffer=[this](std::size_t bytes,
+                                            VkBufferUsageFlags usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT){
     GpuLodBuffer result;
     result.capacity=bytes;
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size=bytes;
-    info.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    info.usage=usage;
     if(vkCreateBuffer(device_,&info,nullptr,&result.buffer)!=VK_SUCCESS)
       throw std::runtime_error("unable to create GPU LOD buffer");
     VkMemoryRequirements requirements{};
@@ -811,6 +857,18 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   for(std::uint32_t index=0;index<image_count;++index)
     gpu_lod_outputs_.push_back(allocate_gpu_lod_buffer(
         sizeof(std::uint32_t)*(4U+gpu_lod_output_capacity)));
+  gpu_terrain_cell_buffers_.clear();gpu_terrain_output_buffers_.clear();gpu_terrain_index_buffers_.clear();
+  gpu_terrain_slot_revisions_.assign(image_count,0U);gpu_terrain_slot_pending_.assign(image_count,false);
+  gpu_terrain_timing_pending_.assign(image_count,false);
+  gpu_terrain_slot_milliseconds_.assign(image_count,0.0);
+  for(std::uint32_t index=0;index<image_count;++index){
+    gpu_terrain_cell_buffers_.push_back(allocate_gpu_lod_buffer(8U*1024U*1024U));
+    gpu_terrain_output_buffers_.push_back(allocate_gpu_lod_buffer(32U*1024U*1024U,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT));
+    gpu_terrain_index_buffers_.push_back(allocate_gpu_lod_buffer(32U*1024U*1024U,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT));
+  }
   shadow_images_.clear();
   descriptor_sets_.clear();
   composite_descriptor_sets_.clear();
@@ -820,7 +878,7 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   }
   VkQueryPoolCreateInfo timing_pool{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
   timing_pool.queryType=VK_QUERY_TYPE_TIMESTAMP;
-  timing_pool.queryCount=image_count*8U;
+  timing_pool.queryCount=image_count*10U;
   if(vkCreateQueryPool(device_,&timing_pool,nullptr,&timing_query_pool_)!=
      VK_SUCCESS)
     throw std::runtime_error("unable to create scene timing query pool");
@@ -1155,9 +1213,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                            image_count*21U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*20U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count*4U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count*7U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets=image_count*4U;
+  pool.maxSets=image_count*5U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
   pool.pPoolSizes=pool_sizes.data();
   if(vkCreateDescriptorPool(device_,&pool,nullptr,&descriptor_pool_)!=VK_SUCCESS)
@@ -1204,6 +1262,20 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     }
     vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(writes.size()),
                            writes.data(),0,nullptr);
+  }
+  gpu_terrain_descriptor_sets_.resize(image_count);
+  layouts.assign(image_count,gpu_terrain_descriptor_set_layout_);
+  allocate.pSetLayouts=layouts.data();
+  if(vkAllocateDescriptorSets(device_,&allocate,gpu_terrain_descriptor_sets_.data())!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate GPU terrain descriptors");
+  for(std::size_t index=0;index<image_count;++index){
+    const std::array<VkDescriptorBufferInfo,3> infos{{
+        {gpu_terrain_cell_buffers_[index].buffer,0,VK_WHOLE_SIZE},
+        {gpu_terrain_output_buffers_[index].buffer,0,VK_WHOLE_SIZE},
+        {gpu_terrain_index_buffers_[index].buffer,0,VK_WHOLE_SIZE}}};
+    std::array<VkWriteDescriptorSet,3> writes{};
+    for(std::uint32_t binding=0;binding<writes.size();++binding){writes[binding]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[binding].dstSet=gpu_terrain_descriptor_sets_[index];writes[binding].dstBinding=binding;writes[binding].descriptorCount=1U;writes[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[binding].pBufferInfo=&infos[binding];}
+    vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(writes.size()),writes.data(),0,nullptr);
   }
   for(std::size_t index=0;index<descriptor_sets_.size();++index){
     VkDescriptorImageInfo image_info{
@@ -1516,6 +1588,18 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
       static_cast<std::uint32_t>(snapshot.records.size());
 }
 
+void SceneRenderer::stage_gpu_terrain_cells(
+    std::span<const tetra::GpuTerrainCellRecord> cells,
+    std::uint64_t source_revision,std::uint32_t expected_vertices) {
+  if(source_revision==0U)
+    throw std::invalid_argument("GPU terrain cells require a nonzero revision");
+  gpu_terrain_cells_.assign(cells.begin(),cells.end());
+  gpu_terrain_cells_revision_=source_revision;
+  gpu_terrain_expected_vertices_=expected_vertices;
+  if(++gpu_terrain_cells_generation_==0U)++gpu_terrain_cells_generation_;
+  gpu_terrain_extract_status_={};
+}
+
 void SceneRenderer::upload_editor_lines(
     std::span<const SceneVertex> editor_line_vertices) {
   std::vector<SceneVertex> ribbons;
@@ -1746,7 +1830,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   const VkExtent2D output_extent=extent;
   const VkExtent2D scene_extent=render_extent_;
 
-  constexpr std::uint32_t timing_count=8U;
+  // The first eight timestamps describe presentation.  The diagnostic
+  // extractor receives an isolated pair so it cannot be hidden in terrain
+  // raster time.
+  constexpr std::uint32_t timing_count=10U;
   const std::uint32_t timing_base=image_index*timing_count;
   if(timing_queries_written_.at(image_index)){
     std::array<std::uint64_t,timing_count> timestamps{};
@@ -1766,6 +1853,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           .temporal_reconstruction_milliseconds=elapsed(5,6),
           .composite_milliseconds=elapsed(6,7),
           .valid=true};
+      if(gpu_terrain_timing_pending_.at(image_index)){
+        gpu_terrain_slot_milliseconds_.at(image_index)=elapsed(8U,9U);
+        gpu_terrain_timing_pending_[image_index]=false;
+      }
     }
   }
   vkCmdResetQueryPool(command_buffer,timing_query_pool_,timing_base,timing_count);
@@ -1834,6 +1925,77 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     gpu_lod_output.revision=gpu_lod_uploaded_revision_;
     gpu_lod_output.record_count=push[0];
     gpu_lod_output.pending=true;
+  }
+  if(gpu_terrain_slot_pending_.at(image_index)){
+    std::array<std::uint32_t,8> result{};void* mapped{};
+    if(vkMapMemory(device_,gpu_terrain_output_buffers_.at(image_index).memory,
+        0,sizeof(result),0,&mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map GPU terrain output slot");
+    std::memcpy(result.data(),mapped,sizeof(result));
+    vkUnmapMemory(device_,gpu_terrain_output_buffers_.at(image_index).memory);
+    if(gpu_terrain_slot_revisions_[image_index]==gpu_terrain_cells_generation_)
+      gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
+          static_cast<std::uint32_t>(gpu_terrain_cells_.size()),result[0],
+          gpu_terrain_slot_milliseconds_.at(image_index),true,false,
+          result[5]!=0U,result[0]==gpu_terrain_expected_vertices_};
+    gpu_terrain_slot_pending_[image_index]=false;
+  }
+  if(gpu_lod_diagnostic_enabled_&&!gpu_terrain_cells_.empty()&&
+     gpu_terrain_slot_revisions_.at(image_index)!=gpu_terrain_cells_generation_){
+    auto& input=gpu_terrain_cell_buffers_.at(image_index);
+    const auto bytes=gpu_terrain_cells_.size()*sizeof(tetra::GpuTerrainCellRecord);
+    if(bytes<=input.capacity&&gpu_terrain_cells_.size()<=0xffffffffU){
+      void* mapped{};
+      if(vkMapMemory(device_,input.memory,0,bytes,0,&mapped)!=VK_SUCCESS)
+        throw std::runtime_error("unable to map GPU terrain cell slot");
+      std::memcpy(mapped,gpu_terrain_cells_.data(),bytes);vkUnmapMemory(device_,input.memory);
+      auto& output=gpu_terrain_output_buffers_.at(image_index);
+      vkCmdFillBuffer(command_buffer,output.buffer,0,32U,0U);
+      std::array<VkBufferMemoryBarrier,2> ready{};
+      ready[0]={VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};ready[0].srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;ready[0].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;ready[0].buffer=input.buffer;ready[0].size=VK_WHOLE_SIZE;
+      ready[1]={VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};ready[1].srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;ready[1].dstAccessMask=VK_ACCESS_SHADER_WRITE_BIT;ready[1].buffer=output.buffer;ready[1].size=VK_WHOLE_SIZE;
+      for(auto& barrier:ready){barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;}
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,2U,ready.data(),0,nullptr);
+      vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_terrain_extract_pipeline_);
+      vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_terrain_pipeline_layout_,0,1,&gpu_terrain_descriptor_sets_.at(image_index),0,nullptr);
+      const std::array<std::uint32_t,3> push{static_cast<std::uint32_t>(gpu_terrain_cells_.size()),(32U*1024U*1024U-32U)/72U,32U*1024U*1024U/4U};
+      vkCmdPushConstants(command_buffer,gpu_terrain_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
+      vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                          timing_query_pool_,timing_base+8U);
+      vkCmdDispatch(command_buffer,(push[0]+63U)/64U,1U,1U);
+      vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                          timing_query_pool_,timing_base+9U);
+      std::array<VkBufferMemoryBarrier,2> complete{};
+      for(auto& barrier:complete){
+        barrier.sType=VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        barrier.size=VK_WHOLE_SIZE;
+      }
+      // This is deliberately installed before the first indirect draw is
+      // wired up.  The future visual gate can therefore consume a completed
+      // slot without weakening compute-to-vertex/index/indirect visibility.
+      complete[0].dstAccessMask=VK_ACCESS_HOST_READ_BIT|
+          VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT|VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+      complete[0].buffer=output.buffer;
+      complete[1].dstAccessMask=VK_ACCESS_INDEX_READ_BIT;
+      complete[1].buffer=gpu_terrain_index_buffers_.at(image_index).buffer;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_HOST_BIT|VK_PIPELINE_STAGE_VERTEX_INPUT_BIT|
+              VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+          0,0,nullptr,static_cast<std::uint32_t>(complete.size()),complete.data(),0,nullptr);
+      gpu_terrain_slot_revisions_[image_index]=gpu_terrain_cells_generation_;
+      gpu_terrain_slot_pending_[image_index]=true;
+      gpu_terrain_timing_pending_[image_index]=true;
+    }else{
+      // Never silently omit an authoritative cut: CPU rendering remains live
+      // and the diagnostic records that no meaningful comparison was run.
+      gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
+          static_cast<std::uint32_t>(std::min<std::size_t>(
+              gpu_terrain_cells_.size(),0xffffffffU)),0U,0.0,false,true,
+          false,false};
+    }
   }
 
   auto& atmosphere_frame=atmosphere_frames_.at(image_index);
@@ -3631,6 +3793,7 @@ void SceneRenderer::shutdown() {
   vkDestroyDescriptorSetLayout(device_,composite_descriptor_set_layout_,nullptr);
   vkDestroyDescriptorSetLayout(device_,atmosphere_descriptor_set_layout_,nullptr);
   vkDestroyDescriptorSetLayout(device_,gpu_lod_descriptor_set_layout_,nullptr);
+  vkDestroyDescriptorSetLayout(device_,gpu_terrain_descriptor_set_layout_,nullptr);
   vkDestroyPipeline(device_,shadow_pipeline_,nullptr);
   vkDestroyPipeline(device_,sky_pipeline_,nullptr);
   vkDestroyPipeline(device_,composite_pipeline_,nullptr);
@@ -3639,6 +3802,7 @@ void SceneRenderer::shutdown() {
   vkDestroyPipeline(device_,faithful_atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_,reference_hillaire_atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_,gpu_lod_pipeline_,nullptr);
+  vkDestroyPipeline(device_,gpu_terrain_extract_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
@@ -3657,6 +3821,7 @@ void SceneRenderer::shutdown() {
   vkDestroyPipelineLayout(device_,composite_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,atmosphere_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,gpu_lod_pipeline_layout_,nullptr);
+  vkDestroyPipelineLayout(device_,gpu_terrain_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
 }
 

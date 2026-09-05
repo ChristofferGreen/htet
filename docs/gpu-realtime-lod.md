@@ -1053,11 +1053,61 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Consume a parity-qualified GPU selection buffer through indirect terrain
-  drawing, with the CPU prepared surface retained as the fallback. Measure
-  complete camera-to-pixels latency before claiming a terrain-generation gain.
-- [ ] Benchmark still, moving, jumping, and revisited camera paths in the
-  release build using GPU timestamps.
+- [ ] **P1 — GPU-extract from the authoritative CPU conforming cut.** Upload
+  immutable `WorldConformingCell` block snapshots and the production terrain
+  field tuple to double-buffered Vulkan storage buffers. A compute extractor
+  evaluates the field at the four cell vertices, emits only crossing triangles
+  into a bounded vertex/index buffer, and writes an indirect draw command.
+  Keep CPU cut selection, BCC closure, and the existing prepared surface as
+  the authority/fallback. **Acceptance:** the completed GPU tuple is revision
+  matched; overflow, unavailable output, or validation failure draws the
+  preceding complete CPU surface; normal camera motion contains no
+  `vkDeviceWaitIdle`. **Stop rule:** do not replace CPU selection or closure.
+- [ ] **P2 — prove GPU extraction parity before display.** For fixed and
+  moving production cameras, compare source conforming-cell identities,
+  crossing/triangle counts, bounds, crack/edge-incidence diagnostics, depth,
+  and colour captures with the CPU surface. Add intentionally stale and
+  undersized-output tests. Only enable GPU indirect drawing when the required
+  parity suite passes; otherwise retain CPU output.
+- [ ] **P3 — measure the visible path.** Compare CPU extraction/staging/upload
+  against P1's compute/exact indirect draw over the P0 paths using GPU
+  timestamps plus complete camera-to-present latency. Retain the GPU path only
+  when it improves the complete interactive result without degrading image or
+  topology parity; publish the measured delta rather than a theoretical gain.
+- [ ] **P4 — GPU selection only after extraction pays off.** Serialize the
+  real per-node geometry, field-range, limb, camera and render-origin inputs;
+  implement the production three-term selector; require exact selected-address
+  parity with the CPU oracle before it can feed P1 extraction. CPU BCC closure
+  remains authoritative.
+
+**P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
+provides the CPU-side breakdown and canonical hashes required for the first
+comparison. On the current production cold-path corpus, near/far/reversal/
+teleport reconstruction measured 10.7/15.8/15.1/12.6 s respectively. Their
+dominant components are closure (3.83--5.03 s), surface construction
+(3.25--7.22 s, including 1.36--1.77 s volume reconstruction and
+1.57--4.33 s surface extraction), and render preparation (1.51--1.94 s).
+Each rebuild staged/uploaded 52.0--61.0 MB of CPU-produced vertices. P1 must
+report these same labels alongside compute and indirect-draw timing; it may
+not describe only the removal of the host upload as a complete speedup.
+
+**P1 implementation status, 2026-09-05.** The Vulkan path now has immutable
+64-byte conforming-cell inputs, one input/output buffer per presentation slot,
+bounded compute emission, and slot-matched completed-count/overflow telemetry.
+It currently performs linear edge interpolation from CPU-provided signed
+distances. This deliberately remains diagnostic-only: it does not reproduce
+the CPU field edge root, smooth normals, optimizer, or global surface
+ownership, so vertex-count parity is a rejection gate and CPU rendering stays
+active. Each slot now includes a separate GPU index buffer as well as its
+vertex/indirect buffer; bounded reservation keeps the future indirect count
+within both allocations, a compute-to-vertex/index/indirect barrier is already
+installed, and an isolated timestamp reports extraction work. Input overflow,
+output overflow, and a render-origin rebase invalidate the diagnostic rather
+than permitting stale output. The next P1 work is to make the edge-root,
+normal, ownership, and optimized-position conventions shared or explicitly
+prove an equivalent GPU representation before indirect drawing is enabled. The
+current count comparison is only a crossing/triangle-count smoke check against
+the authoritative CPU surface metric; it is not topology or image parity.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

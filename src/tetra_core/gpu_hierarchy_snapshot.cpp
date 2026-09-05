@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -273,6 +274,32 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
   for(std::size_t index=0;index<snapshot.records.size();++index)
     if(listed_owner[index]!=((snapshot.records[index].child_mask_flags&logical_owner_bit)!=0U))
       throw std::invalid_argument("GPU hierarchy logical owner flag is malformed");
+}
+
+std::vector<GpuTerrainCellRecord> make_gpu_terrain_cell_records(
+    const WorldBlockedConformingVolume& volume,
+    const WorldStreamingDemand::Domain& domain,const Sphere& field,
+    Vec3 render_origin) {
+  std::vector<GpuTerrainCellRecord> result;
+  result.reserve(volume.cells);
+  for(const auto& block:volume.blocks)for(const auto& cell:block->cells){
+    GpuTerrainCellRecord record{};
+    for(std::size_t corner=0;corner<cell.positions.size();++corner){
+      const auto world=domain.to_world(cell.positions[corner]);
+      const auto relative=world-render_origin;
+      const double distance=field.signed_distance(world);
+      if(!std::isfinite(relative.x)||!std::isfinite(relative.y)||
+         !std::isfinite(relative.z)||!std::isfinite(distance))
+        throw std::invalid_argument("GPU terrain cell has non-finite field input");
+      record.corners[corner]={static_cast<float>(relative.x),
+          static_cast<float>(relative.y),static_cast<float>(relative.z),
+          static_cast<float>(distance)};
+    }
+    result.push_back(record);
+  }
+  if(result.size()!=volume.cells)
+    throw std::logic_error("GPU terrain cell count disagrees with conforming volume");
+  return result;
 }
 
 GpuHierarchyTraversalResult gpu_hierarchy_traverse(

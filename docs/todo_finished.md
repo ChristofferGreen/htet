@@ -2,6 +2,15 @@
 
 ## 2026-09-05
 
+- [x] Establish the GPU-extraction replacement baseline. The existing release
+  `tetra_world --runtime-benchmark` reports canonical hierarchy/surface/render
+  hashes and separately records cut/closure, conforming-volume, surface
+  classification/topology/extraction, staging bytes, and upload bytes for the
+  deterministic camera corpus. Current cold near/far/reversal/teleport paths
+  take 10.7/15.8/15.1/12.6 s, dominated by BCC closure and CPU surface work;
+  rebuilding stages 52--61 MB of vertices. This is the comparison baseline
+  for GPU extraction, not evidence of a GPU gain.
+
 - [x] Upload immutable hierarchy records to Vulkan storage buffers and dispatch
   a per-frame GPU leaf selector into slot-local selection buffers. The new
   `gpu_lod.comp` uses the eight-word record contract in its indexing, emits

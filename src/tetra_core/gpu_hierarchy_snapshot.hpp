@@ -65,6 +65,16 @@ struct GpuHierarchySnapshot {
   std::array<WorldTetrahedronGeometry,bcc_root_tetrahedron_count> root_geometry{};
 };
 
+// One authoritative conforming tetrahedron prepared for the first GPU surface
+// extractor. xyz are camera-relative world metres and w is the CPU field value
+// at that exact conforming-cell vertex.  Supplying values here keeps BCC
+// closure and field identity on the CPU while moving triangle emission to GPU.
+struct alignas(16) GpuTerrainCellRecord {
+  std::array<std::array<float,4>,4> corners{};
+};
+static_assert(sizeof(GpuTerrainCellRecord)==64U);
+static_assert(alignof(GpuTerrainCellRecord)==16U);
+
 // Host oracle for the first compute selector. field_error_pixels is the
 // conservative projected field-range error supplied by the immutable tuple;
 // a later device path consumes the same scalar per record rather than
@@ -129,6 +139,10 @@ class GpuHierarchyFrameRing {
 [[nodiscard]] GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision=0U);
 void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
+[[nodiscard]] std::vector<GpuTerrainCellRecord> make_gpu_terrain_cell_records(
+    const WorldBlockedConformingVolume& volume,
+    const WorldStreamingDemand::Domain& domain,const Sphere& field,
+    Vec3 render_origin);
 [[nodiscard]] GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const GpuHierarchySnapshot& snapshot,
     const GpuHierarchyTraversalParameters& parameters);
