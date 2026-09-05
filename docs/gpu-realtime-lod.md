@@ -1129,6 +1129,21 @@ that image fence completes, then rebind only that image's descriptors. This
 removes the former fixed 8 MiB input ceiling without a global device idle; an
 allocation failure, diagnostic output overflow, or shader-address-space
 overflow still rejects the GPU result and retains CPU drawing.
+
+**P1 execution evidence, 2026-09-05.** A fresh off-screen Vulkan run after
+the source and capacity corrections staged 348,989 certified candidate cells
+without input or output overflow. The compute output (142,251 vertices)
+exactly matched an independent host replay of the shader's present linear
+sign/interpolation rule, proving input transport, the per-slot fence protocol,
+and output visibility. It did *not* match the CPU surface's 56,712 vertices,
+and the isolated dispatch measured 41.63 ms. Both are rejection evidence: the
+current shader's linear roots, patch ordering, flat normals, and unoptimized
+duplicate vertices are not equivalent to the CPU's exact roots, global edge
+ownership, and optimized output. CPU rasterization remains mandatory. The
+run also exposed and corrected a pipeline-layout bug: the terrain compute
+pipeline had been created with the two-binding selector layout instead of its
+three-binding extraction layout, which had made earlier zero-vertex results
+undefined rather than meaningful measurements.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

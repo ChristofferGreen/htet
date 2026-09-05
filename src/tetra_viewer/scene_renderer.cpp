@@ -550,6 +550,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                               nullptr,&gpu_lod_pipeline_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU LOD compute pipeline");
   atmosphere_pipeline.stage.module=gpu_terrain_extract_shader;
+  atmosphere_pipeline.layout=gpu_terrain_pipeline_layout_;
   if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
                               nullptr,&gpu_terrain_extract_pipeline_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU terrain extract pipeline");
@@ -1692,6 +1693,22 @@ void SceneRenderer::stage_gpu_terrain_cells(
   };
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
+  std::size_t linear_vertices{};
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  for(const auto& cell:gpu_terrain_cells_){
+    std::size_t crossings{};
+    for(const auto edge:edges){
+      const float first=cell.corners[edge[0]][3U];
+      const float second=cell.corners[edge[1]][3U];
+      if((first<=0.0F)==(second<=0.0F))continue;
+      ++crossings;
+    }
+    if(crossings>=3U)linear_vertices+=crossings==3U?3U:6U;
+  }
+  gpu_terrain_linear_expected_vertices_=static_cast<std::uint32_t>(
+      std::min<std::size_t>(linear_vertices,
+                            std::numeric_limits<std::uint32_t>::max()));
   // The CPU surface is the authority for the expected triangle-list size.
   // Provision each slot for that exact payload; if a non-equivalent diagnostic
   // shader emits more, its bounded overflow bit remains a rejection signal.
@@ -2042,7 +2059,9 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     if(gpu_terrain_slot_revisions_[image_index]==gpu_terrain_cells_generation_)
       gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
           static_cast<std::uint32_t>(gpu_terrain_cells_.size()),result[0],
-          gpu_terrain_expected_vertices_,gpu_terrain_slot_milliseconds_.at(image_index),true,false,
+          gpu_terrain_expected_vertices_,gpu_terrain_linear_expected_vertices_,
+          result[6],
+          gpu_terrain_slot_milliseconds_.at(image_index),true,false,
           result[5]!=0U,result[0]==gpu_terrain_expected_vertices_};
     gpu_terrain_slot_pending_[image_index]=false;
   }
@@ -2109,7 +2128,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
           static_cast<std::uint32_t>(std::min<std::size_t>(
               gpu_terrain_cells_.size(),0xffffffffU)),0U,
-          gpu_terrain_expected_vertices_,0.0,false,true,
+          gpu_terrain_expected_vertices_,gpu_terrain_linear_expected_vertices_,0U,
+          0.0,false,true,
           false,false};
     }
   }

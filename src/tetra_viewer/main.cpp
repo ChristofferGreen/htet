@@ -5068,6 +5068,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<",\"vertices\":"<<gpu_extract.vertices
                         <<",\"expected_vertices\":"
                         <<gpu_extract.expected_vertices
+                        <<",\"linear_expected_vertices\":"
+                        <<gpu_extract.linear_expected_vertices
+                        <<",\"shader_linear_vertices\":"
+                        <<gpu_extract.shader_linear_vertices
                         <<",\"milliseconds\":"<<gpu_extract.milliseconds
                         <<",\"complete\":"
                         <<(gpu_extract.complete?"true":"false")

@@ -45,6 +45,9 @@ void main(){
   }
   if(count<3u)return;
   uint emitted=count==3u?3u:6u;
+  // Diagnostic-only execution witness.  It distinguishes an empty source
+  // from a failed reservation/write path without being used for rendering.
+  atomicAdd(output_surface.header[6],emitted);
   // A plain atomicAdd can leave the indirect vertexCount larger than the
   // backing allocation after overflow.  Reserve only when the whole patch
   // fits, so the header always remains safe for a future vkCmdDrawIndirect.

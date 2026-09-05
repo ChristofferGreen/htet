@@ -90,6 +90,8 @@ struct GpuTerrainExtractStatus {
   std::uint32_t cells{};
   std::uint32_t vertices{};
   std::uint32_t expected_vertices{};
+  std::uint32_t linear_expected_vertices{};
+  std::uint32_t shader_linear_vertices{};
   double milliseconds{};
   bool complete{};
   bool input_overflow{};
@@ -349,6 +351,7 @@ class SceneRenderer {
   std::uint64_t gpu_terrain_cells_revision_{};
   std::uint64_t gpu_terrain_cells_generation_{};
   std::uint32_t gpu_terrain_expected_vertices_{};
+  std::uint32_t gpu_terrain_linear_expected_vertices_{};
   std::size_t gpu_terrain_input_bytes_required_{};
   std::size_t gpu_terrain_output_bytes_required_{};
   std::size_t gpu_terrain_index_bytes_required_{};

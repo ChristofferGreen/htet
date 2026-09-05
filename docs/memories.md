@@ -19,8 +19,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-extraction-slots
 - Updated: 2026-09-05
 - Tags: vulkan, terrain, extraction, synchronization
-- Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, with a generation (not only terrain revision) invalidating output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier before any future draw.
-- Evidence: The 486-test Release gate and a headless MoltenVK smoke passed after adding bounded reservations, independent extraction timestamps, explicit overflow states, and shutdown/recreate cleanup.
+- Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, growing only after that slot's completed fence and rebinding only its descriptors; a generation (not only terrain revision) invalidates output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier precedes any future draw.
+- Evidence: The 486-test Release gate passed, and the off-screen Vulkan diagnostic staged 348,989 cells then matched its independent host-linear oracle at 142,251 emitted vertices after the terrain pipeline was corrected to use its three-binding layout.
 
 ### gpu-terrain-source-corpus
 - Updated: 2026-09-05
