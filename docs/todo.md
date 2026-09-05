@@ -373,16 +373,14 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         readback canonicalizes the Vulkan address stream and reports mismatch
         counts; the hidden fixed run selected 106,614 addresses with zero
         mismatches and no overflow.
-  - [ ] **P4c1b2b — Vulkan threshold and camera corpus.** Compare canonical
-        Vulkan and P4a/P4b-oracle streams over fixed, frame-by-frame moving,
-        near-surface/camera-inside, orbital, rebase-in-motion, and terrain-
-        replacement cases. Synthesize just-below/in-band/just-above boundaries
-        for each term plus equal-maximum/two-term ties. Outside the band selected
-        addresses must match exactly; in it split-wins must remain
-        ancestor/descendant exclusive and replay-deterministic. Record tuple
-        identity, selected/visited/rejected, overflow, mismatch, and band
-        counts. The result remains a bounded candidate-address frontier, not a
-        drawable surface.
+  - [ ] **P4c1b2b2 — Boundary/rebase corpus accounting.** Synthesize
+        just-below/in-band/just-above boundaries for each term plus equal-
+        maximum/two-term ties, and prove frame-by-frame parity during an explicit
+        render-origin rebase. Record tuple identity, selected/visited/rejected,
+        overflow, mismatch, and band counts. Outside the band selected addresses
+        must match exactly; in it split-wins must remain ancestor/descendant
+        exclusive and replay-deterministic. The result remains a bounded
+        candidate-address frontier, not a drawable surface.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate and run the
         proven selector through the existing SPIR-V-to-MSL path with the same
         immutable records, tuple revisions, capacities, barriers, overflow

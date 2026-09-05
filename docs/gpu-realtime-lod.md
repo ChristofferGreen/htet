@@ -1151,20 +1151,26 @@ that work.
     band, has explicit split-wins behavior, and is shared by the CPU oracle
     and Vulkan shader. Its focused Release test passed and the hidden Vulkan
     diagnostic retained zero address mismatches.
-  - [ ] **P4c1b2b — Vulkan threshold and camera corpus.** Make selector parity
-    a reproducible corpus rather than a single successful readback. It must
-    contain fixed poses; frame-by-frame yaw/pitch and translation motion;
-    near-surface and camera-inside-bound cases; orbital/limb cases; a
-    render-origin rebase in motion; and terrain replacement with old/new tuple
-    isolation. It must also synthesize threshold values immediately below,
-    within, and immediately above every term's boundary, including equal-max
-    and two-term ties. For every completed tuple, canonicalize and compare the
-    Vulkan stream and P4a/P4b CPU oracle: selected addresses outside the band
-    match exactly; in-band results obey split-wins, remain ancestor/descendant
-    exclusive, and have identical results on deterministic replay. Record
-    per-case tuple identity, selected/visited/rejected counts, overflow, and
-    mismatch/band counts. The result remains a bounded candidate-address
-    frontier, not a drawable surface; CPU BCC closure remains authoritative.
+  - [x] **P4c1b2b1 — Repeatable Vulkan camera corpus.** Make fixed, scripted
+    yaw, walking, near-surface/camera-inside, orbital/limb, and terrain-
+    replacement diagnostics reproducible with one hidden runner. It must
+    exercise controlled edge/field/limb threshold sweeps and require canonical
+    Vulkan/P4a/P4b-oracle parity with no overflow for every completed case.
+    Walking alone is not evidence of a render-origin rebase. Complete: the
+    hidden `scripts/qualify_gpu_lod_selector.sh` runner passed all ten cases
+    against the rebuilt Vulkan executable, each with zero mismatches and no
+    overflow. The three tuple threshold terms are independently controllable
+    through test-only launch arguments; explicit boundary synthesis and
+    per-frame rebase accounting remain the next leaf.
+  - [ ] **P4c1b2b2 — Boundary/rebase corpus accounting.** Add the explicit
+    render-origin rebase motion case, synthesize threshold values immediately
+    below, within, and above every term's boundary (including equal-max and
+    two-term ties), and record tuple identity plus selected/visited/rejected,
+    overflow, mismatch, and band counts for every frame. Outside the band,
+    selected addresses match exactly; in-band results obey split-wins, remain
+    ancestor/descendant exclusive, and replay identically. The result remains a
+    bounded candidate-address frontier, not a drawable surface; CPU BCC closure
+    remains authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,

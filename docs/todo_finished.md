@@ -2,6 +2,16 @@
 
 ## 2026-09-05
 
+- [x] **P4c1b2b1 — Repeatable Vulkan camera corpus.** Added the hidden
+  `scripts/qualify_gpu_lod_selector.sh` runner, which launches the rebuilt
+  Vulkan diagnostic against fixed, edge/field/limb threshold sweep, scripted
+  yaw, walking, near-surface, orbital, and terrain-replacement cases. Every
+  completed case requires canonical oracle equality and no selector overflow;
+  the ten-case run passed. The field and limb thresholds are independently
+  controllable only through the test launch interface. Walking is explicitly
+  not represented as a render-origin rebase proof. Full Release validation
+  passed 488/488. CPU terrain remains the draw authority.
+
 - [x] **P4c1b2a — Shared threshold-boundary convention.** Defined the
   shader-visible selector boundary as `abs(e - 1) <= max(8 ulps(e), 2^-20)`.
   Both the float-sidecar CPU oracle and Vulkan shader conservatively refine on

@@ -46,6 +46,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The CPU float-sidecar selector oracle and Vulkan shader treat `abs(projected_error / threshold - 1) <= max(8 ulps, 2^-20)` as a conservative split-wins boundary, with maximum depth still terminating traversal.
 - Evidence: Focused below/in/exact/above-boundary, invalid, equal-maximum, and two-term tests passed; the rebuilt hidden Vulkan diagnostic retained zero address mismatches.
 
+### gpu-hierarchy-selector-camera-corpus
+- Updated: 2026-09-05
+- Tags: gpu-lod, vulkan, oracle, qualification
+- Fact: `scripts/qualify_gpu_lod_selector.sh` is the hidden repeatable Vulkan selector parity runner for fixed, threshold-sweep, yaw, walking, near-surface, orbital, and terrain-replacement inputs; walking is not a render-origin-rebase proof.
+- Evidence: The ten-case rebuilt Release run required `oracle_matches` and no overflow for every JSON result and completed successfully.
+
 ### gpu-terrain-extraction-slots
 - Updated: 2026-09-05
 - Tags: vulkan, terrain, extraction, synchronization

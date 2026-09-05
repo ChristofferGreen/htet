@@ -1251,6 +1251,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_gpu_motion_saw_busy=false;
     bool world_analytic_ridge=false;
     std::optional<double> world_pixel_threshold_override;
+    std::optional<double> world_field_threshold_override;
+    std::optional<double> world_limb_threshold_override;
     std::optional<tetra_viewer::AtmosphereShadowFrontRequest>
         world_retained_atmosphere_shadow_request;
     bool world_gpu_atmosphere_resize_requested=false;
@@ -1321,6 +1323,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         constexpr std::string_view terrain_msaa_prefix="--terrain-msaa=";
         constexpr std::string_view terrain_pixel_threshold_prefix=
             "--terrain-pixel-threshold=";
+        constexpr std::string_view terrain_field_threshold_prefix=
+            "--terrain-field-pixel-threshold=";
+        constexpr std::string_view terrain_limb_threshold_prefix=
+            "--terrain-limb-pixel-threshold=";
         constexpr std::string_view render_resolution_prefix=
             "--render-resolution=";
         constexpr std::string_view render_scale_prefix="--render-scale=";
@@ -1395,6 +1401,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     return 2;
                 }
                 world_pixel_threshold_override=parsed;
+            }else if(value.starts_with(terrain_field_threshold_prefix)){
+                double parsed{};
+                if(!parse_argument_double(value.substr(
+                       terrain_field_threshold_prefix.size()),parsed)||
+                   parsed<0.0001||parsed>1.0e12){
+                    fprintf(stderr,"terrain field pixel threshold must be in [0.0001,1e12]\\n");
+                    return 2;
+                }
+                world_field_threshold_override=parsed;
+            }else if(value.starts_with(terrain_limb_threshold_prefix)){
+                double parsed{};
+                if(!parse_argument_double(value.substr(
+                       terrain_limb_threshold_prefix.size()),parsed)||
+                   parsed<0.0001||parsed>1.0e12){
+                    fprintf(stderr,"terrain limb pixel threshold must be in [0.0001,1e12]\\n");
+                    return 2;
+                }
+                world_limb_threshold_override=parsed;
             }else if(value.starts_with(render_resolution_prefix)){
                 const auto mode=value.substr(render_resolution_prefix.size());
                 if(mode=="native")world_render_resolution_mode=
@@ -1826,6 +1850,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
         auto profile=tetra_viewer::production_world_profile();
         if(world_pixel_threshold_override)
             profile.pixel_threshold=*world_pixel_threshold_override;
+        if(world_field_threshold_override)
+            profile.field_error_pixel_threshold=*world_field_threshold_override;
+        if(world_limb_threshold_override)
+            profile.limb_error_pixel_threshold=*world_limb_threshold_override;
         profile.terrain.analytic_ridge=world_analytic_ridge;
         if(world_analytic_ridge){
             profile.view_distance=12.0;
