@@ -217,6 +217,21 @@ if(APPLE AND TETRA_BUILD_METAL)
             --msl --msl-version 20400 --output ${TETRA_METAL_GPU_LOD_MSL}
     DEPENDS gpu_lod.comp spirv-cross
     VERBATIM)
+  # P5a establishes only the extractor's shared shader ABI. Dispatch and
+  # publication remain separately qualified P5b/P5c work.
+  set(TETRA_METAL_GPU_TERRAIN_EXTRACT_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_terrain_extract.comp.spv)
+  set(TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_terrain_extract.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp
+            -o ${TETRA_METAL_GPU_TERRAIN_EXTRACT_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_TERRAIN_EXTRACT_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
+    DEPENDS gpu_terrain_extract.comp spirv-cross
+    VERBATIM)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_SPV
     ${TETRA_METAL_SHADER_DIR}/atmosphere_reference_hillaire.spv)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_MSL
@@ -236,6 +251,7 @@ if(APPLE AND TETRA_BUILD_METAL)
     DEPENDS ${TETRA_METAL_ATMOSPHERE_SHADERS}
             ${TETRA_METAL_GRAPHICS_SHADERS}
             ${TETRA_METAL_GPU_LOD_MSL}
+            ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
             ${TETRA_METAL_REFERENCE_ATMOSPHERE_MSL})
   add_dependencies(tetra_world_metal tetra_world_metal_shaders)
   target_compile_definitions(tetra_world_metal PRIVATE

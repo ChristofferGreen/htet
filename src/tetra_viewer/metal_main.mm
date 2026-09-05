@@ -3639,6 +3639,14 @@ int main(int argc,char** argv) {
         if(selector_library==nil||
            [selector_library newFunctionWithName:@"main0"]==nil)return 1;
       }
+      {
+        const auto path=std::filesystem::path(
+            TETRA_METAL_ATMOSPHERE_SHADER_DIR)/"gpu_terrain_extract.comp.metal";
+        id<MTLLibrary> extractor_library=make_file_shader_library(
+            device,path.string().c_str());
+        if(extractor_library==nil||
+           [extractor_library newFunctionWithName:@"main0"]==nil)return 1;
+      }
       constexpr std::array<const char*,11> graphics_shaders{
           "scene.vert","scene.frag","wire.frag","edge.vert","edge.frag",
           "shadow.vert","sky.vert","sky.frag","fullscreen.vert",
@@ -3658,7 +3666,7 @@ int main(int argc,char** argv) {
         }
       }
       std::printf("{\"event\":\"metal_atmosphere_compiler\","
-                  "\"source_directory\":\"%s\",\"compute_kernels\":18,"
+                  "\"source_directory\":\"%s\",\"compute_kernels\":19,"
                   "\"reference_kernels\":1,"
                   "\"graphics_stages\":11,"
                   "\"passed\":true}\n",TETRA_METAL_ATMOSPHERE_SHADER_DIR);

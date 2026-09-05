@@ -2,6 +2,13 @@
 
 ## 2026-09-05
 
+- [x] **P5a — Translate and compile the terrain extractor.** Added
+  `gpu_terrain_extract.comp` to the shared glslc/SPIRV-Cross MSL build path and
+  Metal runtime compiler gate. The generated entry point retains the 28-vec4
+  (448-byte) cell source layout and four-word capacity/quality parameter ABI.
+  No extraction dispatch, rendering, or performance claim was introduced;
+  P5b owns that fixture work.
+
 - [x] **P4c — Hierarchical three-term selection parity.** Completed the
   cross-backend diagnostic selector contract. Vulkan traverses the global
   immutable BCC tree with a child-index table, and its eleven-case hidden

@@ -3159,6 +3159,12 @@ TEST_CASE("planetary sliced frontier cold-recovers a sector-union transition") {
 
 TEST_CASE("blocked world resource rejection preserves the complete published front") {
   auto profile=tetra_viewer::production_world_profile();
+  // This is a correctness/recovery test, not a throughput budget. On the
+  // two-core macOS qualification host a concurrent full CTest run can delay a
+  // valid background recovery beyond the former 10--15 s polling windows.
+  // Retain a finite bound, but leave performance enforcement to the dedicated
+  // benchmark tests rather than creating a resource-contention false failure.
+  constexpr auto recovery_timeout=std::chrono::seconds(30);
   tetra_viewer::BlockedTerrainRuntime runtime(profile);
   auto constrained=profile.budgets;constrained.maximum_upload_bytes=1U;
   runtime.set_resource_budgets(constrained);
@@ -3168,7 +3174,7 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   camera.position={0.5,0.72,0.68};camera.forward={0.0,-0.2,-1.0};
   runtime.set_camera(camera,false);
   CHECK_FALSE(runtime.update());
-  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+  const auto deadline=std::chrono::steady_clock::now()+recovery_timeout;
   while(runtime.diagnostics().busy&&std::chrono::steady_clock::now()<deadline){
     static_cast<void>(runtime.update());
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -3198,7 +3204,7 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   camera.position.z=0.58;runtime.set_camera(camera,false);
   CHECK_FALSE(runtime.update());
   const auto recovery_deadline=
-      std::chrono::steady_clock::now()+std::chrono::seconds(15);
+      std::chrono::steady_clock::now()+recovery_timeout;
   while(std::chrono::steady_clock::now()<recovery_deadline){
     static_cast<void>(runtime.update());
     if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;
@@ -3223,7 +3229,7 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
       tetra_viewer::WorldVolumePinKind::terrain_edit}});
   CHECK_FALSE(runtime.update());
   const auto volume_budget_deadline=
-      std::chrono::steady_clock::now()+std::chrono::seconds(10);
+      std::chrono::steady_clock::now()+recovery_timeout;
   while(runtime.diagnostics().busy&&
         std::chrono::steady_clock::now()<volume_budget_deadline){
     static_cast<void>(runtime.update());
@@ -3247,7 +3253,7 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   runtime.set_hierarchy_block_budget(tetra::bcc_root_tetrahedron_count);
   CHECK_FALSE(runtime.update());
   const auto hierarchy_budget_deadline=
-      std::chrono::steady_clock::now()+std::chrono::seconds(10);
+      std::chrono::steady_clock::now()+recovery_timeout;
   while(runtime.diagnostics().busy&&
         std::chrono::steady_clock::now()<hierarchy_budget_deadline){
     static_cast<void>(runtime.update());
@@ -3268,7 +3274,7 @@ TEST_CASE("blocked world resource rejection preserves the complete published fro
   runtime.set_hierarchy_block_budget(profile.maximum_hierarchy_blocks);
   CHECK_FALSE(runtime.update());
   const auto hierarchy_recovery_deadline=
-      std::chrono::steady_clock::now()+std::chrono::seconds(15);
+      std::chrono::steady_clock::now()+recovery_timeout;
   while(std::chrono::steady_clock::now()<hierarchy_recovery_deadline){
     static_cast<void>(runtime.update());
     if(runtime.diagnostics().converged&&!runtime.diagnostics().busy)break;

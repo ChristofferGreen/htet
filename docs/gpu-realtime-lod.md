@@ -1404,9 +1404,14 @@ topology, and complete-frame gates.
 - [ ] **P5 — Metal terrain-extraction parity.** P4c2 has already translated
   and hardware-qualified the selector, so extraction is split into three
   independently closable leaves:
-  - [ ] **P5a — Translate and compile `gpu_terrain_extract.comp`.** Require its
+  - [x] **P5a — Translate and compile `gpu_terrain_extract.comp`.** Require its
     generated MSL entry point and the Vulkan-equivalent 448-byte source stride,
-    bindings, and push-constant ABI. This is compilation evidence only.
+    bindings, and push-constant ABI. **Result:** `gpu_terrain_extract.comp` is
+    now built by `glslc` and SPIRV-Cross alongside the selector; Metal's runtime
+    compiler accepts the generated `main0`. Inspection confirms its 28-`vec4`
+    cell addressing and four-word `{cell_count, vertex_capacity,
+    index_capacity, subdivide_triangles}` parameter packet. This is compilation
+    evidence only.
   - [ ] **P5b — Fixture dispatch with legacy payload.** Bind immutable
     CPU-precomputed cell records and slot-local count/vertex/index/indirect
     buffers through a hidden Metal fixture. Prove count, positions, normals,

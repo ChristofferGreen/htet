@@ -6,6 +6,14 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 23:35 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 490 tests passed in 622.56 seconds after adding the translated Metal terrain-extractor compiler gate and raising the finite recovery-test polling bound.
+
+- 2026-09-05 23:20 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^blocked world resource rejection preserves the complete published front$'` | failures: none | notes: the freshly rebuilt recovery regression passed in 39.28 seconds after its finite correctness-only timeout was raised from 10--15 to 30 seconds.
+
+- 2026-09-05 23:18 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: blocked world resource rejection preserves the complete published front | notes: recovery remained busy past the former 15-second polling bound during the loaded full suite; all Metal compiler and selector tests passed.
+
+- 2026-09-05 23:00 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests` and `TetWorldMetal --metal-atmosphere-compiler-check` | failures: none | notes: generated `gpu_terrain_extract.comp.metal` compiled through Metal as the nineteenth compute kernel; inspection confirmed the 28-vec4 cell addressing and four-word parameter ABI.
+
 - 2026-09-05 22:59 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 490 tests passed. The rebuilt Metal translated-shader check reports 18 compute kernels, and the five-case Metal GPU hierarchy selector fixture passed after the isolated rerun cleared the transient runtime timeouts.
 
 - 2026-09-05 22:49 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R 'blocked world runtime spans old boundaries and refines and simplifies in background|planetary sliced frontier cold-recovers a sector-union transition|blocked world resource rejection preserves the complete published front|blocked world supersession cancels stale work and converges to newest pose'` | failures: none | notes: all four freshly rebuilt timeout-prone tests passed alone in 33.91, 93.23, 35.03, and 24.26 seconds; the earlier full-gate failures were transient resource-contention timeouts.
@@ -227,6 +235,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] blocked world resource rejection recovery timeout | resolved: 2026-09-05 23:20 CEST | validating command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^blocked world resource rejection preserves the complete published front$'` | notes: raised finite correctness polling limits to 30 seconds; the focused Release test passed in 39.28 seconds.
 
 - [x] blocked-world runtime timeout group | resolved: 2026-09-05 22:49 CEST | validating command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R 'blocked world runtime spans old boundaries and refines and simplifies in background|planetary sliced frontier cold-recovers a sector-union transition|blocked world resource rejection preserves the complete published front|blocked world supersession cancels stale work and converges to newest pose'` | notes: all four isolated reruns passed with fresh binaries; no selector change touches their runtime code.
 

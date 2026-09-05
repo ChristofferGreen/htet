@@ -357,13 +357,6 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       translates and qualifies the selector. This tracker is deliberately
       split so static shader translation, buffer lifetime, and full rendered
       output cannot be mistaken for one another.
-  - [ ] **P5a — Translate and compile the terrain extractor.** Add
-        `gpu_terrain_extract.comp` to the existing SPIR-V-to-MSL build path and
-        Metal compiler gate. Scope: translation and entry-point validation only.
-        Acceptance: the generated MSL declares the same 448-byte source stride,
-        bindings, and push constants as Vulkan; the Metal compiler test passes.
-        Stop rule: do not dispatch or promote extraction merely because it
-        compiles.
   - [ ] **P5b — Dispatch legacy-payload extraction in a Metal fixture.** Bind
         immutable CPU-precomputed `GpuTerrainCellRecord` input, slot-local
         count/vertex/index/indirect buffers, revision tuple, and capacity in a
