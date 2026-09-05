@@ -1102,9 +1102,12 @@ that work.
 - [ ] **P4c — Cross-backend three-term selection parity.** Implement the
   production projected-edge, field-error, and limb-sagitta selector over
   P4a/P4b inputs with one shader-visible ABI shared by Vulkan and Metal.
-  Require selected-address parity with the CPU quantized-input oracle under
-  fixed, moving, near-surface, orbital, rebase, and terrain-replacement cases
-  before it can feed surface generation. CPU BCC closure remains authoritative.
+  Require selected-address parity with the CPU quantized-input oracle outside
+  a defined floating-point threshold band; inside the band, require the
+  specified deterministic GPU tie rule and Vulkan/Metal agreement. Cover fixed,
+  moving, near-surface, orbital, rebase, and terrain-replacement cases. This
+  produces a candidate address set, not a drawable surface. CPU BCC closure
+  remains authoritative.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
 provides the CPU-side breakdown and canonical hashes required for the first
@@ -1306,28 +1309,35 @@ by a plausible still image or an isolated kernel time: it must preserve the
 same BCC-derived terrain identity and pass its stated cross-backend, visual,
 topology, and complete-frame gates.
 
-- [ ] **P5 — Metal terrain-compute execution.** Translate and build
+- [ ] **P5 — Metal terrain-compute parity.** Translate and build
   `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
   SPIR-V-to-MSL pipeline. Add Metal slot-local topology, classification,
   geometry, ownership, diagnostics, and indirect-argument buffers with the
   same tuple revisioning, barriers, capacity checks, and overflow rejection as
-  Vulkan. Produce the first fallback-safe visible Metal dispatch; unsupported,
+  Vulkan. Produce a fallback-safe diagnostic Metal parity capture; unsupported,
   stale, malformed, or incomplete output continues to draw the CPU surface.
-- [ ] **P6 — GPU-native BCC surface generation.** Remove the production
-  dependency on the 448-byte `GpuTerrainCellRecord`, whose roots, winding,
-  projected midpoints, and normals are currently computed by the CPU. Feed
-  selected stable BCC addresses plus immutable field/edit payloads instead;
+  This is backend enablement, not a performance result or production-visibility
+  milestone while extraction still consumes the legacy 448-byte CPU payload.
+- [ ] **P6 — BCC render-front conformity and ownership contract.** Treat P4c's
+  selected addresses as candidates. Before GPU-native extraction is
+  implemented, choose and fully specify either dependency-closed render
+  clusters or an exact face/incident-cell ownership rule for mixed-depth red
+  owners and restricted-green transitions. Define shared-face and canonical
+  edge identities, output bounds, revisioning, and fail-closed behaviour. A CPU
+  oracle must exhaust the supported transition motifs and prove no skirts,
+  duplicate faces, overlaps, holes, or finite preview boundary. Candidate
+  output remains diagnostic and cannot be drawn until this contract passes.
+- [ ] **P7 — GPU-native watertight BCC surface generation.** Remove the
+  production dependency on the 448-byte `GpuTerrainCellRecord`, whose roots,
+  winding, projected midpoints, and normals are currently computed by the CPU.
+  Feed selected stable BCC addresses plus immutable field/edit payloads;
   reconstruct tetrahedral geometry, evaluate the field, solve edge roots,
-  order output, project midpoints, and generate normals in compute. Prove each
-  stage against the CPU oracle, but do not make qualification readback part of
-  normal rendering.
-- [ ] **P7 — Watertight mixed-depth BCC ownership.** Specify dependency-closed
-  render clusters or an exact face/incident-cell ownership rule, then generate
-  a single crack-free front with no skirts, duplicate faces, overlaps, holes,
-  or finite preview boundary. Opaque, wireframe, shadows, and ray tracing must
-  consume this same front and revision. Fixed and moving Metal captures must
-  inspect near terrain, horizon/limb, silhouette, back-lit mountains, edits,
-  cutaways, and other implicit shapes before promotion.
+  order output, project midpoints, generate normals, and apply P6 ownership in
+  compute. Prove each stage against the CPU oracle without making qualification
+  readback part of normal rendering. Opaque, wireframe, shadows, and ray tracing
+  must consume the same complete front and revision. Fixed and moving Metal
+  captures must inspect near terrain, horizon/limb, silhouette, back-lit
+  mountains, edits, cutaways, and other implicit shapes before promotion.
 - [ ] **P8 — Readback-free publication and performance qualification.** Keep
   selection, compaction, generated vertices/indices, indirect arguments,
   raster, shadow, and ray-tracing consumption device-local. Camera movement
@@ -1356,7 +1366,7 @@ These are experiments after the baseline P4c–P8 path, not blockers or alternat
 terrain authorities:
 
 - Compare Scholz-style fixed-capacity repacking and the four-hexahedra
-  cell-local extractor only if P6/P7 output quality or allocation behaviour
+  cell-local extractor only if P7 output quality or allocation behaviour
   needs another representation; measure Hausdorff and normal error, triangle
   quality, sampling cost, and total frame time.
 - Prototype Wald-inspired mixed-depth dual ownership only after a complete BCC

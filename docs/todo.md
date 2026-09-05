@@ -356,25 +356,33 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 - [ ] **P4c — Cross-backend three-term selection parity.** Implement the
       projected-edge, field-error, and limb-sagitta selector with one shared
       shader ABI for Vulkan and Metal. Require exact selected-address parity
-      with the quantized CPU oracle across fixed, moving, near-surface, orbital,
-      rebase, and terrain-replacement cases before selection may feed surface
-      generation.
-- [ ] **P5 — Execute terrain compute on Metal.** Build and translate
+      with the quantized CPU oracle outside a defined floating-point threshold
+      band; inside the band, require the specified deterministic GPU tie rule
+      and Vulkan/Metal agreement. Cover fixed, moving, near-surface, orbital,
+      rebase, and terrain-replacement cases. Its output is a candidate address
+      set, not yet a drawable surface.
+- [ ] **P5 — Establish Metal terrain-compute parity.** Build and translate
       `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
       SPIR-V-to-MSL pipeline. Add slot-local buffers, revision matching,
-      barriers, bounded overflow handling, and fallback-safe dispatch. Prove
-      the first visible Metal result without changing the default on failure.
-- [ ] **P6 — Remove the CPU-precomputed terrain-cell payload.** Replace the
-      production dependency on the 448-byte `GpuTerrainCellRecord`—including
-      its CPU roots, winding, midpoints, and normals—with selected stable BCC
-      addresses plus immutable field/edit inputs. Reconstruct tetrahedra,
-      evaluate the field, solve edge roots, order triangles, project
-      midpoints, and generate normals on the GPU.
-- [ ] **P7 — Make mixed-depth BCC surface ownership watertight.** Define and
-      implement dependency-closed render clusters or exact face/incident-cell
-      ownership. The result must have no skirts, duplicate faces, overlap,
-      holes, or finite preview boundary, and the same generated front must feed
-      opaque, wireframe, shadow, and ray-tracing consumers.
+      barriers, bounded overflow handling, and fallback-safe dispatch. Prove a
+      diagnostic Metal parity capture, but make no performance claim or change
+      to production visibility while the legacy 448-byte CPU-precomputed
+      payload is still used.
+- [ ] **P6 — Specify the BCC render-front conformity contract.** Before
+      implementing GPU-native extraction, choose and completely define either
+      dependency-closed render clusters or exact face/incident-cell ownership.
+      Specify mixed-depth and restricted-green transitions, shared-face and
+      edge identities, output bounds, revisioning, and fail-closed behaviour.
+      Prove the CPU oracle over all supported transition motifs has no overlap,
+      holes, duplicate faces, or finite preview boundary. P4c candidate output
+      cannot become drawable until this contract passes.
+- [ ] **P7 — Generate the watertight BCC surface on the GPU.** Replace the
+      production dependency on `GpuTerrainCellRecord`—including its CPU roots,
+      winding, midpoints, and normals—with selected stable BCC addresses plus
+      immutable field/edit inputs. Reconstruct tetrahedra, evaluate the field,
+      solve edge roots, order triangles, project midpoints, generate normals,
+      and apply P6 ownership entirely on the GPU. The same complete revision
+      must feed opaque, wireframe, shadow, and ray-tracing consumers.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
       selection, compaction, vertices, indices, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback
