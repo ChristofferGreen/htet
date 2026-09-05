@@ -10,17 +10,23 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `world_tetrahedron_descendant_bounds` is the normalized AABB of a red address's tetrahedron and conservatively encloses every red descendant because child vertices are parent vertices or midpoints.
 - Evidence: The Release regression exhaustively checked 1,812,144 descendant-vertex containments across all BCC roots through depth five and deterministic paths through the maximum depth.
 
-### gpu-green-template-abi
-- Updated: 2026-09-06
-- Tags: gpu, bcc, conformity, templates
-- Fact: The GPU-facing Grande grammar is an immutable 64-entry array of 112-byte records, packing each template's up-to-24 tetrahedron point-index quads into uint32 words plus its exact mask and count.
-- Evidence: The table is regenerated directly from the CPU templates and its validator rejects wrong size, headers, packed tetrahedra, unused data, and out-of-range lookup; 64 masks by 12 orientation-preserving permutations passed 4,688 Release assertions.
-
 ### gpu-green-mask-packet
 - Updated: 2026-09-06
 - Tags: gpu, bcc, conformity, revisioning
 - Fact: P6b transports canonical candidate addresses and closure-resolved masks through a globally sorted full-dyadic edge directory, with six exact edge references per owner and an explicit split-ancestor requirement flag.
 - Evidence: Its validator independently reruns the exact CPU closure and rejects any stale revision or divergence in candidate, owner, mask, edge identity, reference, format, or ordering.
+
+### gpu-green-mask-topology
+- Updated: 2026-09-06
+- Tags: gpu, bcc, conformity, topology
+- Fact: A P6 packet owner declares whether its world tetrahedron is reflected; the topology certificate swaps its first two template corners and proves all interior faces have opposite winding and exactly two uses, while every one-use face lies on the root domain.
+- Evidence: Uniform, root-boundary, one-level, and adjacent two-level BCC fronts passed with zero invalid boundaries or nonmanifold faces; the initial certificate failure exposed the previously undeclared reflected orientation.
+
+### gpu-green-template-abi
+- Updated: 2026-09-06
+- Tags: gpu, bcc, conformity, templates
+- Fact: The GPU-facing Grande grammar is an immutable 64-entry array of 112-byte records, packing each template's up-to-24 tetrahedron point-index quads into uint32 words plus its exact mask and count.
+- Evidence: The table is regenerated directly from the CPU templates and its validator rejects wrong size, headers, packed tetrahedra, unused data, and out-of-range lookup; 64 masks by 12 orientation-preserving permutations passed 4,688 Release assertions.
 
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05

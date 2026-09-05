@@ -6,6 +6,14 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 01:53 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 497 tests passed after P6c; packet topology proved uniform, root-boundary, one-level, and adjacent two-level BCC fronts have exact counts, opposite shared winding, no invalid boundary, and no nonmanifold face.
+
+- 2026-09-06 01:42 CEST | fail | mode: Release | command: `ctest --test-dir build/release --output-on-failure -R '^GPU green mask packet topology closes BCC depth and root boundaries$'` | failures: GPU green mask packet topology closes BCC depth and root boundaries | notes: the new P6c certificate detected reflected BCC owner orientation across shared faces; adding an explicit packet orientation bit before rerunning.
+
+- 2026-09-06 01:40 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp` | notes: P6c's explicit face-key correction had one missing bracket; repaired before rebuilding the focused topology test.
+
+- 2026-09-06 01:39 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp` | notes: P6c face-key array relied on an unsupported nested deduction form; made the `WorldVertexKey,3` type explicit before the focused rerun.
+
 - 2026-09-06 01:28 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 496 tests passed after P6b; the new revisioned GPU green-mask packet test matches a changing candidate cut to an independent closure oracle and rejects stale or malformed packets.
 
 - 2026-09-06 01:15 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp` | notes: P6b initially referenced the closure module's private `WorldEdgeHash`; replaced it with sorted exact edge identity lookup before the focused rerun.

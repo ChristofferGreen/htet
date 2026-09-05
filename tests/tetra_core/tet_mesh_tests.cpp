@@ -640,6 +640,9 @@ TEST_CASE("GPU green mask packets exactly derive revisioned closure masks") {
       static_cast<std::uint32_t>(packet.edges.size());
   CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
                   std::invalid_argument);
+  malformed=packet;malformed.owners.front().reflected_orientation^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
   malformed=packet;malformed.edges.front().lanes[0]^=1U;
   CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
                   std::invalid_argument);
@@ -650,6 +653,43 @@ TEST_CASE("GPU green mask packets exactly derive revisioned closure masks") {
   std::swap(unordered.front(),unordered.back());
   CHECK_THROWS_AS(static_cast<void>(tetra::make_gpu_green_mask_packet(
                       unordered,73U)),std::invalid_argument);
+}
+
+TEST_CASE("GPU green mask packet topology closes BCC depth and root boundaries") {
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  const auto inspect=[&](std::uint64_t revision) {
+    const auto packet=tetra::make_gpu_green_mask_packet(candidates,revision);
+    const auto topology=tetra::gpu_green_mask_packet_topology(packet,revision);
+    std::uint32_t expected_cells{};
+    for(const auto& owner:packet.owners) {
+      const auto count=tetra::complete_green_template(
+          static_cast<std::uint8_t>(owner.mask)).count;
+      CHECK(topology.cells_per_mask[owner.mask]>=count);
+      expected_cells+=count;
+    }
+    CHECK(topology.cells==expected_cells);
+    CHECK(topology.interior_faces>0U);
+    CHECK(topology.exterior_faces>0U);
+    CHECK(topology.invalid_boundary_faces==0U);
+    CHECK(topology.nonmanifold_faces==0U);
+    CHECK(topology.opposite_shared_orientations);
+  };
+  inspect(81U);
+  const auto split=[&](tetra::WorldTetAddress owner) {
+    const auto found=std::ranges::find(candidates,owner);
+    REQUIRE(found!=candidates.end());
+    candidates.erase(found);
+    for(std::uint8_t child=0U;child<8U;++child)
+      candidates.push_back(owner.child(child));
+    std::ranges::sort(candidates);
+  };
+  split(tetra::WorldTetAddress::root(0U));
+  inspect(82U);
+  split(tetra::WorldTetAddress::root(0U).child(3U));
+  split(tetra::WorldTetAddress::root(1U));
+  inspect(83U);
 }
 
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {

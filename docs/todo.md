@@ -353,18 +353,6 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P6 — Specify and prove the BCC render-front conformity contract.**
-      This tracker keeps the existing 64 restricted-green templates as the
-      sole surface grammar. P4c output remains non-drawable until every leaf
-      below has passed; dependency-cluster and Wald-style dual ownership remain
-      comparisons only if this exact route fails a measured gate.
-  - [ ] **P6c — Prove the BCC dependency halo and mixed-depth grammar.**
-        Exhaust the 64 masks and supported adjacent mixed-depth/root-boundary
-        motifs through the P6 packet/oracle, proving shared faces, edge
-        identity, orientation, and exact per-mask counts with no holes,
-        overlaps, duplicate faces, or finite preview boundary. Acceptance:
-        culling may omit an owner only when its declared dependency halo proves
-        it cannot alter an emitted transition. Stop rule: retain CPU rendering.
 - [ ] **P7 — Generate the watertight BCC surface on the GPU.** Replace the
       production dependency on `GpuTerrainCellRecord`—including its CPU roots,
       winding, midpoints, and normals—and retire P4a's 112-byte corner/bounds

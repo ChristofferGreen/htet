@@ -2,6 +2,15 @@
 
 ## 2026-09-06
 
+- [x] **P6c — Prove packet topology across BCC boundaries.** The P6 topology
+  certificate reconstructs Grande cells from the exact packet, includes a
+  declared reflected-orientation bit per owner, and proves opposite winding,
+  two-sided interior incidence, valid root-only exterior faces, zero invalid
+  boundaries, zero nonmanifold faces, and exact per-mask cell counts. Uniform,
+  root-boundary, one-level, and adjacent two-level fronts passed. Diagnostic
+  P6 keeps the complete candidate packet—there is no per-owner culling or
+  drawable output; P7 owns GPU-native field/surface generation.
+
 - [x] **P6b — Derive revisioned candidate-front masks.** Added a compact
   device-facing packet containing canonical selected BCC addresses, the exact
   closure-resolved owners/masks, and their six references into a globally

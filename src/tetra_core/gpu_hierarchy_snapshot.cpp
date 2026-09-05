@@ -140,6 +140,18 @@ GpuGreenMaskEdgeRecord gpu_green_mask_edge_record(
   return result;
 }
 
+bool gpu_green_mask_reflected(WorldTetAddress address) {
+  const auto geometry=world_tetrahedron_geometry(address);
+  const auto ab=geometry[1]-geometry[0];
+  const auto ac=geometry[2]-geometry[0];
+  const auto ad=geometry[3]-geometry[0];
+  const auto determinant=ab.x*(ac.y*ad.z-ac.z*ad.y)-
+      ab.y*(ac.x*ad.z-ac.z*ad.x)+ab.z*(ac.x*ad.y-ac.y*ad.x);
+  if(determinant==0.0)
+    throw std::logic_error("GPU green mask owner has degenerate geometry");
+  return determinant<0.0;
+}
+
 GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision) {
   std::vector<WorldTetAddress> ordered(candidates.begin(),candidates.end());
@@ -187,6 +199,8 @@ GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
     GpuGreenMaskOwnerRecord owner;
     owner.address=gpu_hierarchy_address_lanes(closed[owner_index]);
     owner.mask=closure.green_masks[owner_index];
+    owner.reflected_orientation=gpu_green_mask_reflected(closed[owner_index])?
+        1U:0U;
     const auto keys=world_tetrahedron_vertex_keys(closed[owner_index]);
     for(std::size_t edge=0U;edge<tetrahedron_edges.size();++edge) {
       const auto identity=world_edge_key(keys[tetrahedron_edges[edge][0]],
@@ -245,6 +259,82 @@ void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
   if(packet.header!=expected.header||packet.candidates!=expected.candidates||
      packet.owners!=expected.owners||packet.edges!=expected.edges)
     throw std::invalid_argument("GPU green mask packet differs from closure oracle");
+}
+
+GpuGreenMaskTopology gpu_green_mask_packet_topology(
+    const GpuGreenMaskPacket& packet,std::uint64_t expected_source_revision) {
+  validate_gpu_green_mask_packet(packet,expected_source_revision);
+  constexpr std::array<std::array<std::uint8_t,3>,4> faces{{
+      {{1U,2U,3U}},{{0U,3U,2U}},{{0U,1U,3U}},{{0U,2U,1U}}}};
+  struct FaceUse { std::array<WorldVertexKey,3> winding{}; std::uint32_t count{}; };
+  std::map<WorldFaceKey,FaceUse> uses;
+  GpuGreenMaskTopology result;
+  const auto exterior=[](const std::array<WorldVertexKey,3>& vertices) {
+    for(std::size_t axis=0U;axis<3U;++axis) {
+      const auto coordinate=[axis](const WorldVertexKey& key) {
+        return axis==0U?key.x:(axis==1U?key.y:key.z);
+      };
+      const auto at_zero=std::ranges::all_of(vertices,[&](const auto& key) {
+        return coordinate(key)==0;
+      });
+      const auto at_one=std::ranges::all_of(vertices,[&](const auto& key) {
+        return std::ldexp(static_cast<double>(coordinate(key)),
+                          -static_cast<int>(key.denominator_exponent))==1.0;
+      });
+      if(at_zero||at_one)return true;
+    }
+    return false;
+  };
+  const auto reversed=[](const std::array<WorldVertexKey,3>& first,
+                         const std::array<WorldVertexKey,3>& second) {
+    return second==std::array{first[0],first[2],first[1]}||
+           second==std::array{first[2],first[1],first[0]}||
+           second==std::array{first[1],first[0],first[2]};
+  };
+  for(const auto& owner:packet.owners) {
+    const auto address=gpu_hierarchy_address_from_lanes(owner.address);
+    const auto& stencil=complete_green_template(
+        static_cast<std::uint8_t>(owner.mask));
+    const auto keys=world_tetrahedron_vertex_keys(address);
+    const auto geometry=world_tetrahedron_geometry(address);
+    std::array<WorldVertexKey,10> points{};
+    for(std::size_t point=0U;point<points.size();++point) {
+      if(grande_point_vertex[point]!=0xffU) {
+        points[point]=keys[grande_point_vertex[point]];
+        continue;
+      }
+      const auto edge=tetrahedron_edges[grande_point_edge[point]];
+      points[point]=world_vertex_key((geometry[edge[0]]+geometry[edge[1]])/2.0);
+    }
+    result.cells_per_mask[owner.mask]+=stencil.count;
+    result.cells+=stencil.count;
+    for(std::size_t cell=0U;cell<stencil.count;++cell) {
+      auto tetrahedron=stencil.tetrahedra[cell];
+      if(owner.reflected_orientation!=0U)
+        std::swap(tetrahedron[0],tetrahedron[1]);
+      for(const auto face:faces) {
+        const std::array<WorldVertexKey,3> vertices{{
+            points[tetrahedron[face[0]]],points[tetrahedron[face[1]]],
+            points[tetrahedron[face[2]]]}};
+        const auto key=world_face_key(vertices[0],vertices[1],vertices[2]);
+        auto [found,inserted]=uses.try_emplace(key,FaceUse{vertices,1U});
+        if(inserted)continue;
+        ++found->second.count;
+        if(found->second.count==2U)
+          result.opposite_shared_orientations&=reversed(found->second.winding,
+                                                         vertices);
+      }
+    }
+  }
+  for(const auto& [key,use]:uses) {
+    (void)key;
+    if(use.count==1U) {
+      if(exterior(use.winding))++result.exterior_faces;
+      else ++result.invalid_boundary_faces;
+    } else if(use.count==2U)++result.interior_faces;
+    else ++result.nonmanifold_faces;
+  }
+  return result;
 }
 
 GpuGreenTemplateTable make_gpu_green_template_table() {

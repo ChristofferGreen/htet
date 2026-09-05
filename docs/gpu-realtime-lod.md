@@ -1440,7 +1440,7 @@ topology, and complete-frame gates.
     failures, overflow, or CPU-front authority violations. Neither this leaf
     nor P5 replaces the legacy 448-byte payload or claims a speed improvement;
     P7 remains the separate GPU-native field/topology milestone.
-- [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
+- [x] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
   selected addresses as candidates and use the existing 64 restricted-green
   edge-mask templates as the sole surface grammar. Candidate output remains
   diagnostic and cannot be drawn until these ordered leaves close; dependency-
@@ -1462,12 +1462,16 @@ topology, and complete-frame gates.
     expected packet. Fixed and changing fronts passed; wrong revision, identity,
     mask, edge reference, edge data, format, and candidate order fail closed.
     Field evaluation, root solving, and promotion remain P7/P8 work.
-  - [ ] **P6c — Halo and mixed-depth proof.** Exhaust masks and supported
-    mixed-depth/root-boundary motifs through the P6 packet/oracle, proving
-    common faces, edge identities, orientations, exact counts, and absence of
-    holes, overlap, duplicated faces, or finite preview boundaries. A culled
-    owner is allowed only where its declared dependency halo proves it cannot
-    alter a transition; CPU rendering remains authoritative.
+  - [x] **P6c — Halo and mixed-depth proof.** The packet topology certificate
+    reconstructs every Grande tetrahedron directly from exact owner addresses
+    and masks, corrects the declared reflected local orientation before face
+    emission, and verifies per-mask counts, opposite shared-face winding,
+    two-sided interior incidence, and root-domain-only boundaries. Uniform,
+    root-boundary, one-level, and adjacent two-level candidate cuts passed;
+    combined with P6a's 64-mask permutation proof, this closes the grammar.
+    No per-owner culling is permitted for the diagnostic front yet: P6 retains
+    the complete candidate packet, so no omitted owner can create a finite
+    preview boundary. CPU rendering remains authoritative.
 - [ ] **P7 — GPU-native watertight BCC surface generation.** Remove the
   production dependency on the 448-byte `GpuTerrainCellRecord`, whose roots,
   winding, projected midpoints, and normals are currently computed by the CPU,

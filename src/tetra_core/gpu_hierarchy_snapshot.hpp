@@ -56,7 +56,9 @@ struct alignas(16) GpuGreenMaskOwnerRecord {
   std::array<std::uint32_t,4> address{};
   std::array<std::uint32_t,6> edge_records{};
   std::uint32_t mask{};
-  std::uint32_t reserved{};
+  // One when this exact address has reflected world-space orientation; a
+  // consumer swaps the first two template corners before emitting faces.
+  std::uint32_t reflected_orientation{};
   auto operator<=>(const GpuGreenMaskOwnerRecord&) const = default;
 };
 static_assert(sizeof(GpuGreenMaskOwnerRecord)==48U);
@@ -76,10 +78,21 @@ struct GpuGreenMaskPacket {
   std::vector<GpuGreenMaskOwnerRecord> owners;
   std::vector<GpuGreenMaskEdgeRecord> edges;
 };
+struct GpuGreenMaskTopology {
+  std::array<std::uint32_t,64> cells_per_mask{};
+  std::uint32_t cells{};
+  std::uint32_t interior_faces{};
+  std::uint32_t exterior_faces{};
+  std::uint32_t invalid_boundary_faces{};
+  std::uint32_t nonmanifold_faces{};
+  bool opposite_shared_orientations{true};
+};
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision);
+[[nodiscard]] GpuGreenMaskTopology gpu_green_mask_packet_topology(
+    const GpuGreenMaskPacket& packet,std::uint64_t expected_source_revision);
 
 // Storage-buffer representation. This is deliberately made only from fixed
 // width scalar fields: it can be copied verbatim to a GPU storage buffer.
