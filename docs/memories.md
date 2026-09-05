@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, with a generation (not only terrain revision) invalidating output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier before any future draw.
 - Evidence: The 486-test Release gate and a headless MoltenVK smoke passed after adding bounded reservations, independent extraction timestamps, explicit overflow states, and shutdown/recreate cleanup.
 
+### gpu-terrain-source-corpus
+- Updated: 2026-09-05
+- Tags: terrain, gpu, bcc, surface-cache
+- Fact: GPU extraction input must be materialized from every `may_cross` surface certificate using exactly `complete_green_template(mask).count`, never from selective collision volume residency or unused template capacity.
+- Evidence: The native sparse-world regression constructs the candidate corpus while conforming-volume residency is empty and proves its owner/cell totals equal the CPU extractor's candidate and green-cell metrics.
+
 ### logical-derived-address-order
 - Updated: 2026-08-24
 - Tags: bcc, surface-cache, ordering

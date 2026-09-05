@@ -1542,6 +1542,94 @@ void SceneRenderer::set_render_extent(VkExtent2D extent,float sharpening) {
   upscale_sharpening_=std::clamp(sharpening,0.0F,1.0F);
 }
 
+SceneRenderer::GpuLodBuffer SceneRenderer::allocate_gpu_lod_buffer(
+    std::size_t bytes,VkBufferUsageFlags usage) {
+  if(bytes==0U)throw std::invalid_argument("GPU LOD buffer capacity must be nonzero");
+  GpuLodBuffer result;
+  result.capacity=bytes;
+  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  info.size=bytes;info.usage=usage;
+  if(vkCreateBuffer(device_,&info,nullptr,&result.buffer)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU LOD buffer");
+  VkMemoryRequirements requirements{};
+  vkGetBufferMemoryRequirements(device_,result.buffer,&requirements);
+  VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  allocation.allocationSize=requirements.size;
+  allocation.memoryTypeIndex=memory_type(physical_device_,requirements.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if(vkAllocateMemory(device_,&allocation,nullptr,&result.memory)!=VK_SUCCESS){
+    vkDestroyBuffer(device_,result.buffer,nullptr);
+    throw std::runtime_error("unable to allocate GPU LOD buffer");
+  }
+  if(vkBindBufferMemory(device_,result.buffer,result.memory,0)!=VK_SUCCESS){
+    vkFreeMemory(device_,result.memory,nullptr);vkDestroyBuffer(device_,result.buffer,nullptr);
+    throw std::runtime_error("unable to bind GPU LOD buffer");
+  }
+  return result;
+}
+
+void SceneRenderer::destroy_gpu_lod_buffer(GpuLodBuffer& buffer) noexcept {
+  if(buffer.buffer!=VK_NULL_HANDLE)vkDestroyBuffer(device_,buffer.buffer,nullptr);
+  if(buffer.memory!=VK_NULL_HANDLE)vkFreeMemory(device_,buffer.memory,nullptr);
+  buffer={};
+}
+
+void SceneRenderer::update_gpu_terrain_descriptor_set(std::uint32_t image_index) {
+  const std::array<VkDescriptorBufferInfo,3> infos{{
+      {gpu_terrain_cell_buffers_.at(image_index).buffer,0,VK_WHOLE_SIZE},
+      {gpu_terrain_output_buffers_.at(image_index).buffer,0,VK_WHOLE_SIZE},
+      {gpu_terrain_index_buffers_.at(image_index).buffer,0,VK_WHOLE_SIZE}}};
+  std::array<VkWriteDescriptorSet,3> writes{};
+  for(std::uint32_t binding=0;binding<writes.size();++binding){
+    writes[binding]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[binding].dstSet=gpu_terrain_descriptor_sets_.at(image_index);
+    writes[binding].dstBinding=binding;writes[binding].descriptorCount=1U;
+    writes[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[binding].pBufferInfo=&infos[binding];
+  }
+  vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(writes.size()),
+                         writes.data(),0,nullptr);
+}
+
+void SceneRenderer::ensure_gpu_terrain_slot_capacity(std::uint32_t image_index) {
+  auto grow=[](std::size_t current,std::size_t required){
+    if(current>=required)return current;
+    if(current>std::numeric_limits<std::size_t>::max()/2U)return required;
+    return std::max(required,current*2U);
+  };
+  auto& input=gpu_terrain_cell_buffers_.at(image_index);
+  auto& output=gpu_terrain_output_buffers_.at(image_index);
+  auto& index=gpu_terrain_index_buffers_.at(image_index);
+  if(input.capacity>=gpu_terrain_input_bytes_required_&&
+     output.capacity>=gpu_terrain_output_bytes_required_&&
+     index.capacity>=gpu_terrain_index_bytes_required_)return;
+  // FrameRender waited this image's fence before calling record().  Destroying
+  // and rebinding only this image's buffers is therefore safe for all commands
+  // that reference the old descriptors, unlike a global swapchain rebuild.
+  GpuLodBuffer new_input,new_output,new_index;
+  try {
+    if(input.capacity<gpu_terrain_input_bytes_required_)
+      new_input=allocate_gpu_lod_buffer(
+          grow(input.capacity,gpu_terrain_input_bytes_required_));
+    if(output.capacity<gpu_terrain_output_bytes_required_)
+      new_output=allocate_gpu_lod_buffer(
+          grow(output.capacity,gpu_terrain_output_bytes_required_),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|
+          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    if(index.capacity<gpu_terrain_index_bytes_required_)
+      new_index=allocate_gpu_lod_buffer(
+          grow(index.capacity,gpu_terrain_index_bytes_required_),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  }catch(...) {
+    destroy_gpu_lod_buffer(new_input);destroy_gpu_lod_buffer(new_output);
+    destroy_gpu_lod_buffer(new_index);throw;
+  }
+  if(new_input.buffer!=VK_NULL_HANDLE){destroy_gpu_lod_buffer(input);input=new_input;}
+  if(new_output.buffer!=VK_NULL_HANDLE){destroy_gpu_lod_buffer(output);output=new_output;}
+  if(new_index.buffer!=VK_NULL_HANDLE){destroy_gpu_lod_buffer(index);index=new_index;}
+  update_gpu_terrain_descriptor_set(image_index);
+}
+
 void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
                            std::span<const SceneVertex> hierarchy_line_vertices,
                            std::span<const SceneVertex> surface_line_vertices) {
@@ -1594,8 +1682,26 @@ void SceneRenderer::stage_gpu_terrain_cells(
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
   gpu_terrain_cells_.assign(cells.begin(),cells.end());
+  if(gpu_terrain_cells_.size()>std::numeric_limits<std::uint32_t>::max())
+    throw std::overflow_error("GPU terrain cell count exceeds dispatch address space");
+  const auto checked_bytes=[](std::size_t count,std::size_t stride,
+                              std::size_t header=0U){
+    if(count>(std::numeric_limits<std::size_t>::max()-header)/stride)
+      throw std::overflow_error("GPU terrain buffer capacity overflows size_t");
+    return header+count*stride;
+  };
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
+  // The CPU surface is the authority for the expected triangle-list size.
+  // Provision each slot for that exact payload; if a non-equivalent diagnostic
+  // shader emits more, its bounded overflow bit remains a rejection signal.
+  gpu_terrain_input_bytes_required_=std::max<std::size_t>(
+      checked_bytes(gpu_terrain_cells_.size(),sizeof(tetra::GpuTerrainCellRecord)),
+      sizeof(tetra::GpuTerrainCellRecord));
+  gpu_terrain_output_bytes_required_=std::max<std::size_t>(
+      checked_bytes(expected_vertices,sizeof(SceneVertex),32U),32U);
+  gpu_terrain_index_bytes_required_=std::max<std::size_t>(
+      checked_bytes(expected_vertices,sizeof(std::uint32_t)),sizeof(std::uint32_t));
   if(++gpu_terrain_cells_generation_==0U)++gpu_terrain_cells_generation_;
   gpu_terrain_extract_status_={};
 }
@@ -1936,12 +2042,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     if(gpu_terrain_slot_revisions_[image_index]==gpu_terrain_cells_generation_)
       gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
           static_cast<std::uint32_t>(gpu_terrain_cells_.size()),result[0],
-          gpu_terrain_slot_milliseconds_.at(image_index),true,false,
+          gpu_terrain_expected_vertices_,gpu_terrain_slot_milliseconds_.at(image_index),true,false,
           result[5]!=0U,result[0]==gpu_terrain_expected_vertices_};
     gpu_terrain_slot_pending_[image_index]=false;
   }
   if(gpu_lod_diagnostic_enabled_&&!gpu_terrain_cells_.empty()&&
      gpu_terrain_slot_revisions_.at(image_index)!=gpu_terrain_cells_generation_){
+    ensure_gpu_terrain_slot_capacity(image_index);
     auto& input=gpu_terrain_cell_buffers_.at(image_index);
     const auto bytes=gpu_terrain_cells_.size()*sizeof(tetra::GpuTerrainCellRecord);
     if(bytes<=input.capacity&&gpu_terrain_cells_.size()<=0xffffffffU){
@@ -1958,7 +2065,15 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,2U,ready.data(),0,nullptr);
       vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_terrain_extract_pipeline_);
       vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_terrain_pipeline_layout_,0,1,&gpu_terrain_descriptor_sets_.at(image_index),0,nullptr);
-      const std::array<std::uint32_t,3> push{static_cast<std::uint32_t>(gpu_terrain_cells_.size()),(32U*1024U*1024U-32U)/72U,32U*1024U*1024U/4U};
+      const auto vertex_capacity=(output.capacity-32U)/sizeof(SceneVertex);
+      const auto index_capacity=gpu_terrain_index_buffers_.at(image_index).capacity/
+          sizeof(std::uint32_t);
+      if(vertex_capacity>std::numeric_limits<std::uint32_t>::max()||
+         index_capacity>std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("GPU terrain buffer exceeds shader capacity");
+      const std::array<std::uint32_t,3> push{static_cast<std::uint32_t>(gpu_terrain_cells_.size()),
+          static_cast<std::uint32_t>(vertex_capacity),
+          static_cast<std::uint32_t>(index_capacity)};
       vkCmdPushConstants(command_buffer,gpu_terrain_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
       vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                           timing_query_pool_,timing_base+8U);
@@ -1993,7 +2108,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       // and the diagnostic records that no meaningful comparison was run.
       gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
           static_cast<std::uint32_t>(std::min<std::size_t>(
-              gpu_terrain_cells_.size(),0xffffffffU)),0U,0.0,false,true,
+              gpu_terrain_cells_.size(),0xffffffffU)),0U,
+          gpu_terrain_expected_vertices_,0.0,false,true,
           false,false};
     }
   }

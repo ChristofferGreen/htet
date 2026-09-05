@@ -3359,6 +3359,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             ImGui::Checkbox("Realtime GPU surface LOD",&world_realtime_gpu_surface_lod);
             g_SceneRenderer.set_gpu_lod_diagnostic_enabled(
                 world_realtime_gpu_surface_lod);
+            if(world_runtime)
+                world_runtime->set_gpu_terrain_extraction_diagnostic(
+                    world_realtime_gpu_surface_lod);
             const auto gpu_lod_status=g_SceneRenderer.gpu_lod_dispatch_status();
             if(!world_realtime_gpu_surface_lod)
                 ImGui::TextDisabled("CPU terrain path active");
@@ -3369,8 +3372,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             else ImGui::TextDisabled("GPU selector awaits an immutable terrain cut");
             const auto gpu_extract=g_SceneRenderer.gpu_terrain_extract_status();
             if(world_realtime_gpu_surface_lod&&gpu_extract.complete)
-                ImGui::TextDisabled("GPU extraction diagnostic: %u cells, %u vertices, %.3f ms%s",
-                    gpu_extract.cells,gpu_extract.vertices,gpu_extract.milliseconds,
+                ImGui::TextDisabled("GPU extraction diagnostic: %u cells, %u/%u vertices, %.3f ms%s",
+                    gpu_extract.cells,gpu_extract.vertices,
+                    gpu_extract.expected_vertices,gpu_extract.milliseconds,
                     gpu_extract.overflow?" (capacity reached)":"");
             if(world_realtime_gpu_surface_lod&&gpu_extract.input_overflow)
                 ImGui::TextDisabled("GPU extraction diagnostic: input exceeds its fixed capacity; CPU fallback retained");
@@ -4521,7 +4525,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         g_SceneRenderer.upload_gpu_hierarchy_snapshot(
                             tetra::make_gpu_hierarchy_snapshot(
                                 directory,directory.revision()));
-                    if(const auto* volume=world_runtime->world_conforming_volume();
+                    if(world_realtime_gpu_surface_lod)if(const auto* volume=
+                           world_runtime->world_surface_conforming_volume();
                        volume!=nullptr&&(g_SceneRenderer.gpu_terrain_cells_revision()!=
                            directory.revision()||!gpu_terrain_cells_render_origin||
                            gpu_terrain_cells_render_origin->x!=prepared_scene.render_origin.x||
@@ -4903,6 +4908,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                !world_runtime->diagnostics().busy){
                 const auto& timing=g_SceneRenderer.gpu_timings();
                 if(timing.valid){
+                    const auto gpu_extract=
+                        g_SceneRenderer.gpu_terrain_extract_status();
+                    // A diagnostic benchmark is not allowed to silently turn
+                    // into an ordinary frame benchmark before the slot that
+                    // owns the authoritative cut has completed.
+                    if(world_realtime_gpu_surface_lod&&
+                       gpu_extract.source_revision!=0U&&
+                       !gpu_extract.complete&&!gpu_extract.input_overflow)
+                        continue;
                     if(world_render_resolution_mode==
                            RenderResolutionMode::automatic&&
                        world_render_scale_stable_frames<120U)
@@ -5047,7 +5061,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<"\"atmosphere_bytes\":"
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
-                        <<g_SceneRenderer.scene_target_allocation_bytes()<<',';
+                        <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<"\"gpu_terrain_extract\":{\"source_revision\":"
+                        <<gpu_extract.source_revision
+                        <<",\"cells\":"<<gpu_extract.cells
+                        <<",\"vertices\":"<<gpu_extract.vertices
+                        <<",\"expected_vertices\":"
+                        <<gpu_extract.expected_vertices
+                        <<",\"milliseconds\":"<<gpu_extract.milliseconds
+                        <<",\"complete\":"
+                        <<(gpu_extract.complete?"true":"false")
+                        <<",\"input_overflow\":"
+                        <<(gpu_extract.input_overflow?"true":"false")
+                        <<",\"output_overflow\":"
+                        <<(gpu_extract.overflow?"true":"false")
+                        <<",\"crossing_count_matches_cpu\":"
+                        <<(gpu_extract.vertex_count_matches_cpu?"true":"false")
+                        <<"},";
                     const auto& fitted_shadow=
                         g_SceneRenderer.atmosphere_shadow_map_status();
                     const auto runtime_shadow=world_runtime->diagnostics();

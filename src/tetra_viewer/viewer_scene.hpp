@@ -964,6 +964,13 @@ struct BlockedDerivedSurfaceBuild {
     bool assemble_flat_output=true);
 [[nodiscard]] BlockedDerivedSurfaceBuild assemble_blocked_derived_surface(
     const tetra::WorldCutDirectory& directory);
+// Materializes only the exact restricted-green cells admitted by the
+// published surface certificates.  This is deliberately separate from
+// gameplay/collision volume residency: GPU extraction must see every source
+// cell that the CPU surface extractor considered, without reconstructing the
+// complete cut on the presentation thread.
+[[nodiscard]] tetra::WorldBlockedConformingVolume
+make_surface_candidate_conforming_volume(const SparseWorldSurfaceCache& cache);
 // Converts a published or freshly assembled blocked snapshot into the same
 // flat-shaded, barycentric-edged draw representation consumed by Vulkan.
 [[nodiscard]] PreparedScene prepare_blocked_derived_surface_scene(

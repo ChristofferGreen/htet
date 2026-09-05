@@ -4439,6 +4439,62 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   return result;
 }
 
+tetra::WorldBlockedConformingVolume make_surface_candidate_conforming_volume(
+    const SparseWorldSurfaceCache& cache) {
+  // This mirrors the candidate-cell input to build_sparse_world_derived_surface
+  // exactly.  In particular it expands only green.count entries: tetrahedra is
+  // a fixed-capacity template array, and its unused tail is not surface input.
+  auto block=std::make_shared<tetra::WorldConformingBlockSnapshot>();
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  for(const auto& certificates:cache.surface_certificate_blocks)
+    for(const auto& certificate:certificates->certificates) {
+      if(!certificate.may_cross)continue;
+      const auto geometry=std::ranges::lower_bound(
+          cache.closure.geometry,certificate.owner,{},
+          &tetra::WorldConformingClosureCacheEntry::address);
+      const auto keys=geometry!=cache.closure.geometry.end()&&
+              geometry->address==certificate.owner?geometry->vertices:
+          tetra::world_tetrahedron_vertex_keys(certificate.owner);
+      std::array<tetra::Vec3,10> points{};
+      std::array<tetra::WorldVertexKey,10> point_keys{};
+      for(std::size_t point=0;point<points.size();++point) {
+        if(tetra::grande_point_vertex[point]!=0xffU) {
+          const auto vertex=tetra::grande_point_vertex[point];
+          points[point]={std::ldexp(static_cast<double>(keys[vertex].x),
+                                    -keys[vertex].denominator_exponent),
+                         std::ldexp(static_cast<double>(keys[vertex].y),
+                                    -keys[vertex].denominator_exponent),
+                         std::ldexp(static_cast<double>(keys[vertex].z),
+                                    -keys[vertex].denominator_exponent)};
+          point_keys[point]=keys[vertex];
+        }else {
+          const auto edge=edges[tetra::grande_point_edge[point]];
+          points[point]=(points[edge[0]]+points[edge[1]])/2.0;
+          point_keys[point]=tetra::world_vertex_key(points[point]);
+        }
+      }
+      const auto& green=tetra::complete_green_template(certificate.green_mask);
+      for(std::size_t cell_index=0;cell_index<green.count;++cell_index) {
+        const auto& indices=green.tetrahedra[cell_index];
+        tetra::WorldConformingCell cell;
+        cell.logical_owner=certificate.owner;
+        for(std::size_t corner=0;corner<4U;++corner) {
+          cell.vertices[corner]=point_keys[indices[corner]];
+          cell.positions[corner]=points[indices[corner]];
+        }
+        block->cells.push_back(cell);
+      }
+      ++block->logical_owners;
+    }
+  tetra::WorldBlockedConformingVolume result;
+  result.cells=block->cells.size();
+  result.materialized_cells=result.cells;
+  result.logical_owners=block->logical_owners;
+  if(!block->cells.empty())result.blocks.push_back(std::move(block));
+  return result;
+}
+
 BlockedDerivedSurfaceBuild build_blocked_derived_surface(
     const tetra::TetMesh& mesh,const tetra::WorldCutDirectory& directory,
     const tetra::Sphere& sphere,BlockedDerivedSurfaceOptions options,

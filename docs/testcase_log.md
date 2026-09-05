@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 13:44 CEST | pass, GPU terrain source corpus and slot capacity | mode: Release | command: `./scripts/compile.sh --release` plus `cmake --build build/release --target tetra_world_bin -j 4` | failures: none | notes: all 486 tests passed; the surface-certificate candidate corpus is independently checked against CPU green-cell metrics while collision residency is empty, and the renderer target compiles with per-fence slot-local input/output/index growth and descriptor rebinding.
+
 - 2026-09-05 12:49 CEST | pass, GPU extraction P0 baseline | mode: Release executable | command: `build/release/src/tetra_viewer/tetra_world --runtime-benchmark` | failures: none | notes: deterministic production corpus completed with hierarchy/surface/render hashes and separated CPU closure, extraction, staging, and upload metrics; it establishes the no-GPU-gain baseline.
 
 - 2026-09-05 12:36 CEST | pass, Vulkan GPU LOD selector closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 485/485 tests passed; a separate off-screen `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark` run completed its Vulkan session without a driver or synchronization error.

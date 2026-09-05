@@ -1108,6 +1108,27 @@ normal, ownership, and optimized-position conventions shared or explicitly
 prove an equivalent GPU representation before indirect drawing is enabled. The
 current count comparison is only a crossing/triangle-count smoke check against
 the authoritative CPU surface metric; it is not topology or image parity.
+
+**P1 source-corpus finding, 2026-09-05.** The first completed diagnostic
+dispatch processed the retained collision/volume subset (19,164 cells) in
+0.559 ms and emitted 4,305 vertices, while the CPU surface contained 56,712
+vertices. This is an expected rejection, not a rendering defect: the retained
+volume is deliberately narrower than surface residency. A naive private
+full-cut reconstruction on the presentation thread took minutes and was
+removed. The diagnostic now creates the immutable surface-candidate cell
+snapshot during the existing background publication, retains it by publication
+revision, and hands it to Vulkan without a foreground closure rebuild. Its
+builder shares the CPU extractor's certificate/green-template source rule and
+expands only `green.count` entries (never unused fixed-array capacity). A
+focused regression test compares its candidate-cell count and owner count to
+the CPU source metrics while the collision volume is empty. It still needs a
+bounded production run and extraction-semantics parity; this change is not GPU
+rendering enablement. Per-image input, vertex/indirect, and index allocations
+now grow to the staged authoritative cell/CPU-output requirements only after
+that image fence completes, then rebind only that image's descriptors. This
+removes the former fixed 8 MiB input ceiling without a global device idle; an
+allocation failure, diagnostic output overflow, or shader-address-space
+overflow still rejects the GPU result and retains CPU drawing.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

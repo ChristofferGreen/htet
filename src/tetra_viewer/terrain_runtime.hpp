@@ -611,6 +611,7 @@ class TerrainRuntime {
   virtual void set_view_identity(const TerrainViewIdentity&) {}
   virtual void set_atmosphere_shadow_request(
       std::optional<AtmosphereShadowFrontRequest>) {}
+  virtual void set_gpu_terrain_extraction_diagnostic(bool) {}
   // Non-blocking publication/scheduling pump, called once per presentation frame.
   virtual bool update()=0;
   [[nodiscard]] virtual const tetra::Sphere& field() const noexcept=0;
@@ -624,6 +625,8 @@ class TerrainRuntime {
       const noexcept { return nullptr; }
   [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
   world_conforming_volume() const noexcept { return nullptr; }
+  [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
+  world_surface_conforming_volume() const noexcept { return nullptr; }
   [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
   atmosphere_shadow_front() const noexcept {
     static const std::optional<AtmosphereShadowFront> none;
@@ -700,6 +703,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   void set_volume_pins(std::vector<WorldVolumePin> pins);
   void set_atmosphere_shadow_request(
       std::optional<AtmosphereShadowFrontRequest> request) override;
+  void set_gpu_terrain_extraction_diagnostic(bool enabled) override;
   bool update() override;
   [[nodiscard]] const tetra::Sphere& field() const noexcept override { return field_; }
   [[nodiscard]] const PreparedScene& scene() const override;
@@ -711,6 +715,12 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] const tetra::WorldBlockedConformingVolume*
   world_conforming_volume() const noexcept override {
     return &surface_cache_.conforming;
+  }
+  [[nodiscard]] const tetra::WorldBlockedConformingVolume*
+  world_surface_conforming_volume() const noexcept override {
+    return directory_&&gpu_surface_conforming_revision_==directory_->revision()&&
+        gpu_surface_conforming_volume_?
+        &*gpu_surface_conforming_volume_:nullptr;
   }
   [[nodiscard]] std::span<const TerrainResidentSector>
   resident_terrain_sectors() const noexcept override {
@@ -744,6 +754,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
+    std::optional<tetra::WorldBlockedConformingVolume>
+        gpu_surface_conforming_volume;
     WorldHierarchyDemandState hierarchy_demand;
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     TerrainDetailWorkingSet detail_working_set;
@@ -772,7 +784,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
       std::vector<WorldVolumePin> volume_pins={},
       std::stop_token cancellation={},
       tetra::GeometryExecutor* executor=nullptr,
-      std::unique_ptr<tetra::WorldCutDirectory> directory={});
+      std::unique_ptr<tetra::WorldCutDirectory> directory={},
+      bool gpu_terrain_extraction_diagnostic=false);
   void submit();
   [[nodiscard]] bool schedule_sector_budget_retry(
       TerrainDetailWorkingSet candidate,
@@ -793,6 +806,9 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   tetra::Camera camera_;
   tetra::Camera last_requested_camera_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
+  std::optional<tetra::WorldBlockedConformingVolume>
+      gpu_surface_conforming_volume_;
+  std::uint64_t gpu_surface_conforming_revision_{};
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;
   std::shared_ptr<tetra::GeometryExecutor> executor_;
@@ -818,6 +834,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   bool camera_interactive_{};
   bool active_superseded_{};
   bool atmosphere_shadow_pending_{};
+  bool gpu_terrain_extraction_diagnostic_{};
   bool atmosphere_shadow_superseded_{};
   std::chrono::steady_clock::time_point superseded_at_{};
   std::uint64_t requested_generation_{};

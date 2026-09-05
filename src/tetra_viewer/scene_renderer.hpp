@@ -89,6 +89,7 @@ struct GpuTerrainExtractStatus {
   std::uint64_t source_revision{};
   std::uint32_t cells{};
   std::uint32_t vertices{};
+  std::uint32_t expected_vertices{};
   double milliseconds{};
   bool complete{};
   bool input_overflow{};
@@ -329,6 +330,15 @@ class SceneRenderer {
     std::uint32_t record_count{};
     bool pending{};
   };
+  [[nodiscard]] GpuLodBuffer allocate_gpu_lod_buffer(
+      std::size_t bytes,VkBufferUsageFlags usage=
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  void destroy_gpu_lod_buffer(GpuLodBuffer& buffer) noexcept;
+  void update_gpu_terrain_descriptor_set(std::uint32_t image_index);
+  // Called only from record() after the acquired image's fence has completed.
+  // Each slot owns its descriptors, so growth cannot invalidate in-flight work
+  // on another swapchain image and never needs vkDeviceWaitIdle.
+  void ensure_gpu_terrain_slot_capacity(std::uint32_t image_index);
   GpuLodBuffer gpu_lod_hierarchy_;
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
@@ -339,6 +349,9 @@ class SceneRenderer {
   std::uint64_t gpu_terrain_cells_revision_{};
   std::uint64_t gpu_terrain_cells_generation_{};
   std::uint32_t gpu_terrain_expected_vertices_{};
+  std::size_t gpu_terrain_input_bytes_required_{};
+  std::size_t gpu_terrain_output_bytes_required_{};
+  std::size_t gpu_terrain_index_bytes_required_{};
   std::vector<GpuLodBuffer> gpu_terrain_cell_buffers_;
   std::vector<GpuLodBuffer> gpu_terrain_output_buffers_;
   std::vector<GpuLodBuffer> gpu_terrain_index_buffers_;

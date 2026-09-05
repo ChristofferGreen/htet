@@ -5939,6 +5939,26 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(direct.metrics.green_cells_enumerated<direct.metrics.conforming_cells);
   CHECK(certificate_count(direct_cache)==
         direct_cache.closure.closed_owners.size());
+  // GPU extraction receives this surface-owned corpus, never the deliberately
+  // narrower collision/edit conforming volume.  Its cell count must follow
+  // exactly the same restricted-green template cardinality as CPU extraction.
+  const auto gpu_candidates=
+      tetra_viewer::make_surface_candidate_conforming_volume(direct_cache);
+  std::size_t expected_gpu_candidate_cells{},expected_gpu_candidate_owners{};
+  for(const auto& certificate_block:direct_cache.surface_certificate_blocks)
+    for(const auto& certificate:certificate_block->certificates)
+      if(certificate.may_cross){
+        expected_gpu_candidate_cells+=
+            tetra::complete_green_template(certificate.green_mask).count;
+        ++expected_gpu_candidate_owners;
+      }
+  CHECK(gpu_candidates.cells==expected_gpu_candidate_cells);
+  CHECK(gpu_candidates.materialized_cells==expected_gpu_candidate_cells);
+  CHECK(gpu_candidates.logical_owners==expected_gpu_candidate_owners);
+  CHECK(gpu_candidates.cells==direct.metrics.green_cells_enumerated);
+  CHECK(direct_cache.conforming.cells==0U);
+  REQUIRE_FALSE(gpu_candidates.blocks.empty());
+  CHECK(gpu_candidates.blocks.front()->cells.size()==gpu_candidates.cells);
   const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);

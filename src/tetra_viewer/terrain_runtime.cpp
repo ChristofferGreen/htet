@@ -1,4 +1,5 @@
 #include "tetra_viewer/terrain_runtime.hpp"
+
 #include "tetra_viewer/projection.hpp"
 
 #include <chrono>
@@ -2021,6 +2022,14 @@ void BlockedTerrainRuntime::set_atmosphere_shadow_request(
   }
 }
 
+void BlockedTerrainRuntime::set_gpu_terrain_extraction_diagnostic(bool enabled) {
+  if(gpu_terrain_extraction_diagnostic_==enabled)return;
+  gpu_terrain_extraction_diagnostic_=enabled;
+  // The next regular background publication owns construction of the
+  // diagnostic source snapshot. It never performs this work on the presenter.
+  demand_pending_=true;
+}
+
 BlockedTerrainRuntime::AtmosphereShadowPublication
 BlockedTerrainRuntime::build_atmosphere_shadow_publication(
     const WorldProfile& profile,const tetra::Camera& camera,
@@ -2089,7 +2098,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     std::optional<AtmosphereShadowFrontRequest> atmosphere_shadow_request,
     std::vector<WorldVolumePin> volume_pins,std::stop_token cancellation,
     tetra::GeometryExecutor* executor,
-    std::unique_ptr<tetra::WorldCutDirectory> directory) {
+    std::unique_ptr<tetra::WorldCutDirectory> directory,
+    bool gpu_terrain_extraction_diagnostic) {
   std::size_t completed_work_units{};
   try{
   const auto started=std::chrono::steady_clock::now();
@@ -2398,6 +2408,11 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       sector.retained_surface_blocks.clear();
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
+  std::optional<tetra::WorldBlockedConformingVolume> gpu_surface_cells;
+  if(gpu_terrain_extraction_diagnostic)
+    // This performs no new cut selection or closure reconstruction.  It is
+    // intentionally executed by the publication worker, never the presenter.
+    gpu_surface_cells=make_surface_candidate_conforming_volume(surface_cache);
   // Keep the closure's requested cut, green masks, causal proofs and immutable
   // dependency blocks only for a bounded-frontier transaction. The next slice
   // consumes its exact changed-owner/block manifest; the unsliced profile may
@@ -2806,7 +2821,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   return {view_identity,std::move(directory),std::move(hierarchy_update),
           std::move(scene),diagnostics,
-          std::move(surface_cache),std::move(hierarchy_plan.state),
+          std::move(surface_cache),std::move(gpu_surface_cells),std::move(hierarchy_plan.state),
           std::move(atmosphere_shadow_front),std::move(detail_working_set),
           target_converged,false,false,false,false};
   }catch(const std::runtime_error&){
@@ -2883,6 +2898,8 @@ void BlockedTerrainRuntime::submit() {
       std::move(*pending_detail_working_set_):detail_working_set_;
   pending_detail_working_set_.reset();
   const auto atmosphere_shadow_request=atmosphere_shadow_request_;
+  const bool gpu_terrain_extraction_diagnostic=
+      gpu_terrain_extraction_diagnostic_;
   const auto generation=++requested_generation_;
   const auto view_identity=view_identity_;
   exact_requested_view_epoch_=view_identity.view_epoch;
@@ -2895,7 +2912,7 @@ void BlockedTerrainRuntime::submit() {
       [profile,field,camera,generation,view_identity,token,volume_pins,
        hierarchy_demand,
        detail_working_set,
-       atmosphere_shadow_request,
+       atmosphere_shadow_request,gpu_terrain_extraction_diagnostic,
        executor,
        surface_cache=std::move(surface_cache),
        directory=std::move(directory)]() mutable {
@@ -2904,7 +2921,7 @@ void BlockedTerrainRuntime::submit() {
         std::move(surface_cache),
         hierarchy_demand,detail_working_set,atmosphere_shadow_request,
         volume_pins,token,
-        executor.get(),std::move(directory));
+        executor.get(),std::move(directory),gpu_terrain_extraction_diagnostic);
   });
   ++diagnostics_.submitted_builds;
   last_requested_camera_=camera;
@@ -3258,6 +3275,10 @@ bool BlockedTerrainRuntime::update() {
     published_view_identity_=publication.view_identity;
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
+    gpu_surface_conforming_volume_=
+        std::move(publication.gpu_surface_conforming_volume);
+    gpu_surface_conforming_revision_=gpu_surface_conforming_volume_?
+        directory_->revision():0U;
     hierarchy_demand_=std::move(publication.hierarchy_demand);
     detail_working_set_=std::move(publication.detail_working_set);
     atmosphere_shadow_front_=std::move(publication.atmosphere_shadow_front);
