@@ -3477,6 +3477,20 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     return terrain_samples_==VK_SAMPLE_COUNT_2_BIT?two:
            (terrain_samples_==VK_SAMPLE_COUNT_4_BIT?four:single);
   };
+  // This is deliberately opt-in diagnostic rendering. A completed earlier
+  // slot must have passed every structural gate for the same staged revision;
+  // the just-recorded dispatch may then overwrite this slot only with that
+  // same immutable packet before its indirect draw executes.
+  const auto gpu_terrain_ready=gpu_terrain_indirect_diagnostic_enabled_&&
+      gpu_terrain_extract_status_.complete&&
+      !gpu_terrain_extract_status_.input_overflow&&
+      !gpu_terrain_extract_status_.overflow&&
+      gpu_terrain_extract_status_.vertex_count_matches_cpu&&
+      gpu_terrain_extract_status_.position_bounds_match_cpu&&
+      gpu_terrain_extract_status_.position_normal_hash_matches_cpu&&
+      gpu_terrain_extract_status_.triangle_hash_matches_cpu&&
+      gpu_terrain_extract_status_.indices_match_vertices&&
+      gpu_terrain_extract_status_.source_revision==gpu_terrain_cells_revision_;
   // Opaque geometry establishes visibility first. The native line-mode pass
   // reuses those triangle vertices and depths, so hidden rear edges fail the
   // depth test and visible edges do not depend on triangle shape.
@@ -3489,10 +3503,25 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         sizeof(float)*28,push_data.data());
     vkCmdDraw(command_buffer,6U,1U,0U,0U);
   }
-  draw(terrain_pipeline(triangle_pipeline_,msaa2_triangle_pipeline_,
-                        msaa_triangle_pipeline_),
-       shaded_pipeline_layout_,triangles_,
-       terrain_draw_ranges);
+  if(gpu_terrain_ready){
+    const auto& output=gpu_terrain_output_buffers_.at(image_index);
+    const auto& index=gpu_terrain_index_buffers_.at(image_index);
+    const VkDeviceSize gpu_offset=32U,index_offset=0U;
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+        terrain_pipeline(triangle_pipeline_,msaa2_triangle_pipeline_,
+                         msaa_triangle_pipeline_));
+    vkCmdBindVertexBuffers(command_buffer,0,1,&output.buffer,&gpu_offset);
+    vkCmdBindIndexBuffer(command_buffer,index.buffer,index_offset,VK_INDEX_TYPE_UINT32);
+    vkCmdPushConstants(command_buffer,shaded_pipeline_layout_,
+        VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,
+        sizeof(float)*28,push_data.data());
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_GRAPHICS,
+        shaded_pipeline_layout_,0,1,&descriptor_sets_.at(image_index),0,nullptr);
+    vkCmdDrawIndexedIndirect(command_buffer,output.buffer,0U,1U,
+        sizeof(VkDrawIndexedIndirectCommand));
+  }else draw(terrain_pipeline(triangle_pipeline_,msaa2_triangle_pipeline_,
+                               msaa_triangle_pipeline_),
+              shaded_pipeline_layout_,triangles_,terrain_draw_ranges);
   draw(terrain_pipeline(triangle_wire_pipeline_,
                         msaa2_triangle_wire_pipeline_,
                         msaa_triangle_wire_pipeline_),

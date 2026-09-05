@@ -1193,6 +1193,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_show_contact_normal=false;
     bool world_smooth_normals=world_mode;
     bool world_realtime_gpu_surface_lod=false;
+    bool world_gpu_terrain_indirect_diagnostic=false;
     bool world_terrain_msaa=world_mode&&
         g_SceneRenderer.prefers_tile_local_terrain_msaa();
     bool world_terrain_msaa_explicit=false;
@@ -1468,6 +1469,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_gpu_atmosphere_benchmark=true;
             }else if(value=="--gpu-lod-diagnostic"){
                 world_realtime_gpu_surface_lod=true;
+            }else if(value=="--gpu-terrain-indirect-diagnostic"){
+                world_realtime_gpu_surface_lod=true;
+                world_gpu_terrain_indirect_diagnostic=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
                 world_gpu_atmosphere_benchmark=true;
                 world_gpu_atmosphere_resize_check=true;
@@ -3358,8 +3362,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
                                &world_smooth_normals);
             ImGui::Checkbox("Realtime GPU surface LOD",&world_realtime_gpu_surface_lod);
+            ImGui::BeginDisabled(!world_realtime_gpu_surface_lod);
+            ImGui::Checkbox("GPU terrain indirect image diagnostic",
+                            &world_gpu_terrain_indirect_diagnostic);
+            ImGui::EndDisabled();
             g_SceneRenderer.set_gpu_lod_diagnostic_enabled(
                 world_realtime_gpu_surface_lod);
+            g_SceneRenderer.set_gpu_terrain_indirect_diagnostic_enabled(
+                world_realtime_gpu_surface_lod&&world_gpu_terrain_indirect_diagnostic);
             if(world_runtime)
                 world_runtime->set_gpu_terrain_extraction_diagnostic(
                     world_realtime_gpu_surface_lod);

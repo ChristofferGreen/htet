@@ -214,6 +214,9 @@ class SceneRenderer {
   void set_gpu_lod_diagnostic_enabled(bool enabled) noexcept {
     gpu_lod_diagnostic_enabled_=enabled;
   }
+  void set_gpu_terrain_indirect_diagnostic_enabled(bool enabled) noexcept {
+    gpu_terrain_indirect_diagnostic_enabled_=enabled;
+  }
   // Refresh view-dependent camera/manipulator overlays without touching the
   // substantially larger retained mesh buffers.
   void upload_editor_lines(std::span<const SceneVertex> editor_line_vertices);
@@ -364,6 +367,7 @@ class SceneRenderer {
   std::uint64_t gpu_lod_uploaded_revision_{};
   bool gpu_lod_hierarchy_upload_pending_{};
   bool gpu_lod_diagnostic_enabled_{};
+  bool gpu_terrain_indirect_diagnostic_enabled_{};
   std::vector<tetra::GpuTerrainCellRecord> gpu_terrain_cells_;
   std::uint64_t gpu_terrain_cells_revision_{};
   std::uint64_t gpu_terrain_cells_generation_{};

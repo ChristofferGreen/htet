@@ -1247,6 +1247,13 @@ The production diagnostic passes both gates alongside exact position/normal
 parity. This establishes the emitted indexed triangle topology, but not yet
 its raster image; indirect drawing remains disabled pending fixed and moving
 camera depth and colour captures.
+**P2 gated indirect diagnostic, 2026-09-05.** The renderer now includes an
+explicitly opt-in indexed-indirect terrain branch. It can run only after a
+previous completed slot has passed count, bounds, position/normal, triangle,
+and index gates for the identical staged revision; a new publication resets
+qualification. The normal CPU route remains the default and fallback. This
+provides a controlled image-capture subject without promoting the GPU path.
+
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive
