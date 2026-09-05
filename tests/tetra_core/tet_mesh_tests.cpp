@@ -5911,6 +5911,14 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
           cache.snapshots[block].vertices.size());
     CHECK(cache.raw_blocks[block]->triangles.size()==
           cache.snapshots[block].triangles.size());
+    std::size_t gpu_triangles{};
+    for(const auto& cell:cache.raw_blocks[block]->gpu_cells){
+      CHECK(cell.triangle_mask>0U);
+      CHECK((cell.triangle_mask&~3U)==0U);
+      gpu_triangles+=(cell.triangle_mask&1U)!=0U?1U:0U;
+      gpu_triangles+=(cell.triangle_mask&2U)!=0U?1U:0U;
+    }
+    CHECK(gpu_triangles==cache.raw_blocks[block]->triangles.size());
   }
 
   // Selective volume retention changes storage only: a cold extraction still

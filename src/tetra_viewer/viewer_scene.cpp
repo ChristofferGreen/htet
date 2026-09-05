@@ -3406,8 +3406,14 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
     std::array<tetra::WorldDerivedVertexKey,3> vertices{};
     tetra::WorldTetAddress owner{};
   };
+  using GpuCellSource=SparseWorldSurfaceCache::SurfaceRawBlock::GpuCellSource;
   std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> all_surface_vertices;
   std::vector<KeyTriangle> all_surface_triangles;
+  // These are built beside the authoritative raw triangle contributions,
+  // rather than later from the broader certificate frontier.  The latter is
+  // conservative by design and is not the retained draw front.
+  std::map<tetra::HierarchyBlockId,std::vector<GpuCellSource>>
+      rebuilt_gpu_cell_sources;
   std::size_t direct_green_cells_enumerated{};
   std::size_t reused_intersections{},computed_intersections{};
   constexpr std::array<std::array<std::size_t,2>,6> surface_edges{{
@@ -3427,6 +3433,13 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
               cache->snapshots[block].vertices.size()&&
           cache->raw_blocks[block]->triangles.size()==
               cache->snapshots[block].triangles.size();
+  if(retained_raw_complete)for(const auto& block:cache->raw_blocks){
+    std::size_t gpu_triangles{};
+    for(const auto& cell:block->gpu_cells)
+      gpu_triangles+=static_cast<std::size_t>(std::popcount(cell.triangle_mask));
+    retained_raw_complete=gpu_triangles==block->triangles.size();
+    if(!retained_raw_complete)break;
+  }
   if(cache){
     if(!field_changed)for(const auto& snapshot:cache->snapshots){
       if(!topology_current_blocks.contains(snapshot.id)||
@@ -3570,9 +3583,53 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
               return std::atan2(dot(a,axis_v),dot(a,axis_u))<
                      std::atan2(dot(b,axis_v),dot(b,axis_u));
             });
-        for(std::size_t index=1U;index+1U<crossing_count;++index)
+        GpuCellSource gpu_source;
+        gpu_source.owner=owner;
+        for(std::size_t corner=0;corner<4U;++corner){
+          const auto point=cell[corner];
+          gpu_source.corners[corner]=world_points[point];
+          gpu_source.corner_signs[corner]=distances[point]<0.0?-1.0F:1.0F;
+        }
+        for(std::size_t edge=0;edge<surface_edges.size();++edge){
+          const auto pair=surface_edges[edge];
+          const auto first=cell[pair[0]],second=cell[pair[1]];
+          if((distances[first]<0.0)==(distances[second]<0.0))continue;
+          const auto key=tetra::world_edge_intersection_key(
+              point_keys[first],point_keys[second]);
+          const auto crossing=std::ranges::find(crossings,key,
+              &Crossing::key);
+          if(crossing==crossings.begin()+static_cast<std::ptrdiff_t>(crossing_count))
+            throw std::logic_error("raw GPU cell has no CPU edge root");
+          gpu_source.edge_roots[edge]=crossing->point;
+          gpu_source.edge_root_present[edge]=1.0F;
+          gpu_source.edge_root_keys[edge]=crossing->key;
+        }
+        for(std::size_t index=0;index<crossing_count;++index){
+          gpu_source.draw_roots[index]=crossings[index].point;
+          gpu_source.draw_root_keys[index]=crossings[index].key;
+        }
+        auto midpoint_field=field;
+        if(midpoint_field.sampling_footprint>0.0)
+          midpoint_field.sampling_footprint*=0.5;
+        const auto midpoint=[&](std::size_t destination,std::size_t first,
+                                std::size_t second){
+          gpu_source.subdivision_midpoints[destination]=
+              midpoint_field.project_to_surface(
+                  (crossings[first].point+crossings[second].point)/2.0);
+        };
+        std::size_t emitted_triangles{};
+        for(std::size_t index=1U;index+1U<crossing_count;++index){
           all_surface_triangles.push_back({{{crossings[0].key,
               crossings[index].key,crossings[index+1U].key}},owner});
+          gpu_source.triangle_mask|=1U<<emitted_triangles++;
+        }
+        midpoint(0U,0U,1U);midpoint(1U,1U,2U);midpoint(2U,2U,0U);
+        if(crossing_count==4U){
+          midpoint(3U,0U,2U);midpoint(4U,2U,3U);midpoint(5U,3U,0U);
+        }
+        rebuilt_gpu_cell_sources[tetra::hierarchy_block_id(
+            owner,directory.block_generations())].push_back(
+                std::move(gpu_source));
       }
     }
   }
@@ -3617,6 +3674,10 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
       }
       block->triangles.push_back(compact);
     }
+    const auto gpu_sources=rebuilt_gpu_cell_sources.find(id);
+    if(gpu_sources==rebuilt_gpu_cell_sources.end())
+      throw std::logic_error("rebuilt raw surface block has no GPU cell source");
+    block->gpu_cells=std::move(gpu_sources->second);
     current_raw_blocks.push_back(std::move(block));
   }
   std::ranges::sort(current_raw_blocks,{},
@@ -4330,6 +4391,54 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
   result.metrics.total_patch_triangles=result.metrics.source_triangles;
   const auto snapshots_assembled=std::chrono::steady_clock::now();
   if(cache){
+    // The CPU renderer consumes optimized snapshot positions, while raw
+    // crossings deliberately remain unoptimized for incremental topology
+    // identity. Refresh only the GPU transport attached to blocks whose
+    // snapshot was rebuilt, preserving the raw arena's reuse semantics.
+    std::map<tetra::WorldDerivedVertexKey,tetra::Vec3> optimized_positions;
+    for(const auto& snapshot:result.snapshots)
+      for(const auto& vertex:snapshot.vertices){
+        const auto [found,inserted]=optimized_positions.emplace(
+            vertex.key,vertex.position);
+        if(!inserted&&dot(found->second-vertex.position,
+                           found->second-vertex.position)>1.0e-20)
+          throw std::logic_error("surface snapshots disagree on optimized position");
+      }
+    auto midpoint_field=field;
+    if(midpoint_field.sampling_footprint>0.0)
+      midpoint_field.sampling_footprint*=0.5;
+    for(auto& retained:current_raw_blocks){
+      if(!output_blocks.contains(retained->id))continue;
+      auto refreshed=std::make_shared<SparseWorldSurfaceCache::SurfaceRawBlock>(
+          *retained);
+      for(auto& cell:refreshed->gpu_cells){
+        for(std::size_t edge=0;edge<cell.edge_roots.size();++edge){
+          if(cell.edge_root_present[edge]!=1.0F)continue;
+          const auto found=optimized_positions.find(cell.edge_root_keys[edge]);
+          if(found==optimized_positions.end())
+            throw std::logic_error("GPU edge root is absent from optimized surface");
+          cell.edge_roots[edge]=found->second;
+        }
+        std::size_t root_count{};
+        for(std::size_t root=0;root<cell.draw_roots.size();++root){
+          if(root==3U&&cell.triangle_mask!=3U)break;
+          const auto found=optimized_positions.find(cell.draw_root_keys[root]);
+          if(found==optimized_positions.end())
+            throw std::logic_error("GPU draw root is absent from optimized surface");
+          cell.draw_roots[root]=found->second;++root_count;
+        }
+        const auto midpoint=[&](std::size_t destination,std::size_t first,
+                                std::size_t second){
+          cell.subdivision_midpoints[destination]=midpoint_field.project_to_surface(
+              (cell.draw_roots[first]+cell.draw_roots[second])/2.0);
+        };
+        midpoint(0U,0U,1U);midpoint(1U,1U,2U);midpoint(2U,2U,0U);
+        if(root_count==4U){
+          midpoint(3U,0U,2U);midpoint(4U,2U,3U);midpoint(5U,3U,0U);
+        }
+      }
+      retained=std::move(refreshed);
+    }
     if(optimize){
       // Retain raw edge crossings, not their optimized surface positions.
       // A derived key names the source hierarchy edge and must remain valid
@@ -4501,6 +4610,45 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
     const tetra::Sphere& field,
     tetra::Vec3 render_origin) {
   std::vector<tetra::GpuTerrainCellRecord> result;
+  // The raw arena is the only faithful definition of the retained CPU front.
+  // Its cells carry world-space source positions, so packing them here is a
+  // pure origin translation; no closure, field classification, root finding,
+  // winding, or triangle-membership decision is repeated on this path.
+  if(!cache.raw_blocks.empty()){
+    std::size_t source_count{};
+    for(const auto& block:cache.raw_blocks)source_count+=block->gpu_cells.size();
+    result.reserve(source_count);
+    const auto relative=[&](tetra::Vec3 point){
+      point=point-render_origin;
+      return std::array<float,4>{static_cast<float>(point.x),
+          static_cast<float>(point.y),static_cast<float>(point.z),1.0F};
+    };
+    for(const auto& block:cache.raw_blocks)for(const auto& source:block->gpu_cells){
+      if(source.triangle_mask==0U)
+        throw std::logic_error("retained raw GPU cell has no emitted triangle");
+      tetra::GpuTerrainCellRecord record{};
+      for(std::size_t corner=0;corner<4U;++corner){
+        record.corners[corner]=relative(source.corners[corner]);
+        record.corners[corner][3]=source.corner_signs[corner];
+      }
+      for(std::size_t edge=0;edge<6U;++edge){
+        record.edge_roots[edge]=relative(source.edge_roots[edge]);
+        record.edge_roots[edge][3]=source.edge_root_present[edge];
+      }
+      for(std::size_t root=0;root<4U;++root)
+        record.draw_roots[root]=relative(source.draw_roots[root]);
+      record.draw_roots[3][3]=static_cast<float>(source.triangle_mask);
+      const auto root_count=static_cast<std::size_t>(std::count(
+          source.edge_root_present.begin(),source.edge_root_present.end(),1.0F));
+      for(std::size_t midpoint=0;midpoint<(root_count==3U?3U:6U);++midpoint)
+        record.subdivision_midpoints[midpoint]=
+            relative(source.subdivision_midpoints[midpoint]);
+      result.push_back(record);
+    }
+    return result;
+  }
+  // Compatibility fallback for an externally supplied pre-arena cache. New
+  // publications always take the exact retained-raw path above.
   using FinalTriangleKey=std::pair<tetra::WorldTetAddress,
       std::array<tetra::WorldDerivedVertexKey,3>>;
   std::set<FinalTriangleKey> final_triangles;

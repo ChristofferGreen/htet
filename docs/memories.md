@@ -26,13 +26,13 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, vulkan
 - Fact: GPU terrain vertex-count parity is insufficient; completed slot output must match the actual retained CPU draw ranges' count and relative-position bounds at the identical render origin before indirect drawing is eligible. The planetary CPU draw path has one projected midpoint subdivision per extracted triangle.
-- Evidence: The GPU's 56,712 base vertices initially matched a pre-render metric but the retained CPU upload contains 226,848 vertices. Compute now matches that count with CPU field-projected midpoint transport; the bounds gate still rejects it because CPU's five-pass optimizer moves the base roots.
+- Evidence: The GPU's 56,712 base vertices initially matched a pre-render metric but the retained CPU upload contains 226,848 vertices. Raw-block transport now refreshes roots from final optimized snapshots and projects their midpoints, producing exact count and bounds parity; orientation, incidence, depth, and colour remain required.
 
 ### gpu-terrain-final-front-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, retained-front
-- Fact: A GPU surface packet must be keyed to the exact retained CPU draw front, not merely the wider certificate frontier or the current snapshot directory.
-- Evidence: Snapshot-key filtering reduced a 12.8 km bounds mismatch to 249 m but emitted 13,705 base triangles while the visible retained front has 18,904, proving the two currently disagree.
+- Fact: A GPU surface packet must be owned by the exact retained CPU raw-block front, not merely the wider certificate frontier or the current snapshot directory.
+- Evidence: Snapshot-key filtering emitted 13,705 base triangles while the visible retained front has 18,904; a raw-block-owned packet subsequently restored 226,848 final vertices and exact CPU position bounds.
 
 ### gpu-terrain-root-transport
 - Updated: 2026-09-05
@@ -43,8 +43,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-source-corpus
 - Updated: 2026-09-05
 - Tags: terrain, gpu, bcc, surface-cache
-- Fact: GPU extraction input must be materialized from every `may_cross` surface certificate using its cached restricted-green corner signs, then omit exactly the cells with fewer than three sign-changing edges; it must never use selective collision volume residency, unused template capacity, or foreground field reevaluation.
-- Evidence: The native sparse-world regression checks the packed nonempty-cell predicate, and an off-screen Vulkan run reduced 348,989 conservative candidates to 15,035 GPU cells while retaining the CPU triangle-list count of 56,712 vertices.
+- Fact: GPU extraction input is produced beside CPU raw contributions and retained in `SurfaceRawBlock`; it begins from cached restricted-green signs and omits cells with fewer than three crossings, never uses collision residency or foreground field evaluation.
+- Evidence: The native sparse-world regression checks the packed nonempty-cell predicate; a 15,035-cell raw-block packet produced the CPU draw's 226,848 final vertices with exact bounds under MoltenVK.
 
 ### logical-derived-address-order
 - Updated: 2026-08-24

@@ -1199,19 +1199,16 @@ rejects the packet: the remaining discrepancy is the CPU's five-pass global
 surface optimizer. This larger input is intentionally a diagnostic transport,
 not an acceleration claim.
 
-**P2 final-front membership gate, 2026-09-05.** Candidate compute cells are
-now admitted only when their CPU-wound triangle key exists in the published
-surface snapshots; quadrilateral cells carry a per-triangle emission mask.
-This shrank the diagnostic from 15,035 cells / 226,848 vertices to 10,937 /
-164,460 and reduced the bounds error from 12.8 km to 249 m. The remaining
-count mismatch is deliberate rejection evidence: the retained CPU draw front
-contains 18,904 base triangles while its snapshot directory exposes only
-13,705. GPU indirect drawing cannot be considered until that ownership/front
-identity gap is closed.
-Owner-sensitive triangle identity produces the same result, ruling out
-duplicate ownership as the explanation; the diagnostic reports the maximum
-CPU/GPU bounds error (249.158 m after final-front filtering) for subsequent
-raw-block packet work.
+**P2 retained-front source correction, 2026-09-05.** Snapshot-key filtering
+proved that the broader certificate frontier is not the retained CPU draw
+front: it reduced the packet to 10,937 cells / 164,460 vertices while the CPU
+draw contains 226,848 vertices. The source has therefore moved into each
+incrementally retained `SurfaceRawBlock`, alongside the CPU raw triangle
+contributions. It stores CPU signs, roots, wound order, midpoint transport,
+and the emission mask in render-origin-independent world space, then packs
+only retained blocks at publication. Packet source consequently retires and
+reuses with the corresponding raw CPU geometry, without foreground closure or
+field classification.
 
 **P2 draw-topology alignment, 2026-09-05.** The compute extractor now emits
 the same one-to-four triangle subdivision required by the planetary CPU draw
@@ -1221,6 +1218,16 @@ positions are still planar, whereas the CPU projects every midpoint through
 the band-limited terrain field, so the position-bounds gate continues to
 reject it. This proves only output cardinality and bounded indirect-buffer
 reservation, not geometric or image parity.
+
+**P2 retained geometry parity, 2026-09-05.** The raw-block packet refreshes
+its transport roots from optimized CPU snapshots when a block is rebuilt, then
+recomputes projected subdivision midpoints from those final roots. The latest
+320x240 off-screen MoltenVK diagnostic processed 15,035 retained cells,
+emitted exactly 226,848 vertices without overflow, and matched the CPU draw's
+six relative-world position bounds exactly (maximum error `0`). This qualifies
+only count and position bounds. CPU rasterization remains mandatory while P2
+adds oriented triangle/normal, edge-incidence, depth, colour, stale-generation,
+and moving-camera image checks.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

@@ -880,6 +880,22 @@ struct SparseWorldSurfaceCache {
       std::array<std::uint32_t,3> vertices{};
       tetra::WorldTetAddress owner{};
     };
+    // Render-origin-independent extraction input owned by precisely the same
+    // incremental arena as the raw CPU triangles.  It is intentionally kept
+    // as doubles here: camera-relative float packing happens only when a
+    // published Vulkan upload is made.
+    struct GpuCellSource {
+      tetra::WorldTetAddress owner{};
+      std::array<tetra::Vec3,4> corners{};
+      std::array<float,4> corner_signs{};
+      std::array<tetra::Vec3,6> edge_roots{};
+      std::array<float,6> edge_root_present{};
+      std::array<tetra::WorldDerivedVertexKey,6> edge_root_keys{};
+      std::array<tetra::Vec3,4> draw_roots{};
+      std::array<tetra::WorldDerivedVertexKey,4> draw_root_keys{};
+      std::array<tetra::Vec3,6> subdivision_midpoints{};
+      std::uint32_t triangle_mask{};
+    };
     tetra::HierarchyBlockId id{};
     std::uint64_t source_hierarchy_revision{};
     // Raw crossings and compact local-index triangles retain the exact
@@ -887,6 +903,7 @@ struct SparseWorldSurfaceCache {
     // optimized snapshot is the second half of the atomic block arena.
     std::vector<tetra::WorldSurfaceVertex> vertices;
     std::vector<Triangle> triangles;
+    std::vector<GpuCellSource> gpu_cells;
   };
   std::vector<tetra::WorldSurfaceVertex> intersections;
   std::vector<std::uint32_t> intersection_references;
