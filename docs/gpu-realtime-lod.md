@@ -1144,6 +1144,27 @@ run also exposed and corrected a pipeline-layout bug: the terrain compute
 pipeline had been created with the two-binding selector layout instead of its
 three-binding extraction layout, which had made earlier zero-vertex results
 undefined rather than meaningful measurements.
+
+**P1 topology-count alignment, 2026-09-05.** The immutable background packet
+now carries each CPU extractor certificate's cached restricted-green corner
+classification rather than re-evaluating the field while staging Vulkan input.
+On the same off-screen production run the GPU and independent host replay both
+emitted exactly 56,712 vertices—the authoritative CPU triangle-list count—from
+348,989 cells, with no overflow. This proves count parity for the shared
+classification/cell corpus only. It does not prove roots, winding, ownership,
+optimized positions, normals, depth, or colour: the compute still took 12.81
+ms and emits the linear diagnostic surface, so CPU rasterization remains the
+only enabled visual path.
+
+**P1 empty-cell compaction, 2026-09-05.** The background packet now omits
+restricted-green cells whose same cached CPU signs give fewer than three edge
+crossings—the exact early-out already used by CPU extraction. The off-screen
+corpus fell from 348,989 conservative candidates to 15,035 nonempty cells
+(96% fewer) while retaining 56,712 CPU/GPU/host-linear vertices and no
+overflow. A single 18.22 ms timing after this change is not a reliable
+comparison with the preceding 12.81 ms run, so it is explicitly not claimed
+as a performance gain; a controlled multi-sample extraction profile remains
+required.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

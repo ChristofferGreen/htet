@@ -5959,6 +5959,28 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   CHECK(direct_cache.conforming.cells==0U);
   REQUIRE_FALSE(gpu_candidates.blocks.empty());
   CHECK(gpu_candidates.blocks.front()->cells.size()==gpu_candidates.cells);
+  const auto gpu_records=tetra_viewer::make_gpu_surface_candidate_cell_records(
+      direct_cache,domain,{});
+  std::size_t expected_gpu_nonempty_cells{};
+  constexpr std::array<std::array<std::size_t,2>,6> gpu_edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  for(const auto& certificate_block:direct_cache.surface_certificate_blocks)
+    for(const auto& certificate:certificate_block->certificates) {
+      if(!certificate.may_cross)continue;
+      const auto& green=tetra::complete_green_template(certificate.green_mask);
+      for(std::size_t cell_index=0;cell_index<green.count;++cell_index) {
+        const auto& cell=green.tetrahedra[cell_index];std::size_t crossings{};
+        for(const auto edge:gpu_edges)
+          crossings+=((certificate.negative_grande_points&(1U<<cell[edge[0]]))!=0U)!=
+              ((certificate.negative_grande_points&(1U<<cell[edge[1]]))!=0U)?1U:0U;
+        expected_gpu_nonempty_cells+=crossings>=3U?1U:0U;
+      }
+    }
+  CHECK(gpu_records.size()==expected_gpu_nonempty_cells);
+  CHECK(gpu_records.size()<expected_gpu_candidate_cells);
+  for(const auto& record:gpu_records)
+    for(const auto& corner:record.corners)
+      CHECK((corner[3]==-1.0F||corner[3]==1.0F));
   const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);

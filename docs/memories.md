@@ -25,8 +25,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-source-corpus
 - Updated: 2026-09-05
 - Tags: terrain, gpu, bcc, surface-cache
-- Fact: GPU extraction input must be materialized from every `may_cross` surface certificate using exactly `complete_green_template(mask).count`, never from selective collision volume residency or unused template capacity.
-- Evidence: The native sparse-world regression constructs the candidate corpus while conforming-volume residency is empty and proves its owner/cell totals equal the CPU extractor's candidate and green-cell metrics.
+- Fact: GPU extraction input must be materialized from every `may_cross` surface certificate using its cached restricted-green corner signs, then omit exactly the cells with fewer than three sign-changing edges; it must never use selective collision volume residency, unused template capacity, or foreground field reevaluation.
+- Evidence: The native sparse-world regression checks the packed nonempty-cell predicate, and an off-screen Vulkan run reduced 348,989 conservative candidates to 15,035 GPU cells while retaining the CPU triangle-list count of 56,712 vertices.
 
 ### logical-derived-address-order
 - Updated: 2026-08-24

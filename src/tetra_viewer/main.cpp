@@ -4525,17 +4525,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         g_SceneRenderer.upload_gpu_hierarchy_snapshot(
                             tetra::make_gpu_hierarchy_snapshot(
                                 directory,directory.revision()));
-                    if(world_realtime_gpu_surface_lod)if(const auto* volume=
-                           world_runtime->world_surface_conforming_volume();
-                       volume!=nullptr&&(g_SceneRenderer.gpu_terrain_cells_revision()!=
+                    if(world_realtime_gpu_surface_lod)if(const auto gpu_cells=
+                           world_runtime->world_surface_gpu_cells();
+                       !gpu_cells.empty()&&(g_SceneRenderer.gpu_terrain_cells_revision()!=
                            directory.revision()||!gpu_terrain_cells_render_origin||
                            gpu_terrain_cells_render_origin->x!=prepared_scene.render_origin.x||
                            gpu_terrain_cells_render_origin->y!=prepared_scene.render_origin.y||
                            gpu_terrain_cells_render_origin->z!=prepared_scene.render_origin.z)){
                         g_SceneRenderer.stage_gpu_terrain_cells(
-                            tetra::make_gpu_terrain_cell_records(
-                                *volume,world_runtime->profile().domain,
-                                world_runtime->field(),prepared_scene.render_origin),
+                            gpu_cells,
                             directory.revision(),static_cast<std::uint32_t>(
                                 std::min<std::size_t>(
                                     world_runtime->diagnostics().render_triangles*3U,

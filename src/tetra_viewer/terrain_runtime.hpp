@@ -625,8 +625,8 @@ class TerrainRuntime {
       const noexcept { return nullptr; }
   [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
   world_conforming_volume() const noexcept { return nullptr; }
-  [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
-  world_surface_conforming_volume() const noexcept { return nullptr; }
+  [[nodiscard]] virtual std::span<const tetra::GpuTerrainCellRecord>
+  world_surface_gpu_cells() const noexcept { return {}; }
   [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
   atmosphere_shadow_front() const noexcept {
     static const std::optional<AtmosphereShadowFront> none;
@@ -716,11 +716,12 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   world_conforming_volume() const noexcept override {
     return &surface_cache_.conforming;
   }
-  [[nodiscard]] const tetra::WorldBlockedConformingVolume*
-  world_surface_conforming_volume() const noexcept override {
+  [[nodiscard]] std::span<const tetra::GpuTerrainCellRecord>
+  world_surface_gpu_cells() const noexcept override {
     return directory_&&gpu_surface_conforming_revision_==directory_->revision()&&
-        gpu_surface_conforming_volume_?
-        &*gpu_surface_conforming_volume_:nullptr;
+        gpu_surface_cells_?
+        std::span<const tetra::GpuTerrainCellRecord>{*gpu_surface_cells_}:
+        std::span<const tetra::GpuTerrainCellRecord>{};
   }
   [[nodiscard]] std::span<const TerrainResidentSector>
   resident_terrain_sectors() const noexcept override {
@@ -754,8 +755,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     PreparedScene scene;
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
-    std::optional<tetra::WorldBlockedConformingVolume>
-        gpu_surface_conforming_volume;
+    std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells;
     WorldHierarchyDemandState hierarchy_demand;
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     TerrainDetailWorkingSet detail_working_set;
@@ -806,8 +806,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   tetra::Camera camera_;
   tetra::Camera last_requested_camera_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
-  std::optional<tetra::WorldBlockedConformingVolume>
-      gpu_surface_conforming_volume_;
+  std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells_;
   std::uint64_t gpu_surface_conforming_revision_{};
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;

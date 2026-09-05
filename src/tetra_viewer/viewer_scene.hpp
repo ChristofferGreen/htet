@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_core/four_hexahedra.hpp"
+#include "tetra_core/gpu_hierarchy_snapshot.hpp"
 #include "tetra_core/implicit_surface.hpp"
 #include "tetra_core/mixed_depth_dual.hpp"
 #include "tetra_core/whole_cell_surface.hpp"
@@ -971,6 +972,13 @@ struct BlockedDerivedSurfaceBuild {
 // complete cut on the presentation thread.
 [[nodiscard]] tetra::WorldBlockedConformingVolume
 make_surface_candidate_conforming_volume(const SparseWorldSurfaceCache& cache);
+// Packs the same CPU-certified candidates with their already-authoritative
+// restricted-green corner signs.  The presentation path only uploads these
+// immutable records; it never reevaluates the field to choose topology.
+[[nodiscard]] std::vector<tetra::GpuTerrainCellRecord>
+make_gpu_surface_candidate_cell_records(const SparseWorldSurfaceCache& cache,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    tetra::Vec3 render_origin);
 // Converts a published or freshly assembled blocked snapshot into the same
 // flat-shaded, barycentric-edged draw representation consumed by Vulkan.
 [[nodiscard]] PreparedScene prepare_blocked_derived_surface_scene(

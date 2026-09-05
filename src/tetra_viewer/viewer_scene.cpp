@@ -4495,6 +4495,69 @@ tetra::WorldBlockedConformingVolume make_surface_candidate_conforming_volume(
   return result;
 }
 
+std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records(
+    const SparseWorldSurfaceCache& cache,
+    const tetra::WorldStreamingDemand::Domain& domain,
+    tetra::Vec3 render_origin) {
+  std::vector<tetra::GpuTerrainCellRecord> result;
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  for(const auto& certificates:cache.surface_certificate_blocks)
+    for(const auto& certificate:certificates->certificates) {
+      if(!certificate.may_cross)continue;
+      if(!certificate.has_grande_signs)
+        throw std::logic_error("GPU surface candidate lacks CPU corner signs");
+      const auto geometry=std::ranges::lower_bound(
+          cache.closure.geometry,certificate.owner,{},
+          &tetra::WorldConformingClosureCacheEntry::address);
+      const auto keys=geometry!=cache.closure.geometry.end()&&
+              geometry->address==certificate.owner?geometry->vertices:
+          tetra::world_tetrahedron_vertex_keys(certificate.owner);
+      std::array<tetra::Vec3,10> points{};
+      for(std::size_t point=0;point<points.size();++point) {
+        if(tetra::grande_point_vertex[point]!=0xffU) {
+          const auto vertex=tetra::grande_point_vertex[point];
+          points[point]={std::ldexp(static_cast<double>(keys[vertex].x),
+                                    -keys[vertex].denominator_exponent),
+                         std::ldexp(static_cast<double>(keys[vertex].y),
+                                    -keys[vertex].denominator_exponent),
+                         std::ldexp(static_cast<double>(keys[vertex].z),
+                                    -keys[vertex].denominator_exponent)};
+        }else {
+          const auto edge=edges[tetra::grande_point_edge[point]];
+          points[point]=(points[edge[0]]+points[edge[1]])/2.0;
+        }
+      }
+      const auto& green=tetra::complete_green_template(certificate.green_mask);
+      for(std::size_t cell_index=0;cell_index<green.count;++cell_index) {
+        const auto& indices=green.tetrahedra[cell_index];
+        std::size_t crossings{};
+        for(const auto edge:edges) {
+          const bool first_negative=(certificate.negative_grande_points&
+              (1U<<indices[edge[0]]))!=0U;
+          const bool second_negative=(certificate.negative_grande_points&
+              (1U<<indices[edge[1]]))!=0U;
+          crossings+=first_negative!=second_negative?1U:0U;
+        }
+        // `may_cross` is conservative.  CPU extraction itself discards this
+        // cell before roots/triangles when its certified corner signs expose
+        // fewer than three crossings, so omitting it here preserves the
+        // authoritative topology while avoiding an empty GPU invocation.
+        if(crossings<3U)continue;
+        tetra::GpuTerrainCellRecord record{};
+        for(std::size_t corner=0;corner<4U;++corner) {
+          const auto point=indices[corner];
+          const auto relative=domain.to_world(points[point])-render_origin;
+          record.corners[corner]={static_cast<float>(relative.x),
+              static_cast<float>(relative.y),static_cast<float>(relative.z),
+              (certificate.negative_grande_points&(1U<<point))!=0U?-1.0F:1.0F};
+        }
+        result.push_back(record);
+      }
+    }
+  return result;
+}
+
 BlockedDerivedSurfaceBuild build_blocked_derived_surface(
     const tetra::TetMesh& mesh,const tetra::WorldCutDirectory& directory,
     const tetra::Sphere& sphere,BlockedDerivedSurfaceOptions options,

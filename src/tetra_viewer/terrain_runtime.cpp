@@ -2408,11 +2408,12 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
       sector.retained_surface_blocks.clear();
   auto scene=std::move(prepared.scene);
   const auto render_prepared=std::chrono::steady_clock::now();
-  std::optional<tetra::WorldBlockedConformingVolume> gpu_surface_cells;
+  std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells;
   if(gpu_terrain_extraction_diagnostic)
     // This performs no new cut selection or closure reconstruction.  It is
     // intentionally executed by the publication worker, never the presenter.
-    gpu_surface_cells=make_surface_candidate_conforming_volume(surface_cache);
+    gpu_surface_cells=make_gpu_surface_candidate_cell_records(surface_cache,
+        profile.domain,prepared.scene.render_origin);
   // Keep the closure's requested cut, green masks, causal proofs and immutable
   // dependency blocks only for a bounded-frontier transaction. The next slice
   // consumes its exact changed-owner/block manifest; the unsliced profile may
@@ -3275,9 +3276,9 @@ bool BlockedTerrainRuntime::update() {
     published_view_identity_=publication.view_identity;
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
-    gpu_surface_conforming_volume_=
-        std::move(publication.gpu_surface_conforming_volume);
-    gpu_surface_conforming_revision_=gpu_surface_conforming_volume_?
+    gpu_surface_cells_=
+        std::move(publication.gpu_surface_cells);
+    gpu_surface_conforming_revision_=gpu_surface_cells_?
         directory_->revision():0U;
     hierarchy_demand_=std::move(publication.hierarchy_demand);
     detail_working_set_=std::move(publication.detail_working_set);
