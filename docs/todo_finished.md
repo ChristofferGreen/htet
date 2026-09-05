@@ -2,6 +2,15 @@
 
 ## 2026-09-06
 
+- [x] **P6b — Derive revisioned candidate-front masks.** Added a compact
+  device-facing packet containing canonical selected BCC addresses, the exact
+  closure-resolved owners/masks, and their six references into a globally
+  sorted, full-dyadic-identity edge directory. The independent CPU oracle
+  recreates the closure and rejects stale revisions plus tampered candidate
+  identities, masks, edge references/data, format, and ordering. The changing
+  candidate-front regression keeps output diagnostic-only; P6c owns the halo
+  and mixed-depth topology proof.
+
 - [x] **P6a — Freeze the shader-visible Grande template contract.** Added the
   immutable 64-entry, 7 KiB GPU-facing table: each 112-byte entry packs the
   CPU Grande tetrahedron point indices, its mask, and exact cell count. The

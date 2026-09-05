@@ -37,6 +37,50 @@ void validate_gpu_green_template_table(
 [[nodiscard]] std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
     const GpuGreenTemplateRecord& record,std::size_t index);
 
+// P6b's device-facing dependency packet.  Candidates are the exact selected
+// red addresses; owners are the closed restricted-green front.  Every owner
+// names its six globally deduplicated, exact dyadic edges, so a shader need
+// not infer a transition from float geometry or a local neighbour search.
+inline constexpr std::uint32_t gpu_green_mask_packet_format_version=1U;
+struct alignas(16) GpuGreenMaskPacketHeader {
+  std::uint64_t source_revision{};
+  std::uint64_t candidate_identity{};
+  std::uint32_t candidate_count{};
+  std::uint32_t owner_count{};
+  std::uint32_t edge_count{};
+  std::uint32_t format_version{gpu_green_mask_packet_format_version};
+  auto operator<=>(const GpuGreenMaskPacketHeader&) const = default;
+};
+static_assert(sizeof(GpuGreenMaskPacketHeader)==32U);
+struct alignas(16) GpuGreenMaskOwnerRecord {
+  std::array<std::uint32_t,4> address{};
+  std::array<std::uint32_t,6> edge_records{};
+  std::uint32_t mask{};
+  std::uint32_t reserved{};
+  auto operator<=>(const GpuGreenMaskOwnerRecord&) const = default;
+};
+static_assert(sizeof(GpuGreenMaskOwnerRecord)==48U);
+// Two exact WorldVertexKey values occupy the first fourteen lanes: xyz as
+// little-endian signed 64-bit words, followed by a denominator exponent.
+// flags bit zero means that a requested split ancestor directly required this
+// midpoint before restricted-green fixed-point propagation.
+struct alignas(16) GpuGreenMaskEdgeRecord {
+  std::array<std::uint32_t,16> lanes{};
+  auto operator<=>(const GpuGreenMaskEdgeRecord&) const = default;
+};
+static_assert(sizeof(GpuGreenMaskEdgeRecord)==64U);
+inline constexpr std::uint32_t gpu_green_mask_edge_ancestor_required=1U;
+struct GpuGreenMaskPacket {
+  GpuGreenMaskPacketHeader header{};
+  std::vector<std::array<std::uint32_t,4>> candidates;
+  std::vector<GpuGreenMaskOwnerRecord> owners;
+  std::vector<GpuGreenMaskEdgeRecord> edges;
+};
+[[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
+    std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
+void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
+                                    std::uint64_t expected_source_revision);
+
 // Storage-buffer representation. This is deliberately made only from fixed
 // width scalar fields: it can be copied verbatim to a GPU storage buffer.
 struct alignas(16) GpuHierarchyRecord {

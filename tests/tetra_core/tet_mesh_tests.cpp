@@ -593,6 +593,65 @@ TEST_CASE("GPU Grande template table is exact compact and fail closed") {
                       table[0],table[0].count)),std::out_of_range);
 }
 
+TEST_CASE("GPU green mask packets exactly derive revisioned closure masks") {
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  const auto split=[&](tetra::WorldTetAddress owner) {
+    const auto found=std::ranges::find(candidates,owner);
+    REQUIRE(found!=candidates.end());
+    candidates.erase(found);
+    for(std::uint8_t child=0U;child<8U;++child)
+      candidates.push_back(owner.child(child));
+    std::ranges::sort(candidates);
+  };
+  split(tetra::WorldTetAddress::root(0U));
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,71U);
+  CHECK_NOTHROW(tetra::validate_gpu_green_mask_packet(packet,71U));
+  tetra::WorldConformingClosureCache closure;
+  const auto closed=tetra::close_world_conforming_cut(candidates,&closure);
+  REQUIRE(packet.owners.size()==closed.size());
+  CHECK(packet.header.candidate_count==candidates.size());
+  CHECK(packet.header.owner_count==closed.size());
+  for(std::size_t index=0U;index<packet.owners.size();++index) {
+    CHECK(tetra::gpu_hierarchy_address_from_lanes(packet.owners[index].address)==
+          closed[index]);
+    CHECK(packet.owners[index].mask==closure.green_masks[index]);
+    CHECK(packet.owners[index].mask<63U);
+    for(const auto edge:packet.owners[index].edge_records)
+      CHECK(edge<packet.edges.size());
+  }
+  CHECK(std::ranges::any_of(packet.edges,[](const auto& edge) {
+    return (edge.lanes[14U]&tetra::gpu_green_mask_edge_ancestor_required)!=0U;
+  }));
+  split(tetra::WorldTetAddress::root(1U));
+  const auto moved=tetra::make_gpu_green_mask_packet(candidates,72U);
+  CHECK_NOTHROW(tetra::validate_gpu_green_mask_packet(moved,72U));
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(packet,72U),
+                  std::invalid_argument);
+  auto malformed=packet;
+  malformed.header.candidate_identity^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
+  malformed=packet;malformed.owners.front().mask^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
+  malformed=packet;malformed.owners.front().edge_records[0]=
+      static_cast<std::uint32_t>(packet.edges.size());
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
+  malformed=packet;malformed.edges.front().lanes[0]^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
+  malformed=packet;malformed.header.format_version=0U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_mask_packet(malformed,71U),
+                  std::invalid_argument);
+  auto unordered=candidates;
+  std::swap(unordered.front(),unordered.back());
+  CHECK_THROWS_AS(static_cast<void>(tetra::make_gpu_green_mask_packet(
+                      unordered,73U)),std::invalid_argument);
+}
+
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
   const auto construction=tetra::make_four_hexahedra();
   REQUIRE(construction.cells.size()==4U);

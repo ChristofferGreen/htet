@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 01:28 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 496 tests passed after P6b; the new revisioned GPU green-mask packet test matches a changing candidate cut to an independent closure oracle and rejects stale or malformed packets.
+
+- 2026-09-06 01:15 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp` | notes: P6b initially referenced the closure module's private `WorldEdgeHash`; replaced it with sorted exact edge identity lookup before the focused rerun.
+
 - 2026-09-06 01:00 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 495 tests passed after P6a; the new GPU Grande-template ABI test made 4,688 assertions over 64 masks, all orientation-preserving permutations, and malformed table cases.
 
 - 2026-09-06 00:36 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 494 tests passed, including hidden static and moving Metal GPU-terrain slot qualification; fixed capture accepted 3 packets, while motion accepted 135 and stale-rejected 1 with zero payload failures, overflow, or CPU-front authority violations.

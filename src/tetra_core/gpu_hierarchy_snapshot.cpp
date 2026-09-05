@@ -102,6 +102,105 @@ std::vector<WorldTetAddress> block_graph_order(
   return result;
 }
 
+constexpr std::array<std::array<std::size_t,2>,6> tetrahedron_edges{{
+    {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+
+std::uint64_t green_mask_candidate_identity(
+    std::span<const WorldTetAddress> candidates) noexcept {
+  constexpr std::uint64_t offset=1469598103934665603ULL;
+  constexpr std::uint64_t prime=1099511628211ULL;
+  std::uint64_t result=offset;
+  for(const auto& address:candidates) {
+    const auto* bytes=reinterpret_cast<const unsigned char*>(&address);
+    for(std::size_t index=0U;index<sizeof(address);++index) {
+      result^=bytes[index];result*=prime;
+    }
+  }
+  return result;
+}
+
+void pack_green_mask_vertex(std::array<std::uint32_t,16>& lanes,
+                            std::size_t offset,WorldVertexKey vertex) {
+  lanes[offset+0U]=low32(static_cast<std::uint64_t>(vertex.x));
+  lanes[offset+1U]=high32(static_cast<std::uint64_t>(vertex.x));
+  lanes[offset+2U]=low32(static_cast<std::uint64_t>(vertex.y));
+  lanes[offset+3U]=high32(static_cast<std::uint64_t>(vertex.y));
+  lanes[offset+4U]=low32(static_cast<std::uint64_t>(vertex.z));
+  lanes[offset+5U]=high32(static_cast<std::uint64_t>(vertex.z));
+  lanes[offset+6U]=vertex.denominator_exponent;
+}
+
+GpuGreenMaskEdgeRecord gpu_green_mask_edge_record(
+    WorldEdgeKey edge,bool ancestor_required) {
+  GpuGreenMaskEdgeRecord result;
+  pack_green_mask_vertex(result.lanes,0U,edge.vertices[0]);
+  pack_green_mask_vertex(result.lanes,7U,edge.vertices[1]);
+  result.lanes[14U]=ancestor_required?
+      gpu_green_mask_edge_ancestor_required:0U;
+  return result;
+}
+
+GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
+    std::span<const WorldTetAddress> candidates,std::uint64_t source_revision) {
+  std::vector<WorldTetAddress> ordered(candidates.begin(),candidates.end());
+  if(!std::ranges::is_sorted(ordered)||
+     std::ranges::adjacent_find(ordered)!=ordered.end())
+    throw std::invalid_argument("GPU green mask candidates are not canonical");
+  WorldConformingClosureCache closure;
+  const auto closed=close_world_conforming_cut(ordered,&closure);
+  if(closed!=closure.closed_owners||
+     closure.green_masks.size()!=closed.size())
+    throw std::logic_error("GPU green mask oracle did not publish masks");
+  std::vector<WorldEdgeKey> ancestor_edges;
+  ancestor_edges.reserve(closure.requested_split_ancestors.size()*6U);
+  for(const auto& ancestor:closure.requested_split_ancestors) {
+    const auto keys=world_tetrahedron_vertex_keys(ancestor.address);
+    for(const auto edge:tetrahedron_edges)
+      ancestor_edges.push_back(world_edge_key(keys[edge[0]],keys[edge[1]]));
+  }
+  std::ranges::sort(ancestor_edges);
+  ancestor_edges.erase(std::unique(ancestor_edges.begin(),ancestor_edges.end()),
+                       ancestor_edges.end());
+  std::vector<WorldEdgeKey> edges;
+  edges.reserve(closed.size()*2U);
+  for(const auto owner:closed) {
+    const auto keys=world_tetrahedron_vertex_keys(owner);
+    for(const auto edge:tetrahedron_edges)
+      edges.push_back(world_edge_key(keys[edge[0]],keys[edge[1]]));
+  }
+  std::ranges::sort(edges);
+  edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
+  GpuGreenMaskPacket result;
+  result.header={source_revision,green_mask_candidate_identity(ordered),
+      static_cast<std::uint32_t>(ordered.size()),
+      static_cast<std::uint32_t>(closed.size()),
+      static_cast<std::uint32_t>(edges.size()),gpu_green_mask_packet_format_version};
+  result.candidates.reserve(ordered.size());
+  for(const auto owner:ordered)
+    result.candidates.push_back(gpu_hierarchy_address_lanes(owner));
+  result.edges.reserve(edges.size());
+  for(const auto edge:edges)
+    result.edges.push_back(gpu_green_mask_edge_record(
+        edge,std::binary_search(ancestor_edges.begin(),ancestor_edges.end(),edge)));
+  result.owners.reserve(closed.size());
+  for(std::size_t owner_index=0U;owner_index<closed.size();++owner_index) {
+    GpuGreenMaskOwnerRecord owner;
+    owner.address=gpu_hierarchy_address_lanes(closed[owner_index]);
+    owner.mask=closure.green_masks[owner_index];
+    const auto keys=world_tetrahedron_vertex_keys(closed[owner_index]);
+    for(std::size_t edge=0U;edge<tetrahedron_edges.size();++edge) {
+      const auto identity=world_edge_key(keys[tetrahedron_edges[edge][0]],
+                                         keys[tetrahedron_edges[edge][1]]);
+      const auto found=std::ranges::lower_bound(edges,identity);
+      if(found==edges.end()||*found!=identity)
+        throw std::logic_error("GPU green mask edge directory lost an owner edge");
+      owner.edge_records[edge]=static_cast<std::uint32_t>(found-edges.begin());
+    }
+    result.owners.push_back(owner);
+  }
+  return result;
+}
+
 }  // namespace
 
 std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
@@ -113,6 +212,39 @@ std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
            static_cast<std::uint8_t>(packed>>8U),
            static_cast<std::uint8_t>(packed>>16U),
            static_cast<std::uint8_t>(packed>>24U)}};
+}
+
+GpuGreenMaskPacket make_gpu_green_mask_packet(
+    std::span<const WorldTetAddress> candidates,std::uint64_t source_revision) {
+  auto result=make_gpu_green_mask_packet_unchecked(candidates,source_revision);
+  validate_gpu_green_mask_packet(result,source_revision);
+  return result;
+}
+
+void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
+                                    std::uint64_t expected_source_revision) {
+  if(packet.header.format_version!=gpu_green_mask_packet_format_version||
+     packet.header.source_revision!=expected_source_revision||
+     packet.header.candidate_count!=packet.candidates.size()||
+     packet.header.owner_count!=packet.owners.size()||
+     packet.header.edge_count!=packet.edges.size())
+    throw std::invalid_argument("GPU green mask packet header is invalid");
+  std::vector<WorldTetAddress> candidates;
+  candidates.reserve(packet.candidates.size());
+  for(const auto lanes:packet.candidates) {
+    if(!gpu_hierarchy_address_valid(lanes))
+      throw std::invalid_argument("GPU green mask packet has invalid candidate");
+    candidates.push_back(gpu_hierarchy_address_from_lanes(lanes));
+  }
+  if(!std::ranges::is_sorted(candidates)||
+     std::ranges::adjacent_find(candidates)!=candidates.end()||
+     packet.header.candidate_identity!=green_mask_candidate_identity(candidates))
+    throw std::invalid_argument("GPU green mask candidates are not canonical");
+  const auto expected=make_gpu_green_mask_packet_unchecked(
+      candidates,expected_source_revision);
+  if(packet.header!=expected.header||packet.candidates!=expected.candidates||
+     packet.owners!=expected.owners||packet.edges!=expected.edges)
+    throw std::invalid_argument("GPU green mask packet differs from closure oracle");
 }
 
 GpuGreenTemplateTable make_gpu_green_template_table() {

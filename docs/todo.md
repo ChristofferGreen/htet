@@ -358,13 +358,6 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       sole surface grammar. P4c output remains non-drawable until every leaf
       below has passed; dependency-cluster and Wald-style dual ownership remain
       comparisons only if this exact route fails a measured gate.
-  - [ ] **P6b — Derive candidate-front edge masks from exact dependencies.**
-        Define a revisioned GPU-facing owner/edge dependency packet and a CPU
-        oracle that derives the same restricted-green masks from selected
-        owners, required ancestor splits, and shared edge identity. Acceptance:
-        fixed and changing candidate fronts match the authoritative closure
-        masks, and missing/malformed/stale packets fail closed. Stop rule: no
-        surface field evaluation, root solving, or render-front promotion.
   - [ ] **P6c — Prove the BCC dependency halo and mixed-depth grammar.**
         Exhaust the 64 masks and supported adjacent mixed-depth/root-boundary
         motifs through the P6 packet/oracle, proving shared faces, edge

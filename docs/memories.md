@@ -16,6 +16,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The GPU-facing Grande grammar is an immutable 64-entry array of 112-byte records, packing each template's up-to-24 tetrahedron point-index quads into uint32 words plus its exact mask and count.
 - Evidence: The table is regenerated directly from the CPU templates and its validator rejects wrong size, headers, packed tetrahedra, unused data, and out-of-range lookup; 64 masks by 12 orientation-preserving permutations passed 4,688 Release assertions.
 
+### gpu-green-mask-packet
+- Updated: 2026-09-06
+- Tags: gpu, bcc, conformity, revisioning
+- Fact: P6b transports canonical candidate addresses and closure-resolved masks through a globally sorted full-dyadic edge directory, with six exact edge references per owner and an explicit split-ancestor requirement flag.
+- Evidence: Its validator independently reruns the exact CPU closure and rejects any stale revision or divergence in candidate, owner, mask, edge identity, reference, format, or ordering.
+
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization

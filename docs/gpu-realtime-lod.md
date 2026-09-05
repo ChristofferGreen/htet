@@ -1453,12 +1453,15 @@ topology, and complete-frame gates.
     table; wrong sizes, masks, counts, packed tetrahedra, unused data, and index
     access fail closed. This leaf defines grammar only—it neither derives masks
     nor makes output drawable.
-  - [ ] **P6b — Revisioned candidate-front mask derivation.** Define the
-    GPU-facing owner/edge dependency packet and a CPU oracle that derives each
-    restricted-green mask from selected owners, required ancestor splits, and
-    global shared-edge identity. Fixed and changing candidate fronts must match
-    the authoritative closure masks; missing, malformed, or stale packets fail
-    closed. Field evaluation, root solving, and promotion remain P7/P8 work.
+  - [x] **P6b — Revisioned candidate-front mask derivation.** The packet
+    carries canonical selected addresses, the closure-resolved owners and their
+    masks, and six indices per owner into a sorted global edge directory. Each
+    64-byte edge record stores its exact dyadic endpoint identity; a flag
+    identifies required split-ancestor edges before fixed-point propagation.
+    The CPU oracle independently re-closes candidates and byte-compares the
+    expected packet. Fixed and changing fronts passed; wrong revision, identity,
+    mask, edge reference, edge data, format, and candidate order fail closed.
+    Field evaluation, root solving, and promotion remain P7/P8 work.
   - [ ] **P6c — Halo and mixed-depth proof.** Exhaust masks and supported
     mixed-depth/root-boundary motifs through the P6 packet/oracle, proving
     common faces, edge identities, orientations, exact counts, and absence of
