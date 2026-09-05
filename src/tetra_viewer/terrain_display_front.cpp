@@ -193,28 +193,18 @@ TerrainDisplayComposition compose_terrain_display(
   if(preview.level_origins().empty()||
      preview.coverage().covered_cells.empty())
     throw std::invalid_argument("preview coverage is empty");
-  const double half_spacing=preview.level_origins().front().sample_spacing*0.5;
-  const auto outer=coverage_bounds(preview);
-  const auto completely_inside_preview=[&](tetra::Vec3 point){
-    const auto projected=project_to_preview_chart(preview,field,point);
-    if(!projected.valid)return false;
-    const long double x=projected.x/half_spacing;
-    const long double z=projected.z/half_spacing;
-    return x>=static_cast<long double>(outer.minimum_x)&&
-        x<static_cast<long double>(outer.maximum_x)&&
-        z>=static_cast<long double>(outer.minimum_z)&&
-        z<static_cast<long double>(outer.maximum_z);
-  };
   for(std::size_t begin=0;begin<exact_vertices.size();begin+=3U){
     const std::array<tetra::Vec3,3> triangle{
         world_position(exact_vertices[begin],render_origin),
         world_position(exact_vertices[begin+1U],render_origin),
         world_position(exact_vertices[begin+2U],render_origin)};
-    const bool completely_covered=std::ranges::all_of(
-        triangle,[&](tetra::Vec3 point){
-      return completely_inside_preview(point);
-    });
-    if(completely_covered){
+    // Exact triangles may be much larger than the preview cells.  Keeping a
+    // triangle simply because one of its vertices lies outside the preview
+    // leaves its interior drawn over the replacement surface, which produces
+    // the visibly floating coarse sheets during an interactive update.  The
+    // preview has a welded guard ring, so it owns every triangle that touches
+    // its covered cells; the exact front owns only disjoint triangles.
+    if(preview_coverage_intersects_world_triangle(preview,field,triangle)){
       ++result.metrics.exact_suppressed_triangles;
       for(const auto point:triangle){
         result.metrics.suppressed_minimum_world_y=std::min(

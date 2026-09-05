@@ -195,10 +195,13 @@ TEST_CASE("terrain display composition uses deterministic chart-cell ownership")
   for(const auto point:crossing)exact.push_back(vertex(point));
   CHECK(tetra_viewer::preview_coverage_intersects_world_triangle(
       *front,field,crossing));
-  const auto guarded=tetra_viewer::compose_terrain_display(
+  const auto no_overlap=tetra_viewer::compose_terrain_display(
       exact,render_origin,field,*front);
-  CHECK(guarded.metrics.exact_selected_triangles==1U);
-  CHECK(guarded.metrics.exact_suppressed_triangles==0U);
+  // A coarse exact triangle may cross the preview boundary even when not all
+  // of its vertices are covered.  It must still be suppressed: otherwise it
+  // overlaps the preview surface and appears as a floating planar sheet.
+  CHECK(no_overlap.metrics.exact_selected_triangles==0U);
+  CHECK(no_overlap.metrics.exact_suppressed_triangles==1U);
 }
 
 TEST_CASE("terrain display composition is render-origin coherent") {
