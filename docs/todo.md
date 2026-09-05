@@ -357,13 +357,6 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       translates and qualifies the selector. This tracker is deliberately
       split so static shader translation, buffer lifetime, and full rendered
       output cannot be mistaken for one another.
-  - [ ] **P5b — Dispatch legacy-payload extraction in a Metal fixture.** Bind
-        immutable CPU-precomputed `GpuTerrainCellRecord` input, slot-local
-        count/vertex/index/indirect buffers, revision tuple, and capacity in a
-        hidden Metal fixture. Acceptance: count, position, normal, triangle,
-        index, and explicit-overflow outcomes match Vulkan/CPU parity fixtures;
-        unavailable or malformed input fails closed. Stop rule: no interactive
-        renderer or visual-promotion change.
   - [ ] **P5c — Qualify runtime-slot Metal extraction and fallback.** Drive P5b
         through the actual completed CPU display revision with per-frame slot
         ownership, command-buffer ordering, revision matching, and stale-work

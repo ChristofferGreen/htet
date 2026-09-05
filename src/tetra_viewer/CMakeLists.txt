@@ -262,6 +262,8 @@ if(APPLE AND TETRA_BUILD_METAL)
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-atmosphere-compiler-check)
   add_test(NAME "metal GPU hierarchy selector parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-lod-selector-smoke-test)
+  add_test(NAME "metal GPU terrain extraction parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-extract-smoke-test)
   set_target_properties(tetra_world_metal PROPERTIES
     OUTPUT_NAME "TetWorldMetal"
     MACOSX_BUNDLE TRUE

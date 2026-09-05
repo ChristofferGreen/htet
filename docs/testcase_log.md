@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 23:52 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 491 tests passed in 584.32 seconds; the new hidden Metal terrain-extraction parity fixture passed its valid, overflow, malformed-root, and empty-packet cases.
+
 - 2026-09-05 23:35 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 490 tests passed in 622.56 seconds after adding the translated Metal terrain-extractor compiler gate and raising the finite recovery-test polling bound.
 
 - 2026-09-05 23:20 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^blocked world resource rejection preserves the complete published front$'` | failures: none | notes: the freshly rebuilt recovery regression passed in 39.28 seconds after its finite correctness-only timeout was raised from 10--15 to 30 seconds.

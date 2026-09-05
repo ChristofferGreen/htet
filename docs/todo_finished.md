@@ -2,6 +2,13 @@
 
 ## 2026-09-05
 
+- [x] **P5b — Dispatch legacy-payload extraction in a Metal fixture.** Added a
+  hidden hardware compute fixture for the translated extractor. It proves full
+  18-float vertex payload, triangle, linear index, header, and execution-count
+  parity for three- and four-crossing records, while capacity overflow,
+  malformed roots, and an empty packet fail closed. No interactive Metal
+  renderer resource or visual-promotion path changed; P5c owns runtime slots.
+
 - [x] **P5a — Translate and compile the terrain extractor.** Added
   `gpu_terrain_extract.comp` to the shared glslc/SPIRV-Cross MSL build path and
   Metal runtime compiler gate. The generated entry point retains the 28-vec4

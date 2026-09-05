@@ -1152,6 +1152,171 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
   return true;
 }
 
+// P5b mirrors the Vulkan extraction qualification without connecting the
+// result to Metal rendering.  The records are the legacy CPU-precomputed ABI;
+// this fixture establishes that its translated kernel writes the same compact
+// triangle-list payload and fails closed before P5c considers slot lifetime.
+bool run_metal_gpu_terrain_extract_smoke_test(id<MTLDevice> device) {
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_terrain_extract.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  if(pipeline==nil){
+    std::fprintf(stderr,"Metal terrain-extract pipeline creation failed: %s\n",
+        error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return false;
+  }
+  struct ExtractVertex { std::array<float,18> values{}; };
+  static_assert(sizeof(ExtractVertex)==sizeof(float)*18U);
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:length
+        options:MTLResourceStorageModeShared];
+  };
+  const auto point=[](float x,float y,float z){
+    return std::array<float,4>{x,y,z,1.0F};
+  };
+  const auto normal=[](float x,float y,float z){
+    return std::array<float,4>{x,y,z,1.0F};
+  };
+  tetra::GpuTerrainCellRecord triangle{};
+  triangle.corners={{{0,0,0,-1},{1,0,0,1},{0,1,0,1},{0,0,1,1}}};
+  triangle.edge_roots[0]=point(0,0,0);triangle.edge_roots[1]=point(1,0,0);
+  triangle.edge_roots[2]=point(0,1,0);
+  triangle.draw_roots[0]=point(0,0,0);triangle.draw_roots[1]=point(1,0,0);
+  triangle.draw_roots[2]=point(0,1,0);triangle.draw_roots[3][3]=1.0F;
+  triangle.subdivision_midpoints[0]=point(.5F,0,0);
+  triangle.subdivision_midpoints[1]=point(.5F,.5F,0);
+  triangle.subdivision_midpoints[2]=point(0,.5F,0);
+  for(auto& value:triangle.subdivision_normals)value=normal(0,0,1);
+
+  tetra::GpuTerrainCellRecord quad{};
+  quad.corners={{{0,0,1,-1},{1,0,1,-1},{0,1,1,1},{1,1,1,1}}};
+  quad.edge_roots[1]=point(0,0,1);quad.edge_roots[2]=point(1,0,1);
+  quad.edge_roots[3]=point(0,1,1);quad.edge_roots[4]=point(1,1,1);
+  quad.draw_roots[0]=point(0,0,1);quad.draw_roots[1]=point(1,0,1);
+  quad.draw_roots[2]=point(0,1,1);quad.draw_roots[3]=point(1,1,1);
+  quad.draw_roots[3][3]=3.0F;
+  quad.subdivision_midpoints[0]=point(.5F,0,1);
+  quad.subdivision_midpoints[1]=point(.5F,.5F,1);
+  quad.subdivision_midpoints[2]=point(0,.5F,1);
+  quad.subdivision_midpoints[3]=point(0,.5F,1);
+  quad.subdivision_midpoints[4]=point(.5F,1,1);
+  quad.subdivision_midpoints[5]=point(.5F,.5F,1);
+  for(auto& value:quad.subdivision_normals)value=normal(0,0,1);
+  const std::array records{triangle,quad};
+
+  std::vector<ExtractVertex> expected;
+  const auto append_vertex=[&](const std::array<float,4>& p,
+                               const std::array<float,4>& n,
+                               std::array<float,3> barycentric){
+    ExtractVertex vertex{};
+    vertex.values={p[0],p[1],p[2],.46F,.40F,.31F,n[0],n[1],n[2],0,0,1,
+                   barycentric[0],barycentric[1],barycentric[2],n[0],n[1],n[2]};
+    expected.push_back(vertex);
+  };
+  const auto append_triangle=[&](const std::array<float,4>& a,
+                                 const std::array<float,4>& b,
+                                 const std::array<float,4>& c,
+                                 const std::array<float,4>& n){
+    append_vertex(a,n,{1,0,0});append_vertex(b,n,{0,1,0});append_vertex(c,n,{0,0,1});
+  };
+  const auto append_subdivided=[&](const tetra::GpuTerrainCellRecord& record,
+                                   const std::array<float,4>& a,
+                                   const std::array<float,4>& b,
+                                   const std::array<float,4>& c,
+                                   std::size_t midpoint,std::size_t normals){
+    const auto& ab=record.subdivision_midpoints[midpoint];
+    const auto& bc=record.subdivision_midpoints[midpoint+1U];const auto& ca=record.subdivision_midpoints[midpoint+2U];
+    append_triangle(a,ab,ca,record.subdivision_normals[normals]);
+    append_triangle(ab,b,bc,record.subdivision_normals[normals+1U]);
+    append_triangle(ca,bc,c,record.subdivision_normals[normals+2U]);
+    append_triangle(ab,bc,ca,record.subdivision_normals[normals+3U]);
+  };
+  append_subdivided(triangle,triangle.draw_roots[0],triangle.draw_roots[1],
+                    triangle.draw_roots[2],0U,0U);
+  append_subdivided(quad,quad.draw_roots[0],quad.draw_roots[1],
+                    quad.draw_roots[2],0U,0U);
+  append_subdivided(quad,quad.draw_roots[0],quad.draw_roots[2],
+                    quad.draw_roots[3],3U,4U);
+  if(expected.size()!=36U)return false;
+
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(queue==nil)return false;
+  const auto canonical=[](std::span<const ExtractVertex> vertices){
+    std::vector<std::array<std::uint32_t,18>> result;
+    result.reserve(vertices.size());
+    for(const auto& vertex:vertices){std::array<std::uint32_t,18> bits{};
+      for(std::size_t lane=0;lane<bits.size();++lane)
+        bits[lane]=std::bit_cast<std::uint32_t>(vertex.values[lane]);
+      result.push_back(bits);
+    }
+    std::ranges::sort(result);return result;
+  };
+  const auto dispatch=[&](std::span<const tetra::GpuTerrainCellRecord> input,
+                          std::uint32_t vertex_capacity,bool expect_overflow,
+                          bool expect_payload,std::uint32_t expected_linear){
+    if(input.empty())return !expect_overflow&&!expect_payload&&expected_linear==0U;
+    const auto index_capacity=vertex_capacity;
+    std::array<std::uint32_t,8> header{};
+    std::vector<ExtractVertex> vertices(std::max<std::uint32_t>(vertex_capacity,1U));
+    std::vector<std::uint32_t> indices(std::max<std::uint32_t>(index_capacity,1U));
+    std::vector<std::byte> output_bytes(sizeof(header)+
+        vertices.size()*sizeof(vertices.front()));
+    id<MTLBuffer> cells=make_buffer(input.data(),std::max<std::size_t>(
+        input.size()*sizeof(input.front()),sizeof(tetra::GpuTerrainCellRecord)));
+    id<MTLBuffer> output=make_buffer(output_bytes.data(),output_bytes.size());
+    id<MTLBuffer> index=make_buffer(indices.data(),indices.size()*sizeof(indices.front()));
+    const std::array<std::uint32_t,4> parameters{
+        static_cast<std::uint32_t>(input.size()),vertex_capacity,index_capacity,1U};
+    if(cells==nil||output==nil||index==nil)return false;
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0U atIndex:0U];
+    [encoder setBuffer:index offset:0U atIndex:1U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+    [encoder setBuffer:cells offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(input.size(),1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted){
+      std::fprintf(stderr,"Metal terrain fixture command failed: %s\n",
+          command.error.localizedDescription.UTF8String);return false;
+    }
+    const auto* result=static_cast<const std::uint32_t*>(output.contents);
+    if((result[5]!=0U)!=expect_overflow||result[0]>vertex_capacity||
+       result[0]>index_capacity){
+      std::fprintf(stderr,"Metal terrain fixture header %u %u %u %u caps %u overflow %u\n",
+          result[0],result[1],result[5],result[6],vertex_capacity,expect_overflow);return false;
+    }
+    if(!expect_payload)return result[0]==0U&&result[1]==0U&&result[6]==0U;
+    if(expect_overflow)return result[6]==expected_linear;
+    if(result[0]!=36U||result[1]!=1U||result[6]!=36U){
+      std::fprintf(stderr,"Metal terrain fixture valid header %u %u %u\n",
+          result[0],result[1],result[6]);return false;
+    }
+    const auto* output_vertices=reinterpret_cast<const ExtractVertex*>(result+8U);
+    if(canonical(std::span{output_vertices,static_cast<std::size_t>(result[0])})!=
+       canonical(expected)){std::fprintf(stderr,"Metal terrain fixture vertex mismatch\n");return false;}
+    const auto* output_indices=static_cast<const std::uint32_t*>(index.contents);
+    for(std::uint32_t value=0U;value<result[0];++value)
+      if(output_indices[value]!=value){std::fprintf(stderr,"Metal terrain fixture index mismatch\n");return false;}
+    return true;
+  };
+  tetra::GpuTerrainCellRecord malformed=triangle;
+  malformed.edge_roots[0][3]=0.0F;
+  if(!dispatch(records,36U,false,true,36U)){std::fprintf(stderr,"Metal terrain fixture valid case failed\n");return false;}
+  if(!dispatch(records,35U,true,true,36U)){std::fprintf(stderr,"Metal terrain fixture capacity case failed\n");return false;}
+  if(!dispatch(std::span{&malformed,1U},12U,true,true,0U)){std::fprintf(stderr,"Metal terrain fixture malformed case failed\n");return false;}
+  if(!dispatch({},0U,false,false,0U)){std::fprintf(stderr,"Metal terrain fixture empty case failed\n");return false;}
+  std::printf("{\"event\":\"metal_gpu_terrain_extract\","
+              "\"cases\":4,\"vertices\":36,\"passed\":true}\n");
+  return true;
+}
+
 enum class AtmosphereTextureRole {
   radiance,
   transmittance,
@@ -3279,6 +3444,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-atmosphere-compiler-check")==0;
   const bool gpu_lod_selector_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
+  const bool gpu_terrain_extract_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -3540,7 +3707,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -3552,6 +3719,7 @@ int main(int argc,char** argv) {
                         "--metal-terrain-ray-oracle-smoke-test|--metal-smoke-test|"
                         "--metal-atmosphere-compiler-check|"
                         "--metal-gpu-lod-selector-smoke-test|"
+                        "--metal-gpu-terrain-extract-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
                         "--metal-atmosphere-capture <path.ppm>|"
@@ -3605,6 +3773,8 @@ int main(int argc,char** argv) {
     if(atmosphere_lut_smoke_test)return run_atmosphere_lut_smoke_test(device);
     if(gpu_lod_selector_smoke_test)
       return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
+    if(gpu_terrain_extract_smoke_test)
+      return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
       for(std::size_t mode=0;mode<=16U;++mode){
         const auto path=std::filesystem::path(

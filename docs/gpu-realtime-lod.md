@@ -1412,11 +1412,14 @@ topology, and complete-frame gates.
     cell addressing and four-word `{cell_count, vertex_capacity,
     index_capacity, subdivide_triangles}` parameter packet. This is compilation
     evidence only.
-  - [ ] **P5b — Fixture dispatch with legacy payload.** Bind immutable
-    CPU-precomputed cell records and slot-local count/vertex/index/indirect
-    buffers through a hidden Metal fixture. Prove count, positions, normals,
-    triangles, indices, and explicit overflow against the existing CPU/Vulkan
-    parity contract; malformed or unavailable work must fail closed.
+  - [x] **P5b — Fixture dispatch with legacy payload.** The hidden Metal
+    fixture dispatches the translated kernel with immutable 448-byte records
+    and validates the complete 18-float vertex payload, canonical triangles,
+    linear indices, count/indirect header, and shader execution witness for
+    both three-crossing and four-crossing cells. A too-small capacity sets the
+    overflow bit without exceeding its backing buffers; a missing crossing
+    root fails closed; an empty packet emits no payload. This test owns no
+    interactive renderer resources.
   - [ ] **P5c — Runtime-slot extraction and fallback qualification.** Submit
     P5b's buffers from the actual display revision with command-buffer ordering,
     revision matching, and stale rejection. Hidden fixed and moving captures

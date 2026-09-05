@@ -64,6 +64,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, growing only after that slot's completed fence and rebinding only its descriptors; a generation (not only terrain revision) invalidates output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier precedes any future draw.
 - Evidence: The 486-test Release gate passed, and the off-screen Vulkan diagnostic staged 348,989 cells then matched its independent host-linear oracle at 142,251 emitted vertices after the terrain pipeline was corrected to use its three-binding layout.
 
+### gpu-terrain-extraction-metal-fixture
+- Updated: 2026-09-05
+- Tags: metal, terrain, extraction, parity
+- Fact: The hidden Metal extractor fixture binds the legacy 448-byte `GpuTerrainCellRecord` ABI as cells=3, output=0, indices=1, parameters=2 and accepts only exact 18-float payload/index parity or an explicit fail-closed outcome.
+- Evidence: The fixture's three-crossing and four-crossing packets match the CPU oracle, while insufficient capacity, a missing crossing root, and an empty packet satisfy the overflow or zero-output contract; the 491-test Release gate passed.
+
 ### gpu-terrain-geometry-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, vulkan
