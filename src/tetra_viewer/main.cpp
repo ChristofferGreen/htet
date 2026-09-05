@@ -4534,22 +4534,37 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                            gpu_terrain_cells_render_origin->z!=prepared_scene.render_origin.z)){
                         g_SceneRenderer.stage_gpu_terrain_cells(
                             gpu_cells,
-                            directory.revision(),static_cast<std::uint32_t>(
-                                std::min<std::size_t>(
-                                    world_runtime->diagnostics().render_triangles*3U,
-                                    0xffffffffU)),[&]{
+                            directory.revision(),static_cast<std::uint32_t>([&]{
+                              if(const auto* retained=world_runtime->retained_surface()){
+                                std::size_t count{};
+                                for(const auto& range:retained->ranges())
+                                  count+=range.triangle_vertex_count;
+                                return std::min<std::size_t>(count,0xffffffffU);
+                              }
+                              return std::min<std::size_t>(
+                                  prepared_scene.triangle_vertices.size(),0xffffffffU);
+                            }()),[&]{
                               std::array<float,6> bounds{};
                               for(std::size_t axis=0;axis<3U;++axis){
                                 bounds[axis]=std::numeric_limits<float>::infinity();
                                 bounds[axis+3U]=(
                                     -std::numeric_limits<float>::infinity());
                               }
-                              for(const auto& vertex:prepared_scene.triangle_vertices)
-                                for(std::size_t axis=0;axis<3U;++axis){
-                                  bounds[axis]=std::min(bounds[axis],vertex.position[axis]);
-                                  bounds[axis+3U]=std::max(bounds[axis+3U],
-                                                            vertex.position[axis]);
+                              const auto add=[&](std::span<const tetra_viewer::SceneVertex> vertices){
+                                for(const auto& vertex:vertices)
+                                  for(std::size_t axis=0;axis<3U;++axis){
+                                    bounds[axis]=std::min(bounds[axis],vertex.position[axis]);
+                                    bounds[axis+3U]=std::max(bounds[axis+3U],
+                                                              vertex.position[axis]);
+                                  }
+                              };
+                              if(const auto* retained=world_runtime->retained_surface())
+                                for(const auto& range:retained->ranges()){
+                                  const auto arena=retained->arena();
+                                  add(arena.subspan(range.triangle_vertex_begin,
+                                      range.triangle_vertex_count));
                                 }
+                              else add(prepared_scene.triangle_vertices);
                               return bounds;
                             }());
                         gpu_terrain_cells_render_origin=prepared_scene.render_origin;

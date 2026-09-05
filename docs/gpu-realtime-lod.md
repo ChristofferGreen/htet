@@ -1179,10 +1179,15 @@ carries six camera-relative, globally keyed CPU edge roots. The compute shader
 uses those roots directly and treats a missing required root as overflow rather
 than silently falling back to interpolation. Evicted raw-cache entries are
 recomputed by the same CPU edge oracle only within the background publication.
-The production smoke still fails the bounds gate after this change, isolating
-the remaining position difference to CPU surface optimization; normals,
-winding and image parity remain independently unproven. This is a correctness
-diagnostic step, not a claim that root computation has been accelerated.
+The production smoke still fails the bounds gate after this change.  The P2
+gate now reads the actual retained CPU vertex ranges rather than the earlier
+pre-render metric: the planetary CPU path projects one midpoint subdivision
+per extracted triangle, yielding 226,848 uploaded vertices from 56,712 base
+ones.  The GPU currently emits only its 56,712 base vertices, so its former
+count match was not a valid topology comparison.  Next, mirror this final
+subdivision convention and then compare the CPU optimizer's final positions,
+winding, normals, depth, and colour. This remains a correctness diagnostic,
+not a claim that root computation has been accelerated.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

@@ -25,8 +25,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-geometry-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, vulkan
-- Fact: GPU terrain vertex-count parity is insufficient; completed slot output must at least match CPU prepared-surface relative-position bounds at the identical render origin before indirect drawing is eligible.
-- Evidence: The count-matched 56,712-vertex linear diagnostic fails this readback-bound comparison, proving that its interpolation cannot be promoted as visual parity.
+- Fact: GPU terrain vertex-count parity is insufficient; completed slot output must match the actual retained CPU draw ranges' count and relative-position bounds at the identical render origin before indirect drawing is eligible. The planetary CPU draw path has one projected midpoint subdivision per extracted triangle.
+- Evidence: The GPU's 56,712 base vertices initially matched a pre-render metric but the retained CPU upload contains 226,848 vertices; the corrected gate rejects the diagnostic before visual parity can be claimed.
 
 ### gpu-terrain-root-transport
 - Updated: 2026-09-05
