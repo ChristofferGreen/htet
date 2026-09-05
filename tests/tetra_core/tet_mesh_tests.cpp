@@ -5108,6 +5108,17 @@ TEST_CASE("GPU hierarchy snapshot validation rejects malformed records") {
   tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
       leaves,1U,5U,tetra::HierarchyResidencyTier::surface));
   const auto source=tetra::make_gpu_hierarchy_snapshot(directory);
+  REQUIRE(source.selection_records.size()==source.records.size());
+  for(std::size_t index=0;index<source.records.size();++index) {
+    const auto geometry=tetra::gpu_hierarchy_geometry(source.records[index].address);
+    const auto& selection=source.selection_records[index];
+    for(const auto& corner:geometry) {
+      CHECK(corner.x>=selection.minimum[0]);CHECK(corner.x<=selection.maximum[0]);
+      CHECK(corner.y>=selection.minimum[1]);CHECK(corner.y<=selection.maximum[1]);
+      CHECK(corner.z>=selection.minimum[2]);CHECK(corner.z<=selection.maximum[2]);
+    }
+    CHECK(selection.centre_radius[3]>0.0F);
+  }
   auto bad_header=source;bad_header.header.record_stride=4U;
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_header),std::invalid_argument);
   auto bad_record=source;bad_record.records.front().reserved=1U;
@@ -5117,6 +5128,9 @@ TEST_CASE("GPU hierarchy snapshot validation rejects malformed records") {
   auto bad_owner=source;bad_owner.logical_owner_records.front()=
       bad_owner.logical_owner_records.back();
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_owner),std::invalid_argument);
+  auto bad_selection=source;bad_selection.selection_records.front().minimum[0]=
+      bad_selection.selection_records.front().maximum[0];
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_selection),std::invalid_argument);
 }
 
 TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminates") {

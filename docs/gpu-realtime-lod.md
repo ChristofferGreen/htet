@@ -1053,7 +1053,7 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] **P1 — GPU-extract from the authoritative CPU conforming cut.** Upload
+- [x] **P1 — GPU-extract from the authoritative CPU conforming cut.** Upload
   immutable `WorldConformingCell` block snapshots and the production terrain
   field tuple to double-buffered Vulkan storage buffers. A compute extractor
   evaluates the field at the four cell vertices, emits only crossing triangles
@@ -1063,21 +1063,40 @@ that work.
   matched; overflow, unavailable output, or validation failure draws the
   preceding complete CPU surface; normal camera motion contains no
   `vkDeviceWaitIdle`. **Stop rule:** do not replace CPU selection or closure.
-- [ ] **P2 — prove GPU extraction parity before display.** For fixed and
+- [x] **P2 — prove GPU extraction parity before display.** For fixed and
   moving production cameras, compare source conforming-cell identities,
   crossing/triangle counts, bounds, crack/edge-incidence diagnostics, depth,
   and colour captures with the CPU surface. Add intentionally stale and
   undersized-output tests. Only enable GPU indirect drawing when the required
   parity suite passes; otherwise retain CPU output.
-- [ ] **P3 — measure the visible path.** Compare CPU extraction/staging/upload
+- [x] **P3 — measure the visible path.** Compare CPU extraction/staging/upload
   against P1's compute/exact indirect draw over the P0 paths using GPU
   timestamps plus complete camera-to-present latency. Retain the GPU path only
   when it improves the complete interactive result without degrading image or
   topology parity; publish the measured delta rather than a theoretical gain.
-- [ ] **P4 — GPU selection only after extraction pays off.** Serialize the
-  real per-node geometry, field-range, limb, camera and render-origin inputs;
-  implement the production three-term selector; require exact selected-address
-  parity with the CPU oracle before it can feed P1 extraction. CPU BCC closure
+- [x] **P4a — Immutable selector geometry packet.** Serialize one conservative
+  normalized-space geometry sidecar for every immutable hierarchy record,
+  including its four corners, outward-rounded AABB, and enclosing sphere.
+  Keep the exact address as identity and keep this stream distinct from both
+  topology and draw data. **Acceptance:** snapshot validation rejects a
+  missing, non-finite, altered, or non-conservative sidecar; it is uploaded
+  with the same revision and synchronized before the selector dispatch.
+  **Result:** each compact topology record now has a 112-byte immutable
+  selection sidecar, generated only from its exact BCC address, validated
+  against it, uploaded to a separate Vulkan binding, and protected by the
+  existing revision/fence handoff. This deliberately does not change the
+  leaf-enumeration diagnostic or any CPU authority.
+- [ ] **P4b — Field and limb selection tuple.** Serialize the production
+  field-range and limb inputs together with camera, render-origin, threshold,
+  hysteresis, sector, and tuple identities. Build a CPU oracle over the
+  quantized sidecar and prove that unsupported, stale, or malformed tuples
+  retain CPU selection. **Acceptance:** the input tuple has explicit
+  invalidation and validation coverage across near, orbital, rebase, and
+  terrain-replacement paths. **Stop rule:** do not change GPU traversal yet.
+- [ ] **P4c — Three-term GPU selection parity.** Implement the production
+  projected edge, field-error, and limb-sagitta selector over P4a/P4b inputs;
+  require selected-address parity with the CPU quantized-input oracle under
+  fixed and moving cameras before it can feed P1 extraction. CPU BCC closure
   remains authoritative.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already

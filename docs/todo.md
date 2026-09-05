@@ -343,6 +343,23 @@ The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
 
+## Active chain: GPU terrain selection parity
+
+The qualified GPU extraction path is image- and topology-identical to CPU but
+does not reduce end-to-end latency while CPU still performs selection. The
+next work is a strictly render-only selector; CPU BCC closure and publication
+remain authoritative. Details and evidence live in
+[`gpu-realtime-lod.md`](gpu-realtime-lod.md).
+
+- [ ] **P4b — Field and limb selector tuple.** Pack real production field
+      bounds, limb inputs, camera/render-origin, thresholds, hysteresis, and
+      identities; prove invalid/stale tuples retain CPU selection. Stop before
+      changing traversal.
+- [ ] **P4c — GPU three-term selection parity.** Apply the projected-edge,
+      field-error, and limb-sagitta criteria to the immutable P4 inputs and
+      require exact selected-address parity with the quantized CPU oracle
+      across fixed and moving production cameras before feeding extraction.
+
 ## Active chain: preview-first terrain response
 
 - [x] Add end-to-end and surface-substage timings to the production world

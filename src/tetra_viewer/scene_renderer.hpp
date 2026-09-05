@@ -362,6 +362,11 @@ class SceneRenderer {
   // on another swapchain image and never needs vkDeviceWaitIdle.
   void ensure_gpu_terrain_slot_capacity(std::uint32_t image_index);
   GpuLodBuffer gpu_lod_hierarchy_;
+  // Immutable geometry sidecar for the forthcoming three-term GPU selector.
+  // It has a separate lifetime from compact topology records and terrain
+  // extraction buffers, so selector inputs can evolve without changing draw
+  // data or CPU authority.
+  GpuLodBuffer gpu_lod_selection_inputs_;
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
   std::uint64_t gpu_lod_uploaded_revision_{};

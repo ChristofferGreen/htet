@@ -130,6 +130,41 @@ WorldTetrahedronGeometry gpu_hierarchy_geometry(std::array<std::uint32_t,4> addr
   return geometry;
 }
 
+GpuHierarchySelectionRecord gpu_hierarchy_selection_record(
+    std::array<std::uint32_t,4> address) {
+  const auto geometry=gpu_hierarchy_geometry(address);
+  GpuHierarchySelectionRecord result{};
+  for(std::size_t corner=0;corner<geometry.size();++corner) {
+    result.corners[corner]={static_cast<float>(geometry[corner].x),
+        static_cast<float>(geometry[corner].y),static_cast<float>(geometry[corner].z),1.0F};
+    for(std::size_t axis=0;axis<3U;++axis) {
+      const auto value=result.corners[corner][axis];
+      if(corner==0U)result.minimum[axis]=result.maximum[axis]=value;
+      else { result.minimum[axis]=std::min(result.minimum[axis],value);
+        result.maximum[axis]=std::max(result.maximum[axis],value); }
+    }
+  }
+  // The selector may only reject by these bounds. Expand the float envelope
+  // by one representable value so conversion from exact dyadic geometry never
+  // turns an otherwise visible/over-threshold cell into a false negative.
+  for(std::size_t axis=0;axis<3U;++axis) {
+    result.minimum[axis]=std::nextafter(result.minimum[axis],
+                                        -std::numeric_limits<float>::infinity());
+    result.maximum[axis]=std::nextafter(result.maximum[axis],
+                                        std::numeric_limits<float>::infinity());
+    result.centre_radius[axis]=(result.minimum[axis]+result.maximum[axis])*0.5F;
+  }
+  float radius{};
+  for(const auto& corner:result.corners) {
+    const float dx=corner[0]-result.centre_radius[0];
+    const float dy=corner[1]-result.centre_radius[1];
+    const float dz=corner[2]-result.centre_radius[2];
+    radius=std::max(radius,std::sqrt(dx*dx+dy*dy+dz*dz));
+  }
+  result.centre_radius[3]=std::nextafter(radius,std::numeric_limits<float>::infinity());
+  return result;
+}
+
 GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision) {
   GpuHierarchySnapshot result;
@@ -199,6 +234,9 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
   result.header.record_capacity=result.header.record_count;
   result.header.block_count=static_cast<std::uint32_t>(result.blocks.size());
   result.header.block_capacity=result.header.block_count;
+  result.selection_records.reserve(result.records.size());
+  for(const auto& record:result.records)
+    result.selection_records.push_back(gpu_hierarchy_selection_record(record.address));
   validate_gpu_hierarchy_snapshot(result);
   return result;
 }
@@ -211,6 +249,7 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
      header.record_count!=snapshot.records.size()||
      header.block_count!=snapshot.blocks.size()||
      header.record_count>header.record_capacity||header.block_count>header.block_capacity||
+     snapshot.selection_records.size()!=snapshot.records.size()||
      header.block_generations==0U||header.block_generations>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy snapshot header is malformed");
   std::vector<bool> record_covered(snapshot.records.size());
@@ -238,6 +277,24 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
        record.reserved!=0U||record.block_index>=snapshot.blocks.size()||
        (record.child_mask_flags&~0x7ffU)!=0U)
       throw std::invalid_argument("GPU hierarchy record is malformed");
+    const auto& selection=snapshot.selection_records[index];
+    const auto expected=gpu_hierarchy_selection_record(record.address);
+    for(std::size_t corner=0;corner<selection.corners.size();++corner)
+      for(std::size_t component=0;component<selection.corners[corner].size();++component)
+        if(!std::isfinite(selection.corners[corner][component])||
+           selection.corners[corner][component]!=expected.corners[corner][component])
+          throw std::invalid_argument("GPU hierarchy selection geometry is malformed");
+    for(std::size_t axis=0;axis<3U;++axis)
+      if(!std::isfinite(selection.minimum[axis])||!std::isfinite(selection.maximum[axis])||
+         !std::isfinite(selection.centre_radius[axis])||
+         selection.minimum[axis]!=expected.minimum[axis]||
+         selection.maximum[axis]!=expected.maximum[axis]||
+         selection.centre_radius[axis]!=expected.centre_radius[axis]||
+         selection.minimum[axis]>selection.maximum[axis])
+        throw std::invalid_argument("GPU hierarchy selection bounds are malformed");
+    if(!std::isfinite(selection.centre_radius[3])||selection.centre_radius[3]<=0.0F||
+       selection.centre_radius[3]!=expected.centre_radius[3])
+      throw std::invalid_argument("GPU hierarchy selection radius is malformed");
     const auto mask=record.child_mask_flags&child_mask;
     if((mask==0U)!=(record.child_base==gpu_hierarchy_invalid_index))
       throw std::invalid_argument("GPU hierarchy leaf encoding is malformed");

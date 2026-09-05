@@ -5,6 +5,11 @@
 // deliberately conservative: it emits immutable hierarchy leaves only.
 layout(std430,binding=0) readonly buffer HierarchyRecords { uint words[]; } hierarchy;
 layout(std430,binding=1) buffer SelectionOutput { uint words[]; } output_buffer;
+// P4a's per-node geometry sidecar.  The current diagnostic remains a leaf
+// enumerator; P4b will consume this immutable record stream for its exact
+// edge/field/limb selection.  Keeping the binding live in the source fixes
+// the descriptor contract before that traversal replaces the diagnostic.
+layout(std430,binding=2) readonly buffer SelectionInputs { vec4 values[]; } selection_inputs;
 
 layout(push_constant) uniform SelectorParameters {
   uint record_count;

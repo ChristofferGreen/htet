@@ -43,6 +43,20 @@ struct alignas(16) GpuHierarchyBlockRecord {
 static_assert(sizeof(GpuHierarchyBlockRecord)==64U);
 static_assert(alignof(GpuHierarchyBlockRecord)==16U);
 
+// Immutable, shader-visible geometry for one hierarchy record.  The address
+// remains the exact identity; these float values are a conservative GPU
+// selection representation, never an authority for topology.  Keeping this
+// sidecar separate from GpuHierarchyRecord preserves the compact traversal
+// layout used by the existing leaf-enumeration diagnostic.
+struct alignas(16) GpuHierarchySelectionRecord {
+  std::array<std::array<float,4>,4> corners{};
+  std::array<float,4> minimum{};
+  std::array<float,4> maximum{};
+  std::array<float,4> centre_radius{};
+};
+static_assert(sizeof(GpuHierarchySelectionRecord)==112U);
+static_assert(alignof(GpuHierarchySelectionRecord)==16U);
+
 struct GpuHierarchySnapshotHeader {
   std::uint32_t format_version{gpu_hierarchy_format_version};
   std::uint32_t record_stride{sizeof(GpuHierarchyRecord)};
@@ -62,6 +76,10 @@ struct GpuHierarchySnapshot {
   std::vector<GpuHierarchyRecord> records;
   std::vector<GpuHierarchyBlockRecord> blocks;
   std::vector<std::uint32_t> logical_owner_records;
+  // One immutable normalized-space geometry sidecar per hierarchy record.
+  // P4 selector inputs add field bounds and camera-dependent parameters in
+  // separate packets; they must not overload topology or draw buffers.
+  std::vector<GpuHierarchySelectionRecord> selection_records;
   std::array<WorldTetrahedronGeometry,bcc_root_tetrahedron_count> root_geometry{};
 };
 
@@ -146,6 +164,8 @@ class GpuHierarchyFrameRing {
 [[nodiscard]] std::array<std::uint32_t,4> gpu_hierarchy_parent(
     std::array<std::uint32_t,4> address);
 [[nodiscard]] WorldTetrahedronGeometry gpu_hierarchy_geometry(
+    std::array<std::uint32_t,4> address);
+[[nodiscard]] GpuHierarchySelectionRecord gpu_hierarchy_selection_record(
     std::array<std::uint32_t,4> address);
 
 [[nodiscard]] GpuHierarchySnapshot make_gpu_hierarchy_snapshot(

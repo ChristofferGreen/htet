@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 15:58 CEST | pass, GPU selector geometry sidecar | mode: Release | command: `./scripts/compile.sh --release`, focused `GPU hierarchy snapshot validation rejects malformed records`, and off-screen `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none | notes: all 486 release entries passed; the immutable 112-byte selector geometry sidecar rejected altered bounds and the separate Vulkan binding completed without affecting qualified terrain extraction parity.
+
 - 2026-09-05 14:15 CEST | partial pass, GPU exact-root transport | mode: Release target | command: focused GPU root-record and native sparse-world tests, then `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none for exact-root packet transport, count, or overflow; expected geometry-gate rejection | notes: 15,035 compact cells and 56,712 GPU vertices completed with cached keyed roots. Bounds still differ from CPU prepared geometry because CPU optimization/normals are not yet reproduced, so CPU rasterization remains mandatory.
 
 - 2026-09-05 14:08 CEST | partial pass, GPU terrain geometry readback gate | mode: Release executable | command: `./scripts/compile.sh --release`, then `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none for the 486-test release gate or readback; expected geometry gate rejection | notes: the completed GPU slot matched CPU count at 56,712 vertices but failed its same-render-origin relative-position-bound comparison, directly proving that linear interpolation is not visual parity. CPU fallback remains active.

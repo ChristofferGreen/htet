@@ -715,3 +715,11 @@
   because its terrain and curved surfaces visibly improve over faster
   marching, which remains the production speed option. Gate 7 and the full
   CPU paper-integration plan are closed.
+- [x] GPU-P4a immutable selector geometry packet: added one separately bound,
+  112-byte conservative normalized-space geometry packet per immutable GPU
+  hierarchy record. The packet preserves exact address identity, carries four
+  corners plus outward-rounded AABB and enclosing sphere, and is validated
+  against exact BCC geometry before upload. Vulkan synchronizes the sidecar
+  with the corresponding topology revision while the existing selector stays
+  diagnostic-only; no CPU cut, closure, or draw authority changed. Release
+  tests cover malformed and non-conservative packet rejection.
