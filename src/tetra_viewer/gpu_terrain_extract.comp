@@ -8,7 +8,7 @@
 layout(std430,binding=0) readonly buffer Cells { vec4 cells[]; } input_cells;
 layout(std430,binding=1) buffer Output { uint header[8]; float vertices[]; } output_surface;
 layout(std430,binding=2) buffer Indices { uint indices[]; } output_indices;
-layout(push_constant) uniform Parameters { uint cell_count; uint vertex_capacity; uint index_capacity; } parameters;
+layout(push_constant) uniform Parameters { uint cell_count; uint vertex_capacity; uint index_capacity; uint subdivide_triangles; } parameters;
 layout(local_size_x=64) in;
 
 const ivec2 edges[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),
@@ -33,6 +33,28 @@ void put_vertex(uint index,vec3 position,vec3 normal,vec3 barycentric){
   output_surface.vertices[base+16u]=normal.y;
   output_surface.vertices[base+17u]=normal.z;
 }
+void put_triangle(uint first,vec3 a,vec3 b,vec3 c){
+  vec3 normal=normalize(cross(b-a,c-a));
+  put_vertex(first,a,normal,vec3(1,0,0));
+  put_vertex(first+1u,b,normal,vec3(0,1,0));
+  put_vertex(first+2u,c,normal,vec3(0,0,1));
+  output_indices.indices[first]=first;
+  output_indices.indices[first+1u]=first+1u;
+  output_indices.indices[first+2u]=first+2u;
+}
+void put_subdivided_triangle(uint first,vec3 a,vec3 b,vec3 c){
+  if(parameters.subdivide_triangles==0u){
+    put_triangle(first,a,b,c);return;
+  }
+  // Match the CPU draw topology's one-to-four subdivision.  These planar
+  // midpoints are deliberately diagnostic-only: P2 still requires the CPU
+  // field-projected midpoint positions before this output can be displayed.
+  vec3 ab=(a+b)*0.5,bc=(b+c)*0.5,ca=(c+a)*0.5;
+  put_triangle(first,a,ab,ca);
+  put_triangle(first+3u,ab,b,bc);
+  put_triangle(first+6u,ca,bc,c);
+  put_triangle(first+9u,ab,bc,ca);
+}
 void main(){
   uint cell=gl_GlobalInvocationID.x;
   if(cell>=parameters.cell_count)return;
@@ -49,7 +71,7 @@ void main(){
     hits[count++]=root.xyz;
   }
   if(count<3u)return;
-  uint emitted=count==3u?3u:6u;
+  uint emitted=(count==3u?3u:6u)*(parameters.subdivide_triangles==0u?1u:4u);
   // Diagnostic-only execution witness.  It distinguishes an empty source
   // from a failed reservation/write path without being used for rendering.
   atomicAdd(output_surface.header[6],emitted);
@@ -69,19 +91,9 @@ void main(){
     if(previous==observed){first=observed;break;}
   }
   output_surface.header[1]=1u;
-  vec3 normal=normalize(cross(hits[1]-hits[0],hits[2]-hits[0]));
-  put_vertex(first,hits[0],normal,vec3(1,0,0));
-  put_vertex(first+1u,hits[1],normal,vec3(0,1,0));
-  put_vertex(first+2u,hits[2],normal,vec3(0,0,1));
-  output_indices.indices[first]=first;
-  output_indices.indices[first+1u]=first+1u;
-  output_indices.indices[first+2u]=first+2u;
+  uint stride=parameters.subdivide_triangles==0u?3u:12u;
+  put_subdivided_triangle(first,hits[0],hits[1],hits[2]);
   if(count==4u){
-    put_vertex(first+3u,hits[0],normal,vec3(1,0,0));
-    put_vertex(first+4u,hits[2],normal,vec3(0,1,0));
-    put_vertex(first+5u,hits[3],normal,vec3(0,0,1));
-    output_indices.indices[first+3u]=first+3u;
-    output_indices.indices[first+4u]=first+4u;
-    output_indices.indices[first+5u]=first+5u;
+    put_subdivided_triangle(first+stride,hits[0],hits[2],hits[3]);
   }
 }

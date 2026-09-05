@@ -1188,6 +1188,15 @@ count match was not a valid topology comparison.  Next, mirror this final
 subdivision convention and then compare the CPU optimizer's final positions,
 winding, normals, depth, and colour. This remains a correctness diagnostic,
 not a claim that root computation has been accelerated.
+
+**P2 draw-topology alignment, 2026-09-05.** The compute extractor now emits
+the same one-to-four triangle subdivision required by the planetary CPU draw
+path, controlled explicitly per staged terrain packet. The off-screen Vulkan
+run produced all 226,848 expected vertices with no overflow. Its midpoint
+positions are still planar, whereas the CPU projects every midpoint through
+the band-limited terrain field, so the position-bounds gate continues to
+reject it. This proves only output cardinality and bounded indirect-buffer
+reservation, not geometric or image parity.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

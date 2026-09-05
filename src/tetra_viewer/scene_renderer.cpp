@@ -311,7 +311,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreatePipelineLayout(device_,&gpu_lod_pipeline_layout,nullptr,
                             &gpu_lod_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create GPU LOD pipeline layout");
-  gpu_lod_push.size=sizeof(std::uint32_t)*3U;
+  gpu_lod_push.size=sizeof(std::uint32_t)*4U;
   gpu_lod_pipeline_layout.pSetLayouts=&gpu_terrain_descriptor_set_layout_;
   if(vkCreatePipelineLayout(device_,&gpu_lod_pipeline_layout,nullptr,
                             &gpu_terrain_pipeline_layout_)!=VK_SUCCESS)
@@ -1680,7 +1680,7 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
 void SceneRenderer::stage_gpu_terrain_cells(
     std::span<const tetra::GpuTerrainCellRecord> cells,
     std::uint64_t source_revision,std::uint32_t expected_vertices,
-    std::array<float,6> expected_position_bounds) {
+    std::array<float,6> expected_position_bounds,bool subdivide_triangles) {
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
   gpu_terrain_cells_.assign(cells.begin(),cells.end());
@@ -1695,6 +1695,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
   gpu_terrain_expected_position_bounds_=expected_position_bounds;
+  gpu_terrain_subdivide_triangles_=subdivide_triangles;
   std::size_t linear_vertices{};
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
@@ -1708,6 +1709,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
     }
     if(crossings>=3U)linear_vertices+=crossings==3U?3U:6U;
   }
+  if(subdivide_triangles)linear_vertices*=4U;
   gpu_terrain_linear_expected_vertices_=static_cast<std::uint32_t>(
       std::min<std::size_t>(linear_vertices,
                             std::numeric_limits<std::uint32_t>::max()));
@@ -2122,9 +2124,10 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       if(vertex_capacity>std::numeric_limits<std::uint32_t>::max()||
          index_capacity>std::numeric_limits<std::uint32_t>::max())
         throw std::overflow_error("GPU terrain buffer exceeds shader capacity");
-      const std::array<std::uint32_t,3> push{static_cast<std::uint32_t>(gpu_terrain_cells_.size()),
+      const std::array<std::uint32_t,4> push{static_cast<std::uint32_t>(gpu_terrain_cells_.size()),
           static_cast<std::uint32_t>(vertex_capacity),
-          static_cast<std::uint32_t>(index_capacity)};
+          static_cast<std::uint32_t>(index_capacity),
+          gpu_terrain_subdivide_triangles_?1U:0U};
       vkCmdPushConstants(command_buffer,gpu_terrain_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),push.data());
       vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                           timing_query_pool_,timing_base+8U);

@@ -4566,7 +4566,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                 }
                               else add(prepared_scene.triangle_vertices);
                               return bounds;
-                            }());
+                            }(),world_runtime->field().terrain.planet_radius>0.0);
                         gpu_terrain_cells_render_origin=prepared_scene.render_origin;
                     }
                 }
