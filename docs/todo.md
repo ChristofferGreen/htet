@@ -355,12 +355,15 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
 - [ ] **P4c — Cross-backend three-term selection parity.** Implement the
       projected-edge, field-error, and limb-sagitta selector with one shared
-      shader ABI for Vulkan and Metal. Require exact selected-address parity
-      with the quantized CPU oracle outside a defined floating-point threshold
-      band; inside the band, require the specified deterministic GPU tie rule
-      and Vulkan/Metal agreement. Cover fixed, moving, near-surface, orbital,
-      rebase, and terrain-replacement cases. Its output is a candidate address
-      set, not yet a drawable surface.
+      shader ABI for Vulkan and Metal as an actual root/active-block hierarchy
+      traversal. Do not dispatch once per resident record. Reject subtrees
+      conservatively, never select both an ancestor and its descendant, and
+      report visited/rejected/selected counts. Require exact selected-address
+      parity with the quantized CPU oracle outside a defined floating-point
+      threshold band; inside the band, require the specified deterministic GPU
+      tie rule and Vulkan/Metal agreement. Cover fixed, moving, near-surface,
+      orbital, rebase, and terrain-replacement cases. Its output is a bounded
+      candidate-address frontier, not yet a drawable surface.
 - [ ] **P5 — Establish Metal terrain-compute parity.** Build and translate
       `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
       SPIR-V-to-MSL pipeline. Add slot-local buffers, revision matching,
@@ -368,33 +371,51 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       diagnostic Metal parity capture, but make no performance claim or change
       to production visibility while the legacy 448-byte CPU-precomputed
       payload is still used.
-- [ ] **P6 — Specify the BCC render-front conformity contract.** Before
-      implementing GPU-native extraction, choose and completely define either
-      dependency-closed render clusters or exact face/incident-cell ownership.
-      Specify mixed-depth and restricted-green transitions, shared-face and
-      edge identities, output bounds, revisioning, and fail-closed behaviour.
-      Prove the CPU oracle over all supported transition motifs has no overlap,
-      holes, duplicate faces, or finite preview boundary. P4c candidate output
-      cannot become drawable until this contract passes.
+- [ ] **P6 — Specify and prove the BCC render-front conformity contract.** Use
+      the existing 64 restricted-green edge-mask templates as the baseline,
+      not a new surface authority. Define how the GPU derives globally
+      consistent refined-edge masks from the candidate frontier and required
+      neighbour/ancestor addresses, then applies the same canonical template,
+      face, edge, and orientation rules as CPU. Prove a conservative BCC
+      conformity dependency domain/halo distinct from red-descendant bounds,
+      so culling cannot omit required transitions. Define exact per-mask output
+      counts, revisioning, and fail-closed behaviour; exhaust all masks and
+      supported adjacent mixed-depth motifs with no overlap, holes, duplicate
+      faces, or finite preview boundary. P4c output cannot become drawable
+      until this contract passes. Dependency-cluster and Wald-style dual-owner
+      methods remain comparisons only if the exact template path cannot meet
+      correctness or performance gates.
 - [ ] **P7 — Generate the watertight BCC surface on the GPU.** Replace the
       production dependency on `GpuTerrainCellRecord`—including its CPU roots,
-      winding, midpoints, and normals—with selected stable BCC addresses plus
-      immutable field/edit inputs. Reconstruct tetrahedra, evaluate the field,
-      solve edge roots, order triangles, project midpoints, generate normals,
-      and apply P6 ownership entirely on the GPU. The same complete revision
-      must feed opaque, wireframe, shadow, and ray-tracing consumers.
+      winding, midpoints, and normals—and retire P4a's 112-byte corner/bounds
+      sidecar from the production path after bootstrap parity. Consume compact
+      stable BCC addresses, topology, field summaries, and immutable field/edit
+      inputs; reconstruct tetrahedra and conservative bounds, evaluate the
+      field, solve roots, order triangles, project midpoints, generate normals,
+      and apply P6 transitions entirely on the GPU. Count and scan exact
+      per-cell output before reservation, reject overflow before publication,
+      and compare compact non-indexed triangle/patch plus canonical edge
+      streams against fat vertices and indexing. Do not retain a sequential
+      index buffer with no measured consumer benefit. The same complete
+      revision must feed opaque, wireframe, shadow, and ray-tracing consumers.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
-      selection, compaction, vertices, indices, indirect arguments, raster,
+      selection, compaction, geometry/edge streams, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback
       only for qualification. Camera motion may update only the compact camera
-      and field tuple. Qualify actual Metal captures and moving-camera geometry,
-      wireframe, shadow, and performance evidence; require 4–8 ms generation
-      and 16.7 ms, or initially 33 ms, complete-frame gates before promotion.
+      and field tuple. Overflow, stale work, or failed validation retains the
+      preceding complete revision; a partial new front is never drawable.
+      Qualify actual Metal captures and moving-camera geometry, wireframe,
+      shadow, and performance evidence; require 4–8 ms generation and 16.7 ms,
+      or initially 33 ms, complete-frame gates before promotion.
 - [ ] **P9 — Add a persistent active front only if measurements require it.**
-      If direct on-demand traversal misses P8's latency gate, compare bounded
-      split/merge with hysteresis and ping-pong complete fronts against direct
-      traversal and optional fVDB-style grouping. Retain it only for a measured
-      complete-frame improvement with identical visual and topology results.
+      Trigger this only if P8 profiling identifies repeated hierarchy traversal
+      or compaction as a dominant missed-budget stage. Compare bounded
+      split/merge with hysteresis, depth-independent fixed-capacity pools,
+      preflight reservation, split-wins conflict handling, and ping-pong
+      complete fronts against direct traversal and optional fVDB-style grouping.
+      Never expose the temporary foldovers permitted by some published GPU LOD
+      schemes. Retain the persistent path only for a measured complete-frame
+      improvement with identical visual and topology results.
 - [ ] **P10 — Move the authoritative conforming volume to the GPU.** Treat GPU
       BCC closure, mutations, neighbour/face repair, rollback, and
       persistence/collision reconciliation as a later independent milestone.

@@ -589,6 +589,13 @@ node when it is a resident leaf, reaches the depth limit, or meets the projected
 pixel-size criterion without violating the configured field/geometric error
 limit. Otherwise it visits its children.
 
+This must be hierarchy traversal rather than flat classification: dispatching
+one invocation for every resident record and merely filtering its leaves is not
+an acceptable completion of P4c. Traversal begins at roots or an explicit
+active-block list, visits only reachable relevant nodes, never emits both an
+ancestor and its descendant, and records visited, rejected, and selected counts
+so the benchmark can distinguish bounded work from full-snapshot scanning.
+
 The projected-area formula used by the Tet-AMR paper assumes the viewpoint is
 outside the convex tetrahedron. This viewer allows its LOD camera to enter the
 mesh. A tetrahedron containing the camera or crossing the near plane must use a
@@ -631,6 +638,16 @@ The extraction stages are expected to be:
 3. classify the scalar field or read fixed-field classifications;
 4. emit the selected method's triangles and stable edge identities;
 5. write the indirect draw count.
+
+For the first BCC path, step 4 uses the existing 64 restricted-green edge-mask
+templates. Selection supplies logical-owner candidates; a separate conformity
+stage derives globally consistent refined-edge masks from required neighbouring
+and ancestor addresses, then applies the same canonical template, face, edge,
+and orientation rules as the CPU. The 2004 communication-free refinement result
+supports deterministic cell-local tessellation once shared edge decisions are
+consistent; it does not remove the need to derive those decisions or prove the
+BCC conformity dependency domain. Dependency-cluster and Wald-style dual-owner
+extractors remain comparisons only if this exact existing grammar cannot pass.
 
 Subgrid Marching Tetrahedra is a later extraction option rather than the first
 one. It needs an edge-root list rather than a single sign bit or crossing, and
@@ -687,9 +704,11 @@ Required device-local buffers include:
 - generated surface edges;
 - overflow and diagnostic counters.
 
-All capacities must be known to the shaders. Overflow sets a diagnostic flag
-and produces a safe partial or previous complete frame; it must not write past
-a buffer or silently corrupt the surface.
+All capacities must be known to the shaders. Count/scan or an equivalent
+preflight determines whether the complete output fits before publication.
+Overflow sets a diagnostic flag and retains the previous complete frame; a
+partial new front is never drawable, and no pass may write past a buffer or
+silently corrupt the surface.
 
 ### CPU authority and reconciliation
 
@@ -1101,13 +1120,17 @@ that work.
   suppress GPU selection and retain the CPU route.
 - [ ] **P4c — Cross-backend three-term selection parity.** Implement the
   production projected-edge, field-error, and limb-sagitta selector over
-  P4a/P4b inputs with one shader-visible ABI shared by Vulkan and Metal.
+  P4a/P4b inputs with one shader-visible ABI shared by Vulkan and Metal. Begin
+  at roots or active blocks, reject subtrees, visit only reachable relevant
+  nodes, and never select both an ancestor and descendant; a flat invocation
+  over every resident record fails this leaf even if its addresses match.
   Require selected-address parity with the CPU quantized-input oracle outside
   a defined floating-point threshold band; inside the band, require the
   specified deterministic GPU tie rule and Vulkan/Metal agreement. Cover fixed,
-  moving, near-surface, orbital, rebase, and terrain-replacement cases. This
-  produces a candidate address set, not a drawable surface. CPU BCC closure
-  remains authoritative.
+  moving, near-surface, orbital, rebase, and terrain-replacement cases, and
+  report visited/rejected/selected work. This produces a bounded candidate-
+  address frontier, not a drawable surface. CPU BCC closure remains
+  authoritative.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
 provides the CPU-side breakdown and canonical hashes required for the first
@@ -1318,42 +1341,58 @@ topology, and complete-frame gates.
   stale, malformed, or incomplete output continues to draw the CPU surface.
   This is backend enablement, not a performance result or production-visibility
   milestone while extraction still consumes the legacy 448-byte CPU payload.
-- [ ] **P6 — BCC render-front conformity and ownership contract.** Treat P4c's
-  selected addresses as candidates. Before GPU-native extraction is
-  implemented, choose and fully specify either dependency-closed render
-  clusters or an exact face/incident-cell ownership rule for mixed-depth red
-  owners and restricted-green transitions. Define shared-face and canonical
-  edge identities, output bounds, revisioning, and fail-closed behaviour. A CPU
-  oracle must exhaust the supported transition motifs and prove no skirts,
-  duplicate faces, overlaps, holes, or finite preview boundary. Candidate
-  output remains diagnostic and cannot be drawn until this contract passes.
+- [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
+  selected addresses as candidates and use the existing 64 restricted-green
+  edge-mask templates as the baseline surface grammar. Define how GPU work
+  derives globally consistent refined-edge masks from required neighbouring
+  and ancestor addresses, then applies the CPU's canonical template, shared-
+  face, edge-identity, and orientation rules. Prove a conservative BCC
+  conformity dependency domain/halo separate from each red node's descendant
+  bound, so frustum and relevance rejection cannot omit required transitions.
+  Define exact per-mask output counts, revisioning, capacity, and fail-closed
+  behaviour. A CPU oracle must exhaust all 64 masks and supported adjacent
+  mixed-depth motifs and prove no skirts, duplicate faces, overlaps, holes, or
+  finite preview boundary. Candidate output remains diagnostic and cannot be
+  drawn until this contract passes. Dependency-cluster and Wald-inspired
+  dual-owner methods remain conditional comparisons, not parallel authorities.
 - [ ] **P7 — GPU-native watertight BCC surface generation.** Remove the
   production dependency on the 448-byte `GpuTerrainCellRecord`, whose roots,
-  winding, projected midpoints, and normals are currently computed by the CPU.
-  Feed selected stable BCC addresses plus immutable field/edit payloads;
-  reconstruct tetrahedral geometry, evaluate the field, solve edge roots,
-  order output, project midpoints, generate normals, and apply P6 ownership in
-  compute. Prove each stage against the CPU oracle without making qualification
-  readback part of normal rendering. Opaque, wireframe, shadows, and ray tracing
-  must consume the same complete front and revision. Fixed and moving Metal
-  captures must inspect near terrain, horizon/limb, silhouette, back-lit
-  mountains, edits, cutaways, and other implicit shapes before promotion.
+  winding, projected midpoints, and normals are currently computed by the CPU,
+  and retire P4a's 112-byte corner/bounds sidecar from the production path after
+  bootstrap parity. Feed compact stable BCC addresses, topology, field
+  summaries, and immutable field/edit payloads; reconstruct tetrahedral
+  geometry and conservative bounds, evaluate the field, solve edge roots,
+  order output, project midpoints, generate normals, and apply P6 transitions
+  in compute. Derive exact per-cell counts, scan/reserve the complete output,
+  and reject overflow before publication. Compare compact non-indexed triangle
+  or patch records plus a canonical edge stream with fat vertices and indexed
+  output; do not retain sequential indices without a measured consumer benefit.
+  Prove each stage against the CPU oracle without making qualification readback
+  part of normal rendering. Opaque, wireframe, shadows, and ray tracing must
+  consume the same complete front and revision. Fixed and moving Metal captures
+  must inspect near terrain, horizon/limb, silhouette, back-lit mountains,
+  edits, cutaways, and other implicit shapes before promotion.
 - [ ] **P8 — Readback-free publication and performance qualification.** Keep
-  selection, compaction, generated vertices/indices, indirect arguments,
+  selection, compaction, generated geometry/edge streams, indirect arguments,
   raster, shadow, and ray-tracing consumption device-local. Camera movement
   changes only the compact camera/field tuple; diagnostic readback is compiled
-  or enabled only for qualification. Measure complete camera-to-present work,
-  not only kernel duration, and require 4–8 ms for generation plus 16.7 ms for
-  the complete 60 Hz frame, with 33 ms as the first acceptable milestone.
-  Promote only after actual Metal camera motion is stable and visually and
-  topologically equivalent to the oracle.
+  or enabled only for qualification. Overflow, stale work, or validation
+  failure retains the preceding complete revision; a partial new front is never
+  drawable. Measure complete camera-to-present work, not only kernel duration,
+  and require 4–8 ms for generation plus 16.7 ms for the complete 60 Hz frame,
+  with 33 ms as the first acceptable milestone. Promote only after actual Metal
+  camera motion is stable and visually and topologically equivalent to the
+  oracle.
 - [ ] **P9 — Conditional traversal/front optimization.** Start only if direct
-  on-demand traversal fails P8's measured latency gate. Compare it with a
-  bounded persistent split/merge front using hysteresis, useful-edit accounting,
-  and ping-pong complete fronts, plus an optional fVDB-inspired address
-  sort/group/compact pass and measured sparse-versus-dense block thresholds.
-  Retain only the simplest method that materially improves the complete frame
-  without changing geometry or introducing camera stalls.
+  on-demand traversal misses P8's latency gate and profiling identifies repeated
+  traversal or compaction as a dominant stage. Compare it with a bounded
+  persistent split/merge front using hysteresis, useful-edit accounting,
+  depth-independent fixed-capacity pools, preflight reservation, split-wins
+  conflict handling, and ping-pong complete fronts, plus an optional fVDB-
+  inspired address sort/group/compact pass and measured sparse-versus-dense
+  block thresholds. Do not permit the temporary foldovers accepted by some GPU
+  LOD schemes. Retain only the simplest method that materially improves the
+  complete frame without changing geometry or introducing camera stalls.
 - [ ] **P10 — Later authoritative GPU conforming volume.** Only after the
   render-only path is complete, separately implement GPU BCC closure, mutation,
   neighbour and face ownership repair, rollback, and CPU persistence/collision
@@ -1369,8 +1408,10 @@ terrain authorities:
   cell-local extractor only if P7 output quality or allocation behaviour
   needs another representation; measure Hausdorff and normal error, triangle
   quality, sampling cost, and total frame time.
-- Prototype Wald-inspired mixed-depth dual ownership only after a complete BCC
-  incident-cell lookup and finer/same-level ownership specification exists.
+- Prototype dependency-cluster or Wald-inspired mixed-depth dual ownership only
+  if the exact restricted-green path fails a measured gate, and only after a
+  complete BCC incident-cell lookup and finer/same-level ownership specification
+  exists.
 - Compare fVDB-style grouping, a fixed-field relevant/minimal hierarchy, and
   locally dense kernels only when measured traversal occupancy identifies the
   corresponding bottleneck.
