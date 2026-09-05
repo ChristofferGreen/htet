@@ -2,6 +2,11 @@
 
 ## 2026-09-05
 
+- [x] Add the Realtime GPU surface LOD control. The World panel exposes an
+  off-by-default checkbox and clearly identifies CPU fallback when requested,
+  because no GPU terrain dispatch is available. This is user-visible capability
+  gating, not a claim that the checkbox enables GPU rendering.
+
 - [x] Add GPU hierarchy frame-slot lifetime control. The two-or-more slot ring
   prevents submitted output from being overwritten, promotes only completed
   matching tuple revisions, and never waits for normal consumption. It is the

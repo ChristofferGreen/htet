@@ -1190,6 +1190,7 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
     bool world_show_capsule=false;
     bool world_show_contact_normal=false;
     bool world_smooth_normals=world_mode;
+    bool world_realtime_gpu_surface_lod=false;
     bool world_terrain_msaa=world_mode&&
         g_SceneRenderer.prefers_tile_local_terrain_msaa();
     bool world_terrain_msaa_explicit=false;
@@ -3352,6 +3353,11 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                &show_surface_edges);
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
                                &world_smooth_normals);
+            ImGui::Checkbox("Realtime GPU surface LOD",&world_realtime_gpu_surface_lod);
+            if(world_realtime_gpu_surface_lod)
+                ImGui::TextDisabled("CPU fallback: GPU dispatch is not available yet");
+            else
+                ImGui::TextDisabled("CPU terrain path active");
             const auto apply_terrain_msaa=[&]{
                 if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
                     throw std::runtime_error(
