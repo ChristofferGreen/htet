@@ -1138,13 +1138,27 @@ that work.
     counts; the hidden fixed run selected 106,614 addresses with zero
     mismatches and no overflow. CPU BCC closure and terrain rendering remain
     authoritative.
-  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Specify the explicit
-    floating-point threshold band and deterministic GPU tie rule, then compare
-    the P4a/P4b CPU oracle and Vulkan address streams across fixed, moving,
-    near-surface, orbital, rebase, and terrain-replacement inputs. Require
-    exact addresses outside the band and the documented tie result inside it.
-    The candidate front is not drawable and CPU BCC closure remains
-    authoritative.
+  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Make selector parity a
+    reproducible corpus rather than a single successful readback. For each of
+    the three dimensionless errors `e = projected_error / threshold`, classify
+    an input as outside the boundary band when `abs(e - 1) > max(8 ulps(e),
+    2^-20)` and inside otherwise; the maximum of the three terms uses the same
+    rule. Feed the exact quantized P4b tuple to both implementations and apply
+    one conservative tie rule: a finite in-band or exactly-one error refines
+    (split wins), except at the explicit maximum depth. Invalid values reject
+    the tuple rather than becoming a tie. The corpus must contain fixed poses;
+    frame-by-frame yaw/pitch and translation motion; near-surface and
+    camera-inside-bound cases; orbital/limb cases; a render-origin rebase in
+    motion; and terrain replacement with old/new tuple isolation. It must also
+    synthesize threshold values immediately below, within, and immediately
+    above every term's boundary, including equal-max and two-term ties. For
+    every completed tuple, canonicalize and compare the Vulkan stream and the
+    P4a/P4b CPU oracle: selected addresses outside the band match exactly;
+    in-band results obey split-wins, remain ancestor/descendant exclusive, and
+    have identical results on deterministic replay. Record per-case tuple
+    identity, selected/visited/rejected counts, overflow, and mismatch/band
+    counts. The result remains a bounded candidate-address frontier, not a
+    drawable surface; CPU BCC closure remains authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,
