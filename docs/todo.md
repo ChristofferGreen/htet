@@ -343,20 +343,61 @@ The final promotion is split so each independent proof has a reproducible
 artifact and a bounded acceptance condition. No Default change is permitted
 until every leaf is complete.
 
-## Active chain: GPU terrain selection parity
+## Active chain: GPU-resident BCC render front
 
-The qualified GPU extraction path is image- and topology-identical to CPU but
-does not reduce end-to-end latency while CPU still performs selection. The
-next work is a strictly render-only selector; CPU BCC closure and publication
-remain authoritative. Details and evidence live in
-[`gpu-realtime-lod.md`](gpu-realtime-lod.md).
+The production direction is one cross-backend visual front derived from the
+persistent BCC hierarchy—not a cube-sphere or other second terrain authority.
+For this chain, “GPU terrain generation” means that camera-driven selection,
+field evaluation, surface construction, and publication remain on the GPU.
+The CPU may remain authoritative for persistence, editing, collision, export,
+and conforming-volume work until the later full-volume milestone. Details and
+evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P4c — GPU three-term selection parity.** Apply the projected-edge,
-      field-error, and limb-sagitta criteria to the immutable P4 inputs and
-      require exact selected-address parity with the quantized CPU oracle
-      across fixed and moving production cameras before feeding extraction.
+- [ ] **P4c — Cross-backend three-term selection parity.** Implement the
+      projected-edge, field-error, and limb-sagitta selector with one shared
+      shader ABI for Vulkan and Metal. Require exact selected-address parity
+      with the quantized CPU oracle across fixed, moving, near-surface, orbital,
+      rebase, and terrain-replacement cases before selection may feed surface
+      generation.
+- [ ] **P5 — Execute terrain compute on Metal.** Build and translate
+      `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
+      SPIR-V-to-MSL pipeline. Add slot-local buffers, revision matching,
+      barriers, bounded overflow handling, and fallback-safe dispatch. Prove
+      the first visible Metal result without changing the default on failure.
+- [ ] **P6 — Remove the CPU-precomputed terrain-cell payload.** Replace the
+      production dependency on the 448-byte `GpuTerrainCellRecord`—including
+      its CPU roots, winding, midpoints, and normals—with selected stable BCC
+      addresses plus immutable field/edit inputs. Reconstruct tetrahedra,
+      evaluate the field, solve edge roots, order triangles, project
+      midpoints, and generate normals on the GPU.
+- [ ] **P7 — Make mixed-depth BCC surface ownership watertight.** Define and
+      implement dependency-closed render clusters or exact face/incident-cell
+      ownership. The result must have no skirts, duplicate faces, overlap,
+      holes, or finite preview boundary, and the same generated front must feed
+      opaque, wireframe, shadow, and ray-tracing consumers.
+- [ ] **P8 — Publish and consume the render front without readback.** Keep
+      selection, compaction, vertices, indices, indirect arguments, raster,
+      shadows, and ray-tracing inputs device-local; compile or enable readback
+      only for qualification. Camera motion may update only the compact camera
+      and field tuple. Qualify actual Metal captures and moving-camera geometry,
+      wireframe, shadow, and performance evidence; require 4–8 ms generation
+      and 16.7 ms, or initially 33 ms, complete-frame gates before promotion.
+- [ ] **P9 — Add a persistent active front only if measurements require it.**
+      If direct on-demand traversal misses P8's latency gate, compare bounded
+      split/merge with hysteresis and ping-pong complete fronts against direct
+      traversal and optional fVDB-style grouping. Retain it only for a measured
+      complete-frame improvement with identical visual and topology results.
+- [ ] **P10 — Move the authoritative conforming volume to the GPU.** Treat GPU
+      BCC closure, mutations, neighbour/face repair, rollback, and
+      persistence/collision reconciliation as a later independent milestone.
+      It must not block completion or promotion of the render-only chain.
 
-## Active chain: preview-first terrain response
+## Completed/retired evidence: preview-first terrain response
+
+This CPU optimization and procedural-preview investigation is complete. Its
+finite rectangular preview remains opt-in research evidence and is explicitly
+not the production terrain path; the active GPU-resident BCC chain above must
+produce the unbounded, watertight visible surface.
 
 - [x] Add end-to-end and surface-substage timings to the production world
       benchmark. A representative walking update measured about 288 ms in
@@ -710,9 +751,10 @@ experiment, Gate 0 playable-world bootstrap, Gate 2 blocked ownership, and Gate
 revisioned predictive hierarchy demand, bounded recent retention, independent
 hierarchy admission, and deterministic cold eviction are complete without
 changing the one authoritative logical cut. Gate 4A's surface-proportional
-construction is also complete. The current priority is the preview
-qualification chain above; exact-world work resumes only with its bounded,
-measurement-led background-front leaf.
+construction is also complete. The current priority is the GPU-resident BCC
+render-front chain above. The finite procedural preview is retained only as
+opt-in research evidence; exact-world work resumes only when required by the
+later authoritative-volume milestone.
 
 Gate 2A's bounded foundation is complete: production block, job, transaction,
 immutable manifest, and retained-render contracts are distinct; shared entity

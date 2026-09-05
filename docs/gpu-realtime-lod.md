@@ -1099,11 +1099,12 @@ that work.
   tuple buffer; it is written only after that slot's fence and explicitly
   synchronized before compute. Invalid, absent, or revision-mismatched tuples
   suppress GPU selection and retain the CPU route.
-- [ ] **P4c — Three-term GPU selection parity.** Implement the production
-  projected edge, field-error, and limb-sagitta selector over P4a/P4b inputs;
-  require selected-address parity with the CPU quantized-input oracle under
-  fixed and moving cameras before it can feed P1 extraction. CPU BCC closure
-  remains authoritative.
+- [ ] **P4c — Cross-backend three-term selection parity.** Implement the
+  production projected-edge, field-error, and limb-sagitta selector over
+  P4a/P4b inputs with one shader-visible ABI shared by Vulkan and Metal.
+  Require selected-address parity with the CPU quantized-input oracle under
+  fixed, moving, near-surface, orbital, rebase, and terrain-replacement cases
+  before it can feed surface generation. CPU BCC closure remains authoritative.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
 provides the CPU-side breakdown and canonical hashes required for the first
@@ -1298,39 +1299,77 @@ avoids a foreground topology rebuild but does not erase independently
 authoritative CPU publication cost; further gains belong to GPU selection and
 progressive active-front scheduling.
 
-- [ ] Visually inspect terrain and the other implicit shapes for missing faces,
-  cracks, incorrect orientation, unstable LOD, and wireframe defects.
-- [ ] Retain the on-demand path only if it improves complete interactive
-  latency and meets correctness requirements.
-- [ ] Compare direct append output with an fVDB-inspired address sort/group/
-  compact pass and record the occupancy distribution of retained blocks.
-- [ ] Compare sparse per-address work with a locally dense block kernel at
-  several measured occupancy thresholds.
-- [ ] Prototype a persistent split/merge active front with one level of change
-  per primitive per frame, separate refine/coarsen candidate streams,
-  hysteresis, a per-frame edit/time budget, and double-buffered complete cuts;
-  compare it with on-demand traversal.
-- [ ] Record requested, admissible, committed, and rejected edits per pass and
-  stop low-yield tail passes; benchmark the useful-edits-per-millisecond curve.
-- [ ] Compare direct variable-size patch output with a Scholz-style
-  fixed-capacity GPU buffer front that repacks draw chunks independently of
-  spatial LOD.
-- [ ] Prototype the four-hexahedra cell-local extractor as a separate quality
-  method and compare Hausdorff error, normal error, triangle quality, sampling
-  cost, and total frame time with direct tetrahedral extraction.
-- [ ] Specify and test a BCC equivalent of Wald's incident-cell lookup and
-  finer-level/same-level ownership rules, then prototype it as a separate
-  crack-free mixed-depth extractor only if the specification is complete.
-- [ ] Keep general GPU edge-collapse coarsening out of the first visual path;
-  later benchmark it against inverse family merges for authoritative volumes,
-  including connectivity-rebuild time and the effect of skipping low-yield
-  iterations.
-- [ ] Add a fixed-field relevant/minimal surface hierarchy and compare visited
-  nodes, memory, extraction time, and invalidation cost.
-- [ ] Prototype Subgrid Marching Tetrahedra as a separate quality-oriented
-  extractor and measure edge-root cost, output growth, and GPU suitability.
-- [ ] Investigate a fully GPU-materialized conforming cut only after the
-  render-only path is measured and the BCC closure requirements are specified.
+### Ordered path from selector to production rendering
+
+The following leaves are dependencies, not a menu. A leaf cannot be promoted
+by a plausible still image or an isolated kernel time: it must preserve the
+same BCC-derived terrain identity and pass its stated cross-backend, visual,
+topology, and complete-frame gates.
+
+- [ ] **P5 — Metal terrain-compute execution.** Translate and build
+  `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
+  SPIR-V-to-MSL pipeline. Add Metal slot-local topology, classification,
+  geometry, ownership, diagnostics, and indirect-argument buffers with the
+  same tuple revisioning, barriers, capacity checks, and overflow rejection as
+  Vulkan. Produce the first fallback-safe visible Metal dispatch; unsupported,
+  stale, malformed, or incomplete output continues to draw the CPU surface.
+- [ ] **P6 — GPU-native BCC surface generation.** Remove the production
+  dependency on the 448-byte `GpuTerrainCellRecord`, whose roots, winding,
+  projected midpoints, and normals are currently computed by the CPU. Feed
+  selected stable BCC addresses plus immutable field/edit payloads instead;
+  reconstruct tetrahedral geometry, evaluate the field, solve edge roots,
+  order output, project midpoints, and generate normals in compute. Prove each
+  stage against the CPU oracle, but do not make qualification readback part of
+  normal rendering.
+- [ ] **P7 — Watertight mixed-depth BCC ownership.** Specify dependency-closed
+  render clusters or an exact face/incident-cell ownership rule, then generate
+  a single crack-free front with no skirts, duplicate faces, overlaps, holes,
+  or finite preview boundary. Opaque, wireframe, shadows, and ray tracing must
+  consume this same front and revision. Fixed and moving Metal captures must
+  inspect near terrain, horizon/limb, silhouette, back-lit mountains, edits,
+  cutaways, and other implicit shapes before promotion.
+- [ ] **P8 — Readback-free publication and performance qualification.** Keep
+  selection, compaction, generated vertices/indices, indirect arguments,
+  raster, shadow, and ray-tracing consumption device-local. Camera movement
+  changes only the compact camera/field tuple; diagnostic readback is compiled
+  or enabled only for qualification. Measure complete camera-to-present work,
+  not only kernel duration, and require 4–8 ms for generation plus 16.7 ms for
+  the complete 60 Hz frame, with 33 ms as the first acceptable milestone.
+  Promote only after actual Metal camera motion is stable and visually and
+  topologically equivalent to the oracle.
+- [ ] **P9 — Conditional traversal/front optimization.** Start only if direct
+  on-demand traversal fails P8's measured latency gate. Compare it with a
+  bounded persistent split/merge front using hysteresis, useful-edit accounting,
+  and ping-pong complete fronts, plus an optional fVDB-inspired address
+  sort/group/compact pass and measured sparse-versus-dense block thresholds.
+  Retain only the simplest method that materially improves the complete frame
+  without changing geometry or introducing camera stalls.
+- [ ] **P10 — Later authoritative GPU conforming volume.** Only after the
+  render-only path is complete, separately implement GPU BCC closure, mutation,
+  neighbour and face ownership repair, rollback, and CPU persistence/collision
+  reconciliation. This milestone is not a prerequisite for GPU camera-driven
+  rendering.
+
+### Conditional paper-derived comparisons
+
+These are experiments after the baseline P4c–P8 path, not blockers or alternate
+terrain authorities:
+
+- Compare Scholz-style fixed-capacity repacking and the four-hexahedra
+  cell-local extractor only if P6/P7 output quality or allocation behaviour
+  needs another representation; measure Hausdorff and normal error, triangle
+  quality, sampling cost, and total frame time.
+- Prototype Wald-inspired mixed-depth dual ownership only after a complete BCC
+  incident-cell lookup and finer/same-level ownership specification exists.
+- Compare fVDB-style grouping, a fixed-field relevant/minimal hierarchy, and
+  locally dense kernels only when measured traversal occupancy identifies the
+  corresponding bottleneck.
+- Prototype Subgrid Marching Tetrahedra only as a quality-oriented alternative
+  after the direct BCC extractor is correct, and measure edge-root cost, output
+  growth, and GPU suitability.
+- Keep general GPU edge-collapse coarsening out of the render-front chain;
+  compare it with inverse family merges only for the later authoritative-volume
+  milestone.
 
 ## Longer-term full-GPU volume path
 
