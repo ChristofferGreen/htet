@@ -258,7 +258,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateDescriptorSetLayout(device_,&atmosphere_descriptor_layout,nullptr,
                                  &atmosphere_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create atmosphere descriptor layout");
-  std::array<VkDescriptorSetLayoutBinding,3> gpu_lod_bindings{};
+  std::array<VkDescriptorSetLayoutBinding,4> gpu_lod_bindings{};
   for(std::uint32_t binding=0;binding<gpu_lod_bindings.size();++binding){
     gpu_lod_bindings[binding].binding=binding;
     gpu_lod_bindings[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -862,6 +862,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   };
   destroy_gpu_lod_buffer(gpu_lod_hierarchy_);
   destroy_gpu_lod_buffer(gpu_lod_selection_inputs_);
+  for(auto& tuple:gpu_lod_selection_tuples_)destroy_gpu_lod_buffer(tuple);
+  gpu_lod_selection_tuples_.clear();gpu_lod_tuple_slot_generations_.clear();
   for(auto& output:gpu_lod_outputs_)destroy_gpu_lod_buffer(output);
   for(auto& input:gpu_terrain_cell_buffers_)destroy_gpu_lod_buffer(input);
   for(auto& output:gpu_terrain_output_buffers_)destroy_gpu_lod_buffer(output);
@@ -897,6 +899,11 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   constexpr std::size_t gpu_lod_output_capacity=65536U;
   gpu_lod_hierarchy_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_inputs_=allocate_gpu_lod_buffer(64U*1024U*1024U);
+  gpu_lod_selection_tuples_.clear();gpu_lod_selection_tuples_.reserve(image_count);
+  for(std::uint32_t index=0;index<image_count;++index)
+    gpu_lod_selection_tuples_.push_back(allocate_gpu_lod_buffer(
+        sizeof(tetra::GpuHierarchySelectionTuple)));
+  gpu_lod_tuple_slot_generations_.assign(image_count,0U);
   gpu_lod_outputs_.reserve(image_count);
   for(std::uint32_t index=0;index<image_count;++index)
     gpu_lod_outputs_.push_back(allocate_gpu_lod_buffer(
@@ -1292,11 +1299,12 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   if(vkAllocateDescriptorSets(device_,&allocate,gpu_lod_descriptor_sets_.data())!=VK_SUCCESS)
     throw std::runtime_error("unable to allocate GPU LOD descriptors");
   for(std::size_t index=0;index<gpu_lod_descriptor_sets_.size();++index){
-    const std::array<VkDescriptorBufferInfo,3> infos{{
+    const std::array<VkDescriptorBufferInfo,4> infos{{
         {gpu_lod_hierarchy_.buffer,0,VK_WHOLE_SIZE},
         {gpu_lod_outputs_[index].buffer,0,VK_WHOLE_SIZE},
-        {gpu_lod_selection_inputs_.buffer,0,VK_WHOLE_SIZE}}};
-    std::array<VkWriteDescriptorSet,3> writes{};
+        {gpu_lod_selection_inputs_.buffer,0,VK_WHOLE_SIZE},
+        {gpu_lod_selection_tuples_[index].buffer,0,VK_WHOLE_SIZE}}};
+    std::array<VkWriteDescriptorSet,4> writes{};
     for(std::uint32_t binding=0;binding<writes.size();++binding){
       writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       writes[binding].dstSet=gpu_lod_descriptor_sets_[index];
@@ -1728,6 +1736,20 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
       static_cast<std::uint32_t>(snapshot.records.size());
 }
 
+void SceneRenderer::stage_gpu_lod_selection_tuple(
+    const tetra::GpuHierarchySelectionTuple& tuple) {
+  try { tetra::validate_gpu_hierarchy_selection_tuple(tuple); }
+  catch(const std::invalid_argument&) {
+    // A new malformed tuple must not leave an older GPU decision eligible.
+    // CPU terrain remains the authoritative fallback for this frame.
+    gpu_lod_selection_tuple_.reset();
+    if(++gpu_lod_selection_tuple_generation_==0U)++gpu_lod_selection_tuple_generation_;
+    return;
+  }
+  gpu_lod_selection_tuple_=tuple;
+  if(++gpu_lod_selection_tuple_generation_==0U)++gpu_lod_selection_tuple_generation_;
+}
+
 void SceneRenderer::stage_gpu_terrain_cells(
     std::span<const tetra::GpuTerrainCellRecord> cells,
     std::uint64_t source_revision,std::uint32_t expected_vertices,
@@ -2068,7 +2090,24 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
           std::min(result[0],65536U),true,result[2]!=0U||result[0]>65536U};
     gpu_lod_output.pending=false;
   }
-  if(gpu_lod_diagnostic_enabled_&&gpu_lod_uploaded_revision_!=0U){
+  const auto tuple_matches_hierarchy=[&]{
+    if(!gpu_lod_selection_tuple_)return false;
+    const auto& lanes=gpu_lod_selection_tuple_->revision_lanes;
+    const auto revision=static_cast<std::uint64_t>(lanes[0])|
+        (static_cast<std::uint64_t>(lanes[1])<<32U);
+    return revision==gpu_lod_uploaded_revision_;
+  };
+  if(gpu_lod_diagnostic_enabled_&&gpu_lod_uploaded_revision_!=0U&&
+     tuple_matches_hierarchy()){
+    bool tuple_uploaded=false;
+    if(gpu_lod_selection_tuple_&&gpu_lod_tuple_slot_generations_.at(image_index)!=gpu_lod_selection_tuple_generation_){
+      auto& tuple=gpu_lod_selection_tuples_.at(image_index);void* mapped{};
+      if(vkMapMemory(device_,tuple.memory,0,sizeof(*gpu_lod_selection_tuple_),0,&mapped)!=VK_SUCCESS)throw std::runtime_error("unable to map GPU LOD tuple");
+      std::memcpy(mapped,&*gpu_lod_selection_tuple_,sizeof(*gpu_lod_selection_tuple_));vkUnmapMemory(device_,tuple.memory);
+      gpu_lod_tuple_slot_generations_[image_index]=gpu_lod_selection_tuple_generation_;
+      tuple_uploaded=true;
+    }
+    if(tuple_uploaded){VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.buffer=gpu_lod_selection_tuples_.at(image_index).buffer;barrier.size=VK_WHOLE_SIZE;vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&barrier,0,nullptr);}
     if(gpu_lod_hierarchy_upload_pending_){
       std::array<VkBufferMemoryBarrier,2> hierarchy_ready{};
       for(auto& barrier:hierarchy_ready){

@@ -10,6 +10,7 @@ layout(std430,binding=1) buffer SelectionOutput { uint words[]; } output_buffer;
 // edge/field/limb selection.  Keeping the binding live in the source fixes
 // the descriptor contract before that traversal replaces the diagnostic.
 layout(std430,binding=2) readonly buffer SelectionInputs { vec4 values[]; } selection_inputs;
+layout(std430,binding=3) readonly buffer SelectionTuple { vec4 values[]; } selection_tuple;
 
 layout(push_constant) uniform SelectorParameters {
   uint record_count;

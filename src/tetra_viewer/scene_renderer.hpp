@@ -204,6 +204,7 @@ class SceneRenderer {
       std::span<const SceneVertex> hierarchy_line_vertices,
       std::span<const SceneVertex> editor_line_vertices);
   void upload_gpu_hierarchy_snapshot(const tetra::GpuHierarchySnapshot& snapshot);
+  void stage_gpu_lod_selection_tuple(const tetra::GpuHierarchySelectionTuple& tuple);
   void stage_gpu_terrain_cells(
       std::span<const tetra::GpuTerrainCellRecord> cells,
       std::uint64_t source_revision,std::uint32_t expected_vertices,
@@ -367,6 +368,10 @@ class SceneRenderer {
   // extraction buffers, so selector inputs can evolve without changing draw
   // data or CPU authority.
   GpuLodBuffer gpu_lod_selection_inputs_;
+  std::vector<GpuLodBuffer> gpu_lod_selection_tuples_;
+  std::vector<std::uint64_t> gpu_lod_tuple_slot_generations_;
+  std::optional<tetra::GpuHierarchySelectionTuple> gpu_lod_selection_tuple_;
+  std::uint64_t gpu_lod_selection_tuple_generation_{};
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
   std::uint64_t gpu_lod_uploaded_revision_{};

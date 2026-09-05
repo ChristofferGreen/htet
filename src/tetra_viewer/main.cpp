@@ -4530,6 +4530,23 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         g_SceneRenderer.upload_gpu_hierarchy_snapshot(
                             tetra::make_gpu_hierarchy_snapshot(
                                 directory,directory.revision()));
+                    if(world_realtime_gpu_surface_lod){
+                        const auto& profile=world_runtime->profile();
+                        const auto& field=world_runtime->field();
+                        g_SceneRenderer.stage_gpu_lod_selection_tuple(
+                            tetra::make_gpu_hierarchy_selection_tuple({
+                                .camera=camera,.render_origin=prepared_scene.render_origin,
+                                .field_centre=field.centre,
+                                .planet_radius=field.terrain.planet_radius,
+                                .terrain_height_bound=tetra::terrain_height_magnitude_bound(field),
+                                .field_lipschitz=tetra::implicit_field_lipschitz_bound(field),
+                                .edge_threshold=profile.pixel_threshold,
+                                .field_threshold=profile.field_error_pixel_threshold,
+                                .limb_threshold=profile.limb_error_pixel_threshold,
+                                .merge_ratio=profile.lod_merge_threshold_ratio,
+                                .source_revision=directory.revision(),
+                                .field_revision=directory.revision()}));
+                    }
                     if(world_realtime_gpu_surface_lod)if(const auto gpu_cells=
                            world_runtime->world_surface_gpu_cells();
                        !gpu_cells.empty()&&(g_SceneRenderer.gpu_terrain_cells_revision()!=

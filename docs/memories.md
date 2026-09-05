@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The GPU hierarchy selector has a separate immutable 112-byte geometry sidecar per topology record, carrying float corners, outward-rounded bounds, and an enclosing sphere; exact addresses remain its identity and CPU cut/closure authority is unchanged.
 - Evidence: Snapshot validation derives and checks every sidecar from exact BCC geometry, rejects altered bounds, and the off-screen Vulkan GPU-LOD diagnostic completed after the sidecar was separately bound and synchronized.
 
+### gpu-hierarchy-selector-tuple
+- Updated: 2026-09-05
+- Tags: gpu-lod, vulkan, synchronization, fallback
+- Fact: GPU selection’s dynamic camera/field tuple is render-origin relative and per-swapchain-image, so it can only be uploaded after the owning fence and a missing, malformed, or stale tuple suppresses GPU selection in favour of CPU rendering.
+- Evidence: The tuple regression rejects invalid revisions and the 487-test Release gate plus off-screen Vulkan diagnostic passed with the slot-local binding and host-to-compute barrier.
+
 ### gpu-terrain-extraction-slots
 - Updated: 2026-09-05
 - Tags: vulkan, terrain, extraction, synchronization

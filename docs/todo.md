@@ -351,10 +351,6 @@ next work is a strictly render-only selector; CPU BCC closure and publication
 remain authoritative. Details and evidence live in
 [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P4b — Field and limb selector tuple.** Pack real production field
-      bounds, limb inputs, camera/render-origin, thresholds, hysteresis, and
-      identities; prove invalid/stale tuples retain CPU selection. Stop before
-      changing traversal.
 - [ ] **P4c — GPU three-term selection parity.** Apply the projected-edge,
       field-error, and limb-sagitta criteria to the immutable P4 inputs and
       require exact selected-address parity with the quantized CPU oracle

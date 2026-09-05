@@ -723,3 +723,9 @@
   with the corresponding topology revision while the existing selector stays
   diagnostic-only; no CPU cut, closure, or draw authority changed. Release
   tests cover malformed and non-conservative packet rejection.
+- [x] GPU-P4b field and limb selector tuple: packed the live camera and
+  render-origin-relative field centre, radius, terrain-height, Lipschitz,
+  edge/field/limb thresholds, hysteresis, and revision identities into a
+  validated 112-byte tuple. Each swapchain image owns a tuple buffer, which is
+  only written after its fence and synchronized before compute; absent, stale,
+  or malformed tuples suppress GPU selection and retain CPU rendering.

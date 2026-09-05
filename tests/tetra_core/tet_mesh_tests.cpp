@@ -5133,6 +5133,24 @@ TEST_CASE("GPU hierarchy snapshot validation rejects malformed records") {
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_selection),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy selector tuple is revisioned and render-origin relative") {
+  tetra::GpuHierarchySelectionTupleParameters p;
+  p.camera.position={1000001.0,2000002.0,3000003.0};p.camera.forward={0,0,-1};
+  p.camera.up={0,1,0};p.camera.viewport_height_pixels=900.0;p.camera.aspect_ratio=1.6;
+  p.render_origin={1000000.0,2000000.0,3000000.0};p.field_centre=p.render_origin;
+  p.planet_radius=1000.0;p.terrain_height_bound=50.0;p.field_lipschitz=3.0;
+  p.edge_threshold=2.0;p.field_threshold=4.0;p.limb_threshold=1.0;p.merge_ratio=0.5;
+  p.source_revision=7U;p.field_revision=9U;
+  const auto tuple=tetra::make_gpu_hierarchy_selection_tuple(p);
+  CHECK(tuple.camera_relative_viewport[0]==doctest::Approx(1.0));
+  CHECK(tuple.camera_relative_viewport[3]==doctest::Approx(900.0));
+  CHECK(tuple.revision_lanes[0]==7U);CHECK(tuple.revision_lanes[2]==9U);
+  auto stale=tuple;stale.revision_lanes[0]=0U;stale.revision_lanes[1]=0U;
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_selection_tuple(stale),std::invalid_argument);
+  p.merge_ratio=0.0;
+  CHECK_THROWS_AS(tetra::make_gpu_hierarchy_selection_tuple(p),std::invalid_argument);
+}
+
 TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminates") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

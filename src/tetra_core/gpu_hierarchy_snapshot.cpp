@@ -165,6 +165,48 @@ GpuHierarchySelectionRecord gpu_hierarchy_selection_record(
   return result;
 }
 
+GpuHierarchySelectionTuple make_gpu_hierarchy_selection_tuple(
+    const GpuHierarchySelectionTupleParameters& p) {
+  if(p.source_revision==0U||p.field_revision==0U||!(p.planet_radius>=0.0)||
+     !(p.terrain_height_bound>=0.0)||!(p.field_lipschitz>0.0)||
+     !(p.edge_threshold>0.0)||!(p.field_threshold>0.0)||
+     !(p.limb_threshold>0.0)||!(p.merge_ratio>0.0)||p.merge_ratio>1.0)
+    throw std::invalid_argument("GPU hierarchy selection tuple parameters are invalid");
+  const auto finite=[](double v){return std::isfinite(v);};
+  const auto relative=p.camera.position-p.render_origin;
+  const auto centre=p.field_centre-p.render_origin;
+  if(!finite(relative.x)||!finite(relative.y)||!finite(relative.z)||
+     !finite(centre.x)||!finite(centre.y)||!finite(centre.z)||
+     !finite(p.camera.forward.x)||!finite(p.camera.forward.y)||!finite(p.camera.forward.z)||
+     !finite(p.camera.up.x)||!finite(p.camera.up.y)||!finite(p.camera.up.z)||
+     !(p.camera.viewport_height_pixels>0.0)||!(p.camera.vertical_fov_radians>0.0)||
+     !(p.camera.aspect_ratio>0.0))throw std::invalid_argument("GPU hierarchy selection tuple is non-finite");
+  GpuHierarchySelectionTuple r{};
+  r.camera_relative_viewport={float(relative.x),float(relative.y),float(relative.z),float(p.camera.viewport_height_pixels)};
+  r.camera_forward_fov={float(p.camera.forward.x),float(p.camera.forward.y),float(p.camera.forward.z),float(p.camera.vertical_fov_radians)};
+  r.camera_up_aspect={float(p.camera.up.x),float(p.camera.up.y),float(p.camera.up.z),float(p.camera.aspect_ratio)};
+  r.field_centre_radius={float(centre.x),float(centre.y),float(centre.z),float(p.planet_radius)};
+  r.field_bounds={float(p.terrain_height_bound),float(p.field_lipschitz),0.0F,0.0F};
+  r.thresholds={float(p.edge_threshold),float(p.field_threshold),float(p.limb_threshold),float(p.merge_ratio)};
+  r.revision_lanes={low32(p.source_revision),high32(p.source_revision),low32(p.field_revision),high32(p.field_revision)};
+  validate_gpu_hierarchy_selection_tuple(r); return r;
+}
+
+void validate_gpu_hierarchy_selection_tuple(const GpuHierarchySelectionTuple& t) {
+  for(const auto& group:{t.camera_relative_viewport,t.camera_forward_fov,t.camera_up_aspect,
+                         t.field_centre_radius,t.field_bounds,t.thresholds})
+    for(const auto value:group)if(!std::isfinite(value))
+      throw std::invalid_argument("GPU hierarchy selection tuple is non-finite");
+  if(!(t.camera_relative_viewport[3]>0.0F)||!(t.camera_forward_fov[3]>0.0F)||
+     !(t.camera_up_aspect[3]>0.0F)||t.field_centre_radius[3]<0.0F||
+     t.field_bounds[0]<0.0F||!(t.field_bounds[1]>0.0F)||
+     !(t.thresholds[0]>0.0F)||!(t.thresholds[1]>0.0F)||!(t.thresholds[2]>0.0F)||
+     !(t.thresholds[3]>0.0F)||t.thresholds[3]>1.0F||
+     (t.revision_lanes[0]==0U&&t.revision_lanes[1]==0U)||
+     (t.revision_lanes[2]==0U&&t.revision_lanes[3]==0U))
+    throw std::invalid_argument("GPU hierarchy selection tuple is malformed");
+}
+
 GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision) {
   GpuHierarchySnapshot result;

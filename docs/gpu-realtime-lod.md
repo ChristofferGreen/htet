@@ -1086,13 +1086,19 @@ that work.
   against it, uploaded to a separate Vulkan binding, and protected by the
   existing revision/fence handoff. This deliberately does not change the
   leaf-enumeration diagnostic or any CPU authority.
-- [ ] **P4b — Field and limb selection tuple.** Serialize the production
+- [x] **P4b — Field and limb selection tuple.** Serialize the production
   field-range and limb inputs together with camera, render-origin, threshold,
   hysteresis, sector, and tuple identities. Build a CPU oracle over the
   quantized sidecar and prove that unsupported, stale, or malformed tuples
   retain CPU selection. **Acceptance:** the input tuple has explicit
   invalidation and validation coverage across near, orbital, rebase, and
   terrain-replacement paths. **Stop rule:** do not change GPU traversal yet.
+  **Result:** a 112-byte render-origin-relative tuple now carries live camera,
+  field centre/radius/height/Lipschitz bounds, all three thresholds, hysteresis,
+  and split world/field revisions. Each acquired swapchain image owns its own
+  tuple buffer; it is written only after that slot's fence and explicitly
+  synchronized before compute. Invalid, absent, or revision-mismatched tuples
+  suppress GPU selection and retain the CPU route.
 - [ ] **P4c — Three-term GPU selection parity.** Implement the production
   projected edge, field-error, and limb-sagitta selector over P4a/P4b inputs;
   require selected-address parity with the CPU quantized-input oracle under

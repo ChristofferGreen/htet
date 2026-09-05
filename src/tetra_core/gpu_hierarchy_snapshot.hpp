@@ -57,6 +57,27 @@ struct alignas(16) GpuHierarchySelectionRecord {
 static_assert(sizeof(GpuHierarchySelectionRecord)==112U);
 static_assert(alignof(GpuHierarchySelectionRecord)==16U);
 
+// Camera- and field-dependent selector inputs are kept out of immutable
+// topology. All positions are render-origin relative to preserve precision.
+struct alignas(16) GpuHierarchySelectionTuple {
+  std::array<float,4> camera_relative_viewport{};
+  std::array<float,4> camera_forward_fov{};
+  std::array<float,4> camera_up_aspect{};
+  std::array<float,4> field_centre_radius{};
+  std::array<float,4> field_bounds{};
+  std::array<float,4> thresholds{};
+  std::array<std::uint32_t,4> revision_lanes{};
+};
+static_assert(sizeof(GpuHierarchySelectionTuple)==112U);
+static_assert(alignof(GpuHierarchySelectionTuple)==16U);
+
+struct GpuHierarchySelectionTupleParameters {
+  Camera camera{}; Vec3 render_origin{}; Vec3 field_centre{};
+  double planet_radius{}; double terrain_height_bound{}; double field_lipschitz{};
+  double edge_threshold{}; double field_threshold{}; double limb_threshold{};
+  double merge_ratio{}; std::uint64_t source_revision{}; std::uint64_t field_revision{};
+};
+
 struct GpuHierarchySnapshotHeader {
   std::uint32_t format_version{gpu_hierarchy_format_version};
   std::uint32_t record_stride{sizeof(GpuHierarchyRecord)};
@@ -167,6 +188,9 @@ class GpuHierarchyFrameRing {
     std::array<std::uint32_t,4> address);
 [[nodiscard]] GpuHierarchySelectionRecord gpu_hierarchy_selection_record(
     std::array<std::uint32_t,4> address);
+[[nodiscard]] GpuHierarchySelectionTuple make_gpu_hierarchy_selection_tuple(
+    const GpuHierarchySelectionTupleParameters& parameters);
+void validate_gpu_hierarchy_selection_tuple(const GpuHierarchySelectionTuple& tuple);
 
 [[nodiscard]] GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision=0U);
