@@ -889,6 +889,29 @@ struct MetalTerrainDisplayFront {
   }
 };
 
+// P5c2 diagnostic slots are deliberately separate from the immutable CPU
+// display front. A result may be inspected only when its command completion,
+// scene generation, and render origin all still match; it has no draw handle.
+struct MetalGpuTerrainDiagnosticSlot {
+  id<MTLBuffer> cells=nil;
+  id<MTLBuffer> output=nil;
+  id<MTLBuffer> indices=nil;
+  std::uint64_t scene_generation{};
+  tetra::Vec3 render_origin{};
+  std::uint32_t expected_vertices{};
+  bool pending{};
+  std::shared_ptr<std::atomic<bool>> completed=
+      std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<std::atomic<bool>> succeeded=
+      std::make_shared<std::atomic<bool>>(false);
+
+  [[nodiscard]] bool matches(std::uint64_t generation,
+                             tetra::Vec3 origin) const noexcept {
+    return scene_generation==generation&&render_origin.x==origin.x&&
+        render_origin.y==origin.y&&render_origin.z==origin.z;
+  }
+};
+
 void promote_completed_terrain_acceleration_structure(
     MetalTerrainAccelerationStructure& structures) {
   if(structures.pending==nil||structures.pending_generation==0U||
@@ -3759,6 +3782,11 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_VISIBLE_TEST_WINDOW")!=nullptr;
   const bool background_requested=
       std::getenv("TETWORLD_METAL_BACKGROUND")!=nullptr;
+  // P5c2 is opt-in until a completed Metal slot has passed the moving-camera
+  // qualification.  Requesting the packet changes only CPU publication work;
+  // the renderer continues to draw its authoritative CPU display front.
+  const bool metal_gpu_terrain_diagnostic=
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_DIAGNOSTIC")!=nullptr;
   // P8c: MetalFX writes the final result directly to a non-framebuffer-only
   // drawable, avoiding the persistent output texture and presentation draw.
   // Keep the former path as an explicit paired qualification control.
@@ -3888,6 +3916,16 @@ int main(int argc,char** argv) {
     }
     id<MTLLibrary> library=make_shader_library(device);
     if(library==nil)return 1;
+    id<MTLComputePipelineState> gpu_terrain_extract_pipeline=nil;
+    if(metal_gpu_terrain_diagnostic){
+      const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+          "gpu_terrain_extract.comp.metal";
+      id<MTLLibrary> extract_library=make_file_shader_library(device,path.string().c_str());
+      NSError* extract_error=nil;
+      gpu_terrain_extract_pipeline=extract_library==nil?nil:
+          [device newComputePipelineStateWithFunction:[extract_library newFunctionWithName:@"main0"] error:&extract_error];
+      if(gpu_terrain_extract_pipeline==nil)return 1;
+    }
     const bool metal_ray_tracing_supported=[](id<MTLDevice> candidate){
       if(@available(macOS 11.0,*))return candidate.supportsRaytracing;
       return false;
@@ -4154,6 +4192,8 @@ int main(int argc,char** argv) {
         .level_count=6U,.cells_per_side=48U,.finest_spacing=0.125};
     tetra_viewer::TerrainDisplayPublicationPlanner terrain_display_planner;
     MetalTerrainDisplayFront terrain_display_front;
+    std::array<MetalGpuTerrainDiagnosticSlot,3> gpu_terrain_slots;
+    std::uint64_t gpu_terrain_slot_cursor{};
     std::size_t peak_terrain_display_transition_bytes{};
     std::uint64_t next_terrain_render_generation{1U};
     id<MTLBuffer> scene_vertices=nil;
@@ -4853,6 +4893,8 @@ int main(int argc,char** argv) {
           runtime_started_this_frame=true;
         }
         if(runtime){
+          runtime->set_gpu_terrain_extraction_diagnostic(
+              metal_gpu_terrain_diagnostic);
           const auto published_view=runtime->published_view_identity();
           if(!terrain_front_coordinator.state().current_view.valid()&&
              published_view.valid())
@@ -4910,6 +4952,16 @@ int main(int argc,char** argv) {
           }
           static_cast<void>(runtime->update());
           diagnostics=runtime->diagnostics();
+          // Retire only completed diagnostic work. A publication replacement
+          // makes an older result ineligible immediately; CPU geometry remains
+          // the sole rendering source regardless of this diagnostic state.
+          for(auto& slot:gpu_terrain_slots)if(slot.pending&&
+              slot.completed->load(std::memory_order_acquire)){
+            slot.pending=false;
+            if(!slot.matches(diagnostics.scene_generation,
+                             runtime->scene().render_origin))
+              slot.succeeded->store(false,std::memory_order_release);
+          }
           const auto exact_now=runtime->published_view_identity();
           if(terrain_display_front.preview_cpu&&exact_now.valid())
             terrain_front_coordinator.publish_exact(
@@ -5885,6 +5937,45 @@ int main(int argc,char** argv) {
 
         id<MTLCommandBuffer> command_buffer=[command_queue commandBuffer];
         command_buffer.label=@"TetWorld frame";
+        if(metal_gpu_terrain_diagnostic&&gpu_terrain_extract_pipeline!=nil&&runtime&&
+           !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
+          auto& slot=gpu_terrain_slots[gpu_terrain_slot_cursor++%gpu_terrain_slots.size()];
+          const auto cells=runtime->world_surface_gpu_cells();
+          const auto generation=diagnostics.scene_generation;
+          const auto origin=runtime->scene().render_origin;
+          if(!slot.pending&&!cells.empty()&&generation!=0U&&
+             cells.size()<=std::numeric_limits<std::uint32_t>::max()&&
+             terrain_display_front.exact_vertex_count<=std::numeric_limits<std::uint32_t>::max()){
+            const auto vertex_count=terrain_display_front.exact_vertex_count;
+            slot.cells=[device newBufferWithBytes:cells.data()
+                length:cells.size()*sizeof(tetra::GpuTerrainCellRecord)
+                options:MTLResourceStorageModeShared];
+            slot.output=[device newBufferWithLength:sizeof(std::uint32_t)*8U+
+                vertex_count*sizeof(tetra_viewer::SceneVertex)
+                options:MTLResourceStorageModeShared];
+            slot.indices=[device newBufferWithLength:vertex_count*sizeof(std::uint32_t)
+                options:MTLResourceStorageModeShared];
+            if(slot.cells!=nil&&slot.output!=nil&&slot.indices!=nil){
+              slot.scene_generation=generation;slot.render_origin=origin;
+              slot.expected_vertices=static_cast<std::uint32_t>(vertex_count);
+              slot.completed->store(false,std::memory_order_release);
+              slot.succeeded->store(false,std::memory_order_release);slot.pending=true;
+              const std::array<std::uint32_t,4> params{static_cast<std::uint32_t>(cells.size()),slot.expected_vertices,slot.expected_vertices,1U};
+              id<MTLComputeCommandEncoder> compute=[command_buffer computeCommandEncoder];
+              [compute setComputePipelineState:gpu_terrain_extract_pipeline];
+              [compute setBuffer:slot.output offset:0 atIndex:0U];[compute setBuffer:slot.indices offset:0 atIndex:1U];
+              [compute setBytes:params.data() length:sizeof(params) atIndex:2U];[compute setBuffer:slot.cells offset:0 atIndex:3U];
+              [compute dispatchThreads:MTLSizeMake(cells.size(),1U,1U) threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];
+              [compute endEncoding];
+              const auto complete=slot.completed,success=slot.succeeded;
+              [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> command){
+                const auto* header=static_cast<const std::uint32_t*>(slot.output.contents);
+                success->store(command.status==MTLCommandBufferStatusCompleted&&header!=nullptr&&header[0]==vertex_count&&header[5]==0U,std::memory_order_release);
+                complete->store(true,std::memory_order_release);
+              }];
+            }
+          }
+        }
         bool optical_lookup_encoded_this_frame=false;
         bool reference_lookup_encoded_this_frame=false;
         bool aerial_lookup_encoded_this_frame=false;
