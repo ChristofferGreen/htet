@@ -79,8 +79,12 @@ struct alignas(16) GpuTerrainCellRecord {
   // are a P2 geometry-parity transport while field evaluation stays on CPU.
   std::array<std::array<float,4>,4> draw_roots{};
   std::array<std::array<float,4>,6> subdivision_midpoints{};
+  // One CPU-oriented flat normal for each of the up to eight emitted child
+  // triangles (four per parent triangle).  This keeps lighting parity from
+  // depending on the winding convention of a compute implementation.
+  std::array<std::array<float,4>,8> subdivision_normals{};
 };
-static_assert(sizeof(GpuTerrainCellRecord)==320U);
+static_assert(sizeof(GpuTerrainCellRecord)==448U);
 static_assert(alignof(GpuTerrainCellRecord)==16U);
 
 // Host oracle for the first compute selector. field_error_pixels is the

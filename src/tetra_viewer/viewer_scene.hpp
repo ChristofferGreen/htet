@@ -894,6 +894,7 @@ struct SparseWorldSurfaceCache {
       std::array<tetra::Vec3,4> draw_roots{};
       std::array<tetra::WorldDerivedVertexKey,4> draw_root_keys{};
       std::array<tetra::Vec3,6> subdivision_midpoints{};
+      std::array<tetra::Vec3,8> subdivision_normals{};
       std::uint32_t triangle_mask{};
     };
     tetra::HierarchyBlockId id{};

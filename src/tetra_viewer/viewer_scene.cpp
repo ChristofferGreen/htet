@@ -3627,6 +3627,31 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
         if(crossing_count==4U){
           midpoint(3U,0U,2U);midpoint(4U,2U,3U);midpoint(5U,3U,0U);
         }
+        const auto oriented_normal=[&](tetra::Vec3 first,tetra::Vec3 second,
+                                       tetra::Vec3 third){
+          auto normal=face_normal(first,second,third);
+          const auto magnitude=std::sqrt(dot(normal,normal));
+          normal=magnitude>1.0e-12?normal/magnitude:tetra::Vec3{0.0,1.0,0.0};
+          const auto centre=(first+second+third)/3.0;
+          const auto outward=field.normal(centre);
+          if(dot(normal,outward)<0.0)normal=normal*-1.0;
+          return normal;
+        };
+        const auto store_normals=[&](std::size_t destination,tetra::Vec3 a,
+                                     tetra::Vec3 b,tetra::Vec3 c,
+                                     tetra::Vec3 ab,tetra::Vec3 bc,tetra::Vec3 ca){
+          gpu_source.subdivision_normals[destination]=oriented_normal(a,ab,ca);
+          gpu_source.subdivision_normals[destination+1U]=oriented_normal(ab,b,bc);
+          gpu_source.subdivision_normals[destination+2U]=oriented_normal(ca,bc,c);
+          gpu_source.subdivision_normals[destination+3U]=oriented_normal(ab,bc,ca);
+        };
+        store_normals(0U,crossings[0].point,crossings[1].point,
+            crossings[2].point,gpu_source.subdivision_midpoints[0],
+            gpu_source.subdivision_midpoints[1],gpu_source.subdivision_midpoints[2]);
+        if(crossing_count==4U)store_normals(4U,crossings[0].point,
+            crossings[2].point,crossings[3].point,
+            gpu_source.subdivision_midpoints[3],
+            gpu_source.subdivision_midpoints[4],gpu_source.subdivision_midpoints[5]);
         rebuilt_gpu_cell_sources[tetra::hierarchy_block_id(
             owner,directory.block_generations())].push_back(
                 std::move(gpu_source));
@@ -4436,6 +4461,29 @@ BlockedDerivedSurfaceBuild build_sparse_world_derived_surface(
         if(root_count==4U){
           midpoint(3U,0U,2U);midpoint(4U,2U,3U);midpoint(5U,3U,0U);
         }
+        const auto oriented_normal=[&](tetra::Vec3 first,tetra::Vec3 second,
+                                       tetra::Vec3 third){
+          auto normal=face_normal(first,second,third);
+          const auto magnitude=std::sqrt(dot(normal,normal));
+          normal=magnitude>1.0e-12?normal/magnitude:tetra::Vec3{0.0,1.0,0.0};
+          if(dot(normal,field.normal((first+second+third)/3.0))<0.0)
+            normal=normal*-1.0;
+          return normal;
+        };
+        const auto store_normals=[&](std::size_t destination,tetra::Vec3 a,
+                                     tetra::Vec3 b,tetra::Vec3 c,
+                                     tetra::Vec3 ab,tetra::Vec3 bc,tetra::Vec3 ca){
+          cell.subdivision_normals[destination]=oriented_normal(a,ab,ca);
+          cell.subdivision_normals[destination+1U]=oriented_normal(ab,b,bc);
+          cell.subdivision_normals[destination+2U]=oriented_normal(ca,bc,c);
+          cell.subdivision_normals[destination+3U]=oriented_normal(ab,bc,ca);
+        };
+        store_normals(0U,cell.draw_roots[0],cell.draw_roots[1],cell.draw_roots[2],
+            cell.subdivision_midpoints[0],cell.subdivision_midpoints[1],
+            cell.subdivision_midpoints[2]);
+        if(root_count==4U)store_normals(4U,cell.draw_roots[0],cell.draw_roots[2],
+            cell.draw_roots[3],cell.subdivision_midpoints[3],
+            cell.subdivision_midpoints[4],cell.subdivision_midpoints[5]);
       }
       retained=std::move(refreshed);
     }
@@ -4643,6 +4691,11 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
       for(std::size_t midpoint=0;midpoint<(root_count==3U?3U:6U);++midpoint)
         record.subdivision_midpoints[midpoint]=
             relative(source.subdivision_midpoints[midpoint]);
+      for(std::size_t normal=0;normal<source.subdivision_normals.size();++normal){
+        const auto& value=source.subdivision_normals[normal];
+        record.subdivision_normals[normal]={static_cast<float>(value.x),
+            static_cast<float>(value.y),static_cast<float>(value.z),1.0F};
+      }
       result.push_back(record);
     }
     return result;

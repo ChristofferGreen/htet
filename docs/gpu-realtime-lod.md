@@ -1228,6 +1228,13 @@ six relative-world position bounds exactly (maximum error `0`). This qualifies
 only count and position bounds. CPU rasterization remains mandatory while P2
 adds oriented triangle/normal, edge-incidence, depth, colour, stale-generation,
 and moving-camera image checks.
+
+**P2 normal transport, in progress.** The packet now also carries the CPU's
+oriented flat normal for each emitted one-to-four child triangle. This removes
+the compute shader's former assumption that raw winding alone decides outward
+lighting, while retaining CPU fallback. The next diagnostic must compare the
+read-back normal stream against the retained CPU upload before this is counted
+as a parity result.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive
