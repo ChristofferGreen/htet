@@ -4583,6 +4583,37 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                                 }
                               else add(prepared_scene.triangle_vertices);
                               return values;
+                            }(),[&]{
+                              using Position=std::array<std::uint32_t,3>;
+                              std::vector<std::array<Position,3>> triangles;
+                              const auto add=[&](std::span<const tetra_viewer::SceneVertex> vertices){
+                                if(vertices.size()%3U!=0U)
+                                  throw std::logic_error("CPU terrain draw is not triangular");
+                                triangles.reserve(triangles.size()+vertices.size()/3U);
+                                for(std::size_t index=0;index<vertices.size();index+=3U){
+                                  std::array<Position,3> triangle{};
+                                  for(std::size_t corner=0;corner<3U;++corner)
+                                    triangle[corner]={
+                                        std::bit_cast<std::uint32_t>(vertices[index+corner].position[0]),
+                                        std::bit_cast<std::uint32_t>(vertices[index+corner].position[1]),
+                                        std::bit_cast<std::uint32_t>(vertices[index+corner].position[2])};
+                                  std::ranges::sort(triangle);triangles.push_back(triangle);
+                                }
+                              };
+                              if(const auto* retained=world_runtime->retained_surface())
+                                for(const auto& range:retained->ranges()){
+                                  const auto arena=retained->arena();
+                                  add(arena.subspan(range.triangle_vertex_begin,
+                                      range.triangle_vertex_count));
+                                }
+                              else add(prepared_scene.triangle_vertices);
+                              std::ranges::sort(triangles);
+                              std::uint64_t hash=1469598103934665603ULL;
+                              for(const auto& triangle:triangles)for(const auto& position:triangle)
+                                for(const auto lane:position)for(unsigned byte=0;byte<4U;++byte){
+                                  hash^=(lane>>(byte*8U))&0xffU;hash*=1099511628211ULL;
+                                }
+                              return hash;
                             }(),world_runtime->field().terrain.planet_radius>0.0);
                         gpu_terrain_cells_render_origin=prepared_scene.render_origin;
                     }
@@ -5139,6 +5170,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<gpu_extract.maximum_normal_error
                         <<",\"normal_mismatch_vertices\":"
                         <<gpu_extract.normal_mismatch_vertices
+                        <<",\"triangle_hash_matches_cpu\":"
+                        <<(gpu_extract.triangle_hash_matches_cpu?"true":"false")
+                        <<",\"indices_match_vertices\":"
+                        <<(gpu_extract.indices_match_vertices?"true":"false")
                         <<",\"gpu_position_bounds\":["
                         <<gpu_extract.gpu_position_bounds[0]<<','
                         <<gpu_extract.gpu_position_bounds[1]<<','

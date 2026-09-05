@@ -56,6 +56,28 @@ std::uint64_t canonical_position_normal_hash(
   return hash;
 }
 
+std::uint64_t canonical_triangle_hash(std::span<const SceneVertex> vertices) {
+  if(vertices.size()%3U!=0U)throw std::invalid_argument("GPU terrain triangle list is incomplete");
+  using Position=std::array<std::uint32_t,3>;
+  std::vector<std::array<Position,3>> triangles;
+  triangles.reserve(vertices.size()/3U);
+  for(std::size_t index=0;index<vertices.size();index+=3U){
+    std::array<Position,3> triangle{};
+    for(std::size_t corner=0;corner<3U;++corner)
+      triangle[corner]={std::bit_cast<std::uint32_t>(vertices[index+corner].position[0]),
+          std::bit_cast<std::uint32_t>(vertices[index+corner].position[1]),
+          std::bit_cast<std::uint32_t>(vertices[index+corner].position[2])};
+    std::ranges::sort(triangle);triangles.push_back(triangle);
+  }
+  std::ranges::sort(triangles);
+  std::uint64_t hash=1469598103934665603ULL;
+  for(const auto& triangle:triangles)for(const auto& position:triangle)
+    for(const auto lane:position)for(unsigned byte=0;byte<4U;++byte){
+      hash^=(lane>>(byte*8U))&0xffU;hash*=1099511628211ULL;
+    }
+  return hash;
+}
+
 VkCompareOp depth_compare(DepthConvention convention,bool overlay=false) {
   if(convention==DepthConvention::reversed_infinite)
     return overlay?VK_COMPARE_OP_GREATER_OR_EQUAL:VK_COMPARE_OP_GREATER;
@@ -1701,6 +1723,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
     std::uint64_t source_revision,std::uint32_t expected_vertices,
     std::array<float,6> expected_position_bounds,
     std::vector<std::array<float,6>> expected_position_normals,
+    std::uint64_t expected_triangle_hash,
     bool subdivide_triangles) {
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
@@ -1717,6 +1740,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
   gpu_terrain_expected_vertices_=expected_vertices;
   gpu_terrain_expected_position_bounds_=expected_position_bounds;
   gpu_terrain_expected_position_normals_=std::move(expected_position_normals);
+  gpu_terrain_expected_triangle_hash_=expected_triangle_hash;
   gpu_terrain_subdivide_triangles_=subdivide_triangles;
   std::size_t linear_vertices{};
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
@@ -2136,6 +2160,21 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
         status.gpu_position_normal_hash=canonical_position_normal_hash(gpu_position_normals);
         status.position_normal_hash_matches_cpu=
             status.gpu_position_normal_hash==status.cpu_position_normal_hash;
+        status.cpu_triangle_hash=gpu_terrain_expected_triangle_hash_;
+        status.gpu_triangle_hash=canonical_triangle_hash(vertices);
+        status.triangle_hash_matches_cpu=status.gpu_triangle_hash==status.cpu_triangle_hash;
+        if(result[0]*sizeof(std::uint32_t)<=gpu_terrain_index_buffers_.at(image_index).capacity){
+          std::vector<std::uint32_t> indices(result[0]);void* index_mapped{};
+          if(vkMapMemory(device_,gpu_terrain_index_buffers_.at(image_index).memory,
+              0,indices.size()*sizeof(std::uint32_t),0,&index_mapped)!=VK_SUCCESS)
+            throw std::runtime_error("unable to map GPU terrain index output");
+          std::memcpy(indices.data(),index_mapped,indices.size()*sizeof(std::uint32_t));
+          vkUnmapMemory(device_,gpu_terrain_index_buffers_.at(image_index).memory);
+          status.indices_match_vertices=true;
+          for(std::size_t index=0;index<indices.size();++index)
+            status.indices_match_vertices&=indices[index]==
+                static_cast<std::uint32_t>(index);
+        }
         auto cpu=gpu_terrain_expected_position_normals_;
         std::ranges::sort(cpu);std::ranges::sort(gpu_position_normals);
         if(cpu.size()==gpu_position_normals.size())for(std::size_t index=0;

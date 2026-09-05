@@ -1238,6 +1238,15 @@ retained draw; after matching the CPU's final float-space render-attribute
 calculation, the production off-screen diagnostic passed with zero mismatched
 components and zero maximum normal error. Index/edge incidence and actual
 indirect depth/colour capture remain required before display enablement.
+
+**P2 topology readback, 2026-09-05.** A completed compute output is now
+canonicalized into an order-independent triangle-position multiset and checked
+against the exact retained CPU draw. The same completed slot maps its index
+buffer and verifies the sequential index identity written by the extractor.
+The production diagnostic passes both gates alongside exact position/normal
+parity. This establishes the emitted indexed triangle topology, but not yet
+its raster image; indirect drawing remains disabled pending fixed and moving
+camera depth and colour captures.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

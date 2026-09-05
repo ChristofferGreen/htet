@@ -34,6 +34,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain normals must be derived from the final camera-relative float positions using the CPU-selected outward side, rather than solely from world-space source geometry or GPU winding.
 - Evidence: The order-independent position/normal comparison initially found 291 differing components (maximum 0.0385886); float-space transport then matched all 226,848 retained CPU vertices exactly.
 
+### gpu-terrain-topology-gate
+- Updated: 2026-09-05
+- Tags: terrain, gpu, parity, topology
+- Fact: GPU compute emission order is nondeterministic, so topology parity must compare canonical unordered triangle-position multisets and validate the generated index stream separately.
+- Evidence: The retained-front diagnostic matched the CPU triangle multiset and verified all 226,848 generated indices equal their referenced vertex slot.
+
 ### gpu-terrain-final-front-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, retained-front

@@ -106,6 +106,10 @@ struct GpuTerrainExtractStatus {
   bool position_normal_hash_matches_cpu{};
   float maximum_normal_error{};
   std::uint32_t normal_mismatch_vertices{};
+  std::uint64_t gpu_triangle_hash{};
+  std::uint64_t cpu_triangle_hash{};
+  bool triangle_hash_matches_cpu{};
+  bool indices_match_vertices{};
 };
 
 struct AtmosphereDispatchCounts {
@@ -205,6 +209,7 @@ class SceneRenderer {
       std::uint64_t source_revision,std::uint32_t expected_vertices,
       std::array<float,6> expected_position_bounds,
       std::vector<std::array<float,6>> expected_position_normals,
+      std::uint64_t expected_triangle_hash,
       bool subdivide_triangles);
   void set_gpu_lod_diagnostic_enabled(bool enabled) noexcept {
     gpu_lod_diagnostic_enabled_=enabled;
@@ -367,6 +372,7 @@ class SceneRenderer {
   bool gpu_terrain_subdivide_triangles_{};
   std::array<float,6> gpu_terrain_expected_position_bounds_{};
   std::vector<std::array<float,6>> gpu_terrain_expected_position_normals_;
+  std::uint64_t gpu_terrain_expected_triangle_hash_{};
   std::size_t gpu_terrain_input_bytes_required_{};
   std::size_t gpu_terrain_output_bytes_required_{};
   std::size_t gpu_terrain_index_bytes_required_{};
