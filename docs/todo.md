@@ -375,9 +375,9 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         mismatches and no overflow.
   - [ ] **P4c1b2b2b — Boundary/rebase corpus accounting.** Synthesize
         just-below/in-band/just-above boundaries for each term plus equal-
-        maximum/two-term ties, and prove frame-by-frame parity during an explicit
-        root-normalized selector invariance across an explicit render-origin
-        rebase. Record tuple identity, selected/visited/rejected,
+        maximum/two-term ties, and prove frame-by-frame root-normalized selector
+        invariance across an explicit render-origin rebase. Record tuple
+        identity, selected/visited/rejected,
         overflow, mismatch, and band counts. Outside the band selected addresses
         must match exactly; in it split-wins must remain ancestor/descendant
         exclusive and replay-deterministic. The result remains a bounded
