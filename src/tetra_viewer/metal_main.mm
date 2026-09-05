@@ -874,8 +874,11 @@ struct MetalTerrainDisplayFront {
   std::uint64_t render_generation{};
 
   [[nodiscard]] bool ready() const noexcept {
-    return identity.valid()&&exact_vertices!=nil&&exact_vertex_count!=0U&&
-        render_generation!=0U;
+    const bool exact_ready=exact_vertices!=nil&&exact_vertex_count!=0U;
+    const bool preview_ready=preview_cpu!=nullptr&&preview_vertices!=nil&&
+        preview_indices!=nil&&preview_vertex_count!=0U&&
+        preview_index_count!=0U;
+    return identity.valid()&&(exact_ready||preview_ready)&&render_generation!=0U;
   }
   [[nodiscard]] std::size_t triangle_count() const noexcept {
     return (indexed_exact_selection?exact_index_count:exact_vertex_count)/3U+
@@ -914,7 +917,10 @@ bool encode_terrain_acceleration_structure_build(
     id<MTLCounterSampleBuffer> timestamp_samples,bool& build_encoded) {
   build_encoded=false;
   promote_completed_terrain_acceleration_structure(structures);
-  if(vertices==nil||vertex_count==0U||vertex_count%3U!=0U||generation==0U||
+  const bool exact_ready=vertices!=nil&&vertex_count!=0U&&vertex_count%3U==0U;
+  const bool preview_ready=preview_vertices!=nil&&preview_vertex_count!=0U&&
+      preview_indices!=nil&&preview_index_count!=0U&&preview_index_count%3U==0U;
+  if((!exact_ready&&!preview_ready)||generation==0U||
      (indexed_exact_selection&&exact_index_count%3U!=0U)||
      (indexed_exact_selection&&exact_index_count!=0U&&exact_indices==nil)||
      (preview_vertices!=nil&&
@@ -3302,14 +3308,10 @@ int main(int argc,char** argv) {
        (raster_profile_qualification&&(motion_test||metalfx_test)))&&
       (std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr||
        timing_profile_test||raster_profile_qualification);
-  // The current preview replacement does not yet clip exact triangles at the
-  // clipmap boundary.  Leaving it enabled by default can either overlap the
-  // two surfaces or, when overlap is suppressed, create a non-watertight
-  // skirt.  Keep the production Metal display on the coherent exact front
-  // until that boundary is represented watertightly.  The explicit
-  // environment switch and diagnostics checkbox retain the experimental path
-  // for qualification work.
-  bool preview_enabled=false;
+  // A visible preview is a complete welded front in its own right.  It never
+  // shares a draw with the exact front: exact terrain continues to build in
+  // the background and replaces the preview atomically on handoff.
+  bool preview_enabled=!automated_test;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
     else if(std::strcmp(value,"1")==0)preview_enabled=true;
@@ -3694,7 +3696,10 @@ int main(int argc,char** argv) {
     tetra_viewer::TerrainFrontCoordinator terrain_front_coordinator;
     tetra_viewer::PreviewSurfaceWorker preview_surface_worker;
     const tetra_viewer::PreviewSurfaceConfiguration preview_configuration{
-        .level_count=5U,.cells_per_side=32U,.finest_spacing=0.125};
+        // Six welded rings extend beyond the ground-view horizon while the
+        // 48-cell outer rings retain enough shape to represent mountains,
+        // rather than flattening the horizon into a coarse silhouette.
+        .level_count=6U,.cells_per_side=48U,.finest_spacing=0.125};
     tetra_viewer::TerrainDisplayPublicationPlanner terrain_display_planner;
     MetalTerrainDisplayFront terrain_display_front;
     std::size_t peak_terrain_display_transition_bytes{};
@@ -4155,7 +4160,7 @@ int main(int argc,char** argv) {
         if(preview){
           const auto composition_started=std::chrono::steady_clock::now();
           composition.emplace(tetra_viewer::compose_terrain_display(
-              exact_scene.triangle_vertices,exact_scene.render_origin,
+              {},exact_scene.render_origin,
               runtime->field(),*preview));
           composition_milliseconds=
               std::chrono::duration<double,std::milli>(
@@ -4174,16 +4179,9 @@ int main(int argc,char** argv) {
       MetalTerrainDisplayFront candidate;
       candidate.identity=identity;
       candidate.preview_cpu=std::move(preview);
-      candidate.exact_vertex_count=exact_scene.triangle_vertices.size();
       candidate.upload_bytes=upload_bytes;
-      const bool exact_buffer_reusable=terrain_display_front.ready()&&
-          terrain_display_front.identity.exact_generation==exact_generation&&
-          terrain_display_front.identity.render_origin.x==exact_scene.render_origin.x&&
-          terrain_display_front.identity.render_origin.y==exact_scene.render_origin.y&&
-          terrain_display_front.identity.render_origin.z==exact_scene.render_origin.z;
-      if(exact_buffer_reusable)
-        candidate.exact_vertices=terrain_display_front.exact_vertices;
-      else {
+      if(!composition){
+        candidate.exact_vertex_count=exact_scene.triangle_vertices.size();
         const auto bytes=exact_scene.triangle_vertices.size()*
             sizeof(tetra_viewer::SceneVertex);
         candidate.exact_vertices=[device
@@ -4198,17 +4196,18 @@ int main(int argc,char** argv) {
                                     length:values.size()*sizeof(values.front())
                                    options:MTLResourceStorageModeShared];
         };
-        candidate.exact_indices=make_buffer(composition->exact_indices);
-        candidate.exact_index_count=composition->exact_indices.size();
+        // The preview is a self-contained, welded display front.  Do not
+        // retain an exact draw at its boundary: partial exact ownership caused
+        // both overlapping coarse sheets and non-watertight skirts.
+        candidate.exact_index_count=0U;
         candidate.preview_vertices=make_buffer(composition->preview_vertices);
         candidate.preview_vertex_count=composition->preview_vertices.size();
         candidate.preview_indices=make_buffer(composition->preview_indices);
         candidate.preview_index_count=composition->preview_indices.size();
       }
-      const bool upload_succeeded=candidate.exact_vertices!=nil&&
-          (!composition||
-           ((candidate.exact_index_count==0U||candidate.exact_indices!=nil)&&
-            candidate.preview_vertices!=nil&&candidate.preview_indices!=nil));
+      const bool upload_succeeded=composition?
+          candidate.preview_vertices!=nil&&candidate.preview_indices!=nil:
+          candidate.exact_vertices!=nil;
       const std::size_t transition_owned_bytes=
           terrain_display_front.upload_bytes+candidate.upload_bytes;
       peak_terrain_display_transition_bytes=std::max(
@@ -4244,7 +4243,8 @@ int main(int argc,char** argv) {
       candidate.render_generation=next_terrain_render_generation++;
       if(next_terrain_render_generation==0U)next_terrain_render_generation=1U;
       terrain_display_front=std::move(candidate);
-      scene_vertices=terrain_display_front.exact_vertices;
+      scene_vertices=terrain_display_front.preview_cpu?
+          terrain_display_front.preview_vertices:terrain_display_front.exact_vertices;
       scene_vertex_count=terrain_display_front.triangle_count()*3U;
       uploaded_generation=exact_generation;
       terrain_acceleration_structure.maximum_vertex_radius_world=0.0F;
@@ -4257,8 +4257,8 @@ int main(int argc,char** argv) {
                         vertex.position[1]*vertex.position[1]+
                         vertex.position[2]*vertex.position[2]));
       };
-      include_radius(exact_scene.triangle_vertices);
       if(composition)include_radius(composition->preview_vertices);
+      else include_radius(exact_scene.triangle_vertices);
       return true;
     };
 
@@ -5369,7 +5369,7 @@ int main(int argc,char** argv) {
             &exposure_minimum,&exposure_maximum,"%.2f");
 
         if(runtime&&ImGui::CollapsingHeader("Terrain diagnostics")){
-          if(ImGui::Checkbox("Experimental fast terrain preview",&preview_enabled)&&
+          if(ImGui::Checkbox("Fast terrain preview",&preview_enabled)&&
              !preview_enabled)
             preview_surface_worker.cancel();
           ImGui::Text("Scene generation %llu   triangles %zu",

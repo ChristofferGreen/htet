@@ -673,8 +673,10 @@ remain authoritative. Details and evidence live in
         Neighboring overhead and back-lit mountain captures show continuous
         opaque terrain, stable seams, correct solar occlusion, and no 2D Mie
         cutout; the disabled control remains exact-only.
-        A five-level, 32-cell layout preserves the outer preview extent and
-        finest spacing while cutting cold construction to about 9.5 ms. The
+        The Metal renderer now shows one standalone welded preview front while
+        exact terrain builds, then atomically hands back to exact; it does not
+        combine fronts. A six-level, 48-cell layout covers the ground-view
+        horizon and builds in about 28 ms. The
         interactive performance smoke keeps temporal jitter out of physical
         atmosphere lookup identities, uses 2x MSAA, and permits one-third Auto
         resolution; the full stack measures 1.61 ms median and 4.01 ms p95

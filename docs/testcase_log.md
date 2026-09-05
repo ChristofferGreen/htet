@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 18:45 CEST | pass, standalone Metal fast terrain front | mode: Release | command: `./scripts/compile.sh --release`, focused terrain-display regression, and hidden Metal `--capture-view` | failures: none | notes: all 487 release entries passed. The reported ground view published 44,256 welded preview triangles in 27.9 ms with 0 exact triangles in the preview draw, avoiding the former 3.28 s exact/preview composition and eliminating overlapping or skirt geometry; the exact front remains the atomic background handoff.
+
 - 2026-09-05 17:46 CEST | pass, GPU selector tuple transport | mode: Release | command: `./scripts/compile.sh --release`, focused selector-tuple regression, and off-screen GPU-LOD diagnostic | failures: none | notes: all 487 release entries passed; per-slot render-origin-relative tuple upload and malformed/stale-tuple suppression preserved CPU rendering and qualified GPU terrain parity.
 
 - 2026-09-05 15:58 CEST | pass, GPU selector geometry sidecar | mode: Release | command: `./scripts/compile.sh --release`, focused `GPU hierarchy snapshot validation rejects malformed records`, and off-screen `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none | notes: all 486 release entries passed; the immutable 112-byte selector geometry sidecar rejected altered bounds and the separate Vulkan binding completed without affecting qualified terrain extraction parity.
