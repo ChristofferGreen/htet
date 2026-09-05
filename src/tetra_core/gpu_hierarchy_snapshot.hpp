@@ -75,8 +75,12 @@ struct alignas(16) GpuTerrainCellRecord {
   // canonical (01,02,03,12,13,23) order. xyz are camera-relative world
   // metres; w is one only for a sign-changing edge.
   std::array<std::array<float,4>,6> edge_roots{};
+  // CPU-wound crossings and CPU field-projected subdivision midpoints. These
+  // are a P2 geometry-parity transport while field evaluation stays on CPU.
+  std::array<std::array<float,4>,4> draw_roots{};
+  std::array<std::array<float,4>,6> subdivision_midpoints{};
 };
-static_assert(sizeof(GpuTerrainCellRecord)==160U);
+static_assert(sizeof(GpuTerrainCellRecord)==320U);
 static_assert(alignof(GpuTerrainCellRecord)==16U);
 
 // Host oracle for the first compute selector. field_error_pixels is the

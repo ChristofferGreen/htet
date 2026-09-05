@@ -4549,6 +4549,8 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
         // authoritative topology while avoiding an empty GPU invocation.
         if(crossings<3U)continue;
         tetra::GpuTerrainCellRecord record{};
+        std::array<tetra::Vec3,4> crossing_roots{};
+        std::size_t crossing_root_count{};
         for(std::size_t corner=0;corner<4U;++corner) {
           const auto point=indices[corner];
           const auto relative=domain.to_world(points[point])-render_origin;
@@ -4577,6 +4579,55 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
           const auto root_relative=root-render_origin;
           record.edge_roots[edge]={static_cast<float>(root_relative.x),
               static_cast<float>(root_relative.y),static_cast<float>(root_relative.z),1.0F};
+          crossing_roots[crossing_root_count++]=root;
+        }
+        if(crossing_root_count!=crossings)
+          throw std::logic_error("GPU surface crossing packet is incomplete");
+        tetra::Vec3 centre{};
+        for(std::size_t index=0;index<crossing_root_count;++index)
+          centre=centre+crossing_roots[index];
+        centre=centre/static_cast<double>(crossing_root_count);
+        const auto normal=field.normal(centre);
+        const auto reference=std::abs(normal.z)<0.9?
+            tetra::Vec3{0.0,0.0,1.0}:tetra::Vec3{0.0,1.0,0.0};
+        const auto cross=[](tetra::Vec3 first,tetra::Vec3 second){
+          return tetra::Vec3{first.y*second.z-first.z*second.y,
+                             first.z*second.x-first.x*second.z,
+                             first.x*second.y-first.y*second.x};
+        };
+        const auto dot=[](tetra::Vec3 first,tetra::Vec3 second){
+          return first.x*second.x+first.y*second.y+first.z*second.z;
+        };
+        const auto axis_u=cross(reference,normal),axis_v=cross(normal,axis_u);
+        std::sort(crossing_roots.begin(),crossing_roots.begin()+
+            static_cast<std::ptrdiff_t>(crossing_root_count),
+            [&](const tetra::Vec3& first,const tetra::Vec3& second){
+              const auto a=first-centre,b=second-centre;
+              return std::atan2(dot(a,axis_v),dot(a,axis_u))<
+                  std::atan2(dot(b,axis_v),dot(b,axis_u));
+            });
+        for(std::size_t index=0;index<crossing_root_count;++index){
+          const auto relative=crossing_roots[index]-render_origin;
+          record.draw_roots[index]={static_cast<float>(relative.x),
+              static_cast<float>(relative.y),static_cast<float>(relative.z),1.0F};
+        }
+        auto midpoint_field=field;
+        if(midpoint_field.sampling_footprint>0.0)
+          midpoint_field.sampling_footprint*=0.5;
+        const auto store_midpoint=[&](std::size_t destination,
+                                      std::size_t first,std::size_t second){
+          const auto midpoint=midpoint_field.project_to_surface(
+              (crossing_roots[first]+crossing_roots[second])/2.0);
+          const auto relative=midpoint-render_origin;
+          record.subdivision_midpoints[destination]={
+              static_cast<float>(relative.x),static_cast<float>(relative.y),
+              static_cast<float>(relative.z),1.0F};
+        };
+        store_midpoint(0U,0U,1U);store_midpoint(1U,1U,2U);
+        store_midpoint(2U,2U,0U);
+        if(crossing_root_count==4U){
+          store_midpoint(3U,0U,2U);store_midpoint(4U,2U,3U);
+          store_midpoint(5U,3U,0U);
         }
         result.push_back(record);
       }

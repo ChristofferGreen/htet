@@ -1,7 +1,8 @@
 #version 450
 
 // Immutable `GpuTerrainCellRecord`: four vec4(position_relative_world,
-// cached_sign) values followed by six exact keyed edge-root vec4 values.
+// cached_sign) values followed by exact roots, CPU-wound roots, and projected
+// subdivision-midpoint vec4 values.
 // Output starts with VkDrawIndexedIndirectCommand
 // (five words), followed by an overflow word. Vertices are packed as the
 // existing 18-float SceneVertex layout.
@@ -42,14 +43,13 @@ void put_triangle(uint first,vec3 a,vec3 b,vec3 c){
   output_indices.indices[first+1u]=first+1u;
   output_indices.indices[first+2u]=first+2u;
 }
-void put_subdivided_triangle(uint first,vec3 a,vec3 b,vec3 c){
+void put_subdivided_triangle(uint first,vec3 a,vec3 b,vec3 c,
+                             vec3 ab,vec3 bc,vec3 ca){
   if(parameters.subdivide_triangles==0u){
     put_triangle(first,a,b,c);return;
   }
-  // Match the CPU draw topology's one-to-four subdivision.  These planar
-  // midpoints are deliberately diagnostic-only: P2 still requires the CPU
-  // field-projected midpoint positions before this output can be displayed.
-  vec3 ab=(a+b)*0.5,bc=(b+c)*0.5,ca=(c+a)*0.5;
+  // CPU supplies field-projected midpoints using the same half-footprint
+  // convention as its visible planetary draw path.
   put_triangle(first,a,ab,ca);
   put_triangle(first+3u,ab,b,bc);
   put_triangle(first+6u,ca,bc,c);
@@ -58,9 +58,8 @@ void put_subdivided_triangle(uint first,vec3 a,vec3 b,vec3 c){
 void main(){
   uint cell=gl_GlobalInvocationID.x;
   if(cell>=parameters.cell_count)return;
-  // Ten vec4 values per record: four classified corners followed by the six
-  // CPU-authoritative keyed roots in canonical tetrahedron-edge order.
-  const uint cell_base=cell*10u;
+  // Twenty vec4 values: corners, canonical roots, wound roots, midpoints.
+  const uint cell_base=cell*20u;
   vec4 corners[4];for(uint i=0u;i<4u;++i)corners[i]=input_cells.cells[cell_base+i];
   vec3 hits[4];uint count=0u;
   for(uint edge=0u;edge<6u;++edge){
@@ -91,9 +90,21 @@ void main(){
     if(previous==observed){first=observed;break;}
   }
   output_surface.header[1]=1u;
+  vec4 draw_roots[4];for(uint i=0u;i<4u;++i)
+    draw_roots[i]=input_cells.cells[cell_base+10u+i];
+  for(uint i=0u;i<count;++i)if(draw_roots[i].w!=1.0){
+    atomicOr(output_surface.header[5],1u);return;
+  }
+  vec4 midpoints[6];for(uint i=0u;i<6u;++i)
+    midpoints[i]=input_cells.cells[cell_base+14u+i];
   uint stride=parameters.subdivide_triangles==0u?3u:12u;
-  put_subdivided_triangle(first,hits[0],hits[1],hits[2]);
+  put_subdivided_triangle(first,draw_roots[0].xyz,draw_roots[1].xyz,
+                          draw_roots[2].xyz,midpoints[0].xyz,
+                          midpoints[1].xyz,midpoints[2].xyz);
   if(count==4u){
-    put_subdivided_triangle(first+stride,hits[0],hits[2],hits[3]);
+    put_subdivided_triangle(first+stride,draw_roots[0].xyz,
+                            draw_roots[2].xyz,draw_roots[3].xyz,
+                            midpoints[3].xyz,midpoints[4].xyz,
+                            midpoints[5].xyz);
   }
 }

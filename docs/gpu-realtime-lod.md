@@ -1189,6 +1189,16 @@ subdivision convention and then compare the CPU optimizer's final positions,
 winding, normals, depth, and colour. This remains a correctness diagnostic,
 not a claim that root computation has been accelerated.
 
+**P2 projected-midpoint transport, 2026-09-05.** The compact record now also
+carries the CPU's wound crossing order and the six possible field-projected
+subdivision midpoints, using the identical half-footprint projection rule as
+the draw preparation. The compute kernel consumes those values while retaining
+the conforming-cell dispatch and bounded indirect emission. Production count
+parity remains 226,848 vertices with no overflow, but the position gate still
+rejects the packet: the remaining discrepancy is the CPU's five-pass global
+surface optimizer. This larger input is intentionally a diagnostic transport,
+not an acceleration claim.
+
 **P2 draw-topology alignment, 2026-09-05.** The compute extractor now emits
 the same one-to-four triangle subdivision required by the planetary CPU draw
 path, controlled explicitly per staged terrain packet. The off-screen Vulkan

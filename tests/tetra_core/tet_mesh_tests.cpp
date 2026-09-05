@@ -5997,6 +5997,17 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   for(const auto& record:gpu_records)
     for(const auto& corner:record.corners)
       CHECK((corner[3]==-1.0F||corner[3]==1.0F));
+  for(const auto& record:gpu_records){
+    const auto root_count=std::ranges::count_if(record.draw_roots,
+        [](const auto& root){return root[3]==1.0F;});
+    CHECK((root_count==3||root_count==4));
+    const auto midpoint_count=std::ranges::count_if(record.subdivision_midpoints,
+        [](const auto& midpoint){return midpoint[3]==1.0F;});
+    CHECK(midpoint_count==(root_count==3?3:6));
+    for(std::size_t index=0;index<midpoint_count;++index)
+      for(std::size_t axis=0;axis<3U;++axis)
+        CHECK(std::isfinite(record.subdivision_midpoints[index][axis]));
+  }
   const auto direct_repeated=tetra_viewer::build_sparse_world_derived_surface(
       directory,domain,sphere,false,{},&direct_cache,{},true,false);
   CHECK(direct_repeated.canonical_surface_hash==direct.canonical_surface_hash);
