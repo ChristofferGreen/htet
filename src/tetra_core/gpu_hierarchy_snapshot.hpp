@@ -133,6 +133,12 @@ static_assert(alignof(GpuTerrainCellRecord)==16U);
 struct GpuHierarchyTraversalParameters {
   Camera camera{};
   double pixel_threshold{2.0};
+  double field_threshold{2.0};
+  double limb_threshold{2.0};
+  double field_lipschitz{};
+  double planet_radius{};
+  // Retained for deterministic tests of an explicitly conservative field
+  // bound. Production traversal derives its bound from radius and Lipschitz.
   double field_error_pixels{};
   unsigned int maximum_red_depth{maximum_world_red_depth};
 };
@@ -142,6 +148,7 @@ struct GpuHierarchyTraversalMetrics {
   std::size_t depth_terminated{};
   std::size_t projected_terminated{};
   std::size_t field_terminated{};
+  std::size_t limb_terminated{};
   std::size_t selected{};
 };
 struct GpuHierarchyTraversalResult {

@@ -1,8 +1,8 @@
 #version 450
 
 // GpuHierarchyRecord is exactly eight uint words (32 bytes), matching the
-// static assertion in gpu_hierarchy_snapshot.hpp.  The first selector is
-// deliberately conservative: it emits immutable hierarchy leaves only.
+// static assertion in gpu_hierarchy_snapshot.hpp.  One invocation traverses
+// one root/active-block tree; this must never become a flat record classifier.
 layout(std430,binding=0) readonly buffer HierarchyRecords { uint words[]; } hierarchy;
 layout(std430,binding=1) buffer SelectionOutput { uint words[]; } output_buffer;
 // P4a's per-node geometry sidecar.  The current diagnostic remains a leaf
@@ -17,14 +17,89 @@ layout(push_constant) uniform SelectorParameters {
   uint output_capacity;
 } parameters;
 
-layout(local_size_x=64) in;
+const uint child_mask=0xffu;
+const uint active_root_bit=0x800u;
+const uint stack_limit=64u;
+
+uint child_index(uint record_index,uint child) {
+  const uint flags=hierarchy.words[record_index*8u+5u];
+  return hierarchy.words[record_index*8u+4u]+bitCount((flags&child_mask)&((1u<<child)-1u));
+}
+
+float projected_diameter(uint record_index,vec3 camera,float focal) {
+  vec3 corners[4];
+  float nearest_depth=3.402823466e+38;
+  for(uint i=0u;i<4u;++i) {
+    corners[i]=selection_inputs.values[record_index*7u+i].xyz;
+    nearest_depth=min(nearest_depth,dot(corners[i]-camera,selection_tuple.values[1].xyz));
+  }
+  if(nearest_depth<=0.0001)return selection_tuple.values[0].w;
+  float longest=0.0;
+  for(uint i=0u;i<4u;++i)for(uint j=i+1u;j<4u;++j)
+    longest=max(longest,length(corners[i]-corners[j]));
+  return longest*focal/nearest_depth;
+}
+
+bool intersects_frustum(uint record_index,vec3 camera,vec3 forward,vec3 up,
+                        float vertical_tangent,float aspect) {
+  const vec4 sphere=selection_inputs.values[record_index*7u+6u];
+  const vec3 delta=sphere.xyz-camera;
+  const float z=dot(delta,forward);
+  if(z+sphere.w<=0.0)return false;
+  const vec3 right=normalize(cross(forward,up));
+  const vec3 corrected_up=normalize(cross(right,forward));
+  const float conservative_z=max(z-sphere.w,0.0);
+  return abs(dot(delta,right))<=conservative_z*vertical_tangent*aspect+sphere.w&&
+         abs(dot(delta,corrected_up))<=conservative_z*vertical_tangent+sphere.w;
+}
+
+layout(local_size_x=1) in;
 void main() {
-  const uint record_index=gl_GlobalInvocationID.x;
-  if(record_index>=parameters.record_count)return;
-  const uint child_mask_flags=hierarchy.words[record_index*8u+5u];
-  if((child_mask_flags&0xffu)!=0u)return;
-  const uint output_index=atomicAdd(output_buffer.words[0],1u);
-  if(output_index<parameters.output_capacity)
-    output_buffer.words[4u+output_index]=record_index;
-  else atomicOr(output_buffer.words[2],1u);
+  const uint root=gl_GlobalInvocationID.x;
+  if(root>=parameters.record_count)return;
+  if((hierarchy.words[root*8u+5u]&active_root_bit)==0u)return;
+
+  const vec3 camera=selection_tuple.values[0].xyz;
+  const vec3 forward=normalize(selection_tuple.values[1].xyz);
+  const vec3 up=normalize(selection_tuple.values[2].xyz);
+  const float tangent=tan(selection_tuple.values[1].w*0.5);
+  const float focal=selection_tuple.values[0].w/(2.0*tangent);
+  const float edge_threshold=selection_tuple.values[5].x;
+  const float field_threshold=selection_tuple.values[5].y;
+  const float limb_threshold=selection_tuple.values[5].z;
+  const float field_lipschitz=selection_tuple.values[4].y;
+  const float planet_radius=selection_tuple.values[3].w;
+  uint nodes[stack_limit]; uint next_child[stack_limit]; uint depth=0u;
+  nodes[0]=root;next_child[0]=0u;
+  while(true) {
+    const uint record_index=nodes[depth];
+    const uint flags=hierarchy.words[record_index*8u+5u];
+    const uint mask=flags&child_mask;
+    if(next_child[depth]==0u) {
+      atomicAdd(output_buffer.words[1],1u);
+      if(!intersects_frustum(record_index,camera,forward,up,tangent,selection_tuple.values[2].w)) {
+        atomicAdd(output_buffer.words[2],1u);
+        if(depth==0u)break; --depth; ++next_child[depth]; continue;
+      }
+      const vec4 sphere=selection_inputs.values[record_index*7u+6u];
+      const float distance=max(length(sphere.xyz-camera)-sphere.w,0.0001);
+      const float field_error=sphere.w*field_lipschitz*focal/distance;
+      const float sagitta=planet_radius>0.0?
+          (sphere.w*sphere.w/(2.0*max(planet_radius,sphere.w)))*focal/distance:0.0;
+      const bool split=mask!=0u&&(projected_diameter(record_index,camera,focal)>edge_threshold||
+          field_error>field_threshold||sagitta>limb_threshold);
+      if(!split) {
+        const uint output_index=atomicAdd(output_buffer.words[0],1u);
+        if(output_index<parameters.output_capacity)
+          output_buffer.words[4u+output_index]=record_index;
+        else atomicOr(output_buffer.words[3],1u);
+        if(depth==0u)break; --depth; ++next_child[depth]; continue;
+      }
+    }
+    while(next_child[depth]<8u&&(mask&(1u<<next_child[depth]))==0u)++next_child[depth];
+    if(next_child[depth]<8u) {
+      if(depth+1u>=stack_limit) { atomicOr(output_buffer.words[3],1u);break; }
+      nodes[++depth]=child_index(record_index,next_child[depth-1u]);next_child[depth]=0u;
+    } else { if(depth==0u)break; --depth; ++next_child[depth]; }
+  }
 }

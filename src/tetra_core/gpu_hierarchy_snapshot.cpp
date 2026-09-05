@@ -13,6 +13,10 @@ namespace {
 constexpr std::uint32_t child_mask=0xffU;
 constexpr std::uint32_t residency_shift=8U;
 constexpr std::uint32_t logical_owner_bit=1U<<10U;
+// A record with no resident parent is an independent entry point.  This is
+// intentionally an active-block root, not necessarily a world root: hierarchy
+// blocks may be streamed independently.
+constexpr std::uint32_t active_root_bit=1U<<11U;
 
 std::uint32_t low32(std::uint64_t value) noexcept {
   return static_cast<std::uint32_t>(value);
@@ -270,6 +274,12 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
       }
       record.child_mask_flags|=mask;
     }
+    for(const auto [address,index]:indices) {
+      const bool parent_is_resident=address.red_depth()>0U&&
+          indices.contains(address.parent());
+      if(!parent_is_resident)
+        result.records[index].child_mask_flags|=active_root_bit;
+    }
     result.blocks.push_back(block);
   }
   result.header.record_count=static_cast<std::uint32_t>(result.records.size());
@@ -317,7 +327,7 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
     const auto& record=snapshot.records[index];
     if(!record_covered[index]||!gpu_hierarchy_address_valid(record.address)||
        record.reserved!=0U||record.block_index>=snapshot.blocks.size()||
-       (record.child_mask_flags&~0x7ffU)!=0U)
+       (record.child_mask_flags&~0xfffU)!=0U)
       throw std::invalid_argument("GPU hierarchy record is malformed");
     const auto& selection=snapshot.selection_records[index];
     const auto expected=gpu_hierarchy_selection_record(record.address);
@@ -340,6 +350,20 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
     const auto mask=record.child_mask_flags&child_mask;
     if((mask==0U)!=(record.child_base==gpu_hierarchy_invalid_index))
       throw std::invalid_argument("GPU hierarchy leaf encoding is malformed");
+    const auto address=gpu_hierarchy_address_from_lanes(record.address);
+    bool parent_is_resident=false;
+    if(address.red_depth()>0U) {
+      const auto parent=address.parent();
+      const auto& block=snapshot.blocks[record.block_index];
+      for(std::uint32_t local=0;local<block.record_count;++local) {
+        const auto candidate=block.record_first+local;
+        if(gpu_hierarchy_address_from_lanes(snapshot.records[candidate].address)==parent) {
+          parent_is_resident=true;break;
+        }
+      }
+    }
+    if(((record.child_mask_flags&active_root_bit)!=0U)==parent_is_resident)
+      throw std::invalid_argument("GPU hierarchy active-root encoding is malformed");
     if(mask==0U)continue;
     const auto children=static_cast<std::uint32_t>(std::popcount(mask));
     if(record.child_base==gpu_hierarchy_invalid_index||
@@ -419,34 +443,47 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const GpuHierarchyTraversalParameters& parameters) {
   validate_gpu_hierarchy_snapshot(snapshot);
   if(!(parameters.pixel_threshold>0.0)||!std::isfinite(parameters.pixel_threshold)||
+     !(parameters.field_threshold>0.0)||!std::isfinite(parameters.field_threshold)||
+     !(parameters.limb_threshold>0.0)||!std::isfinite(parameters.limb_threshold)||
+     !(parameters.field_lipschitz>=0.0)||!std::isfinite(parameters.field_lipschitz)||
+     !(parameters.planet_radius>=0.0)||!std::isfinite(parameters.planet_radius)||
      !(parameters.field_error_pixels>=0.0)||!std::isfinite(parameters.field_error_pixels)||
      parameters.maximum_red_depth>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy traversal parameters are invalid");
   GpuHierarchyTraversalResult result;
   const auto projection=prepare_camera_projection(parameters.camera);
-  std::vector<bool> child(snapshot.records.size());
-  for(const auto& record:snapshot.records) {
-    const auto mask=record.child_mask_flags&child_mask;
-    for(std::uint8_t digit=0;digit<8U;++digit)if(mask&(1U<<digit))
-      child[record.child_base+static_cast<std::uint32_t>(
-          std::popcount(mask&((1U<<digit)-1U)))]=true;
-  }
   std::vector<std::uint32_t> work;
   for(std::uint32_t index=0;index<snapshot.records.size();++index)
-    if(!child[index])work.push_back(index);
+    if((snapshot.records[index].child_mask_flags&active_root_bit)!=0U)work.push_back(index);
   for(std::size_t cursor=0;cursor<work.size();++cursor) {
     const auto index=work[cursor];const auto& record=snapshot.records[index];
     ++result.metrics.visited;
     const auto address=gpu_hierarchy_address_from_lanes(record.address);
-    const auto projected=projected_tetrahedron(gpu_hierarchy_geometry(record.address),projection);
+    std::array<Vec3,4> corners{};
+    for(std::size_t corner=0;corner<corners.size();++corner) {
+      const auto& value=snapshot.selection_records[index].corners[corner];
+      corners[corner]={value[0],value[1],value[2]};
+    }
+    const auto projected=projected_tetrahedron(corners,projection);
     if(!projected.intersects_frustum) { ++result.metrics.frustum_rejected;continue; }
     const auto mask=record.child_mask_flags&child_mask;
     const bool can_refine=mask!=0U&&address.red_depth()<parameters.maximum_red_depth;
     if(!can_refine) { ++result.metrics.depth_terminated;result.selected_records.push_back(index);continue; }
+    const auto& bounds=snapshot.selection_records[index].centre_radius;
+    const auto radius=static_cast<double>(bounds[3]);
+    const auto offset=Vec3{bounds[0],bounds[1],bounds[2]}-parameters.camera.position;
+    const auto distance=std::max(1.0e-4,
+        std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z)-radius);
+    const auto field_error=std::max(parameters.field_error_pixels,
+        radius*parameters.field_lipschitz*projection.focal_length/distance);
+    const auto limb_error=parameters.planet_radius>0.0?
+        (radius*radius/(2.0*std::max(parameters.planet_radius,radius)))*
+            projection.focal_length/distance:0.0;
     if(projected.diameter_pixels<=parameters.pixel_threshold&&
-       parameters.field_error_pixels<=parameters.pixel_threshold) {
+       field_error<=parameters.field_threshold&&limb_error<=parameters.limb_threshold) {
       ++result.metrics.projected_terminated;
       ++result.metrics.field_terminated;
+      ++result.metrics.limb_terminated;
       result.selected_records.push_back(index);continue;
     }
     for(std::uint8_t digit=0;digit<8U;++digit)if(mask&(1U<<digit))

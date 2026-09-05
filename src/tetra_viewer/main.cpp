@@ -3371,8 +3371,9 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             if(!world_realtime_gpu_surface_lod)
                 ImGui::TextDisabled("CPU terrain path active");
             else if(gpu_lod_status.dispatched)
-                ImGui::TextDisabled("GPU diagnostic: %u/%u leaves%s; CPU terrain renders",
-                    gpu_lod_status.selected_records,gpu_lod_status.hierarchy_records,
+                ImGui::TextDisabled("GPU diagnostic: %u selected, %u visited, %u rejected / %u records%s; CPU terrain renders",
+                    gpu_lod_status.selected_records,gpu_lod_status.visited_records,
+                    gpu_lod_status.rejected_records,gpu_lod_status.hierarchy_records,
                     gpu_lod_status.overflow?" (capacity reached)":"");
             else ImGui::TextDisabled("GPU selector awaits an immutable terrain cut");
             const auto gpu_extract=g_SceneRenderer.gpu_terrain_extract_status();
@@ -4533,13 +4534,24 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                     if(world_realtime_gpu_surface_lod){
                         const auto& profile=world_runtime->profile();
                         const auto& field=world_runtime->field();
+                        // Hierarchy sidecars are root-normalized, while the
+                        // renderer camera and field are in metres. The
+                        // selector has to compare values in one coordinate
+                        // system; render-origin-relative positions belong to
+                        // the later generated-geometry path, not this oracle.
+                        auto selector_camera=camera;
+                        selector_camera.position=profile.domain.to_root(
+                            camera.position);
                         g_SceneRenderer.stage_gpu_lod_selection_tuple(
                             tetra::make_gpu_hierarchy_selection_tuple({
-                                .camera=camera,.render_origin=prepared_scene.render_origin,
-                                .field_centre=field.centre,
-                                .planet_radius=field.terrain.planet_radius,
-                                .terrain_height_bound=tetra::terrain_height_magnitude_bound(field),
-                                .field_lipschitz=tetra::implicit_field_lipschitz_bound(field),
+                                .camera=selector_camera,.render_origin={},
+                                .field_centre=profile.domain.to_root(field.centre),
+                                .planet_radius=field.terrain.planet_radius/
+                                    profile.domain.world_extent,
+                                .terrain_height_bound=tetra::terrain_height_magnitude_bound(field)/
+                                    profile.domain.world_extent,
+                                .field_lipschitz=tetra::implicit_field_lipschitz_bound(field)*
+                                    profile.domain.world_extent,
                                 .edge_threshold=profile.pixel_threshold,
                                 .field_threshold=profile.field_error_pixel_threshold,
                                 .limb_threshold=profile.limb_error_pixel_threshold,
@@ -5158,6 +5170,21 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.atmosphere_allocation_bytes()<<','
                         <<"\"scene_target_bytes\":"
                         <<g_SceneRenderer.scene_target_allocation_bytes()<<','
+                        <<"\"gpu_lod\":{\"source_revision\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().source_revision
+                        <<",\"records\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().hierarchy_records
+                        <<",\"selected\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().selected_records
+                        <<",\"visited\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().visited_records
+                        <<",\"rejected\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().rejected_records
+                        <<",\"dispatched\":"
+                        <<(g_SceneRenderer.gpu_lod_dispatch_status().dispatched?"true":"false")
+                        <<",\"overflow\":"
+                        <<(g_SceneRenderer.gpu_lod_dispatch_status().overflow?"true":"false")
+                        <<"},"
                         <<"\"gpu_terrain_extract\":{\"source_revision\":"
                         <<gpu_extract.source_revision
                         <<",\"cells\":"<<gpu_extract.cells

@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU selection’s dynamic camera/field tuple is render-origin relative and per-swapchain-image, so it can only be uploaded after the owning fence and a missing, malformed, or stale tuple suppresses GPU selection in favour of CPU rendering.
 - Evidence: The tuple regression rejects invalid revisions and the 487-test Release gate plus off-screen Vulkan diagnostic passed with the slot-local binding and host-to-compute barrier.
 
+### gpu-hierarchy-active-root-traversal
+- Updated: 2026-09-05
+- Tags: gpu-lod, vulkan, hierarchy, traversal
+- Fact: Vulkan GPU hierarchy selection dispatches one bounded depth-first work list per explicitly encoded active-block root, with root-normalized camera inputs, and retains CPU terrain rendering on selector overflow or any later parity failure.
+- Evidence: Snapshot validation rejects an altered active-root flag; the P4c1a focused regression and 487-test Release gate passed, and the hidden MoltenVK run reported a completed 334,843-record traversal.
+
 ### gpu-terrain-extraction-slots
 - Updated: 2026-09-05
 - Tags: vulkan, terrain, extraction, synchronization

@@ -1122,16 +1122,21 @@ that work.
   ordered leaves: proving traversal and its oracle in Vulkan first prevents a
   flat classifier or a duplicated unverified backend implementation from being
   mistaken for hierarchy traversal.
-  - [ ] **P4c1 — Vulkan traversal and CPU oracle.** Implement the production
-    projected-edge, field-error, and limb-sagitta selector over P4a/P4b inputs
-    as a root/active-block work-list traversal of immutable hierarchy records.
-    It must reject subtrees conservatively, visit only reachable relevant
-    nodes, never select an ancestor and descendant together, and report
-    visited/rejected/selected work. Add a quantized CPU oracle and regressions
-    for fixed, moving, near-surface, orbital, rebase, terrain replacement, and
-    threshold-band inputs. Outside the defined floating-point threshold band,
-    selected addresses match exactly; within it, Vulkan uses the documented
-    deterministic tie rule. Its bounded candidate frontier is not drawable;
+  - [x] **P4c1a — Vulkan active-block traversal diagnostic.** Complete. Each
+    Vulkan invocation walks one immutable root/active-block tree using a
+    bounded depth-first work list, never a flat record classification. The
+    snapshot explicitly encodes and validates active roots; projected edge,
+    conservative Lipschitz field, and limb-sagitta bounds decide descent;
+    selected, visited, and frustum-rejected counts are read back only for the
+    diagnostic. A one-million-address stream has explicit overflow rejection.
+    Release 487/487 and hidden MoltenVK completed with CPU terrain still the
+    authoritative fallback.
+  - [ ] **P4c1b — Quantized CPU oracle and threshold corpus.** Derive the
+    CPU oracle directly from P4a sidecars and the P4b float tuple, specify the
+    threshold band and GPU tie rule, and compare selected address streams with
+    Vulkan. Cover fixed, moving, near-surface, orbital, rebase, and terrain
+    replacement inputs. Require exact addresses outside the band and the
+    deterministic tie rule inside it. The candidate front is not drawable and
     CPU BCC closure remains authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable

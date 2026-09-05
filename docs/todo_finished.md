@@ -2,6 +2,17 @@
 
 ## 2026-09-05
 
+- [x] **P4c1a — Vulkan active-block traversal diagnostic.** Replaced the
+  prohibited flat per-record leaf scan with one bounded depth-first work list
+  per immutable root/active-block tree. Snapshot records now encode and
+  validate active roots; selection uses projected-edge, conservative
+  Lipschitz field, and limb-sagitta terms, conservatively rejects frustum
+  subtrees, reports selected/visited/rejected work, and fails closed on its
+  one-million-address output bound. The camera is transformed into the
+  root-normalized coordinate system before selection. The hidden MoltenVK
+  diagnostic completed; 487/487 Release tests passed. This remains
+  diagnostic-only and CPU terrain rendering is unchanged.
+
 - [x] Establish the GPU-extraction replacement baseline. The existing release
   `tetra_world --runtime-benchmark` reports canonical hierarchy/surface/render
   hashes and separately records cut/closure, conforming-volume, surface

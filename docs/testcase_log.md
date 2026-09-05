@@ -6,6 +6,16 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 19:44 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 487 tests passed after P4c1a Vulkan active-block traversal; hidden `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark` completed with 334,843 records traversed and CPU terrain still authoritative.
+
+- 2026-09-05 19:34 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests` and hidden `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none | notes: rebuilt selector instrumentation and completed a MoltenVK diagnostic dispatch.
+
+- 2026-09-05 19:32 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: tetra_viewer GPU LOD diagnostic build | notes: P4c1 benchmark JSON string had an unterminated quote; corrected before rerun.
+
+- 2026-09-05 19:29 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: none | notes: resolved the P4c1 selector-oracle compile error; fresh Vulkan shader and all targets built.
+
+- 2026-09-05 19:27 CEST | fail | mode: Release | command: `./scripts/compile.sh --release --skip-tests` | failures: tetra_core GPU hierarchy selector build | notes: P4c1 oracle called unavailable `Vec3::length()`.
+
 - 2026-09-05 18:45 CEST | pass, standalone Metal fast terrain front | mode: Release | command: `./scripts/compile.sh --release`, focused terrain-display regression, and hidden Metal `--capture-view` | failures: none | notes: all 487 release entries passed. The reported ground view published 44,256 welded preview triangles in 27.9 ms with 0 exact triangles in the preview draw, avoiding the former 3.28 s exact/preview composition and eliminating overlapping or skirt geometry; the exact front remains the atomic background handoff.
 
 - 2026-09-05 17:46 CEST | pass, GPU selector tuple transport | mode: Release | command: `./scripts/compile.sh --release`, focused selector-tuple regression, and off-screen GPU-LOD diagnostic | failures: none | notes: all 487 release entries passed; per-slot render-origin-relative tuple upload and malformed/stale-tuple suppression preserved CPU rendering and qualified GPU terrain parity.

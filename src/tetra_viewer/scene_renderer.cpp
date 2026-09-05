@@ -896,7 +896,11 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
       throw std::runtime_error("unable to bind GPU LOD buffer");
     return result;
   };
-  constexpr std::size_t gpu_lod_output_capacity=65536U;
+  // A selector front can legitimately contain every currently resident leaf.
+  // Keep this diagnostic capacity above the production hierarchy budget so an
+  // ordinary near-surface frame measures traversal rather than artificial
+  // output truncation; overflow remains an explicit fail-closed condition.
+  constexpr std::size_t gpu_lod_output_capacity=1048576U;
   gpu_lod_hierarchy_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_inputs_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_tuples_.clear();gpu_lod_selection_tuples_.reserve(image_count);
@@ -2087,7 +2091,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     vkUnmapMemory(device_,gpu_lod_output.memory);
     if(gpu_lod_output.revision==gpu_lod_uploaded_revision_)
       gpu_lod_dispatch_status_={gpu_lod_output.revision,gpu_lod_output.record_count,
-          std::min(result[0],65536U),true,result[2]!=0U||result[0]>65536U};
+          std::min(result[0],1048576U),result[1],result[2],true,
+          result[3]!=0U||result[0]>1048576U};
     gpu_lod_output.pending=false;
   }
   const auto tuple_matches_hierarchy=[&]{
@@ -2141,10 +2146,12 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         gpu_lod_pipeline_layout_,0,1,&gpu_lod_descriptor_sets_.at(image_index),0,nullptr);
     const std::array<std::uint32_t,2> push{
-        gpu_lod_dispatch_status_.hierarchy_records,65536U};
+        gpu_lod_dispatch_status_.hierarchy_records,1048576U};
     vkCmdPushConstants(command_buffer,gpu_lod_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,
         0,sizeof(push),push.data());
-    if(push[0]!=0U)vkCmdDispatch(command_buffer,(push[0]+63U)/64U,1U,1U);
+    // Each invocation traverses one immutable active-root tree. Dispatching
+    // every record would silently regress this path to flat classification.
+    if(push[0]!=0U)vkCmdDispatch(command_buffer,push[0],1U,1U);
     VkBufferMemoryBarrier complete{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
     complete.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
     complete.dstAccessMask=VK_ACCESS_HOST_READ_BIT;

@@ -82,6 +82,8 @@ struct GpuLodDispatchStatus {
   std::uint64_t source_revision{};
   std::uint32_t hierarchy_records{};
   std::uint32_t selected_records{};
+  std::uint32_t visited_records{};
+  std::uint32_t rejected_records{};
   bool dispatched{};
   bool overflow{};
 };

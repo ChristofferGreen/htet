@@ -357,16 +357,23 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       deliberately split: a flat per-record classifier is not an acceptable
       partial implementation, and Metal parity must follow a proven Vulkan
       traversal rather than duplicate an unverified design.
-  - [ ] **P4c1 — Vulkan traversal and CPU oracle.** Implement projected-edge,
-        field-error, and limb-sagitta selection as a root/active-block work-list
-        traversal over immutable hierarchy records. Conservatively reject whole
-        subtrees; never select both an ancestor and a descendant; and expose
-        visited, rejected, and selected counts. Add a quantized CPU oracle and
-        regression cases for fixed, moving, near-surface, orbital, rebase,
-        terrain-replacement, and threshold-band inputs. Outside the defined
-        floating-point threshold band, selected addresses must match exactly;
-        within it, Vulkan must use the documented deterministic tie rule. The
-        result is a bounded candidate-address frontier, not a drawable surface.
+  - [x] **P4c1a — Vulkan active-block traversal diagnostic.** Complete. Each
+        Vulkan invocation now walks one immutable root/active-block tree using
+        a bounded depth-first work list, rather than classifying a flat record
+        array. Active roots are explicitly encoded and validated; projected
+        edge, conservative Lipschitz field, and limb-sagitta terms control
+        descent; frustum-rejected subtrees, selected leaves, and visited work
+        are counted. The one-million-address diagnostic output fails closed on
+        overflow, and CPU terrain remains authoritative. Release 487/487 and
+        the hidden MoltenVK run passed.
+  - [ ] **P4c1b — Quantized CPU oracle and threshold corpus.** Derive a CPU
+        oracle directly from the P4a sidecars and P4b float tuple, define an
+        explicit threshold band and deterministic boundary tie rule, then
+        compare it with the Vulkan address stream. Cover fixed, moving,
+        near-surface, orbital, rebase, and terrain-replacement cases. Outside
+        the band selected addresses must match exactly; within it the specified
+        deterministic GPU tie rule must hold. The result remains a bounded
+        candidate-address frontier, not a drawable surface.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate and run the
         proven selector through the existing SPIR-V-to-MSL path with the same
         immutable records, tuple revisions, capacities, barriers, overflow

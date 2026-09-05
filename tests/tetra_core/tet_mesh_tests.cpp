@@ -5168,10 +5168,28 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   CHECK(first.metrics.frustum_rejected==second.metrics.frustum_rejected);
   CHECK(first.metrics.selected>0U);
   CHECK(first.metrics.projected_terminated>0U);
+  CHECK(first.metrics.limb_terminated>0U);
+  for(std::size_t first_index=0;first_index<first.selected_records.size();++first_index)
+    for(std::size_t second_index=first_index+1U;second_index<first.selected_records.size();++second_index) {
+      auto ancestor=tetra::gpu_hierarchy_address_from_lanes(
+          snapshot.records[first.selected_records[first_index]].address);
+      const auto descendant=tetra::gpu_hierarchy_address_from_lanes(
+          snapshot.records[first.selected_records[second_index]].address);
+      while(ancestor.red_depth()>0U) {
+        ancestor=ancestor.parent();
+        CHECK(ancestor!=descendant);
+      }
+    }
   auto forced=coarse;forced.field_error_pixels=1.0e7;
   const auto refined=tetra::gpu_hierarchy_traverse(snapshot,forced);
   CHECK(refined.metrics.visited>first.metrics.visited);
   CHECK(refined.metrics.selected>=first.metrics.selected);
+  auto field_bound=coarse;field_bound.field_lipschitz=1.0e6;
+  const auto field_refined=tetra::gpu_hierarchy_traverse(snapshot,field_bound);
+  CHECK(field_refined.metrics.visited>first.metrics.visited);
+  auto limb_bound=coarse;limb_bound.planet_radius=0.01;limb_bound.limb_threshold=1.0e-4;
+  const auto limb_refined=tetra::gpu_hierarchy_traverse(snapshot,limb_bound);
+  CHECK(limb_refined.metrics.visited>first.metrics.visited);
   auto capped=forced;capped.maximum_red_depth=0U;
   const auto roots=tetra::gpu_hierarchy_traverse(snapshot,capped);
   CHECK(roots.metrics.depth_terminated==roots.metrics.selected);
@@ -5193,6 +5211,9 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       snapshot,invalid_index)),std::invalid_argument);
   CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_traverse(snapshot,
       {.pixel_threshold=0.0})),std::invalid_argument);
+  auto malformed=snapshot;
+  malformed.records.front().child_mask_flags&=~(1U<<11U);
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
 }
 
 TEST_CASE("GPU hierarchy frame ring never overwrites in-flight output") {
