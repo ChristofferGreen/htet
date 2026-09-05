@@ -281,6 +281,30 @@ GpuHierarchyTraversalParameters gpu_hierarchy_traversal_parameters(
   return result;
 }
 
+float gpu_hierarchy_selector_threshold_band(float normalized_error) noexcept {
+  if(!std::isfinite(normalized_error)||normalized_error<0.0F)return 0.0F;
+  const auto next=std::nextafter(normalized_error,
+      std::numeric_limits<float>::infinity());
+  // Keep the absolute floor representable and identical to gpu_lod.comp.
+  return std::max(8.0F*(next-normalized_error),0x1.0p-20F);
+}
+
+bool gpu_hierarchy_selector_refines(float projected_error,float threshold) noexcept {
+  if(!std::isfinite(projected_error)||!std::isfinite(threshold)||
+     projected_error<0.0F||!(threshold>0.0F))return false;
+  const auto normalized=projected_error/threshold;
+  if(!std::isfinite(normalized))return true;
+  return normalized>=1.0F-gpu_hierarchy_selector_threshold_band(normalized);
+}
+
+bool gpu_hierarchy_selector_refines(
+    std::array<float,3> projected_errors,std::array<float,3> thresholds) noexcept {
+  for(std::size_t term=0;term<projected_errors.size();++term)
+    if(gpu_hierarchy_selector_refines(projected_errors[term],thresholds[term]))
+      return true;
+  return false;
+}
+
 GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision) {
   GpuHierarchySnapshot result;
@@ -534,20 +558,23 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const bool can_refine=mask!=0U&&address.red_depth()<parameters.maximum_red_depth;
     if(!can_refine) { ++result.metrics.depth_terminated;result.selected_records.push_back(index);continue; }
     const auto& bounds=snapshot.selection_records[index].centre_radius;
-    const auto radius=static_cast<double>(bounds[3]);
-    const auto offset=Vec3{bounds[0],bounds[1],bounds[2]}-parameters.camera.position;
-    const auto distance=std::max(1.0e-4,
-        std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z)-radius);
-    const auto field_error=std::max(parameters.field_error_pixels,
-        radius*parameters.field_lipschitz*
-            (parameters.camera.viewport_height_pixels/(2.0*std::tan(
-                parameters.camera.vertical_fov_radians*0.5)))/distance);
-    const auto limb_error=parameters.planet_radius>0.0?
-        (radius*radius/(2.0*std::max(parameters.planet_radius,radius)))*
-            (parameters.camera.viewport_height_pixels/(2.0*std::tan(
-                parameters.camera.vertical_fov_radians*0.5)))/distance:0.0;
-    if(projected.diameter<=parameters.pixel_threshold&&
-       field_error<=parameters.field_threshold&&limb_error<=parameters.limb_threshold) {
+    const float radius=bounds[3];
+    const std::array<float,3> offset{{bounds[0]-static_cast<float>(parameters.camera.position.x),
+        bounds[1]-static_cast<float>(parameters.camera.position.y),
+        bounds[2]-static_cast<float>(parameters.camera.position.z)}};
+    const float distance=std::max(1.0e-4F,
+        std::sqrt(offset[0]*offset[0]+offset[1]*offset[1]+offset[2]*offset[2])-radius);
+    const float focal=static_cast<float>(parameters.camera.viewport_height_pixels)/
+        (2.0F*std::tan(static_cast<float>(parameters.camera.vertical_fov_radians)*0.5F));
+    const float field_error=std::max(static_cast<float>(parameters.field_error_pixels),
+        radius*static_cast<float>(parameters.field_lipschitz)*focal/distance);
+    const float limb_error=parameters.planet_radius>0.0?
+        (radius*radius/(2.0F*std::max(static_cast<float>(parameters.planet_radius),radius)))*
+            focal/distance:0.0F;
+    if(!gpu_hierarchy_selector_refines({projected.diameter,field_error,limb_error},
+          {static_cast<float>(parameters.pixel_threshold),
+           static_cast<float>(parameters.field_threshold),
+           static_cast<float>(parameters.limb_threshold)})) {
       ++result.metrics.projected_terminated;
       ++result.metrics.field_terminated;
       ++result.metrics.limb_terminated;

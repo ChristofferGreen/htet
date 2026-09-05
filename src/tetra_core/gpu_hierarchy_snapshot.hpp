@@ -155,6 +155,16 @@ struct GpuHierarchyTraversalResult {
   std::vector<std::uint32_t> selected_records;
   GpuHierarchyTraversalMetrics metrics{};
 };
+// The selector compares dimensionless projected-error ratios in float, because
+// that is the shader-visible representation.  Values within this band of one
+// refine conservatively (split wins); malformed inputs are rejected by the
+// tuple validator before traversal.
+[[nodiscard]] float gpu_hierarchy_selector_threshold_band(float normalized_error) noexcept;
+[[nodiscard]] bool gpu_hierarchy_selector_refines(
+    float projected_error,float threshold) noexcept;
+[[nodiscard]] bool gpu_hierarchy_selector_refines(
+    std::array<float,3> projected_errors,
+    std::array<float,3> thresholds) noexcept;
 struct GpuHierarchyIndirectDraw {
   std::uint32_t vertex_count{};
   std::uint32_t instance_count{};

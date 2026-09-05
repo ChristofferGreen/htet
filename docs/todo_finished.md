@@ -2,6 +2,16 @@
 
 ## 2026-09-05
 
+- [x] **P4c1b2a — Shared threshold-boundary convention.** Defined the
+  shader-visible selector boundary as `abs(e - 1) <= max(8 ulps(e), 2^-20)`.
+  Both the float-sidecar CPU oracle and Vulkan shader conservatively refine on
+  the finite boundary (split wins), with maximum depth still terminating the
+  traversal. The focused contract covers below-band, in-band, exact,
+  above-band, invalid, equal-maximum, and two-term cases. A rebuilt hidden
+  Vulkan diagnostic retained zero selected-address mismatches and no overflow.
+  The separate P4c1b2b camera/rebase/replacement corpus remains open; this
+  changes only diagnostic selector behavior and does not promote GPU drawing.
+
 - [x] **P4c1b1 — Shader-input CPU oracle and fixed parity readback.** The CPU
   selector oracle now reconstructs camera, thresholds, field Lipschitz, and
   limb radius from the exact P4b float tuple and mirrors P4a float-sidecar

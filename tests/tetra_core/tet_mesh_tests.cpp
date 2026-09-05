@@ -5160,6 +5160,29 @@ TEST_CASE("GPU hierarchy selector tuple is revisioned and render-origin relative
   CHECK_THROWS_AS(tetra::make_gpu_hierarchy_selection_tuple(p),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy selector threshold band conservatively splits ties") {
+  constexpr float threshold=32.0F;
+  const auto band=tetra::gpu_hierarchy_selector_threshold_band(1.0F);
+  CHECK(band==doctest::Approx(0x1.0p-20F));
+  CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(
+      threshold*(1.0F-2.0F*band),threshold));
+  CHECK(tetra::gpu_hierarchy_selector_refines(
+      threshold*(1.0F-0.5F*band),threshold));
+  CHECK(tetra::gpu_hierarchy_selector_refines(threshold,threshold));
+  CHECK(tetra::gpu_hierarchy_selector_refines(
+      threshold*(1.0F+2.0F*band),threshold));
+  CHECK(tetra::gpu_hierarchy_selector_refines(
+      {threshold*(1.0F-2.0F*band),threshold,threshold},
+      {threshold,threshold,threshold}));
+  CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(
+      {threshold*(1.0F-2.0F*band),threshold*(1.0F-2.0F*band),
+       threshold*(1.0F-2.0F*band)},
+      {threshold,threshold,threshold}));
+  CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(
+      std::numeric_limits<float>::quiet_NaN(),threshold));
+  CHECK_FALSE(tetra::gpu_hierarchy_selector_refines(threshold,0.0F));
+}
+
 TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminates") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

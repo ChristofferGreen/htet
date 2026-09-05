@@ -373,11 +373,8 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         readback canonicalizes the Vulkan address stream and reports mismatch
         counts; the hidden fixed run selected 106,614 addresses with zero
         mismatches and no overflow.
-  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Define each normalized
-        selector boundary as `abs(e - 1) <= max(8 ulps(e), 2^-20)` and use one
-        conservative finite tie rule: refine on the boundary (split wins),
-        except at maximum depth; reject invalid values. Compare canonical Vulkan
-        and P4a/P4b-oracle streams over fixed, frame-by-frame moving,
+  - [ ] **P4c1b2b — Vulkan threshold and camera corpus.** Compare canonical
+        Vulkan and P4a/P4b-oracle streams over fixed, frame-by-frame moving,
         near-surface/camera-inside, orbital, rebase-in-motion, and terrain-
         replacement cases. Synthesize just-below/in-band/just-above boundaries
         for each term plus equal-maximum/two-term ties. Outside the band selected

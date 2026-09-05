@@ -20,6 +20,23 @@ layout(push_constant) uniform SelectorParameters {
 const uint child_mask=0xffu;
 const uint active_root_bit=0x800u;
 const uint stack_limit=64u;
+const float selector_minimum_band=0.00000095367431640625;
+
+float selector_threshold_band(float normalized_error) {
+  // Positive finite errors only reach this helper. uint arithmetic gives the
+  // exact float ULP used by the CPU oracle, without backend-dependent math.
+  const float next_error=uintBitsToFloat(floatBitsToUint(normalized_error)+1u);
+  return max(8.0*(next_error-normalized_error),selector_minimum_band);
+}
+
+bool selector_refines(float projected_error,float threshold) {
+  if(isnan(projected_error)||isinf(projected_error)||projected_error<0.0||
+     isnan(threshold)||isinf(threshold)||threshold<=0.0)return false;
+  const float normalized_error=projected_error/threshold;
+  if(isinf(normalized_error))return true;
+  // A boundary is deliberately refined: split wins until maximum depth.
+  return normalized_error>=1.0-selector_threshold_band(normalized_error);
+}
 
 uint child_index(uint record_index,uint child) {
   const uint flags=hierarchy.words[record_index*8u+5u];
@@ -86,8 +103,10 @@ void main() {
       const float field_error=sphere.w*field_lipschitz*focal/distance;
       const float sagitta=planet_radius>0.0?
           (sphere.w*sphere.w/(2.0*max(planet_radius,sphere.w)))*focal/distance:0.0;
-      const bool split=mask!=0u&&(projected_diameter(record_index,camera,focal)>edge_threshold||
-          field_error>field_threshold||sagitta>limb_threshold);
+      const bool split=mask!=0u&&(selector_refines(
+          projected_diameter(record_index,camera,focal),edge_threshold)||
+          selector_refines(field_error,field_threshold)||
+          selector_refines(sagitta,limb_threshold));
       if(!split) {
         const uint output_index=atomicAdd(output_buffer.words[0],1u);
         if(output_index<parameters.output_capacity)

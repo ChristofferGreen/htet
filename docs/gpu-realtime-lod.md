@@ -1138,27 +1138,33 @@ that work.
     counts; the hidden fixed run selected 106,614 addresses with zero
     mismatches and no overflow. CPU BCC closure and terrain rendering remain
     authoritative.
-  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Make selector parity a
-    reproducible corpus rather than a single successful readback. For each of
-    the three dimensionless errors `e = projected_error / threshold`, classify
-    an input as outside the boundary band when `abs(e - 1) > max(8 ulps(e),
-    2^-20)` and inside otherwise; the maximum of the three terms uses the same
-    rule. Feed the exact quantized P4b tuple to both implementations and apply
-    one conservative tie rule: a finite in-band or exactly-one error refines
-    (split wins), except at the explicit maximum depth. Invalid values reject
-    the tuple rather than becoming a tie. The corpus must contain fixed poses;
-    frame-by-frame yaw/pitch and translation motion; near-surface and
-    camera-inside-bound cases; orbital/limb cases; a render-origin rebase in
-    motion; and terrain replacement with old/new tuple isolation. It must also
-    synthesize threshold values immediately below, within, and immediately
-    above every term's boundary, including equal-max and two-term ties. For
-    every completed tuple, canonicalize and compare the Vulkan stream and the
-    P4a/P4b CPU oracle: selected addresses outside the band match exactly;
-    in-band results obey split-wins, remain ancestor/descendant exclusive, and
-    have identical results on deterministic replay. Record per-case tuple
-    identity, selected/visited/rejected counts, overflow, and mismatch/band
-    counts. The result remains a bounded candidate-address frontier, not a
-    drawable surface; CPU BCC closure remains authoritative.
+  - [x] **P4c1b2a — Shared threshold-boundary convention.** For each
+    dimensionless error `e = projected_error / threshold`, classify an input as
+    inside the boundary band when `abs(e - 1) <= max(8 ulps(e), 2^-20)` and
+    outside otherwise; the maximum of the three terms uses the same convention.
+    Feed the exact quantized P4b tuple to the float-sidecar CPU oracle and
+    Vulkan shader. A finite in-band or exactly-one error refines (split wins),
+    except at explicit maximum depth; invalid tuple values reject the tuple
+    rather than becoming a tie. Unit coverage must exercise below-band,
+    in-band, exact, above-band, invalid, equal-maximum, and two-term ties.
+    Complete: the common float predicate uses the `2^-20` floor and eight-ULP
+    band, has explicit split-wins behavior, and is shared by the CPU oracle
+    and Vulkan shader. Its focused Release test passed and the hidden Vulkan
+    diagnostic retained zero address mismatches.
+  - [ ] **P4c1b2b — Vulkan threshold and camera corpus.** Make selector parity
+    a reproducible corpus rather than a single successful readback. It must
+    contain fixed poses; frame-by-frame yaw/pitch and translation motion;
+    near-surface and camera-inside-bound cases; orbital/limb cases; a
+    render-origin rebase in motion; and terrain replacement with old/new tuple
+    isolation. It must also synthesize threshold values immediately below,
+    within, and immediately above every term's boundary, including equal-max
+    and two-term ties. For every completed tuple, canonicalize and compare the
+    Vulkan stream and P4a/P4b CPU oracle: selected addresses outside the band
+    match exactly; in-band results obey split-wins, remain ancestor/descendant
+    exclusive, and have identical results on deterministic replay. Record
+    per-case tuple identity, selected/visited/rejected counts, overflow, and
+    mismatch/band counts. The result remains a bounded candidate-address
+    frontier, not a drawable surface; CPU BCC closure remains authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,

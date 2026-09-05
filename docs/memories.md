@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Diagnostic selector parity must reconstruct the CPU decision from the exact float P4a sidecar and P4b tuple rather than gameplay's higher-precision tetrahedron projection, then compare canonicalized selected address streams.
 - Evidence: The first comparison found 113,630 mismatches with the old frustum calculation; matching the shader's conservative sphere arithmetic produced zero mismatches across 106,614 fixed-run addresses.
 
+### gpu-hierarchy-selector-threshold-band
+- Updated: 2026-09-05
+- Tags: gpu-lod, vulkan, oracle, floating-point
+- Fact: The CPU float-sidecar selector oracle and Vulkan shader treat `abs(projected_error / threshold - 1) <= max(8 ulps, 2^-20)` as a conservative split-wins boundary, with maximum depth still terminating traversal.
+- Evidence: Focused below/in/exact/above-boundary, invalid, equal-maximum, and two-term tests passed; the rebuilt hidden Vulkan diagnostic retained zero address mismatches.
+
 ### gpu-terrain-extraction-slots
 - Updated: 2026-09-05
 - Tags: vulkan, terrain, extraction, synchronization
