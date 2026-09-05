@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU compute emission order is nondeterministic, so topology parity must compare canonical unordered triangle-position multisets and validate the generated index stream separately.
 - Evidence: The retained-front diagnostic matched the CPU triangle multiset and verified all 226,848 generated indices equal their referenced vertex slot.
 
+### gpu-terrain-visible-parity
+- Updated: 2026-09-05
+- Tags: terrain, gpu, parity, image, latency
+- Fact: Realtime GPU surface LOD can draw the qualified double-buffered compute output indirectly while falling back to CPU for initial, stale, failed, or overflowing packets.
+- Evidence: Fixed and moving CPU/GPU captures matched colour and depth byte-for-byte; the 240-sample moving camera-to-present p50 was 8.330 ms CPU and 8.331 ms GPU on the display-limited test device.
+
 ### gpu-terrain-final-front-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, retained-front

@@ -1262,6 +1262,17 @@ indirect path only after all per-revision structural gates complete; initial,
 stale, overflowing, or failed output continues to draw CPU terrain. P3 now
 owns controlled camera-to-pixels latency measurement.
 
+**P3 camera-to-pixels measurement, 2026-09-05.** The deterministic 180-step
+walk/capture harness retained 240 post-motion frame-pacing samples for matched
+CPU and qualified-GPU runs at 320x240 logical / 640x480 drawable resolution.
+CPU/GPU camera-to-present median was 8.330/8.331 ms and p95 was
+8.448/8.443 ms; missed presents were 3/2. Reported GPU frame work was
+24.034/24.719 ms. The paths are presentation-equivalent on this
+display-limited run, not evidence of a material latency win. GPU extraction
+avoids a foreground topology rebuild but does not erase independently
+authoritative CPU publication cost; further gains belong to GPU selection and
+progressive active-front scheduling.
+
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive
