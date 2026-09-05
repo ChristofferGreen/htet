@@ -5060,6 +5060,34 @@ TEST_CASE("GPU hierarchy snapshot validation rejects malformed records") {
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(bad_owner),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminates") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,9U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory);
+  tetra::GpuHierarchyTraversalParameters coarse;
+  coarse.camera.position={0.5,0.5,3.0};coarse.camera.forward={0.0,0.0,-1.0};
+  coarse.camera.viewport_height_pixels=800.0;coarse.pixel_threshold=1.0e6;
+  const auto first=tetra::gpu_hierarchy_traverse(snapshot,coarse);
+  const auto second=tetra::gpu_hierarchy_traverse(snapshot,coarse);
+  CHECK(first.selected_records==second.selected_records);
+  CHECK(first.metrics.frustum_rejected==second.metrics.frustum_rejected);
+  CHECK(first.metrics.selected>0U);
+  CHECK(first.metrics.projected_terminated>0U);
+  auto forced=coarse;forced.field_error_pixels=1.0e7;
+  const auto refined=tetra::gpu_hierarchy_traverse(snapshot,forced);
+  CHECK(refined.metrics.visited>first.metrics.visited);
+  CHECK(refined.metrics.selected>=first.metrics.selected);
+  auto capped=forced;capped.maximum_red_depth=0U;
+  const auto roots=tetra::gpu_hierarchy_traverse(snapshot,capped);
+  CHECK(roots.metrics.depth_terminated==roots.metrics.selected);
+  CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_traverse(snapshot,
+      {.pixel_threshold=0.0})),std::invalid_argument);
+}
+
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

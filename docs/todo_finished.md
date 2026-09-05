@@ -1,5 +1,16 @@
 # Finished TODO Items
 
+## 2026-09-05
+
+- [x] Implement the immutable hierarchy traversal oracle. The host-side
+  shader-equivalent selector validates a single immutable snapshot, follows
+  only its packed child links, uses the established exact tetrahedron frustum
+  projection, and terminates at depth or only when both projected size and the
+  conservative field-error bound meet their threshold. Deterministic tests
+  cover stable ordering, forced field refinement, depth caps, frustum
+  rejection, and invalid parameters. This remains a CPU reference: no device
+  dispatch, selection buffer, readback, or rendering path is enabled.
+
 ## 2026-09-04
 
 - [x] Encode and validate an immutable GPU hierarchy snapshot against CPU

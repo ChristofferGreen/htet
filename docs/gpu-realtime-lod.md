@@ -1053,8 +1053,6 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Implement GPU on-demand traversal with frustum, depth, projected-size,
-  and conservative field-range termination.
 - [ ] Implement device-local selection counters, overflow detection, and
   indirect draw arguments without normal-frame readback.
 - [ ] Implement the first exact GPU surface extractor and edge emitter.

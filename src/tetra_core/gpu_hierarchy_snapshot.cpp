@@ -275,4 +275,47 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
       throw std::invalid_argument("GPU hierarchy logical owner flag is malformed");
 }
 
+GpuHierarchyTraversalResult gpu_hierarchy_traverse(
+    const GpuHierarchySnapshot& snapshot,
+    const GpuHierarchyTraversalParameters& parameters) {
+  validate_gpu_hierarchy_snapshot(snapshot);
+  if(!(parameters.pixel_threshold>0.0)||!std::isfinite(parameters.pixel_threshold)||
+     !(parameters.field_error_pixels>=0.0)||!std::isfinite(parameters.field_error_pixels)||
+     parameters.maximum_red_depth>maximum_world_red_depth)
+    throw std::invalid_argument("GPU hierarchy traversal parameters are invalid");
+  GpuHierarchyTraversalResult result;
+  const auto projection=prepare_camera_projection(parameters.camera);
+  std::vector<bool> child(snapshot.records.size());
+  for(const auto& record:snapshot.records) {
+    const auto mask=record.child_mask_flags&child_mask;
+    for(std::uint8_t digit=0;digit<8U;++digit)if(mask&(1U<<digit))
+      child[record.child_base+static_cast<std::uint32_t>(
+          std::popcount(mask&((1U<<digit)-1U)))]=true;
+  }
+  std::vector<std::uint32_t> work;
+  for(std::uint32_t index=0;index<snapshot.records.size();++index)
+    if(!child[index])work.push_back(index);
+  for(std::size_t cursor=0;cursor<work.size();++cursor) {
+    const auto index=work[cursor];const auto& record=snapshot.records[index];
+    ++result.metrics.visited;
+    const auto address=gpu_hierarchy_address_from_lanes(record.address);
+    const auto projected=projected_tetrahedron(gpu_hierarchy_geometry(record.address),projection);
+    if(!projected.intersects_frustum) { ++result.metrics.frustum_rejected;continue; }
+    const auto mask=record.child_mask_flags&child_mask;
+    const bool can_refine=mask!=0U&&address.red_depth()<parameters.maximum_red_depth;
+    if(!can_refine) { ++result.metrics.depth_terminated;result.selected_records.push_back(index);continue; }
+    if(projected.diameter_pixels<=parameters.pixel_threshold&&
+       parameters.field_error_pixels<=parameters.pixel_threshold) {
+      ++result.metrics.projected_terminated;
+      ++result.metrics.field_terminated;
+      result.selected_records.push_back(index);continue;
+    }
+    for(std::uint8_t digit=0;digit<8U;++digit)if(mask&(1U<<digit))
+      work.push_back(record.child_base+static_cast<std::uint32_t>(
+          std::popcount(mask&((1U<<digit)-1U))));
+  }
+  result.metrics.selected=result.selected_records.size();
+  return result;
+}
+
 }  // namespace tetra

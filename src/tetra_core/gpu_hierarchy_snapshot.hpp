@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_core/world_cut_directory.hpp"
+#include "tetra_core/implicit_surface.hpp"
 
 #include <array>
 #include <cstdint>
@@ -63,6 +64,29 @@ struct GpuHierarchySnapshot {
   std::array<WorldTetrahedronGeometry,bcc_root_tetrahedron_count> root_geometry{};
 };
 
+// Host oracle for the first compute selector. field_error_pixels is the
+// conservative projected field-range error supplied by the immutable tuple;
+// a later device path consumes the same scalar per record rather than
+// changing topology or reading back a result.
+struct GpuHierarchyTraversalParameters {
+  Camera camera{};
+  double pixel_threshold{2.0};
+  double field_error_pixels{};
+  unsigned int maximum_red_depth{maximum_world_red_depth};
+};
+struct GpuHierarchyTraversalMetrics {
+  std::size_t visited{};
+  std::size_t frustum_rejected{};
+  std::size_t depth_terminated{};
+  std::size_t projected_terminated{};
+  std::size_t field_terminated{};
+  std::size_t selected{};
+};
+struct GpuHierarchyTraversalResult {
+  std::vector<std::uint32_t> selected_records;
+  GpuHierarchyTraversalMetrics metrics{};
+};
+
 [[nodiscard]] std::array<std::uint32_t,4> gpu_hierarchy_address_lanes(
     WorldTetAddress address) noexcept;
 [[nodiscard]] WorldTetAddress gpu_hierarchy_address_from_lanes(
@@ -79,5 +103,8 @@ struct GpuHierarchySnapshot {
 [[nodiscard]] GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     const WorldCutDirectory& directory,std::uint64_t field_revision=0U);
 void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
+[[nodiscard]] GpuHierarchyTraversalResult gpu_hierarchy_traverse(
+    const GpuHierarchySnapshot& snapshot,
+    const GpuHierarchyTraversalParameters& parameters);
 
 }  // namespace tetra

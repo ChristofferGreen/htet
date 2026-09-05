@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 07:34 CEST | pass, immutable GPU hierarchy traversal closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 482/482 tests passed in 479.55 s; the new traversal oracle regression proves deterministic selection, conservative field-forced refinement, depth termination, frustum rejection, and invalid-parameter rejection.
+
 - 2026-09-04 20:45 CEST | pass, immutable GPU hierarchy snapshot closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 481/481 tests passed in 449.77 s; the three new focused snapshot tests cover exact record/geometry reconstruction, all-root maximum-depth lane carry, and malformed header/block/record/owner rejection.
 
 - 2026-09-04 20:35 CEST | fail, immutable GPU hierarchy snapshot implementation | mode: fresh Release build | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_core/gpu_hierarchy_snapshot.cpp`, `tetra_tests` | notes: initial block side-table size assertion was 80 rather than declared 64 bytes, and new tests passed `TetMesh` where the sparse checkpoint API requires world-address spans; correcting both before focused rerun.
