@@ -266,6 +266,19 @@ if(APPLE AND TETRA_BUILD_METAL)
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-extract-smoke-test)
   add_test(NAME "metal GPU terrain runtime parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-runtime-smoke-test)
+  # P5c2 drives the real hidden render loop with the diagnostic packets on;
+  # the test asserts completed/accepted/stale slots while CPU terrain remains
+  # the only drawable front.
+  add_test(NAME "metal GPU terrain interactive slots retain CPU front"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_GPU_TERRAIN_DIAGNOSTIC=1
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
+  add_test(NAME "metal GPU terrain static slots retain CPU front"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_GPU_TERRAIN_DIAGNOSTIC=1
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
   set_target_properties(tetra_world_metal PROPERTIES
     OUTPUT_NAME "TetWorldMetal"
     MACOSX_BUNDLE TRUE

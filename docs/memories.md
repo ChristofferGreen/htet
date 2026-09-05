@@ -76,6 +76,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The hidden Metal runtime capture can only dispatch an immutable legacy cell packet after one asynchronous CPU publication has converged and its scene generation and render origin are captured together.
 - Evidence: The fixture consumed 36,165 cells from a completed production front, matched count, position/normal and triangle multisets plus every linear index for 545,112 vertices, and the 492-test Release gate passed.
 
+### gpu-terrain-extraction-metal-slots
+- Updated: 2026-09-06
+- Tags: metal, terrain, extraction, runtime, fallback
+- Fact: Opt-in live Metal extraction uses three non-drawable packet slots that snapshot the CPU-front identity and canonical geometry fingerprint at submission, accepting only completed, exact-index, matching-generation/origin payloads while retaining CPU terrain as the sole render, shadow, and ray-tracing front.
+- Evidence: Hidden static and moving app tests accepted 3 and 135 packets respectively; the moving run stale-rejected one completion with zero payload failures, overflow, or CPU-front authority violations, and the 494-test Release gate passed.
+
 ### gpu-terrain-geometry-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, vulkan

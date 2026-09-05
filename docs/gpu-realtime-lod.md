@@ -1401,9 +1401,9 @@ by a plausible still image or an isolated kernel time: it must preserve the
 same BCC-derived terrain identity and pass its stated cross-backend, visual,
 topology, and complete-frame gates.
 
-- [ ] **P5 — Metal terrain-extraction parity.** P4c2 has already translated
-  and hardware-qualified the selector, so extraction is split into three
-  independently closable leaves:
+- [x] **P5 — Metal terrain-extraction parity.** P4c2 has already translated
+  and hardware-qualified the selector; P5 now has four independently proven
+  leaves:
   - [x] **P5a — Translate and compile `gpu_terrain_extract.comp`.** Require its
     generated MSL entry point and the Vulkan-equivalent 448-byte source stride,
     bindings, and push-constant ABI. **Result:** `gpu_terrain_extract.comp` is
@@ -1428,13 +1428,18 @@ topology, and complete-frame gates.
     stream of that CPU scene; any incomplete, identity-invalid, overflowing, or
     failed command returns false before a drawable object exists. The fixed
     production capture validated 36,165 cells and 545,112 vertices.
-  - [ ] **P5c2 — Interactive slot and fallback qualification.** Connect P5c1's
-    capture contract to actual Metal per-frame slots, command ordering,
-    revision matching, and stale-work rejection under fixed and moving hidden
-    captures. A stale, incomplete, mismatched, or overflowing result retains
-    CPU rendering. Neither leaf may replace the legacy 448-byte payload or
-    claim a speed improvement; P7 is the separate GPU-native field/topology
-    milestone.
+  - [x] **P5c2 — Interactive slot and fallback qualification.** The opt-in
+    Metal diagnostic owns three per-frame packet/output/index slots and retains
+    the CPU display front as the sole raster, shadow, and ray-tracing source.
+    Submission snapshots the CPU scene generation, render origin, count, and
+    order-independent position/normal/triangle fingerprint; completion also
+    verifies the exact linear index stream, count/indirect header, overflow
+    state, and command success before a matching result may be accepted. A
+    static hidden capture accepted three packets with zero failures; a moving
+    capture accepted 140 and rejected one stale packet, also with zero payload
+    failures, overflow, or CPU-front authority violations. Neither this leaf
+    nor P5 replaces the legacy 448-byte payload or claims a speed improvement;
+    P7 remains the separate GPU-native field/topology milestone.
 - [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
   selected addresses as candidates and use the existing 64 restricted-green
   edge-mask templates as the baseline surface grammar. Define how GPU work

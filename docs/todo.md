@@ -353,17 +353,6 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P5 — Establish Metal terrain-extraction parity.** P4c2 already
-      translates and qualifies the selector. This tracker is deliberately
-      split so static shader translation, buffer lifetime, and full rendered
-      output cannot be mistaken for one another.
-  - [ ] **P5c2 — Qualify interactive runtime slots and fallback.** Drive P5c1
-        through actual per-frame slot ownership, command-buffer ordering,
-        revision matching, moving-camera stale-work rejection, and CPU fallback.
-        Acceptance: hidden fixed and moving captures equal the CPU front or
-        retain CPU rendering; no stale or incomplete Metal result is consumed.
-        Stop rule: do not replace the 448-byte CPU-precomputed payload or claim
-        a speedup.
 - [ ] **P6 — Specify and prove the BCC render-front conformity contract.** Use
       the existing 64 restricted-green edge-mask templates as the baseline,
       not a new surface authority. Define how the GPU derives globally

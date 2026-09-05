@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 00:36 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 494 tests passed, including hidden static and moving Metal GPU-terrain slot qualification; fixed capture accepted 3 packets, while motion accepted 135 and stale-rejected 1 with zero payload failures, overflow, or CPU-front authority violations.
+
 - 2026-09-06 00:15 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 492 tests passed in 596.80 seconds, including the hidden Metal published-front runtime extraction fixture.
 
 - 2026-09-06 00:02 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain runtime parity$'` | failures: none | notes: the hidden published-front fixture matched the actual CPU scene for 36,165 cells / 545,112 vertices in 18.05 seconds.

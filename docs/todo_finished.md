@@ -1,5 +1,17 @@
 # Finished TODO Items
 
+## 2026-09-06
+
+- [x] **P5c2 — Qualify interactive Metal runtime slots and CPU fallback.** An
+  opt-in three-slot Metal diagnostic now snapshots immutable CPU-front
+  generation/origin/count and a canonical geometry fingerprint at submission;
+  completion checks it, the linear indices, header, command state, and
+  overflow before an identity-matched result can be accepted. Hidden static
+  and moving app captures accepted 3 and 140 packets respectively; movement
+  rejected one stale completion with zero failed payloads, overflows, or
+  CPU-front authority violations. GPU buffers remain non-drawable: CPU terrain
+  remains the only raster, shadow, and ray-tracing front.
+
 ## 2026-09-05
 
 - [x] **P5c1 — Capture one completed CPU front through Metal extraction.** A

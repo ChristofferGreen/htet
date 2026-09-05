@@ -889,9 +889,70 @@ struct MetalTerrainDisplayFront {
   }
 };
 
+// A commutative two-lane fingerprint lets a diagnostic completion validate the
+// complete CPU-captured geometry without depending on the extractor's workgroup
+// order.  It intentionally covers positions, normals, triangle membership and
+// the linear index stream, rather than treating a vertex count as parity.
+struct MetalGpuTerrainFingerprint {
+  std::uint64_t sum{};
+  std::uint64_t xor_sum{};
+
+  [[nodiscard]] bool operator==(const MetalGpuTerrainFingerprint&) const=
+      default;
+};
+
+[[nodiscard]] std::uint64_t metal_terrain_mix(std::uint64_t value) noexcept {
+  value^=value>>30U;value*=0xbf58476d1ce4e5b9ULL;
+  value^=value>>27U;value*=0x94d049bb133111ebULL;
+  return value^(value>>31U);
+}
+
+[[nodiscard]] MetalGpuTerrainFingerprint metal_terrain_fingerprint(
+    std::span<const tetra_viewer::SceneVertex> vertices) {
+  MetalGpuTerrainFingerprint result;
+  const auto include=[&](std::uint64_t value){
+    const auto mixed=metal_terrain_mix(value);
+    result.sum+=mixed;
+    result.xor_sum^=std::rotl(mixed,static_cast<int>(mixed&63U));
+  };
+  const auto vertex_key=[](const tetra_viewer::SceneVertex& vertex){
+    std::array<std::uint32_t,6> words{};
+    for(std::size_t lane=0U;lane<3U;++lane){
+      words[lane]=std::bit_cast<std::uint32_t>(vertex.position[lane]);
+      words[lane+3U]=std::bit_cast<std::uint32_t>(vertex.normal[lane]);
+    }
+    std::uint64_t key=0x6a09e667f3bcc909ULL;
+    for(const auto word:words)key=metal_terrain_mix(key^word);
+    return key;
+  };
+  for(const auto& vertex:vertices)include(vertex_key(vertex));
+  for(std::size_t first=0U;first+2U<vertices.size();first+=3U){
+    std::array<std::uint64_t,3> triangle{
+        vertex_key(vertices[first]),vertex_key(vertices[first+1U]),
+        vertex_key(vertices[first+2U])};
+    std::ranges::sort(triangle);
+    include(metal_terrain_mix(triangle[0])^
+            std::rotl(metal_terrain_mix(triangle[1]),21)^
+            std::rotl(metal_terrain_mix(triangle[2]),42));
+  }
+  return result;
+}
+
+struct MetalGpuTerrainDiagnosticCounters {
+  std::atomic<std::uint64_t> dispatched{};
+  std::atomic<std::uint64_t> completed{};
+  std::atomic<std::uint64_t> accepted{};
+  std::atomic<std::uint64_t> stale_rejected{};
+  std::atomic<std::uint64_t> failed{};
+  std::atomic<std::uint64_t> overflow{};
+  std::atomic<std::uint64_t> cpu_front_frames{};
+  std::atomic<std::uint64_t> cpu_front_violations{};
+};
+
 // P5c2 diagnostic slots are deliberately separate from the immutable CPU
 // display front. A result may be inspected only when its command completion,
-// scene generation, and render origin all still match; it has no draw handle.
+// immutable payload fingerprint, scene generation, and render origin all still
+// match; it has no draw handle.
 struct MetalGpuTerrainDiagnosticSlot {
   id<MTLBuffer> cells=nil;
   id<MTLBuffer> output=nil;
@@ -899,6 +960,7 @@ struct MetalGpuTerrainDiagnosticSlot {
   std::uint64_t scene_generation{};
   tetra::Vec3 render_origin{};
   std::uint32_t expected_vertices{};
+  MetalGpuTerrainFingerprint expected_fingerprint{};
   bool pending{};
   std::shared_ptr<std::atomic<bool>> completed=
       std::make_shared<std::atomic<bool>>(false);
@@ -4194,6 +4256,8 @@ int main(int argc,char** argv) {
     MetalTerrainDisplayFront terrain_display_front;
     std::array<MetalGpuTerrainDiagnosticSlot,3> gpu_terrain_slots;
     std::uint64_t gpu_terrain_slot_cursor{};
+    auto gpu_terrain_counters=
+        std::make_shared<MetalGpuTerrainDiagnosticCounters>();
     std::size_t peak_terrain_display_transition_bytes{};
     std::uint64_t next_terrain_render_generation{1U};
     id<MTLBuffer> scene_vertices=nil;
@@ -4959,8 +5023,14 @@ int main(int argc,char** argv) {
               slot.completed->load(std::memory_order_acquire)){
             slot.pending=false;
             if(!slot.matches(diagnostics.scene_generation,
-                             runtime->scene().render_origin))
+                             runtime->scene().render_origin)){
               slot.succeeded->store(false,std::memory_order_release);
+              gpu_terrain_counters->stale_rejected.fetch_add(
+                  1U,std::memory_order_relaxed);
+            }else if(slot.succeeded->load(std::memory_order_acquire)){
+              gpu_terrain_counters->accepted.fetch_add(
+                  1U,std::memory_order_relaxed);
+            }
           }
           const auto exact_now=runtime->published_view_identity();
           if(terrain_display_front.preview_cpu&&exact_now.valid())
@@ -5896,6 +5966,20 @@ int main(int argc,char** argv) {
                    terrain_display_front.exact_index_count:
                    terrain_display_front.exact_vertex_count)/3U,
               terrain_display_front.preview_index_count/3U);
+          if(metal_gpu_terrain_diagnostic)ImGui::Text(
+              "GPU extract slots D %llu C %llu A %llu stale %llu fail %llu over %llu",
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->dispatched.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->completed.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->accepted.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->stale_rejected.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->failed.load(std::memory_order_relaxed)),
+              static_cast<unsigned long long>(
+                  gpu_terrain_counters->overflow.load(std::memory_order_relaxed)));
           ImGui::Text("Resident %.1f MiB   cache %.1f MiB",
               static_cast<double>(diagnostics.resident_bytes)/(1024.0*1024.0),
               static_cast<double>(diagnostics.retained_cache_bytes)/
@@ -5939,6 +6023,15 @@ int main(int argc,char** argv) {
         command_buffer.label=@"TetWorld frame";
         if(metal_gpu_terrain_diagnostic&&gpu_terrain_extract_pipeline!=nil&&runtime&&
            !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
+          // This is the authority assertion for P5c2: the diagnostic buffers
+          // are never substituted into the CPU-published display front.
+          gpu_terrain_counters->cpu_front_frames.fetch_add(1U,
+              std::memory_order_relaxed);
+          if(scene_vertices!=terrain_display_front.exact_vertices||
+             terrain_display_front.indexed_exact_selection||
+             terrain_display_front.preview_cpu)
+            gpu_terrain_counters->cpu_front_violations.fetch_add(1U,
+                std::memory_order_relaxed);
           auto& slot=gpu_terrain_slots[gpu_terrain_slot_cursor++%gpu_terrain_slots.size()];
           const auto cells=runtime->world_surface_gpu_cells();
           const auto generation=diagnostics.scene_generation;
@@ -5947,6 +6040,8 @@ int main(int argc,char** argv) {
              cells.size()<=std::numeric_limits<std::uint32_t>::max()&&
              terrain_display_front.exact_vertex_count<=std::numeric_limits<std::uint32_t>::max()){
             const auto vertex_count=terrain_display_front.exact_vertex_count;
+            const auto expected_fingerprint=metal_terrain_fingerprint(
+                runtime->scene().triangle_vertices);
             slot.cells=[device newBufferWithBytes:cells.data()
                 length:cells.size()*sizeof(tetra::GpuTerrainCellRecord)
                 options:MTLResourceStorageModeShared];
@@ -5956,8 +6051,11 @@ int main(int argc,char** argv) {
             slot.indices=[device newBufferWithLength:vertex_count*sizeof(std::uint32_t)
                 options:MTLResourceStorageModeShared];
             if(slot.cells!=nil&&slot.output!=nil&&slot.indices!=nil){
+              std::memset(slot.output.contents,0,slot.output.length);
+              std::memset(slot.indices.contents,0,slot.indices.length);
               slot.scene_generation=generation;slot.render_origin=origin;
               slot.expected_vertices=static_cast<std::uint32_t>(vertex_count);
+              slot.expected_fingerprint=expected_fingerprint;
               slot.completed->store(false,std::memory_order_release);
               slot.succeeded->store(false,std::memory_order_release);slot.pending=true;
               const std::array<std::uint32_t,4> params{static_cast<std::uint32_t>(cells.size()),slot.expected_vertices,slot.expected_vertices,1U};
@@ -5968,9 +6066,37 @@ int main(int argc,char** argv) {
               [compute dispatchThreads:MTLSizeMake(cells.size(),1U,1U) threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];
               [compute endEncoding];
               const auto complete=slot.completed,success=slot.succeeded;
+              const auto counters=gpu_terrain_counters;
+              id<MTLBuffer> output=slot.output;
+              id<MTLBuffer> indices=slot.indices;
+              counters->dispatched.fetch_add(1U,std::memory_order_relaxed);
               [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> command){
-                const auto* header=static_cast<const std::uint32_t*>(slot.output.contents);
-                success->store(command.status==MTLCommandBufferStatusCompleted&&header!=nullptr&&header[0]==vertex_count&&header[5]==0U,std::memory_order_release);
+                const auto* header=static_cast<const std::uint32_t*>(output.contents);
+                const bool command_complete=
+                    command.status==MTLCommandBufferStatusCompleted;
+                const bool header_valid=header!=nullptr&&header[0]==vertex_count&&
+                    header[1]==1U&&header[6]==vertex_count;
+                const bool overflown=header!=nullptr&&header[5]!=0U;
+                if(overflown)counters->overflow.fetch_add(1U,
+                    std::memory_order_relaxed);
+                bool index_valid=header_valid&&!overflown;
+                const auto* result_indices=static_cast<const std::uint32_t*>(
+                    indices.contents);
+                if(result_indices==nullptr)index_valid=false;
+                for(std::uint32_t index=0U;index_valid&&index<vertex_count;++index)
+                  index_valid=result_indices[index]==index;
+                const auto* vertices=header==nullptr?nullptr:
+                    reinterpret_cast<const tetra_viewer::SceneVertex*>(header+8U);
+                const bool fingerprint_valid=vertices!=nullptr&&index_valid&&
+                    metal_terrain_fingerprint(std::span{vertices,
+                        static_cast<std::size_t>(vertex_count)})==
+                        expected_fingerprint;
+                const bool passed=command_complete&&header_valid&&!overflown&&
+                    index_valid&&fingerprint_valid;
+                if(!passed)counters->failed.fetch_add(1U,
+                    std::memory_order_relaxed);
+                counters->completed.fetch_add(1U,std::memory_order_relaxed);
+                success->store(passed,std::memory_order_release);
                 complete->store(true,std::memory_order_release);
               }];
             }
@@ -7286,6 +7412,16 @@ int main(int argc,char** argv) {
             (!motion_test||(motion_rendered_frames>=30U&&
                             !runtime_camera_interactive&&
                             diagnostics.converged&&!diagnostics.busy))&&
+            (!metal_gpu_terrain_diagnostic||(
+                gpu_terrain_counters->dispatched.load(std::memory_order_acquire)!=0U&&
+                gpu_terrain_counters->completed.load(std::memory_order_acquire)!=0U&&
+                gpu_terrain_counters->accepted.load(std::memory_order_acquire)!=0U&&
+                (!motion_test||gpu_terrain_counters->stale_rejected.load(
+                    std::memory_order_acquire)!=0U)&&
+                gpu_terrain_counters->failed.load(std::memory_order_acquire)==0U&&
+                gpu_terrain_counters->overflow.load(std::memory_order_acquire)==0U&&
+                gpu_terrain_counters->cpu_front_violations.load(
+                    std::memory_order_acquire)==0U))&&
             (!render_test||render_test_frames>=40U)&&
             (!metalfx_test||(metalfx_test_frames>=45U&&
                              diagnostics.converged&&!diagnostics.busy))&&
@@ -8162,24 +8298,81 @@ int main(int argc,char** argv) {
                   published_delta.x*published_delta.x+
                   published_delta.y*published_delta.y+
                   published_delta.z*published_delta.z);
+              const auto dispatched=gpu_terrain_counters->dispatched.load(
+                  std::memory_order_acquire);
+              const auto completed=gpu_terrain_counters->completed.load(
+                  std::memory_order_acquire);
+              const auto accepted=gpu_terrain_counters->accepted.load(
+                  std::memory_order_acquire);
+              const auto stale_rejected=gpu_terrain_counters->stale_rejected.load(
+                  std::memory_order_acquire);
+              const auto failed=gpu_terrain_counters->failed.load(
+                  std::memory_order_acquire);
+              const auto overflow=gpu_terrain_counters->overflow.load(
+                  std::memory_order_acquire);
+              const auto cpu_front_frames=gpu_terrain_counters->cpu_front_frames.load(
+                  std::memory_order_acquire);
+              const auto cpu_front_violations=
+                  gpu_terrain_counters->cpu_front_violations.load(
+                      std::memory_order_acquire);
+              const bool gpu_slots_passed=!metal_gpu_terrain_diagnostic||
+                  (dispatched!=0U&&completed!=0U&&accepted!=0U&&
+                   stale_rejected!=0U&&failed==0U&&overflow==0U&&
+                   cpu_front_frames!=0U&&cpu_front_violations==0U);
               const bool passed=distance>0.001&&
                   published_distance<1.0e-8&&diagnostics.converged&&
-                  !diagnostics.busy&&!runtime_camera_interactive;
+                  !diagnostics.busy&&!runtime_camera_interactive&&gpu_slots_passed;
               std::printf("{\"event\":\"metal_motion_smoke\","
                           "\"rendered_frames\":%zu,\"distance\":%.8f,"
                           "\"published_pose_error\":%.12f,"
                           "\"settled\":true,\"triangles\":%zu,"
+                          "\"gpu_slots\":{\"dispatched\":%llu,"
+                          "\"completed\":%llu,\"accepted\":%llu,"
+                          "\"stale_rejected\":%llu,\"failed\":%llu,"
+                          "\"overflow\":%llu,\"cpu_front_frames\":%llu,"
+                          "\"cpu_front_violations\":%llu},"
                           "\"passed\":%s}\n",
                           motion_rendered_frames,distance,
                           published_distance,scene_vertex_count/3U,
+                          static_cast<unsigned long long>(dispatched),
+                          static_cast<unsigned long long>(completed),
+                          static_cast<unsigned long long>(accepted),
+                          static_cast<unsigned long long>(stale_rejected),
+                          static_cast<unsigned long long>(failed),
+                          static_cast<unsigned long long>(overflow),
+                          static_cast<unsigned long long>(cpu_front_frames),
+                          static_cast<unsigned long long>(cpu_front_violations),
                           passed?"true":"false");
               if(!passed)result=1;
             }else{
+              const auto dispatched=gpu_terrain_counters->dispatched.load(
+                  std::memory_order_acquire);
+              const auto completed=gpu_terrain_counters->completed.load(
+                  std::memory_order_acquire);
+              const auto accepted=gpu_terrain_counters->accepted.load(
+                  std::memory_order_acquire);
+              const auto failed=gpu_terrain_counters->failed.load(
+                  std::memory_order_acquire);
+              const auto overflow=gpu_terrain_counters->overflow.load(
+                  std::memory_order_acquire);
+              const auto cpu_front_violations=
+                  gpu_terrain_counters->cpu_front_violations.load(
+                      std::memory_order_acquire);
               std::printf("{\"event\":\"metal_smoke\",\"device\":\"%s\","
-                          "\"scene_generation\":%llu,\"triangles\":%zu}\n",
+                          "\"scene_generation\":%llu,\"triangles\":%zu,"
+                          "\"gpu_slots\":{\"dispatched\":%llu,"
+                          "\"completed\":%llu,\"accepted\":%llu,"
+                          "\"failed\":%llu,\"overflow\":%llu,"
+                          "\"cpu_front_violations\":%llu}}\n",
                           device.name.UTF8String,
                           static_cast<unsigned long long>(uploaded_generation),
-                          scene_vertex_count/3U);
+                          scene_vertex_count/3U,
+                          static_cast<unsigned long long>(dispatched),
+                          static_cast<unsigned long long>(completed),
+                          static_cast<unsigned long long>(accepted),
+                          static_cast<unsigned long long>(failed),
+                          static_cast<unsigned long long>(overflow),
+                          static_cast<unsigned long long>(cpu_front_violations));
             }
           }else{
             std::fprintf(stderr,"Metal smoke frame failed: %s\n",
