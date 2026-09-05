@@ -332,4 +332,24 @@ GpuHierarchySelectionOutput gpu_hierarchy_selection_output(
   return result;
 }
 
+GpuHierarchyExtraction gpu_hierarchy_extract_full_tetrahedra(
+    const GpuHierarchySnapshot& snapshot,std::span<const std::uint32_t> selected_records) {
+  validate_gpu_hierarchy_snapshot(snapshot);GpuHierarchyExtraction result;
+  constexpr std::array<std::array<std::uint8_t,3>,4> faces{{{{1,2,3}},{{0,3,2}},{{0,1,3}},{{0,2,1}}}};
+  std::map<WorldFaceKey,std::pair<std::array<WorldVertexKey,3>,std::uint32_t>> boundary;
+  for(const auto index:selected_records) {
+    if(index>=snapshot.records.size())throw std::invalid_argument("GPU extraction index is invalid");
+    const auto keys=world_tetrahedron_vertex_keys(gpu_hierarchy_address_from_lanes(snapshot.records[index].address));
+    for(const auto face:faces) { std::array<WorldVertexKey,3> vertices{{keys[face[0]],keys[face[1]],keys[face[2]]}};
+      const auto key=world_face_key(vertices[0],vertices[1],vertices[2]);
+      if(const auto found=boundary.find(key);found==boundary.end())boundary.emplace(key,std::make_pair(vertices,index));
+      else boundary.erase(found);
+    }
+  }
+  std::map<WorldEdgeKey,std::uint32_t> edges;
+  for(const auto& [key,value]:boundary) { (void)key;result.triangles.push_back({value.first,value.second});
+    for(std::size_t a=0;a<3U;++a)edges.try_emplace(world_edge_key(value.first[a],value.first[(a+1U)%3U]),value.second); }
+  for(const auto& [edge,owner]:edges)result.edges.push_back({edge,owner});return result;
+}
+
 }  // namespace tetra

@@ -5094,6 +5094,12 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   CHECK(clipped.overflow== (first.selected_records.size()>1U));
   CHECK(clipped.indices.size()<=1U);
   CHECK(clipped.attempted_count==first.selected_records.size());
+  const auto extracted=tetra::gpu_hierarchy_extract_full_tetrahedra(snapshot,first.selected_records);
+  CHECK_FALSE(extracted.triangles.empty());
+  CHECK_FALSE(extracted.edges.empty());
+  const std::array<std::uint32_t,1> invalid_index{{tetra::gpu_hierarchy_invalid_index}};
+  CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_extract_full_tetrahedra(
+      snapshot,invalid_index)),std::invalid_argument);
   CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_traverse(snapshot,
       {.pixel_threshold=0.0})),std::invalid_argument);
 }

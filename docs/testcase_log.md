@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 09:50 CEST | pass, GPU hierarchy extractor closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 482/482 tests passed in 505.93 s; exact-key boundary face cancellation and wire-edge extraction passed focused coverage.
+
+- 2026-09-05 09:44 CEST | fail, GPU extractor implementation | mode: fresh Release build | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_tests` | notes: test passed a scalar instead of the extractor's selected-index span; corrected before focused rerun.
+
 - 2026-09-05 07:53 CEST | pass, GPU hierarchy selection-output closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 482/482 tests passed in 489.67 s; bounded selected-index output reports attempted count, overflow, and indirect arguments without a readback path.
 
 - 2026-09-05 07:34 CEST | pass, immutable GPU hierarchy traversal closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 482/482 tests passed in 479.55 s; the new traversal oracle regression proves deterministic selection, conservative field-forced refinement, depth termination, frustum rejection, and invalid-parameter rejection.

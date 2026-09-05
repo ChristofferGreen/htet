@@ -98,6 +98,9 @@ struct GpuHierarchySelectionOutput {
   std::uint32_t attempted_count{};
   bool overflow{};
 };
+struct GpuHierarchyExtractedTriangle { std::array<WorldVertexKey,3> vertices{}; std::uint32_t owner{}; };
+struct GpuHierarchyExtractedEdge { WorldEdgeKey edge{}; std::uint32_t owner{}; };
+struct GpuHierarchyExtraction { std::vector<GpuHierarchyExtractedTriangle> triangles; std::vector<GpuHierarchyExtractedEdge> edges; };
 
 [[nodiscard]] std::array<std::uint32_t,4> gpu_hierarchy_address_lanes(
     WorldTetAddress address) noexcept;
@@ -120,5 +123,7 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
     const GpuHierarchyTraversalParameters& parameters);
 [[nodiscard]] GpuHierarchySelectionOutput gpu_hierarchy_selection_output(
     const GpuHierarchyTraversalResult& traversal,std::uint32_t capacity);
+[[nodiscard]] GpuHierarchyExtraction gpu_hierarchy_extract_full_tetrahedra(
+    const GpuHierarchySnapshot& snapshot,std::span<const std::uint32_t> selected_records);
 
 }  // namespace tetra

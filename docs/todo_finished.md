@@ -2,6 +2,11 @@
 
 ## 2026-09-05
 
+- [x] Add exact selected-tetrahedron boundary extraction and wire-edge emission
+  to the GPU hierarchy oracle. Faces cancel by exact dyadic keys and retained
+  boundary edges deduplicate by canonical keys, with no float equality. This
+  is a host-side reference only; no GPU shader or renderer path is enabled.
+
 - [x] Define bounded device-style selection output. The traversal result now
   packs a capacity-limited selected-index stream, attempted count, overflow
   bit, and standard indirect-draw arguments without a normal-frame readback.

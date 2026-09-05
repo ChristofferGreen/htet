@@ -1053,7 +1053,6 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Implement the first exact GPU surface extractor and edge emitter.
 - [ ] Add Vulkan barriers and frame-buffering so compute results feed the draw
   without waiting on the CPU or overwriting in-flight data.
 - [ ] Add the **Realtime GPU surface LOD** checkbox, capability gating,
