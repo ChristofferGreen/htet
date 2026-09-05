@@ -1118,19 +1118,28 @@ that work.
   tuple buffer; it is written only after that slot's fence and explicitly
   synchronized before compute. Invalid, absent, or revision-mismatched tuples
   suppress GPU selection and retain the CPU route.
-- [ ] **P4c — Cross-backend three-term selection parity.** Implement the
-  production projected-edge, field-error, and limb-sagitta selector over
-  P4a/P4b inputs with one shader-visible ABI shared by Vulkan and Metal. Begin
-  at roots or active blocks, reject subtrees, visit only reachable relevant
-  nodes, and never select both an ancestor and descendant; a flat invocation
-  over every resident record fails this leaf even if its addresses match.
-  Require selected-address parity with the CPU quantized-input oracle outside
-  a defined floating-point threshold band; inside the band, require the
-  specified deterministic GPU tie rule and Vulkan/Metal agreement. Cover fixed,
-  moving, near-surface, orbital, rebase, and terrain-replacement cases, and
-  report visited/rejected/selected work. This produces a bounded candidate-
-  address frontier, not a drawable surface. CPU BCC closure remains
-  authoritative.
+- [ ] **P4c — Hierarchical three-term selection parity.** This tracker has two
+  ordered leaves: proving traversal and its oracle in Vulkan first prevents a
+  flat classifier or a duplicated unverified backend implementation from being
+  mistaken for hierarchy traversal.
+  - [ ] **P4c1 — Vulkan traversal and CPU oracle.** Implement the production
+    projected-edge, field-error, and limb-sagitta selector over P4a/P4b inputs
+    as a root/active-block work-list traversal of immutable hierarchy records.
+    It must reject subtrees conservatively, visit only reachable relevant
+    nodes, never select an ancestor and descendant together, and report
+    visited/rejected/selected work. Add a quantized CPU oracle and regressions
+    for fixed, moving, near-surface, orbital, rebase, terrain replacement, and
+    threshold-band inputs. Outside the defined floating-point threshold band,
+    selected addresses match exactly; within it, Vulkan uses the documented
+    deterministic tie rule. Its bounded candidate frontier is not drawable;
+    CPU BCC closure remains authoritative.
+  - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
+    selector through the existing SPIR-V-to-MSL path, preserving immutable
+    record layout, tuple revisioning, capacities, barriers, overflow rejection,
+    counters, and the threshold tie rule. Require selected-address agreement
+    between Vulkan and Metal, including threshold-band cases. Stale, malformed,
+    unavailable, or overflowed work retains CPU selection. P5 remains the
+    separate enablement leaf for the terrain extraction shader and its buffers.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
 provides the CPU-side breakdown and canonical hashes required for the first

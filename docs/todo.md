@@ -353,17 +353,26 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P4c — Cross-backend three-term selection parity.** Implement the
-      projected-edge, field-error, and limb-sagitta selector with one shared
-      shader ABI for Vulkan and Metal as an actual root/active-block hierarchy
-      traversal. Do not dispatch once per resident record. Reject subtrees
-      conservatively, never select both an ancestor and its descendant, and
-      report visited/rejected/selected counts. Require exact selected-address
-      parity with the quantized CPU oracle outside a defined floating-point
-      threshold band; inside the band, require the specified deterministic GPU
-      tie rule and Vulkan/Metal agreement. Cover fixed, moving, near-surface,
-      orbital, rebase, and terrain-replacement cases. Its output is a bounded
-      candidate-address frontier, not yet a drawable surface.
+- [ ] **P4c — Hierarchical three-term selection parity.** This tracker is
+      deliberately split: a flat per-record classifier is not an acceptable
+      partial implementation, and Metal parity must follow a proven Vulkan
+      traversal rather than duplicate an unverified design.
+  - [ ] **P4c1 — Vulkan traversal and CPU oracle.** Implement projected-edge,
+        field-error, and limb-sagitta selection as a root/active-block work-list
+        traversal over immutable hierarchy records. Conservatively reject whole
+        subtrees; never select both an ancestor and a descendant; and expose
+        visited, rejected, and selected counts. Add a quantized CPU oracle and
+        regression cases for fixed, moving, near-surface, orbital, rebase,
+        terrain-replacement, and threshold-band inputs. Outside the defined
+        floating-point threshold band, selected addresses must match exactly;
+        within it, Vulkan must use the documented deterministic tie rule. The
+        result is a bounded candidate-address frontier, not a drawable surface.
+  - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate and run the
+        proven selector through the existing SPIR-V-to-MSL path with the same
+        immutable records, tuple revisions, capacities, barriers, overflow
+        rejection, threshold tie rule, and counters. Require Vulkan/Metal
+        selected-address agreement, including threshold-band cases, while stale,
+        malformed, unavailable, or overflowed work retains the CPU route.
 - [ ] **P5 — Establish Metal terrain-compute parity.** Build and translate
       `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
       SPIR-V-to-MSL pipeline. Add slot-local buffers, revision matching,
