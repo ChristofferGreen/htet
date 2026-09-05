@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 21:05 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 488 tests passed after cumulative Vulkan selector dispatch accounting.
+
 - 2026-09-05 20:55 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` and `scripts/qualify_gpu_lod_selector.sh` | failures: none | notes: all 488 tests passed; hidden Vulkan selector camera corpus completed ten fixed/motion/threshold/terrain cases with zero mismatches and no overflow.
 
 - 2026-09-05 20:32 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 488 tests passed after P4c1b2a; the rebuilt hidden Vulkan selector diagnostic also passed with zero mismatches and no overflow.

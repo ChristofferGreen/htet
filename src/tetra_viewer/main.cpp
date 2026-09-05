@@ -5210,6 +5210,10 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.gpu_lod_dispatch_status().rejected_records
                         <<",\"oracle_mismatches\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().oracle_mismatches
+                        <<",\"completed_dispatches\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().completed_dispatches
+                        <<",\"failed_dispatches\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().failed_dispatches
                         <<",\"dispatched\":"
                         <<(g_SceneRenderer.gpu_lod_dispatch_status().dispatched?"true":"false")
                         <<",\"overflow\":"

@@ -21,7 +21,8 @@ run_case() {
   local line
   line=$(printf '%s\n' "$output" | rg '"event":"gpu_atmosphere_benchmark"' | tail -n 1)
   if [[ -z "$line" ]] || ! grep -q '"oracle_matches":true' <<<"$line" ||
-     ! grep -q '"overflow":false' <<<"$line"; then
+     ! grep -q '"overflow":false' <<<"$line" ||
+     ! grep -q '"failed_dispatches":0' <<<"$line"; then
     echo "GPU LOD parity failed: $name" >&2
     printf '%s\n' "$output" >&2
     exit 1

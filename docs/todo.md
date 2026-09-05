@@ -373,7 +373,7 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         readback canonicalizes the Vulkan address stream and reports mismatch
         counts; the hidden fixed run selected 106,614 addresses with zero
         mismatches and no overflow.
-  - [ ] **P4c1b2b2 — Boundary/rebase corpus accounting.** Synthesize
+  - [ ] **P4c1b2b2b — Boundary/rebase corpus accounting.** Synthesize
         just-below/in-band/just-above boundaries for each term plus equal-
         maximum/two-term ties, and prove frame-by-frame parity during an explicit
         render-origin rebase. Record tuple identity, selected/visited/rejected,

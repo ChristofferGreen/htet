@@ -2,6 +2,12 @@
 
 ## 2026-09-05
 
+- [x] **P4c1b2b2a — Cumulative Vulkan dispatch accounting.** The diagnostic
+  now exposes completed and failed selector dispatch totals; any oracle
+  mismatch or overflow increments the failure total. The hidden corpus requires
+  zero failed dispatches, preventing its final matching frame from masking an
+  earlier failure. Release validation passed 488/488.
+
 - [x] **P4c1b2b1 — Repeatable Vulkan camera corpus.** Added the hidden
   `scripts/qualify_gpu_lod_selector.sh` runner, which launches the rebuilt
   Vulkan diagnostic against fixed, edge/field/limb threshold sweep, scripted

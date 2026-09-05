@@ -2114,8 +2114,11 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
             std::max(device.size(),expected.size())-common);
         oracle_matches=mismatches==0U;
       }
+      ++gpu_lod_completed_dispatches_;
+      if(overflow||!oracle_matches)++gpu_lod_failed_dispatches_;
       gpu_lod_dispatch_status_={gpu_lod_output.revision,gpu_lod_output.record_count,
-          std::min(result[0],1048576U),result[1],result[2],mismatches,true,
+          std::min(result[0],1048576U),result[1],result[2],mismatches,
+          gpu_lod_completed_dispatches_,gpu_lod_failed_dispatches_,true,
           overflow,oracle_matches};
     }
     gpu_lod_output.pending=false;

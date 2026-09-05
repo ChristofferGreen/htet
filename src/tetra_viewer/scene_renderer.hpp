@@ -85,6 +85,8 @@ struct GpuLodDispatchStatus {
   std::uint32_t visited_records{};
   std::uint32_t rejected_records{};
   std::uint32_t oracle_mismatches{};
+  std::uint32_t completed_dispatches{};
+  std::uint32_t failed_dispatches{};
   bool dispatched{};
   bool overflow{};
   bool oracle_matches{};
@@ -377,6 +379,8 @@ class SceneRenderer {
   std::optional<tetra::GpuHierarchySelectionTuple> gpu_lod_selection_tuple_;
   std::optional<tetra::GpuHierarchySnapshot> gpu_lod_snapshot_;
   std::uint64_t gpu_lod_selection_tuple_generation_{};
+  std::uint32_t gpu_lod_completed_dispatches_{};
+  std::uint32_t gpu_lod_failed_dispatches_{};
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
   std::uint64_t gpu_lod_uploaded_revision_{};
