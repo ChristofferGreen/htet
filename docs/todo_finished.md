@@ -2,6 +2,13 @@
 
 ## 2026-09-05
 
+- [x] **P5c1 — Capture one completed CPU front through Metal extraction.** A
+  hidden headless runtime fixture waits for the real asynchronous CPU
+  publication and dispatches the immutable 448-byte cells at its captured
+  revision/origin. It matched count, position/normal and triangle multisets,
+  and linear indices for 36,165 cells / 545,112 vertices. It creates no window,
+  interactive renderer buffers, or GPU draw; P5c2 owns those slots and fallback.
+
 - [x] **P5b — Dispatch legacy-payload extraction in a Metal fixture.** Added a
   hidden hardware compute fixture for the translated extractor. It proves full
   18-float vertex payload, triangle, linear index, header, and execution-count

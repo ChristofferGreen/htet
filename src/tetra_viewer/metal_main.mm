@@ -49,6 +49,7 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1314,6 +1315,132 @@ bool run_metal_gpu_terrain_extract_smoke_test(id<MTLDevice> device) {
   if(!dispatch({},0U,false,false,0U)){std::fprintf(stderr,"Metal terrain fixture empty case failed\n");return false;}
   std::printf("{\"event\":\"metal_gpu_terrain_extract\","
               "\"cases\":4,\"vertices\":36,\"passed\":true}\n");
+  return true;
+}
+
+// P5c1 consumes the same asynchronous CPU publication used by the application
+// but remains a headless readback qualification.  In particular, it does not
+// create a GLFW window, alter MetalTerrainDisplayFront, or make GPU output
+// eligible for a draw.
+bool run_metal_gpu_terrain_runtime_smoke_test(id<MTLDevice> device) {
+  auto runtime=tetra_viewer::make_production_terrain_runtime();
+  runtime->set_gpu_terrain_extraction_diagnostic(true);
+  tetra::Camera camera;
+  camera.position={0.5,0.72,0.68};camera.forward={0.0,-0.2,-1.0};
+  runtime->set_camera(camera,false);
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(120);
+  while(std::chrono::steady_clock::now()<deadline){
+    static_cast<void>(runtime->update());
+    const auto diagnostics=runtime->diagnostics();
+    if(diagnostics.converged&&!diagnostics.busy&&
+       !runtime->world_surface_gpu_cells().empty()&&
+       !runtime->scene().triangle_vertices.empty())break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto diagnostics=runtime->diagnostics();
+  const auto cells=runtime->world_surface_gpu_cells();
+  const auto& scene=runtime->scene();
+  const auto* directory=runtime->world_cut_directory();
+  const auto origin=runtime->render_origin();
+  // Every identity is captured after the same completed publication.  This is
+  // deliberately checked before allocating or encoding GPU work so a stale or
+  // origin-shifted packet has no path to become a future drawable result.
+  if(!diagnostics.converged||diagnostics.busy||cells.empty()||
+     scene.triangle_vertices.empty()||directory==nullptr||
+     diagnostics.scene_generation==0U||origin.x!=scene.render_origin.x||
+     origin.y!=scene.render_origin.y||origin.z!=scene.render_origin.z){
+    std::fprintf(stderr,"Metal runtime terrain fixture unavailable: converged=%u busy=%u cells=%zu vertices=%zu directory=%p revision=%llu origin=%g,%g,%g scene=%g,%g,%g\n",
+        diagnostics.converged,diagnostics.busy,cells.size(),scene.triangle_vertices.size(),
+        static_cast<const void*>(directory),static_cast<unsigned long long>(diagnostics.scene_generation),
+        origin.x,origin.y,origin.z,scene.render_origin.x,scene.render_origin.y,scene.render_origin.z);
+    return false;
+  }
+  const std::uint64_t source_revision=diagnostics.scene_generation;
+  if(source_revision==0U){std::fprintf(stderr,"Metal runtime terrain fixture has zero source revision\n");return false;}
+
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_terrain_extract.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  if(pipeline==nil){std::fprintf(stderr,"Metal runtime terrain fixture pipeline unavailable\n");return false;}
+  static_assert(sizeof(tetra_viewer::SceneVertex)==sizeof(float)*18U);
+  const std::size_t vertex_count=scene.triangle_vertices.size();
+  if(vertex_count>std::numeric_limits<std::uint32_t>::max()||
+     cells.size()>std::numeric_limits<std::uint32_t>::max()){std::fprintf(stderr,"Metal runtime terrain fixture input too large\n");return false;}
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:length
+        options:MTLResourceStorageModeShared];
+  };
+  std::vector<std::byte> output_bytes(sizeof(std::uint32_t)*8U+
+      vertex_count*sizeof(tetra_viewer::SceneVertex));
+  std::vector<std::uint32_t> index_bytes(vertex_count);
+  id<MTLBuffer> cell_buffer=make_buffer(cells.data(),
+      cells.size()*sizeof(tetra::GpuTerrainCellRecord));
+  id<MTLBuffer> output_buffer=make_buffer(output_bytes.data(),output_bytes.size());
+  id<MTLBuffer> index_buffer=make_buffer(index_bytes.data(),
+      index_bytes.size()*sizeof(index_bytes.front()));
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  const std::array<std::uint32_t,4> parameters{
+      static_cast<std::uint32_t>(cells.size()),static_cast<std::uint32_t>(vertex_count),
+      static_cast<std::uint32_t>(vertex_count),1U};
+  if(cell_buffer==nil||output_buffer==nil||index_buffer==nil||queue==nil){std::fprintf(stderr,"Metal runtime terrain fixture buffers unavailable\n");return false;}
+  id<MTLCommandBuffer> command=[queue commandBuffer];
+  id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:pipeline];
+  [encoder setBuffer:output_buffer offset:0U atIndex:0U];
+  [encoder setBuffer:index_buffer offset:0U atIndex:1U];
+  [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+  [encoder setBuffer:cell_buffer offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(cells.size(),1U,1U)
+       threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];
+  [encoder endEncoding];[command commit];[command waitUntilCompleted];
+  if(command.status!=MTLCommandBufferStatusCompleted){std::fprintf(stderr,"Metal runtime terrain fixture command failed\n");return false;}
+  const auto* header=static_cast<const std::uint32_t*>(output_buffer.contents);
+  if(header==nullptr||header[0]!=vertex_count||header[1]!=1U||header[5]!=0U||
+     header[6]!=vertex_count){std::fprintf(stderr,"Metal runtime terrain fixture header %u %u %u %u expected %zu\n",header==nullptr?0U:header[0],header==nullptr?0U:header[1],header==nullptr?0U:header[5],header==nullptr?0U:header[6],vertex_count);return false;}
+  const auto* output=reinterpret_cast<const tetra_viewer::SceneVertex*>(header+8U);
+  const auto canonical_position_normals=[](
+      std::span<const tetra_viewer::SceneVertex> vertices){
+    std::vector<std::array<std::uint32_t,6>> result;result.reserve(vertices.size());
+    for(const auto& vertex:vertices){
+      result.push_back({std::bit_cast<std::uint32_t>(vertex.position[0]),
+          std::bit_cast<std::uint32_t>(vertex.position[1]),
+          std::bit_cast<std::uint32_t>(vertex.position[2]),
+          std::bit_cast<std::uint32_t>(vertex.normal[0]),
+          std::bit_cast<std::uint32_t>(vertex.normal[1]),
+          std::bit_cast<std::uint32_t>(vertex.normal[2])});
+    }
+    std::ranges::sort(result);return result;
+  };
+  const auto canonical_triangles=[](std::span<const tetra_viewer::SceneVertex> vertices){
+    using Position=std::array<std::uint32_t,3>;
+    std::vector<std::array<Position,3>> result;result.reserve(vertices.size()/3U);
+    for(std::size_t first=0U;first<vertices.size();first+=3U){
+      std::array<Position,3> triangle{};
+      for(std::size_t corner=0U;corner<3U;++corner)triangle[corner]={
+          std::bit_cast<std::uint32_t>(vertices[first+corner].position[0]),
+          std::bit_cast<std::uint32_t>(vertices[first+corner].position[1]),
+          std::bit_cast<std::uint32_t>(vertices[first+corner].position[2])};
+      std::ranges::sort(triangle);result.push_back(triangle);
+    }
+    std::ranges::sort(result);return result;
+  };
+  if(canonical_position_normals(std::span{output,vertex_count})!=
+     canonical_position_normals(scene.triangle_vertices)||
+     canonical_triangles(std::span{output,vertex_count})!=
+     canonical_triangles(scene.triangle_vertices)){
+    std::fprintf(stderr,"Metal runtime terrain fixture geometry mismatch\n");return false;}
+  const auto* indices=static_cast<const std::uint32_t*>(index_buffer.contents);
+  if(indices==nullptr){std::fprintf(stderr,"Metal runtime terrain fixture index map unavailable\n");return false;}
+  for(std::uint32_t index=0U;index<vertex_count;++index)
+    if(indices[index]!=index){std::fprintf(stderr,"Metal runtime terrain fixture index mismatch\n");return false;}
+  std::printf("{\"event\":\"metal_gpu_terrain_runtime\","
+              "\"source_revision\":%llu,\"cells\":%zu,"
+              "\"vertices\":%zu,\"passed\":true}\n",
+              static_cast<unsigned long long>(source_revision),cells.size(),vertex_count);
   return true;
 }
 
@@ -3446,6 +3573,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
   const bool gpu_terrain_extract_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
+  const bool gpu_terrain_runtime_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -3707,7 +3836,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -3720,6 +3849,7 @@ int main(int argc,char** argv) {
                         "--metal-atmosphere-compiler-check|"
                         "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
+                        "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
                         "--metal-atmosphere-capture <path.ppm>|"
@@ -3775,6 +3905,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
     if(gpu_terrain_extract_smoke_test)
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
+    if(gpu_terrain_runtime_smoke_test)
+      return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
       for(std::size_t mode=0;mode<=16U;++mode){
         const auto path=std::filesystem::path(

@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 00:15 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 492 tests passed in 596.80 seconds, including the hidden Metal published-front runtime extraction fixture.
+
+- 2026-09-06 00:02 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain runtime parity$'` | failures: none | notes: the hidden published-front fixture matched the actual CPU scene for 36,165 cells / 545,112 vertices in 18.05 seconds.
+
 - 2026-09-05 23:52 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 491 tests passed in 584.32 seconds; the new hidden Metal terrain-extraction parity fixture passed its valid, overflow, malformed-root, and empty-packet cases.
 
 - 2026-09-05 23:35 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 490 tests passed in 622.56 seconds after adding the translated Metal terrain-extractor compiler gate and raising the finite recovery-test polling bound.

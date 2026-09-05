@@ -70,6 +70,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The hidden Metal extractor fixture binds the legacy 448-byte `GpuTerrainCellRecord` ABI as cells=3, output=0, indices=1, parameters=2 and accepts only exact 18-float payload/index parity or an explicit fail-closed outcome.
 - Evidence: The fixture's three-crossing and four-crossing packets match the CPU oracle, while insufficient capacity, a missing crossing root, and an empty packet satisfy the overflow or zero-output contract; the 491-test Release gate passed.
 
+### gpu-terrain-extraction-metal-runtime
+- Updated: 2026-09-06
+- Tags: metal, terrain, extraction, runtime, parity
+- Fact: The hidden Metal runtime capture can only dispatch an immutable legacy cell packet after one asynchronous CPU publication has converged and its scene generation and render origin are captured together.
+- Evidence: The fixture consumed 36,165 cells from a completed production front, matched count, position/normal and triangle multisets plus every linear index for 545,112 vertices, and the 492-test Release gate passed.
+
 ### gpu-terrain-geometry-gate
 - Updated: 2026-09-05
 - Tags: terrain, gpu, parity, vulkan

@@ -1420,12 +1420,14 @@ topology, and complete-frame gates.
     overflow bit without exceeding its backing buffers; a missing crossing
     root fails closed; an empty packet emits no payload. This test owns no
     interactive renderer resources.
-  - [ ] **P5c1 — Completed CPU-front runtime capture.** Use the existing
-    background CPU production publication runtime in a hidden fixture; wait for
-    one exact completed front, then dispatch P5b's legacy cells and compare the
-    completed command-buffer payload with that front at its immutable revision
-    and render origin. Mismatched identity or capacity must fail closed. This
-    leaf owns no interactive renderer buffers or draw.
+  - [x] **P5c1 — Completed CPU-front runtime capture.** A hidden fixture now
+    enables the existing asynchronous CPU publication diagnostic, waits for a
+    completed exact front, and dispatches its immutable legacy cells at the
+    captured source revision and render origin. The command-buffer result must
+    match count, position/normal multiset, triangle multiset, and linear index
+    stream of that CPU scene; any incomplete, identity-invalid, overflowing, or
+    failed command returns false before a drawable object exists. The fixed
+    production capture validated 36,165 cells and 545,112 vertices.
   - [ ] **P5c2 — Interactive slot and fallback qualification.** Connect P5c1's
     capture contract to actual Metal per-frame slots, command ordering,
     revision matching, and stale-work rejection under fixed and moving hidden

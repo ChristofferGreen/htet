@@ -357,14 +357,6 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       translates and qualifies the selector. This tracker is deliberately
       split so static shader translation, buffer lifetime, and full rendered
       output cannot be mistaken for one another.
-  - [ ] **P5c1 — Capture one completed CPU front through Metal extraction.** In
-        a hidden headless runtime fixture, enable the existing CPU production
-        publication diagnostic, wait for one exact published display revision,
-        and dispatch P5b's kernel from its immutable legacy cells. Acceptance:
-        the completed command buffer's count, positions, normals, triangles,
-        and indices match that exact CPU scene, with a revision/origin mismatch
-        or overflow failing closed. Stop rule: no interactive renderer buffers
-        or GPU draw are introduced.
   - [ ] **P5c2 — Qualify interactive runtime slots and fallback.** Drive P5c1
         through actual per-frame slot ownership, command-buffer ordering,
         revision matching, moving-camera stale-work rejection, and CPU fallback.
