@@ -5061,6 +5061,22 @@ TEST_CASE("GPU terrain cell records preserve authoritative conforming corners") 
     CHECK(records.front().corners[corner][2]==doctest::Approx(world.z-0.5));
     CHECK(records.front().corners[corner][3]==doctest::Approx(field.signed_distance(world)));
   }
+  constexpr std::array<std::array<std::size_t,2>,6> gpu_edges{{
+      {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+  for(std::size_t edge=0;edge<gpu_edges.size();++edge){
+    const auto pair=gpu_edges[edge];
+    const auto first=domain.to_world(source.positions[pair[0]]);
+    const auto second=domain.to_world(source.positions[pair[1]]);
+    if((field.signed_distance(first)<0.0)==(field.signed_distance(second)<0.0))
+      CHECK(records.front().edge_roots[edge][3]==0.0F);
+    else{
+      const auto root=field.edge_intersection(first,second);
+      CHECK(records.front().edge_roots[edge][0]==doctest::Approx(root.x-0.5));
+      CHECK(records.front().edge_roots[edge][1]==doctest::Approx(root.y-0.5));
+      CHECK(records.front().edge_roots[edge][2]==doctest::Approx(root.z-0.5));
+      CHECK(records.front().edge_roots[edge][3]==1.0F);
+    }
+  }
 }
 
 TEST_CASE("GPU hierarchy lane arithmetic carries across 64-bit boundaries") {
@@ -5960,7 +5976,7 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
   REQUIRE_FALSE(gpu_candidates.blocks.empty());
   CHECK(gpu_candidates.blocks.front()->cells.size()==gpu_candidates.cells);
   const auto gpu_records=tetra_viewer::make_gpu_surface_candidate_cell_records(
-      direct_cache,domain,{});
+      direct_cache,domain,sphere,{});
   std::size_t expected_gpu_nonempty_cells{};
   constexpr std::array<std::array<std::size_t,2>,6> gpu_edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};

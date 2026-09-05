@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain vertex-count parity is insufficient; completed slot output must at least match CPU prepared-surface relative-position bounds at the identical render origin before indirect drawing is eligible.
 - Evidence: The count-matched 56,712-vertex linear diagnostic fails this readback-bound comparison, proving that its interpolation cannot be promoted as visual parity.
 
+### gpu-terrain-root-transport
+- Updated: 2026-09-05
+- Tags: terrain, gpu, roots, parity
+- Fact: Compact GPU terrain records carry six canonical globally keyed CPU edge roots, and a cache miss may only recompute through the identical CPU root oracle on the background publication worker.
+- Evidence: The Release root-record regression verifies exact sphere roots; the production Vulkan diagnostic consumed the expanded record without overflow while preserving the 56,712 vertex count.
+
 ### gpu-terrain-source-corpus
 - Updated: 2026-09-05
 - Tags: terrain, gpu, bcc, surface-cache

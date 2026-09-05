@@ -4498,6 +4498,7 @@ tetra::WorldBlockedConformingVolume make_surface_candidate_conforming_volume(
 std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records(
     const SparseWorldSurfaceCache& cache,
     const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Sphere& field,
     tetra::Vec3 render_origin) {
   std::vector<tetra::GpuTerrainCellRecord> result;
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
@@ -4514,6 +4515,7 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
               geometry->address==certificate.owner?geometry->vertices:
           tetra::world_tetrahedron_vertex_keys(certificate.owner);
       std::array<tetra::Vec3,10> points{};
+      std::array<tetra::WorldVertexKey,10> point_keys{};
       for(std::size_t point=0;point<points.size();++point) {
         if(tetra::grande_point_vertex[point]!=0xffU) {
           const auto vertex=tetra::grande_point_vertex[point];
@@ -4523,9 +4525,11 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
                                     -keys[vertex].denominator_exponent),
                          std::ldexp(static_cast<double>(keys[vertex].z),
                                     -keys[vertex].denominator_exponent)};
+          point_keys[point]=keys[vertex];
         }else {
           const auto edge=edges[tetra::grande_point_edge[point]];
           points[point]=(points[edge[0]]+points[edge[1]])/2.0;
+          point_keys[point]=tetra::world_vertex_key(points[point]);
         }
       }
       const auto& green=tetra::complete_green_template(certificate.green_mask);
@@ -4551,6 +4555,28 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
           record.corners[corner]={static_cast<float>(relative.x),
               static_cast<float>(relative.y),static_cast<float>(relative.z),
               (certificate.negative_grande_points&(1U<<point))!=0U?-1.0F:1.0F};
+        }
+        for(std::size_t edge=0;edge<edges.size();++edge){
+          const auto pair=edges[edge];
+          const auto first=indices[pair[0]],second=indices[pair[1]];
+          const bool first_negative=(certificate.negative_grande_points&
+              (1U<<first))!=0U;
+          const bool second_negative=(certificate.negative_grande_points&
+              (1U<<second))!=0U;
+          if(first_negative==second_negative)continue;
+          const auto key=tetra::world_edge_intersection_key(
+              point_keys[first],point_keys[second]);
+          const auto found=std::ranges::lower_bound(
+              cache.intersections,key,{},&tetra::WorldSurfaceVertex::key);
+          // Render-block eviction may retire an otherwise valid raw crossing.
+          // Recompute only then, with the same bisection/analytic oracle as
+          // CPU extraction and still wholly inside the publication worker.
+          const auto root=found!=cache.intersections.end()&&found->key==key?
+              found->position:field.edge_intersection(
+                  domain.to_world(points[first]),domain.to_world(points[second]));
+          const auto root_relative=root-render_origin;
+          record.edge_roots[edge]={static_cast<float>(root_relative.x),
+              static_cast<float>(root_relative.y),static_cast<float>(root_relative.z),1.0F};
         }
         result.push_back(record);
       }

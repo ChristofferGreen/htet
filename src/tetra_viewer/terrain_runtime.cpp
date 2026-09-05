@@ -2413,7 +2413,7 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     // This performs no new cut selection or closure reconstruction.  It is
     // intentionally executed by the publication worker, never the presenter.
     gpu_surface_cells=make_gpu_surface_candidate_cell_records(surface_cache,
-        profile.domain,prepared.scene.render_origin);
+        profile.domain,field,prepared.scene.render_origin);
   // Keep the closure's requested cut, green masks, causal proofs and immutable
   // dependency blocks only for a bounded-frontier transaction. The next slice
   // consumes its exact changed-owner/block manifest; the unsliced profile may

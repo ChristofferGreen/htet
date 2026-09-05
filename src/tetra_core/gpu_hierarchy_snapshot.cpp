@@ -295,6 +295,19 @@ std::vector<GpuTerrainCellRecord> make_gpu_terrain_cell_records(
           static_cast<float>(relative.y),static_cast<float>(relative.z),
           static_cast<float>(distance)};
     }
+    constexpr std::array<std::array<std::size_t,2>,6> edges{{
+        {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
+    for(std::size_t edge=0;edge<edges.size();++edge){
+      const auto pair=edges[edge];
+      if((record.corners[pair[0]][3]<0.0F)==
+         (record.corners[pair[1]][3]<0.0F))continue;
+      const auto root=field.edge_intersection(
+          domain.to_world(cell.positions[pair[0]]),
+          domain.to_world(cell.positions[pair[1]]));
+      const auto relative=root-render_origin;
+      record.edge_roots[edge]={static_cast<float>(relative.x),
+          static_cast<float>(relative.y),static_cast<float>(relative.z),1.0F};
+    }
     result.push_back(record);
   }
   if(result.size()!=volume.cells)

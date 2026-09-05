@@ -1,7 +1,8 @@
 #version 450
 
 // Immutable `GpuTerrainCellRecord`: four vec4(position_relative_world,
-// signed_distance) values. Output starts with VkDrawIndexedIndirectCommand
+// cached_sign) values followed by six exact keyed edge-root vec4 values.
+// Output starts with VkDrawIndexedIndirectCommand
 // (five words), followed by an overflow word. Vertices are packed as the
 // existing 18-float SceneVertex layout.
 layout(std430,binding=0) readonly buffer Cells { vec4 cells[]; } input_cells;
@@ -35,13 +36,17 @@ void put_vertex(uint index,vec3 position,vec3 normal,vec3 barycentric){
 void main(){
   uint cell=gl_GlobalInvocationID.x;
   if(cell>=parameters.cell_count)return;
-  vec4 corners[4];for(uint i=0u;i<4u;++i)corners[i]=input_cells.cells[cell*4u+i];
+  // Ten vec4 values per record: four classified corners followed by the six
+  // CPU-authoritative keyed roots in canonical tetrahedron-edge order.
+  const uint cell_base=cell*10u;
+  vec4 corners[4];for(uint i=0u;i<4u;++i)corners[i]=input_cells.cells[cell_base+i];
   vec3 hits[4];uint count=0u;
   for(uint edge=0u;edge<6u;++edge){
     ivec2 e=edges[edge];float a=corners[e.x].w,b=corners[e.y].w;
     if((a<=0.0)==(b<=0.0))continue;
-    float t=clamp(a/(a-b),0.0,1.0);
-    hits[count++]=mix(corners[e.x].xyz,corners[e.y].xyz,t);
+    const vec4 root=input_cells.cells[cell_base+4u+edge];
+    if(root.w!=1.0) { atomicOr(output_surface.header[5],1u); return; }
+    hits[count++]=root.xyz;
   }
   if(count<3u)return;
   uint emitted=count==3u?3u:6u;

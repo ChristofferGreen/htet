@@ -1173,6 +1173,16 @@ same render origin. The count-matched linear diagnostic fails this bound test,
 as expected. This is positive rejection evidence: it prevents a matching
 triangle count from being mistaken for geometric or visual parity, and gives
 the exact-root work a live measurable gate before depth/colour capture work.
+
+**P2 exact-root transport, 2026-09-05.** Each compact GPU-cell record now
+carries six camera-relative, globally keyed CPU edge roots. The compute shader
+uses those roots directly and treats a missing required root as overflow rather
+than silently falling back to interpolation. Evicted raw-cache entries are
+recomputed by the same CPU edge oracle only within the background publication.
+The production smoke still fails the bounds gate after this change, isolating
+the remaining position difference to CPU surface optimization; normals,
+winding and image parity remain independently unproven. This is a correctness
+diagnostic step, not a claim that root computation has been accelerated.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

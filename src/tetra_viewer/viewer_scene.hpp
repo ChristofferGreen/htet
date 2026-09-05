@@ -978,6 +978,7 @@ make_surface_candidate_conforming_volume(const SparseWorldSurfaceCache& cache);
 [[nodiscard]] std::vector<tetra::GpuTerrainCellRecord>
 make_gpu_surface_candidate_cell_records(const SparseWorldSurfaceCache& cache,
     const tetra::WorldStreamingDemand::Domain& domain,
+    const tetra::Sphere& field,
     tetra::Vec3 render_origin);
 // Converts a published or freshly assembled blocked snapshot into the same
 // flat-shaded, barycentric-edged draw representation consumed by Vulkan.

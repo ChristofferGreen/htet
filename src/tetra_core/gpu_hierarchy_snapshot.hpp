@@ -71,8 +71,12 @@ struct GpuHierarchySnapshot {
 // closure and field identity on the CPU while moving triangle emission to GPU.
 struct alignas(16) GpuTerrainCellRecord {
   std::array<std::array<float,4>,4> corners{};
+  // Exact CPU-owned intersection position for each tetrahedron edge in the
+  // canonical (01,02,03,12,13,23) order. xyz are camera-relative world
+  // metres; w is one only for a sign-changing edge.
+  std::array<std::array<float,4>,6> edge_roots{};
 };
-static_assert(sizeof(GpuTerrainCellRecord)==64U);
+static_assert(sizeof(GpuTerrainCellRecord)==160U);
 static_assert(alignof(GpuTerrainCellRecord)==16U);
 
 // Host oracle for the first compute selector. field_error_pixels is the
