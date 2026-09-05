@@ -1472,23 +1472,28 @@ topology, and complete-frame gates.
     No per-owner culling is permitted for the diagnostic front yet: P6 retains
     the complete candidate packet, so no omitted owner can create a finite
     preview boundary. CPU rendering remains authoritative.
-- [ ] **P7 — GPU-native watertight BCC surface generation.** Remove the
-  production dependency on the 448-byte `GpuTerrainCellRecord`, whose roots,
-  winding, projected midpoints, and normals are currently computed by the CPU,
-  and retire P4a's 112-byte corner/bounds sidecar from the production path after
-  bootstrap parity. Feed compact stable BCC addresses, topology, field
-  summaries, and immutable field/edit payloads; reconstruct tetrahedral
-  geometry and conservative bounds, evaluate the field, solve edge roots,
-  order output, project midpoints, generate normals, and apply P6 transitions
-  in compute. Derive exact per-cell counts, scan/reserve the complete output,
-  and reject overflow before publication. Compare compact non-indexed triangle
-  or patch records plus a canonical edge stream with fat vertices and indexed
-  output; do not retain sequential indices without a measured consumer benefit.
-  Prove each stage against the CPU oracle without making qualification readback
-  part of normal rendering. Opaque, wireframe, shadows, and ray tracing must
-  consume the same complete front and revision. Fixed and moving Metal captures
-  must inspect near terrain, horizon/limb, silhouette, back-lit mountains,
-  edits, cutaways, and other implicit shapes before promotion.
+- [ ] **P7 — GPU-native watertight BCC surface generation.** P6 is the sole
+  topology authority while these ordered diagnostic leaves replace the legacy
+  448-byte CPU-precomputed cell payload.
+  - [ ] **P7a — Compact reconstruction and field classification.** Join exact
+    P6 owner/mask/orientation records to immutable field/domain parameters and
+    reconstruct the BCC/template tetrahedra on device. Emit classification and
+    count evidence only: CPU roots, winding, midpoints, normals, and vertices
+    are forbidden inputs. Fixed and moving Metal fixtures must exactly match the
+    CPU classification/count oracle, and malformed/stale/capacity inputs fail
+    closed. CPU remains renderer; root solving is P7b.
+  - [ ] **P7b — Device roots, ordering, and compact base triangles.** Solve
+    roots from P7a signs and emit overflow-safe scanned compact non-indexed
+    base triangles. Match canonical roots, triangle ownership, masks, and edge
+    streams against CPU over fixed and moving fronts; projection/normals await
+    P7c.
+  - [ ] **P7c — Device projection, normals, and shared consumers.** Match
+    production midpoint projection and normals; feed one complete revision to
+    opaque, wireframe, shadow, and ray-tracing inputs. Retain no sequential
+    index buffer without measured consumer benefit; diagnostic readback remains.
+  - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
+    horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
+    shapes; reject stale/partial/overflow output. CPU fallback remains until P8.
 - [ ] **P8 — Readback-free publication and performance qualification.** Keep
   selection, compaction, generated geometry/edge streams, indirect arguments,
   raster, shadow, and ray-tracing consumption device-local. Camera movement

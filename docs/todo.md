@@ -353,19 +353,37 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P7 — Generate the watertight BCC surface on the GPU.** Replace the
-      production dependency on `GpuTerrainCellRecord`—including its CPU roots,
-      winding, midpoints, and normals—and retire P4a's 112-byte corner/bounds
-      sidecar from the production path after bootstrap parity. Consume compact
-      stable BCC addresses, topology, field summaries, and immutable field/edit
-      inputs; reconstruct tetrahedra and conservative bounds, evaluate the
-      field, solve roots, order triangles, project midpoints, generate normals,
-      and apply P6 transitions entirely on the GPU. Count and scan exact
-      per-cell output before reservation, reject overflow before publication,
-      and compare compact non-indexed triangle/patch plus canonical edge
-      streams against fat vertices and indexing. Do not retain a sequential
-      index buffer with no measured consumer benefit. The same complete
-      revision must feed opaque, wireframe, shadow, and ray-tracing consumers.
+- [ ] **P7 — Generate the watertight BCC surface on the GPU.** This replaces
+      the production dependency on CPU-precomputed `GpuTerrainCellRecord`
+      geometry in ordered, diagnostic-only leaves. P6 remains the exclusive
+      topology authority until compact GPU generation is exactly qualified.
+  - [ ] **P7a — Reconstruct compact BCC candidates and classify the field on
+        device.** Define a fixed ABI joining P6 owner/mask/orientation records
+        with immutable field/domain parameters. A new compute diagnostic must
+        reconstruct owner/template tetrahedra from exact addresses, evaluate
+        the field at every corner, and emit only counts/classification evidence
+        without accepting CPU roots, winding, midpoints, normals, or vertices.
+        Fixed and moving Metal fixtures compare every classification/count to
+        the CPU oracle; malformed address, template, field tuple, stale source
+        revision, and capacity failures fail closed. Stop rule: CPU remains the
+        only renderer; no root solve or surface vertices yet.
+  - [ ] **P7b — Solve roots and emit unprojected GPU surface triangles.**
+        Implement robust device root solving and crossing ordering from P7a
+        signs, with exact per-cell count/scan/reservation and overflow-safe
+        compact non-indexed triangle output. Compare canonical roots, triangle
+        ownership, masks, and edge streams against CPU across fixed and moving
+        fronts. Stop rule: no optimizer projection, normals, or draw promotion.
+  - [ ] **P7c — Match production projection, normals, and all consumers.**
+        Move midpoint projection and normal generation to GPU and prove compact
+        generated streams match the visible CPU geometry quality/contracts.
+        The same complete revision must feed opaque, wireframe, shadow, and
+        ray-tracing consumers; retain no sequential index buffer without a
+        measured consumer benefit. Stop rule: diagnostic readback remains.
+  - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
+        Compare compact streams against CPU across near terrain, horizon/limb,
+        silhouettes, back-lit mountains, edits, cutaways, and implicit shapes;
+        reject stale, partial, and overflow revisions. Acceptance is identical
+        topology/geometry quality with CPU fallback retained pending P8.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
       selection, compaction, geometry/edge streams, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback
