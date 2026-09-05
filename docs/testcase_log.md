@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 10:38 CEST | pass, GPU hierarchy frame-slot closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 483/483 tests passed in 513.65 s; frame-ring coverage proves submitted output cannot be reacquired and completed output is revision matched.
+
 - 2026-09-05 09:50 CEST | pass, GPU hierarchy extractor closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 482/482 tests passed in 505.93 s; exact-key boundary face cancellation and wire-edge extraction passed focused coverage.
 
 - 2026-09-05 09:44 CEST | fail, GPU extractor implementation | mode: fresh Release build | command: `./scripts/compile.sh --release --skip-tests` | failures: `tetra_tests` | notes: test passed a scalar instead of the extractor's selected-index span; corrected before focused rerun.

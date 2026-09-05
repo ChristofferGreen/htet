@@ -2,6 +2,12 @@
 
 ## 2026-09-05
 
+- [x] Add GPU hierarchy frame-slot lifetime control. The two-or-more slot ring
+  prevents submitted output from being overwritten, promotes only completed
+  matching tuple revisions, and never waits for normal consumption. It is the
+  renderer-independent prerequisite for the future Vulkan buffer barriers;
+  no device buffers exist yet, so no false barrier claim is made.
+
 - [x] Add exact selected-tetrahedron boundary extraction and wire-edge emission
   to the GPU hierarchy oracle. Faces cancel by exact dyadic keys and retained
   boundary edges deduplicate by canonical keys, with no float equality. This

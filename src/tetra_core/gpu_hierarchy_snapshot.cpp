@@ -352,4 +352,17 @@ GpuHierarchyExtraction gpu_hierarchy_extract_full_tetrahedra(
   for(const auto& [edge,owner]:edges)result.edges.push_back({edge,owner});return result;
 }
 
+GpuHierarchyFrameRing::GpuHierarchyFrameRing(std::size_t count):slots_(count) {
+  if(count<2U)throw std::invalid_argument("GPU hierarchy frame ring needs two slots");
+}
+std::optional<std::size_t> GpuHierarchyFrameRing::acquire(std::uint64_t revision) {
+  for(std::size_t index=0;index<slots_.size();++index)if(slots_[index].state==GpuHierarchyFrameState::available) {
+    slots_[index]={revision,GpuHierarchyFrameState::recording};return index;
+  }
+  return {};
+}
+void GpuHierarchyFrameRing::submit(std::size_t slot) { if(slot>=slots_.size()||slots_[slot].state!=GpuHierarchyFrameState::recording)throw std::logic_error("GPU hierarchy slot is not recording");slots_[slot].state=GpuHierarchyFrameState::submitted; }
+void GpuHierarchyFrameRing::complete(std::size_t slot) { if(slot>=slots_.size()||slots_[slot].state!=GpuHierarchyFrameState::submitted)throw std::logic_error("GPU hierarchy slot is not submitted");slots_[slot].state=GpuHierarchyFrameState::ready; }
+std::optional<std::size_t> GpuHierarchyFrameRing::consume_ready(std::uint64_t revision) { for(std::size_t i=0;i<slots_.size();++i)if(slots_[i].state==GpuHierarchyFrameState::ready&&slots_[i].tuple_revision==revision){slots_[i].state=GpuHierarchyFrameState::available;return i;}return {}; }
+
 }  // namespace tetra

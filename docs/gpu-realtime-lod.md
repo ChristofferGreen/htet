@@ -1053,8 +1053,6 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Add Vulkan barriers and frame-buffering so compute results feed the draw
-  without waiting on the CPU or overwriting in-flight data.
 - [ ] Add the **Realtime GPU surface LOD** checkbox, capability gating,
   diagnostic source indicator, and explicit CPU fallback.
 - [ ] Add scripted GPU-versus-CPU topology, triangle-hash, edge-incidence,

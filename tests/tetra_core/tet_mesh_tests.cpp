@@ -5104,6 +5104,20 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       {.pixel_threshold=0.0})),std::invalid_argument);
 }
 
+TEST_CASE("GPU hierarchy frame ring never overwrites in-flight output") {
+  tetra::GpuHierarchyFrameRing ring(2U);
+  REQUIRE(ring.acquire(7U)==0U);
+  ring.submit(0U);
+  REQUIRE(ring.acquire(8U)==1U);
+  ring.submit(1U);
+  CHECK_FALSE(ring.acquire(9U).has_value());
+  ring.complete(0U);
+  CHECK_FALSE(ring.consume_ready(8U).has_value());
+  CHECK(ring.consume_ready(7U)==0U);
+  CHECK(ring.acquire(9U)==0U);
+  CHECK_THROWS_AS(tetra::GpuHierarchyFrameRing(1U),std::invalid_argument);
+}
+
 TEST_CASE("global derived vertex identities ignore local orientation and allocation order") {
   auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
   for(unsigned int generation=0;generation<3U;++generation)mesh.refine_all_binary();

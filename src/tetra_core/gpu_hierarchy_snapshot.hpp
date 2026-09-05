@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -101,6 +102,16 @@ struct GpuHierarchySelectionOutput {
 struct GpuHierarchyExtractedTriangle { std::array<WorldVertexKey,3> vertices{}; std::uint32_t owner{}; };
 struct GpuHierarchyExtractedEdge { WorldEdgeKey edge{}; std::uint32_t owner{}; };
 struct GpuHierarchyExtraction { std::vector<GpuHierarchyExtractedTriangle> triangles; std::vector<GpuHierarchyExtractedEdge> edges; };
+enum class GpuHierarchyFrameState : std::uint8_t { available, recording, submitted, ready };
+struct GpuHierarchyFrameSlot { std::uint64_t tuple_revision{}; GpuHierarchyFrameState state{GpuHierarchyFrameState::available}; };
+class GpuHierarchyFrameRing {
+ public:
+  explicit GpuHierarchyFrameRing(std::size_t count);
+  [[nodiscard]] std::optional<std::size_t> acquire(std::uint64_t tuple_revision);
+  void submit(std::size_t slot); void complete(std::size_t slot);
+  [[nodiscard]] std::optional<std::size_t> consume_ready(std::uint64_t tuple_revision);
+ private: std::vector<GpuHierarchyFrameSlot> slots_;
+};
 
 [[nodiscard]] std::array<std::uint32_t,4> gpu_hierarchy_address_lanes(
     WorldTetAddress address) noexcept;
