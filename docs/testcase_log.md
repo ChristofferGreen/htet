@@ -6,6 +6,12 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 22:59 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 490 tests passed. The rebuilt Metal translated-shader check reports 18 compute kernels, and the five-case Metal GPU hierarchy selector fixture passed after the isolated rerun cleared the transient runtime timeouts.
+
+- 2026-09-05 22:49 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R 'blocked world runtime spans old boundaries and refines and simplifies in background|planetary sliced frontier cold-recovers a sector-union transition|blocked world resource rejection preserves the complete published front|blocked world supersession cancels stale work and converges to newest pose'` | failures: none | notes: all four freshly rebuilt timeout-prone tests passed alone in 33.91, 93.23, 35.03, and 24.26 seconds; the earlier full-gate failures were transient resource-contention timeouts.
+
+- 2026-09-05 22:45 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: blocked world runtime spans old boundaries and refines and simplifies in background; planetary sliced frontier cold-recovers a sector-union transition; blocked world resource rejection preserves the complete published front; blocked world supersession cancels stale work and converges to newest pose | notes: all four failures were timeout assertions with an active, non-budget-exceeded runtime; Metal translated-shader compiler and new five-case GPU selector parity tests passed.
+
 - 2026-09-05 22:21 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` and `scripts/qualify_gpu_lod_selector.sh` | failures: none | notes: all 489 tests passed; the rebuilt eleven-case Vulkan corpus passed with global child-index traversal, ancestor/descendant exclusivity, deterministic tuple replay, explicit rebase qualification, and zero overflows/mismatches.
 
 - 2026-09-05 21:05 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 488 tests passed after cumulative Vulkan selector dispatch accounting.
@@ -221,6 +227,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] blocked-world runtime timeout group | resolved: 2026-09-05 22:49 CEST | validating command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R 'blocked world runtime spans old boundaries and refines and simplifies in background|planetary sliced frontier cold-recovers a sector-union transition|blocked world resource rejection preserves the complete published front|blocked world supersession cancels stale work and converges to newest pose'` | notes: all four isolated reruns passed with fresh binaries; no selector change touches their runtime code.
 
 - [x] `scripts/qualify_gpu_lod_selector.sh` terrain-replacement | resolved: 2026-09-05 22:11 CEST | validating command: `scripts/qualify_gpu_lod_selector.sh` | notes: raised the analytic-ridge-only initial upload cap from 64 MiB to 128 MiB, admitting its certified 85,599,936-byte front and allowing the selector corpus to complete.
 

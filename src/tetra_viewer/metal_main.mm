@@ -9,6 +9,8 @@
 #include "tetra_viewer/terrain_runtime.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
 #include "tetra_viewer/world_script.hpp"
+#include "tetra_core/gpu_hierarchy_snapshot.hpp"
+#include "tetra_core/tet_mesh.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -1022,6 +1024,132 @@ id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
     std::fprintf(stderr,"Metal shader compilation failed for %s: %s\n",path,
                  error.localizedDescription.UTF8String);
   return library;
+}
+
+// P4c2's backend qualification fixture deliberately constructs the same
+// immutable BCC snapshot and exact float tuple consumed by the Vulkan path.
+// It does not touch the interactive terrain front: Metal output is read back
+// only here and compared to the shared CPU shader-ABI oracle.
+bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0U;generation<3U;++generation)
+    mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> owners;
+  for(const auto owner:mesh.logical_red_owners())
+    owners.push_back(tetra::world_tet_address(owner));
+  const tetra::WorldCutDirectory directory(
+      tetra::make_sparse_world_cut_checkpoint(
+          owners,1U,41U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,43U);
+  try { tetra::validate_gpu_hierarchy_snapshot(snapshot); }
+  catch(const std::exception& error) {
+    std::fprintf(stderr,"Metal GPU LOD fixture is invalid: %s\n",error.what());
+    return false;
+  }
+  if(snapshot.records.empty()||snapshot.selection_records.size()!=
+     snapshot.records.size())return false;
+
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_lod.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(
+      device,shader_path.string().c_str());
+  id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  if(pipeline==nil){
+    std::fprintf(stderr,"Metal GPU LOD pipeline creation failed: %s\n",
+        error==nil?"missing translated entry point":
+        error.localizedDescription.UTF8String);
+    return false;
+  }
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:length
+        options:MTLResourceStorageModeShared];
+  };
+  id<MTLBuffer> hierarchy=make_buffer(snapshot.records.data(),
+      snapshot.records.size()*sizeof(snapshot.records.front()));
+  id<MTLBuffer> children=make_buffer(snapshot.child_indices.data(),
+      snapshot.child_indices.size()*sizeof(snapshot.child_indices.front()));
+  id<MTLBuffer> inputs=make_buffer(snapshot.selection_records.data(),
+      snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
+  if(hierarchy==nil||children==nil||inputs==nil)return false;
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(queue==nil)return false;
+
+  constexpr std::uint32_t output_capacity=65536U;
+  const auto make_tuple=[](float edge,float field,float limb){
+    tetra::GpuHierarchySelectionTupleParameters p;
+    p.camera.position={0.5,0.5,3.0};p.camera.forward={0.0,0.0,-1.0};
+    p.camera.up={0.0,1.0,0.0};p.camera.viewport_height_pixels=800.0;
+    p.camera.aspect_ratio=1.0;p.render_origin={};p.field_centre={0.5,0.5,0.5};
+    p.planet_radius=2.0;p.terrain_height_bound=0.1;p.field_lipschitz=1.0;
+    p.edge_threshold=edge;p.field_threshold=field;p.limb_threshold=limb;
+    p.merge_ratio=0.5;p.source_revision=41U;p.field_revision=43U;
+    return tetra::make_gpu_hierarchy_selection_tuple(p);
+  };
+  struct SelectorCase {
+    const char* name;
+    float edge,field,limb;
+    std::uint32_t capacity;
+  };
+  constexpr std::array cases{
+      SelectorCase{"coarse",1.0e6F,1.0e6F,1.0e6F,output_capacity},
+      SelectorCase{"edge",0.5F,1.0e6F,1.0e6F,output_capacity},
+      SelectorCase{"field",1.0e6F,0.05F,1.0e6F,output_capacity},
+      SelectorCase{"limb",1.0e6F,1.0e6F,0.02F,output_capacity},
+      // A full selector result with zero writable entries is the hardware
+      // overflow/fail-closed contract; the interactive Metal renderer still
+      // draws its CPU front because this diagnostic can never be promoted.
+      SelectorCase{"overflow",1.0e6F,1.0e6F,1.0e6F,0U}};
+  std::size_t completed{};
+  for(const auto& selector_case:cases){
+    const auto tuple=make_tuple(selector_case.edge,selector_case.field,
+                                selector_case.limb);
+    const auto oracle=tetra::gpu_hierarchy_traverse(snapshot,
+        tetra::gpu_hierarchy_traversal_parameters(tuple));
+    if(oracle.selected_records.size()>output_capacity)return false;
+    id<MTLBuffer> tuple_buffer=make_buffer(&tuple,sizeof(tuple));
+    std::vector<std::uint32_t> zeroed(4U+selector_case.capacity,0U);
+    id<MTLBuffer> output=make_buffer(zeroed.data(),
+        zeroed.size()*sizeof(zeroed.front()));
+    const std::array<std::uint32_t,2> parameters{
+        static_cast<std::uint32_t>(snapshot.records.size()),selector_case.capacity};
+    if(tuple_buffer==nil||output==nil)return false;
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:hierarchy offset:0U atIndex:0U];
+    [encoder setBuffer:children offset:0U atIndex:1U];
+    [encoder setBuffer:inputs offset:0U atIndex:2U];
+    [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
+    [encoder setBuffer:output offset:0U atIndex:5U];
+    [encoder dispatchThreads:MTLSizeMake(snapshot.records.size(),1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted)return false;
+    const auto* words=static_cast<const std::uint32_t*>(output.contents);
+    const std::uint32_t count=words[0];
+    if(count!=oracle.selected_records.size()||
+       words[1]!=oracle.metrics.visited||words[2]!=oracle.metrics.frustum_rejected)
+      return false;
+    const bool expects_overflow=selector_case.capacity==0U;
+    if((words[3]!=0U)!=expects_overflow||
+       (!expects_overflow&&count>selector_case.capacity))return false;
+    if(expects_overflow){ ++completed; continue; }
+    std::vector<std::uint32_t> device(words+4U,words+4U+count);
+    auto canonical=[](std::vector<std::uint32_t> values){
+      std::ranges::sort(values);return values;
+    };
+    if(canonical(std::move(device))!=canonical(oracle.selected_records))return false;
+    ++completed;
+  }
+  std::printf("{\"event\":\"metal_gpu_lod_selector\","
+              "\"cases\":%zu,\"records\":%zu,\"passed\":true}\n",
+              completed,snapshot.records.size());
+  return true;
 }
 
 enum class AtmosphereTextureRole {
@@ -3149,6 +3277,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-terrain-ray-oracle-smoke-test")==0;
   const bool atmosphere_compiler_check=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-compiler-check")==0;
+  const bool gpu_lod_selector_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -3410,7 +3540,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -3421,6 +3551,7 @@ int main(int argc,char** argv) {
                         "--metal-ray-visibility-smoke-test|"
                         "--metal-terrain-ray-oracle-smoke-test|--metal-smoke-test|"
                         "--metal-atmosphere-compiler-check|"
+                        "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
                         "--metal-atmosphere-capture <path.ppm>|"
@@ -3472,6 +3603,8 @@ int main(int argc,char** argv) {
     }
     if(ray_visibility_smoke_test)return run_ray_visibility_smoke_test(device);
     if(atmosphere_lut_smoke_test)return run_atmosphere_lut_smoke_test(device);
+    if(gpu_lod_selector_smoke_test)
+      return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
       for(std::size_t mode=0;mode<=16U;++mode){
         const auto path=std::filesystem::path(
@@ -3498,6 +3631,14 @@ int main(int argc,char** argv) {
         if(reference_library==nil||
            [reference_library newFunctionWithName:@"main0"]==nil)return 1;
       }
+      {
+        const auto path=std::filesystem::path(
+            TETRA_METAL_ATMOSPHERE_SHADER_DIR)/"gpu_lod.comp.metal";
+        id<MTLLibrary> selector_library=make_file_shader_library(
+            device,path.string().c_str());
+        if(selector_library==nil||
+           [selector_library newFunctionWithName:@"main0"]==nil)return 1;
+      }
       constexpr std::array<const char*,11> graphics_shaders{
           "scene.vert","scene.frag","wire.frag","edge.vert","edge.frag",
           "shadow.vert","sky.vert","sky.frag","fullscreen.vert",
@@ -3517,7 +3658,7 @@ int main(int argc,char** argv) {
         }
       }
       std::printf("{\"event\":\"metal_atmosphere_compiler\","
-                  "\"source_directory\":\"%s\",\"compute_kernels\":17,"
+                  "\"source_directory\":\"%s\",\"compute_kernels\":18,"
                   "\"reference_kernels\":1,"
                   "\"graphics_stages\":11,"
                   "\"passed\":true}\n",TETRA_METAL_ATMOSPHERE_SHADER_DIR);

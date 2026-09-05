@@ -1183,13 +1183,23 @@ that work.
     replays each tuple deterministically and proves a paired coordinate rebase
     has the same tuple identity; focused boundary synthesis covers each term
     below/inside/above the band plus equal-max and two-term ties.
-  - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
+  - [x] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,
     counters, and the threshold tie rule. Require selected-address agreement
     between Vulkan and Metal, including threshold-band cases. Stale, malformed,
     unavailable, or overflowed work retains CPU selection. P5 remains the
     separate enablement leaf for the terrain extraction shader and its buffers.
+    **Result:** the build now translates the shared `gpu_lod.comp` SPIR-V to
+    MSL, and a hidden Metal hardware fixture uploads the exact immutable BCC
+    records, child-index table, geometry sidecars, revisioned tuple, capacities,
+    and selector output contract. It checks selected records plus visited and
+    rejected counters against the shader-ABI CPU oracle for coarse and each
+    edge/field/limb-driven case; an explicit zero-capacity dispatch proves
+    overflow reporting. Vulkan's eleven-case corpus and Metal's five-case
+    fixture both pass against that common contract. The interactive Metal path
+    still consumes its CPU front, so an unavailable, stale, malformed, or
+    overflowed diagnostic cannot affect rendering.
 
 **P0 baseline, 2026-09-05.** `tetra_world --runtime-benchmark` already
 provides the CPU-side breakdown and canonical hashes required for the first
@@ -1391,15 +1401,23 @@ by a plausible still image or an isolated kernel time: it must preserve the
 same BCC-derived terrain identity and pass its stated cross-backend, visual,
 topology, and complete-frame gates.
 
-- [ ] **P5 — Metal terrain-compute parity.** Translate and build
-  `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
-  SPIR-V-to-MSL pipeline. Add Metal slot-local topology, classification,
-  geometry, ownership, diagnostics, and indirect-argument buffers with the
-  same tuple revisioning, barriers, capacity checks, and overflow rejection as
-  Vulkan. Produce a fallback-safe diagnostic Metal parity capture; unsupported,
-  stale, malformed, or incomplete output continues to draw the CPU surface.
-  This is backend enablement, not a performance result or production-visibility
-  milestone while extraction still consumes the legacy 448-byte CPU payload.
+- [ ] **P5 — Metal terrain-extraction parity.** P4c2 has already translated
+  and hardware-qualified the selector, so extraction is split into three
+  independently closable leaves:
+  - [ ] **P5a — Translate and compile `gpu_terrain_extract.comp`.** Require its
+    generated MSL entry point and the Vulkan-equivalent 448-byte source stride,
+    bindings, and push-constant ABI. This is compilation evidence only.
+  - [ ] **P5b — Fixture dispatch with legacy payload.** Bind immutable
+    CPU-precomputed cell records and slot-local count/vertex/index/indirect
+    buffers through a hidden Metal fixture. Prove count, positions, normals,
+    triangles, indices, and explicit overflow against the existing CPU/Vulkan
+    parity contract; malformed or unavailable work must fail closed.
+  - [ ] **P5c — Runtime-slot extraction and fallback qualification.** Submit
+    P5b's buffers from the actual display revision with command-buffer ordering,
+    revision matching, and stale rejection. Hidden fixed and moving captures
+    must equal the CPU front or retain CPU rendering. None of these leaves may
+    replace the legacy 448-byte payload or claim a speed improvement; P7 is
+    the separate GPU-native field/topology milestone.
 - [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
   selected addresses as candidates and use the existing 64 restricted-green
   edge-mask templates as the baseline surface grammar. Define how GPU work

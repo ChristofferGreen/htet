@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The GPU hierarchy selector has a separate immutable 112-byte geometry sidecar per topology record, carrying float corners, outward-rounded bounds, and an enclosing sphere; exact addresses remain its identity and CPU cut/closure authority is unchanged.
 - Evidence: Snapshot validation derives and checks every sidecar from exact BCC geometry, rejects altered bounds, and the off-screen Vulkan GPU-LOD diagnostic completed after the sidecar was separately bound and synchronized.
 
+### gpu-hierarchy-selector-metal
+- Updated: 2026-09-05
+- Tags: gpu-lod, metal, spirv, parity
+- Fact: Metal selector qualification compiles the shared `gpu_lod.comp` SPIR-V through SPIRV-Cross and compares its hardware output to the float-ABI oracle; Metal rendering remains on the CPU terrain front until later extraction parity.
+- Evidence: The hidden five-case Metal fixture checks coarse, edge, field, limb, and zero-capacity overflow dispatches, and the 490-test Release gate passed.
+
 ### gpu-hierarchy-selector-tuple
 - Updated: 2026-09-05
 - Tags: gpu-lod, vulkan, synchronization, fallback

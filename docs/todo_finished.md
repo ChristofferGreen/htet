@@ -2,6 +2,16 @@
 
 ## 2026-09-05
 
+- [x] **P4c — Hierarchical three-term selection parity.** Completed the
+  cross-backend diagnostic selector contract. Vulkan traverses the global
+  immutable BCC tree with a child-index table, and its eleven-case hidden
+  corpus proves canonical parity, root-normalized rebase invariance, boundary
+  handling, and exclusive front selection. The same `gpu_lod.comp` SPIR-V is
+  translated to MSL; a hidden Metal hardware fixture verifies coarse,
+  edge/field/limb, and zero-capacity overflow cases against the shared
+  shader-ABI CPU oracle. The full Release suite passed 490/490. This remains
+  diagnostic-only: CPU BCC closure and terrain rendering are authoritative.
+
 - [x] **P4c1b2b2b — Boundary/rebase corpus accounting.** Added explicit
   root-normalized coordinate-rebase qualification, frame-by-frame submitted
   tuple ledger, term boundary-band counters, deterministic replay checks, and

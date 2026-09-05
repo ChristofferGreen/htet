@@ -353,45 +353,31 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P4c — Hierarchical three-term selection parity.** The Vulkan traversal,
-      float-sidecar oracle, threshold rule, and repeatable/rebase-qualified
-      corpus are complete. A flat per-record classifier is not acceptable, and
-      Metal parity must now translate this proven traversal rather than
-      duplicate an unverified design.
-  - [x] **P4c1a — Vulkan active-block traversal diagnostic.** Complete. Each
-        Vulkan invocation now walks one immutable root/active-block tree using
-        a bounded depth-first work list, rather than classifying a flat record
-        array. Active roots are explicitly encoded and validated; projected
-        edge, conservative Lipschitz field, and limb-sagitta terms control
-        descent; frustum-rejected subtrees, selected leaves, and visited work
-        are counted. The one-million-address diagnostic output fails closed on
-        overflow, and CPU terrain remains authoritative. Release 487/487 and
-        the hidden MoltenVK run passed.
-  - [x] **P4c1b — Vulkan oracle and corpus qualification.** Complete. The CPU
-        oracle reconstructs camera, thresholds, field, and limb values from the
-        exact float tuple and mirrors float-sidecar sphere/frustum arithmetic.
-        The selector uses one shared split-wins threshold band, and a hidden
-        corpus covers fixed, individual-term boundary, yaw, walking,
-        near-surface, orbital, terrain-replacement, and exact coordinate-rebase
-        cases. The per-dispatch ledger proves canonical selected-address parity,
-        tuple replay/rebase identity, no overflow, and an
-        ancestor/descendant-exclusive selected front. The snapshot materializes
-        missing ancestors once globally and follows a validated immutable
-        child-index table. This is diagnostic-only; CPU BCC closure and terrain
-        rendering remain authoritative.
-  - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate and run the
-        proven selector through the existing SPIR-V-to-MSL path with the same
-        immutable records, tuple revisions, capacities, barriers, overflow
-        rejection, threshold tie rule, and counters. Require Vulkan/Metal
-        selected-address agreement, including threshold-band cases, while stale,
-        malformed, unavailable, or overflowed work retains the CPU route.
-- [ ] **P5 — Establish Metal terrain-compute parity.** Build and translate
-      `gpu_lod.comp` and `gpu_terrain_extract.comp` through the existing
-      SPIR-V-to-MSL pipeline. Add slot-local buffers, revision matching,
-      barriers, bounded overflow handling, and fallback-safe dispatch. Prove a
-      diagnostic Metal parity capture, but make no performance claim or change
-      to production visibility while the legacy 448-byte CPU-precomputed
-      payload is still used.
+- [ ] **P5 — Establish Metal terrain-extraction parity.** P4c2 already
+      translates and qualifies the selector. This tracker is deliberately
+      split so static shader translation, buffer lifetime, and full rendered
+      output cannot be mistaken for one another.
+  - [ ] **P5a — Translate and compile the terrain extractor.** Add
+        `gpu_terrain_extract.comp` to the existing SPIR-V-to-MSL build path and
+        Metal compiler gate. Scope: translation and entry-point validation only.
+        Acceptance: the generated MSL declares the same 448-byte source stride,
+        bindings, and push constants as Vulkan; the Metal compiler test passes.
+        Stop rule: do not dispatch or promote extraction merely because it
+        compiles.
+  - [ ] **P5b — Dispatch legacy-payload extraction in a Metal fixture.** Bind
+        immutable CPU-precomputed `GpuTerrainCellRecord` input, slot-local
+        count/vertex/index/indirect buffers, revision tuple, and capacity in a
+        hidden Metal fixture. Acceptance: count, position, normal, triangle,
+        index, and explicit-overflow outcomes match Vulkan/CPU parity fixtures;
+        unavailable or malformed input fails closed. Stop rule: no interactive
+        renderer or visual-promotion change.
+  - [ ] **P5c — Qualify runtime-slot Metal extraction and fallback.** Drive P5b
+        through the actual completed CPU display revision with per-frame slot
+        ownership, command-buffer ordering, revision matching, and stale-work
+        rejection. Acceptance: hidden fixed and moving captures match the CPU
+        front byte-for-byte or retain CPU rendering; no stale or incomplete
+        Metal result is consumed. Stop rule: do not replace the 448-byte
+        CPU-precomputed payload or claim a speedup.
 - [ ] **P6 — Specify and prove the BCC render-front conformity contract.** Use
       the existing 64 restricted-green edge-mask templates as the baseline,
       not a new surface authority. Define how the GPU derives globally

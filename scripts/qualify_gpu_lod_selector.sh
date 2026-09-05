@@ -6,8 +6,13 @@ set -euo pipefail
 # the CPU terrain front remains the rendering authority.
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 binary=${1:-"$repo_root/build/release/src/tetra_viewer/tetra_world"}
+metal_binary=${2:-"$repo_root/build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal"}
 if [[ ! -x "$binary" ]]; then
   echo "GPU LOD binary is not executable: $binary" >&2
+  exit 2
+fi
+if [[ ! -x "$metal_binary" ]]; then
+  echo "Metal GPU LOD binary is not executable: $metal_binary" >&2
   exit 2
 fi
 
@@ -63,3 +68,18 @@ run_case rebase --gpu-lod-selector-rebase
 run_case near-surface --camera-feet=0,1,0 --camera-yaw-degrees=0 --camera-pitch-degrees=-5
 run_case orbital --camera-feet=0,500000,0 --camera-yaw-degrees=0 --camera-pitch-degrees=-89
 run_case terrain-replacement --analytic-ridge --camera-feet=0,5,0
+
+# This fixture uses the same immutable BCC snapshot, 112-byte tuple ABI, and
+# translated gpu_lod.comp source as Vulkan. It independently checks Metal's
+# canonical selected records and traversal counters against the shared oracle
+# for coarse plus edge/field/limb and explicit-overflow cases, without opening
+# a window.
+metal_output=$("$metal_binary" --metal-gpu-lod-selector-smoke-test)
+if ! grep -q '"event":"metal_gpu_lod_selector"' <<<"$metal_output" ||
+   ! grep -q '"cases":5' <<<"$metal_output" ||
+   ! grep -q '"passed":true' <<<"$metal_output"; then
+  echo "Metal GPU LOD parity failed" >&2
+  printf '%s\n' "$metal_output" >&2
+  exit 1
+fi
+printf 'metal-fixture %s\n' "$metal_output"
