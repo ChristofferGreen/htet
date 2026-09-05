@@ -673,8 +673,8 @@ remain authoritative. Details and evidence live in
         Neighboring overhead and back-lit mountain captures show continuous
         opaque terrain, stable seams, correct solar occlusion, and no 2D Mie
         cutout; the disabled control remains exact-only.
-        The Metal renderer now shows one standalone welded preview front while
-        exact terrain builds, then atomically hands back to exact; it does not
+        The Metal renderer can show one opt-in standalone welded preview front
+        while exact terrain builds, then atomically hands back to exact; it does not
         combine fronts. A six-level, 48-cell layout covers the ground-view
         horizon and builds in about 28 ms. The
         interactive performance smoke keeps temporal jitter out of physical

@@ -470,8 +470,9 @@ visual failures can be tied to the exact coordinator state.
       and preview-disabled parity. This milestone proves coherent visible
       integration; the following milestone retains the full latency, cadence,
       memory, starvation, and convergence qualification. Release evidence on
-      Apple M3 Pro publishes a standalone welded preview front while exact
-      terrain builds in the background. The renderer never combines preview
+      Apple M3 Pro can publish a standalone welded preview front while exact
+      terrain builds in the background. It remains opt-in until it covers every
+      visible terrain pixel. The renderer never combines preview
       and exact triangles in a single draw: doing so made coarse exact faces
       overlap the preview and produced a non-watertight boundary. The six-level,
       48-cell layout produces 44,256 preview triangles in a 10,090,368-byte

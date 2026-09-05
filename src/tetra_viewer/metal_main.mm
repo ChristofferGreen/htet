@@ -3308,10 +3308,11 @@ int main(int argc,char** argv) {
        (raster_profile_qualification&&(motion_test||metalfx_test)))&&
       (std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr||
        timing_profile_test||raster_profile_qualification);
-  // A visible preview is a complete welded front in its own right.  It never
-  // shares a draw with the exact front: exact terrain continues to build in
-  // the background and replaces the preview atomically on handoff.
-  bool preview_enabled=!automated_test;
+  // The finite fast front remains opt-in until its coverage can include every
+  // visible terrain pixel.  Shipping it as the default would expose its outer
+  // rectangle as a missing-terrain patch. Exact terrain remains the complete
+  // production display front in the meantime.
+  bool preview_enabled=false;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
     else if(std::strcmp(value,"1")==0)preview_enabled=true;
@@ -5369,7 +5370,7 @@ int main(int argc,char** argv) {
             &exposure_minimum,&exposure_maximum,"%.2f");
 
         if(runtime&&ImGui::CollapsingHeader("Terrain diagnostics")){
-          if(ImGui::Checkbox("Fast terrain preview",&preview_enabled)&&
+          if(ImGui::Checkbox("Experimental fast terrain preview",&preview_enabled)&&
              !preview_enabled)
             preview_surface_worker.cancel();
           ImGui::Text("Scene generation %llu   triangles %zu",
