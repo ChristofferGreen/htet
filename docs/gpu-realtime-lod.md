@@ -1165,6 +1165,14 @@ overflow. A single 18.22 ms timing after this change is not a reliable
 comparison with the preceding 12.81 ms run, so it is explicitly not claimed
 as a performance gain; a controlled multi-sample extraction profile remains
 required.
+
+**P2 geometry-readback gate, 2026-09-05.** Completed per-slot GPU vertex
+output is now mapped only after its owning frame fence, and its relative-world
+position bounds are compared against the CPU prepared surface staged at the
+same render origin. The count-matched linear diagnostic fails this bound test,
+as expected. This is positive rejection evidence: it prevents a matching
+triangle count from being mistaken for geometric or visual parity, and gives
+the exact-root work a live measurable gate before depth/colour capture work.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive

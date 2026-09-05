@@ -22,6 +22,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain extraction uses one cell-input, vertex/indirect-output, and index-output allocation per swapchain slot, growing only after that slot's completed fence and rebinding only its descriptors; a generation (not only terrain revision) invalidates output on render-origin rebases and a compute-to-host/vertex/index/indirect barrier precedes any future draw.
 - Evidence: The 486-test Release gate passed, and the off-screen Vulkan diagnostic staged 348,989 cells then matched its independent host-linear oracle at 142,251 emitted vertices after the terrain pipeline was corrected to use its three-binding layout.
 
+### gpu-terrain-geometry-gate
+- Updated: 2026-09-05
+- Tags: terrain, gpu, parity, vulkan
+- Fact: GPU terrain vertex-count parity is insufficient; completed slot output must at least match CPU prepared-surface relative-position bounds at the identical render origin before indirect drawing is eligible.
+- Evidence: The count-matched 56,712-vertex linear diagnostic fails this readback-bound comparison, proving that its interpolation cannot be promoted as visual parity.
+
 ### gpu-terrain-source-corpus
 - Updated: 2026-09-05
 - Tags: terrain, gpu, bcc, surface-cache

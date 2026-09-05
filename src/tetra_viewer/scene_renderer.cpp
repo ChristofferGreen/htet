@@ -1679,7 +1679,8 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
 
 void SceneRenderer::stage_gpu_terrain_cells(
     std::span<const tetra::GpuTerrainCellRecord> cells,
-    std::uint64_t source_revision,std::uint32_t expected_vertices) {
+    std::uint64_t source_revision,std::uint32_t expected_vertices,
+    std::array<float,6> expected_position_bounds) {
   if(source_revision==0U)
     throw std::invalid_argument("GPU terrain cells require a nonzero revision");
   gpu_terrain_cells_.assign(cells.begin(),cells.end());
@@ -1693,6 +1694,7 @@ void SceneRenderer::stage_gpu_terrain_cells(
   };
   gpu_terrain_cells_revision_=source_revision;
   gpu_terrain_expected_vertices_=expected_vertices;
+  gpu_terrain_expected_position_bounds_=expected_position_bounds;
   std::size_t linear_vertices{};
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
@@ -2056,13 +2058,43 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       throw std::runtime_error("unable to map GPU terrain output slot");
     std::memcpy(result.data(),mapped,sizeof(result));
     vkUnmapMemory(device_,gpu_terrain_output_buffers_.at(image_index).memory);
-    if(gpu_terrain_slot_revisions_[image_index]==gpu_terrain_cells_generation_)
+    if(gpu_terrain_slot_revisions_[image_index]==gpu_terrain_cells_generation_){
       gpu_terrain_extract_status_={gpu_terrain_cells_revision_,
           static_cast<std::uint32_t>(gpu_terrain_cells_.size()),result[0],
           gpu_terrain_expected_vertices_,gpu_terrain_linear_expected_vertices_,
           result[6],
           gpu_terrain_slot_milliseconds_.at(image_index),true,false,
           result[5]!=0U,result[0]==gpu_terrain_expected_vertices_};
+      auto& status=gpu_terrain_extract_status_;
+      status.cpu_position_bounds=gpu_terrain_expected_position_bounds_;
+      const auto maximum_vertices=(gpu_terrain_output_buffers_.at(image_index).
+          capacity-32U)/sizeof(SceneVertex);
+      if(result[0]<=maximum_vertices&&result[0]!=0U){
+        std::vector<SceneVertex> vertices(result[0]);void* vertex_mapped{};
+        if(vkMapMemory(device_,gpu_terrain_output_buffers_.at(image_index).memory,
+            0,32U+vertices.size()*sizeof(SceneVertex),0,&vertex_mapped)!=VK_SUCCESS)
+          throw std::runtime_error("unable to map GPU terrain vertex output");
+        std::memcpy(vertices.data(),static_cast<const std::byte*>(vertex_mapped)+32U,
+                    vertices.size()*sizeof(SceneVertex));
+        vkUnmapMemory(device_,gpu_terrain_output_buffers_.at(image_index).memory);
+        for(std::size_t axis=0;axis<3U;++axis){
+          status.gpu_position_bounds[axis]=std::numeric_limits<float>::infinity();
+          status.gpu_position_bounds[axis+3U]=(
+              -std::numeric_limits<float>::infinity());
+        }
+        for(const auto& vertex:vertices)for(std::size_t axis=0;axis<3U;++axis){
+          status.gpu_position_bounds[axis]=std::min(
+              status.gpu_position_bounds[axis],vertex.position[axis]);
+          status.gpu_position_bounds[axis+3U]=std::max(
+              status.gpu_position_bounds[axis+3U],vertex.position[axis]);
+        }
+        status.position_bounds_match_cpu=true;
+        for(std::size_t index=0;index<status.gpu_position_bounds.size();++index)
+          status.position_bounds_match_cpu&=std::abs(
+              status.gpu_position_bounds[index]-status.cpu_position_bounds[index])<=
+              1.0e-3F;
+      }
+    }
     gpu_terrain_slot_pending_[image_index]=false;
   }
   if(gpu_lod_diagnostic_enabled_&&!gpu_terrain_cells_.empty()&&

@@ -4537,7 +4537,21 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                             directory.revision(),static_cast<std::uint32_t>(
                                 std::min<std::size_t>(
                                     world_runtime->diagnostics().render_triangles*3U,
-                                    0xffffffffU)));
+                                    0xffffffffU)),[&]{
+                              std::array<float,6> bounds{};
+                              for(std::size_t axis=0;axis<3U;++axis){
+                                bounds[axis]=std::numeric_limits<float>::infinity();
+                                bounds[axis+3U]=(
+                                    -std::numeric_limits<float>::infinity());
+                              }
+                              for(const auto& vertex:prepared_scene.triangle_vertices)
+                                for(std::size_t axis=0;axis<3U;++axis){
+                                  bounds[axis]=std::min(bounds[axis],vertex.position[axis]);
+                                  bounds[axis+3U]=std::max(bounds[axis+3U],
+                                                            vertex.position[axis]);
+                                }
+                              return bounds;
+                            }());
                         gpu_terrain_cells_render_origin=prepared_scene.render_origin;
                     }
                 }
@@ -5079,6 +5093,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(gpu_extract.overflow?"true":"false")
                         <<",\"crossing_count_matches_cpu\":"
                         <<(gpu_extract.vertex_count_matches_cpu?"true":"false")
+                        <<",\"position_bounds_match_cpu\":"
+                        <<(gpu_extract.position_bounds_match_cpu?"true":"false")
                         <<"},";
                     const auto& fitted_shadow=
                         g_SceneRenderer.atmosphere_shadow_map_status();
