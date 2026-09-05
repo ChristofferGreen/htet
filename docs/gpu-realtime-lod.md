@@ -1053,11 +1053,9 @@ that work.
   orbit, near/far, teleport, reversal, and revisit paths; the focused test
   repeats both standard and persistent-scheduler runs and checks authoritative
   conformity, hashes, counts, upload cost, and latency fields.
-- [ ] Implement a device-backed Vulkan GPU-LOD vertical slice: immutable
-  hierarchy upload, storage-buffer descriptors, a compute selector dispatch,
-  per-slot synchronization, and indirect draw consumption. Keep the CPU
-  surface as the fallback until its output matches the oracle; do not count
-  host-side oracle work as GPU terrain generation.
+- [ ] Consume a parity-qualified GPU selection buffer through indirect terrain
+  drawing, with the CPU prepared surface retained as the fallback. Measure
+  complete camera-to-pixels latency before claiming a terrain-generation gain.
 - [ ] Benchmark still, moving, jumping, and revisited camera paths in the
   release build using GPU timestamps.
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,

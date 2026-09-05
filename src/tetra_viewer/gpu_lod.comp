@@ -1,0 +1,24 @@
+#version 450
+
+// GpuHierarchyRecord is exactly eight uint words (32 bytes), matching the
+// static assertion in gpu_hierarchy_snapshot.hpp.  The first selector is
+// deliberately conservative: it emits immutable hierarchy leaves only.
+layout(std430,binding=0) readonly buffer HierarchyRecords { uint words[]; } hierarchy;
+layout(std430,binding=1) buffer SelectionOutput { uint words[]; } output_buffer;
+
+layout(push_constant) uniform SelectorParameters {
+  uint record_count;
+  uint output_capacity;
+} parameters;
+
+layout(local_size_x=64) in;
+void main() {
+  const uint record_index=gl_GlobalInvocationID.x;
+  if(record_index>=parameters.record_count)return;
+  const uint child_mask_flags=hierarchy.words[record_index*8u+5u];
+  if((child_mask_flags&0xffu)!=0u)return;
+  const uint output_index=atomicAdd(output_buffer.words[0],1u);
+  if(output_index<parameters.output_capacity)
+    output_buffer.words[4u+output_index]=record_index;
+  else atomicOr(output_buffer.words[2],1u);
+}

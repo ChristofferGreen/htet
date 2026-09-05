@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 12:36 CEST | pass, Vulkan GPU LOD selector closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 485/485 tests passed; a separate off-screen `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark` run completed its Vulkan session without a driver or synchronization error.
+
 - 2026-09-05 11:37 CEST | pass, GPU hierarchy comparison closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 484/484 tests passed in 564.14 s; encoded traversal/extraction is deterministic, capacity-zero selection overflows safely, and stale completed tuples are rejected.
 
 - 2026-09-05 10:55 CEST | pass, GPU LOD UI fallback closure | mode: fresh Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 483/483 tests passed in 576.62 s; native viewer compile includes off-by-default Realtime GPU surface LOD control and explicit CPU fallback text.

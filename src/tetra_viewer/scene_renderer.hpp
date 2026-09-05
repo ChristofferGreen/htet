@@ -4,6 +4,7 @@
 #include "tetra_viewer/atmosphere_shadow_front.hpp"
 #include "tetra_viewer/shadow_cascades.hpp"
 #include "tetra_viewer/viewer_scene.hpp"
+#include "tetra_core/gpu_hierarchy_snapshot.hpp"
 
 #include <vulkan/vulkan.h>
 #include <array>
@@ -73,6 +74,16 @@ struct SceneGpuTimings {
   double temporal_reconstruction_milliseconds{};
   double composite_milliseconds{};
   bool valid{};
+};
+
+// State produced by the diagnostic-only Vulkan hierarchy selector.  The CPU
+// retained surface remains the renderer's authority until a later parity gate.
+struct GpuLodDispatchStatus {
+  std::uint64_t source_revision{};
+  std::uint32_t hierarchy_records{};
+  std::uint32_t selected_records{};
+  bool dispatched{};
+  bool overflow{};
 };
 
 struct AtmosphereDispatchCounts {
@@ -166,6 +177,10 @@ class SceneRenderer {
       const SurfaceHostStagingStorage& surface,
       std::span<const SceneVertex> hierarchy_line_vertices,
       std::span<const SceneVertex> editor_line_vertices);
+  void upload_gpu_hierarchy_snapshot(const tetra::GpuHierarchySnapshot& snapshot);
+  void set_gpu_lod_diagnostic_enabled(bool enabled) noexcept {
+    gpu_lod_diagnostic_enabled_=enabled;
+  }
   // Refresh view-dependent camera/manipulator overlays without touching the
   // substantially larger retained mesh buffers.
   void upload_editor_lines(std::span<const SceneVertex> editor_line_vertices);
@@ -173,6 +188,11 @@ class SceneRenderer {
       const noexcept { return surface_upload_planner_.metrics(); }
   [[nodiscard]] const SceneGpuTimings& gpu_timings() const noexcept {
     return gpu_timings_;
+  }
+  [[nodiscard]] const GpuLodDispatchStatus& gpu_lod_dispatch_status() const
+      noexcept { return gpu_lod_dispatch_status_; }
+  [[nodiscard]] std::uint64_t gpu_lod_uploaded_revision() const noexcept {
+    return gpu_lod_uploaded_revision_;
   }
   [[nodiscard]] const SurfaceDrawVisibility& terrain_draw_visibility()
       const noexcept { return terrain_draw_visibility_; }
@@ -212,6 +232,7 @@ class SceneRenderer {
   VkDescriptorSetLayout descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout composite_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout atmosphere_descriptor_set_layout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout gpu_lod_descriptor_set_layout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptor_pool_{VK_NULL_HANDLE};
   VkSampler shadow_sampler_{VK_NULL_HANDLE};
   VkSampler scene_sampler_{VK_NULL_HANDLE};
@@ -220,6 +241,7 @@ class SceneRenderer {
   VkPipelineLayout shaded_pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout composite_pipeline_layout_{VK_NULL_HANDLE};
   VkPipelineLayout atmosphere_pipeline_layout_{VK_NULL_HANDLE};
+  VkPipelineLayout gpu_lod_pipeline_layout_{VK_NULL_HANDLE};
   VkPipeline shadow_pipeline_{VK_NULL_HANDLE};
   VkPipeline sky_pipeline_{VK_NULL_HANDLE};
   VkPipeline composite_pipeline_{VK_NULL_HANDLE};
@@ -227,6 +249,7 @@ class SceneRenderer {
   VkPipeline atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline faithful_atmosphere_pipeline_{VK_NULL_HANDLE};
   VkPipeline reference_hillaire_atmosphere_pipeline_{VK_NULL_HANDLE};
+  VkPipeline gpu_lod_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_pipeline_{VK_NULL_HANDLE};
   VkPipeline triangle_wire_pipeline_{VK_NULL_HANDLE};
   VkPipeline line_pipeline_{VK_NULL_HANDLE};
@@ -245,6 +268,7 @@ class SceneRenderer {
   float timestamp_period_nanoseconds_{};
   std::vector<bool> timing_queries_written_;
   SceneGpuTimings gpu_timings_{};
+  GpuLodDispatchStatus gpu_lod_dispatch_status_{};
   AtmosphereDispatchCounts atmosphere_dispatch_counts_{};
   std::uint32_t dynamic_sun_shadow_phase_{};
   bool dynamic_sun_was_active_{};
@@ -276,6 +300,20 @@ class SceneRenderer {
   VertexBuffer triangles_;
   VertexBuffer hierarchy_lines_;
   VertexBuffer editor_lines_;
+  struct GpuLodBuffer {
+    VkBuffer buffer{VK_NULL_HANDLE};
+    VkDeviceMemory memory{VK_NULL_HANDLE};
+    std::size_t capacity{};
+    std::uint64_t revision{};
+    std::uint32_t record_count{};
+    bool pending{};
+  };
+  GpuLodBuffer gpu_lod_hierarchy_;
+  std::vector<GpuLodBuffer> gpu_lod_outputs_;
+  std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;
+  std::uint64_t gpu_lod_uploaded_revision_{};
+  bool gpu_lod_hierarchy_upload_pending_{};
+  bool gpu_lod_diagnostic_enabled_{};
   SurfaceDeviceUploadPlanner surface_upload_planner_;
   SurfaceDrawVisibility terrain_draw_visibility_{};
   struct DepthImage { VkImage image{VK_NULL_HANDLE}; VkDeviceMemory memory{VK_NULL_HANDLE}; VkImageView view{VK_NULL_HANDLE}; bool initialized{}; };

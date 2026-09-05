@@ -217,6 +217,20 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreateDescriptorSetLayout(device_,&atmosphere_descriptor_layout,nullptr,
                                  &atmosphere_descriptor_set_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create atmosphere descriptor layout");
+  std::array<VkDescriptorSetLayoutBinding,2> gpu_lod_bindings{};
+  for(std::uint32_t binding=0;binding<gpu_lod_bindings.size();++binding){
+    gpu_lod_bindings[binding].binding=binding;
+    gpu_lod_bindings[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    gpu_lod_bindings[binding].descriptorCount=1U;
+    gpu_lod_bindings[binding].stageFlags=VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo gpu_lod_layout{
+      VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  gpu_lod_layout.bindingCount=static_cast<std::uint32_t>(gpu_lod_bindings.size());
+  gpu_lod_layout.pBindings=gpu_lod_bindings.data();
+  if(vkCreateDescriptorSetLayout(device_,&gpu_lod_layout,nullptr,
+                                 &gpu_lod_descriptor_set_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU LOD descriptor layout");
 
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter=VK_FILTER_LINEAR;
@@ -272,6 +286,17 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   if(vkCreatePipelineLayout(device_,&atmosphere_layout,nullptr,
                             &atmosphere_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create atmosphere pipeline layout");
+  VkPushConstantRange gpu_lod_push{VK_SHADER_STAGE_COMPUTE_BIT,0,
+                                   sizeof(std::uint32_t)*2U};
+  VkPipelineLayoutCreateInfo gpu_lod_pipeline_layout{
+      VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  gpu_lod_pipeline_layout.setLayoutCount=1U;
+  gpu_lod_pipeline_layout.pSetLayouts=&gpu_lod_descriptor_set_layout_;
+  gpu_lod_pipeline_layout.pushConstantRangeCount=1U;
+  gpu_lod_pipeline_layout.pPushConstantRanges=&gpu_lod_push;
+  if(vkCreatePipelineLayout(device_,&gpu_lod_pipeline_layout,nullptr,
+                            &gpu_lod_pipeline_layout_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU LOD pipeline layout");
 
   const auto vertex_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.vert.spv");
   const auto fragment_shader = shader_module(device_, TETRA_VIEWER_SHADER_DIR "/scene.frag.spv");
@@ -296,6 +321,8 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   const auto reference_hillaire_atmosphere_compute_shader=shader_module(
       device_,TETRA_VIEWER_SHADER_DIR
           "/atmosphere_reference_hillaire.comp.spv");
+  const auto gpu_lod_compute_shader=shader_module(
+      device_,TETRA_VIEWER_SHADER_DIR "/gpu_lod.comp.spv");
   VkPipelineShaderStageCreateInfo stages[2]{};
   stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex_shader, "main"};
   stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment_shader, "main"};
@@ -496,6 +523,11 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
      VK_SUCCESS)
     throw std::runtime_error(
         "unable to create reference Hillaire atmosphere compute pipeline");
+  atmosphere_pipeline.stage.module=gpu_lod_compute_shader;
+  atmosphere_pipeline.layout=gpu_lod_pipeline_layout_;
+  if(vkCreateComputePipelines(device_,VK_NULL_HANDLE,1,&atmosphere_pipeline,
+                              nullptr,&gpu_lod_pipeline_)!=VK_SUCCESS)
+    throw std::runtime_error("unable to create GPU LOD compute pipeline");
 
   VkPipelineShaderStageCreateInfo shadow_stage{
       VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,
@@ -558,6 +590,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
   vkDestroyShaderModule(device_,faithful_atmosphere_compute_shader,nullptr);
   vkDestroyShaderModule(
       device_,reference_hillaire_atmosphere_compute_shader,nullptr);
+  vkDestroyShaderModule(device_,gpu_lod_compute_shader,nullptr);
 }
 
 void SceneRenderer::destroy_terrain_msaa_targets() {
@@ -740,6 +773,44 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   }
   atmosphere_frames_.clear();
   capture_frames_.clear();
+  const auto destroy_gpu_lod_buffer=[this](GpuLodBuffer& buffer){
+    if(buffer.buffer!=VK_NULL_HANDLE)vkDestroyBuffer(device_,buffer.buffer,nullptr);
+    if(buffer.memory!=VK_NULL_HANDLE)vkFreeMemory(device_,buffer.memory,nullptr);
+    buffer={};
+  };
+  destroy_gpu_lod_buffer(gpu_lod_hierarchy_);
+  for(auto& output:gpu_lod_outputs_)destroy_gpu_lod_buffer(output);
+  gpu_lod_outputs_.clear();
+  gpu_lod_descriptor_sets_.clear();
+  gpu_lod_uploaded_revision_=0U;
+  gpu_lod_hierarchy_upload_pending_=false;
+  gpu_lod_dispatch_status_={};
+  const auto allocate_gpu_lod_buffer=[this](std::size_t bytes){
+    GpuLodBuffer result;
+    result.capacity=bytes;
+    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    info.size=bytes;
+    info.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if(vkCreateBuffer(device_,&info,nullptr,&result.buffer)!=VK_SUCCESS)
+      throw std::runtime_error("unable to create GPU LOD buffer");
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_,result.buffer,&requirements);
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.allocationSize=requirements.size;
+    allocation.memoryTypeIndex=memory_type(physical_device_,requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if(vkAllocateMemory(device_,&allocation,nullptr,&result.memory)!=VK_SUCCESS)
+      throw std::runtime_error("unable to allocate GPU LOD buffer");
+    if(vkBindBufferMemory(device_,result.buffer,result.memory,0)!=VK_SUCCESS)
+      throw std::runtime_error("unable to bind GPU LOD buffer");
+    return result;
+  };
+  constexpr std::size_t gpu_lod_output_capacity=65536U;
+  gpu_lod_hierarchy_=allocate_gpu_lod_buffer(64U*1024U*1024U);
+  gpu_lod_outputs_.reserve(image_count);
+  for(std::uint32_t index=0;index<image_count;++index)
+    gpu_lod_outputs_.push_back(allocate_gpu_lod_buffer(
+        sizeof(std::uint32_t)*(4U+gpu_lod_output_capacity)));
   shadow_images_.clear();
   descriptor_sets_.clear();
   composite_descriptor_sets_.clear();
@@ -1084,9 +1155,9 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
                            image_count*21U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,image_count*20U},
       VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,image_count*6U},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count*2U}};
+      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,image_count*4U}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets=image_count*3U;
+  pool.maxSets=image_count*4U;
   pool.poolSizeCount=static_cast<std::uint32_t>(pool_sizes.size());
   pool.pPoolSizes=pool_sizes.data();
   if(vkCreateDescriptorPool(device_,&pool,nullptr,&descriptor_pool_)!=VK_SUCCESS)
@@ -1113,6 +1184,27 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
     throw std::runtime_error("unable to allocate atmosphere descriptors");
   for(std::size_t index=0;index<atmosphere_sets.size();++index)
     atmosphere_frames_[index].descriptor_set=atmosphere_sets[index];
+  gpu_lod_descriptor_sets_.resize(image_count);
+  layouts.assign(image_count,gpu_lod_descriptor_set_layout_);
+  allocate.pSetLayouts=layouts.data();
+  if(vkAllocateDescriptorSets(device_,&allocate,gpu_lod_descriptor_sets_.data())!=VK_SUCCESS)
+    throw std::runtime_error("unable to allocate GPU LOD descriptors");
+  for(std::size_t index=0;index<gpu_lod_descriptor_sets_.size();++index){
+    const std::array<VkDescriptorBufferInfo,2> infos{{
+        {gpu_lod_hierarchy_.buffer,0,VK_WHOLE_SIZE},
+        {gpu_lod_outputs_[index].buffer,0,VK_WHOLE_SIZE}}};
+    std::array<VkWriteDescriptorSet,2> writes{};
+    for(std::uint32_t binding=0;binding<writes.size();++binding){
+      writes[binding].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      writes[binding].dstSet=gpu_lod_descriptor_sets_[index];
+      writes[binding].dstBinding=binding;
+      writes[binding].descriptorCount=1U;
+      writes[binding].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      writes[binding].pBufferInfo=&infos[binding];
+    }
+    vkUpdateDescriptorSets(device_,static_cast<std::uint32_t>(writes.size()),
+                           writes.data(),0,nullptr);
+  }
   for(std::size_t index=0;index<descriptor_sets_.size();++index){
     VkDescriptorImageInfo image_info{
         shadow_sampler_,shadow_images_[index].view,
@@ -1406,6 +1498,24 @@ void SceneRenderer::upload(std::span<const SceneVertex> triangle_vertices,
   ++geometry_revision_;
 }
 
+void SceneRenderer::upload_gpu_hierarchy_snapshot(
+    const tetra::GpuHierarchySnapshot& snapshot) {
+  tetra::validate_gpu_hierarchy_snapshot(snapshot);
+  const auto bytes=snapshot.records.size()*sizeof(tetra::GpuHierarchyRecord);
+  if(bytes>gpu_lod_hierarchy_.capacity)
+    throw std::runtime_error("GPU LOD immutable hierarchy exceeds 64 MiB upload capacity");
+  void* mapped{};
+  if(vkMapMemory(device_,gpu_lod_hierarchy_.memory,0,bytes,0,&mapped)!=VK_SUCCESS)
+    throw std::runtime_error("unable to map GPU LOD hierarchy upload");
+  std::memcpy(mapped,snapshot.records.data(),bytes);
+  vkUnmapMemory(device_,gpu_lod_hierarchy_.memory);
+  gpu_lod_uploaded_revision_=snapshot.header.source_world_revision;
+  gpu_lod_hierarchy_upload_pending_=true;
+  gpu_lod_dispatch_status_.source_revision=gpu_lod_uploaded_revision_;
+  gpu_lod_dispatch_status_.hierarchy_records=
+      static_cast<std::uint32_t>(snapshot.records.size());
+}
+
 void SceneRenderer::upload_editor_lines(
     std::span<const SceneVertex> editor_line_vertices) {
   std::vector<SceneVertex> ribbons;
@@ -1662,6 +1772,69 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
   vkCmdWriteTimestamp(command_buffer,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                       timing_query_pool_,timing_base);
   timing_queries_written_[image_index]=true;
+
+  auto& gpu_lod_output=gpu_lod_outputs_.at(image_index);
+  // Acquiring a swapchain image implies its fence has completed, so this is a
+  // slot-matched host read of the preceding dispatch rather than a global idle.
+  if(gpu_lod_output.pending){
+    std::array<std::uint32_t,4> result{};
+    void* mapped{};
+    if(vkMapMemory(device_,gpu_lod_output.memory,0,sizeof(result),0,&mapped)!=VK_SUCCESS)
+      throw std::runtime_error("unable to map GPU LOD selection result");
+    std::memcpy(result.data(),mapped,sizeof(result));
+    vkUnmapMemory(device_,gpu_lod_output.memory);
+    if(gpu_lod_output.revision==gpu_lod_uploaded_revision_)
+      gpu_lod_dispatch_status_={gpu_lod_output.revision,gpu_lod_output.record_count,
+          std::min(result[0],65536U),true,result[2]!=0U||result[0]>65536U};
+    gpu_lod_output.pending=false;
+  }
+  if(gpu_lod_diagnostic_enabled_&&gpu_lod_uploaded_revision_!=0U){
+    if(gpu_lod_hierarchy_upload_pending_){
+      VkBufferMemoryBarrier hierarchy_ready{
+          VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      hierarchy_ready.srcAccessMask=VK_ACCESS_HOST_WRITE_BIT;
+      hierarchy_ready.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+      hierarchy_ready.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      hierarchy_ready.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+      hierarchy_ready.buffer=gpu_lod_hierarchy_.buffer;
+      hierarchy_ready.size=VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_HOST_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&hierarchy_ready,
+          0,nullptr);
+      gpu_lod_hierarchy_upload_pending_=false;
+    }
+    vkCmdFillBuffer(command_buffer,gpu_lod_output.buffer,0,
+                    sizeof(std::uint32_t)*4U,0U);
+    VkBufferMemoryBarrier prepare{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    prepare.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+    prepare.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+    prepare.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    prepare.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    prepare.buffer=gpu_lod_output.buffer;
+    prepare.size=VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,0,nullptr,1,&prepare,0,nullptr);
+    vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_lod_pipeline_);
+    vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
+        gpu_lod_pipeline_layout_,0,1,&gpu_lod_descriptor_sets_.at(image_index),0,nullptr);
+    const std::array<std::uint32_t,2> push{
+        gpu_lod_dispatch_status_.hierarchy_records,65536U};
+    vkCmdPushConstants(command_buffer,gpu_lod_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,
+        0,sizeof(push),push.data());
+    if(push[0]!=0U)vkCmdDispatch(command_buffer,(push[0]+63U)/64U,1U,1U);
+    VkBufferMemoryBarrier complete{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    complete.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
+    complete.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+    complete.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    complete.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    complete.buffer=gpu_lod_output.buffer;
+    complete.size=VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(command_buffer,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&complete,0,nullptr);
+    gpu_lod_output.revision=gpu_lod_uploaded_revision_;
+    gpu_lod_output.record_count=push[0];
+    gpu_lod_output.pending=true;
+  }
 
   auto& atmosphere_frame=atmosphere_frames_.at(image_index);
   auto& atmosphere=atmosphere_lookups_;
@@ -3457,6 +3630,7 @@ void SceneRenderer::shutdown() {
   vkDestroyDescriptorSetLayout(device_,descriptor_set_layout_,nullptr);
   vkDestroyDescriptorSetLayout(device_,composite_descriptor_set_layout_,nullptr);
   vkDestroyDescriptorSetLayout(device_,atmosphere_descriptor_set_layout_,nullptr);
+  vkDestroyDescriptorSetLayout(device_,gpu_lod_descriptor_set_layout_,nullptr);
   vkDestroyPipeline(device_,shadow_pipeline_,nullptr);
   vkDestroyPipeline(device_,sky_pipeline_,nullptr);
   vkDestroyPipeline(device_,composite_pipeline_,nullptr);
@@ -3464,6 +3638,7 @@ void SceneRenderer::shutdown() {
   vkDestroyPipeline(device_,atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_,faithful_atmosphere_pipeline_,nullptr);
   vkDestroyPipeline(device_,reference_hillaire_atmosphere_pipeline_,nullptr);
+  vkDestroyPipeline(device_,gpu_lod_pipeline_,nullptr);
   vkDestroyPipeline(device_, triangle_pipeline_, nullptr);
   vkDestroyPipeline(device_, triangle_wire_pipeline_, nullptr);
   vkDestroyPipeline(device_, line_pipeline_, nullptr);
@@ -3481,6 +3656,7 @@ void SceneRenderer::shutdown() {
   vkDestroyPipelineLayout(device_,shaded_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,composite_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_,atmosphere_pipeline_layout_,nullptr);
+  vkDestroyPipelineLayout(device_,gpu_lod_pipeline_layout_,nullptr);
   vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
 }
 

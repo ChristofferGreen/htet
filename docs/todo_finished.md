@@ -2,6 +2,17 @@
 
 ## 2026-09-05
 
+- [x] Upload immutable hierarchy records to Vulkan storage buffers and dispatch
+  a per-frame GPU leaf selector into slot-local selection buffers. The new
+  `gpu_lod.comp` uses the eight-word record contract in its indexing, emits
+  leaf-record indices via an atomic counter, and records explicit overflow.
+  The renderer uses one output buffer per swapchain image, host-to-compute and
+  compute-to-host barriers, and only accepts a completed result with the
+  current immutable revision. `--gpu-lod-diagnostic` enables it for automated
+  Vulkan sessions; the World panel shows its count. It remains diagnostic-only:
+  the CPU prepared surface is still authoritative and no terrain speedup is
+  claimed. Release validation passed 485/485 tests and a hidden Vulkan run.
+
 - [x] Add encoded-hierarchy-versus-CPU oracle regressions. Repeated traversal
   and exact-key extraction preserve triangle/edge counts; zero-capacity output
   reports overflow without writing indices; and a completed stale tuple cannot

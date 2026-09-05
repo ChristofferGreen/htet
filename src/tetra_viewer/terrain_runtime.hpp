@@ -620,6 +620,8 @@ class TerrainRuntime {
       const noexcept { return nullptr; }
   [[nodiscard]] virtual std::span<const TerrainResidentSector>
   resident_terrain_sectors() const noexcept { return {}; }
+  [[nodiscard]] virtual const tetra::WorldCutDirectory* world_cut_directory()
+      const noexcept { return nullptr; }
   [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
   atmosphere_shadow_front() const noexcept {
     static const std::optional<AtmosphereShadowFront> none;
@@ -702,6 +704,8 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] const WorldProfile& profile() const noexcept override { return profile_; }
   [[nodiscard]] const SurfaceHostStagingStorage* retained_surface()
       const noexcept override { return &host_staging_; }
+  [[nodiscard]] const tetra::WorldCutDirectory* world_cut_directory()
+      const noexcept override { return directory_.get(); }
   [[nodiscard]] std::span<const TerrainResidentSector>
   resident_terrain_sectors() const noexcept override {
     return detail_working_set_.sectors;

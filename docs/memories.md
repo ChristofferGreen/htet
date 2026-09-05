@@ -13,8 +13,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization
-- Fact: `GpuHierarchySnapshot` is a host-only immutable core encoding of one `WorldCutDirectory` revision; its 32-byte records have deterministic breadth-first per-block child packing and its traversal oracle uses exact CPU frustum projection plus joint projected/field-error termination, but it does not allocate or upload a device buffer.
-- Evidence: Release tests reconstruct exact CPU BCC geometry, exercise maximum-depth lane carry, reject malformed snapshot fields, prove deterministic traversal with field-forced refinement and depth caps, and verify bounded selection output with explicit overflow/indirect arguments.
+- Fact: `GpuHierarchySnapshot` is an immutable core encoding of one `WorldCutDirectory` revision with deterministic breadth-first per-block child packing; Vulkan uploads its 32-byte records to a diagnostic leaf-selector storage buffer, but CPU terrain remains authoritative until parity-qualified indirect drawing exists.
+- Evidence: Release tests reconstruct exact CPU BCC geometry, exercise maximum-depth lane carry, reject malformed snapshot fields, and check packed leaf masks; an off-screen Vulkan world run completed the storage-buffer selector without synchronization errors.
 
 ### logical-derived-address-order
 - Updated: 2026-08-24

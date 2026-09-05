@@ -1464,6 +1464,8 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 world_upscale_sharpening=static_cast<float>(parsed);
             }else if(value=="--gpu-atmosphere-benchmark"){
                 world_gpu_atmosphere_benchmark=true;
+            }else if(value=="--gpu-lod-diagnostic"){
+                world_realtime_gpu_surface_lod=true;
             }else if(value=="--gpu-atmosphere-resize-check"){
                 world_gpu_atmosphere_benchmark=true;
                 world_gpu_atmosphere_resize_check=true;
@@ -3354,10 +3356,16 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
             CheckboxWithHotkey("Smooth terrain normals","M",ImGuiKey_M,
                                &world_smooth_normals);
             ImGui::Checkbox("Realtime GPU surface LOD",&world_realtime_gpu_surface_lod);
-            if(world_realtime_gpu_surface_lod)
-                ImGui::TextDisabled("CPU fallback: GPU dispatch is not available yet");
-            else
+            g_SceneRenderer.set_gpu_lod_diagnostic_enabled(
+                world_realtime_gpu_surface_lod);
+            const auto gpu_lod_status=g_SceneRenderer.gpu_lod_dispatch_status();
+            if(!world_realtime_gpu_surface_lod)
                 ImGui::TextDisabled("CPU terrain path active");
+            else if(gpu_lod_status.dispatched)
+                ImGui::TextDisabled("GPU diagnostic: %u/%u leaves%s; CPU terrain renders",
+                    gpu_lod_status.selected_records,gpu_lod_status.hierarchy_records,
+                    gpu_lod_status.overflow?" (capacity reached)":"");
+            else ImGui::TextDisabled("GPU selector awaits an immutable terrain cut");
             const auto apply_terrain_msaa=[&]{
                 if(vkDeviceWaitIdle(g_Device)!=VK_SUCCESS)
                     throw std::runtime_error(
@@ -4494,6 +4502,15 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 else g_SceneRenderer.upload(prepared_scene.triangle_vertices,
                                             prepared_scene.hierarchy_line_vertices,
                                             overlay_lines);
+                if(world_mode&&world_runtime&&
+                   world_runtime->world_cut_directory()!=nullptr){
+                    const auto& directory=*world_runtime->world_cut_directory();
+                    if(g_SceneRenderer.gpu_lod_uploaded_revision()!=
+                       directory.revision())
+                        g_SceneRenderer.upload_gpu_hierarchy_snapshot(
+                            tetra::make_gpu_hierarchy_snapshot(
+                                directory,directory.revision()));
+                }
                 if(retained_upload_check&&retained_surface_upload_ready)
                     retained_upload_present_pending=true;
                 if(world_mode)

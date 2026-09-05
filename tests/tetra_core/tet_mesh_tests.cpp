@@ -5020,6 +5020,23 @@ TEST_CASE("GPU hierarchy snapshots preserve exact addresses and geometry") {
   }
 }
 
+TEST_CASE("GPU hierarchy leaf selector contract uses only packed child masks") {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0;generation<4U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,11U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory);
+  std::size_t selected{};
+  for(const auto& record:snapshot.records)
+    if((record.child_mask_flags&0xffU)==0U)++selected;
+  CHECK(selected>0U);
+  CHECK(selected<=snapshot.records.size());
+  for(const auto& record:snapshot.records)if((record.child_mask_flags&0xffU)!=0U)
+    CHECK(record.child_base!=tetra::gpu_hierarchy_invalid_index);
+}
+
 TEST_CASE("GPU hierarchy lane arithmetic carries across 64-bit boundaries") {
   for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root) {
     auto address=tetra::WorldTetAddress::root(root);
