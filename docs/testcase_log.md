@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-05 20:06 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 487 tests passed after P4c1b1 shader-input CPU oracle/readback comparison; focused tuple regression also passed.
+
+- 2026-09-05 19:56 CEST | fail then resolved | mode: Release | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R 'GPU hierarchy selector tuple'` | failures: GPU hierarchy selector tuple regression | notes: new assertions expected incorrect threshold values; corrected to the packed tuple values 2, 4, and 1 before the full Release rerun.
+
 - 2026-09-05 19:44 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 487 tests passed after P4c1a Vulkan active-block traversal; hidden `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark` completed with 334,843 records traversed and CPU terrain still authoritative.
 
 - 2026-09-05 19:34 CEST | pass | mode: Release | command: `./scripts/compile.sh --release --skip-tests` and hidden `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none | notes: rebuilt selector instrumentation and completed a MoltenVK diagnostic dispatch.

@@ -366,10 +366,16 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         are counted. The one-million-address diagnostic output fails closed on
         overflow, and CPU terrain remains authoritative. Release 487/487 and
         the hidden MoltenVK run passed.
-  - [ ] **P4c1b — Quantized CPU oracle and threshold corpus.** Derive a CPU
-        oracle directly from the P4a sidecars and P4b float tuple, define an
-        explicit threshold band and deterministic boundary tie rule, then
-        compare it with the Vulkan address stream. Cover fixed, moving,
+  - [x] **P4c1b1 — Shader-input CPU oracle and fixed parity readback.**
+        Complete. The CPU oracle reconstructs its camera, thresholds, field,
+        and limb values from the exact P4b float tuple and mirrors P4a
+        float-sidecar conservative sphere/frustum arithmetic. Diagnostic
+        readback canonicalizes the Vulkan address stream and reports mismatch
+        counts; the hidden fixed run selected 106,614 addresses with zero
+        mismatches and no overflow.
+  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Define the explicit
+        threshold band and deterministic boundary tie rule, then compare the
+        Vulkan stream and P4a/P4b CPU oracle across fixed, moving,
         near-surface, orbital, rebase, and terrain-replacement cases. Outside
         the band selected addresses must match exactly; within it the specified
         deterministic GPU tie rule must hold. The result remains a bounded

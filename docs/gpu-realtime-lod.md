@@ -1131,13 +1131,20 @@ that work.
     diagnostic. A one-million-address stream has explicit overflow rejection.
     Release 487/487 and hidden MoltenVK completed with CPU terrain still the
     authoritative fallback.
-  - [ ] **P4c1b — Quantized CPU oracle and threshold corpus.** Derive the
-    CPU oracle directly from P4a sidecars and the P4b float tuple, specify the
-    threshold band and GPU tie rule, and compare selected address streams with
-    Vulkan. Cover fixed, moving, near-surface, orbital, rebase, and terrain
-    replacement inputs. Require exact addresses outside the band and the
-    deterministic tie rule inside it. The candidate front is not drawable and
-    CPU BCC closure remains authoritative.
+  - [x] **P4c1b1 — Shader-input CPU oracle and fixed parity readback.**
+    Complete. The oracle reconstructs all selection values from P4b's exact
+    float tuple and mirrors P4a float-sidecar sphere/frustum arithmetic.
+    Diagnostic readback sorts Vulkan addresses and reports exact mismatch
+    counts; the hidden fixed run selected 106,614 addresses with zero
+    mismatches and no overflow. CPU BCC closure and terrain rendering remain
+    authoritative.
+  - [ ] **P4c1b2 — Threshold-band and camera corpus.** Specify the explicit
+    floating-point threshold band and deterministic GPU tie rule, then compare
+    the P4a/P4b CPU oracle and Vulkan address streams across fixed, moving,
+    near-surface, orbital, rebase, and terrain-replacement inputs. Require
+    exact addresses outside the band and the documented tie result inside it.
+    The candidate front is not drawable and CPU BCC closure remains
+    authoritative.
   - [ ] **P4c2 — Shared ABI and Metal selector parity.** Translate the proven
     selector through the existing SPIR-V-to-MSL path, preserving immutable
     record layout, tuple revisioning, capacities, barriers, overflow rejection,

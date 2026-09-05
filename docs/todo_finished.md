@@ -2,6 +2,15 @@
 
 ## 2026-09-05
 
+- [x] **P4c1b1 — Shader-input CPU oracle and fixed parity readback.** The CPU
+  selector oracle now reconstructs camera, thresholds, field Lipschitz, and
+  limb radius from the exact P4b float tuple and mirrors P4a float-sidecar
+  sphere/frustum arithmetic. Diagnostic-only Vulkan readback canonicalizes
+  the selected address stream and exposes mismatch counts. The hidden
+  root-normalized fixed run selected 106,614 addresses with zero mismatches
+  and no overflow; 487/487 Release tests passed. This is no rendering
+  promotion: CPU terrain and BCC closure remain authoritative.
+
 - [x] **P4c1a — Vulkan active-block traversal diagnostic.** Replaced the
   prohibited flat per-record leaf scan with one bounded depth-first work list
   per immutable root/active-block tree. Snapshot records now encode and

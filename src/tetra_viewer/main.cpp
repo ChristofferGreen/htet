@@ -5180,10 +5180,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<g_SceneRenderer.gpu_lod_dispatch_status().visited_records
                         <<",\"rejected\":"
                         <<g_SceneRenderer.gpu_lod_dispatch_status().rejected_records
+                        <<",\"oracle_mismatches\":"
+                        <<g_SceneRenderer.gpu_lod_dispatch_status().oracle_mismatches
                         <<",\"dispatched\":"
                         <<(g_SceneRenderer.gpu_lod_dispatch_status().dispatched?"true":"false")
                         <<",\"overflow\":"
                         <<(g_SceneRenderer.gpu_lod_dispatch_status().overflow?"true":"false")
+                        <<",\"oracle_matches\":"
+                        <<(g_SceneRenderer.gpu_lod_dispatch_status().oracle_matches?"true":"false")
                         <<"},"
                         <<"\"gpu_terrain_extract\":{\"source_revision\":"
                         <<gpu_extract.source_revision

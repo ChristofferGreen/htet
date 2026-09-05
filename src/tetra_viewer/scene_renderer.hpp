@@ -84,8 +84,10 @@ struct GpuLodDispatchStatus {
   std::uint32_t selected_records{};
   std::uint32_t visited_records{};
   std::uint32_t rejected_records{};
+  std::uint32_t oracle_mismatches{};
   bool dispatched{};
   bool overflow{};
+  bool oracle_matches{};
 };
 struct GpuTerrainExtractStatus {
   std::uint64_t source_revision{};
@@ -373,6 +375,7 @@ class SceneRenderer {
   std::vector<GpuLodBuffer> gpu_lod_selection_tuples_;
   std::vector<std::uint64_t> gpu_lod_tuple_slot_generations_;
   std::optional<tetra::GpuHierarchySelectionTuple> gpu_lod_selection_tuple_;
+  std::optional<tetra::GpuHierarchySnapshot> gpu_lod_snapshot_;
   std::uint64_t gpu_lod_selection_tuple_generation_{};
   std::vector<GpuLodBuffer> gpu_lod_outputs_;
   std::vector<VkDescriptorSet> gpu_lod_descriptor_sets_;

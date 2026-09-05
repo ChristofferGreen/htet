@@ -28,6 +28,52 @@ std::uint64_t join32(std::uint32_t low,std::uint32_t high) noexcept {
   return static_cast<std::uint64_t>(low)|(static_cast<std::uint64_t>(high)<<32U);
 }
 
+struct GpuSelectorProjection { float diameter{}; bool intersects{}; };
+
+// This deliberately mirrors gpu_lod.comp's float-sidecar arithmetic instead
+// of reusing the higher-precision gameplay projection. It is an oracle for
+// the device ABI, not a second terrain-selection authority.
+GpuSelectorProjection gpu_selector_projection(
+    const GpuHierarchySelectionRecord& selection,
+    const GpuHierarchyTraversalParameters& p) {
+  using V=std::array<float,3>;
+  const auto sub=[](V a,V b){return V{a[0]-b[0],a[1]-b[1],a[2]-b[2]};};
+  const auto dot=[](V a,V b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];};
+  const auto length=[&](V v){return std::sqrt(dot(v,v));};
+  const auto normalize=[&](V v){const auto l=length(v);return l>0.0F?V{v[0]/l,v[1]/l,v[2]/l}:V{};};
+  const auto cross=[](V a,V b){return V{a[1]*b[2]-a[2]*b[1],
+      a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};};
+  const V camera{static_cast<float>(p.camera.position.x),static_cast<float>(p.camera.position.y),static_cast<float>(p.camera.position.z)};
+  const V forward=normalize({static_cast<float>(p.camera.forward.x),
+      static_cast<float>(p.camera.forward.y),static_cast<float>(p.camera.forward.z)});
+  const V up=normalize({static_cast<float>(p.camera.up.x),static_cast<float>(p.camera.up.y),
+      static_cast<float>(p.camera.up.z)});
+  const V centre{selection.centre_radius[0],selection.centre_radius[1],selection.centre_radius[2]};
+  const auto radius=selection.centre_radius[3];
+  const auto delta=sub(centre,camera);
+  const auto z=dot(delta,forward);
+  const auto tangent=std::tan(static_cast<float>(p.camera.vertical_fov_radians)*0.5F);
+  const auto conservative_z=std::max(z-radius,0.0F);
+  const V right=normalize(cross(forward,up));
+  const V corrected_up=normalize(cross(right,forward));
+  const bool intersects=z+radius>0.0F&&
+      std::abs(dot(delta,right))<=conservative_z*tangent*
+          static_cast<float>(p.camera.aspect_ratio)+radius&&
+      std::abs(dot(delta,corrected_up))<=conservative_z*tangent+radius;
+  float nearest=std::numeric_limits<float>::max();
+  std::array<V,4> corners{};
+  for(std::size_t i=0;i<corners.size();++i) {
+    corners[i]={selection.corners[i][0],selection.corners[i][1],selection.corners[i][2]};
+    nearest=std::min(nearest,dot(sub(corners[i],camera),forward));
+  }
+  if(nearest<=0.0001F)return {static_cast<float>(p.camera.viewport_height_pixels),intersects};
+  float longest{};
+  for(std::size_t i=0;i<corners.size();++i)for(std::size_t j=i+1U;j<corners.size();++j)
+    longest=std::max(longest,length(sub(corners[i],corners[j])));
+  const auto focal=static_cast<float>(p.camera.viewport_height_pixels)/(2.0F*tangent);
+  return {longest*focal/nearest,intersects};
+}
+
 std::vector<WorldTetAddress> block_graph_order(
     std::span<const WorldTetAddress> addresses) {
   std::vector<WorldTetAddress> unique(addresses.begin(),addresses.end());
@@ -209,6 +255,30 @@ void validate_gpu_hierarchy_selection_tuple(const GpuHierarchySelectionTuple& t)
      (t.revision_lanes[0]==0U&&t.revision_lanes[1]==0U)||
      (t.revision_lanes[2]==0U&&t.revision_lanes[3]==0U))
     throw std::invalid_argument("GPU hierarchy selection tuple is malformed");
+}
+
+GpuHierarchyTraversalParameters gpu_hierarchy_traversal_parameters(
+    const GpuHierarchySelectionTuple& tuple,unsigned int maximum_red_depth) {
+  validate_gpu_hierarchy_selection_tuple(tuple);
+  if(maximum_red_depth>maximum_world_red_depth)
+    throw std::invalid_argument("GPU hierarchy traversal depth is invalid");
+  GpuHierarchyTraversalParameters result;
+  result.camera.position={tuple.camera_relative_viewport[0],
+      tuple.camera_relative_viewport[1],tuple.camera_relative_viewport[2]};
+  result.camera.viewport_height_pixels=tuple.camera_relative_viewport[3];
+  result.camera.forward={tuple.camera_forward_fov[0],tuple.camera_forward_fov[1],
+      tuple.camera_forward_fov[2]};
+  result.camera.vertical_fov_radians=tuple.camera_forward_fov[3];
+  result.camera.up={tuple.camera_up_aspect[0],tuple.camera_up_aspect[1],
+      tuple.camera_up_aspect[2]};
+  result.camera.aspect_ratio=tuple.camera_up_aspect[3];
+  result.pixel_threshold=tuple.thresholds[0];
+  result.field_threshold=tuple.thresholds[1];
+  result.limb_threshold=tuple.thresholds[2];
+  result.field_lipschitz=tuple.field_bounds[1];
+  result.planet_radius=tuple.field_centre_radius[3];
+  result.maximum_red_depth=maximum_red_depth;
+  return result;
 }
 
 GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
@@ -451,7 +521,6 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
      parameters.maximum_red_depth>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy traversal parameters are invalid");
   GpuHierarchyTraversalResult result;
-  const auto projection=prepare_camera_projection(parameters.camera);
   std::vector<std::uint32_t> work;
   for(std::uint32_t index=0;index<snapshot.records.size();++index)
     if((snapshot.records[index].child_mask_flags&active_root_bit)!=0U)work.push_back(index);
@@ -459,13 +528,8 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const auto index=work[cursor];const auto& record=snapshot.records[index];
     ++result.metrics.visited;
     const auto address=gpu_hierarchy_address_from_lanes(record.address);
-    std::array<Vec3,4> corners{};
-    for(std::size_t corner=0;corner<corners.size();++corner) {
-      const auto& value=snapshot.selection_records[index].corners[corner];
-      corners[corner]={value[0],value[1],value[2]};
-    }
-    const auto projected=projected_tetrahedron(corners,projection);
-    if(!projected.intersects_frustum) { ++result.metrics.frustum_rejected;continue; }
+    const auto projected=gpu_selector_projection(snapshot.selection_records[index],parameters);
+    if(!projected.intersects) { ++result.metrics.frustum_rejected;continue; }
     const auto mask=record.child_mask_flags&child_mask;
     const bool can_refine=mask!=0U&&address.red_depth()<parameters.maximum_red_depth;
     if(!can_refine) { ++result.metrics.depth_terminated;result.selected_records.push_back(index);continue; }
@@ -475,11 +539,14 @@ GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const auto distance=std::max(1.0e-4,
         std::sqrt(offset.x*offset.x+offset.y*offset.y+offset.z*offset.z)-radius);
     const auto field_error=std::max(parameters.field_error_pixels,
-        radius*parameters.field_lipschitz*projection.focal_length/distance);
+        radius*parameters.field_lipschitz*
+            (parameters.camera.viewport_height_pixels/(2.0*std::tan(
+                parameters.camera.vertical_fov_radians*0.5)))/distance);
     const auto limb_error=parameters.planet_radius>0.0?
         (radius*radius/(2.0*std::max(parameters.planet_radius,radius)))*
-            projection.focal_length/distance:0.0;
-    if(projected.diameter_pixels<=parameters.pixel_threshold&&
+            (parameters.camera.viewport_height_pixels/(2.0*std::tan(
+                parameters.camera.vertical_fov_radians*0.5)))/distance:0.0;
+    if(projected.diameter<=parameters.pixel_threshold&&
        field_error<=parameters.field_threshold&&limb_error<=parameters.limb_threshold) {
       ++result.metrics.projected_terminated;
       ++result.metrics.field_terminated;

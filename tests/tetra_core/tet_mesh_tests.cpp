@@ -5145,6 +5145,15 @@ TEST_CASE("GPU hierarchy selector tuple is revisioned and render-origin relative
   CHECK(tuple.camera_relative_viewport[0]==doctest::Approx(1.0));
   CHECK(tuple.camera_relative_viewport[3]==doctest::Approx(900.0));
   CHECK(tuple.revision_lanes[0]==7U);CHECK(tuple.revision_lanes[2]==9U);
+  const auto traversal=tetra::gpu_hierarchy_traversal_parameters(tuple,5U);
+  CHECK(traversal.camera.position.x==doctest::Approx(1.0));
+  CHECK(traversal.camera.viewport_height_pixels==doctest::Approx(900.0));
+  CHECK(traversal.pixel_threshold==doctest::Approx(2.0));
+  CHECK(traversal.field_threshold==doctest::Approx(4.0));
+  CHECK(traversal.limb_threshold==doctest::Approx(1.0));
+  CHECK(traversal.maximum_red_depth==5U);
+  CHECK_THROWS_AS(static_cast<void>(tetra::gpu_hierarchy_traversal_parameters(
+      tuple,tetra::maximum_world_red_depth+1U)),std::invalid_argument);
   auto stale=tuple;stale.revision_lanes[0]=0U;stale.revision_lanes[1]=0U;
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_selection_tuple(stale),std::invalid_argument);
   p.merge_ratio=0.0;

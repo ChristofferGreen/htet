@@ -209,6 +209,12 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
 [[nodiscard]] GpuHierarchyTraversalResult gpu_hierarchy_traverse(
     const GpuHierarchySnapshot& snapshot,
     const GpuHierarchyTraversalParameters& parameters);
+// Converts the exact float payload consumed by gpu_lod.comp into the host
+// oracle's inputs. This is deliberately separate from the gameplay camera,
+// whose positions are in world metres rather than root-normalized space.
+[[nodiscard]] GpuHierarchyTraversalParameters
+gpu_hierarchy_traversal_parameters(const GpuHierarchySelectionTuple& tuple,
+    unsigned int maximum_red_depth=maximum_world_red_depth);
 [[nodiscard]] GpuHierarchySelectionOutput gpu_hierarchy_selection_output(
     const GpuHierarchyTraversalResult& traversal,std::uint32_t capacity);
 [[nodiscard]] GpuHierarchyExtraction gpu_hierarchy_extract_full_tetrahedra(

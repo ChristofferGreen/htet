@@ -1734,6 +1734,7 @@ void SceneRenderer::upload_gpu_hierarchy_snapshot(
   std::memcpy(mapped,snapshot.selection_records.data(),selection_bytes);
   vkUnmapMemory(device_,gpu_lod_selection_inputs_.memory);
   gpu_lod_uploaded_revision_=snapshot.header.source_world_revision;
+  gpu_lod_snapshot_=snapshot;
   gpu_lod_hierarchy_upload_pending_=true;
   gpu_lod_dispatch_status_.source_revision=gpu_lod_uploaded_revision_;
   gpu_lod_dispatch_status_.hierarchy_records=
@@ -2089,10 +2090,34 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       throw std::runtime_error("unable to map GPU LOD selection result");
     std::memcpy(result.data(),mapped,sizeof(result));
     vkUnmapMemory(device_,gpu_lod_output.memory);
-    if(gpu_lod_output.revision==gpu_lod_uploaded_revision_)
+    if(gpu_lod_output.revision==gpu_lod_uploaded_revision_) {
+      const bool overflow=result[3]!=0U||result[0]>1048576U;
+      std::uint32_t mismatches{};
+      bool oracle_matches=false;
+      if(!overflow&&gpu_lod_snapshot_&&gpu_lod_selection_tuple_) {
+        const auto oracle=tetra::gpu_hierarchy_traverse(*gpu_lod_snapshot_,
+            tetra::gpu_hierarchy_traversal_parameters(*gpu_lod_selection_tuple_));
+        std::vector<std::uint32_t> device(result[0]);
+        if(!device.empty()) {
+          if(vkMapMemory(device_,gpu_lod_output.memory,sizeof(result),
+              device.size()*sizeof(std::uint32_t),0,&mapped)!=VK_SUCCESS)
+            throw std::runtime_error("unable to map GPU LOD selected addresses");
+          std::memcpy(device.data(),mapped,device.size()*sizeof(std::uint32_t));
+          vkUnmapMemory(device_,gpu_lod_output.memory);
+        }
+        auto expected=oracle.selected_records;
+        std::ranges::sort(device);std::ranges::sort(expected);
+        const auto common=std::min(device.size(),expected.size());
+        for(std::size_t index=0;index<common;++index)
+          mismatches+=device[index]!=expected[index]?1U:0U;
+        mismatches+=static_cast<std::uint32_t>(
+            std::max(device.size(),expected.size())-common);
+        oracle_matches=mismatches==0U;
+      }
       gpu_lod_dispatch_status_={gpu_lod_output.revision,gpu_lod_output.record_count,
-          std::min(result[0],1048576U),result[1],result[2],true,
-          result[3]!=0U||result[0]>1048576U};
+          std::min(result[0],1048576U),result[1],result[2],mismatches,true,
+          overflow,oracle_matches};
+    }
     gpu_lod_output.pending=false;
   }
   const auto tuple_matches_hierarchy=[&]{
