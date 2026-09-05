@@ -70,7 +70,13 @@ void main(){
     hits[count++]=root.xyz;
   }
   if(count<3u)return;
-  uint emitted=(count==3u?3u:6u)*(parameters.subdivide_triangles==0u?1u:4u);
+  const uint triangle_mask=uint(input_cells.cells[cell_base+13u].w);
+  const uint allowed_mask=count==3u?1u:3u;
+  if(triangle_mask==0u||(triangle_mask&~allowed_mask)!=0u){
+    atomicOr(output_surface.header[5],1u);return;
+  }
+  uint emitted=bitCount(triangle_mask)*3u*
+      (parameters.subdivide_triangles==0u?1u:4u);
   // Diagnostic-only execution witness.  It distinguishes an empty source
   // from a failed reservation/write path without being used for rendering.
   atomicAdd(output_surface.header[6],emitted);
@@ -92,17 +98,21 @@ void main(){
   output_surface.header[1]=1u;
   vec4 draw_roots[4];for(uint i=0u;i<4u;++i)
     draw_roots[i]=input_cells.cells[cell_base+10u+i];
-  for(uint i=0u;i<count;++i)if(draw_roots[i].w!=1.0){
+  for(uint i=0u;i<min(count,3u);++i)if(draw_roots[i].w!=1.0){
     atomicOr(output_surface.header[5],1u);return;
   }
   vec4 midpoints[6];for(uint i=0u;i<6u;++i)
     midpoints[i]=input_cells.cells[cell_base+14u+i];
   uint stride=parameters.subdivide_triangles==0u?3u:12u;
-  put_subdivided_triangle(first,draw_roots[0].xyz,draw_roots[1].xyz,
-                          draw_roots[2].xyz,midpoints[0].xyz,
-                          midpoints[1].xyz,midpoints[2].xyz);
-  if(count==4u){
-    put_subdivided_triangle(first+stride,draw_roots[0].xyz,
+  uint cursor=first;
+  if((triangle_mask&1u)!=0u){
+    put_subdivided_triangle(cursor,draw_roots[0].xyz,draw_roots[1].xyz,
+                            draw_roots[2].xyz,midpoints[0].xyz,
+                            midpoints[1].xyz,midpoints[2].xyz);
+    cursor+=stride;
+  }
+  if((triangle_mask&2u)!=0u){
+    put_subdivided_triangle(cursor,draw_roots[0].xyz,
                             draw_roots[2].xyz,draw_roots[3].xyz,
                             midpoints[3].xyz,midpoints[4].xyz,
                             midpoints[5].xyz);

@@ -1707,7 +1707,13 @@ void SceneRenderer::stage_gpu_terrain_cells(
       if((first<=0.0F)==(second<=0.0F))continue;
       ++crossings;
     }
-    if(crossings>=3U)linear_vertices+=crossings==3U?3U:6U;
+    if(crossings>=3U){
+      const auto mask=static_cast<std::uint32_t>(cell.draw_roots[3U][3U]);
+      const auto allowed=crossings==3U?1U:3U;
+      if(mask==0U||(mask&~allowed)!=0U)
+        throw std::invalid_argument("GPU terrain cell has invalid triangle mask");
+      linear_vertices+=std::popcount(mask)*3U;
+    }
   }
   if(subdivide_triangles)linear_vertices*=4U;
   gpu_terrain_linear_expected_vertices_=static_cast<std::uint32_t>(
@@ -2091,10 +2097,13 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
               status.gpu_position_bounds[axis+3U],vertex.position[axis]);
         }
         status.position_bounds_match_cpu=true;
-        for(std::size_t index=0;index<status.gpu_position_bounds.size();++index)
-          status.position_bounds_match_cpu&=std::abs(
-              status.gpu_position_bounds[index]-status.cpu_position_bounds[index])<=
-              1.0e-3F;
+        for(std::size_t index=0;index<status.gpu_position_bounds.size();++index){
+          const auto error=std::abs(status.gpu_position_bounds[index]-
+                                    status.cpu_position_bounds[index]);
+          status.maximum_position_bounds_error=std::max(
+              status.maximum_position_bounds_error,error);
+          status.position_bounds_match_cpu&=error<=1.0e-3F;
+        }
       }
     }
     gpu_terrain_slot_pending_[image_index]=false;

@@ -4501,6 +4501,13 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
     const tetra::Sphere& field,
     tetra::Vec3 render_origin) {
   std::vector<tetra::GpuTerrainCellRecord> result;
+  std::set<std::array<tetra::WorldDerivedVertexKey,3>> final_triangles;
+  for(const auto& snapshot:cache.snapshots)
+    for(const auto& triangle:snapshot.triangles){
+      auto canonical=triangle.vertices;
+      std::ranges::sort(canonical);
+      final_triangles.insert(canonical);
+    }
   constexpr std::array<std::array<std::size_t,2>,6> edges{{
       {{0,1}},{{0,2}},{{0,3}},{{1,2}},{{1,3}},{{2,3}}}};
   for(const auto& certificates:cache.surface_certificate_blocks)
@@ -4549,7 +4556,8 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
         // authoritative topology while avoiding an empty GPU invocation.
         if(crossings<3U)continue;
         tetra::GpuTerrainCellRecord record{};
-        std::array<tetra::Vec3,4> crossing_roots{};
+        struct Crossing { tetra::WorldDerivedVertexKey key;tetra::Vec3 point; };
+        std::array<Crossing,4> crossing_roots{};
         std::size_t crossing_root_count{};
         for(std::size_t corner=0;corner<4U;++corner) {
           const auto point=indices[corner];
@@ -4579,13 +4587,13 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
           const auto root_relative=root-render_origin;
           record.edge_roots[edge]={static_cast<float>(root_relative.x),
               static_cast<float>(root_relative.y),static_cast<float>(root_relative.z),1.0F};
-          crossing_roots[crossing_root_count++]=root;
+          crossing_roots[crossing_root_count++]={key,root};
         }
         if(crossing_root_count!=crossings)
           throw std::logic_error("GPU surface crossing packet is incomplete");
         tetra::Vec3 centre{};
         for(std::size_t index=0;index<crossing_root_count;++index)
-          centre=centre+crossing_roots[index];
+          centre=centre+crossing_roots[index].point;
         centre=centre/static_cast<double>(crossing_root_count);
         const auto normal=field.normal(centre);
         const auto reference=std::abs(normal.z)<0.9?
@@ -4601,13 +4609,13 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
         const auto axis_u=cross(reference,normal),axis_v=cross(normal,axis_u);
         std::sort(crossing_roots.begin(),crossing_roots.begin()+
             static_cast<std::ptrdiff_t>(crossing_root_count),
-            [&](const tetra::Vec3& first,const tetra::Vec3& second){
-              const auto a=first-centre,b=second-centre;
+            [&](const Crossing& first,const Crossing& second){
+              const auto a=first.point-centre,b=second.point-centre;
               return std::atan2(dot(a,axis_v),dot(a,axis_u))<
                   std::atan2(dot(b,axis_v),dot(b,axis_u));
             });
         for(std::size_t index=0;index<crossing_root_count;++index){
-          const auto relative=crossing_roots[index]-render_origin;
+          const auto relative=crossing_roots[index].point-render_origin;
           record.draw_roots[index]={static_cast<float>(relative.x),
               static_cast<float>(relative.y),static_cast<float>(relative.z),1.0F};
         }
@@ -4617,12 +4625,27 @@ std::vector<tetra::GpuTerrainCellRecord> make_gpu_surface_candidate_cell_records
         const auto store_midpoint=[&](std::size_t destination,
                                       std::size_t first,std::size_t second){
           const auto midpoint=midpoint_field.project_to_surface(
-              (crossing_roots[first]+crossing_roots[second])/2.0);
+              (crossing_roots[first].point+crossing_roots[second].point)/2.0);
           const auto relative=midpoint-render_origin;
           record.subdivision_midpoints[destination]={
               static_cast<float>(relative.x),static_cast<float>(relative.y),
               static_cast<float>(relative.z),1.0F};
         };
+        const auto triangle_present=[&](std::size_t first,std::size_t second,
+                                        std::size_t third){
+          std::array<tetra::WorldDerivedVertexKey,3> canonical{{
+              crossing_roots[first].key,crossing_roots[second].key,
+              crossing_roots[third].key}};
+          std::ranges::sort(canonical);
+          return final_triangles.contains(canonical);
+        };
+        std::uint32_t triangle_mask=triangle_present(0U,1U,2U)?1U:0U;
+        if(crossing_root_count==4U&&triangle_present(0U,2U,3U))
+          triangle_mask|=2U;
+        if(triangle_mask==0U)continue;
+        // The fourth w slot is otherwise unused for triangles and is the
+        // compact per-cell final-surface emission mask for compute.
+        record.draw_roots[3][3]=static_cast<float>(triangle_mask);
         store_midpoint(0U,0U,1U);store_midpoint(1U,1U,2U);
         store_midpoint(2U,2U,0U);
         if(crossing_root_count==4U){

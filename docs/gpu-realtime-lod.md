@@ -1199,6 +1199,16 @@ rejects the packet: the remaining discrepancy is the CPU's five-pass global
 surface optimizer. This larger input is intentionally a diagnostic transport,
 not an acceleration claim.
 
+**P2 final-front membership gate, 2026-09-05.** Candidate compute cells are
+now admitted only when their CPU-wound triangle key exists in the published
+surface snapshots; quadrilateral cells carry a per-triangle emission mask.
+This shrank the diagnostic from 15,035 cells / 226,848 vertices to 10,937 /
+164,460 and reduced the bounds error from 12.8 km to 249 m. The remaining
+count mismatch is deliberate rejection evidence: the retained CPU draw front
+contains 18,904 base triangles while its snapshot directory exposes only
+13,705. GPU indirect drawing cannot be considered until that ownership/front
+identity gap is closed.
+
 **P2 draw-topology alignment, 2026-09-05.** The compute extractor now emits
 the same one-to-four triangle subdivision required by the planetary CPU draw
 path, controlled explicitly per staged terrain packet. The off-screen Vulkan

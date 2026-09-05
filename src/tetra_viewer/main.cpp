@@ -5110,6 +5110,22 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                         <<(gpu_extract.vertex_count_matches_cpu?"true":"false")
                         <<",\"position_bounds_match_cpu\":"
                         <<(gpu_extract.position_bounds_match_cpu?"true":"false")
+                        <<",\"maximum_position_bounds_error\":"
+                        <<gpu_extract.maximum_position_bounds_error
+                        <<",\"gpu_position_bounds\":["
+                        <<gpu_extract.gpu_position_bounds[0]<<','
+                        <<gpu_extract.gpu_position_bounds[1]<<','
+                        <<gpu_extract.gpu_position_bounds[2]<<','
+                        <<gpu_extract.gpu_position_bounds[3]<<','
+                        <<gpu_extract.gpu_position_bounds[4]<<','
+                        <<gpu_extract.gpu_position_bounds[5]<<']'
+                        <<",\"cpu_position_bounds\":["
+                        <<gpu_extract.cpu_position_bounds[0]<<','
+                        <<gpu_extract.cpu_position_bounds[1]<<','
+                        <<gpu_extract.cpu_position_bounds[2]<<','
+                        <<gpu_extract.cpu_position_bounds[3]<<','
+                        <<gpu_extract.cpu_position_bounds[4]<<','
+                        <<gpu_extract.cpu_position_bounds[5]<<']'
                         <<"},";
                     const auto& fitted_shadow=
                         g_SceneRenderer.atmosphere_shadow_map_status();

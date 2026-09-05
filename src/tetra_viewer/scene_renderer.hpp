@@ -100,6 +100,7 @@ struct GpuTerrainExtractStatus {
   std::array<float,6> gpu_position_bounds{};
   std::array<float,6> cpu_position_bounds{};
   bool position_bounds_match_cpu{};
+  float maximum_position_bounds_error{};
 };
 
 struct AtmosphereDispatchCounts {

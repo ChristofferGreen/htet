@@ -5998,9 +5998,16 @@ TEST_CASE("native sparse world surface is watertight and publishable without a m
     for(const auto& corner:record.corners)
       CHECK((corner[3]==-1.0F||corner[3]==1.0F));
   for(const auto& record:gpu_records){
-    const auto root_count=std::ranges::count_if(record.draw_roots,
-        [](const auto& root){return root[3]==1.0F;});
+    std::size_t root_count{};
+    for(const auto edge:gpu_edges)
+      root_count+=((record.corners[edge[0]][3]<0.0F)!=
+                   (record.corners[edge[1]][3]<0.0F))?1U:0U;
     CHECK((root_count==3||root_count==4));
+    for(std::size_t index=0;index<std::min<std::size_t>(root_count,3U);++index)
+      CHECK(record.draw_roots[index][3]==1.0F);
+    const auto mask=static_cast<std::uint32_t>(record.draw_roots[3][3]);
+    CHECK(mask>0U);
+    CHECK((mask&~(root_count==3U?1U:3U))==0U);
     const auto midpoint_count=std::ranges::count_if(record.subdivision_midpoints,
         [](const auto& midpoint){return midpoint[3]==1.0F;});
     CHECK(midpoint_count==(root_count==3?3:6));

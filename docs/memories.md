@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU terrain vertex-count parity is insufficient; completed slot output must match the actual retained CPU draw ranges' count and relative-position bounds at the identical render origin before indirect drawing is eligible. The planetary CPU draw path has one projected midpoint subdivision per extracted triangle.
 - Evidence: The GPU's 56,712 base vertices initially matched a pre-render metric but the retained CPU upload contains 226,848 vertices. Compute now matches that count with CPU field-projected midpoint transport; the bounds gate still rejects it because CPU's five-pass optimizer moves the base roots.
 
+### gpu-terrain-final-front-gate
+- Updated: 2026-09-05
+- Tags: terrain, gpu, parity, retained-front
+- Fact: A GPU surface packet must be keyed to the exact retained CPU draw front, not merely the wider certificate frontier or the current snapshot directory.
+- Evidence: Snapshot-key filtering reduced a 12.8 km bounds mismatch to 249 m but emitted 13,705 base triangles while the visible retained front has 18,904, proving the two currently disagree.
+
 ### gpu-terrain-root-transport
 - Updated: 2026-09-05
 - Tags: terrain, gpu, roots, parity
