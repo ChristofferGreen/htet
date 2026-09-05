@@ -1254,6 +1254,14 @@ and index gates for the identical staged revision; a new publication resets
 qualification. The normal CPU route remains the default and fallback. This
 provides a controlled image-capture subject without promoting the GPU path.
 
+**P2 image parity and promotion, 2026-09-05.** Fixed and moving-camera
+off-screen captures of the qualified indirect path are byte-identical to CPU
+colour and depth captures. The moving test uses 180 automated walk steps and
+captures after 60 post-motion frames. Realtime GPU surface LOD now selects the
+indirect path only after all per-revision structural gates complete; initial,
+stale, overflowing, or failed output continues to draw CPU terrain. P3 now
+owns controlled camera-to-pixels latency measurement.
+
 - [ ] Visually inspect terrain and the other implicit shapes for missing faces,
   cracks, incorrect orientation, unstable LOD, and wireframe defects.
 - [ ] Retain the on-demand path only if it improves complete interactive
