@@ -3302,7 +3302,14 @@ int main(int argc,char** argv) {
        (raster_profile_qualification&&(motion_test||metalfx_test)))&&
       (std::getenv("TETWORLD_METAL_PROFILE_INTERACTIVE")!=nullptr||
        timing_profile_test||raster_profile_qualification);
-  bool preview_enabled=!automated_test;
+  // The current preview replacement does not yet clip exact triangles at the
+  // clipmap boundary.  Leaving it enabled by default can either overlap the
+  // two surfaces or, when overlap is suppressed, create a non-watertight
+  // skirt.  Keep the production Metal display on the coherent exact front
+  // until that boundary is represented watertightly.  The explicit
+  // environment switch and diagnostics checkbox retain the experimental path
+  // for qualification work.
+  bool preview_enabled=false;
   if(const char* value=std::getenv("TETWORLD_METAL_PREVIEW");value!=nullptr){
     if(std::strcmp(value,"0")==0)preview_enabled=false;
     else if(std::strcmp(value,"1")==0)preview_enabled=true;
@@ -5362,7 +5369,7 @@ int main(int argc,char** argv) {
             &exposure_minimum,&exposure_maximum,"%.2f");
 
         if(runtime&&ImGui::CollapsingHeader("Terrain diagnostics")){
-          if(ImGui::Checkbox("Fast terrain preview",&preview_enabled)&&
+          if(ImGui::Checkbox("Experimental fast terrain preview",&preview_enabled)&&
              !preview_enabled)
             preview_surface_worker.cancel();
           ImGui::Text("Scene generation %llu   triangles %zu",
