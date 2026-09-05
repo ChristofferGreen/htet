@@ -2,6 +2,15 @@
 
 ## 2026-09-06
 
+- [x] **P6a — Freeze the shader-visible Grande template contract.** Added the
+  immutable 64-entry, 7 KiB GPU-facing table: each 112-byte entry packs the
+  CPU Grande tetrahedron point indices, its mask, and exact cell count. The
+  host validator rejects every mismatch with the CPU table, malformed header,
+  nonzero unused entry, bad table length, and out-of-range tetrahedron lookup.
+  The focused Release test ran 4,688 assertions across every mask and its 12
+  orientation-preserving permutations. It does not derive a mask or draw GPU
+  output; P6b owns dependency derivation.
+
 - [x] **P5c2 — Qualify interactive Metal runtime slots and CPU fallback.** An
   opt-in three-slot Metal diagnostic now snapshots immutable CPU-front
   generation/origin/count and a canonical geometry fingerprint at submission;

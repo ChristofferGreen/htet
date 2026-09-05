@@ -104,6 +104,61 @@ std::vector<WorldTetAddress> block_graph_order(
 
 }  // namespace
 
+std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
+    const GpuGreenTemplateRecord& record,std::size_t index) {
+  if(index>=record.count||index>=record.packed_tetrahedra.size())
+    throw std::out_of_range("GPU green template tetrahedron index is invalid");
+  const auto packed=record.packed_tetrahedra[index];
+  return {{static_cast<std::uint8_t>(packed),
+           static_cast<std::uint8_t>(packed>>8U),
+           static_cast<std::uint8_t>(packed>>16U),
+           static_cast<std::uint8_t>(packed>>24U)}};
+}
+
+GpuGreenTemplateTable make_gpu_green_template_table() {
+  GpuGreenTemplateTable result{};
+  for(std::uint32_t mask=0U;mask<result.size();++mask) {
+    const auto& source=complete_green_template(static_cast<std::uint8_t>(mask));
+    auto& target=result[mask];
+    target.count=source.count;target.mask=mask;
+    for(std::size_t index=0U;index<source.count;++index) {
+      const auto& tetrahedron=source.tetrahedra[index];
+      target.packed_tetrahedra[index]=
+          static_cast<std::uint32_t>(tetrahedron[0])|
+          (static_cast<std::uint32_t>(tetrahedron[1])<<8U)|
+          (static_cast<std::uint32_t>(tetrahedron[2])<<16U)|
+          (static_cast<std::uint32_t>(tetrahedron[3])<<24U);
+    }
+  }
+  validate_gpu_green_template_table(result);
+  return result;
+}
+
+void validate_gpu_green_template_table(
+    std::span<const GpuGreenTemplateRecord> table) {
+  if(table.size()!=64U)
+    throw std::invalid_argument("GPU green template table has wrong size");
+  for(std::size_t mask=0U;mask<table.size();++mask) {
+    const auto& actual=table[mask];
+    const auto& expected=complete_green_template(static_cast<std::uint8_t>(mask));
+    if(actual.mask!=mask||actual.count!=expected.count||actual.count==0U||
+       actual.count>actual.packed_tetrahedra.size()||actual.reserved0!=0U||
+       actual.reserved1!=0U)
+      throw std::invalid_argument("GPU green template header is invalid");
+    for(std::size_t index=0U;index<actual.packed_tetrahedra.size();++index) {
+      const auto packed=actual.packed_tetrahedra[index];
+      if(index>=actual.count) {
+        if(packed!=0U)throw std::invalid_argument(
+            "GPU green template has nonzero unused tetrahedron");
+        continue;
+      }
+      const auto tetrahedron=gpu_green_template_tetrahedron(actual,index);
+      if(tetrahedron!=expected.tetrahedra[index])
+        throw std::invalid_argument("GPU green template differs from Grande");
+    }
+  }
+}
+
 std::array<std::uint32_t,4> gpu_hierarchy_address_lanes(
     WorldTetAddress address) noexcept {
   return {{low32(address.high),high32(address.high),low32(address.low),high32(address.low)}};

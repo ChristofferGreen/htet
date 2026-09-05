@@ -353,20 +353,25 @@ The CPU may remain authoritative for persistence, editing, collision, export,
 and conforming-volume work until the later full-volume milestone. Details and
 evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
-- [ ] **P6 — Specify and prove the BCC render-front conformity contract.** Use
-      the existing 64 restricted-green edge-mask templates as the baseline,
-      not a new surface authority. Define how the GPU derives globally
-      consistent refined-edge masks from the candidate frontier and required
-      neighbour/ancestor addresses, then applies the same canonical template,
-      face, edge, and orientation rules as CPU. Prove a conservative BCC
-      conformity dependency domain/halo distinct from red-descendant bounds,
-      so culling cannot omit required transitions. Define exact per-mask output
-      counts, revisioning, and fail-closed behaviour; exhaust all masks and
-      supported adjacent mixed-depth motifs with no overlap, holes, duplicate
-      faces, or finite preview boundary. P4c output cannot become drawable
-      until this contract passes. Dependency-cluster and Wald-style dual-owner
-      methods remain comparisons only if the exact template path cannot meet
-      correctness or performance gates.
+- [ ] **P6 — Specify and prove the BCC render-front conformity contract.**
+      This tracker keeps the existing 64 restricted-green templates as the
+      sole surface grammar. P4c output remains non-drawable until every leaf
+      below has passed; dependency-cluster and Wald-style dual ownership remain
+      comparisons only if this exact route fails a measured gate.
+  - [ ] **P6b — Derive candidate-front edge masks from exact dependencies.**
+        Define a revisioned GPU-facing owner/edge dependency packet and a CPU
+        oracle that derives the same restricted-green masks from selected
+        owners, required ancestor splits, and shared edge identity. Acceptance:
+        fixed and changing candidate fronts match the authoritative closure
+        masks, and missing/malformed/stale packets fail closed. Stop rule: no
+        surface field evaluation, root solving, or render-front promotion.
+  - [ ] **P6c — Prove the BCC dependency halo and mixed-depth grammar.**
+        Exhaust the 64 masks and supported adjacent mixed-depth/root-boundary
+        motifs through the P6 packet/oracle, proving shared faces, edge
+        identity, orientation, and exact per-mask counts with no holes,
+        overlaps, duplicate faces, or finite preview boundary. Acceptance:
+        culling may omit an owner only when its declared dependency halo proves
+        it cannot alter an emitted transition. Stop rule: retain CPU rendering.
 - [ ] **P7 — Generate the watertight BCC surface on the GPU.** Replace the
       production dependency on `GpuTerrainCellRecord`—including its CPU roots,
       winding, midpoints, and normals—and retire P4a's 112-byte corner/bounds

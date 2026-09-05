@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 01:00 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 495 tests passed after P6a; the new GPU Grande-template ABI test made 4,688 assertions over 64 masks, all orientation-preserving permutations, and malformed table cases.
+
 - 2026-09-06 00:36 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 494 tests passed, including hidden static and moving Metal GPU-terrain slot qualification; fixed capture accepted 3 packets, while motion accepted 135 and stale-rejected 1 with zero payload failures, overflow, or CPU-front authority violations.
 
 - 2026-09-06 00:15 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 492 tests passed in 596.80 seconds, including the hidden Metal published-front runtime extraction fixture.

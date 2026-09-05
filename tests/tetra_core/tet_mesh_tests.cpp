@@ -543,6 +543,56 @@ TEST_CASE("green masks canonicalize under every orientation preserving vertex pe
                   std::invalid_argument);
 }
 
+TEST_CASE("GPU Grande template table is exact compact and fail closed") {
+  const auto table=tetra::make_gpu_green_template_table();
+  REQUIRE(table.size()==64U);
+  CHECK_NOTHROW(tetra::validate_gpu_green_template_table(table));
+  std::vector<std::array<std::uint8_t,4>> orientations;
+  std::array<std::uint8_t,4> order{{0U,1U,2U,3U}};
+  do {
+    unsigned int inversions{};
+    for(std::size_t first=0U;first<order.size();++first)
+      for(std::size_t second=first+1U;second<order.size();++second)
+        inversions+=order[first]>order[second]?1U:0U;
+    if((inversions&1U)==0U)orientations.push_back(order);
+  } while(std::next_permutation(order.begin(),order.end()));
+  REQUIRE(orientations.size()==12U);
+  for(std::uint8_t mask=0U;mask<64U;++mask) {
+    const auto& expected=tetra::complete_green_template(mask);
+    const auto& record=table[mask];
+    CHECK(record.mask==mask);
+    CHECK(record.count==expected.count);
+    for(std::size_t index=0U;index<record.count;++index)
+      CHECK(tetra::gpu_green_template_tetrahedron(record,index)==
+            expected.tetrahedra[index]);
+    for(const auto& orientation:orientations) {
+      const auto permuted=tetra::permute_green_mask(mask,orientation);
+      const auto& oriented=table[permuted];
+      CHECK(oriented.count==tetra::complete_green_template(permuted).count);
+      for(std::size_t index=0U;index<oriented.count;++index)
+        CHECK(tetra::gpu_green_template_tetrahedron(oriented,index)==
+              tetra::complete_green_template(permuted).tetrahedra[index]);
+    }
+  }
+  auto malformed=table;
+  malformed[7].count=25U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_template_table(malformed),
+                  std::invalid_argument);
+  malformed=table;malformed[12].mask=13U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_template_table(malformed),
+                  std::invalid_argument);
+  malformed=table;malformed[31].packed_tetrahedra[0]^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_template_table(malformed),
+                  std::invalid_argument);
+  malformed=table;malformed[45].packed_tetrahedra[23]=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_green_template_table(malformed),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(tetra::validate_gpu_green_template_table(
+                      std::span{table}.first(63U)),std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::gpu_green_template_tetrahedron(
+                      table[0],table[0].count)),std::out_of_range);
+}
+
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
   const auto construction=tetra::make_four_hexahedra();
   REQUIRE(construction.cells.size()==4U);

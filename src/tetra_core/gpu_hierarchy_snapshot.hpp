@@ -2,6 +2,7 @@
 
 #include "tetra_core/world_cut_directory.hpp"
 #include "tetra_core/implicit_surface.hpp"
+#include "tetra_core/green_templates.hpp"
 
 #include <array>
 #include <cstdint>
@@ -13,6 +14,28 @@ namespace tetra {
 
 inline constexpr std::uint32_t gpu_hierarchy_format_version=1U;
 inline constexpr std::uint32_t gpu_hierarchy_invalid_index=0xffffffffU;
+
+// P6a's immutable GPU-facing copy of the exact Grande grammar. Each word
+// packs four point indices in low-to-high bytes, matching CompleteGreenTemplate
+// tetrahedra. It is deliberately separate from hierarchy records and dynamic
+// selection/output buffers: it is a tiny read-only shader resource (64 * 112
+// bytes), not a second topology authority.
+struct alignas(16) GpuGreenTemplateRecord {
+  std::array<std::uint32_t,24> packed_tetrahedra{};
+  std::uint32_t count{};
+  std::uint32_t mask{};
+  std::uint32_t reserved0{};
+  std::uint32_t reserved1{};
+};
+static_assert(sizeof(GpuGreenTemplateRecord)==112U);
+static_assert(alignof(GpuGreenTemplateRecord)==16U);
+using GpuGreenTemplateTable=std::array<GpuGreenTemplateRecord,64>;
+
+[[nodiscard]] GpuGreenTemplateTable make_gpu_green_template_table();
+void validate_gpu_green_template_table(
+    std::span<const GpuGreenTemplateRecord> table);
+[[nodiscard]] std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
+    const GpuGreenTemplateRecord& record,std::size_t index);
 
 // Storage-buffer representation. This is deliberately made only from fixed
 // width scalar fields: it can be copied verbatim to a GPU storage buffer.

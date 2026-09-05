@@ -1442,18 +1442,29 @@ topology, and complete-frame gates.
     P7 remains the separate GPU-native field/topology milestone.
 - [ ] **P6 — Exact restricted-green BCC conformity contract.** Treat P4c's
   selected addresses as candidates and use the existing 64 restricted-green
-  edge-mask templates as the baseline surface grammar. Define how GPU work
-  derives globally consistent refined-edge masks from required neighbouring
-  and ancestor addresses, then applies the CPU's canonical template, shared-
-  face, edge-identity, and orientation rules. Prove a conservative BCC
-  conformity dependency domain/halo separate from each red node's descendant
-  bound, so frustum and relevance rejection cannot omit required transitions.
-  Define exact per-mask output counts, revisioning, capacity, and fail-closed
-  behaviour. A CPU oracle must exhaust all 64 masks and supported adjacent
-  mixed-depth motifs and prove no skirts, duplicate faces, overlaps, holes, or
-  finite preview boundary. Candidate output remains diagnostic and cannot be
-  drawn until this contract passes. Dependency-cluster and Wald-inspired
-  dual-owner methods remain conditional comparisons, not parallel authorities.
+  edge-mask templates as the sole surface grammar. Candidate output remains
+  diagnostic and cannot be drawn until these ordered leaves close; dependency-
+  cluster and Wald-inspired dual-owner methods remain conditional comparisons,
+  not parallel authorities.
+  - [x] **P6a — Frozen Grande template ABI.** Published a compact immutable
+    shader-visible table of all 64 CPU Grande templates, their exact positive-
+    volume point-index tetrahedra, and output cardinalities. Host reconstruction
+    and all 64 by 12 orientation-preserving mask permutations reproduce the CPU
+    table; wrong sizes, masks, counts, packed tetrahedra, unused data, and index
+    access fail closed. This leaf defines grammar only—it neither derives masks
+    nor makes output drawable.
+  - [ ] **P6b — Revisioned candidate-front mask derivation.** Define the
+    GPU-facing owner/edge dependency packet and a CPU oracle that derives each
+    restricted-green mask from selected owners, required ancestor splits, and
+    global shared-edge identity. Fixed and changing candidate fronts must match
+    the authoritative closure masks; missing, malformed, or stale packets fail
+    closed. Field evaluation, root solving, and promotion remain P7/P8 work.
+  - [ ] **P6c — Halo and mixed-depth proof.** Exhaust masks and supported
+    mixed-depth/root-boundary motifs through the P6 packet/oracle, proving
+    common faces, edge identities, orientations, exact counts, and absence of
+    holes, overlap, duplicated faces, or finite preview boundaries. A culled
+    owner is allowed only where its declared dependency halo proves it cannot
+    alter a transition; CPU rendering remains authoritative.
 - [ ] **P7 — GPU-native watertight BCC surface generation.** Remove the
   production dependency on the 448-byte `GpuTerrainCellRecord`, whose roots,
   winding, projected midpoints, and normals are currently computed by the CPU,
