@@ -1895,6 +1895,7 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   finalize_render_front_metrics(initial.diagnostics);
   directory_=std::move(initial.directory);
   scene_=std::move(initial.scene);diagnostics_=initial.diagnostics;
+  gpu_green_mask_packet_=std::move(initial.gpu_green_mask_packet);
   published_view_identity_=initial.view_identity;
   surface_cache_=std::move(initial.surface_cache);
   hierarchy_demand_=std::move(initial.hierarchy_demand);
@@ -2414,6 +2415,14 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
     // intentionally executed by the publication worker, never the presenter.
     gpu_surface_cells=make_gpu_surface_candidate_cell_records(surface_cache,
         profile.domain,field,prepared.scene.render_origin);
+  // P6 is topology derived by the same closure transaction that produced this
+  // directory.  Build its immutable sidecar here, while that transaction is
+  // still private, rather than making the presentation thread replay closure
+  // from every logical owner on every GPU submission.
+  std::optional<tetra::GpuGreenMaskPacket> gpu_green_mask_packet;
+  if(gpu_terrain_extraction_diagnostic)
+    gpu_green_mask_packet=tetra::make_gpu_green_mask_packet_from_closure(
+        requested_owners,surface_cache.closure,directory->revision());
   // Keep the closure's requested cut, green masks, causal proofs and immutable
   // dependency blocks only for a bounded-frontier transaction. The next slice
   // consumes its exact changed-owner/block manifest; the unsliced profile may
@@ -2822,7 +2831,8 @@ BlockedTerrainRuntime::Publication BlockedTerrainRuntime::build_publication(
   }
   return {view_identity,std::move(directory),std::move(hierarchy_update),
           std::move(scene),diagnostics,
-          std::move(surface_cache),std::move(gpu_surface_cells),std::move(hierarchy_plan.state),
+          std::move(surface_cache),std::move(gpu_surface_cells),
+          std::move(gpu_green_mask_packet),std::move(hierarchy_plan.state),
           std::move(atmosphere_shadow_front),std::move(detail_working_set),
           target_converged,false,false,false,false};
   }catch(const std::runtime_error&){
@@ -3278,6 +3288,8 @@ bool BlockedTerrainRuntime::update() {
     surface_cache_=std::move(publication.surface_cache);
     gpu_surface_cells_=
         std::move(publication.gpu_surface_cells);
+    gpu_green_mask_packet_=
+        std::move(publication.gpu_green_mask_packet);
     gpu_surface_conforming_revision_=gpu_surface_cells_?
         directory_->revision():0U;
     hierarchy_demand_=std::move(publication.hierarchy_demand);

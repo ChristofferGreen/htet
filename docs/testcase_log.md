@@ -2,10 +2,11 @@
 
 ## Current Known Failures
 
-- [ ] GPU terrain private-front moving qualification | mode: Release, hidden native Metal | command: `TETWORLD_METAL_GPU_TERRAIN_RENDERER=1 TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION=1 TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-motion-smoke-test` | first_seen: 2026-09-06 17:51 CEST | last_seen: 2026-09-06 17:56 CEST | next: cache or asynchronously construct the P6 packet, then rerun the same command | notes: canceled after five minutes before a GPU candidate dispatch. Main thread was CPU-bound in `make_gpu_green_mask_packet` on the production cut (6.0 GiB footprint), so this is a P8b/P8c generation blocker rather than a readback failure.
+- none
 
 ## Recent Test Runs
 
+- 2026-09-06 19:15 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 511 tests passed after publishing P6 packets in the background terrain closure; focused equality and nonblocking-motion checks passed.
 - 2026-09-06 17:56 CEST | canceled, P8b blocker | mode: Release, hidden native Metal | command: `TETWORLD_METAL_GPU_TERRAIN_RENDERER=1 TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION=1 TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-motion-smoke-test` | failures: GPU terrain private-front moving qualification | notes: Normal GPU selection only seeds the private front during automation; enabling native generation exposed synchronous CPU construction of the full P6 green-mask packet before dispatch. Terminated after five minutes without a candidate completion.
 - 2026-09-06 16:13 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh non-contended Release gate passed all 510 tests after P8a; the GPU selector smoke reported a private indirect front available without dispatching or reading a candidate payload.
 - 2026-09-06 15:59 CEST | fail then resolved | mode: Release | command: `./scripts/compile.sh --release`; focused rerun: `ctest --test-dir build/release --rerun-failed --output-on-failure` | failures: metal GPU terrain live private slots | notes: The full gate's live-slot test was contended by an earlier canceled diagnostic run; the fresh rebuilt isolated rerun passed in 0.50 s. A clean full Release rerun is required before commit.

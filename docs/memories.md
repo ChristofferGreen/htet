@@ -16,6 +16,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P6b transports canonical candidate addresses and closure-resolved masks through a globally sorted full-dyadic edge directory, with six exact edge references per owner and an explicit split-ancestor requirement flag.
 - Evidence: Its validator independently reruns the exact CPU closure and rejects any stale revision or divergence in candidate, owner, mask, edge identity, reference, format, or ordering.
 
+### gpu-green-mask-packet-publication
+- Updated: 2026-09-06
+- Tags: gpu, terrain, closure, publication, metal
+- Fact: The P6 packet must be constructed from the private publication closure cache and adopted with its directory revision; Metal must consume that immutable sidecar rather than rebuilding closure on the presentation thread.
+- Evidence: The direct factory byte-matches the full rebuild oracle, rejects a mismatched cache, and the runtime motion-pump regression confirms a generation-matched packet is retained without synchronous packet construction.
+
 ### gpu-green-mask-topology
 - Updated: 2026-09-06
 - Tags: gpu, bcc, conformity, topology

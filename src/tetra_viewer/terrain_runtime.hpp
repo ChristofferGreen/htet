@@ -627,6 +627,10 @@ class TerrainRuntime {
   world_conforming_volume() const noexcept { return nullptr; }
   [[nodiscard]] virtual std::span<const tetra::GpuTerrainCellRecord>
   world_surface_gpu_cells() const noexcept { return {}; }
+  // Immutable P6 topology sidecar published with the directory and scene.
+  // Callers must retain the preceding complete front if this is absent.
+  [[nodiscard]] virtual const tetra::GpuGreenMaskPacket*
+  gpu_green_mask_packet() const noexcept { return nullptr; }
   [[nodiscard]] virtual const std::optional<AtmosphereShadowFront>&
   atmosphere_shadow_front() const noexcept {
     static const std::optional<AtmosphereShadowFront> none;
@@ -723,6 +727,12 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
         std::span<const tetra::GpuTerrainCellRecord>{*gpu_surface_cells_}:
         std::span<const tetra::GpuTerrainCellRecord>{};
   }
+  [[nodiscard]] const tetra::GpuGreenMaskPacket*
+  gpu_green_mask_packet() const noexcept override {
+    return gpu_green_mask_packet_&&directory_&&
+        gpu_green_mask_packet_->header.source_revision==directory_->revision()?
+        &*gpu_green_mask_packet_:nullptr;
+  }
   [[nodiscard]] std::span<const TerrainResidentSector>
   resident_terrain_sectors() const noexcept override {
     return detail_working_set_.sectors;
@@ -756,6 +766,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
     TerrainRuntimeDiagnostics diagnostics;
     SparseWorldSurfaceCache surface_cache;
     std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells;
+    std::optional<tetra::GpuGreenMaskPacket> gpu_green_mask_packet;
     WorldHierarchyDemandState hierarchy_demand;
     std::optional<AtmosphereShadowFront> atmosphere_shadow_front;
     TerrainDetailWorkingSet detail_working_set;
@@ -807,6 +818,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   tetra::Camera last_requested_camera_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
   std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells_;
+  std::optional<tetra::GpuGreenMaskPacket> gpu_green_mask_packet_;
   std::uint64_t gpu_surface_conforming_revision_{};
   mutable PreparedScene scene_;
   TerrainRuntimeDiagnostics diagnostics_;

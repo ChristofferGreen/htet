@@ -152,17 +152,19 @@ bool gpu_green_mask_reflected(WorldTetAddress address) {
   return determinant<0.0;
 }
 
-GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
-    std::span<const WorldTetAddress> candidates,std::uint64_t source_revision) {
+GpuGreenMaskPacket make_gpu_green_mask_packet_from_closed_cache(
+    std::span<const WorldTetAddress> candidates,
+    const WorldConformingClosureCache& closure,
+    std::uint64_t source_revision) {
   std::vector<WorldTetAddress> ordered(candidates.begin(),candidates.end());
   if(!std::ranges::is_sorted(ordered)||
      std::ranges::adjacent_find(ordered)!=ordered.end())
     throw std::invalid_argument("GPU green mask candidates are not canonical");
-  WorldConformingClosureCache closure;
-  const auto closed=close_world_conforming_cut(ordered,&closure);
-  if(closed!=closure.closed_owners||
-     closure.green_masks.size()!=closed.size())
+  if(closure.requested_owners!=ordered||
+     closure.closed_owners.empty()||
+     closure.green_masks.size()!=closure.closed_owners.size())
     throw std::logic_error("GPU green mask oracle did not publish masks");
+  const auto& closed=closure.closed_owners;
   std::vector<WorldEdgeKey> ancestor_edges;
   ancestor_edges.reserve(closure.requested_split_ancestors.size()*6U);
   for(const auto& ancestor:closure.requested_split_ancestors) {
@@ -215,6 +217,16 @@ GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
   return result;
 }
 
+GpuGreenMaskPacket make_gpu_green_mask_packet_unchecked(
+    std::span<const WorldTetAddress> candidates,std::uint64_t source_revision) {
+  WorldConformingClosureCache closure;
+  const auto closed=close_world_conforming_cut(candidates,&closure);
+  if(closed!=closure.closed_owners)
+    throw std::logic_error("GPU green mask oracle did not publish masks");
+  return make_gpu_green_mask_packet_from_closed_cache(
+      candidates,closure,source_revision);
+}
+
 }  // namespace
 
 std::array<std::uint8_t,4> gpu_green_template_tetrahedron(
@@ -233,6 +245,13 @@ GpuGreenMaskPacket make_gpu_green_mask_packet(
   auto result=make_gpu_green_mask_packet_unchecked(candidates,source_revision);
   validate_gpu_green_mask_packet(result,source_revision);
   return result;
+}
+
+GpuGreenMaskPacket make_gpu_green_mask_packet_from_closure(
+    std::span<const WorldTetAddress> candidates,
+    const WorldConformingClosureCache& closure,std::uint64_t source_revision) {
+  return make_gpu_green_mask_packet_from_closed_cache(
+      candidates,closure,source_revision);
 }
 
 GpuTerrainFieldTuple make_gpu_terrain_field_tuple(

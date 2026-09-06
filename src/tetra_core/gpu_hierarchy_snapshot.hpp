@@ -162,6 +162,13 @@ gpu_terrain_project_base_triangles(std::span<const GpuTerrainBaseTriangleRecord>
     const Sphere& field,Vec3 render_origin,std::uint32_t capacity);
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
+// Builds the immutable P6 transport from the closure already computed for a
+// candidate publication.  Unlike make_gpu_green_mask_packet this is the
+// production path: it must not replay closure merely to stage GPU input.
+[[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet_from_closure(
+    std::span<const WorldTetAddress> candidates,
+    const WorldConformingClosureCache& closure,
+    std::uint64_t source_revision);
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision);
 [[nodiscard]] GpuGreenMaskTopology gpu_green_mask_packet_topology(

@@ -1021,6 +1021,16 @@ struct MetalGpuTerrainNativeDiagnosticSlot {
   }
 };
 
+// Immutable P6 inputs are shared by all three flights for one published
+// candidate.  Only the compact field tuple changes per submission.
+struct MetalGpuTerrainPacketUpload {
+  id<MTLBuffer> owners=nil;
+  id<MTLBuffer> templates=nil;
+  std::uint64_t source_revision{};
+  std::uint64_t candidate_identity{};
+  std::size_t owner_count{};
+};
+
 // The P8 active surface is always private.  CPU geometry may seed it after a
 // new exact publication, but candidate validation and replacement never map
 // it: invalid work simply leaves these prior complete contents untouched.
@@ -5237,6 +5247,7 @@ int main(int argc,char** argv) {
     std::uint64_t gpu_terrain_slot_cursor{};
     std::array<MetalGpuTerrainNativeDiagnosticSlot,3>
         gpu_terrain_native_slots;
+    MetalGpuTerrainPacketUpload gpu_terrain_packet_upload;
     std::uint64_t gpu_terrain_native_slot_cursor{};
     bool gpu_terrain_renderer_available{};
     auto gpu_terrain_counters=
@@ -5975,7 +5986,8 @@ int main(int argc,char** argv) {
         }
         if(runtime){
           runtime->set_gpu_terrain_extraction_diagnostic(
-              metal_gpu_terrain_diagnostic);
+              metal_gpu_terrain_diagnostic||metal_gpu_terrain_native_diagnostic||
+              gpu_terrain_renderer_selected);
           const auto published_view=runtime->published_view_identity();
           if(!terrain_front_coordinator.state().current_view.valid()&&
              published_view.valid())
@@ -7202,11 +7214,16 @@ int main(int argc,char** argv) {
           auto& slot=gpu_terrain_native_slots[
               gpu_terrain_native_slot_cursor++%gpu_terrain_native_slots.size()];
           const auto* directory=runtime->world_cut_directory();
+          // The P6 sidecar was constructed by the private terrain
+          // publication.  Never reconstruct closure (or its packet) from the
+          // presenter: a missing/stale sidecar simply retains this front.
+          const auto* packet=runtime->gpu_green_mask_packet();
           const auto origin=runtime->render_origin();
           const auto field_revision=runtime->published_view_identity().field_revision;
           const auto source_revision=directory==nullptr?0U:directory->revision();
           const auto vertex_count=terrain_display_front.exact_vertex_count;
-          if(!slot.pending&&directory!=nullptr&&source_revision!=0U&&
+          if(!slot.pending&&directory!=nullptr&&packet!=nullptr&&
+             packet->header.source_revision==source_revision&&source_revision!=0U&&
              diagnostics.scene_generation!=0U&&field_revision!=0U&&
              vertex_count>=12U&&
              vertex_count<=std::numeric_limits<std::uint32_t>::max()&&
@@ -7214,14 +7231,7 @@ int main(int argc,char** argv) {
              gpu_terrain_active_front.indirect_arguments!=nil&&
              gpu_terrain_active_front.vertex_capacity>=vertex_count&&
              gpu_terrain_active_front.identity==terrain_display_front.identity){
-            std::vector<tetra::WorldTetAddress> owners;
-            owners.reserve(directory->logical_owner_count());
-            directory->for_each_logical_owner(
-                [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
-            std::ranges::sort(owners);
             try {
-              const auto packet=tetra::make_gpu_green_mask_packet(
-                  owners,source_revision);
               tetra::GpuTerrainFieldTupleParameters parameters;
               parameters.field=runtime->field();
               parameters.domain=runtime->profile().domain;
@@ -7235,7 +7245,7 @@ int main(int argc,char** argv) {
               // silently truncating a valid P6 packet.  Three diagnostic
               // flights remain bounded to 768 MiB and are opt-in only.
               constexpr std::size_t maximum_slot_bytes=256U*1024U*1024U;
-              const std::size_t owner_count=packet.owners.size();
+              const std::size_t owner_count=packet->owners.size();
               const std::size_t root_slots=owner_count*24U;
               const std::size_t compaction_blocks=(root_slots+255U)/256U;
               const std::size_t triangle_capacity=vertex_count/12U;
@@ -7278,9 +7288,22 @@ int main(int argc,char** argv) {
                       options:MTLResourceStorageModeShared];
                 };
                 slot.field=shared(device,&tuple,sizeof(tuple));
-                slot.owners=shared(device,packet.owners.data(),
-                    packet.owners.size()*sizeof(packet.owners.front()));
-                slot.templates=shared(device,templates.data(),sizeof(templates));
+                if(gpu_terrain_packet_upload.source_revision!=source_revision||
+                   gpu_terrain_packet_upload.candidate_identity!=
+                       packet->header.candidate_identity||
+                   gpu_terrain_packet_upload.owner_count!=owner_count){
+                  gpu_terrain_packet_upload.owners=shared(device,
+                      packet->owners.data(),packet->owners.size()*
+                          sizeof(packet->owners.front()));
+                  gpu_terrain_packet_upload.templates=shared(
+                      device,templates.data(),sizeof(templates));
+                  gpu_terrain_packet_upload.source_revision=source_revision;
+                  gpu_terrain_packet_upload.candidate_identity=
+                      packet->header.candidate_identity;
+                  gpu_terrain_packet_upload.owner_count=owner_count;
+                }
+                slot.owners=gpu_terrain_packet_upload.owners;
+                slot.templates=gpu_terrain_packet_upload.templates;
                 slot.roots=[device newBufferWithLength:*roots_bytes
                     options:MTLResourceStorageModePrivate];
                 slot.counts=[device newBufferWithLength:*counts_bytes options:MTLResourceStorageModePrivate];
@@ -7309,7 +7332,7 @@ int main(int argc,char** argv) {
                     std::memset(slot.readback.contents,0,slot.readback.length);
                   slot.tuple=tuple;slot.scene_generation=diagnostics.scene_generation;
                   slot.source_revision=source_revision;slot.field_revision=field_revision;
-                  slot.candidate_identity=packet.header.candidate_identity;
+                  slot.candidate_identity=packet->header.candidate_identity;
                   slot.render_origin=origin;
                   slot.vertex_capacity=static_cast<std::uint32_t>(vertex_capacity);
                   slot.completed->store(false,std::memory_order_release);

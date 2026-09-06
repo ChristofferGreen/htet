@@ -374,6 +374,10 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 P8 is deliberately split into independent closure leaves.  P9 remains
 conditional on P8’s measured complete-frame result.
 
+P8a1 is complete: the P6 packet is an immutable sidecar of the background
+terrain publication, not a synchronous presentation-thread rebuild.  P8b
+owns the live moving-camera qualification that this unblocks.
+
 - [ ] **P8b — Qualify readback-free moving-camera consumers.** Scope: exercise
       private active-front updates through opaque terrain, wireframe, shadows,
       and ray tracing while moving and rebasing the camera. Acceptance: actual

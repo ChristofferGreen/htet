@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P8a1 — Publish retained P6 packets with terrain fronts.** Each
+  background terrain publication now constructs its immutable restricted-green
+  packet directly from the just-computed closure cache, before that cache is
+  retired, and atomically adopts it with the directory, scene, and view
+  identity. Metal receives only this generation-matched packet and shares its
+  owner/template upload across in-flight submissions; a missing or stale
+  packet retains the preceding complete front. The full closure-rebuild packet
+  factory remains a test oracle only. Focused tests prove byte equality,
+  mismatched-cache rejection, revision matching, and a nonblocking motion
+  pump. This unblocks P8b/P8c without creating another terrain authority.
+
 - [x] **P8a — Publish a guarded private render front without normal readback.**
   A complete CPU front now seeds a private Metal active buffer and private
   `MTLDrawPrimitivesIndirectArguments` once per source publication.  Every

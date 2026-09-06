@@ -610,6 +610,15 @@ TEST_CASE("GPU green mask packets exactly derive revisioned closure masks") {
   CHECK_NOTHROW(tetra::validate_gpu_green_mask_packet(packet,71U));
   tetra::WorldConformingClosureCache closure;
   const auto closed=tetra::close_world_conforming_cut(candidates,&closure);
+  // The live publisher consumes this already-computed closure.  Its packet
+  // must remain byte-for-byte the diagnostic rebuild oracle without replaying
+  // the fixed-point closure on the presentation thread.
+  const auto published=tetra::make_gpu_green_mask_packet_from_closure(
+      candidates,closure,71U);
+  CHECK(published.header==packet.header);
+  CHECK(published.candidates==packet.candidates);
+  CHECK(published.owners==packet.owners);
+  CHECK(published.edges==packet.edges);
   REQUIRE(packet.owners.size()==closed.size());
   CHECK(packet.header.candidate_count==candidates.size());
   CHECK(packet.header.owner_count==closed.size());
@@ -653,6 +662,12 @@ TEST_CASE("GPU green mask packets exactly derive revisioned closure masks") {
   std::swap(unordered.front(),unordered.back());
   CHECK_THROWS_AS(static_cast<void>(tetra::make_gpu_green_mask_packet(
                       unordered,73U)),std::invalid_argument);
+  CHECK_THROWS_AS(static_cast<void>(tetra::make_gpu_green_mask_packet_from_closure(
+                      unordered,closure,73U)),std::invalid_argument);
+  auto mismatched=closure;
+  mismatched.requested_owners.pop_back();
+  CHECK_THROWS_AS(static_cast<void>(tetra::make_gpu_green_mask_packet_from_closure(
+                      candidates,mismatched,73U)),std::logic_error);
 }
 
 TEST_CASE("GPU green mask packet topology closes BCC depth and root boundaries") {
@@ -2098,6 +2113,51 @@ TEST_CASE("blocked runtime coalesces atmosphere shadow generations without rebui
   CHECK(runtime.diagnostics().atmosphere_shadow_publications>=2U);
   CHECK(runtime.diagnostics().atmosphere_shadow_cancellations>=1U);
   CHECK(runtime.diagnostics().atmosphere_shadow_planning_milliseconds>0.0);
+}
+
+TEST_CASE("blocked runtime publishes a retained P6 packet off the presentation thread") {
+  auto profile=tetra_viewer::production_world_profile();
+  profile.terrain.planet_radius=0.0;
+  profile.domain={.world_origin={-15.5,-15.5,-15.5},.world_extent=32.0};
+  profile.background_red_depth=3U;profile.near_red_depth=6U;
+  profile.maximum_depth=9U;profile.view_distance=8.0;
+  tetra_viewer::BlockedTerrainRuntime runtime(profile);
+  const auto require_matched_packet=[&] {
+    const auto* packet=runtime.gpu_green_mask_packet();
+    const auto* directory=runtime.world_cut_directory();
+    REQUIRE(packet!=nullptr);REQUIRE(directory!=nullptr);
+    CHECK(packet->header.source_revision==directory->revision());
+    CHECK_NOTHROW(tetra::validate_gpu_green_mask_packet(
+        *packet,directory->revision()));
+  };
+  CHECK(runtime.gpu_green_mask_packet()==nullptr);
+  runtime.set_gpu_terrain_extraction_diagnostic(true);
+  const auto initial_deadline=std::chrono::steady_clock::now()+
+      std::chrono::seconds(10);
+  while(std::chrono::steady_clock::now()<initial_deadline&&
+        (runtime.diagnostics().busy||runtime.gpu_green_mask_packet()==nullptr)){
+    static_cast<void>(runtime.update());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  require_matched_packet();
+  auto camera=runtime.diagnostics().published_camera_position;
+  camera.x+=0.5;
+  tetra::Camera moved;
+  moved.position=camera;moved.forward={0.0,-0.2,-1.0};
+  const auto before=std::chrono::steady_clock::now();
+  runtime.set_camera(moved,true);
+  static_cast<void>(runtime.update());
+  // Packet construction belongs to the background publication, so a motion
+  // pump only schedules/coalesces work and never rebuilds the P6 closure.
+  CHECK(std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-before).count()<100.0);
+  const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+  while(std::chrono::steady_clock::now()<deadline&&runtime.diagnostics().busy){
+    static_cast<void>(runtime.update());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK_FALSE(runtime.diagnostics().busy);
+  require_matched_packet();
 }
 
 TEST_CASE("analytic atmosphere ridge is an exact triangular planetary fixture") {
