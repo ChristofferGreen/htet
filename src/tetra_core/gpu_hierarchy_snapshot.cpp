@@ -447,6 +447,38 @@ std::vector<GpuTerrainBaseTriangleRecord> gpu_terrain_base_triangles(
   return result;
 }
 
+std::vector<GpuTerrainProjectedTriangleRecord> gpu_terrain_project_base_triangles(
+    std::span<const GpuTerrainBaseTriangleRecord> triangles,const Sphere& field,
+    Vec3 render_origin,std::uint32_t capacity) {
+  if(!std::isfinite(render_origin.x)||!std::isfinite(render_origin.y)||!std::isfinite(render_origin.z))
+    throw std::invalid_argument("GPU terrain render origin is invalid");
+  if(triangles.size()>capacity)throw std::overflow_error("GPU terrain projected triangle capacity exceeded");
+  auto midpoint_field=field;if(midpoint_field.sampling_footprint>0.0)
+    midpoint_field.sampling_footprint*=0.5;
+  const auto cross=[](Vec3 a,Vec3 b){return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+  const auto dot=[](Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
+  std::vector<GpuTerrainProjectedTriangleRecord> result;result.reserve(triangles.size());
+  for(const auto& triangle:triangles) {
+    GpuTerrainProjectedTriangleRecord record;record.source=triangle;
+    const auto a=triangle.roots[0],b=triangle.roots[1],c=triangle.roots[2];
+    const auto ab=midpoint_field.project_to_surface((a+b)/2.0);
+    const auto bc=midpoint_field.project_to_surface((b+c)/2.0);
+    const auto ca=midpoint_field.project_to_surface((c+a)/2.0);
+    record.vertices={a-render_origin,ab-render_origin,ca-render_origin,b-render_origin,bc-render_origin,c-render_origin};
+    const std::array<std::array<Vec3,3>,4> faces{{{{a,ab,ca}},{{ab,b,bc}},{{ca,bc,c}},{{ab,bc,ca}}}};
+    for(std::size_t i=0;i<faces.size();++i){
+      auto normal=cross(faces[i][1]-faces[i][0],faces[i][2]-faces[i][0]);
+      const auto outward=field.normal((faces[i][0]+faces[i][1]+faces[i][2])/3.0);
+      if(dot(normal,outward)<0.0)normal=normal*-1.0;
+      const auto length=std::sqrt(dot(normal,normal));
+      if(!(length>1.e-15))throw std::invalid_argument("GPU terrain projected triangle is degenerate");
+      record.normals[i]=normal/length;
+    }
+    result.push_back(record);
+  }
+  return result;
+}
+
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision) {
   if(packet.header.format_version!=gpu_green_mask_packet_format_version||

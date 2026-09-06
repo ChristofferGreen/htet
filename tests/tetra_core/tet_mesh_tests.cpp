@@ -845,6 +845,33 @@ TEST_CASE("GPU terrain base triangles canonically compact valid roots") {
   CHECK_THROWS_AS(tetra::gpu_terrain_base_triangles(missing,100U),std::invalid_argument);
 }
 
+TEST_CASE("GPU terrain projection preserves midpoint and normal contract") {
+  tetra::Sphere field;field.kind=tetra::ImplicitShapeKind::sphere;
+  field.centre={0.0,0.0,0.0};field.radius=1.0;
+  tetra::GpuTerrainBaseTriangleRecord triangle;
+  triangle.roots={tetra::Vec3{1.0,0.0,0.0},tetra::Vec3{0.0,1.0,0.0},
+                  tetra::Vec3{0.0,0.0,1.0}};
+  const auto output=tetra::gpu_terrain_project_base_triangles({&triangle,1U},field,
+      {10.0,20.0,30.0},1U);
+  REQUIRE(output.size()==1U);
+  // Source roots retain camera-relative precision, while the child midpoint
+  // is projected to the same implicit surface before flat normals are made.
+  CHECK(output[0].vertices[0].x==doctest::Approx(-9.0));
+  const auto midpoint=output[0].vertices[1]+tetra::Vec3{10.0,20.0,30.0};
+  CHECK(field.signed_distance(midpoint)==doctest::Approx(0.0).epsilon(1e-10));
+  for(const auto normal:output[0].normals)
+    CHECK(std::sqrt(normal.x*normal.x+normal.y*normal.y+normal.z*normal.z)==doctest::Approx(1.0));
+  tetra::Sphere terrain;terrain.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  terrain.terrain.planet_radius=1.0;terrain.radius=1.0;
+  terrain.sampling_footprint=.25;
+  const auto terrain_output=tetra::gpu_terrain_project_base_triangles({&triangle,1U},terrain,{},1U);
+  const auto terrain_midpoint=terrain_output[0].vertices[1];
+  auto half_footprint=terrain;half_footprint.sampling_footprint=.125;
+  CHECK(half_footprint.signed_distance(terrain_midpoint)==doctest::Approx(0.0).epsilon(1e-8));
+  CHECK_THROWS_AS(tetra::gpu_terrain_project_base_triangles({&triangle,1U},field,{},0U),
+                  std::overflow_error);
+}
+
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
   const auto construction=tetra::make_four_hexahedra();
   REQUIRE(construction.cells.size()==4U);

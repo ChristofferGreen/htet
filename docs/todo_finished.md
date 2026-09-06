@@ -2,6 +2,14 @@
 
 ## 2026-09-06
 
+- [x] **P7c1a — Freeze compact geometry projection ABI.** Added the
+  diagnostic-only compact-triangle expansion kernel, Metal/Vulkan translation
+  wiring, and a CPU oracle for camera-relative roots, half-footprint projected
+  midpoints, outward child normals, invalid origins, degeneracy, and capacity.
+  The focused sphere and planetary-terrain regression passes. Full device
+  midpoint-field parity remains the distinct P7c1b leaf; no consumer binds
+  this diagnostic stream.
+
 - [x] **P7b2 — Compact base-triangle emission.** Added a separate translated
   Metal compute diagnostic that consumes only P7b1 fixed-stride root records,
   scans the canonical three/four-crossing cases before writing, and produces

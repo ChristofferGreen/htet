@@ -52,6 +52,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.vert -o ${TETRA_SHADER_DIR}/scene.vert.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.frag -o ${TETRA_SHADER_DIR}/scene.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/wire.frag -o ${TETRA_SHADER_DIR}/wire.frag.spv
@@ -70,7 +71,8 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangles.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp)
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_project.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_project.comp)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv
@@ -264,6 +266,12 @@ if(APPLE AND TETRA_BUILD_METAL)
             --output ${TETRA_METAL_GPU_TERRAIN_TRIANGLES_MSL}
     DEPENDS gpu_terrain_triangles.comp spirv-cross
     VERBATIM)
+  set(TETRA_METAL_GPU_TERRAIN_PROJECT_SPV ${TETRA_METAL_SHADER_DIR}/gpu_terrain_project.comp.spv)
+  set(TETRA_METAL_GPU_TERRAIN_PROJECT_MSL ${TETRA_METAL_SHADER_DIR}/gpu_terrain_project.comp.metal)
+  add_custom_command(OUTPUT ${TETRA_METAL_GPU_TERRAIN_PROJECT_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_project.comp -o ${TETRA_METAL_GPU_TERRAIN_PROJECT_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_TERRAIN_PROJECT_SPV} --msl --msl-version 20400 --output ${TETRA_METAL_GPU_TERRAIN_PROJECT_MSL}
+    DEPENDS gpu_terrain_project.comp spirv-cross VERBATIM)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_SPV
     ${TETRA_METAL_SHADER_DIR}/atmosphere_reference_hillaire.spv)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_MSL
@@ -286,6 +294,7 @@ if(APPLE AND TETRA_BUILD_METAL)
             ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
             ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
             ${TETRA_METAL_GPU_TERRAIN_TRIANGLES_MSL}
+            ${TETRA_METAL_GPU_TERRAIN_PROJECT_MSL}
             ${TETRA_METAL_REFERENCE_ATMOSPHERE_MSL})
   add_dependencies(tetra_world_metal tetra_world_metal_shaders)
   target_compile_definitions(tetra_world_metal PRIVATE

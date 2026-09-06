@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 03:38 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 503 tests passed with P7c1a's CPU geometry oracle and translated diagnostic ABI present; no GPU geometry was promoted to rendering.
+
+- 2026-09-06 03:26 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && build/release/tetra_tests --test-case='GPU terrain projection preserves midpoint and normal contract'` | failures: none | notes: P7c1a oracle passed sphere and planetary half-footprint midpoint projection, camera-relative normal, and capacity checks.
+
 - 2026-09-06 03:19 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: P7c baseline passed all 502 tests before splitting its oversized projection/consumer scope into independently closable leaves.
 
 - 2026-09-06 03:08 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 502 tests passed after P7b2; the new host compact-triangle oracle and background Metal root-to-triangle fixture passed without promoting a drawable GPU surface.

@@ -1,0 +1,23 @@
+#version 450
+// P7c1 diagnostic geometry expansion. P7b2 records are world-space roots;
+// this stage only makes camera-relative vertices and flat normals. It is not
+// bound by any drawable, shadow, or ray-tracing command.
+layout(std430,binding=0) readonly buffer Triangles { uint words[]; } input_triangles;
+layout(std430,binding=1) buffer Geometry { uint words[]; } output_geometry;
+layout(push_constant) uniform Parameters { uint triangle_count; uint capacity; vec3 render_origin; } parameters;
+layout(local_size_x=64) in;
+bool finite3(vec3 v){return !(any(isnan(v))||any(isinf(v)));}
+void main(){
+  uint index=gl_GlobalInvocationID.x;if(index>=parameters.triangle_count)return;
+  if(index>=parameters.capacity){atomicOr(output_geometry.words[1],1u);return;}
+  uint source=4u+index*16u,destination=4u+index*24u;
+  vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
+  vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
+  vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
+  vec3 n=cross(b-a,c-a);float l=length(n);if(!finite3(a)||!finite3(b)||!finite3(c)||!(l>1e-15)){atomicOr(output_geometry.words[1],1u);return;}n/=l;
+  output_geometry.words[destination]=input_triangles.words[source];output_geometry.words[destination+1u]=input_triangles.words[source+1u];
+  vec3 points[3]=vec3[3](a-parameters.render_origin,b-parameters.render_origin,c-parameters.render_origin);
+  for(uint v=0u;v<3u;++v)for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+2u+v*3u+axis]=floatBitsToUint(points[v][axis]);
+  for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+11u+axis]=floatBitsToUint(n[axis]);
+  atomicAdd(output_geometry.words[0],1u);
+}

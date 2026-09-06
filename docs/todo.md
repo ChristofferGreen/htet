@@ -362,7 +362,7 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. P7c is now the sole active implementation
       leaf.
-  - [ ] **P7c1 — Project and orient compact GPU base triangles.** Define the
+  - [ ] **P7c1b — Project and orient compact GPU base triangles.** Use the
         compact camera-relative geometry ABI and use it to project P7b2 roots,
         derive outward flat normals, and emit a diagnostic vertex stream.
         Prove exact CPU-oracle position/normal/count parity across fixed and

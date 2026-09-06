@@ -1480,7 +1480,7 @@ topology, and complete-frame gates.
   diagnostic is complete and remains non-drawable; P7b's device roots and
   compact base-triangle diagnostic are complete. P7c is the current executable
   leaf.
-  - [ ] **P7c1 — Device projection and normal diagnostic.** Consume P7b2's
+  - [ ] **P7c1b — Device projection and normal diagnostic.** Consume P7b2's
     compact base triangles with a revisioned camera/origin tuple, reproduce
     the production midpoint projection and outward flat normals, and compare
     diagnostic geometry against the CPU oracle for fixed/moving origins,

@@ -138,6 +138,11 @@ struct GpuTerrainBaseTriangleRecord {
   std::array<std::uint8_t,3> edges{};
   std::array<Vec3,3> roots{};
 };
+struct GpuTerrainProjectedTriangleRecord {
+  GpuTerrainBaseTriangleRecord source{};
+  std::array<Vec3,6> vertices{};
+  std::array<Vec3,4> normals{};
+};
 [[nodiscard]] GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
     const GpuTerrainFieldTupleParameters& parameters);
 void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
@@ -152,6 +157,9 @@ void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
 [[nodiscard]] std::vector<GpuTerrainBaseTriangleRecord>
 gpu_terrain_base_triangles(std::span<const GpuTerrainRootRecord> roots,
                            std::uint32_t capacity);
+[[nodiscard]] std::vector<GpuTerrainProjectedTriangleRecord>
+gpu_terrain_project_base_triangles(std::span<const GpuTerrainBaseTriangleRecord> triangles,
+    const Sphere& field,Vec3 render_origin,std::uint32_t capacity);
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
