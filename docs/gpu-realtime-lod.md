@@ -1479,11 +1479,15 @@ topology, and complete-frame gates.
   448-byte CPU-precomputed cell payload. P7a's compact classification
   diagnostic is complete and remains non-drawable; P7b is the current
   executable leaf.
-  - [ ] **P7b — Device roots, ordering, and compact base triangles.** Solve
-    roots from P7a signs and emit overflow-safe scanned compact non-indexed
-    base triangles. Match canonical roots, triangle ownership, masks, and edge
-    streams against CPU over fixed and moving fronts; projection/normals await
-    P7c.
+  - [ ] **P7b — Device roots and compact base triangles.** P7b1 is the current
+    executable leaf; P7b2 remains blocked on its root parity.
+  - [ ] **P7b1 — Device root classification and ordering.** Bracket-refine the
+    P7a crossing edges and write canonical roots plus validity/count evidence,
+    with fixed/moving CPU-oracle, endpoint, no-root, stale, and capacity gates.
+    No triangles, projection, normals, or draw resources are permitted.
+  - [ ] **P7b2 — Compact base-triangle emission.** Scan P7b1-valid crossings
+    into overflow-safe non-indexed triangles and prove ownership/mask/edge
+    parity before P7c projection and shared-consumer work.
   - [ ] **P7c — Device projection, normals, and shared consumers.** Match
     production midpoint projection and normals; feed one complete revision to
     opaque, wireframe, shadow, and ray-tracing inputs. Retain no sequential
