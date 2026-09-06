@@ -2,10 +2,12 @@
 
 ## Current Known Failures
 
-- [ ] metal GPU terrain parallel compaction parity | mode: Release | command: `TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | first_seen: 2026-09-06 08:16 CEST | last_seen: 2026-09-06 08:16 CEST | next: `./scripts/compile.sh --release --skip-tests && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | notes: P7c2b1b0 count pass matches 28 expected triangles on the mixed-depth P6 packet, but the chained translated Metal scan emits unstable offsets (first 1951, then zero); no consumer path is connected.
+- none
 
 ## Recent Test Runs
 
+- 2026-09-06 08:39 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 507 tests passed in 735.75 seconds after P7c2b1b0; the new native Metal parallel-compaction parity test and both CPU-front-retention slot tests passed.
+- 2026-09-06 08:27 CEST | pass | mode: Release, hidden native Metal | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | failures: none | notes: P7c2b1b0 mixed-depth byte-for-byte CPU-oracle parity, 131,072-slot two-level scan, and zero-capacity fail-closed gate passed after correcting the translated scan output/input bindings.
 - 2026-09-06 04:41 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 506 tests passed in 641.04 seconds after adding the guarded native P6-to-P7c live-slot diagnostic scaffolding and splitting the required parallel P7b2 prerequisite; the CPU display front remains the only consumer.
 
 - 2026-09-06 04:29 CEST | canceled, diagnostic safety finding | mode: Release, hidden native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_GPU_TERRAIN_NATIVE_DIAGNOSTIC=1 TetWorldMetal --metal-motion-smoke-test` | failures: none asserted | notes: canceled after the complete production P6 stream reached P7b2's single-invocation ordered root scan and did not complete promptly. This is a live-path performance/correctness blocker, not a CPU-front regression; P7c2b1b0 now owns a bounded parallel count/scan/scatter replacement before the live chain may be qualified.
@@ -293,6 +295,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] metal GPU terrain parallel compaction parity | resolved: 2026-09-06 08:27 CEST | validating command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | notes: the scan bindings were reversed: the output slot overwrote counts. Corrected output/input buffer binding makes the staged scan deterministic.
 
 - [x] gpu_terrain_draw.comp | resolved: 2026-09-06 04:01 CEST | validating command: `cmake --build build/release --target tetra_viewer_shaders tetra_world_metal_shaders -j 4` | notes: GLSL reserved local `smooth` was renamed `smooth_normal`; Vulkan and translated-Metal shader builds passed.
 

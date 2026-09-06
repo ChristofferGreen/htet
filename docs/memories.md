@@ -37,8 +37,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-live-compaction-limit
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, performance, synchronization
-- Fact: P7b2's canonical one-invocation compaction scan is safe for its small parity fixture but can stall a production P6 root stream for minutes, so live native-slot dispatches must reject streams above 65,536 root slots until a parallel ordered scan/scatter path replaces it.
-- Evidence: A hidden Release production-motion run entered the serial P7b2 scan without completing promptly; the subsequent full 506-test Release gate passed with the explicit live guard and no CPU-front consumer change.
+- Fact: P7b2's one-invocation scan can stall on a production P6 root stream, but P7c2b1b0 now provides deterministic 256-lane recursive count/exclusive-scan/scatter compaction with bounded temporary storage; later live slots must use that path rather than the serial kernel.
+- Evidence: The native Metal fixture byte-compared the mixed-depth output with P7b2's CPU oracle, completed a 131,072-slot two-level scan, and rejected a zero-capacity output without publishing a usable header.
 
 ### gpu-terrain-metal-classification
 - Updated: 2026-09-06

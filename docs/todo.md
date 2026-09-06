@@ -365,16 +365,8 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       topology authority. P7a's compact field/classification diagnostic is
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. A production-cut experiment established that
-      P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0 is
-      therefore the next required implementation leaf.
-  - [ ] **P7c2b1b0 — Parallelize ordered P7b2 compaction for live cuts.**
-        Replace the diagnostic serial root-stream scan with a device-resident,
-        deterministic count/scan/scatter path whose peak work and temporary
-        storage are explicitly bounded. It must preserve P7b2's canonical
-        triangle order and fail-closed header contract, match the existing CPU
-        oracle on mixed-depth packets, and demonstrate bounded completion on a
-        production-scale published P6 directory. Stop before connecting any
-        render consumer or changing the CPU display front.
+      P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0's
+      bounded parallel replacement is complete and P7c2b1b is next.
   - [ ] **P7c2b1b — Run the qualified chain in live private slots.**
         Chain compact P6 owners/templates, P7a classification/root generation,
         P7b2 base triangles, P7c1b projection, and P7c2a `SceneVertex`

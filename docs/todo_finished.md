@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P7c2b1b0 — Parallelize ordered P7b2 compaction for live cuts.** Added
+  translated Metal count, recursive exclusive-scan, capacity-finalize, and
+  scatter kernels. The staged scan has fixed 256-lane groups and bounded
+  `O(n + ceil(n/256) + ...)` temporary words, while scatter addresses each
+  output only through its deterministic exclusive offset. The hardware gate
+  compares every mixed-depth compact triangle byte-for-byte with the P7b2 CPU
+  oracle, exercises a 131,072-slot two-level P6-derived stream, and rejects
+  zero output capacity without publishing a usable header. The prior
+  host-side scan binding inversion was corrected. This remains diagnostic:
+  no live slot or renderer consumer, including the CPU display front, changed.
+
 - [x] **P7c2b1a — Qualify one complete private native chain.** Added a
   headless Metal command-buffer fixture chaining P6 compact
   owners/templates through P7a classification/root generation, P7b2 compact
