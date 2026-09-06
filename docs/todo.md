@@ -376,10 +376,11 @@ conditional on P8’s measured complete-frame result.
 
 P8a1 and P8b are complete: the P6 packet is an immutable sidecar of the
 background terrain publication, and selected private-front motion is now
-qualified without normal candidate readback. P8c owns the remaining
-device-local generation performance decision.
+qualified without normal candidate readback. P8c is split so the bounded
+owner-direct implementation can close independently before its hardware
+performance-promotion decision.
 
-- [ ] **P8c — Measure and promote the device-local route.** Scope: profile full
+- [ ] **P8c2 — Measure and promote the device-local route.** Scope: profile full
       camera-to-present work, including generation and private-front replacement.
       Acceptance: 4–8 ms generation and a 16.7 ms complete frame, or an initial
       33 ms complete-frame milestone, with P8b private-front motion evidence. Stop rule: do not

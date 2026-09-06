@@ -64,6 +64,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7c2a expands a complete P7c1b projected record into twelve exact 18-float `SceneVertex` values with smooth normals evaluated at camera-relative position plus its captured render origin, while remaining non-drawable.
 - Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
 
+### gpu-terrain-owner-direct-publication
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, private-memory
+- Fact: Selected GPU terrain uses owner-major count, a three-level deterministic scan, and direct `SceneVertex` emission, avoiding all root, compact-triangle, and projected intermediate allocation.
+- Evidence: A fresh 512-test Release gate completed 4,004 selected private GPU flights without failure, overflow, or CPU-front violations; nil omitted intermediates must also be skipped by Metal blit clears.
+
 ### gpu-terrain-private-publication
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, private-memory, indirect, synchronization

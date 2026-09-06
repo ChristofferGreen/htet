@@ -989,6 +989,8 @@ struct MetalGpuTerrainNativeDiagnosticSlot {
   id<MTLBuffer> added_offsets=nil;
   id<MTLBuffer> block_totals=nil;
   id<MTLBuffer> block_offsets=nil;
+  id<MTLBuffer> block_totals2=nil;
+  id<MTLBuffer> block_offsets2=nil;
   id<MTLBuffer> compaction_status=nil;
   id<MTLBuffer> triangles=nil;
   id<MTLBuffer> projected=nil;
@@ -4924,6 +4926,9 @@ int main(int argc,char** argv) {
     id<MTLComputePipelineState> gpu_terrain_scan_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_finalize_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_scatter_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_owner_count_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_owner_finalize_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_owner_emit_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_project_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_draw_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_commit_validate_pipeline=nil;
@@ -4951,6 +4956,9 @@ int main(int argc,char** argv) {
       gpu_terrain_scan_pipeline=make_pipeline("gpu_terrain_exclusive_scan.comp.metal");
       gpu_terrain_finalize_pipeline=make_pipeline("gpu_terrain_triangle_finalize.comp.metal");
       gpu_terrain_scatter_pipeline=make_pipeline("gpu_terrain_triangle_scatter.comp.metal");
+      gpu_terrain_owner_count_pipeline=make_pipeline("gpu_terrain_owner_counts.comp.metal");
+      gpu_terrain_owner_finalize_pipeline=make_pipeline("gpu_terrain_owner_finalize.comp.metal");
+      gpu_terrain_owner_emit_pipeline=make_pipeline("gpu_terrain_owner_emit.comp.metal");
       gpu_terrain_project_pipeline=make_pipeline("gpu_terrain_project.comp.metal");
       gpu_terrain_draw_pipeline=make_pipeline("gpu_terrain_draw.comp.metal");
       gpu_terrain_commit_validate_pipeline=make_pipeline("gpu_terrain_commit_validate.comp.metal");
@@ -4959,6 +4967,9 @@ int main(int argc,char** argv) {
       if(gpu_terrain_classify_pipeline==nil||gpu_terrain_count_pipeline==nil||
          gpu_terrain_scan_pipeline==nil||gpu_terrain_finalize_pipeline==nil||
          gpu_terrain_scatter_pipeline==nil||
+         gpu_terrain_owner_count_pipeline==nil||
+         gpu_terrain_owner_finalize_pipeline==nil||
+         gpu_terrain_owner_emit_pipeline==nil||
          gpu_terrain_project_pipeline==nil||gpu_terrain_draw_pipeline==nil||
          gpu_terrain_commit_validate_pipeline==nil||
          gpu_terrain_commit_copy_pipeline==nil||
@@ -7216,8 +7227,7 @@ int main(int argc,char** argv) {
             }
           }
         }
-        if((metal_gpu_terrain_native_diagnostic||
-            (gpu_terrain_renderer_selected&&!automated_test))&&runtime&&
+        if((metal_gpu_terrain_native_diagnostic||gpu_terrain_renderer_selected)&&runtime&&
            !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
           // The native route captures a self-contained P6 packet only from a
           // complete published directory.  It deliberately has no fallback to
@@ -7264,8 +7274,10 @@ int main(int argc,char** argv) {
               // only; P8c owns replacing the root-expanded live route.
               constexpr std::size_t maximum_slot_bytes=256U*1024U*1024U;
               const std::size_t owner_count=packet->owners.size();
-              const std::size_t root_slots=owner_count*24U;
+              const bool owner_direct=gpu_terrain_renderer_selected;
+              const std::size_t root_slots=owner_direct?owner_count:owner_count*24U;
               const std::size_t compaction_blocks=(root_slots+255U)/256U;
+              const std::size_t super_blocks=(compaction_blocks+255U)/256U;
               const std::size_t triangle_capacity=vertex_count/12U;
               const std::size_t vertex_capacity=vertex_count;
               const auto words_bytes=[](std::size_t words)->std::optional<std::size_t>{
@@ -7273,28 +7285,30 @@ int main(int argc,char** argv) {
                   return std::nullopt;
                 return words*sizeof(std::uint32_t);
               };
-              const auto roots_bytes=words_bytes(4U+root_slots*24U);
+              const auto roots_bytes=words_bytes(owner_direct?0U:4U+root_slots*24U);
               const auto counts_bytes=words_bytes(root_slots);
               const auto block_bytes=words_bytes(compaction_blocks);
-              const auto triangles_bytes=words_bytes(4U+triangle_capacity*16U);
-              const auto projected_bytes=words_bytes(4U+triangle_capacity*36U);
+              const auto super_block_bytes=words_bytes(super_blocks);
+              const auto triangles_bytes=words_bytes(owner_direct?0U:4U+triangle_capacity*16U);
+              const auto projected_bytes=words_bytes(owner_direct?0U:4U+triangle_capacity*36U);
               const auto vertices_bytes=words_bytes(4U+vertex_capacity*18U);
-              const bool fits_slot_budget=roots_bytes&&counts_bytes&&block_bytes&&triangles_bytes&&
+              const bool fits_slot_budget=roots_bytes&&counts_bytes&&block_bytes&&super_block_bytes&&triangles_bytes&&
                   projected_bytes&&vertices_bytes&&
-                  *roots_bytes+3U * *counts_bytes+2U * *block_bytes+
+                  *roots_bytes+3U * *counts_bytes+2U * *block_bytes+2U * *super_block_bytes+
                       4U*sizeof(std::uint32_t)<=maximum_slot_bytes&&
                   *triangles_bytes<=maximum_slot_bytes-*roots_bytes-
-                      3U * *counts_bytes-2U * *block_bytes-4U*sizeof(std::uint32_t)&&
+                      3U * *counts_bytes-2U * *block_bytes-2U * *super_block_bytes-4U*sizeof(std::uint32_t)&&
                   *projected_bytes<=maximum_slot_bytes-*roots_bytes-
-                      3U * *counts_bytes-2U * *block_bytes-4U*sizeof(std::uint32_t)-
+                      3U * *counts_bytes-2U * *block_bytes-2U * *super_block_bytes-4U*sizeof(std::uint32_t)-
                       *triangles_bytes&&
                   *vertices_bytes<=maximum_slot_bytes-*roots_bytes-
-                      3U * *counts_bytes-2U * *block_bytes-4U*sizeof(std::uint32_t)-
+                      3U * *counts_bytes-2U * *block_bytes-2U * *super_block_bytes-4U*sizeof(std::uint32_t)-
                       *triangles_bytes-*projected_bytes;
               const bool capacity_valid=owner_count!=0U&&
                   owner_count<=std::numeric_limits<std::uint32_t>::max()&&
                   root_slots<=std::numeric_limits<std::uint32_t>::max()&&
                   compaction_blocks<=std::numeric_limits<std::uint32_t>::max()&&
+                  super_blocks<=std::numeric_limits<std::uint32_t>::max()&&
                   triangle_capacity<=std::numeric_limits<std::uint32_t>::max()&&
                   fits_slot_budget;
               if(!capacity_valid){
@@ -7322,17 +7336,19 @@ int main(int argc,char** argv) {
                 }
                 slot.owners=gpu_terrain_packet_upload.owners;
                 slot.templates=gpu_terrain_packet_upload.templates;
-                slot.roots=[device newBufferWithLength:*roots_bytes
+                slot.roots=owner_direct?nil:[device newBufferWithLength:*roots_bytes
                     options:MTLResourceStorageModePrivate];
                 slot.counts=[device newBufferWithLength:*counts_bytes options:MTLResourceStorageModePrivate];
                 slot.offsets=[device newBufferWithLength:*counts_bytes options:MTLResourceStorageModePrivate];
                 slot.added_offsets=[device newBufferWithLength:*counts_bytes options:MTLResourceStorageModePrivate];
                 slot.block_totals=[device newBufferWithLength:*block_bytes options:MTLResourceStorageModePrivate];
                 slot.block_offsets=[device newBufferWithLength:*block_bytes options:MTLResourceStorageModePrivate];
+                slot.block_totals2=[device newBufferWithLength:*super_block_bytes options:MTLResourceStorageModePrivate];
+                slot.block_offsets2=[device newBufferWithLength:*super_block_bytes options:MTLResourceStorageModePrivate];
                 slot.compaction_status=[device newBufferWithLength:4U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
-                slot.triangles=[device newBufferWithLength:*triangles_bytes
+                slot.triangles=owner_direct?nil:[device newBufferWithLength:*triangles_bytes
                     options:MTLResourceStorageModePrivate];
-                slot.projected=[device newBufferWithLength:*projected_bytes
+                slot.projected=owner_direct?nil:[device newBufferWithLength:*projected_bytes
                     options:MTLResourceStorageModePrivate];
                 slot.vertices=[device newBufferWithLength:*vertices_bytes
                     options:MTLResourceStorageModePrivate];
@@ -7341,10 +7357,12 @@ int main(int argc,char** argv) {
                 slot.readback=metal_gpu_terrain_qualification?
                     [device newBufferWithLength:sizeof(std::uint32_t)*4U
                         options:MTLResourceStorageModeShared]:nil;
-                if(slot.field&&slot.owners&&slot.templates&&slot.roots&&slot.counts&&
+                if(slot.field&&slot.owners&&slot.templates&&
+                   (owner_direct||slot.roots!=nil)&&slot.counts&&
                    slot.offsets&&slot.added_offsets&&slot.block_totals&&
-                   slot.block_offsets&&slot.compaction_status&&
-                   slot.triangles&&slot.projected&&slot.vertices&&slot.commit_control&&
+                   slot.block_offsets&&slot.block_totals2&&slot.block_offsets2&&slot.compaction_status&&
+                   (owner_direct||(slot.triangles!=nil&&slot.projected!=nil))&&
+                   slot.vertices&&slot.commit_control&&
                    (!metal_gpu_terrain_qualification||slot.readback!=nil)){
                   if(slot.readback!=nil)
                     std::memset(slot.readback.contents,0,slot.readback.length);
@@ -7358,14 +7376,22 @@ int main(int argc,char** argv) {
                   id<MTLBlitCommandEncoder> clear=[command_buffer blitCommandEncoder];
                   for(id<MTLBuffer> buffer: {slot.roots,slot.counts,slot.offsets,
                       slot.added_offsets,slot.block_totals,slot.block_offsets,
+                      slot.block_totals2,slot.block_offsets2,
                       slot.compaction_status,slot.triangles,slot.projected,slot.vertices,
                       slot.commit_control})
-                    [clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+                    // The owner-direct P8c route deliberately has no root,
+                    // triangle, or projected intermediate buffers.  Metal's
+                    // blit encoder must not be handed a nil resource even for
+                    // a zero-length range.
+                    if(buffer!=nil)
+                      [clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
                   [clear endEncoding];
+                  id<MTLComputeCommandEncoder> compute=nil;
+                  if(!owner_direct){
                   const std::array<std::uint32_t,4> classify_parameters{
                     static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(root_slots),
                     static_cast<std::uint32_t>(source_revision),static_cast<std::uint32_t>(source_revision>>32U)};
-                  id<MTLComputeCommandEncoder> compute=[command_buffer computeCommandEncoder];
+                  compute=[command_buffer computeCommandEncoder];
                   [compute setComputePipelineState:gpu_terrain_classify_pipeline];
                   [compute setBuffer:slot.field offset:0U atIndex:0U];
                   [compute setBytes:classify_parameters.data() length:sizeof(classify_parameters) atIndex:1U];
@@ -7411,6 +7437,35 @@ int main(int argc,char** argv) {
                   compute=[command_buffer computeCommandEncoder];[compute setComputePipelineState:gpu_terrain_draw_pipeline];
                   [compute setBuffer:slot.field offset:0U atIndex:0U];[compute setBytes:&draw_parameters length:sizeof(draw_parameters) atIndex:1U];[compute setBuffer:slot.vertices offset:0U atIndex:2U];[compute setBuffer:slot.projected offset:0U atIndex:3U];
                   [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
+                  }else{
+                    const std::array<std::uint32_t,4> owner_parameters{
+                        static_cast<std::uint32_t>(owner_count),
+                        static_cast<std::uint32_t>(source_revision),
+                        static_cast<std::uint32_t>(source_revision>>32U),0U};
+                    id<MTLComputeCommandEncoder> owner_compute=[command_buffer computeCommandEncoder];
+                    [owner_compute setComputePipelineState:gpu_terrain_owner_count_pipeline];
+                    [owner_compute setBuffer:slot.owners offset:0U atIndex:0U];
+                    [owner_compute setBuffer:slot.templates offset:0U atIndex:1U];
+                    [owner_compute setBuffer:slot.field offset:0U atIndex:2U];
+                    [owner_compute setBuffer:slot.counts offset:0U atIndex:3U];
+                    [owner_compute setBuffer:slot.compaction_status offset:0U atIndex:4U];
+                    [owner_compute setBytes:owner_parameters.data() length:sizeof(owner_parameters) atIndex:5U];
+                    [owner_compute dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_scan{static_cast<std::uint32_t>(owner_count),0U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_scan.data() length:sizeof(owner_scan) atIndex:0U];[owner_compute setBuffer:slot.offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.counts offset:0U atIndex:2U];[owner_compute setBuffer:slot.block_totals offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(compaction_blocks*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_block_scan{static_cast<std::uint32_t>(compaction_blocks),0U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_block_scan.data() length:sizeof(owner_block_scan) atIndex:0U];[owner_compute setBuffer:slot.block_offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.block_totals offset:0U atIndex:2U];[owner_compute setBuffer:slot.block_totals2 offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(super_blocks*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_super_scan{static_cast<std::uint32_t>(super_blocks),0U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_super_scan.data() length:sizeof(owner_super_scan) atIndex:0U];[owner_compute setBuffer:slot.block_offsets2 offset:0U atIndex:1U];[owner_compute setBuffer:slot.block_totals2 offset:0U atIndex:2U];[owner_compute setBuffer:slot.compaction_status offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_block_add{static_cast<std::uint32_t>(compaction_blocks),1U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_block_add.data() length:sizeof(owner_block_add) atIndex:0U];[owner_compute setBuffer:slot.block_offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.block_offsets offset:0U atIndex:2U];[owner_compute setBuffer:slot.block_offsets2 offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(super_blocks*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_add{static_cast<std::uint32_t>(owner_count),1U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_add.data() length:sizeof(owner_add) atIndex:0U];[owner_compute setBuffer:slot.added_offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.offsets offset:0U atIndex:2U];[owner_compute setBuffer:slot.block_offsets offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(compaction_blocks*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
+                    const std::array<std::uint32_t,2> owner_final{static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(vertex_capacity)};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_owner_finalize_pipeline];[owner_compute setBuffer:slot.counts offset:0U atIndex:0U];[owner_compute setBuffer:slot.added_offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.compaction_status offset:0U atIndex:2U];[owner_compute setBuffer:slot.vertices offset:0U atIndex:3U];[owner_compute setBytes:owner_final.data() length:sizeof(owner_final) atIndex:4U];[owner_compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[owner_compute endEncoding];
+                    MetalGpuTerrainGeometryParameters owner_emit{static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(vertex_capacity),0U,0U,{static_cast<float>(origin.x),static_cast<float>(origin.y),static_cast<float>(origin.z),0.0F},static_cast<std::uint32_t>(source_revision),static_cast<std::uint32_t>(source_revision>>32U),0U,0U};
+                    owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_owner_emit_pipeline];[owner_compute setBuffer:slot.owners offset:0U atIndex:0U];[owner_compute setBuffer:slot.templates offset:0U atIndex:1U];[owner_compute setBuffer:slot.field offset:0U atIndex:2U];[owner_compute setBuffer:slot.counts offset:0U atIndex:3U];[owner_compute setBuffer:slot.added_offsets offset:0U atIndex:4U];[owner_compute setBuffer:slot.vertices offset:0U atIndex:5U];[owner_compute setBytes:&owner_emit length:sizeof(owner_emit) atIndex:6U];[owner_compute dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];[owner_compute endEncoding];
+                  }
                   // A candidate never becomes a CPU-visible payload.  These
                   // three passes validate, copy, and publish its indirect
                   // arguments wholly in private memory; validation failure

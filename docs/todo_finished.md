@@ -1007,6 +1007,16 @@
   because its terrain and curved surfaces visibly improve over faster
   marching, which remains the production speed option. Gate 7 and the full
   CPU paper-integration plan are closed.
+- [x] **P8c1 — Owner-direct device-local terrain generation.** Replaced the
+  selected renderer's root-expanded live route with bounded owner counts, a
+  three-level deterministic exclusive scan, header preflight, and direct
+  owner-major `SceneVertex` emission into private storage. The route retains
+  the P6 packet as topology authority and the existing private
+  validate/copy/publish transaction; it allocates no root, compact-triangle,
+  or projected intermediate buffers. Native selected-GPU motion completed
+  3,910 submissions with no failed or overflowed flight and no CPU-front
+  violation. Hardware generation/frame timing remains P8c2.
+
 - [x] GPU-P4a immutable selector geometry packet: added one separately bound,
   112-byte conservative normalized-space geometry packet per immutable GPU
   hierarchy record. The packet preserves exact address identity, carries four
