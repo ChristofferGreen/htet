@@ -797,6 +797,16 @@ TEST_CASE("GPU terrain classification reconstructs BCC field signs") {
   CHECK(overflow.overflow);
   CHECK(overflow.records.empty());
   CHECK(overflow.crossing_cells==0U);
+  const auto roots=tetra::gpu_terrain_root_packet(packet,tuple,10000U);
+  REQUIRE(roots.size()==actual.records.size());
+  for(const auto& root:roots) {
+    CHECK(root.classification.crossing_count==std::popcount(root.valid_edge_mask));
+    for(std::size_t edge=0U;edge<6U;++edge)
+      if((root.valid_edge_mask&(1U<<edge))!=0U)
+        CHECK(std::abs(field.signed_distance(root.roots[edge]))<1.0e-9);
+  }
+  CHECK_THROWS_AS(tetra::gpu_terrain_root_packet(packet,tuple,1U),
+                  std::overflow_error);
   auto stale=tuple;stale.revision_lanes[0]=102U;
   CHECK_THROWS_AS(tetra::gpu_terrain_classify_packet(packet,stale,10000U),
                   std::invalid_argument);

@@ -368,6 +368,32 @@ GpuTerrainClassification gpu_terrain_classify_packet(
   return result;
 }
 
+std::vector<GpuTerrainRootRecord> gpu_terrain_root_packet(
+    const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
+    std::uint32_t capacity) {
+  const auto classified=gpu_terrain_classify_packet(packet,tuple,capacity);
+  if(classified.overflow)throw std::overflow_error("GPU terrain root capacity exceeded");
+  const auto field=gpu_terrain_field_tuple_sphere(tuple);
+  const WorldStreamingDemand::Domain domain{{tuple.domain_origin_extent[0],
+      tuple.domain_origin_extent[1],tuple.domain_origin_extent[2]},tuple.domain_origin_extent[3]};
+  std::vector<GpuTerrainRootRecord> result;
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{{{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  for(const auto& classification:classified.records) {
+    const auto geometry=world_tetrahedron_geometry(gpu_hierarchy_address_from_lanes(packet.owners[classification.owner_index].address));
+    std::array<Vec3,10> points{};
+    for(std::size_t i=0;i<points.size();++i)points[i]=grande_point_vertex[i]==0xffU?
+      (geometry[edges[grande_point_edge[i]][0]]+geometry[edges[grande_point_edge[i]][1]])/2.0:geometry[grande_point_vertex[i]];
+    const auto corners=complete_green_template(static_cast<std::uint8_t>(packet.owners[classification.owner_index].mask)).tetrahedra[classification.template_cell];
+    GpuTerrainRootRecord record;record.classification=classification;
+    for(std::size_t edge=0;edge<edges.size();++edge)if(((classification.corner_negative_mask>>edges[edge][0])&1U)!=((classification.corner_negative_mask>>edges[edge][1])&1U)) {
+      record.roots[edge]=field.edge_intersection(domain.to_world(points[corners[edges[edge][0]]]),domain.to_world(points[corners[edges[edge][1]]]));
+      record.valid_edge_mask|=1U<<edge;
+    }
+    result.push_back(record);
+  }
+  return result;
+}
+
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision) {
   if(packet.header.format_version!=gpu_green_mask_packet_format_version||

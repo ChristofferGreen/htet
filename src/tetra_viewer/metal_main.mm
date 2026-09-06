@@ -1291,8 +1291,10 @@ bool run_metal_gpu_terrain_classify_smoke_test(id<MTLDevice> device) {
     const auto expected_for_tuple=expect_failure?
         tetra::GpuTerrainClassification{}:tetra::gpu_terrain_classify_packet(
             packet,input_tuple,100000U);
+    const auto expected_roots=expect_failure?std::vector<tetra::GpuTerrainRootRecord>{}:
+        tetra::gpu_terrain_root_packet(packet,input_tuple,100000U);
     const std::size_t output_words=4U+
-        std::max<std::size_t>(capacity,packet.owners.size()*24U)*4U;
+        std::max<std::size_t>(capacity,packet.owners.size()*24U)*24U;
     std::vector<std::uint32_t> zeroed(output_words);
     id<MTLBuffer> field_buffer=make_buffer(&input_tuple,sizeof(input_tuple));
     id<MTLBuffer> owner_buffer=make_buffer(owners.data(),
@@ -1329,12 +1331,13 @@ bool run_metal_gpu_terrain_classify_smoke_test(id<MTLDevice> device) {
     std::uint32_t device_crossing_records{};
     for(std::size_t owner_index=0U;owner_index<owners.size();++owner_index)
       for(std::size_t cell=0U;cell<24U;++cell)
-        if(words[4U+(owner_index*24U+cell)*4U+3U]>=3U)++device_crossing_records;
-    for(const auto& record:expected_for_tuple.records) {
+        if(words[4U+(owner_index*24U+cell)*24U+3U]>=3U)++device_crossing_records;
+    for(std::size_t record_index=0U;record_index<expected_for_tuple.records.size();++record_index) {
+      const auto& record=expected_for_tuple.records[record_index];
       const std::size_t output_index=static_cast<std::size_t>(record.owner_index)*24U+
           record.template_cell;
       if(output_index>=capacity){std::fprintf(stderr,"Metal terrain-classification output capacity mismatch\n");return false;}
-      const auto offset=4U+output_index*4U;
+      const auto offset=4U+output_index*24U;
       if(words[offset]!=record.owner_index||words[offset+1U]!=record.template_cell||
          words[offset+2U]!=record.corner_negative_mask||
          words[offset+3U]!=record.crossing_count){
@@ -1343,6 +1346,20 @@ bool run_metal_gpu_terrain_classify_smoke_test(id<MTLDevice> device) {
             record.owner_index,record.template_cell,record.corner_negative_mask,
             record.crossing_count);return false;
       }
+      const auto& roots=expected_roots[record_index];
+      if(words[offset+22U]!=roots.valid_edge_mask){
+        std::fprintf(stderr,"Metal terrain root mask mismatch at %zu\n",output_index);return false;
+      }
+      for(std::size_t edge=0U;edge<6U;++edge)if((roots.valid_edge_mask&(1U<<edge))!=0U)
+        for(std::size_t axis=0U;axis<3U;++axis) {
+          const auto device_root=std::bit_cast<float>(words[offset+4U+edge*3U+axis]);
+          const auto expected_root=axis==0U?roots.roots[edge].x:
+              axis==1U?roots.roots[edge].y:roots.roots[edge].z;
+          if(std::abs(static_cast<double>(device_root)-expected_root)>2.0e-5){
+            std::fprintf(stderr,"Metal terrain root mismatch at %zu edge %zu: %.9g %.9g\n",output_index,edge,
+                static_cast<double>(device_root),expected_root);return false;
+          }
+        }
     }
     if(!header_matches){
       std::fprintf(stderr,"Metal terrain-classification header mismatch %u %u %u expected %u %u records %u\n",

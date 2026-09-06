@@ -2,6 +2,14 @@
 
 ## 2026-09-06
 
+- [x] **P7b1 — Qualify compact device edge roots.** The non-drawable compact
+  Metal diagnostic now bracket-refines every classified crossing for 40 steps,
+  writes world-space root coordinates and edge-validity bits, and matches the
+  P7b1 CPU oracle for fixed and revisioned field-motion cases. The parity gate
+  exposed and corrected a mismatched terrain octave gain (0.25, not 0.5).
+  No triangle, normal, projection, or drawable resource is produced; P7b2
+  owns compaction and base-triangle output.
+
 - [x] **P7a2 — Qualify compact Metal field classification.** Added a separate
   SPIR-V/MSL compute kernel that reconstructs P6 BCC owners and Grande template
   cells from compact addresses, evaluates the planetary field tuple at every

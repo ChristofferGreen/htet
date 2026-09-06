@@ -361,13 +361,8 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       topology authority. P7a's compact field/classification diagnostic is
       complete and non-drawable; P7b is now the sole active implementation
       leaf.
-  - [ ] **P7b — Device roots and unprojected base triangles.** P7b1 owns the
-        root contract; P7b2 may emit only after it is qualified.
-  - [ ] **P7b1 — Solve and order compact device edge roots.** Starting from
-        P7a signs, bracket-refine every crossing on the device and write only
-        canonical per-template edge roots plus validity/count evidence. Match
-        the field-root oracle under fixed and moving fronts, including endpoint
-        and no-root failure cases. Stop rule: no triangle output yet.
+  - [ ] **P7b — Device roots and unprojected base triangles.** P7b1 is
+        complete; P7b2 is now the active leaf.
   - [ ] **P7b2 — Scan and emit compact base triangles.** Consume only P7b1
         roots and P6 topology to reserve overflow-safe non-indexed base
         triangles; match ownership, masks, and edge streams before P7c.

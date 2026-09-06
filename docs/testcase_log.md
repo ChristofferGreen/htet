@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 03:19 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-gpu-terrain-classify-smoke-test` | failures: none | notes: P7b1 root parity passed after matching the authoritative 0.25 terrain-octave gain; fixed and revisioned field-motion root streams match the CPU oracle.
+
 - 2026-09-06 03:08 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 500 tests passed after P7a2, including the translated Metal compact-classification parity fixture.
 
 - 2026-09-06 02:56 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-gpu-terrain-classify-smoke-test` | failures: none | notes: P7a2 matched its 33-record mixed-depth CPU oracle in fixed and revisioned field-motion cases; zero-capacity, stale-tuple, and malformed-owner dispatches failed closed.

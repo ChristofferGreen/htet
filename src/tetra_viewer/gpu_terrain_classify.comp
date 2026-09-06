@@ -93,7 +93,7 @@ float terrain_displacement(vec3 direction) {
   for(int octave=0;octave<4;++octave) {
     height+=amplitude*resolved(current_frequency,footprint)*
         SAMPLE(current_frequency,vec3(0));
-    amplitude*=.5;current_frequency*=2.0;
+    amplitude*=.25;current_frequency*=2.0;
   }
   if(f.y>f.x)height*=smooth01((acos(clamp(direction.y,-1.0,1.0))*radius-f.x)/(f.y-f.x));
   #undef SAMPLE
@@ -189,7 +189,19 @@ void main() {
     if(crossings>=3u)atomicAdd(output_buffer.words[1],1u);
     const uint output_index=owner*cells_per_owner+cell;
     if(output_index>=parameters.record_capacity){atomicOr(output_buffer.words[2],1u);return;}
-    const uint record=4u+output_index*4u;output_buffer.words[record]=owner;output_buffer.words[record+1u]=cell;
+    const uint record=4u+output_index*24u;output_buffer.words[record]=owner;output_buffer.words[record+1u]=cell;
     output_buffer.words[record+2u]=negative;output_buffer.words[record+3u]=crossings;
+    uint valid=0u;
+    for(uint edge=0u;edge<6u;++edge)if(((negative>>tet_edges[edge].x)&1u)!=((negative>>tet_edges[edge].y)&1u)) {
+      vec3 first=points[indices[tet_edges[edge].x]],second=points[indices[tet_edges[edge].y]];
+      float first_distance=signed_distance(first);
+      for(uint iteration=0u;iteration<40u;++iteration){
+        const vec3 middle=.5*(first+second);
+        if((first_distance<0.0)==(signed_distance(middle)<0.0)){first=middle;first_distance=signed_distance(middle);}else second=middle;
+      }
+      const vec3 world=.5*(first+second)*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));
+      const uint root=record+4u+edge*3u;output_buffer.words[root]=floatBitsToUint(world.x);output_buffer.words[root+1u]=floatBitsToUint(world.y);output_buffer.words[root+2u]=floatBitsToUint(world.z);valid|=1u<<edge;
+    }
+    output_buffer.words[record+22u]=valid;
   }
 }

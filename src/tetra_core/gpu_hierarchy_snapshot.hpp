@@ -120,12 +120,22 @@ struct GpuTerrainClassification {
   std::uint32_t attempted_records{};
   bool overflow{};
 };
+// P7b1 CPU oracle for the compact device root stream.  Roots are in world
+// coordinates and valid only for the crossing bit in the matching template tet.
+struct GpuTerrainRootRecord {
+  GpuTerrainClassificationRecord classification{};
+  std::array<Vec3,6> roots{};
+  std::uint32_t valid_edge_mask{};
+};
 [[nodiscard]] GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
     const GpuTerrainFieldTupleParameters& parameters);
 void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
 [[nodiscard]] Sphere gpu_terrain_field_tuple_sphere(
     const GpuTerrainFieldTuple& tuple);
 [[nodiscard]] GpuTerrainClassification gpu_terrain_classify_packet(
+    const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
+    std::uint32_t capacity);
+[[nodiscard]] std::vector<GpuTerrainRootRecord> gpu_terrain_root_packet(
     const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
     std::uint32_t capacity);
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
