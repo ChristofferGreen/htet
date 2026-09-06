@@ -52,6 +52,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7c2a expands a complete P7c1b projected record into twelve exact 18-float `SceneVertex` values with smooth normals evaluated at camera-relative position plus its captured render origin, while remaining non-drawable.
 - Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
 
+### gpu-terrain-native-private-chain
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, private-memory, synchronization
+- Fact: P7c2b1a can execute the complete P6-to-`SceneVertex` diagnostic chain in one Metal command buffer with private intermediate buffers and GPU-header-derived downstream counts.
+- Evidence: The hidden hardware fixture passed all five staged Metal parity gates and matched 12 compact triangles / 144 final vertices without any renderer consumer or CPU count readback.
+
 ### gpu-terrain-projected-geometry
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, projection, parity

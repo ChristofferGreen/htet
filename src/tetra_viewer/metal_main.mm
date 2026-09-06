@@ -1767,6 +1767,98 @@ bool run_metal_gpu_terrain_draw_smoke_test(id<MTLDevice> device) {
   return true;
 }
 
+// P7c2b1a is deliberately a hardware-only chain.  The final buffer is shared
+// solely for this bounded oracle; every intermediate is private and every
+// downstream stage discovers its count from the preceding GPU header.
+bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device) {
+  const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline_for=[&](const char* filename)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(directory/filename).string().c_str());
+    NSError* error=nil;id<MTLFunction> function=library==nil?nil:[library newFunctionWithName:@"main0"];
+    auto pipeline=function==nil?nil:[device newComputePipelineStateWithFunction:function error:&error];
+    if(pipeline==nil)std::fprintf(stderr,"Metal native terrain chain pipeline %s failed: %s\n",filename,
+        error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return pipeline;
+  };
+  id<MTLComputePipelineState> classify=pipeline_for("gpu_terrain_classify.comp.metal");
+  id<MTLComputePipelineState> triangles=pipeline_for("gpu_terrain_triangles.comp.metal");
+  id<MTLComputePipelineState> project=pipeline_for("gpu_terrain_project.comp.metal");
+  id<MTLComputePipelineState> draw=pipeline_for("gpu_terrain_draw.comp.metal");
+  if(classify==nil||triangles==nil||project==nil||draw==nil)return false;
+  tetra::GpuTerrainFieldTupleParameters field_parameters;
+  field_parameters.source_revision=101U;field_parameters.field_revision=19U;
+  field_parameters.domain.world_extent=1.0;field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  field_parameters.field.sampling_footprint=.0625;field_parameters.field.terrain.planet_radius=.37;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)candidates.push_back(tetra::WorldTetAddress::root(root));
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  const auto templates=tetra::make_gpu_green_template_table();
+  const auto expected_roots=tetra::gpu_terrain_root_packet(packet,tuple,100000U);
+  auto expected_base=tetra::gpu_terrain_base_triangles(expected_roots,100000U);
+  for(auto& triangle:expected_base)for(auto& root:triangle.roots){
+    root.x=static_cast<float>(root.x);root.y=static_cast<float>(root.y);root.z=static_cast<float>(root.z);
+  }
+  const auto expected=tetra::gpu_terrain_project_base_triangles(expected_base,
+      tetra::gpu_terrain_field_tuple_sphere(tuple),{},100000U);
+  if(expected.empty())return false;
+  const auto make_shared=[&](const void* bytes,NSUInteger length){return [device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
+  const auto make_private=[&](NSUInteger length){return [device newBufferWithLength:length options:MTLResourceStorageModePrivate];};
+  const std::uint32_t owner_count=static_cast<std::uint32_t>(packet.owners.size());
+  const std::uint32_t root_slots=owner_count*24U;
+  const std::uint32_t triangle_capacity=root_slots*2U;
+  const std::uint32_t vertex_capacity=triangle_capacity*12U;
+  id<MTLBuffer> field=make_shared(&tuple,sizeof(tuple));
+  id<MTLBuffer> owners=make_shared(packet.owners.data(),packet.owners.size()*sizeof(packet.owners.front()));
+  id<MTLBuffer> stencil=make_shared(templates.data(),sizeof(templates));
+  id<MTLBuffer> roots=make_private((4U+static_cast<NSUInteger>(root_slots)*24U)*sizeof(std::uint32_t));
+  id<MTLBuffer> compact=make_private((4U+static_cast<NSUInteger>(triangle_capacity)*16U)*sizeof(std::uint32_t));
+  id<MTLBuffer> projected=make_private((4U+static_cast<NSUInteger>(triangle_capacity)*36U)*sizeof(std::uint32_t));
+  id<MTLBuffer> output=[device newBufferWithLength:(4U+static_cast<NSUInteger>(vertex_capacity)*18U)*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(field==nil||owners==nil||stencil==nil||roots==nil||compact==nil||projected==nil||output==nil||queue==nil)return false;
+  std::memset(output.contents,0,output.length);
+  id<MTLCommandBuffer> command=[queue commandBuffer];
+  id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+  for(id<MTLBuffer> buffer: {roots,compact,projected})[clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+  [clear endEncoding];
+  const std::array<std::uint32_t,4> classify_parameters{owner_count,root_slots,101U,0U};
+  id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:classify];[encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBytes:classify_parameters.data() length:sizeof(classify_parameters) atIndex:1U];
+  [encoder setBuffer:owners offset:0U atIndex:2U];[encoder setBuffer:roots offset:0U atIndex:3U];[encoder setBuffer:stencil offset:0U atIndex:4U];
+  [encoder dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  const std::array<std::uint32_t,4> triangle_parameters{owner_count,root_slots,triangle_capacity,101U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:triangles];[encoder setBuffer:roots offset:0U atIndex:0U];
+  [encoder setBytes:triangle_parameters.data() length:sizeof(triangle_parameters) atIndex:1U];[encoder setBuffer:owners offset:0U atIndex:2U];
+  [encoder setBuffer:stencil offset:0U atIndex:3U];[encoder setBuffer:compact offset:0U atIndex:4U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  struct alignas(16) GeometryParameters { std::uint32_t count{},capacity{},reserved0{},reserved1{};std::array<float,4> origin{};std::uint32_t source_low{},source_high{},padding0{},padding1{}; };
+  static_assert(sizeof(GeometryParameters)==48U);
+  GeometryParameters projection_parameters{std::numeric_limits<std::uint32_t>::max(),triangle_capacity,0U,0U,{0,0,0,0},101U,0U,0U,0U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:project];[encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBytes:&projection_parameters length:sizeof(projection_parameters) atIndex:1U];[encoder setBuffer:projected offset:0U atIndex:2U];[encoder setBuffer:compact offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  GeometryParameters draw_parameters{std::numeric_limits<std::uint32_t>::max(),vertex_capacity,0U,0U,{0,0,0,0},101U,0U,0U,0U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:draw];[encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBytes:&draw_parameters length:sizeof(draw_parameters) atIndex:1U];[encoder setBuffer:output offset:0U atIndex:2U];[encoder setBuffer:projected offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  [command commit];[command waitUntilCompleted];if(command.status!=MTLCommandBufferStatusCompleted)return false;
+  const auto* words=static_cast<const std::uint32_t*>(output.contents);
+  const auto expected_vertices=static_cast<std::uint32_t>(expected.size()*12U);
+  if(words==nullptr||words[0U]!=expected_vertices||words[1U]!=0U||words[2U]!=expected.size()){
+    std::fprintf(stderr,"Metal native terrain chain header mismatch %u %u %u expected %u\n",words==nullptr?0U:words[0U],words==nullptr?0U:words[1U],words==nullptr?0U:words[2U],expected_vertices);return false;
+  }
+  constexpr std::array<std::array<std::uint32_t,3>,4> faces{{{{0U,1U,2U}},{{1U,3U,4U}},{{2U,4U,5U}},{{1U,4U,2U}}}};
+  for(std::size_t triangle=0U;triangle<expected.size();++triangle)for(std::size_t face=0U;face<4U;++face)for(std::size_t corner=0U;corner<3U;++corner){
+    const auto offset=4U+(triangle*12U+face*3U+corner)*18U;const auto& point=expected[triangle].vertices[faces[face][corner]];
+    for(std::size_t axis=0U;axis<3U;++axis){const float value=std::bit_cast<float>(words[offset+axis]);const double wanted=axis==0U?point.x:axis==1U?point.y:point.z;if(!std::isfinite(value)||std::abs(static_cast<double>(value)-wanted)>2.e-3){std::fprintf(stderr,"Metal native terrain chain position mismatch\n");return false;}}
+  }
+  std::printf("{\"event\":\"metal_gpu_terrain_native_chain\",\"triangles\":%zu,\"vertices\":%u,\"passed\":true}\n",expected.size(),expected_vertices);
+  return true;
+}
+
 // P5b mirrors the Vulkan extraction qualification without connecting the
 // result to Metal rendering.  The records are the legacy CPU-precomputed ABI;
 // this fixture establishes that its translated kernel writes the same compact
@@ -4195,6 +4287,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-project-smoke-test")==0;
   const bool gpu_terrain_draw_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-draw-smoke-test")==0;
+  const bool gpu_terrain_native_chain_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-native-chain-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
@@ -4463,7 +4557,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4480,6 +4574,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-terrain-triangle-smoke-test|"
                         "--metal-gpu-terrain-project-smoke-test|"
                         "--metal-gpu-terrain-draw-smoke-test|"
+                        "--metal-gpu-terrain-native-chain-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
@@ -4554,6 +4649,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_project_smoke_test(device)?0:1;
     if(gpu_terrain_draw_smoke_test)
       return run_metal_gpu_terrain_draw_smoke_test(device)?0:1;
+    if(gpu_terrain_native_chain_smoke_test)
+      return run_metal_gpu_terrain_native_chain_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){

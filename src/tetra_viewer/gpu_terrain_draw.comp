@@ -21,16 +21,18 @@ bool valid_field(){
 void fail(){atomicOr(output_vertices.words[1u],1u);}
 void main(){
   if(gl_GlobalInvocationID.x!=0u)return;
-  if(input_geometry.words[1u]!=0u||input_geometry.words[0u]!=parameters.triangle_count||!valid_field()){fail();return;}
-  const uint required=parameters.triangle_count*12u;
-  if(parameters.triangle_count!=0u&&required/12u!=parameters.triangle_count||required>parameters.vertex_capacity){fail();return;}
+  const uint triangle_count=input_geometry.words[0u];
+  if(input_geometry.words[1u]!=0u||
+     (parameters.triangle_count!=0xffffffffu&&triangle_count!=parameters.triangle_count)||!valid_field()){fail();return;}
+  const uint required=triangle_count*12u;
+  if(triangle_count!=0u&&required/12u!=triangle_count||required>parameters.vertex_capacity){fail();return;}
   const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
-  for(uint triangle=0u;triangle<parameters.triangle_count;++triangle){
+  for(uint triangle=0u;triangle<triangle_count;++triangle){
     const uint source=4u+triangle*36u;
     vec3 points[6];for(uint vertex=0u;vertex<6u;++vertex){points[vertex]=vec3(uintBitsToFloat(input_geometry.words[source+4u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+5u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+6u+vertex*3u]));if(!finite3(points[vertex])){fail();return;}}
     for(uint face=0u;face<4u;++face){const vec3 normal=vec3(uintBitsToFloat(input_geometry.words[source+22u+face*3u]),uintBitsToFloat(input_geometry.words[source+23u+face*3u]),uintBitsToFloat(input_geometry.words[source+24u+face*3u]));if(!finite3(normal)||!(length(normal)>1.e-15)){fail();return;}}
   }
-  for(uint triangle=0u;triangle<parameters.triangle_count;++triangle){
+  for(uint triangle=0u;triangle<triangle_count;++triangle){
     const uint source=4u+triangle*36u;
     vec3 points[6];for(uint vertex=0u;vertex<6u;++vertex)points[vertex]=vec3(uintBitsToFloat(input_geometry.words[source+4u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+5u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+6u+vertex*3u]));
     const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
@@ -48,5 +50,5 @@ void main(){
       }
     }
   }
-  output_vertices.words[0u]=required;output_vertices.words[2u]=parameters.triangle_count;
+  output_vertices.words[0u]=required;output_vertices.words[2u]=triangle_count;
 }

@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 04:46 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 506 tests passed after P7c2b1a. The new headless Metal private-buffer chain ran P6 through P7c2a in one command buffer, deriving downstream counts from GPU headers and matching 12 compact triangles / 144 final vertices without a renderer consumer.
+
 - 2026-09-06 04:17 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 505 tests passed after P7c2a. The new headless Metal `SceneVertex` candidate parity gate and the non-default intersecting-domain P7c1b projection case passed alongside the full suite; no GPU candidate was promoted to drawing.
 
 - 2026-09-06 03:58 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 504 tests passed in 641.27 seconds after P7c1b; the full suite includes the new translated Metal projected-geometry parity and CPU-front-retention gates.

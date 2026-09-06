@@ -2,6 +2,18 @@
 
 ## 2026-09-06
 
+- [x] **P7c2b1a — Qualify one complete private native chain.** Added a
+  headless Metal command-buffer fixture chaining P6 compact
+  owners/templates through P7a classification/root generation, P7b2 compact
+  triangles, P7c1b projection, and P7c2a `SceneVertex` output. Root, compact,
+  and projected buffers are private; final output is shared only for the
+  bounded oracle. Projection and draw now obtain their actual input count
+  from the immediately preceding GPU header, with a checked sentinel only for
+  chained dispatches, eliminating the hidden CPU-count dependency. The full
+  chain matches the expected 12 compact triangles and 144 output vertices;
+  the individual stage gates continue to own exhaustive attribute and
+  fail-closed validation. No live renderer consumer exists yet.
+
 - [x] **P7c2a — Materialize a device-local drawable candidate.** Added the
   translated P7c1b-to-`SceneVertex` compute kernel and the headless Metal
   parity fixture. It validates all source records before publishing its

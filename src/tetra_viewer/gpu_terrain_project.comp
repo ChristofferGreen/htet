@@ -27,9 +27,11 @@ void main(){
   // A diagnostic serial preflight prevents exposing a partial stream on any
   // malformed, stale, degenerate, or capacity-failed invocation.
   if(gl_GlobalInvocationID.x!=0u)return;
-  if(input_triangles.words[1u]!=0u||!finite3(parameters.render_origin.xyz)||!valid_field()){fail();return;}
-  if(parameters.triangle_count>parameters.capacity){fail();return;}
-  for(uint index=0u;index<parameters.triangle_count;++index){
+  const uint triangle_count=input_triangles.words[0u];
+  if(input_triangles.words[1u]!=0u||!finite3(parameters.render_origin.xyz)||!valid_field()||
+     (parameters.triangle_count!=0xffffffffu&&triangle_count!=parameters.triangle_count)){fail();return;}
+  if(triangle_count>parameters.capacity){fail();return;}
+  for(uint index=0u;index<triangle_count;++index){
     const uint source=4u+index*16u;
     const vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
     const vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
@@ -49,7 +51,7 @@ void main(){
       if(!finite3(normal)||!(length(normal)>1.e-15)){fail();return;}
     }
   }
-  for(uint index=0u;index<parameters.triangle_count;++index){
+  for(uint index=0u;index<triangle_count;++index){
     const uint source=4u+index*16u,destination=4u+index*36u;
     const vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
     const vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
@@ -66,5 +68,5 @@ void main(){
       for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+22u+face*3u+axis]=floatBitsToUint(normal[axis]);
     }
   }
-  output_geometry.words[0u]=parameters.triangle_count;
+  output_geometry.words[0u]=triangle_count;
 }
