@@ -58,6 +58,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7c2a expands a complete P7c1b projected record into twelve exact 18-float `SceneVertex` values with smooth normals evaluated at camera-relative position plus its captured render origin, while remaining non-drawable.
 - Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
 
+### gpu-terrain-private-publication
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, private-memory, indirect, synchronization
+- Fact: P8a seeds an immutable complete CPU front into private Metal vertex and indirect-argument buffers, then permits native candidate replacement only through a private validate/copy/publish sequence that leaves both prior buffers unchanged on validation failure.
+- Evidence: The rebuilt GPU-selector smoke bound the private indirect front successfully without allocating candidate readback; native readback remains gated behind the explicit qualification setting.
+
 ### gpu-terrain-native-private-chain
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, private-memory, synchronization

@@ -2,6 +2,19 @@
 
 ## 2026-09-06
 
+- [x] **P8a — Publish a guarded private render front without normal readback.**
+  A complete CPU front now seeds a private Metal active buffer and private
+  `MTLDrawPrimitivesIndirectArguments` once per source publication.  Every
+  native candidate remains private; its header is validated on-device, copied
+  into the active front only after that validation, then publishes the indirect
+  arguments.  Failed candidates do not modify either active resource, so the
+  preceding complete revision remains drawable.  Candidate readback is absent
+  from ordinary GPU selection and is allocated only by the explicit native
+  qualification switch.  The CPU/GPU selector now proves that its GPU route
+  binds the private indirect front; raster, shadow, and RT continue to consume
+  that single display-front binding.  P8b owns moving-camera capture evidence;
+  P8c owns the performance gate.
+
 - [x] **P7d — Qualify GPU-native surface parity before P8 publication.** The
   new hidden Metal gate composes the mixed-depth compact-stream/parallel-scan,
   private live-slot, projected surface, `SceneVertex`, and retained-runtime

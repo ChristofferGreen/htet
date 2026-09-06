@@ -369,16 +369,22 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       bounded parallel replacement, live private slots, and the full
       diagnostic-only P7d parity gate are complete. P8 is next and is the
       only milestone allowed to remove qualification readback.
-- [ ] **P8 — Publish and consume the render front without readback.** Keep
-      selection, compaction, geometry/edge streams, indirect arguments, raster,
-      shadows, and ray-tracing inputs device-local; compile or enable readback
-      only for qualification. Camera motion may update only the compact camera
-      and field tuple. Overflow, stale work, or failed validation retains the
-      preceding complete revision; a partial new front is never drawable.
-      Qualify actual Metal captures and moving-camera geometry, wireframe,
-      shadow, and performance evidence; require 4–8 ms generation and 16.7 ms,
-      or initially 33 ms, complete-frame gates before promotion. Preserve the
-      CPU/GPU terrain-renderer toggle as the user-facing route selector.
+### P8 tracker — readback-free GPU terrain publication
+
+P8 is deliberately split into independent closure leaves.  P9 remains
+conditional on P8’s measured complete-frame result.
+
+- [ ] **P8b — Qualify readback-free moving-camera consumers.** Scope: exercise
+      private active-front updates through opaque terrain, wireframe, shadows,
+      and ray tracing while moving and rebasing the camera. Acceptance: actual
+      Metal captures demonstrate geometry, wireframe, shadow, and retained-front
+      correctness with no normal readback. Stop rule: retain the preceding
+      complete front on any stale tuple, overflow, or invalid candidate.
+- [ ] **P8c — Measure and promote the device-local route.** Scope: profile full
+      camera-to-present work, including generation and private-front replacement.
+      Acceptance: 4–8 ms generation and a 16.7 ms complete frame, or an initial
+      33 ms complete-frame milestone, with P8b image evidence. Stop rule: do not
+      start P9 unless profiling identifies a missed gate and its dominant stage.
 - [ ] **P9 — Add a persistent active front only if measurements require it.**
       Trigger this only if P8 profiling identifies repeated hierarchy traversal
       or compaction as a dominant missed-budget stage. Compare bounded

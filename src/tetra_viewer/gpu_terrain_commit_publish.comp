@@ -1,0 +1,11 @@
+#version 450
+// MTLDrawPrimitivesIndirectArguments: vertexCount, instanceCount, vertexStart,
+// baseInstance.  Do not touch the old arguments unless all candidate checks won.
+layout(std430,binding=0) readonly buffer Control { uint words[]; } control;
+layout(std430,binding=1) buffer Arguments { uint words[]; } arguments;
+layout(local_size_x=1) in;
+void main(){
+  if(gl_GlobalInvocationID.x!=0u||control.words[1u]==0u)return;
+  arguments.words[0u]=control.words[0u];arguments.words[1u]=1u;
+  arguments.words[2u]=0u;arguments.words[3u]=0u;
+}

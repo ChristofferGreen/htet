@@ -1,0 +1,10 @@
+#version 450
+layout(std430,binding=0) readonly buffer Source { uint words[]; } source;
+layout(std430,binding=1) readonly buffer Control { uint words[]; } control;
+layout(std430,binding=2) buffer Destination { uint words[]; } destination;
+layout(local_size_x=256) in;
+void main(){
+  const uint word=gl_GlobalInvocationID.x;
+  if(control.words[1u]!=0u&&word<control.words[0u]*18u)
+    destination.words[word]=source.words[4u+word];
+}
