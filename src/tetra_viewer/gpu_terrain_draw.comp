@@ -1,0 +1,52 @@
+#version 450
+// P7c2a expands a complete P7c1b diagnostic stream into the renderer's
+// 18-float SceneVertex ABI. It is deliberately a non-drawable candidate.
+layout(std430,binding=0) readonly buffer Projected { uint words[]; } input_geometry;
+layout(std430,binding=1) readonly buffer Field { uvec4 lanes[]; } field;
+layout(std430,binding=2) buffer Vertices { uint words[]; } output_vertices;
+layout(push_constant) uniform Parameters {
+  uint triangle_count; uint vertex_capacity; uint reserved0; uint reserved1;
+  vec4 render_origin; uint source_revision_low; uint source_revision_high;
+} parameters;
+layout(local_size_x=1) in;
+float lane(uint index,uint component){return uintBitsToFloat(field.lanes[index][component]);}
+bool finite(float value){return !isnan(value)&&!isinf(value);}
+bool finite3(vec3 value){return finite(value.x)&&finite(value.y)&&finite(value.z);}
+#include "gpu_terrain_field.glsl"
+bool valid_field(){
+  for(uint i=0u;i<10u;++i)for(uint c=0u;c<4u;++c)if(!finite(lane(i,c)))return false;
+  return field.lanes[10u].x==parameters.source_revision_low&&field.lanes[10u].y==parameters.source_revision_high&&
+      lane(1u,0u)==4.0&&lane(0u,3u)>0.0&&lane(7u,2u)>0.0&&lane(9u,3u)>0.0;
+}
+void fail(){atomicOr(output_vertices.words[1u],1u);}
+void main(){
+  if(gl_GlobalInvocationID.x!=0u)return;
+  if(input_geometry.words[1u]!=0u||input_geometry.words[0u]!=parameters.triangle_count||!valid_field()){fail();return;}
+  const uint required=parameters.triangle_count*12u;
+  if(parameters.triangle_count!=0u&&required/12u!=parameters.triangle_count||required>parameters.vertex_capacity){fail();return;}
+  const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
+  for(uint triangle=0u;triangle<parameters.triangle_count;++triangle){
+    const uint source=4u+triangle*36u;
+    vec3 points[6];for(uint vertex=0u;vertex<6u;++vertex){points[vertex]=vec3(uintBitsToFloat(input_geometry.words[source+4u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+5u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+6u+vertex*3u]));if(!finite3(points[vertex])){fail();return;}}
+    for(uint face=0u;face<4u;++face){const vec3 normal=vec3(uintBitsToFloat(input_geometry.words[source+22u+face*3u]),uintBitsToFloat(input_geometry.words[source+23u+face*3u]),uintBitsToFloat(input_geometry.words[source+24u+face*3u]));if(!finite3(normal)||!(length(normal)>1.e-15)){fail();return;}}
+  }
+  for(uint triangle=0u;triangle<parameters.triangle_count;++triangle){
+    const uint source=4u+triangle*36u;
+    vec3 points[6];for(uint vertex=0u;vertex<6u;++vertex)points[vertex]=vec3(uintBitsToFloat(input_geometry.words[source+4u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+5u+vertex*3u]),uintBitsToFloat(input_geometry.words[source+6u+vertex*3u]));
+    const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
+    for(uint face=0u;face<4u;++face){
+      const vec3 normal=vec3(uintBitsToFloat(input_geometry.words[source+22u+face*3u]),uintBitsToFloat(input_geometry.words[source+23u+face*3u]),uintBitsToFloat(input_geometry.words[source+24u+face*3u]));
+      for(uint corner=0u;corner<3u;++corner){
+        const uint destination=4u+(triangle*12u+face*3u+corner)*18u;const vec3 point=points[faces[face][corner]];
+        const vec3 smooth_normal=terrain_field_normal_world(point+parameters.render_origin.xyz,lane(1u,3u));
+        output_vertices.words[destination]=floatBitsToUint(point.x);output_vertices.words[destination+1u]=floatBitsToUint(point.y);output_vertices.words[destination+2u]=floatBitsToUint(point.z);
+        output_vertices.words[destination+3u]=floatBitsToUint(.43);output_vertices.words[destination+4u]=floatBitsToUint(.45);output_vertices.words[destination+5u]=floatBitsToUint(.47);
+        output_vertices.words[destination+6u]=floatBitsToUint(normal.x);output_vertices.words[destination+7u]=floatBitsToUint(normal.y);output_vertices.words[destination+8u]=floatBitsToUint(normal.z);
+        output_vertices.words[destination+9u]=floatBitsToUint(-2.0);output_vertices.words[destination+10u]=0u;output_vertices.words[destination+11u]=floatBitsToUint(7.0);
+        output_vertices.words[destination+12u]=floatBitsToUint(corner==0u?1.0:0.0);output_vertices.words[destination+13u]=floatBitsToUint(corner==1u?1.0:0.0);output_vertices.words[destination+14u]=floatBitsToUint(corner==2u?1.0:0.0);
+        output_vertices.words[destination+15u]=floatBitsToUint(smooth_normal.x);output_vertices.words[destination+16u]=floatBitsToUint(smooth_normal.y);output_vertices.words[destination+17u]=floatBitsToUint(smooth_normal.z);
+      }
+    }
+  }
+  output_vertices.words[0u]=required;output_vertices.words[2u]=parameters.triangle_count;
+}

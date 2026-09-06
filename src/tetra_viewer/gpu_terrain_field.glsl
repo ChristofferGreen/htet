@@ -40,8 +40,7 @@ float terrain_field_displacement(vec3 direction,float footprint){
   #undef TERRAIN_SAMPLE
   return height;
 }
-float terrain_field_signed_distance(vec3 root_point,float footprint){
-  const vec3 world=root_point*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));
+float terrain_field_signed_distance_world(vec3 world,float footprint){
   const vec3 centre=vec3(lane(0u,0u),lane(0u,1u),lane(0u,2u));
   const float planet_radius=lane(7u,2u);const vec3 offset=world-(centre-vec3(0,planet_radius,0));
   const float length_offset=length(offset);if(!(length_offset>1.e-15))return -planet_radius;
@@ -49,12 +48,15 @@ float terrain_field_signed_distance(vec3 root_point,float footprint){
   if(lane(7u,3u)==1.0){const float half_width=max(lane(8u,2u),1.e-12);displacement=lane(8u,1u)*max(0.0,1.0-abs((world.z-centre.z)-lane(8u,0u))/half_width);}
   return length_offset-(planet_radius+displacement);
 }
-vec3 terrain_field_normal(vec3 point,float footprint){
+float terrain_field_signed_distance(vec3 root_point,float footprint){
+  return terrain_field_signed_distance_world(root_point*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u)),footprint);
+}
+vec3 terrain_field_normal_world(vec3 point,float footprint){
   const float epsilon=1.e-5;
-  const vec3 gradient=vec3(terrain_field_signed_distance(point+vec3(epsilon,0,0),footprint)-terrain_field_signed_distance(point-vec3(epsilon,0,0),footprint),terrain_field_signed_distance(point+vec3(0,epsilon,0),footprint)-terrain_field_signed_distance(point-vec3(0,epsilon,0),footprint),terrain_field_signed_distance(point+vec3(0,0,epsilon),footprint)-terrain_field_signed_distance(point-vec3(0,0,epsilon),footprint));
+  const vec3 gradient=vec3(terrain_field_signed_distance_world(point+vec3(epsilon,0,0),footprint)-terrain_field_signed_distance_world(point-vec3(epsilon,0,0),footprint),terrain_field_signed_distance_world(point+vec3(0,epsilon,0),footprint)-terrain_field_signed_distance_world(point-vec3(0,epsilon,0),footprint),terrain_field_signed_distance_world(point+vec3(0,0,epsilon),footprint)-terrain_field_signed_distance_world(point-vec3(0,0,epsilon),footprint));
   const float length_gradient=length(gradient);return length_gradient>1.e-15?gradient/length_gradient:vec3(0,1,0);
 }
-vec3 terrain_field_project_to_surface(vec3 point,float footprint){
-  for(int iteration=0;iteration<12;++iteration){const float distance=terrain_field_signed_distance(point,footprint);if(abs(distance)<1.e-10)break;point-=terrain_field_normal(point,footprint)*distance;}
+vec3 terrain_field_project_to_surface_world(vec3 point,float footprint){
+  for(int iteration=0;iteration<12;++iteration){const float distance=terrain_field_signed_distance_world(point,footprint);if(abs(distance)<1.e-10)break;point-=terrain_field_normal_world(point,footprint)*distance;}
   return point;
 }

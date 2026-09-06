@@ -46,6 +46,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7b2 compacts P7b1 root slots only after validating their P6 owner/template identity and completing a capacity-before-write canonical cut-cycle scan, so malformed, stale, missing-root, and overflowing input cannot publish a partial base-triangle stream.
 - Evidence: The compact CPU oracle and translated Metal fixture matched fixed and moved planetary streams, while hardware cases explicitly fail closed for overflow, stale/malformed, and missing-root inputs and preserve a valid empty-stream result.
 
+### gpu-terrain-draw-candidate
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, scene-vertex, parity
+- Fact: P7c2a expands a complete P7c1b projected record into twelve exact 18-float `SceneVertex` values with smooth normals evaluated at camera-relative position plus its captured render origin, while remaining non-drawable.
+- Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
+
 ### gpu-terrain-projected-geometry
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, projection, parity

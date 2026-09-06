@@ -360,28 +360,23 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       dyadic edge directory, and mixed-depth halo proof are the exclusive
       topology authority. P7a's compact field/classification diagnostic is
       complete and non-drawable; P7b's roots and compact base-triangle
-      diagnostics are complete. P7c is now the sole active implementation
+      diagnostics are complete. P7c2b is now the sole active implementation
       leaf.
-  - [ ] **P7c2a — Materialize a device-local drawable candidate.** Consume
-        only a complete P7c1b diagnostic generation and expand its four child
-        faces into the renderer's `SceneVertex` ABI plus one immutable
-        generation/count contract. Prove source identity, position, normal,
-        winding, empty, stale, malformed, and overflow behaviour against the
-        CPU oracle. It remains a non-drawable candidate: CPU stays the front
-        authority until the next atomic promotion leaf.
   - [ ] **P7c2b — Atomically bind one qualified generation to consumers.**
         After P7c2a parity, make opaque, wireframe, shadow, and ray-tracing
         consumers select the same complete GPU generation or atomically retain
-        the CPU front. Retain no sequential index buffer without measured
-        consumer benefit; diagnostic readback remains until P7d.
+        the CPU front. A consumer may not independently observe a newer,
+        partial, or differently rebased surface. Retain no sequential index
+        buffer without measured consumer benefit; diagnostic readback remains
+        until P7d.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams and raster results against CPU across near
         terrain, horizon/limb, silhouettes, back-lit mountains, edits,
         cutaways, and implicit shapes. Verify watertight incidence, winding,
-        normals, depth, and colour as well as count and bounds; reject stale,
-        partial, non-finite, degenerate, and overflow revisions. Acceptance is
-        identical topology/geometry/image quality with CPU fallback retained
-        pending P8.
+        normals, depth, colour, and normal-direction distribution as well as
+        count and bounds; reject stale, partial, non-finite, degenerate, and
+        overflow revisions. Acceptance is identical topology/geometry/image
+        quality with CPU fallback retained pending P8.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
       selection, compaction, geometry/edge streams, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback

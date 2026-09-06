@@ -2,6 +2,19 @@
 
 ## 2026-09-06
 
+- [x] **P7c2a — Materialize a device-local drawable candidate.** Added the
+  translated P7c1b-to-`SceneVertex` compute kernel and the headless Metal
+  parity fixture. It validates all source records before publishing its
+  fixed-stride 18-float vertex stream, then writes child-face position, flat
+  normal, field-derived smooth normal, colour, diagnostic, edge, and
+  barycentric attributes together with its count/status header. The fixture
+  matches the CPU oracle for fixed and moved fields and render origins, and
+  rejects stale tuples, bad headers, non-finite geometry, capacity overflow,
+  and empty streams correctly. The P7c1b project fixture additionally now
+  covers an actually intersecting non-default world domain, preventing a
+  normalized/world-space regression. This is an isolated candidate only: no
+  raster, wireframe, shadow, or ray-tracing consumer has been bound.
+
 - [x] **P7c1b — Project and orient compact GPU base triangles.** Extracted the
   complete deterministic planetary-field grammar into a version-free helper
   shared by classification and projection, preserving the 0.25 octave gain.

@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 04:17 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 505 tests passed after P7c2a. The new headless Metal `SceneVertex` candidate parity gate and the non-default intersecting-domain P7c1b projection case passed alongside the full suite; no GPU candidate was promoted to drawing.
+
 - 2026-09-06 03:58 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 504 tests passed in 641.27 seconds after P7c1b; the full suite includes the new translated Metal projected-geometry parity and CPU-front-retention gates.
 
 - 2026-09-06 03:46 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain (classification|base triangle|projected geometry) parity$'` | failures: none | notes: P7c1b's translated Metal projection fixture passed fixed/moved field and origin CPU-oracle parity plus stale, malformed, degenerate, overflow, and empty-stream fail-closed cases; the shared field refactor retained classification and base-triangle parity.
@@ -285,6 +287,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] gpu_terrain_draw.comp | resolved: 2026-09-06 04:01 CEST | validating command: `cmake --build build/release --target tetra_viewer_shaders tetra_world_metal_shaders -j 4` | notes: GLSL reserved local `smooth` was renamed `smooth_normal`; Vulkan and translated-Metal shader builds passed.
 
 - [x] gpu_terrain_project.comp | resolved: 2026-09-06 03:42 CEST | validating command: `cmake --build build/release --target tetra_viewer_shaders -j 4` | notes: reverted invalid complete-shader import; GLSL shader translation is healthy while a dedicated field-helper extraction is prepared.
 

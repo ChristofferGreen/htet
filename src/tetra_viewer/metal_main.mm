@@ -1614,6 +1614,22 @@ bool run_metal_gpu_terrain_project_smoke_test(id<MTLDevice> device) {
   auto moved=tuple;moved.centre_radius[0]+=.03125F;moved.revision_lanes[2]+=1U;
   const auto moved_roots=tetra::gpu_terrain_root_packet(packet,moved,100000U);
   if(!dispatch(moved,tetra::gpu_terrain_base_triangles(moved_roots,100000U),{},capacity,false)){std::fprintf(stderr,"Metal terrain project moved-field parity failed\n");return false;}
+  // Classification receives normalized hierarchy points but roots are world
+  // positions.  This translated-kernel case proves that projection consumes
+  // the latter by using a non-default domain and a field centred in it.
+  auto non_default_parameters=field_parameters;
+  non_default_parameters.domain.world_origin={-1.0,-.25,-.5};
+  non_default_parameters.domain.world_extent=2.0;
+  non_default_parameters.field.centre={0.0,.75,.5};
+  non_default_parameters.field.radius=.37;
+  non_default_parameters.field.terrain.planet_radius=.37;
+  const auto non_default=tetra::make_gpu_terrain_field_tuple(non_default_parameters);
+  const auto non_default_roots=tetra::gpu_terrain_root_packet(packet,non_default,100000U);
+  const auto non_default_triangles=tetra::gpu_terrain_base_triangles(non_default_roots,100000U);
+  if(non_default_triangles.empty()||!dispatch(non_default,non_default_triangles,{0.0,.75,.5},
+      static_cast<std::uint32_t>(non_default_triangles.size()),false)){
+    std::fprintf(stderr,"Metal terrain project non-default-domain parity failed\n");return false;
+  }
   if(!dispatch(tuple,source_triangles,{},0U,true)){std::fprintf(stderr,"Metal terrain project capacity rejection failed\n");return false;}
   auto stale=tuple;stale.revision_lanes[0]^=1U;if(!dispatch(stale,source_triangles,{},capacity,true)){std::fprintf(stderr,"Metal terrain project stale rejection failed\n");return false;}
   auto malformed=source_triangles;malformed.front().roots[0].x=std::numeric_limits<double>::quiet_NaN();
@@ -1622,6 +1638,132 @@ bool run_metal_gpu_terrain_project_smoke_test(id<MTLDevice> device) {
   if(!dispatch(tuple,std::move(degenerate),{},capacity,true)){std::fprintf(stderr,"Metal terrain project degeneracy rejection failed\n");return false;}
   if(!dispatch(tuple,{}, {},0U,false)){std::fprintf(stderr,"Metal terrain project empty-stream parity failed\n");return false;}
   std::printf("{\"event\":\"metal_gpu_terrain_project\",\"triangles\":%u,\"passed\":true}\n",capacity);
+  return true;
+}
+
+// P7c2a turns the P7c1b diagnostic stream into the exact vertex ABI consumed
+// by the renderer.  This remains an isolated readback gate: it intentionally
+// creates neither a drawable nor a consumer binding.
+bool run_metal_gpu_terrain_draw_smoke_test(id<MTLDevice> device) {
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_terrain_draw.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  NSError* error=nil;id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  if(pipeline==nil){std::fprintf(stderr,"Metal terrain draw pipeline creation failed: %s\n",
+      error==nil?"missing translated entry point":error.localizedDescription.UTF8String);return false;}
+  tetra::GpuTerrainFieldTupleParameters field_parameters;
+  field_parameters.source_revision=101U;field_parameters.field_revision=19U;
+  field_parameters.domain.world_extent=1.0;field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  field_parameters.field.sampling_footprint=.0625;field_parameters.field.terrain.planet_radius=.37;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  const auto roots=tetra::gpu_terrain_root_packet(packet,tuple,100000U);
+  const auto base_triangles=tetra::gpu_terrain_base_triangles(roots,100000U);
+  if(base_triangles.empty()){std::fprintf(stderr,"Metal terrain draw oracle is empty\n");return false;}
+  struct alignas(16) DrawParameters {
+    std::uint32_t triangle_count{},vertex_capacity{},reserved0{},reserved1{};
+    std::array<float,4> render_origin{};
+    std::uint32_t source_revision_low{},source_revision_high{},padding0{},padding1{};
+  };
+  static_assert(sizeof(DrawParameters)==48U);
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){return [device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
+  id<MTLCommandQueue> queue=[device newCommandQueue];if(queue==nil)return false;
+  const auto dispatch=[&](const tetra::GpuTerrainFieldTuple& input_tuple,
+                          const std::vector<tetra::GpuTerrainProjectedTriangleRecord>& projected,
+                          tetra::Vec3 origin,std::uint32_t capacity,bool expect_failure,
+                          bool corrupt_header=false,bool corrupt_geometry=false){
+    std::vector<std::uint32_t> input(4U+projected.size()*36U);
+    input[0U]=static_cast<std::uint32_t>(projected.size());
+    if(corrupt_header)input[0U]^=1U;
+    for(std::size_t index=0U;index<projected.size();++index){
+      const auto offset=4U+index*36U;const auto& record=projected[index];
+      input[offset]=record.source.owner_index;input[offset+1U]=record.source.template_cell;
+      input[offset+2U]=record.source.corner_negative_mask;
+      input[offset+3U]=static_cast<std::uint32_t>(record.source.edges[0])|
+          (static_cast<std::uint32_t>(record.source.edges[1])<<8U)|
+          (static_cast<std::uint32_t>(record.source.edges[2])<<16U);
+      for(std::size_t vertex=0U;vertex<6U;++vertex)for(std::size_t axis=0U;axis<3U;++axis){
+        const auto point=record.vertices[vertex];const float value=static_cast<float>(axis==0U?point.x:axis==1U?point.y:point.z);
+        input[offset+4U+vertex*3U+axis]=std::bit_cast<std::uint32_t>(value);
+      }
+      for(std::size_t normal=0U;normal<4U;++normal)for(std::size_t axis=0U;axis<3U;++axis){
+        const auto value=record.normals[normal];const float component=static_cast<float>(axis==0U?value.x:axis==1U?value.y:value.z);
+        input[offset+22U+normal*3U+axis]=std::bit_cast<std::uint32_t>(component);
+      }
+    }
+    if(corrupt_geometry&&!projected.empty())input[8U]=std::bit_cast<std::uint32_t>(std::numeric_limits<float>::quiet_NaN());
+    const auto required=projected.size()*12U;
+    std::vector<std::uint32_t> output(4U+std::max<std::size_t>(capacity,1U)*18U);
+    id<MTLBuffer> field=make_buffer(&input_tuple,sizeof(input_tuple));
+    id<MTLBuffer> input_buffer=make_buffer(input.data(),input.size()*sizeof(input.front()));
+    id<MTLBuffer> output_buffer=make_buffer(output.data(),output.size()*sizeof(output.front()));
+    if(field==nil||input_buffer==nil||output_buffer==nil)return false;
+    DrawParameters parameters;parameters.triangle_count=static_cast<std::uint32_t>(projected.size());parameters.vertex_capacity=capacity;
+    parameters.render_origin={static_cast<float>(origin.x),static_cast<float>(origin.y),static_cast<float>(origin.z),0.0F};
+    parameters.source_revision_low=101U;parameters.source_revision_high=0U;
+    id<MTLCommandBuffer> command=[queue commandBuffer];id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:pipeline];[encoder setBuffer:field offset:0U atIndex:0U];
+    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:1U];[encoder setBuffer:output_buffer offset:0U atIndex:2U];
+    [encoder setBuffer:input_buffer offset:0U atIndex:3U];[encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted)return false;
+    const auto* words=static_cast<const std::uint32_t*>(output_buffer.contents);
+    if(expect_failure)return words[0U]==0U&&words[1U]!=0U;
+    if(words[0U]!=required||words[1U]!=0U||words[2U]!=projected.size()){std::fprintf(stderr,"Metal terrain draw header %u %u %u expected %zu\n",words[0U],words[1U],words[2U],required);return false;}
+    const auto field_sphere=tetra::gpu_terrain_field_tuple_sphere(input_tuple);
+    constexpr std::array<std::array<std::uint32_t,3>,4> faces{{{{0U,1U,2U}},{{1U,3U,4U}},{{2U,4U,5U}},{{1U,4U,2U}}}};
+    for(std::size_t triangle=0U;triangle<projected.size();++triangle)for(std::size_t face=0U;face<faces.size();++face)for(std::size_t corner=0U;corner<3U;++corner){
+      const auto vertex=triangle*12U+face*3U+corner;const auto offset=4U+vertex*18U;
+      const auto& point=projected[triangle].vertices[faces[face][corner]];
+      const auto& flat=projected[triangle].normals[face];
+      const auto smooth=field_sphere.normal(point+origin);
+      const std::array<double,3> expected_position{{point.x,point.y,point.z}};
+      const std::array<double,3> expected_flat{{flat.x,flat.y,flat.z}};
+      const std::array<double,3> expected_smooth{{smooth.x,smooth.y,smooth.z}};
+      for(std::size_t axis=0U;axis<3U;++axis){
+        const float position=std::bit_cast<float>(words[offset+axis]);
+        const float colour=std::bit_cast<float>(words[offset+3U+axis]);
+        const float normal=std::bit_cast<float>(words[offset+6U+axis]);
+        const float barycentric=std::bit_cast<float>(words[offset+12U+axis]);
+        const float smooth_normal=std::bit_cast<float>(words[offset+15U+axis]);
+        const float wanted_colour=axis==0U?.43F:axis==1U?.45F:.47F;
+        const float wanted_barycentric=axis==corner?1.0F:0.0F;
+        if(!std::isfinite(position)||std::abs(static_cast<double>(position)-expected_position[axis])>2.e-5||
+           std::abs(colour-wanted_colour)>1.e-6F||!std::isfinite(normal)||std::abs(static_cast<double>(normal)-expected_flat[axis])>2.e-3||
+           std::abs(barycentric-wanted_barycentric)>1.e-6F||!std::isfinite(smooth_normal)||std::abs(static_cast<double>(smooth_normal)-expected_smooth[axis])>3.e-2){
+          std::fprintf(stderr,"Metal terrain draw vertex mismatch %zu/%zu/%zu\n",triangle,face,corner);return false;
+        }
+      }
+      if(std::abs(std::bit_cast<float>(words[offset+9U])+2.0F)>1.e-6F||words[offset+10U]!=0U||
+         std::abs(std::bit_cast<float>(words[offset+11U])-7.0F)>1.e-6F){std::fprintf(stderr,"Metal terrain draw attributes mismatch\n");return false;}
+    }
+    return true;
+  };
+  const auto projected_for=[&](const tetra::GpuTerrainFieldTuple& field,tetra::Vec3 origin){
+    return tetra::gpu_terrain_project_base_triangles(base_triangles,
+        tetra::gpu_terrain_field_tuple_sphere(field),origin,100000U);
+  };
+  const auto fixed=projected_for(tuple,{});const auto capacity=static_cast<std::uint32_t>(fixed.size()*12U);
+  if(!dispatch(tuple,fixed,{},capacity,false)){std::fprintf(stderr,"Metal terrain draw fixed parity failed\n");return false;}
+  const tetra::Vec3 moved_origin{.25,-.5,.75};const auto rebased=projected_for(tuple,moved_origin);
+  if(!dispatch(tuple,rebased,moved_origin,capacity,false)){std::fprintf(stderr,"Metal terrain draw moved-origin parity failed\n");return false;}
+  auto moved=tuple;moved.centre_radius[0]+=.03125F;moved.revision_lanes[2]+=1U;
+  const auto moved_roots=tetra::gpu_terrain_root_packet(packet,moved,100000U);
+  const auto moved_base=tetra::gpu_terrain_base_triangles(moved_roots,100000U);
+  const auto moved_projected=tetra::gpu_terrain_project_base_triangles(moved_base,tetra::gpu_terrain_field_tuple_sphere(moved),{},100000U);
+  if(!dispatch(moved,moved_projected,{},static_cast<std::uint32_t>(moved_projected.size()*12U),false)){std::fprintf(stderr,"Metal terrain draw moved-field parity failed\n");return false;}
+  if(!dispatch(tuple,fixed,{},capacity-1U,true)){std::fprintf(stderr,"Metal terrain draw capacity rejection failed\n");return false;}
+  auto stale=tuple;stale.revision_lanes[0]^=1U;if(!dispatch(stale,fixed,{},capacity,true)){std::fprintf(stderr,"Metal terrain draw stale rejection failed\n");return false;}
+  if(!dispatch(tuple,fixed,{},capacity,true,true)){std::fprintf(stderr,"Metal terrain draw header rejection failed\n");return false;}
+  if(!dispatch(tuple,fixed,{},capacity,true,false,true)){std::fprintf(stderr,"Metal terrain draw geometry rejection failed\n");return false;}
+  if(!dispatch(tuple,{}, {},0U,false)){std::fprintf(stderr,"Metal terrain draw empty-stream parity failed\n");return false;}
+  std::printf("{\"event\":\"metal_gpu_terrain_draw\",\"vertices\":%u,\"passed\":true}\n",capacity);
   return true;
 }
 
@@ -4051,6 +4193,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-triangle-smoke-test")==0;
   const bool gpu_terrain_project_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-project-smoke-test")==0;
+  const bool gpu_terrain_draw_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-draw-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
@@ -4319,7 +4463,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4335,6 +4479,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-terrain-classify-smoke-test|"
                         "--metal-gpu-terrain-triangle-smoke-test|"
                         "--metal-gpu-terrain-project-smoke-test|"
+                        "--metal-gpu-terrain-draw-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
@@ -4407,6 +4552,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_triangle_smoke_test(device)?0:1;
     if(gpu_terrain_project_smoke_test)
       return run_metal_gpu_terrain_project_smoke_test(device)?0:1;
+    if(gpu_terrain_draw_smoke_test)
+      return run_metal_gpu_terrain_draw_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){

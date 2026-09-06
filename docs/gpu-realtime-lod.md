@@ -1478,24 +1478,19 @@ topology, and complete-frame gates.
   topology authority while these ordered diagnostic leaves replace the legacy
   448-byte CPU-precomputed cell payload. P7a's compact classification
   diagnostic is complete and remains non-drawable; P7b's device roots and
-  compact base-triangle diagnostic are complete. P7c is the current executable
-  leaf.
-  - [ ] **P7c2a — Device-local drawable candidate.** Consume only a complete
-    P7c1b generation and expand its four child faces into the renderer's
-    `SceneVertex` ABI plus one immutable generation/count contract. Prove
-    identity, position, normal, winding, empty, stale, malformed, and overflow
-    behaviour against the CPU oracle. This remains non-drawable; CPU retains
-    front authority until the atomic-promotion leaf.
+  compact base-triangle diagnostic are complete. P7c2b is the current
+  executable leaf.
   - [ ] **P7c2b — Shared complete-generation consumer binding.** Only after
     P7c2a parity, bind opaque, wireframe, shadow, and ray tracing to exactly
-    one completed GPU generation, otherwise retaining the CPU front. Avoid a
-    sequential index buffer unless it has measured consumer benefit; readback
-    remains diagnostic until P7d.
+    one completed GPU generation, otherwise retaining the CPU front. No
+    consumer may independently advance, retain a differently rebased surface,
+    or consume a partial update. Avoid a sequential index buffer unless it has
+    measured consumer benefit; readback remains diagnostic until P7d.
   - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
     horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
-    shapes. Require stream, incidence/winding, normal, depth, and colour parity
-    and reject stale, partial, non-finite, degenerate, or overflow output. CPU
-    fallback remains until P8.
+    shapes. Require stream, incidence/winding, normal-direction distribution,
+    depth, and colour parity and reject stale, partial, non-finite, degenerate,
+    or overflow output. CPU fallback remains until P8.
 - [ ] **P8 — Readback-free publication and performance qualification.** Keep
   selection, compaction, generated geometry/edge streams, indirect arguments,
   raster, shadow, and ray-tracing consumption device-local. Camera movement

@@ -36,15 +36,15 @@ void main(){
     const vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
     if(!finite3(a)||!finite3(b)||!finite3(c)){fail();return;}
     const float midpoint_footprint=lane(1u,3u)>0.0?lane(1u,3u)*.5:lane(1u,3u);
-    const vec3 ab=terrain_field_project_to_surface((a+b)*.5,midpoint_footprint);
-    const vec3 bc=terrain_field_project_to_surface((b+c)*.5,midpoint_footprint);
-    const vec3 ca=terrain_field_project_to_surface((c+a)*.5,midpoint_footprint);
+    const vec3 ab=terrain_field_project_to_surface_world((a+b)*.5,midpoint_footprint);
+    const vec3 bc=terrain_field_project_to_surface_world((b+c)*.5,midpoint_footprint);
+    const vec3 ca=terrain_field_project_to_surface_world((c+a)*.5,midpoint_footprint);
     if(!finite3(ab)||!finite3(bc)||!finite3(ca)){fail();return;}
     const vec3 points[6]=vec3[6](a,ab,ca,b,bc,c);
     const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
     for(uint face=0u;face<4u;++face){
       vec3 normal=cross(points[faces[face].y]-points[faces[face].x],points[faces[face].z]-points[faces[face].x]);
-      const vec3 outward=terrain_field_normal((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u));
+      const vec3 outward=terrain_field_normal_world((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u));
       if(dot(normal,outward)<0.0)normal=-normal;
       if(!finite3(normal)||!(length(normal)>1.e-15)){fail();return;}
     }
@@ -55,13 +55,13 @@ void main(){
     const vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
     const vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
     const float midpoint_footprint=lane(1u,3u)>0.0?lane(1u,3u)*.5:lane(1u,3u);
-    const vec3 points[6]=vec3[6](a,terrain_field_project_to_surface((a+b)*.5,midpoint_footprint),terrain_field_project_to_surface((c+a)*.5,midpoint_footprint),b,terrain_field_project_to_surface((b+c)*.5,midpoint_footprint),c);
+    const vec3 points[6]=vec3[6](a,terrain_field_project_to_surface_world((a+b)*.5,midpoint_footprint),terrain_field_project_to_surface_world((c+a)*.5,midpoint_footprint),b,terrain_field_project_to_surface_world((b+c)*.5,midpoint_footprint),c);
     const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
     for(uint word=0u;word<4u;++word)output_geometry.words[destination+word]=input_triangles.words[source+word];
     for(uint vertex=0u;vertex<6u;++vertex)for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+4u+vertex*3u+axis]=floatBitsToUint(points[vertex][axis]-parameters.render_origin[axis]);
     for(uint face=0u;face<4u;++face){
       vec3 normal=cross(points[faces[face].y]-points[faces[face].x],points[faces[face].z]-points[faces[face].x]);
-      if(dot(normal,terrain_field_normal((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u)))<0.0)normal=-normal;
+      if(dot(normal,terrain_field_normal_world((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u)))<0.0)normal=-normal;
       normal/=length(normal);
       for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+22u+face*3u+axis]=floatBitsToUint(normal[axis]);
     }
