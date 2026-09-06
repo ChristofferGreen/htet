@@ -2,7 +2,7 @@
 
 ## Current Known Failures
 
-- none
+- [ ] metal GPU terrain parallel compaction parity | mode: Release | command: `TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | first_seen: 2026-09-06 08:16 CEST | last_seen: 2026-09-06 08:16 CEST | next: `./scripts/compile.sh --release --skip-tests && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | notes: P7c2b1b0 count pass matches 28 expected triangles on the mixed-depth P6 packet, but the chained translated Metal scan emits unstable offsets (first 1951, then zero); no consumer path is connected.
 
 ## Recent Test Runs
 

@@ -1,5 +1,5 @@
 #version 450
-// Inclusive hierarchy primitive for P7c2b1b0.  Each dispatch scans 256 input
+// Exclusive hierarchy primitive for P7c2b1b0.  Each dispatch scans 256 input
 // values per workgroup, writes their exclusive offsets and one block total.
 // The host recursively scans block totals, then invokes add_offsets while
 // descending.  No atomic allocation participates in stream ordering.
@@ -9,12 +9,23 @@ layout(std430,binding=2) buffer Totals { uint values[]; } block_totals;
 layout(push_constant) uniform Parameters { uint count; uint add_offsets; } parameters;
 layout(local_size_x=256) in;
 shared uint scratch[256];
+shared uint next_scratch[256];
+shared uint total;
 void main(){
   uint lane=gl_LocalInvocationID.x,index=gl_GlobalInvocationID.x;
+  // Descending passes add the already-scanned parent block offset; they must
+  // not scan the child offsets a second time.
+  if(parameters.add_offsets!=0u){if(index<parameters.count)
+    output_offsets.values[index]=input_values.values[index]+block_totals.values[gl_WorkGroupID.x];return;}
   scratch[lane]=index<parameters.count?input_values.values[index]:0u;
   barrier();
-  for(uint step=1u;step<256u;step<<=1u){uint value=lane>=step?scratch[lane-step]:0u;barrier();scratch[lane]+=value;barrier();}
+  // Use a separate destination array at every level.  This makes the
+  // read-before-write ordering explicit in translated Metal as well.
+  for(uint step=1u;step<256u;step<<=1u){next_scratch[lane]=scratch[lane]+(lane>=step?scratch[lane-step]:0u);barrier();scratch[lane]=next_scratch[lane];barrier();}
+  if(lane==0u)total=scratch[255u];barrier();
   if(index<parameters.count){uint base=lane==0u?0u:scratch[lane-1u];
-    output_offsets.values[index]=base+(parameters.add_offsets!=0u?block_totals.values[gl_WorkGroupID.x]:0u);}
-  if(lane==255u)block_totals.values[gl_WorkGroupID.x]=scratch[lane];
+    output_offsets.values[index]=base;}
+  // During descending uniform-add passes `block_totals` contains the already
+  // scanned parent offsets and must not be overwritten.
+  if(lane==255u)block_totals.values[gl_WorkGroupID.x]=total;
 }

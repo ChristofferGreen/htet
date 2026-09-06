@@ -1,0 +1,16 @@
+#version 450
+// P7c2b1b0 capacity gate.  It runs after the recursive scan and before any
+// scatter dispatch, so an invalid stream or an over-capacity total cannot
+// publish a partial compact-triangle packet.
+layout(std430,binding=0) readonly buffer Counts { uint values[]; } counts;
+layout(std430,binding=1) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=2) readonly buffer Status { uint words[]; } status;
+layout(std430,binding=3) buffer Output { uint words[]; } output_buffer;
+layout(push_constant) uniform Parameters { uint root_slot_count; uint capacity; } parameters;
+layout(local_size_x=1) in;
+void main(){
+  if(parameters.root_slot_count==0u){output_buffer.words[0u]=0u;output_buffer.words[1u]=status.words[1u];return;}
+  uint last=parameters.root_slot_count-1u,total=offsets.values[last]+counts.values[last];
+  if(status.words[1u]!=0u||total>parameters.capacity){output_buffer.words[1u]=1u;return;}
+  output_buffer.words[0u]=total;
+}
