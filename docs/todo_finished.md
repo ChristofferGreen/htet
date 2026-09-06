@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P7a1 — Freeze the compact field ABI and CPU reconstruction oracle.**
+  Added a 176-byte, 16-byte-aligned GPU tuple that carries the complete
+  `Sphere`/`TerrainParameters` and domain contract with source/field revisions.
+  The validator rejects malformed shape, domain, finite-value, analytic-ridge,
+  and source-revision lanes. The diagnostic CPU oracle reconstructs every
+  restricted-green Grande tetrahedron directly from P6 owner addresses and
+  classifies only corner signs/crossings; it accepts no CPU roots, normals, or
+  vertices and fails closed on stale revision or capacity overflow. A
+  mixed-depth planetary BCC regression independently reproduces every record.
+  P7a2 owns the translated Metal dispatch and hardware parity.
+
 - [x] **P6c — Prove packet topology across BCC boundaries.** The P6 topology
   certificate reconstructs Grande cells from the exact packet, includes a
   declared reflected-orientation bit per owner, and proves opposite winding,

@@ -6,6 +6,12 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 02:37 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 499 tests passed after P7a1; the final gate includes the mixed-depth planetary BCC classification oracle and all existing Metal diagnostics.
+
+- 2026-09-06 02:24 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^GPU terrain (field tuple preserves the complete procedural contract|classification reconstructs BCC field signs)$'` | failures: none | notes: P7a1's compact field tuple and independent mixed-depth planetary BCC classification oracle both passed.
+
+- 2026-09-06 02:07 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: P7a baseline passed all 497 tests before replacing the legacy CPU-precomputed terrain-cell diagnostic input.
+
 - 2026-09-06 01:53 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 497 tests passed after P6c; packet topology proved uniform, root-boundary, one-level, and adjacent two-level BCC fronts have exact counts, opposite shared winding, no invalid boundary, and no nonmanifold face.
 
 - 2026-09-06 01:42 CEST | fail | mode: Release | command: `ctest --test-dir build/release --output-on-failure -R '^GPU green mask packet topology closes BCC depth and root boundaries$'` | failures: GPU green mask packet topology closes BCC depth and root boundaries | notes: the new P6c certificate detected reflected BCC owner orientation across shared faces; adding an explicit packet orientation bit before rerunning.

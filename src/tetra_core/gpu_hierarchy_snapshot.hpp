@@ -87,6 +87,47 @@ struct GpuGreenMaskTopology {
   std::uint32_t nonmanifold_faces{};
   bool opposite_shared_orientations{true};
 };
+// Immutable P7a field/domain ABI.  The nine vec4 lanes preserve every scalar
+// used by Sphere and TerrainParameters; no sampled signs or CPU geometry are
+// permitted in this tuple.  The classification shader consumes this alongside
+// the P6 owner/mask packet.
+struct alignas(16) GpuTerrainFieldTuple {
+  std::array<float,4> centre_radius{};
+  std::array<float,4> shape_secondary_frequency{};
+  std::array<std::array<float,4>,7> terrain{};
+  std::array<float,4> domain_origin_extent{};
+  std::array<std::uint32_t,4> revision_lanes{};
+  auto operator<=>(const GpuTerrainFieldTuple&) const = default;
+};
+static_assert(sizeof(GpuTerrainFieldTuple)==176U);
+static_assert(alignof(GpuTerrainFieldTuple)==16U);
+struct GpuTerrainFieldTupleParameters {
+  Sphere field{};
+  WorldStreamingDemand::Domain domain{};
+  std::uint64_t source_revision{};
+  std::uint64_t field_revision{};
+};
+struct GpuTerrainClassificationRecord {
+  std::uint32_t owner_index{};
+  std::uint32_t template_cell{};
+  std::uint32_t corner_negative_mask{};
+  std::uint32_t crossing_count{};
+  auto operator<=>(const GpuTerrainClassificationRecord&) const = default;
+};
+struct GpuTerrainClassification {
+  std::vector<GpuTerrainClassificationRecord> records;
+  std::uint32_t crossing_cells{};
+  std::uint32_t attempted_records{};
+  bool overflow{};
+};
+[[nodiscard]] GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
+    const GpuTerrainFieldTupleParameters& parameters);
+void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
+[[nodiscard]] Sphere gpu_terrain_field_tuple_sphere(
+    const GpuTerrainFieldTuple& tuple);
+[[nodiscard]] GpuTerrainClassification gpu_terrain_classify_packet(
+    const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
+    std::uint32_t capacity);
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,

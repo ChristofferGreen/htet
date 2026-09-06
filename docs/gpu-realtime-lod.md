@@ -1472,16 +1472,22 @@ topology, and complete-frame gates.
     No per-owner culling is permitted for the diagnostic front yet: P6 retains
     the complete candidate packet, so no omitted owner can create a finite
     preview boundary. CPU rendering remains authoritative.
-- [ ] **P7 — GPU-native watertight BCC surface generation.** P6 is the sole
+- [ ] **P7 — GPU-native watertight BCC surface generation.** P6a--P6c are
+  complete, so the frozen Grande templates, revisioned restricted-green packet,
+  exact dyadic edge identities, and halo/mixed-depth certificate are the sole
   topology authority while these ordered diagnostic leaves replace the legacy
-  448-byte CPU-precomputed cell payload.
-  - [ ] **P7a — Compact reconstruction and field classification.** Join exact
-    P6 owner/mask/orientation records to immutable field/domain parameters and
-    reconstruct the BCC/template tetrahedra on device. Emit classification and
-    count evidence only: CPU roots, winding, midpoints, normals, and vertices
-    are forbidden inputs. Fixed and moving Metal fixtures must exactly match the
-    CPU classification/count oracle, and malformed/stale/capacity inputs fail
-    closed. CPU remains renderer; root solving is P7b.
+  448-byte CPU-precomputed cell payload. P7a1's host ABI/oracle is complete;
+  P7a2 is the current executable leaf.
+  - [ ] **P7a2 — Metal compact-classification parity.** Translate a separate
+    compute diagnostic that joins exact P6 owner/mask/orientation records to
+    P7a1's immutable field/domain tuple, reconstructs BCC/template tetrahedra
+    from addresses, and emits classification/count evidence only. CPU roots,
+    winding, midpoints, normals, and vertices are forbidden inputs. The tuple
+    and compute implementation must reproduce the complete planetary-terrain
+    grammar (including domain-warped gradient noise and all terrain parameters),
+    never a sphere-only surrogate. Fixed and moving Metal fixtures must exactly
+    match the CPU classification/count oracle; malformed/stale/capacity inputs
+    fail closed. CPU remains renderer; root solving is P7b.
   - [ ] **P7b — Device roots, ordering, and compact base triangles.** Solve
     roots from P7a signs and emit overflow-safe scanned compact non-indexed
     base triangles. Match canonical roots, triangle ownership, masks, and edge

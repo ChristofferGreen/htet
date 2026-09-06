@@ -692,6 +692,116 @@ TEST_CASE("GPU green mask packet topology closes BCC depth and root boundaries")
   inspect(83U);
 }
 
+TEST_CASE("GPU terrain field tuple preserves the complete procedural contract") {
+  tetra::GpuTerrainFieldTupleParameters parameters;
+  parameters.source_revision=91U;parameters.field_revision=37U;
+  parameters.domain.world_origin={1000.25,-80.5,3.75};
+  parameters.domain.world_extent=4096.0;
+  auto& field=parameters.field;
+  field.centre={0.4,0.7,0.2};field.radius=0.31;
+  field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field.secondary=0.17;field.frequency=2.7;field.sampling_footprint=0.0625;
+  auto& terrain=field.terrain;
+  terrain.height_offset=1.0;terrain.landform_amplitude=2.0;terrain.landform_frequency=3.0;
+  terrain.mountain_amplitude=4.0;terrain.mountain_ridge_frequency=5.0;terrain.mountain_range_frequency=6.0;
+  terrain.planetary_mountain_amplitude_scale=7.0;terrain.planetary_mountain_frequency_scale=8.0;
+  terrain.planetary_mountain_fade_start=9.0;terrain.planetary_mountain_fade_end=10.0;
+  terrain.gameplay_hill_amplitude=11.0;terrain.gameplay_hill_frequency=12.0;
+  terrain.gameplay_feature_amplitude=13.0;terrain.gameplay_feature_frequency=14.0;
+  terrain.gameplay_region_frequency=15.0;terrain.gameplay_corridor_depth=16.0;
+  terrain.gameplay_warp_amplitude=17.0;terrain.gameplay_warp_frequency=18.0;
+  terrain.ground_roughness_amplitude=19.0;terrain.ground_roughness_frequency=20.0;
+  terrain.spawn_flat_radius=21.0;terrain.spawn_blend_radius=22.0;terrain.planet_radius=23.0;
+  terrain.analytic_ridge=true;terrain.analytic_ridge_centre_z=24.0;
+  terrain.analytic_ridge_height=25.0;terrain.analytic_ridge_half_width=26.0;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(parameters);
+  CHECK_NOTHROW(tetra::validate_gpu_terrain_field_tuple(tuple));
+  const auto restored=tetra::gpu_terrain_field_tuple_sphere(tuple);
+  tetra::GpuTerrainFieldTupleParameters replay=parameters;
+  replay.field=restored;
+  CHECK(tetra::make_gpu_terrain_field_tuple(replay)==tuple);
+  CHECK(tuple.revision_lanes[0]==91U);
+  CHECK(tuple.revision_lanes[2]==37U);
+  auto malformed=tuple;malformed.centre_radius[3]=0.0F;
+  CHECK_THROWS_AS(tetra::validate_gpu_terrain_field_tuple(malformed),
+                  std::invalid_argument);
+  malformed=tuple;malformed.shape_secondary_frequency[0]=9.0F;
+  CHECK_THROWS_AS(tetra::validate_gpu_terrain_field_tuple(malformed),
+                  std::invalid_argument);
+  malformed=tuple;malformed.terrain[5][3]=0.5F;
+  CHECK_THROWS_AS(tetra::validate_gpu_terrain_field_tuple(malformed),
+                  std::invalid_argument);
+  malformed=tuple;malformed.revision_lanes[0]=0U;malformed.revision_lanes[1]=0U;
+  CHECK_THROWS_AS(tetra::validate_gpu_terrain_field_tuple(malformed),
+                  std::invalid_argument);
+}
+
+TEST_CASE("GPU terrain classification reconstructs BCC field signs") {
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  candidates.erase(std::ranges::find(candidates,tetra::WorldTetAddress::root(0U)));
+  for(std::uint8_t child=0U;child<8U;++child)
+    candidates.push_back(tetra::WorldTetAddress::root(0U).child(child));
+  std::ranges::sort(candidates);
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  tetra::GpuTerrainFieldTupleParameters parameters;
+  parameters.source_revision=101U;parameters.field_revision=19U;
+  parameters.domain.world_extent=1.0;
+  parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  parameters.field.centre={.5,.5,.5};parameters.field.radius=.45;
+  parameters.field.terrain.planet_radius=.45;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(parameters);
+  const auto actual=tetra::gpu_terrain_classify_packet(packet,tuple,10000U);
+  CHECK_FALSE(actual.overflow);
+  std::vector<tetra::GpuTerrainClassificationRecord> expected;
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  const auto field=tetra::gpu_terrain_field_tuple_sphere(tuple);
+  for(std::size_t owner_index=0U;owner_index<packet.owners.size();++owner_index) {
+    const auto geometry=tetra::world_tetrahedron_geometry(
+        tetra::gpu_hierarchy_address_from_lanes(packet.owners[owner_index].address));
+    std::array<tetra::Vec3,10> points{};
+    for(std::size_t point=0U;point<points.size();++point) {
+      if(tetra::grande_point_vertex[point]!=0xffU)
+        points[point]=geometry[tetra::grande_point_vertex[point]];
+      else {
+        const auto edge=edges[tetra::grande_point_edge[point]];
+        points[point]=(geometry[edge[0]]+geometry[edge[1]])/2.0;
+      }
+    }
+    const auto& stencil=tetra::complete_green_template(
+        static_cast<std::uint8_t>(packet.owners[owner_index].mask));
+    for(std::size_t cell=0U;cell<stencil.count;++cell) {
+      tetra::GpuTerrainClassificationRecord record;
+      record.owner_index=static_cast<std::uint32_t>(owner_index);
+      record.template_cell=static_cast<std::uint32_t>(cell);
+      for(std::size_t corner=0U;corner<4U;++corner) {
+        const auto point=parameters.domain.to_world(
+            points[stencil.tetrahedra[cell][corner]]);
+        if(field.signed_distance(point)<0.0)record.corner_negative_mask|=1U<<corner;
+      }
+      for(const auto edge:edges)
+        if(((record.corner_negative_mask>>edge[0])&1U)!=
+           ((record.corner_negative_mask>>edge[1])&1U))++record.crossing_count;
+      expected.push_back(record);
+    }
+  }
+  CHECK(actual.records==expected);
+  CHECK(actual.attempted_records==expected.size());
+  const auto expected_crossing=std::ranges::count_if(expected,[](const auto& record){
+    return record.crossing_count>=3U;
+  });
+  CHECK(actual.crossing_cells==expected_crossing);
+  const auto overflow=tetra::gpu_terrain_classify_packet(packet,tuple,1U);
+  CHECK(overflow.overflow);
+  CHECK(overflow.records.empty());
+  CHECK(overflow.crossing_cells==0U);
+  auto stale=tuple;stale.revision_lanes[0]=102U;
+  CHECK_THROWS_AS(tetra::gpu_terrain_classify_packet(packet,stale,10000U),
+                  std::invalid_argument);
+}
+
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
   const auto construction=tetra::make_four_hexahedra();
   REQUIRE(construction.cells.size()==4U);

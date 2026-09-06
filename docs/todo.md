@@ -355,18 +355,25 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 
 - [ ] **P7 — Generate the watertight BCC surface on the GPU.** This replaces
       the production dependency on CPU-precomputed `GpuTerrainCellRecord`
-      geometry in ordered, diagnostic-only leaves. P6 remains the exclusive
-      topology authority until compact GPU generation is exactly qualified.
-  - [ ] **P7a — Reconstruct compact BCC candidates and classify the field on
-        device.** Define a fixed ABI joining P6 owner/mask/orientation records
-        with immutable field/domain parameters. A new compute diagnostic must
-        reconstruct owner/template tetrahedra from exact addresses, evaluate
-        the field at every corner, and emit only counts/classification evidence
-        without accepting CPU roots, winding, midpoints, normals, or vertices.
-        Fixed and moving Metal fixtures compare every classification/count to
-        the CPU oracle; malformed address, template, field tuple, stale source
-        revision, and capacity failures fail closed. Stop rule: CPU remains the
-        only renderer; no root solve or surface vertices yet.
+      geometry in ordered, diagnostic-only leaves. P6a--P6c are complete: the
+      frozen Grande-template ABI, revisioned restricted-green masks, exact
+      dyadic edge directory, and mixed-depth halo proof are the exclusive
+      topology authority. P7a is now the sole active implementation leaf;
+      compact GPU generation cannot become drawable until its field contract
+      and Metal parity gates close.
+  - [ ] **P7a — Compact reconstruction and field classification.** Its host
+        ABI/oracle foundation is complete; the next executable leaf is P7a2.
+  - [ ] **P7a2 — Dispatch the compact classifier on Metal.** Translate a
+        separate compute diagnostic that joins the P6 owner/mask/orientation
+        packet to P7a1's immutable field/domain tuple, reconstructs every
+        owner/template tetrahedron from exact addresses, and emits only
+        corner-sign, crossing-count, and capacity evidence. It must reproduce
+        the complete production planetary-terrain grammar, including
+        domain-warped gradient noise and every terrain parameter—never a
+        sphere-only approximation. Fixed and moving Metal fixtures compare all
+        records and counts to the CPU oracle; malformed address/template/field
+        data, stale source revision, and capacity failures fail closed. Stop
+        rule: CPU remains the only renderer; root solving and vertices are P7b.
   - [ ] **P7b — Solve roots and emit unprojected GPU surface triangles.**
         Implement robust device root solving and crossing ordering from P7a
         signs, with exact per-cell count/scan/reservation and overflow-safe

@@ -28,6 +28,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The GPU-facing Grande grammar is an immutable 64-entry array of 112-byte records, packing each template's up-to-24 tetrahedron point-index quads into uint32 words plus its exact mask and count.
 - Evidence: The table is regenerated directly from the CPU templates and its validator rejects wrong size, headers, packed tetrahedra, unused data, and out-of-range lookup; 64 masks by 12 orientation-preserving permutations passed 4,688 Release assertions.
 
+### gpu-terrain-field-tuple
+- Updated: 2026-09-06
+- Tags: gpu, terrain, bcc, classification
+- Fact: P7a1's 176-byte aligned field tuple carries every `Sphere` and planetary-terrain scalar plus domain and source/field revisions; its host oracle reconstructs Grande cells solely from P6 owner addresses and fails closed on stale packets or insufficient record capacity.
+- Evidence: The focused Release regression round-trips every parameter and independently matches all corner-sign/crossing records for a mixed-depth planetary BCC front.
+
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization

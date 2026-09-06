@@ -235,6 +235,139 @@ GpuGreenMaskPacket make_gpu_green_mask_packet(
   return result;
 }
 
+GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
+    const GpuTerrainFieldTupleParameters& parameters) {
+  const auto& field=parameters.field;
+  const auto& terrain=field.terrain;
+  GpuTerrainFieldTuple result;
+  const auto pack=[](double value) { return static_cast<float>(value); };
+  result.centre_radius={{pack(field.centre.x),pack(field.centre.y),
+      pack(field.centre.z),pack(field.radius)}};
+  result.shape_secondary_frequency={{static_cast<float>(field.kind),
+      pack(field.secondary),pack(field.frequency),pack(field.sampling_footprint)}};
+  result.terrain={{{pack(terrain.height_offset),pack(terrain.landform_amplitude),
+      pack(terrain.landform_frequency),pack(terrain.mountain_amplitude)},
+      {pack(terrain.mountain_ridge_frequency),pack(terrain.mountain_range_frequency),
+       pack(terrain.planetary_mountain_amplitude_scale),pack(terrain.planetary_mountain_frequency_scale)},
+      {pack(terrain.planetary_mountain_fade_start),pack(terrain.planetary_mountain_fade_end),
+       pack(terrain.gameplay_hill_amplitude),pack(terrain.gameplay_hill_frequency)},
+      {pack(terrain.gameplay_feature_amplitude),pack(terrain.gameplay_feature_frequency),
+       pack(terrain.gameplay_region_frequency),pack(terrain.gameplay_corridor_depth)},
+      {pack(terrain.gameplay_warp_amplitude),pack(terrain.gameplay_warp_frequency),
+       pack(terrain.ground_roughness_amplitude),pack(terrain.ground_roughness_frequency)},
+      {pack(terrain.spawn_flat_radius),pack(terrain.spawn_blend_radius),
+       pack(terrain.planet_radius),terrain.analytic_ridge?1.0F:0.0F},
+      {pack(terrain.analytic_ridge_centre_z),pack(terrain.analytic_ridge_height),
+       pack(terrain.analytic_ridge_half_width),0.0F}}};
+  result.domain_origin_extent={{pack(parameters.domain.world_origin.x),
+      pack(parameters.domain.world_origin.y),pack(parameters.domain.world_origin.z),
+      pack(parameters.domain.world_extent)}};
+  result.revision_lanes={{low32(parameters.source_revision),
+      high32(parameters.source_revision),low32(parameters.field_revision),
+      high32(parameters.field_revision)}};
+  validate_gpu_terrain_field_tuple(result);
+  return result;
+}
+
+void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple) {
+  const auto finite=[](float value) { return std::isfinite(value); };
+  for(const auto lane:tuple.centre_radius)if(!finite(lane))
+    throw std::invalid_argument("GPU terrain field centre is invalid");
+  for(const auto lane:tuple.shape_secondary_frequency)if(!finite(lane))
+    throw std::invalid_argument("GPU terrain field shape is invalid");
+  for(const auto& values:tuple.terrain)for(const auto lane:values)if(!finite(lane))
+    throw std::invalid_argument("GPU terrain field parameters are invalid");
+  for(const auto lane:tuple.domain_origin_extent)if(!finite(lane))
+    throw std::invalid_argument("GPU terrain field domain is invalid");
+  const auto shape=tuple.shape_secondary_frequency[0];
+  if(shape<0.0F||shape>static_cast<float>(ImplicitShapeKind::rounded_cube)||
+     std::floor(shape)!=shape||!(tuple.centre_radius[3]>0.0F)||
+     !(tuple.domain_origin_extent[3]>0.0F)||
+     (tuple.terrain[5][3]!=0.0F&&tuple.terrain[5][3]!=1.0F)||
+     join32(tuple.revision_lanes[0],tuple.revision_lanes[1])==0U)
+    throw std::invalid_argument("GPU terrain field tuple is malformed");
+}
+
+Sphere gpu_terrain_field_tuple_sphere(const GpuTerrainFieldTuple& tuple) {
+  validate_gpu_terrain_field_tuple(tuple);
+  Sphere result;
+  result.centre={tuple.centre_radius[0],tuple.centre_radius[1],tuple.centre_radius[2]};
+  result.radius=tuple.centre_radius[3];
+  result.kind=static_cast<ImplicitShapeKind>(
+      static_cast<unsigned int>(tuple.shape_secondary_frequency[0]));
+  result.secondary=tuple.shape_secondary_frequency[1];
+  result.frequency=tuple.shape_secondary_frequency[2];
+  result.sampling_footprint=tuple.shape_secondary_frequency[3];
+  auto& terrain=result.terrain;
+  terrain.height_offset=tuple.terrain[0][0];terrain.landform_amplitude=tuple.terrain[0][1];
+  terrain.landform_frequency=tuple.terrain[0][2];terrain.mountain_amplitude=tuple.terrain[0][3];
+  terrain.mountain_ridge_frequency=tuple.terrain[1][0];terrain.mountain_range_frequency=tuple.terrain[1][1];
+  terrain.planetary_mountain_amplitude_scale=tuple.terrain[1][2];terrain.planetary_mountain_frequency_scale=tuple.terrain[1][3];
+  terrain.planetary_mountain_fade_start=tuple.terrain[2][0];terrain.planetary_mountain_fade_end=tuple.terrain[2][1];
+  terrain.gameplay_hill_amplitude=tuple.terrain[2][2];terrain.gameplay_hill_frequency=tuple.terrain[2][3];
+  terrain.gameplay_feature_amplitude=tuple.terrain[3][0];terrain.gameplay_feature_frequency=tuple.terrain[3][1];
+  terrain.gameplay_region_frequency=tuple.terrain[3][2];terrain.gameplay_corridor_depth=tuple.terrain[3][3];
+  terrain.gameplay_warp_amplitude=tuple.terrain[4][0];terrain.gameplay_warp_frequency=tuple.terrain[4][1];
+  terrain.ground_roughness_amplitude=tuple.terrain[4][2];terrain.ground_roughness_frequency=tuple.terrain[4][3];
+  terrain.spawn_flat_radius=tuple.terrain[5][0];terrain.spawn_blend_radius=tuple.terrain[5][1];
+  terrain.planet_radius=tuple.terrain[5][2];terrain.analytic_ridge=tuple.terrain[5][3]!=0.0F;
+  terrain.analytic_ridge_centre_z=tuple.terrain[6][0];terrain.analytic_ridge_height=tuple.terrain[6][1];
+  terrain.analytic_ridge_half_width=tuple.terrain[6][2];
+  return result;
+}
+
+GpuTerrainClassification gpu_terrain_classify_packet(
+    const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
+    std::uint32_t capacity) {
+  validate_gpu_terrain_field_tuple(tuple);
+  const auto source_revision=join32(tuple.revision_lanes[0],
+                                    tuple.revision_lanes[1]);
+  validate_gpu_green_mask_packet(packet,source_revision);
+  const auto field=gpu_terrain_field_tuple_sphere(tuple);
+  const WorldStreamingDemand::Domain domain{{tuple.domain_origin_extent[0],
+      tuple.domain_origin_extent[1],tuple.domain_origin_extent[2]},
+      tuple.domain_origin_extent[3]};
+  GpuTerrainClassification result;
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  for(std::size_t owner_index=0U;owner_index<packet.owners.size();++owner_index) {
+    const auto& owner=packet.owners[owner_index];
+    const auto geometry=world_tetrahedron_geometry(
+        gpu_hierarchy_address_from_lanes(owner.address));
+    std::array<Vec3,10> points{};
+    for(std::size_t point=0U;point<points.size();++point) {
+      if(grande_point_vertex[point]!=0xffU) {
+        points[point]=geometry[grande_point_vertex[point]];
+        continue;
+      }
+      const auto edge=edges[grande_point_edge[point]];
+      points[point]=(geometry[edge[0]]+geometry[edge[1]])/2.0;
+    }
+    const auto& stencil=complete_green_template(
+        static_cast<std::uint8_t>(owner.mask));
+    for(std::size_t cell=0U;cell<stencil.count;++cell) {
+      GpuTerrainClassificationRecord record;
+      record.owner_index=static_cast<std::uint32_t>(owner_index);
+      record.template_cell=static_cast<std::uint32_t>(cell);
+      const auto& tetrahedron=stencil.tetrahedra[cell];
+      for(std::size_t corner=0U;corner<4U;++corner)
+        if(field.signed_distance(domain.to_world(points[tetrahedron[corner]]))<0.0)
+          record.corner_negative_mask|=1U<<corner;
+      for(const auto edge:edges)
+        if(((record.corner_negative_mask>>edge[0])&1U)!=
+           ((record.corner_negative_mask>>edge[1])&1U))
+          ++record.crossing_count;
+      result.crossing_cells+=record.crossing_count>=3U?1U:0U;
+      ++result.attempted_records;
+      if(result.attempted_records<=capacity)result.records.push_back(record);
+    }
+  }
+  if(result.attempted_records>capacity) {
+    result.records.clear();result.crossing_cells=0U;result.overflow=true;
+  }
+  return result;
+}
+
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision) {
   if(packet.header.format_version!=gpu_green_mask_packet_format_version||
