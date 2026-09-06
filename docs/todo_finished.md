@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P7c2b1b — Run the qualified chain in live private slots.** The native
+  Metal chain now uses P7c2b1b0's count, two-level 256-lane scan, uniform-add,
+  finalize, and scatter passes rather than P7b2's forbidden serial scan. Its
+  three independently allocated private candidate slots capture distinct
+  source/field identities; the headless gate covers static output, a changed
+  terrain field, and a render-origin rebase, each matching 12 compact
+  triangles and 144 `SceneVertex` values. Only bounded diagnostic output is
+  shared for parity; no raster, shadow, ray-tracing, or CPU-front consumer is
+  bound. Existing per-stage hardware gates retain malformed, stale,
+  non-finite, and capacity-overflow rejection coverage.
+
 - [x] **P7c2b1b0 — Parallelize ordered P7b2 compaction for live cuts.** Added
   translated Metal count, recursive exclusive-scan, capacity-finalize, and
   scatter kernels. The staged scan has fixed 256-lane groups and bounded

@@ -1916,7 +1916,12 @@ bool run_metal_gpu_terrain_draw_smoke_test(id<MTLDevice> device) {
 // P7c2b1a is deliberately a hardware-only chain.  The final buffer is shared
 // solely for this bounded oracle; every intermediate is private and every
 // downstream stage discovers its count from the preceding GPU header.
-bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device) {
+// Each invocation owns a distinct private candidate slot.  The live-slot
+// smoke submits all three identities below; slot 1 changes the field and slot
+// 2 changes the render origin, exercising completion identity rather than
+// accidentally treating a previous candidate as current.
+bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device,
+                                                   std::uint32_t slot=0U) {
   const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
   const auto pipeline_for=[&](const char* filename)->id<MTLComputePipelineState>{
     id<MTLLibrary> library=make_file_shader_library(device,(directory/filename).string().c_str());
@@ -1927,32 +1932,40 @@ bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device) {
     return pipeline;
   };
   id<MTLComputePipelineState> classify=pipeline_for("gpu_terrain_classify.comp.metal");
-  id<MTLComputePipelineState> triangles=pipeline_for("gpu_terrain_triangles.comp.metal");
+  // This is the live-slot precursor, so it must use P7c2b1b0's ordered
+  // parallel compaction rather than P7b2's one-lane diagnostic kernel.
+  id<MTLComputePipelineState> count=pipeline_for("gpu_terrain_triangle_counts.comp.metal");
+  id<MTLComputePipelineState> scan=pipeline_for("gpu_terrain_exclusive_scan.comp.metal");
+  id<MTLComputePipelineState> finalize=pipeline_for("gpu_terrain_triangle_finalize.comp.metal");
+  id<MTLComputePipelineState> scatter=pipeline_for("gpu_terrain_triangle_scatter.comp.metal");
   id<MTLComputePipelineState> project=pipeline_for("gpu_terrain_project.comp.metal");
   id<MTLComputePipelineState> draw=pipeline_for("gpu_terrain_draw.comp.metal");
-  if(classify==nil||triangles==nil||project==nil||draw==nil)return false;
+  if(classify==nil||count==nil||scan==nil||finalize==nil||scatter==nil||project==nil||draw==nil)return false;
   tetra::GpuTerrainFieldTupleParameters field_parameters;
-  field_parameters.source_revision=101U;field_parameters.field_revision=19U;
+  const auto source_revision=101U+slot;
+  field_parameters.source_revision=source_revision;field_parameters.field_revision=19U+slot;
   field_parameters.domain.world_extent=1.0;field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
-  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  field_parameters.field.centre={.5+.015*static_cast<double>(slot),.52,.5};field_parameters.field.radius=.37;
   field_parameters.field.sampling_footprint=.0625;field_parameters.field.terrain.planet_radius=.37;
   const auto tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
   std::vector<tetra::WorldTetAddress> candidates;
   for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)candidates.push_back(tetra::WorldTetAddress::root(root));
-  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,source_revision);
   const auto templates=tetra::make_gpu_green_template_table();
   const auto expected_roots=tetra::gpu_terrain_root_packet(packet,tuple,100000U);
   auto expected_base=tetra::gpu_terrain_base_triangles(expected_roots,100000U);
   for(auto& triangle:expected_base)for(auto& root:triangle.roots){
     root.x=static_cast<float>(root.x);root.y=static_cast<float>(root.y);root.z=static_cast<float>(root.z);
   }
+  const tetra::Vec3 render_origin=slot==2U?tetra::Vec3{.125,-.25,.0625}:tetra::Vec3{};
   const auto expected=tetra::gpu_terrain_project_base_triangles(expected_base,
-      tetra::gpu_terrain_field_tuple_sphere(tuple),{},100000U);
+      tetra::gpu_terrain_field_tuple_sphere(tuple),render_origin,100000U);
   if(expected.empty())return false;
   const auto make_shared=[&](const void* bytes,NSUInteger length){return [device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
   const auto make_private=[&](NSUInteger length){return [device newBufferWithLength:length options:MTLResourceStorageModePrivate];};
   const std::uint32_t owner_count=static_cast<std::uint32_t>(packet.owners.size());
   const std::uint32_t root_slots=owner_count*24U;
+  const std::uint32_t compaction_blocks=(root_slots+255U)/256U;
   const std::uint32_t triangle_capacity=root_slots*2U;
   const std::uint32_t vertex_capacity=triangle_capacity*12U;
   id<MTLBuffer> field=make_shared(&tuple,sizeof(tuple));
@@ -1960,33 +1973,58 @@ bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device) {
   id<MTLBuffer> stencil=make_shared(templates.data(),sizeof(templates));
   id<MTLBuffer> roots=make_private((4U+static_cast<NSUInteger>(root_slots)*24U)*sizeof(std::uint32_t));
   id<MTLBuffer> compact=make_private((4U+static_cast<NSUInteger>(triangle_capacity)*16U)*sizeof(std::uint32_t));
+  id<MTLBuffer> counts=make_private(static_cast<NSUInteger>(root_slots)*sizeof(std::uint32_t));
+  id<MTLBuffer> offsets=make_private(static_cast<NSUInteger>(root_slots)*sizeof(std::uint32_t));
+  id<MTLBuffer> added_offsets=make_private(static_cast<NSUInteger>(root_slots)*sizeof(std::uint32_t));
+  id<MTLBuffer> block_totals=make_private(static_cast<NSUInteger>(compaction_blocks)*sizeof(std::uint32_t));
+  id<MTLBuffer> block_offsets=make_private(static_cast<NSUInteger>(compaction_blocks)*sizeof(std::uint32_t));
+  id<MTLBuffer> compaction_status=make_private(4U*sizeof(std::uint32_t));
   id<MTLBuffer> projected=make_private((4U+static_cast<NSUInteger>(triangle_capacity)*36U)*sizeof(std::uint32_t));
   id<MTLBuffer> output=[device newBufferWithLength:(4U+static_cast<NSUInteger>(vertex_capacity)*18U)*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
   id<MTLCommandQueue> queue=[device newCommandQueue];
-  if(field==nil||owners==nil||stencil==nil||roots==nil||compact==nil||projected==nil||output==nil||queue==nil)return false;
+  if(field==nil||owners==nil||stencil==nil||roots==nil||compact==nil||counts==nil||offsets==nil||added_offsets==nil||block_totals==nil||block_offsets==nil||compaction_status==nil||projected==nil||output==nil||queue==nil)return false;
   std::memset(output.contents,0,output.length);
   id<MTLCommandBuffer> command=[queue commandBuffer];
   id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
-  for(id<MTLBuffer> buffer: {roots,compact,projected})[clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+  for(id<MTLBuffer> buffer: {roots,compact,counts,offsets,added_offsets,block_totals,block_offsets,compaction_status,projected})[clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
   [clear endEncoding];
-  const std::array<std::uint32_t,4> classify_parameters{owner_count,root_slots,101U,0U};
+  const std::array<std::uint32_t,4> classify_parameters{owner_count,root_slots,source_revision,0U};
   id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
   [encoder setComputePipelineState:classify];[encoder setBuffer:field offset:0U atIndex:0U];
   [encoder setBytes:classify_parameters.data() length:sizeof(classify_parameters) atIndex:1U];
   [encoder setBuffer:owners offset:0U atIndex:2U];[encoder setBuffer:roots offset:0U atIndex:3U];[encoder setBuffer:stencil offset:0U atIndex:4U];
   [encoder dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
-  const std::array<std::uint32_t,4> triangle_parameters{owner_count,root_slots,triangle_capacity,101U};
-  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:triangles];[encoder setBuffer:roots offset:0U atIndex:0U];
-  [encoder setBytes:triangle_parameters.data() length:sizeof(triangle_parameters) atIndex:1U];[encoder setBuffer:owners offset:0U atIndex:2U];
-  [encoder setBuffer:stencil offset:0U atIndex:3U];[encoder setBuffer:compact offset:0U atIndex:4U];
+  const std::array<std::uint32_t,2> count_parameters{owner_count,root_slots};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:count];[encoder setBuffer:roots offset:0U atIndex:0U];
+  [encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:1U];[encoder setBuffer:owners offset:0U atIndex:2U];
+  [encoder setBuffer:stencil offset:0U atIndex:3U];[encoder setBuffer:compaction_status offset:0U atIndex:4U];[encoder setBuffer:counts offset:0U atIndex:5U];
+  [encoder dispatchThreads:MTLSizeMake(root_slots,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  const std::array<std::uint32_t,2> scan_parameters{root_slots,0U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];[encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
+  [encoder setBuffer:offsets offset:0U atIndex:1U];[encoder setBuffer:counts offset:0U atIndex:2U];[encoder setBuffer:block_totals offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(compaction_blocks)*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  const std::array<std::uint32_t,2> block_scan_parameters{compaction_blocks,0U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];[encoder setBytes:block_scan_parameters.data() length:sizeof(block_scan_parameters) atIndex:0U];
+  [encoder setBuffer:block_offsets offset:0U atIndex:1U];[encoder setBuffer:block_totals offset:0U atIndex:2U];[encoder setBuffer:compaction_status offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  const std::array<std::uint32_t,2> add_parameters{root_slots,1U};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];[encoder setBytes:add_parameters.data() length:sizeof(add_parameters) atIndex:0U];
+  [encoder setBuffer:added_offsets offset:0U atIndex:1U];[encoder setBuffer:offsets offset:0U atIndex:2U];[encoder setBuffer:block_offsets offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(compaction_blocks)*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  const std::array<std::uint32_t,2> compact_parameters{root_slots,triangle_capacity};
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:finalize];[encoder setBytes:compact_parameters.data() length:sizeof(compact_parameters) atIndex:0U];
+  [encoder setBuffer:compact offset:0U atIndex:1U];[encoder setBuffer:compaction_status offset:0U atIndex:2U];[encoder setBuffer:added_offsets offset:0U atIndex:3U];[encoder setBuffer:counts offset:0U atIndex:4U];
   [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scatter];[encoder setBytes:compact_parameters.data() length:sizeof(compact_parameters) atIndex:0U];
+  [encoder setBuffer:compact offset:0U atIndex:1U];[encoder setBuffer:counts offset:0U atIndex:2U];[encoder setBuffer:added_offsets offset:0U atIndex:3U];[encoder setBuffer:roots offset:0U atIndex:4U];
+  [encoder dispatchThreads:MTLSizeMake(root_slots,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
   struct alignas(16) GeometryParameters { std::uint32_t count{},capacity{},reserved0{},reserved1{};std::array<float,4> origin{};std::uint32_t source_low{},source_high{},padding0{},padding1{}; };
   static_assert(sizeof(GeometryParameters)==48U);
-  GeometryParameters projection_parameters{std::numeric_limits<std::uint32_t>::max(),triangle_capacity,0U,0U,{0,0,0,0},101U,0U,0U,0U};
+  GeometryParameters projection_parameters{std::numeric_limits<std::uint32_t>::max(),triangle_capacity,0U,0U,{static_cast<float>(render_origin.x),static_cast<float>(render_origin.y),static_cast<float>(render_origin.z),0},source_revision,0U,0U,0U};
   encoder=[command computeCommandEncoder];[encoder setComputePipelineState:project];[encoder setBuffer:field offset:0U atIndex:0U];
   [encoder setBytes:&projection_parameters length:sizeof(projection_parameters) atIndex:1U];[encoder setBuffer:projected offset:0U atIndex:2U];[encoder setBuffer:compact offset:0U atIndex:3U];
   [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
-  GeometryParameters draw_parameters{std::numeric_limits<std::uint32_t>::max(),vertex_capacity,0U,0U,{0,0,0,0},101U,0U,0U,0U};
+  GeometryParameters draw_parameters{std::numeric_limits<std::uint32_t>::max(),vertex_capacity,0U,0U,{static_cast<float>(render_origin.x),static_cast<float>(render_origin.y),static_cast<float>(render_origin.z),0},source_revision,0U,0U,0U};
   encoder=[command computeCommandEncoder];[encoder setComputePipelineState:draw];[encoder setBuffer:field offset:0U atIndex:0U];
   [encoder setBytes:&draw_parameters length:sizeof(draw_parameters) atIndex:1U];[encoder setBuffer:output offset:0U atIndex:2U];[encoder setBuffer:projected offset:0U atIndex:3U];
   [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
@@ -2001,7 +2039,18 @@ bool run_metal_gpu_terrain_native_chain_smoke_test(id<MTLDevice> device) {
     const auto offset=4U+(triangle*12U+face*3U+corner)*18U;const auto& point=expected[triangle].vertices[faces[face][corner]];
     for(std::size_t axis=0U;axis<3U;++axis){const float value=std::bit_cast<float>(words[offset+axis]);const double wanted=axis==0U?point.x:axis==1U?point.y:point.z;if(!std::isfinite(value)||std::abs(static_cast<double>(value)-wanted)>2.e-3){std::fprintf(stderr,"Metal native terrain chain position mismatch\n");return false;}}
   }
-  std::printf("{\"event\":\"metal_gpu_terrain_native_chain\",\"triangles\":%zu,\"vertices\":%u,\"passed\":true}\n",expected.size(),expected_vertices);
+  std::printf("{\"event\":\"metal_gpu_terrain_native_chain\",\"slot\":%u,\"triangles\":%zu,\"vertices\":%u,\"passed\":true}\n",slot,expected.size(),expected_vertices);
+  return true;
+}
+
+// P7c2b1b is still diagnostic-only: these three independent private resource
+// sets model the rotating live slots, but this function never binds a render,
+// shadow, or ray-tracing consumer.  Completion readback is the four-word
+// candidate header plus the bounded fixture payload used for parity.
+bool run_metal_gpu_terrain_live_slots_smoke_test(id<MTLDevice> device) {
+  for(std::uint32_t slot=0U;slot<3U;++slot)
+    if(!run_metal_gpu_terrain_native_chain_smoke_test(device,slot))return false;
+  std::printf("{\"event\":\"metal_gpu_terrain_live_private_slots\",\"slots\":3,\"static\":true,\"moving\":true,\"rebase\":true,\"cpu_front_untouched\":true,\"passed\":true}\n");
   return true;
 }
 
@@ -4437,6 +4486,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-draw-smoke-test")==0;
   const bool gpu_terrain_native_chain_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-native-chain-smoke-test")==0;
+  const bool gpu_terrain_live_slots_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-live-slots-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
@@ -4710,7 +4761,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4729,6 +4780,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-terrain-project-smoke-test|"
                         "--metal-gpu-terrain-draw-smoke-test|"
                         "--metal-gpu-terrain-native-chain-smoke-test|"
+                        "--metal-gpu-terrain-live-slots-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
@@ -4826,6 +4878,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_draw_smoke_test(device)?0:1;
     if(gpu_terrain_native_chain_smoke_test)
       return run_metal_gpu_terrain_native_chain_smoke_test(device)?0:1;
+    if(gpu_terrain_live_slots_smoke_test)
+      return run_metal_gpu_terrain_live_slots_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){

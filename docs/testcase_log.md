@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 09:16 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 508 tests passed after P7c2b1b; the new native three-private-slot chain gate passed with static, changed-field, and render-origin-rebase identities while existing CPU-front-retention checks remained green.
+- 2026-09-06 09:03 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^planetary sliced frontier cold-recovers a sector-union transition$'` | failures: none | notes: fresh focused rerun passed after a transient full-suite convergence stall.
+- 2026-09-06 09:00 CEST | canceled | mode: Release | command: `./scripts/compile.sh --release` | failures: planetary sliced frontier cold-recovers a sector-union transition | notes: stopped after the pre-existing long convergence test stalled; focused fresh rerun subsequently passed.
+- 2026-09-06 08:50 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: clean baseline passed all 507 tests before P7c2b1b implementation.
 - 2026-09-06 08:39 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 507 tests passed in 735.75 seconds after P7c2b1b0; the new native Metal parallel-compaction parity test and both CPU-front-retention slot tests passed.
 - 2026-09-06 08:27 CEST | pass | mode: Release, hidden native Metal | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | failures: none | notes: P7c2b1b0 mixed-depth byte-for-byte CPU-oracle parity, 131,072-slot two-level scan, and zero-capacity fail-closed gate passed after correcting the translated scan output/input bindings.
 - 2026-09-06 04:41 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 506 tests passed in 641.04 seconds after adding the guarded native P6-to-P7c live-slot diagnostic scaffolding and splitting the required parallel P7b2 prerequisite; the CPU display front remains the only consumer.
@@ -295,6 +299,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] planetary sliced frontier cold-recovers a sector-union transition | resolved: 2026-09-06 09:03 CEST | validating command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^planetary sliced frontier cold-recovers a sector-union transition$'` | notes: fresh focused Release rerun passed in 151.04 seconds; the prior full-run timeout was transient.
 
 - [x] metal GPU terrain parallel compaction parity | resolved: 2026-09-06 08:27 CEST | validating command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | notes: the scan bindings were reversed: the output slot overwrote counts. Corrected output/input buffer binding makes the staged scan deterministic.
 

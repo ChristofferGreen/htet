@@ -61,8 +61,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-native-private-chain
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, private-memory, synchronization
-- Fact: P7c2b1a can execute the complete P6-to-`SceneVertex` diagnostic chain in one Metal command buffer with private intermediate buffers and GPU-header-derived downstream counts.
-- Evidence: The hidden hardware fixture passed all five staged Metal parity gates and matched 12 compact triangles / 144 final vertices without any renderer consumer or CPU count readback.
+- Fact: P7c2b1b runs three independent diagnostic private candidates through the complete P6-to-`SceneVertex` Metal chain using deterministic two-level parallel compaction and GPU-header-derived downstream counts; no renderer consumer is bound.
+- Evidence: The hidden hardware fixture matched 12 compact triangles / 144 final vertices for static, changed-field, and rebased identities, while the individual gates retain stale, malformed, non-finite, and overflow rejection coverage.
 
 ### gpu-terrain-projected-geometry
 - Updated: 2026-09-06

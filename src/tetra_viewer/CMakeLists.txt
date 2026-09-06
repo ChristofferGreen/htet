@@ -362,6 +362,9 @@ if(APPLE AND TETRA_BUILD_METAL)
   add_test(NAME "metal GPU terrain native private chain parity"
     COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-native-chain-smoke-test)
+  add_test(NAME "metal GPU terrain live private slots"
+    COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-live-slots-smoke-test)
   add_test(NAME "metal GPU terrain runtime parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-runtime-smoke-test)
   # P5c2 drives the real hidden render loop with the diagnostic packets on;

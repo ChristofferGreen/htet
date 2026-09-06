@@ -1484,29 +1484,10 @@ topology, and complete-frame gates.
   diagnostic is complete and remains non-drawable; P7b's device roots and
   compact base-triangle diagnostic are complete. The first full-production
   live-slot attempt proved that P7b2's one-invocation ordered scan can stall a
-  real cut for minutes, so P7c2b1b0 is the current executable leaf.
-  - [ ] **P7c2b1b0 — Parallel ordered P7b2 compaction.** Replace P7b2's
-    serial root-stream scan with a bounded device count/scan/scatter pipeline
-    that preserves canonical output order and its fail-closed header. Match
-    the mixed-depth CPU oracle and bound the production-directory run before
-    a live render slot can use it. No renderer consumer may change.
-    The required layout is one count per fixed root slot, a recursive
-    256-lane exclusive block scan with one bounded block-sum level per pass,
-    and a descending uniform-add pass before parallel scatter. Every phase
-    observes the same failure lane; no scatter occurs unless the final total
-    fits capacity. This is deliberately not an atomic-reservation stream:
-    atomic reservation would make canonical P7b2 ordering scheduler-dependent.
-  - [ ] **P7c2b1b — Live private-slot candidate chain.** Drive P6 compact
-    owners/templates through P7a classification/root generation, P7b2 base
-    triangles, P7c1b projection, and P7c2a `SceneVertex` expansion in one
-    triple-buffered Metal command-buffer chain. Keep all intermediate and
-    final candidates private except for bounded qualification readback. The
-    slot's captured source/field revisions, render origin, count, and status
-    must match at completion; stale, partial, malformed, non-finite, and
-    overflowing candidates are discarded while the CPU display front remains
-    the only consumer. Static, moving, and rebase headless runs are required.
-    This depends on P7c2b1b0: P7b2's serial diagnostic kernel must not run on
-    a production-sized packet.
+  real cut for minutes. P7c2b1b0's bounded ordered replacement and P7c2b1b's
+  three private diagnostic slots are complete; P7c2b2 is the next executable
+  leaf. The live-slot chain uses only count/scan/finalize/scatter compaction,
+  never P7b2's serial diagnostic kernel.
   - [ ] **P7c2b2 — Shared complete-generation consumer binding.** Only after
     P7c2b1b parity, bind opaque, wireframe, shadow, and ray tracing to exactly
     one completed GPU generation, otherwise retaining the CPU front. No

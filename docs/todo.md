@@ -367,18 +367,6 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       diagnostics are complete. A production-cut experiment established that
       P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0's
       bounded parallel replacement is complete and P7c2b1b is next.
-  - [ ] **P7c2b1b — Run the qualified chain in live private slots.**
-        Chain compact P6 owners/templates, P7a classification/root generation,
-        P7b2 base triangles, P7c1b projection, and P7c2a `SceneVertex`
-        expansion in a triple-buffered Metal command buffer. Intermediate and
-        final candidate resources are private; only a bounded qualification
-        readback may be shared. Capture source/field revisions, render origin,
-        count, and status at submission; completion rejects stale, partial,
-        malformed, non-finite, or overflowing work and leaves the CPU display
-        front untouched. Prove static, moving, rebase, and failure behaviour
-        headlessly before any consumer receives this stream. Depends on
-        P7c2b1b0; the current serial diagnostic P7b2 kernel is explicitly
-        forbidden for a production-sized live packet.
   - [ ] **P7c2b2 — Atomically bind one qualified generation to consumers.**
         After P7c2b1b live-slot parity, make opaque, wireframe, shadow, and
         ray-tracing consumers select the same complete GPU generation or
