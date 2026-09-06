@@ -1478,8 +1478,14 @@ topology, and complete-frame gates.
   topology authority while these ordered diagnostic leaves replace the legacy
   448-byte CPU-precomputed cell payload. P7a's compact classification
   diagnostic is complete and remains non-drawable; P7b's device roots and
-  compact base-triangle diagnostic are complete. P7c2b1b is the current
-  executable leaf.
+  compact base-triangle diagnostic are complete. The first full-production
+  live-slot attempt proved that P7b2's one-invocation ordered scan can stall a
+  real cut for minutes, so P7c2b1b0 is the current executable leaf.
+  - [ ] **P7c2b1b0 — Parallel ordered P7b2 compaction.** Replace P7b2's
+    serial root-stream scan with a bounded device count/scan/scatter pipeline
+    that preserves canonical output order and its fail-closed header. Match
+    the mixed-depth CPU oracle and bound the production-directory run before
+    a live render slot can use it. No renderer consumer may change.
   - [ ] **P7c2b1b — Live private-slot candidate chain.** Drive P6 compact
     owners/templates through P7a classification/root generation, P7b2 base
     triangles, P7c1b projection, and P7c2a `SceneVertex` expansion in one
@@ -1489,6 +1495,8 @@ topology, and complete-frame gates.
     must match at completion; stale, partial, malformed, non-finite, and
     overflowing candidates are discarded while the CPU display front remains
     the only consumer. Static, moving, and rebase headless runs are required.
+    This depends on P7c2b1b0: P7b2's serial diagnostic kernel must not run on
+    a production-sized packet.
   - [ ] **P7c2b2 — Shared complete-generation consumer binding.** Only after
     P7c2b1b parity, bind opaque, wireframe, shadow, and ray tracing to exactly
     one completed GPU generation, otherwise retaining the CPU front. No

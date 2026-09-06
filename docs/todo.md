@@ -360,8 +360,17 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       dyadic edge directory, and mixed-depth halo proof are the exclusive
       topology authority. P7a's compact field/classification diagnostic is
       complete and non-drawable; P7b's roots and compact base-triangle
-      diagnostics are complete. P7c2b1b is now the sole active implementation
-      leaf.
+      diagnostics are complete. A production-cut experiment established that
+      P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0 is
+      therefore the next required implementation leaf.
+  - [ ] **P7c2b1b0 — Parallelize ordered P7b2 compaction for live cuts.**
+        Replace the diagnostic serial root-stream scan with a device-resident,
+        deterministic count/scan/scatter path whose peak work and temporary
+        storage are explicitly bounded. It must preserve P7b2's canonical
+        triangle order and fail-closed header contract, match the existing CPU
+        oracle on mixed-depth packets, and demonstrate bounded completion on a
+        production-scale published P6 directory. Stop before connecting any
+        render consumer or changing the CPU display front.
   - [ ] **P7c2b1b — Run the qualified chain in live private slots.**
         Chain compact P6 owners/templates, P7a classification/root generation,
         P7b2 base triangles, P7c1b projection, and P7c2a `SceneVertex`
@@ -371,7 +380,9 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         count, and status at submission; completion rejects stale, partial,
         malformed, non-finite, or overflowing work and leaves the CPU display
         front untouched. Prove static, moving, rebase, and failure behaviour
-        headlessly before any consumer receives this stream.
+        headlessly before any consumer receives this stream. Depends on
+        P7c2b1b0; the current serial diagnostic P7b2 kernel is explicitly
+        forbidden for a production-sized live packet.
   - [ ] **P7c2b2 — Atomically bind one qualified generation to consumers.**
         After P7c2b1b live-slot parity, make opaque, wireframe, shadow, and
         ray-tracing consumers select the same complete GPU generation or

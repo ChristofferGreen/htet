@@ -974,6 +974,49 @@ struct MetalGpuTerrainDiagnosticSlot {
   }
 };
 
+// P7c2b1b retains the P6 packet rather than the superseded pre-expanded cell
+// ABI.  These buffers are diagnostic-only: `vertices` is private and has no
+// renderer handle until the later atomic consumer-promotion leaf.
+struct MetalGpuTerrainNativeDiagnosticSlot {
+  id<MTLBuffer> field=nil;
+  id<MTLBuffer> owners=nil;
+  id<MTLBuffer> templates=nil;
+  id<MTLBuffer> roots=nil;
+  id<MTLBuffer> triangles=nil;
+  id<MTLBuffer> projected=nil;
+  id<MTLBuffer> vertices=nil;
+  id<MTLBuffer> readback=nil;
+  tetra::GpuTerrainFieldTuple tuple{};
+  std::uint64_t scene_generation{};
+  std::uint64_t source_revision{};
+  std::uint64_t field_revision{};
+  std::uint64_t candidate_identity{};
+  tetra::Vec3 render_origin{};
+  std::uint32_t vertex_capacity{};
+  bool pending{};
+  std::shared_ptr<std::atomic<bool>> completed=
+      std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<std::atomic<bool>> succeeded=
+      std::make_shared<std::atomic<bool>>(false);
+
+  [[nodiscard]] bool matches(std::uint64_t generation,
+                             std::uint64_t source,
+                             std::uint64_t field_revision_value,
+                             tetra::Vec3 origin) const noexcept {
+    return scene_generation==generation&&source_revision==source&&
+        field_revision==field_revision_value&&
+        render_origin.x==origin.x&&render_origin.y==origin.y&&
+        render_origin.z==origin.z;
+  }
+};
+
+struct alignas(16) MetalGpuTerrainGeometryParameters {
+  std::uint32_t count{},capacity{},reserved0{},reserved1{};
+  std::array<float,4> origin{};
+  std::uint32_t source_low{},source_high{},padding0{},padding1{};
+};
+static_assert(sizeof(MetalGpuTerrainGeometryParameters)==48U);
+
 void promote_completed_terrain_acceleration_structure(
     MetalTerrainAccelerationStructure& structures) {
   if(structures.pending==nil||structures.pending_generation==0U||
@@ -4480,6 +4523,11 @@ int main(int argc,char** argv) {
   // the renderer continues to draw its authoritative CPU display front.
   const bool metal_gpu_terrain_diagnostic=
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_DIAGNOSTIC")!=nullptr;
+  // P7c2b1b's opt-in live qualification is intentionally distinct from the
+  // legacy extraction diagnostic.  It starts from a completed P6 directory
+  // packet and never consults `world_surface_gpu_cells()`.
+  const bool metal_gpu_terrain_native_diagnostic=
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_NATIVE_DIAGNOSTIC")!=nullptr;
   // P8c: MetalFX writes the final result directly to a non-framebuffer-only
   // drawable, avoiding the persistent output texture and presentation draw.
   // Keep the former path as an explicit paired qualification control.
@@ -4615,6 +4663,10 @@ int main(int argc,char** argv) {
     id<MTLLibrary> library=make_shader_library(device);
     if(library==nil)return 1;
     id<MTLComputePipelineState> gpu_terrain_extract_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_classify_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_triangles_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_project_pipeline=nil;
+    id<MTLComputePipelineState> gpu_terrain_draw_pipeline=nil;
     if(metal_gpu_terrain_diagnostic){
       const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
           "gpu_terrain_extract.comp.metal";
@@ -4623,6 +4675,21 @@ int main(int argc,char** argv) {
       gpu_terrain_extract_pipeline=extract_library==nil?nil:
           [device newComputePipelineStateWithFunction:[extract_library newFunctionWithName:@"main0"] error:&extract_error];
       if(gpu_terrain_extract_pipeline==nil)return 1;
+    }
+    if(metal_gpu_terrain_native_diagnostic){
+      const auto make_pipeline=[&](const char* name)->id<MTLComputePipelineState>{
+        const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
+        id<MTLLibrary> shader_library=make_file_shader_library(device,path.string().c_str());
+        NSError* error=nil;
+        return shader_library==nil?nil:[device newComputePipelineStateWithFunction:
+            [shader_library newFunctionWithName:@"main0"] error:&error];
+      };
+      gpu_terrain_classify_pipeline=make_pipeline("gpu_terrain_classify.comp.metal");
+      gpu_terrain_triangles_pipeline=make_pipeline("gpu_terrain_triangles.comp.metal");
+      gpu_terrain_project_pipeline=make_pipeline("gpu_terrain_project.comp.metal");
+      gpu_terrain_draw_pipeline=make_pipeline("gpu_terrain_draw.comp.metal");
+      if(gpu_terrain_classify_pipeline==nil||gpu_terrain_triangles_pipeline==nil||
+         gpu_terrain_project_pipeline==nil||gpu_terrain_draw_pipeline==nil)return 1;
     }
     const bool metal_ray_tracing_supported=[](id<MTLDevice> candidate){
       if(@available(macOS 11.0,*))return candidate.supportsRaytracing;
@@ -4910,6 +4977,9 @@ int main(int argc,char** argv) {
     MetalTerrainDisplayFront terrain_display_front;
     std::array<MetalGpuTerrainDiagnosticSlot,3> gpu_terrain_slots;
     std::uint64_t gpu_terrain_slot_cursor{};
+    std::array<MetalGpuTerrainNativeDiagnosticSlot,3>
+        gpu_terrain_native_slots;
+    std::uint64_t gpu_terrain_native_slot_cursor{};
     auto gpu_terrain_counters=
         std::make_shared<MetalGpuTerrainDiagnosticCounters>();
     std::size_t peak_terrain_display_transition_bytes{};
@@ -5678,6 +5748,23 @@ int main(int argc,char** argv) {
             slot.pending=false;
             if(!slot.matches(diagnostics.scene_generation,
                              runtime->scene().render_origin)){
+              slot.succeeded->store(false,std::memory_order_release);
+              gpu_terrain_counters->stale_rejected.fetch_add(
+                  1U,std::memory_order_relaxed);
+            }else if(slot.succeeded->load(std::memory_order_acquire)){
+              gpu_terrain_counters->accepted.fetch_add(
+                  1U,std::memory_order_relaxed);
+            }
+          }
+          for(auto& slot:gpu_terrain_native_slots)if(slot.pending&&
+              slot.completed->load(std::memory_order_acquire)){
+            slot.pending=false;
+            const auto* current_directory=runtime->world_cut_directory();
+            const auto current_source=current_directory==nullptr?0U:
+                current_directory->revision();
+            const auto current_field=runtime->published_view_identity().field_revision;
+            if(!slot.matches(diagnostics.scene_generation,current_source,
+                             current_field,runtime->render_origin())){
               slot.succeeded->store(false,std::memory_order_release);
               gpu_terrain_counters->stale_rejected.fetch_add(
                   1U,std::memory_order_relaxed);
@@ -6620,8 +6707,8 @@ int main(int argc,char** argv) {
                    terrain_display_front.exact_index_count:
                    terrain_display_front.exact_vertex_count)/3U,
               terrain_display_front.preview_index_count/3U);
-          if(metal_gpu_terrain_diagnostic)ImGui::Text(
-              "GPU extract slots D %llu C %llu A %llu stale %llu fail %llu over %llu",
+          if(metal_gpu_terrain_diagnostic||metal_gpu_terrain_native_diagnostic)ImGui::Text(
+              "GPU terrain slots D %llu C %llu A %llu stale %llu fail %llu over %llu",
               static_cast<unsigned long long>(
                   gpu_terrain_counters->dispatched.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(
@@ -6753,6 +6840,169 @@ int main(int argc,char** argv) {
                 success->store(passed,std::memory_order_release);
                 complete->store(true,std::memory_order_release);
               }];
+            }
+          }
+        }
+        if(metal_gpu_terrain_native_diagnostic&&runtime&&
+           !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
+          // The native route captures a self-contained P6 packet only from a
+          // complete published directory.  It deliberately has no fallback to
+          // `world_surface_gpu_cells()`, which is the retired CPU geometry ABI.
+          gpu_terrain_counters->cpu_front_frames.fetch_add(1U,
+              std::memory_order_relaxed);
+          if(scene_vertices!=terrain_display_front.exact_vertices||
+             terrain_display_front.indexed_exact_selection||
+             terrain_display_front.preview_cpu)
+            gpu_terrain_counters->cpu_front_violations.fetch_add(1U,
+                std::memory_order_relaxed);
+          auto& slot=gpu_terrain_native_slots[
+              gpu_terrain_native_slot_cursor++%gpu_terrain_native_slots.size()];
+          const auto* directory=runtime->world_cut_directory();
+          const auto origin=runtime->render_origin();
+          const auto field_revision=runtime->published_view_identity().field_revision;
+          const auto source_revision=directory==nullptr?0U:directory->revision();
+          const auto vertex_count=terrain_display_front.exact_vertex_count;
+          if(!slot.pending&&directory!=nullptr&&source_revision!=0U&&
+             diagnostics.scene_generation!=0U&&field_revision!=0U&&
+             vertex_count>=12U&&
+             vertex_count<=std::numeric_limits<std::uint32_t>::max()){
+            std::vector<tetra::WorldTetAddress> owners;
+            owners.reserve(directory->logical_owner_count());
+            directory->for_each_logical_owner(
+                [&](tetra::WorldTetAddress owner){owners.push_back(owner);});
+            std::ranges::sort(owners);
+            try {
+              const auto packet=tetra::make_gpu_green_mask_packet(
+                  owners,source_revision);
+              tetra::GpuTerrainFieldTupleParameters parameters;
+              parameters.field=runtime->field();
+              parameters.domain=runtime->profile().domain;
+              parameters.source_revision=source_revision;
+              parameters.field_revision=field_revision;
+              const auto tuple=tetra::make_gpu_terrain_field_tuple(parameters);
+              const auto templates=tetra::make_gpu_green_template_table();
+              // A production ground cut currently carries roughly a million
+              // candidate vertices.  The private output alone is therefore
+              // about 68 MiB; keep an explicit per-flight ceiling rather than
+              // silently truncating a valid P6 packet.  Three diagnostic
+              // flights remain bounded to 768 MiB and are opt-in only.
+              constexpr std::size_t maximum_slot_bytes=256U*1024U*1024U;
+              const std::size_t owner_count=packet.owners.size();
+              const std::size_t root_slots=owner_count*24U;
+              const std::size_t triangle_capacity=vertex_count/12U;
+              const std::size_t vertex_capacity=vertex_count;
+              const auto words_bytes=[](std::size_t words)->std::optional<std::size_t>{
+                if(words>(std::numeric_limits<std::size_t>::max()/sizeof(std::uint32_t)))
+                  return std::nullopt;
+                return words*sizeof(std::uint32_t);
+              };
+              const auto roots_bytes=words_bytes(4U+root_slots*24U);
+              const auto triangles_bytes=words_bytes(4U+triangle_capacity*16U);
+              const auto projected_bytes=words_bytes(4U+triangle_capacity*36U);
+              const auto vertices_bytes=words_bytes(4U+vertex_capacity*18U);
+              const bool fits_slot_budget=roots_bytes&&triangles_bytes&&
+                  projected_bytes&&vertices_bytes&&
+                  *roots_bytes<=maximum_slot_bytes&&
+                  *triangles_bytes<=maximum_slot_bytes-*roots_bytes&&
+                  *projected_bytes<=maximum_slot_bytes-*roots_bytes-
+                      *triangles_bytes&&
+                  *vertices_bytes<=maximum_slot_bytes-*roots_bytes-
+                      *triangles_bytes-*projected_bytes;
+              const bool capacity_valid=owner_count!=0U&&
+                  owner_count<=std::numeric_limits<std::uint32_t>::max()&&
+                  root_slots<=std::numeric_limits<std::uint32_t>::max()&&
+                  // P7b2's current diagnostic kernel is intentionally a
+                  // serial ordered scan.  Never submit that implementation
+                  // for a production-sized front: the following parallel
+                  // scan/scatter leaf must replace it before full live use.
+                  root_slots<=65'536U&&
+                  triangle_capacity<=std::numeric_limits<std::uint32_t>::max()&&
+                  fits_slot_budget;
+              if(!capacity_valid){
+                gpu_terrain_counters->overflow.fetch_add(1U,
+                    std::memory_order_relaxed);
+              }else{
+                const auto shared=[](id<MTLDevice> metal,const void* data,NSUInteger length){
+                  return [metal newBufferWithBytes:data length:length
+                      options:MTLResourceStorageModeShared];
+                };
+                slot.field=shared(device,&tuple,sizeof(tuple));
+                slot.owners=shared(device,packet.owners.data(),
+                    packet.owners.size()*sizeof(packet.owners.front()));
+                slot.templates=shared(device,templates.data(),sizeof(templates));
+                slot.roots=[device newBufferWithLength:*roots_bytes
+                    options:MTLResourceStorageModePrivate];
+                slot.triangles=[device newBufferWithLength:*triangles_bytes
+                    options:MTLResourceStorageModePrivate];
+                slot.projected=[device newBufferWithLength:*projected_bytes
+                    options:MTLResourceStorageModePrivate];
+                slot.vertices=[device newBufferWithLength:*vertices_bytes
+                    options:MTLResourceStorageModePrivate];
+                slot.readback=[device newBufferWithLength:sizeof(std::uint32_t)*4U
+                    options:MTLResourceStorageModeShared];
+                if(slot.field&&slot.owners&&slot.templates&&slot.roots&&
+                   slot.triangles&&slot.projected&&slot.vertices&&slot.readback){
+                  std::memset(slot.readback.contents,0,slot.readback.length);
+                  slot.tuple=tuple;slot.scene_generation=diagnostics.scene_generation;
+                  slot.source_revision=source_revision;slot.field_revision=field_revision;
+                  slot.candidate_identity=packet.header.candidate_identity;
+                  slot.render_origin=origin;
+                  slot.vertex_capacity=static_cast<std::uint32_t>(vertex_capacity);
+                  slot.completed->store(false,std::memory_order_release);
+                  slot.succeeded->store(false,std::memory_order_release);slot.pending=true;
+                  id<MTLBlitCommandEncoder> clear=[command_buffer blitCommandEncoder];
+                  for(id<MTLBuffer> buffer: {slot.roots,slot.triangles,slot.projected,slot.vertices})
+                    [clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+                  [clear endEncoding];
+                  const std::array<std::uint32_t,4> classify_parameters{
+                    static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(root_slots),
+                    static_cast<std::uint32_t>(source_revision),static_cast<std::uint32_t>(source_revision>>32U)};
+                  id<MTLComputeCommandEncoder> compute=[command_buffer computeCommandEncoder];
+                  [compute setComputePipelineState:gpu_terrain_classify_pipeline];
+                  [compute setBuffer:slot.field offset:0U atIndex:0U];
+                  [compute setBytes:classify_parameters.data() length:sizeof(classify_parameters) atIndex:1U];
+                  [compute setBuffer:slot.owners offset:0U atIndex:2U];[compute setBuffer:slot.roots offset:0U atIndex:3U];
+                  [compute setBuffer:slot.templates offset:0U atIndex:4U];
+                  [compute dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];[compute endEncoding];
+                  const std::array<std::uint32_t,4> triangle_parameters{
+                    static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(root_slots),
+                    static_cast<std::uint32_t>(triangle_capacity),static_cast<std::uint32_t>(source_revision)};
+                  compute=[command_buffer computeCommandEncoder];[compute setComputePipelineState:gpu_terrain_triangles_pipeline];
+                  [compute setBuffer:slot.roots offset:0U atIndex:0U];[compute setBytes:triangle_parameters.data() length:sizeof(triangle_parameters) atIndex:1U];
+                  [compute setBuffer:slot.owners offset:0U atIndex:2U];[compute setBuffer:slot.templates offset:0U atIndex:3U];[compute setBuffer:slot.triangles offset:0U atIndex:4U];
+                  [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
+                  MetalGpuTerrainGeometryParameters projection_parameters{
+                    std::numeric_limits<std::uint32_t>::max(),static_cast<std::uint32_t>(triangle_capacity),0U,0U,
+                    {static_cast<float>(origin.x),static_cast<float>(origin.y),static_cast<float>(origin.z),0.0F},
+                    static_cast<std::uint32_t>(source_revision),static_cast<std::uint32_t>(source_revision>>32U),0U,0U};
+                  compute=[command_buffer computeCommandEncoder];[compute setComputePipelineState:gpu_terrain_project_pipeline];
+                  [compute setBuffer:slot.field offset:0U atIndex:0U];[compute setBytes:&projection_parameters length:sizeof(projection_parameters) atIndex:1U];[compute setBuffer:slot.projected offset:0U atIndex:2U];[compute setBuffer:slot.triangles offset:0U atIndex:3U];
+                  [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
+                  auto draw_parameters=projection_parameters;draw_parameters.capacity=slot.vertex_capacity;
+                  compute=[command_buffer computeCommandEncoder];[compute setComputePipelineState:gpu_terrain_draw_pipeline];
+                  [compute setBuffer:slot.field offset:0U atIndex:0U];[compute setBytes:&draw_parameters length:sizeof(draw_parameters) atIndex:1U];[compute setBuffer:slot.vertices offset:0U atIndex:2U];[compute setBuffer:slot.projected offset:0U atIndex:3U];
+                  [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
+                  id<MTLBlitCommandEncoder> read=[command_buffer blitCommandEncoder];
+                  [read copyFromBuffer:slot.vertices sourceOffset:0U toBuffer:slot.readback destinationOffset:0U size:slot.readback.length];[read endEncoding];
+                  const auto complete=slot.completed,success=slot.succeeded;
+                  const auto counters=gpu_terrain_counters;id<MTLBuffer> readback=slot.readback;
+                  const auto capacity=slot.vertex_capacity;
+                  counters->dispatched.fetch_add(1U,std::memory_order_relaxed);
+                  [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> command){
+                    const auto* header=static_cast<const std::uint32_t*>(readback.contents);
+                    const bool passed=command.status==MTLCommandBufferStatusCompleted&&
+                        header!=nullptr&&header[1U]==0U&&header[0U]!=0U&&
+                        header[0U]<=capacity&&header[0U]%3U==0U&&
+                        header[2U]*12U==header[0U];
+                    if(!passed)counters->failed.fetch_add(1U,std::memory_order_relaxed);
+                    counters->completed.fetch_add(1U,std::memory_order_relaxed);
+                    success->store(passed,std::memory_order_release);
+                    complete->store(true,std::memory_order_release);
+                  }];
+                }else gpu_terrain_counters->failed.fetch_add(1U,std::memory_order_relaxed);
+              }
+            }catch(const std::exception&){
+              gpu_terrain_counters->failed.fetch_add(1U,std::memory_order_relaxed);
             }
           }
         }
@@ -8969,7 +9219,8 @@ int main(int argc,char** argv) {
               const auto cpu_front_violations=
                   gpu_terrain_counters->cpu_front_violations.load(
                       std::memory_order_acquire);
-              const bool gpu_slots_passed=!metal_gpu_terrain_diagnostic||
+              const bool gpu_slots_passed=!(metal_gpu_terrain_diagnostic||
+                  metal_gpu_terrain_native_diagnostic)||
                   (dispatched!=0U&&completed!=0U&&accepted!=0U&&
                    stale_rejected!=0U&&failed==0U&&overflow==0U&&
                    cpu_front_frames!=0U&&cpu_front_violations==0U);

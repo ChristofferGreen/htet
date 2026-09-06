@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 04:41 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 506 tests passed in 641.04 seconds after adding the guarded native P6-to-P7c live-slot diagnostic scaffolding and splitting the required parallel P7b2 prerequisite; the CPU display front remains the only consumer.
+
+- 2026-09-06 04:29 CEST | canceled, diagnostic safety finding | mode: Release, hidden native Metal | command: `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_GPU_TERRAIN_NATIVE_DIAGNOSTIC=1 TetWorldMetal --metal-motion-smoke-test` | failures: none asserted | notes: canceled after the complete production P6 stream reached P7b2's single-invocation ordered root scan and did not complete promptly. This is a live-path performance/correctness blocker, not a CPU-front regression; P7c2b1b0 now owns a bounded parallel count/scan/scatter replacement before the live chain may be qualified.
+
 - 2026-09-06 04:46 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 506 tests passed after P7c2b1a. The new headless Metal private-buffer chain ran P6 through P7c2a in one command buffer, deriving downstream counts from GPU headers and matching 12 compact triangles / 144 final vertices without a renderer consumer.
 
 - 2026-09-06 04:17 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 505 tests passed after P7c2a. The new headless Metal `SceneVertex` candidate parity gate and the non-default intersecting-domain P7c1b projection case passed alongside the full suite; no GPU candidate was promoted to drawing.

@@ -34,6 +34,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7a1's 176-byte aligned field tuple carries every `Sphere` and planetary-terrain scalar plus domain and source/field revisions; its host oracle reconstructs Grande cells solely from P6 owner addresses and fails closed on stale packets or insufficient record capacity.
 - Evidence: The focused Release regression round-trips every parameter and independently matches all corner-sign/crossing records for a mixed-depth planetary BCC front.
 
+### gpu-terrain-live-compaction-limit
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, performance, synchronization
+- Fact: P7b2's canonical one-invocation compaction scan is safe for its small parity fixture but can stall a production P6 root stream for minutes, so live native-slot dispatches must reject streams above 65,536 root slots until a parallel ordered scan/scatter path replaces it.
+- Evidence: A hidden Release production-motion run entered the serial P7b2 scan without completing promptly; the subsequent full 506-test Release gate passed with the explicit live guard and no CPU-front consumer change.
+
 ### gpu-terrain-metal-classification
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, classification
