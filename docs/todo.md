@@ -362,13 +362,23 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. P7c2b is now the sole active implementation
       leaf.
-  - [ ] **P7c2b — Atomically bind one qualified generation to consumers.**
-        After P7c2a parity, make opaque, wireframe, shadow, and ray-tracing
-        consumers select the same complete GPU generation or atomically retain
-        the CPU front. A consumer may not independently observe a newer,
-        partial, or differently rebased surface. Retain no sequential index
-        buffer without measured consumer benefit; diagnostic readback remains
-        until P7d.
+  - [ ] **P7c2b1 — Run one complete native candidate in live private slots.**
+        Chain compact P6 owners/templates, P7a classification/root generation,
+        P7b2 base triangles, P7c1b projection, and P7c2a `SceneVertex`
+        expansion in a triple-buffered Metal command buffer. Intermediate and
+        final candidate resources are private; only a bounded qualification
+        readback may be shared. Capture source/field revisions, render origin,
+        count, and status at submission; completion rejects stale, partial,
+        malformed, non-finite, or overflowing work and leaves the CPU display
+        front untouched. Prove static, moving, rebase, and failure behaviour
+        headlessly before any consumer receives this stream.
+  - [ ] **P7c2b2 — Atomically bind one qualified generation to consumers.**
+        After P7c2b1 live-slot parity, make opaque, wireframe, shadow, and
+        ray-tracing consumers select the same complete GPU generation or
+        atomically retain the CPU front. A consumer may not independently
+        observe a newer, partial, or differently rebased surface. Retain no
+        sequential index buffer without measured consumer benefit; diagnostic
+        readback remains until P7d.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams and raster results against CPU across near
         terrain, horizon/limb, silhouettes, back-lit mountains, edits,

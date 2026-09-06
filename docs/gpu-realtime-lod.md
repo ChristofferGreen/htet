@@ -1480,8 +1480,17 @@ topology, and complete-frame gates.
   diagnostic is complete and remains non-drawable; P7b's device roots and
   compact base-triangle diagnostic are complete. P7c2b is the current
   executable leaf.
-  - [ ] **P7c2b — Shared complete-generation consumer binding.** Only after
-    P7c2a parity, bind opaque, wireframe, shadow, and ray tracing to exactly
+  - [ ] **P7c2b1 — Live private-slot candidate chain.** Drive P6 compact
+    owners/templates through P7a classification/root generation, P7b2 base
+    triangles, P7c1b projection, and P7c2a `SceneVertex` expansion in one
+    triple-buffered Metal command-buffer chain. Keep all intermediate and
+    final candidates private except for bounded qualification readback. The
+    slot's captured source/field revisions, render origin, count, and status
+    must match at completion; stale, partial, malformed, non-finite, and
+    overflowing candidates are discarded while the CPU display front remains
+    the only consumer. Static, moving, and rebase headless runs are required.
+  - [ ] **P7c2b2 — Shared complete-generation consumer binding.** Only after
+    P7c2b1 parity, bind opaque, wireframe, shadow, and ray tracing to exactly
     one completed GPU generation, otherwise retaining the CPU front. No
     consumer may independently advance, retain a differently rebased surface,
     or consume a partial update. Avoid a sequential index buffer unless it has
