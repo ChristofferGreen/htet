@@ -40,6 +40,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7a2 uses a separate non-drawable SPIR-V/MSL kernel with only P6 compact owners/templates and the P7a1 tuple, writing fixed-stride Grande corner-sign/crossing records and treating any malformed or capacity-invalid dispatch as unusable.
 - Evidence: The hidden Metal fixture matched 33 independent CPU-oracle records for fixed and revisioned field-motion packets, then rejected zero capacity, stale tuple revision, and an invalid owner mask.
 
+### gpu-terrain-compact-base-triangles
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, compaction
+- Fact: P7b2 compacts P7b1 root slots only after validating their P6 owner/template identity and completing a capacity-before-write canonical cut-cycle scan, so malformed, stale, missing-root, and overflowing input cannot publish a partial base-triangle stream.
+- Evidence: The compact CPU oracle and translated Metal fixture matched fixed and moved planetary streams, while hardware cases explicitly fail closed for overflow, stale/malformed, and missing-root inputs and preserve a valid empty-stream result.
+
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization

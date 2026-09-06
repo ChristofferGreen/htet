@@ -1384,6 +1384,144 @@ bool run_metal_gpu_terrain_classify_smoke_test(id<MTLDevice> device) {
   return true;
 }
 
+// P7b2 chains P7b1's compact root buffer into a second, non-drawable kernel.
+// The fixture deliberately reads the compact stream back only to compare it to
+// the host oracle; no live renderer resource is created or promoted here.
+bool run_metal_gpu_terrain_triangle_smoke_test(id<MTLDevice> device) {
+  const auto shader_directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto make_pipeline=[&](const char* filename){
+    id<MTLLibrary> library=make_file_shader_library(device,(shader_directory/filename).string().c_str());
+    NSError* error=nil;id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+    id<MTLComputePipelineState> pipeline=function==nil?nil:
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if(pipeline==nil)std::fprintf(stderr,"Metal terrain triangle pipeline creation failed: %s\n",
+        error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return pipeline;
+  };
+  id<MTLComputePipelineState> classify=make_pipeline("gpu_terrain_classify.comp.metal");
+  id<MTLComputePipelineState> triangles=make_pipeline("gpu_terrain_triangles.comp.metal");
+  if(classify==nil||triangles==nil)return false;
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  candidates.erase(std::ranges::find(candidates,tetra::WorldTetAddress::root(0U)));
+  for(std::uint8_t child=0U;child<8U;++child)candidates.push_back(tetra::WorldTetAddress::root(0U).child(child));
+  std::ranges::sort(candidates);
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  const auto templates=tetra::make_gpu_green_template_table();
+  tetra::GpuTerrainFieldTupleParameters field_parameters;
+  field_parameters.source_revision=101U;field_parameters.field_revision=19U;
+  field_parameters.domain.world_extent=1.0;field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  field_parameters.field.terrain.planet_radius=.37;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){return [device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
+  id<MTLCommandQueue> queue=[device newCommandQueue];if(queue==nil)return false;
+  const auto records=static_cast<std::uint32_t>(packet.owners.size()*24U);
+  const auto dispatch=[&](const tetra::GpuTerrainFieldTuple& input_tuple,
+                          std::vector<tetra::GpuGreenMaskOwnerRecord> owners,
+                          std::uint32_t triangle_capacity,bool expect_failure,bool remove_root){
+    const auto expected_roots=expect_failure?std::vector<tetra::GpuTerrainRootRecord>{}:
+        tetra::gpu_terrain_root_packet(packet,input_tuple,100000U);
+    const auto expected=expect_failure?std::vector<tetra::GpuTerrainBaseTriangleRecord>{}:
+        tetra::gpu_terrain_base_triangles(expected_roots,100000U);
+    std::vector<std::uint32_t> root_zeroes(4U+static_cast<std::size_t>(records)*24U);
+    std::vector<std::uint32_t> triangle_zeroes(4U+std::max<std::size_t>(triangle_capacity,1U)*16U);
+    id<MTLBuffer> field=make_buffer(&input_tuple,sizeof(input_tuple));
+    id<MTLBuffer> owner=make_buffer(owners.data(),owners.size()*sizeof(owners.front()));
+    id<MTLBuffer> stencil=make_buffer(templates.data(),sizeof(templates));
+    id<MTLBuffer> root_output=make_buffer(root_zeroes.data(),root_zeroes.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> triangle_output=make_buffer(triangle_zeroes.data(),triangle_zeroes.size()*sizeof(std::uint32_t));
+    if(field==nil||owner==nil||stencil==nil||root_output==nil||triangle_output==nil){std::fprintf(stderr,"Metal terrain triangle buffer allocation failed\n");return false;}
+    const std::array<std::uint32_t,4> classify_parameters{static_cast<std::uint32_t>(owners.size()),records,101U,0U};
+    id<MTLCommandBuffer> command=[queue commandBuffer];id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:classify];[encoder setBuffer:field offset:0 atIndex:0];
+    [encoder setBytes:classify_parameters.data() length:sizeof(classify_parameters) atIndex:1];
+    [encoder setBuffer:owner offset:0 atIndex:2];[encoder setBuffer:root_output offset:0 atIndex:3];[encoder setBuffer:stencil offset:0 atIndex:4];
+    [encoder dispatchThreads:MTLSizeMake(owners.size(),1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted){std::fprintf(stderr,"Metal terrain triangle root command failed\n");return false;}
+    auto* root_words=static_cast<std::uint32_t*>(root_output.contents);
+    if(!expect_failure) {
+      std::uint32_t rooted{};
+      for(std::uint32_t index=0U;index<records;++index)
+        rooted+=root_words[4U+index*24U+22U]!=0U?1U:0U;
+      if(root_words[0U]!=expected_roots.size()||rooted==0U){
+        std::fprintf(stderr,"Metal terrain triangle root stream mismatch %u %u expected %zu\n",root_words[0U],rooted,expected_roots.size());return false;
+      }
+    }
+    if(remove_root&&root_words[2U]==0U) {
+      bool removed=false;
+      for(std::uint32_t index=0U;index<records&&!removed;++index) {
+        auto& valid=root_words[4U+index*24U+22U];
+        if(valid!=0U) { valid&=valid-1U;removed=true; }
+      }
+      if(!removed){std::fprintf(stderr,"Metal terrain triangle missing-root fixture had no roots\n");return false;}
+    }
+    command=[queue commandBuffer];encoder=[command computeCommandEncoder];
+    const std::array<std::uint32_t,4> triangle_parameters{static_cast<std::uint32_t>(owners.size()),records,triangle_capacity,101U};
+    [encoder setComputePipelineState:triangles];[encoder setBuffer:root_output offset:0 atIndex:0];
+    [encoder setBytes:triangle_parameters.data() length:sizeof(triangle_parameters) atIndex:1];
+    [encoder setBuffer:owner offset:0 atIndex:2];[encoder setBuffer:stencil offset:0 atIndex:3];
+    [encoder setBuffer:triangle_output offset:0 atIndex:4];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted){std::fprintf(stderr,"Metal terrain triangle command failed\n");return false;}
+    const auto* output=static_cast<const std::uint32_t*>(triangle_output.contents);
+    if(expect_failure||remove_root){
+      if(output[1U]==0U){std::fprintf(stderr,"Metal terrain triangles failed closed-output gate\n");return false;}
+      return true;
+    }
+    if(output[1U]!=0U||output[0U]!=expected.size()){
+      std::fprintf(stderr,"Metal terrain triangle header mismatch %u %u expected %zu\n",output[0U],output[1U],expected.size());return false;
+    }
+    for(std::size_t index=0U;index<expected.size();++index){
+      const auto& want=expected[index];const auto offset=4U+index*16U;
+      const auto packed=static_cast<std::uint32_t>(want.edges[0])|
+          (static_cast<std::uint32_t>(want.edges[1])<<8U)|(static_cast<std::uint32_t>(want.edges[2])<<16U);
+      if(output[offset]!=want.owner_index||output[offset+1U]!=want.template_cell||
+         output[offset+2U]!=want.corner_negative_mask||output[offset+3U]!=packed){std::fprintf(stderr,"Metal terrain triangle record mismatch at %zu\n",index);return false;}
+      for(std::size_t corner=0U;corner<3U;++corner)for(std::size_t axis=0U;axis<3U;++axis){
+        const float actual=std::bit_cast<float>(output[offset+4U+corner*3U+axis]);
+        const auto& point=want.roots[corner];const double target=axis==0U?point.x:axis==1U?point.y:point.z;
+        if(std::abs(static_cast<double>(actual)-target)>2.0e-5){std::fprintf(stderr,"Metal terrain triangle root mismatch at %zu\n",index);return false;}
+      }
+    }
+    return true;
+  };
+  const auto capacity=100000U;
+  if(!dispatch(tuple,packet.owners,capacity,false,false))return false;
+  auto moved=tuple;moved.centre_radius[0]+=.03125F;moved.revision_lanes[2]+=1U;
+  if(!dispatch(moved,packet.owners,capacity,false,false))return false;
+  if(!dispatch(tuple,packet.owners,0U,true,false))return false;
+  if(!dispatch(tuple,packet.owners,capacity,false,true))return false;
+  auto stale=tuple;stale.revision_lanes[0]^=1U;
+  if(!dispatch(stale,packet.owners,capacity,true,false))return false;
+  auto malformed=packet.owners;malformed.front().mask=64U;
+  if(!dispatch(tuple,std::move(malformed),capacity,true,false))return false;
+  // An empty P7b1 stream is a valid empty surface, distinct from failure.
+  const std::array<std::uint32_t,4> empty_roots{};
+  std::array<std::uint32_t,20> empty_triangles{};
+  id<MTLBuffer> empty_root_buffer=make_buffer(empty_roots.data(),sizeof(empty_roots));
+  id<MTLBuffer> empty_triangle_buffer=make_buffer(empty_triangles.data(),sizeof(empty_triangles));
+  if(empty_root_buffer==nil||empty_triangle_buffer==nil)return false;
+  id<MTLCommandBuffer> empty_command=[queue commandBuffer];
+  id<MTLComputeCommandEncoder> empty_encoder=[empty_command computeCommandEncoder];
+  const std::array<std::uint32_t,4> empty_parameters{0U,0U,1U,101U};
+  [empty_encoder setComputePipelineState:triangles];
+  [empty_encoder setBuffer:empty_root_buffer offset:0 atIndex:0];
+  [empty_encoder setBytes:empty_parameters.data() length:sizeof(empty_parameters) atIndex:1];
+  // No topology resource is touched for a zero-slot stream, so the empty
+  // case intentionally needs only the root and output buffers.
+  [empty_encoder setBuffer:empty_triangle_buffer offset:0 atIndex:4];
+  [empty_encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+  [empty_encoder endEncoding];[empty_command commit];[empty_command waitUntilCompleted];
+  const auto* empty_words=static_cast<const std::uint32_t*>(empty_triangle_buffer.contents);
+  if(empty_command.status!=MTLCommandBufferStatusCompleted||empty_words[0U]!=0U||empty_words[1U]!=0U)return false;
+  std::printf("{\"event\":\"metal_gpu_terrain_triangles\",\"roots\":%u,\"passed\":true}\n",records);
+  return true;
+}
+
 // P5b mirrors the Vulkan extraction qualification without connecting the
 // result to Metal rendering.  The records are the legacy CPU-precomputed ABI;
 // this fixture establishes that its translated kernel writes the same compact
@@ -3806,6 +3944,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
   const bool gpu_terrain_classify_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-classify-smoke-test")==0;
+  const bool gpu_terrain_triangle_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-triangle-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
@@ -4074,7 +4214,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4088,6 +4228,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
                         "--metal-gpu-terrain-classify-smoke-test|"
+                        "--metal-gpu-terrain-triangle-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
@@ -4156,6 +4297,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
     if(gpu_terrain_classify_smoke_test)
       return run_metal_gpu_terrain_classify_smoke_test(device)?0:1;
+    if(gpu_terrain_triangle_smoke_test)
+      return run_metal_gpu_terrain_triangle_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){

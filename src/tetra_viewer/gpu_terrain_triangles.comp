@@ -1,0 +1,101 @@
+#version 450
+
+// P7b2 is intentionally a diagnostic-only compaction stage.  It consumes the
+// fixed-stride P7b1 root records and emits only compact unprojected triangles:
+// owner/template/sign identity, canonical root-edge triplet, and three root
+// positions.  There is no drawable vertex, normal, projection, material, or
+// index stream in this shader.
+layout(std430,binding=0) readonly buffer Roots { uint words[]; } roots_buffer;
+layout(std430,binding=1) buffer Output { uint words[]; } output_buffer;
+// P6 topology remains an explicit input: identity carried by a root record is
+// accepted only when it names a real owner/template cell in this immutable
+// restricted-green packet.
+layout(std430,binding=2) readonly buffer Owners { uint words[]; } owners;
+layout(std430,binding=3) readonly buffer Templates { uint words[]; } templates;
+layout(push_constant) uniform Parameters {
+  uint owner_count; uint root_slot_count;
+  uint triangle_capacity; uint source_revision_low;
+} parameters;
+layout(local_size_x=1) in;
+
+const uvec2 tet_edges[6]=uvec2[6](uvec2(0,1),uvec2(0,2),uvec2(0,3),
+                                  uvec2(1,2),uvec2(1,3),uvec2(2,3));
+
+uint crossing_mask(uint signs) {
+  uint result=0u;
+  for(uint edge=0u;edge<6u;++edge)
+    if(((signs>>tet_edges[edge].x)&1u)!=((signs>>tet_edges[edge].y)&1u))
+      result|=1u<<edge;
+  return result;
+}
+uint triangle_count(uint crossings) { return crossings==3u?1u:crossings==4u?2u:0u; }
+uvec3 triangle_edges(uint signs,uint triangle) {
+  // Four-crossing cases use the same lowest-edge cut-cycle fan for a mask and
+  // its complement.  This freezes canonical stream order before P7c owns
+  // surface winding and normals.
+  const uvec3 table[32]=uvec3[32](
+    uvec3(0),uvec3(0), uvec3(0,1,2),uvec3(0), uvec3(0,3,4),uvec3(0),
+    uvec3(1,2,4),uvec3(1,4,3), uvec3(1,3,5),uvec3(0),
+    uvec3(0,2,5),uvec3(0,5,3), uvec3(0,1,5),uvec3(0,5,4),
+    uvec3(2,4,5),uvec3(0), uvec3(2,4,5),uvec3(0),
+    uvec3(0,1,5),uvec3(0,5,4), uvec3(0,2,5),uvec3(0,5,3),
+    uvec3(1,3,5),uvec3(0), uvec3(1,2,4),uvec3(1,4,3),
+    uvec3(0,3,4),uvec3(0), uvec3(0,1,2),uvec3(0), uvec3(0),uvec3(0));
+  return table[signs*2u+triangle];
+}
+bool valid_root(uint record,uint edge) {
+  if((roots_buffer.words[record+22u]&(1u<<edge))==0u)return false;
+  for(uint axis=0u;axis<3u;++axis) {
+    const float value=uintBitsToFloat(roots_buffer.words[record+4u+edge*3u+axis]);
+    if(isnan(value)||isinf(value))return false;
+  }
+  return true;
+}
+bool valid_topology(uint record) {
+  const uint owner=roots_buffer.words[record],cell=roots_buffer.words[record+1u];
+  if(owner>=parameters.owner_count)return false;
+  const uint mask=owners.words[owner*12u+10u];
+  if(mask>=64u)return false;
+  const uint template_base=mask*28u;
+  return templates.words[template_base+25u]==mask&&cell<templates.words[template_base+24u];
+}
+void main() {
+  if(gl_GlobalInvocationID.x!=0u)return;
+  // P7b1's header marks stale, invalid, and capacity-failed root output.  Do
+  // not make a partial surface from it.
+  if(roots_buffer.words[2u]!=0u){output_buffer.words[1u]=1u;return;}
+  uint total=0u;
+  for(uint index=0u;index<parameters.root_slot_count;++index) {
+    const uint record=4u+index*24u,signs=roots_buffer.words[record+2u];
+    const uint crossings=roots_buffer.words[record+3u];
+    const uint required=crossing_mask(signs);
+    if(!valid_topology(record)||signs>15u||crossings!=bitCount(required)||
+       roots_buffer.words[record+22u]!=required){output_buffer.words[1u]=1u;return;}
+    total+=triangle_count(crossings);
+  }
+  // The serial two-pass scan proves capacity before the first write. This is
+  // deliberately compact and deterministic; parallel reservation belongs to
+  // later measured publication work, not this P7b2 parity diagnostic.
+  if(total>parameters.triangle_capacity){output_buffer.words[1u]=1u;return;}
+  uint destination=0u;
+  for(uint index=0u;index<parameters.root_slot_count;++index) {
+    const uint record=4u+index*24u,signs=roots_buffer.words[record+2u];
+    const uint count=triangle_count(roots_buffer.words[record+3u]);
+    for(uint triangle=0u;triangle<count;++triangle) {
+      const uvec3 edges=triangle_edges(signs,triangle);
+      if(!valid_root(record,edges.x)||!valid_root(record,edges.y)||!valid_root(record,edges.z)){
+        output_buffer.words[1u]=1u;return;
+      }
+      const uint output_record=4u+destination*16u;
+      output_buffer.words[output_record]=roots_buffer.words[record];
+      output_buffer.words[output_record+1u]=roots_buffer.words[record+1u];
+      output_buffer.words[output_record+2u]=signs;
+      output_buffer.words[output_record+3u]=edges.x|(edges.y<<8u)|(edges.z<<16u);
+      for(uint corner=0u;corner<3u;++corner)for(uint axis=0u;axis<3u;++axis)
+        output_buffer.words[output_record+4u+corner*3u+axis]=
+            roots_buffer.words[record+4u+edges[corner]*3u+axis];
+      ++destination;
+    }
+  }
+  output_buffer.words[0u]=total;
+}

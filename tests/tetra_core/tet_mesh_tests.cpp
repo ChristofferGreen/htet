@@ -812,6 +812,39 @@ TEST_CASE("GPU terrain classification reconstructs BCC field signs") {
                   std::invalid_argument);
 }
 
+TEST_CASE("GPU terrain base triangles canonically compact valid roots") {
+  constexpr std::array<std::array<std::uint8_t,3>,2> quad{{
+      {{1U,2U,4U}},{{1U,4U,3U}}}};
+  std::vector<tetra::GpuTerrainRootRecord> roots;
+  constexpr std::array<std::array<std::size_t,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  for(std::uint32_t signs=0U;signs<16U;++signs) {
+    tetra::GpuTerrainRootRecord record;
+    record.classification.owner_index=7U;record.classification.template_cell=11U;
+    record.classification.corner_negative_mask=signs;
+    for(std::size_t edge=0U;edge<edges.size();++edge)
+      if(((signs>>edges[edge][0])&1U)!=((signs>>edges[edge][1])&1U)) {
+        record.valid_edge_mask|=1U<<edge;
+        record.roots[edge]={static_cast<double>(edge),static_cast<double>(signs),1.0};
+      }
+    record.classification.crossing_count=std::popcount(record.valid_edge_mask);
+    roots.push_back(record);
+  }
+  const auto triangles=tetra::gpu_terrain_base_triangles(roots,100U);
+  // Six masks have one inside/outside corner (one triangle) and six have two
+  // of each (two triangles); empty/full masks emit nothing.
+  CHECK(triangles.size()==20U);
+  REQUIRE(triangles.size()>3U);
+  CHECK(triangles[0].edges==std::array<std::uint8_t,3>{{0U,1U,2U}});
+  CHECK(triangles[2].corner_negative_mask==3U);
+  CHECK(triangles[2].edges==quad[0]);
+  CHECK(triangles[3].edges==quad[1]);
+  CHECK(triangles[2].roots[0].x==1.0);
+  CHECK_THROWS_AS(tetra::gpu_terrain_base_triangles(roots,1U),std::overflow_error);
+  auto missing=roots;missing[1].valid_edge_mask&=~1U;
+  CHECK_THROWS_AS(tetra::gpu_terrain_base_triangles(missing,100U),std::invalid_argument);
+}
+
 TEST_CASE("Scholz construction defines four exact barycentric hexahedra") {
   const auto construction=tetra::make_four_hexahedra();
   REQUIRE(construction.cells.size()==4U);

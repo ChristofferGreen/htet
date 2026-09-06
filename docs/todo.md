@@ -359,13 +359,9 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       frozen Grande-template ABI, revisioned restricted-green masks, exact
       dyadic edge directory, and mixed-depth halo proof are the exclusive
       topology authority. P7a's compact field/classification diagnostic is
-      complete and non-drawable; P7b is now the sole active implementation
+      complete and non-drawable; P7b's roots and compact base-triangle
+      diagnostics are complete. P7c is now the sole active implementation
       leaf.
-  - [ ] **P7b — Device roots and unprojected base triangles.** P7b1 is
-        complete; P7b2 is now the active leaf.
-  - [ ] **P7b2 — Scan and emit compact base triangles.** Consume only P7b1
-        roots and P6 topology to reserve overflow-safe non-indexed base
-        triangles; match ownership, masks, and edge streams before P7c.
   - [ ] **P7c — Match production projection, normals, and all consumers.**
         Move midpoint projection and normal generation to GPU and prove compact
         generated streams match the visible CPU geometry quality/contracts.

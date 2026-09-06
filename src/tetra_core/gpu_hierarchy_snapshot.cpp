@@ -394,6 +394,59 @@ std::vector<GpuTerrainRootRecord> gpu_terrain_root_packet(
   return result;
 }
 
+std::vector<GpuTerrainBaseTriangleRecord> gpu_terrain_base_triangles(
+    std::span<const GpuTerrainRootRecord> roots,std::uint32_t capacity) {
+  // The table is an edge-cycle canonicalization, not a conventional
+  // marching-tetrahedron winding table.  A later projection/normal stage owns
+  // geometric orientation; this diagnostic stream instead freezes one exact
+  // root triplet order for each sign pattern.  Four-root quads always split
+  // from their lowest edge around the unique cut cycle.
+  constexpr std::array<std::array<std::array<std::uint8_t,3>,2>,16> triangles{{
+      {{{{0,0,0}},{{0,0,0}}}}, {{{{0,1,2}},{{0,0,0}}}},
+      {{{{0,3,4}},{{0,0,0}}}}, {{{{1,2,4}},{{1,4,3}}}},
+      {{{{1,3,5}},{{0,0,0}}}}, {{{{0,2,5}},{{0,5,3}}}},
+      {{{{0,1,5}},{{0,5,4}}}}, {{{{2,4,5}},{{0,0,0}}}},
+      {{{{2,4,5}},{{0,0,0}}}}, {{{{0,1,5}},{{0,5,4}}}},
+      {{{{0,2,5}},{{0,5,3}}}}, {{{{1,3,5}},{{0,0,0}}}},
+      {{{{1,2,4}},{{1,4,3}}}}, {{{{0,3,4}},{{0,0,0}}}},
+      {{{{0,1,2}},{{0,0,0}}}}, {{{{0,0,0}},{{0,0,0}}}}
+  }};
+  std::vector<GpuTerrainBaseTriangleRecord> result;
+  for(const auto& root:roots) {
+    const auto mask=root.classification.corner_negative_mask;
+    std::uint32_t expected_mask{};
+    for(std::size_t edge=0U;edge<tetrahedron_edges.size();++edge)
+      if(((mask>>tetrahedron_edges[edge][0])&1U)!=
+         ((mask>>tetrahedron_edges[edge][1])&1U)) expected_mask|=1U<<edge;
+    if(mask>15U||root.valid_edge_mask!=expected_mask||
+        root.classification.crossing_count!=static_cast<std::uint32_t>(std::popcount(expected_mask)))
+      throw std::invalid_argument("GPU terrain root record is malformed");
+    const auto expected_crossings=std::popcount(expected_mask);
+    const auto triangle_count=expected_crossings==3U?1U:
+        expected_crossings==4U?2U:0U;
+    if(triangle_count!=0U&&result.size()+triangle_count>capacity)
+      throw std::overflow_error("GPU terrain triangle capacity exceeded");
+    for(std::size_t triangle=0U;triangle<triangle_count;++triangle) {
+      GpuTerrainBaseTriangleRecord record;
+      record.owner_index=root.classification.owner_index;
+      record.template_cell=root.classification.template_cell;
+      record.corner_negative_mask=mask;
+      record.edges=triangles[mask][triangle];
+      for(std::size_t corner=0U;corner<record.edges.size();++corner) {
+        const auto edge=record.edges[corner];
+        if((root.valid_edge_mask&(1U<<edge))==0U)
+          throw std::invalid_argument("GPU terrain triangle has missing root");
+        const auto point=root.roots[edge];
+        if(!std::isfinite(point.x)||!std::isfinite(point.y)||!std::isfinite(point.z))
+          throw std::invalid_argument("GPU terrain triangle root is invalid");
+        record.roots[corner]=point;
+      }
+      result.push_back(record);
+    }
+  }
+  return result;
+}
+
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
                                     std::uint64_t expected_source_revision) {
   if(packet.header.format_version!=gpu_green_mask_packet_format_version||

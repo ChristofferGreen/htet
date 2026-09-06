@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P7b2 — Compact base-triangle emission.** Added a separate translated
+  Metal compute diagnostic that consumes only P7b1 fixed-stride root records,
+  scans the canonical three/four-crossing cases before writing, and produces
+  compact owner/template/sign identity, canonical root-edge triplets, and
+  unprojected root positions. Its CPU oracle freezes the cut-cycle ordering;
+  focused host and hardware gates cover fixed and revisioned field motion,
+  overflow, stale/malformed roots, a missing root, and an empty stream. The
+  capacity check occurs before the first write, so failed input publishes no
+  usable partial output. No normal, midpoint projection, index, drawable,
+  shadow, or ray-tracing resource is created; P7c owns all of those concerns.
+
 - [x] **P7b1 — Qualify compact device edge roots.** The non-drawable compact
   Metal diagnostic now bracket-refines every classified crossing for 40 steps,
   writes world-space root coordinates and edge-validity bits, and matches the

@@ -127,6 +127,17 @@ struct GpuTerrainRootRecord {
   std::array<Vec3,6> roots{};
   std::uint32_t valid_edge_mask{};
 };
+// P7b2's compact, unprojected surface primitive.  `edges` names the three
+// canonical tetrahedron edges whose P7b1 roots form this triangle; positions
+// are retained here solely for diagnostic parity.  No normal, midpoint,
+// material, index, or drawable representation is implied by this record.
+struct GpuTerrainBaseTriangleRecord {
+  std::uint32_t owner_index{};
+  std::uint32_t template_cell{};
+  std::uint32_t corner_negative_mask{};
+  std::array<std::uint8_t,3> edges{};
+  std::array<Vec3,3> roots{};
+};
 [[nodiscard]] GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
     const GpuTerrainFieldTupleParameters& parameters);
 void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
@@ -138,6 +149,9 @@ void validate_gpu_terrain_field_tuple(const GpuTerrainFieldTuple& tuple);
 [[nodiscard]] std::vector<GpuTerrainRootRecord> gpu_terrain_root_packet(
     const GpuGreenMaskPacket& packet,const GpuTerrainFieldTuple& tuple,
     std::uint32_t capacity);
+[[nodiscard]] std::vector<GpuTerrainBaseTriangleRecord>
+gpu_terrain_base_triangles(std::span<const GpuTerrainRootRecord> roots,
+                           std::uint32_t capacity);
 [[nodiscard]] GpuGreenMaskPacket make_gpu_green_mask_packet(
     std::span<const WorldTetAddress> candidates,std::uint64_t source_revision);
 void validate_gpu_green_mask_packet(const GpuGreenMaskPacket& packet,
