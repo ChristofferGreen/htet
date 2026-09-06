@@ -6,6 +6,7 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 13:43 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 509 tests passed after P7c2b2; the CPU/GPU terrain selector's unavailable GPU request retained the complete CPU front, and raster, wireframe, shadow, and RT consumers share the single display-front publication.
 - 2026-09-06 09:16 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 508 tests passed after P7c2b1b; the new native three-private-slot chain gate passed with static, changed-field, and render-origin-rebase identities while existing CPU-front-retention checks remained green.
 - 2026-09-06 09:03 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^planetary sliced frontier cold-recovers a sector-union transition$'` | failures: none | notes: fresh focused rerun passed after a transient full-suite convergence stall.
 - 2026-09-06 09:00 CEST | canceled | mode: Release | command: `./scripts/compile.sh --release` | failures: planetary sliced frontier cold-recovers a sector-union transition | notes: stopped after the pre-existing long convergence test stalled; focused fresh rerun subsequently passed.

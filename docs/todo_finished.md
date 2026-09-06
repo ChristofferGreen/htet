@@ -2,6 +2,17 @@
 
 ## 2026-09-06
 
+- [x] **P7c2b2 — Atomically bind one qualified generation to consumers.** A
+  completed native slot now has one guarded publication point: opaque raster,
+  wireframe, shadows, and the ray-tracing structure all consume the same
+  `MetalTerrainDisplayFront`, while stale, failed, partial, and unavailable
+  slots retain the complete CPU front. The visible Terrain diagnostics selector
+  chooses CPU or GPU terrain; GPU mode reports its unavailable state rather
+  than drawing a partial candidate. The live route uses the bounded parallel
+  count/scan/finalize/scatter compaction path and retains scalar header
+  readback for P7d. Both CPU selection and GPU-unavailable retention are
+  covered by hidden Metal smoke tests.
+
 - [x] **P7c2b1b — Run the qualified chain in live private slots.** The native
   Metal chain now uses P7c2b1b0's count, two-level 256-lane scan, uniform-add,
   finalize, and scatter passes rather than P7b2's forbidden serial scan. Its

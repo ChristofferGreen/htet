@@ -1485,19 +1485,12 @@ topology, and complete-frame gates.
   compact base-triangle diagnostic are complete. The first full-production
   live-slot attempt proved that P7b2's one-invocation ordered scan can stall a
   real cut for minutes. P7c2b1b0's bounded ordered replacement and P7c2b1b's
-  three private diagnostic slots are complete; P7c2b2 is the next executable
-  leaf. The live-slot chain uses only count/scan/finalize/scatter compaction,
-  never P7b2's serial diagnostic kernel.
-  - [ ] **P7c2b2 — Shared complete-generation consumer binding.** Only after
-    P7c2b1b parity, bind opaque, wireframe, shadow, and ray tracing to exactly
-    one completed GPU generation, otherwise retaining the CPU front. No
-    consumer may independently advance, retain a differently rebased surface,
-    or consume a partial update. Avoid a sequential index buffer unless it has
-    measured consumer benefit; readback remains diagnostic until P7d. Add a
-    visible CPU/GPU terrain-renderer toggle: CPU selects the existing CPU
-    renderer, while GPU selects only a complete qualified GPU generation and
-    reports an unavailable GPU candidate instead of rendering partial work.
-    Test both selections.
+  three private diagnostic slots and P7c2b2's single shared consumer
+  publication are complete. The live-slot chain uses only
+  count/scan/finalize/scatter compaction, never P7b2's serial diagnostic
+  kernel. Raster, wireframe, shadows, and ray tracing read the same immutable
+  front; GPU selection retains that CPU front until a current completed slot is
+  available, and readback remains diagnostic through P7d.
   - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
     horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
     shapes. Require stream, incidence/winding, normal-direction distribution,

@@ -366,17 +366,9 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. A production-cut experiment established that
       P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0's
-      bounded parallel replacement is complete and P7c2b1b is next.
-  - [ ] **P7c2b2 — Atomically bind one qualified generation to consumers.**
-        After P7c2b1b live-slot parity, make opaque, wireframe, shadow, and
-        ray-tracing consumers select the same complete GPU generation or
-        atomically retain the CPU front. A consumer may not independently
-        observe a newer, partial, or differently rebased surface. Retain no
-        sequential index buffer without measured consumer benefit; diagnostic
-        readback remains until P7d. Add the visible CPU/GPU terrain-renderer
-        toggle: CPU selects the existing renderer; GPU selects only one fully
-        qualified, complete GPU generation and visibly reports unavailable
-        rather than exposing partial work. Exercise both selections in tests.
+      bounded parallel replacement and live private slots are complete. P7d is
+      next; it is the required full GPU-native parity qualification before
+      readback-free publication.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams and raster results against CPU across near
         terrain, horizon/limb, silhouettes, back-lit mountains, edits,

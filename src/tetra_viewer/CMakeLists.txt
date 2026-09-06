@@ -380,6 +380,13 @@ if(APPLE AND TETRA_BUILD_METAL)
       TETWORLD_METAL_GPU_TERRAIN_DIAGNOSTIC=1
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  # The selector must retain the complete CPU front while a requested native
+  # candidate is unavailable; it must never expose a partial GPU buffer.
+  add_test(NAME "metal GPU terrain renderer selector retains complete front"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_GPU_TERRAIN_RENDERER=1
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
   set_target_properties(tetra_world_metal PROPERTIES
     OUTPUT_NAME "TetWorldMetal"
     MACOSX_BUNDLE TRUE

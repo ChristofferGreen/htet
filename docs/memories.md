@@ -61,8 +61,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-native-private-chain
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, private-memory, synchronization
-- Fact: P7c2b1b runs three independent diagnostic private candidates through the complete P6-to-`SceneVertex` Metal chain using deterministic two-level parallel compaction and GPU-header-derived downstream counts; no renderer consumer is bound.
-- Evidence: The hidden hardware fixture matched 12 compact triangles / 144 final vertices for static, changed-field, and rebased identities, while the individual gates retain stale, malformed, non-finite, and overflow rejection coverage.
+- Fact: A current, completed native candidate is promoted only by replacing the single `MetalTerrainDisplayFront`, so raster, wireframe, shadow, and ray-tracing consumers share one generation and retain the CPU front on stale, failed, partial, or unavailable GPU work.
+- Evidence: P7c2b2 wired the live slots through deterministic parallel compaction, added the visible CPU/GPU selector, and the hidden GPU-selection smoke retained a complete CPU front when its requested candidate was unavailable.
 
 ### gpu-terrain-projected-geometry
 - Updated: 2026-09-06
