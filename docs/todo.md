@@ -362,12 +362,17 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. P7c is now the sole active implementation
       leaf.
-  - [ ] **P7c — Match production projection, normals, and all consumers.**
-        Move midpoint projection and normal generation to GPU and prove compact
-        generated streams match the visible CPU geometry quality/contracts.
-        The same complete revision must feed opaque, wireframe, shadow, and
-        ray-tracing consumers; retain no sequential index buffer without a
-        measured consumer benefit. Stop rule: diagnostic readback remains.
+  - [ ] **P7c1 — Project and orient compact GPU base triangles.** Define the
+        compact camera-relative geometry ABI and use it to project P7b2 roots,
+        derive outward flat normals, and emit a diagnostic vertex stream.
+        Prove exact CPU-oracle position/normal/count parity across fixed and
+        moving origins, malformed inputs, and capacity failure. Stop rule: no
+        drawable, shadow, wireframe, or ray-tracing consumer may bind it.
+  - [ ] **P7c2 — Bind one qualified GPU geometry generation to consumers.**
+        After P7c1 parity, make opaque, wireframe, shadow, and ray-tracing
+        consumers select the same complete generation or atomically retain the
+        CPU front. Retain no sequential index buffer without measured consumer
+        benefit; diagnostic readback remains until P7d.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams against CPU across near terrain, horizon/limb,
         silhouettes, back-lit mountains, edits, cutaways, and implicit shapes;

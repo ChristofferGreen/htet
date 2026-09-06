@@ -6,6 +6,8 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 03:19 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: P7c baseline passed all 502 tests before splitting its oversized projection/consumer scope into independently closable leaves.
+
 - 2026-09-06 03:08 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 502 tests passed after P7b2; the new host compact-triangle oracle and background Metal root-to-triangle fixture passed without promoting a drawable GPU surface.
 
 - 2026-09-06 03:19 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-gpu-terrain-classify-smoke-test` | failures: none | notes: P7b1 root parity passed after matching the authoritative 0.25 terrain-octave gain; fixed and revisioned field-motion root streams match the CPU oracle.

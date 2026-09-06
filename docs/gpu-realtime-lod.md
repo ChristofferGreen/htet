@@ -1480,10 +1480,16 @@ topology, and complete-frame gates.
   diagnostic is complete and remains non-drawable; P7b's device roots and
   compact base-triangle diagnostic are complete. P7c is the current executable
   leaf.
-  - [ ] **P7c — Device projection, normals, and shared consumers.** Match
-    production midpoint projection and normals; feed one complete revision to
-    opaque, wireframe, shadow, and ray-tracing inputs. Retain no sequential
-    index buffer without measured consumer benefit; diagnostic readback remains.
+  - [ ] **P7c1 — Device projection and normal diagnostic.** Consume P7b2's
+    compact base triangles with a revisioned camera/origin tuple, reproduce
+    the production midpoint projection and outward flat normals, and compare
+    diagnostic geometry against the CPU oracle for fixed/moving origins,
+    invalid input, and capacity exhaustion. No drawable consumer is permitted.
+  - [ ] **P7c2 — Shared complete-generation consumer binding.** Only after
+    P7c1 parity, bind opaque, wireframe, shadow, and ray tracing to exactly one
+    completed geometry generation, otherwise retaining the CPU front. Avoid a
+    sequential index buffer unless it has measured consumer benefit; readback
+    remains diagnostic until P7d.
   - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
     horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
     shapes; reject stale/partial/overflow output. CPU fallback remains until P8.
