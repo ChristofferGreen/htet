@@ -67,8 +67,14 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-private-publication
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, private-memory, indirect, synchronization
-- Fact: P8a seeds an immutable complete CPU front into private Metal vertex and indirect-argument buffers, then permits native candidate replacement only through a private validate/copy/publish sequence that leaves both prior buffers unchanged on validation failure.
-- Evidence: The rebuilt GPU-selector smoke bound the private indirect front successfully without allocating candidate readback; native readback remains gated behind the explicit qualification setting.
+- Fact: P8a/P8b seed each complete CPU publication into private Metal vertex and indirect-argument buffers, and the selected GPU renderer preserves that generation-matched active front through live motion without normal candidate readback; native replacement may only use the private validate/copy/publish sequence.
+- Evidence: The hidden selected-GPU motion smoke settled in 89.18 seconds under its 120-second bound with the active private indirect handle selected and zero consumer-front violations; stale, failed, or overflowing native work cannot modify the prior buffers.
+
+### gpu-terrain-production-root-expansion
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, performance, capacity
+- Fact: The diagnostic P7 root-expanded route cannot be promoted for the production P6 packet because 3,312,468 owners expand to 79,499,232 root slots and 7,631,926,288 bytes before intermediate/output storage.
+- Evidence: The P8b selected-motion attempt deterministically reached the bounded capacity guard before dispatch; P8c is the required measured redesign point.
 
 ### gpu-terrain-native-private-chain
 - Updated: 2026-09-06

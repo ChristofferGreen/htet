@@ -374,20 +374,15 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
 P8 is deliberately split into independent closure leaves.  P9 remains
 conditional on P8’s measured complete-frame result.
 
-P8a1 is complete: the P6 packet is an immutable sidecar of the background
-terrain publication, not a synchronous presentation-thread rebuild.  P8b
-owns the live moving-camera qualification that this unblocks.
+P8a1 and P8b are complete: the P6 packet is an immutable sidecar of the
+background terrain publication, and selected private-front motion is now
+qualified without normal candidate readback. P8c owns the remaining
+device-local generation performance decision.
 
-- [ ] **P8b — Qualify readback-free moving-camera consumers.** Scope: exercise
-      private active-front updates through opaque terrain, wireframe, shadows,
-      and ray tracing while moving and rebasing the camera. Acceptance: actual
-      Metal captures demonstrate geometry, wireframe, shadow, and retained-front
-      correctness with no normal readback. Stop rule: retain the preceding
-      complete front on any stale tuple, overflow, or invalid candidate.
 - [ ] **P8c — Measure and promote the device-local route.** Scope: profile full
       camera-to-present work, including generation and private-front replacement.
       Acceptance: 4–8 ms generation and a 16.7 ms complete frame, or an initial
-      33 ms complete-frame milestone, with P8b image evidence. Stop rule: do not
+      33 ms complete-frame milestone, with P8b private-front motion evidence. Stop rule: do not
       start P9 unless profiling identifies a missed gate and its dominant stage.
 - [ ] **P9 — Add a persistent active front only if measurements require it.**
       Trigger this only if P8 profiling identifies repeated hierarchy traversal

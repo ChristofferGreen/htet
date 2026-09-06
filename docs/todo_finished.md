@@ -2,6 +2,19 @@
 
 ## 2026-09-06
 
+- [x] **P8b — Qualify readback-free moving-camera consumers.** The hidden
+  selected-GPU Metal motion smoke drives the ordinary camera-to-settled
+  publication loop with the CPU/GPU selector enabled and a 120-second
+  no-stall bound. Each complete CPU generation is atomically seeded into the
+  private active vertex/indirect front; opaque terrain, wireframe, shadows,
+  and ray tracing retain that single display-front handle. The smoke requires
+  a settled matching private indirect front and zero CPU-front violations,
+  with no candidate-payload readback enabled. Stale, invalid, and overflowing
+  native candidates remain unable to replace the preceding complete front.
+  Production P6 packets contain millions of owners, so expanding 24 roots per
+  owner is deliberately not promoted here; P8c owns a measured replacement
+  for that root-expanded path.
+
 - [x] **P8a1 — Publish retained P6 packets with terrain fronts.** Each
   background terrain publication now constructs its immutable restricted-green
   packet directly from the just-computed closure cache, before that cache is

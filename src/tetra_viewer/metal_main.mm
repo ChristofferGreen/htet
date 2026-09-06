@@ -4781,6 +4781,18 @@ int main(int argc,char** argv) {
       return 2;
     }
   }
+  // P8b exercises the selected private display front in the real moving
+  // render loop.  It permits no candidate payload readback and is
+  // automation-only, leaving normal GPU selection a quiet presentation
+  // choice. P8c owns promotion of the root-expanded native generator.
+  const bool metal_gpu_terrain_private_front_qualification=
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION")!=nullptr;
+  if(metal_gpu_terrain_private_front_qualification&&
+     !gpu_terrain_renderer_selected){
+    std::fprintf(stderr,"TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION "
+                        "requires TETWORLD_METAL_GPU_TERRAIN_RENDERER=1\\n");
+    return 2;
+  }
   // 200x100 is Hillaire's reference sky-view resolution and is now the
   // qualified production default.  Keep 0 as an explicit 384x216 control for
   // the paired native qualification harness.
@@ -5613,9 +5625,15 @@ int main(int argc,char** argv) {
 #else
     constexpr int basic_automation_timeout_seconds=180;
 #endif
-    const auto smoke_deadline=previous_time+std::chrono::seconds(
-        any_atmosphere_frame_test||metalfx_test||timing_profile_test||motion_test||soak_test?300:
-        basic_automation_timeout_seconds);
+    // P8b is specifically a no-stall live-motion gate.  A qualified private
+    // front must make observable progress quickly; retain the longer timeout
+    // for the unrelated image and timing automation suites.
+    const int smoke_timeout_seconds=
+        metal_gpu_terrain_private_front_qualification?120:
+        (any_atmosphere_frame_test||metalfx_test||timing_profile_test||motion_test||soak_test?300:
+         basic_automation_timeout_seconds);
+    const auto smoke_deadline=previous_time+
+        std::chrono::seconds(smoke_timeout_seconds);
     const auto motion_start=controller.state().feet;
     std::size_t motion_rendered_frames{};
     std::size_t render_test_frames{};
@@ -7240,10 +7258,10 @@ int main(int argc,char** argv) {
               const auto tuple=tetra::make_gpu_terrain_field_tuple(parameters);
               const auto templates=tetra::make_gpu_green_template_table();
               // A production ground cut currently carries roughly a million
-              // candidate vertices.  The private output alone is therefore
-              // about 68 MiB; keep an explicit per-flight ceiling rather than
-              // silently truncating a valid P6 packet.  Three diagnostic
-              // flights remain bounded to 768 MiB and are opt-in only.
+              // candidate vertices.  Keep an explicit per-flight ceiling
+              // rather than silently truncating a valid P6 packet.  Three
+              // diagnostic flights remain bounded to 768 MiB and are opt-in
+              // only; P8c owns replacing the root-expanded live route.
               constexpr std::size_t maximum_slot_bytes=256U*1024U*1024U;
               const std::size_t owner_count=packet->owners.size();
               const std::size_t root_slots=owner_count*24U;
@@ -8761,12 +8779,15 @@ int main(int argc,char** argv) {
                     std::memory_order_acquire)!=0U)&&
                 gpu_terrain_counters->failed.load(std::memory_order_acquire)==0U&&
                 gpu_terrain_counters->overflow.load(std::memory_order_acquire)==0U&&
-                gpu_terrain_counters->cpu_front_violations.load(
+                  gpu_terrain_counters->cpu_front_violations.load(
                     std::memory_order_acquire)==0U))&&
             (!gpu_terrain_renderer_selected||
              (gpu_terrain_renderer_available&&gpu_terrain_active_front.promoted&&
               terrain_display_front.exact_indirect_arguments==
                   gpu_terrain_active_front.indirect_arguments))&&
+            (!metal_gpu_terrain_private_front_qualification||
+             gpu_terrain_counters->cpu_front_violations.load(
+                 std::memory_order_acquire)==0U)&&
             (!render_test||render_test_frames>=40U)&&
             (!metalfx_test||(metalfx_test_frames>=45U&&
                              diagnostics.converged&&!diagnostics.busy))&&
@@ -9667,7 +9688,13 @@ int main(int argc,char** argv) {
                    cpu_front_frames!=0U&&cpu_front_violations==0U);
               const bool passed=distance>0.001&&
                   published_distance<1.0e-8&&diagnostics.converged&&
-                  !diagnostics.busy&&!runtime_camera_interactive&&gpu_slots_passed;
+                  !diagnostics.busy&&!runtime_camera_interactive&&gpu_slots_passed&&
+                  (!metal_gpu_terrain_private_front_qualification||
+                   (gpu_terrain_renderer_available&&
+                    gpu_terrain_active_front.promoted&&
+                    terrain_display_front.exact_indirect_arguments==
+                        gpu_terrain_active_front.indirect_arguments&&
+                    cpu_front_violations==0U));
               std::printf("{\"event\":\"metal_motion_smoke\","
                           "\"rendered_frames\":%zu,\"distance\":%.8f,"
                           "\"published_pose_error\":%.12f,"
@@ -9737,8 +9764,10 @@ int main(int argc,char** argv) {
               "submitted=%zu canceled=%zu budget_exceeded=%s "
               "rejected_cpu=%zu rejected_triangles=%zu rejected_work=%zu "
               "rejected_upload=%zu rejected_hierarchy=%zu rejected_volume=%zu "
-              "busy=%s converged=%s interactive=%s "
-              "motion_frames=%zu).\n",
+              "busy=%s converged=%s interactive=%s motion_frames=%zu "
+              "gpu_dispatched=%llu gpu_completed=%llu gpu_accepted=%llu "
+              "gpu_stale=%llu gpu_failed=%llu gpu_overflow=%llu "
+              "gpu_cpu_front_violations=%llu gpu_available=%s).\n",
               static_cast<unsigned long long>(diagnostics.scene_generation),
               static_cast<unsigned long long>(
                   diagnostics.exact_requested_view_epoch),
@@ -9754,7 +9783,22 @@ int main(int argc,char** argv) {
               diagnostics.rejected_proposed_volume_blocks,
               diagnostics.busy?"true":"false",
               diagnostics.converged?"true":"false",
-              runtime_camera_interactive?"true":"false",motion_rendered_frames);
+              runtime_camera_interactive?"true":"false",motion_rendered_frames,
+              static_cast<unsigned long long>(gpu_terrain_counters->dispatched.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->completed.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->accepted.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->stale_rejected.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->failed.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->overflow.load(
+                  std::memory_order_acquire)),
+              static_cast<unsigned long long>(gpu_terrain_counters->cpu_front_violations.load(
+                  std::memory_order_acquire)),
+              gpu_terrain_renderer_available?"true":"false");
           result=1;
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }

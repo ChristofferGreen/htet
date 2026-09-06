@@ -419,6 +419,16 @@ if(APPLE AND TETRA_BUILD_METAL)
       TETWORLD_METAL_GPU_TERRAIN_RENDERER=1
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  # P8b drives the selected renderer through the production moving-camera
+  # loop.  It verifies the selected, complete private display front across
+  # camera motion without enabling legacy candidate-payload readback. Native
+  # root expansion remains a separate P8c performance route.
+  add_test(NAME "metal GPU terrain selected private front moves readback-free"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_GPU_TERRAIN_RENDERER=1
+      TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION=1
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
   set_target_properties(tetra_world_metal PROPERTIES
     OUTPUT_NAME "TetWorldMetal"
     MACOSX_BUNDLE TRUE
