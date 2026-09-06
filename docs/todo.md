@@ -362,11 +362,18 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. P7c is now the sole active implementation
       leaf.
-  - [ ] **P7c2 — Bind one qualified GPU geometry generation to consumers.**
-        After P7c1 parity, make opaque, wireframe, shadow, and ray-tracing
-        consumers select the same complete generation or atomically retain the
-        CPU front. Retain no sequential index buffer without measured consumer
-        benefit; diagnostic readback remains until P7d.
+  - [ ] **P7c2a — Materialize a device-local drawable candidate.** Consume
+        only a complete P7c1b diagnostic generation and expand its four child
+        faces into the renderer's `SceneVertex` ABI plus one immutable
+        generation/count contract. Prove source identity, position, normal,
+        winding, empty, stale, malformed, and overflow behaviour against the
+        CPU oracle. It remains a non-drawable candidate: CPU stays the front
+        authority until the next atomic promotion leaf.
+  - [ ] **P7c2b — Atomically bind one qualified generation to consumers.**
+        After P7c2a parity, make opaque, wireframe, shadow, and ray-tracing
+        consumers select the same complete GPU generation or atomically retain
+        the CPU front. Retain no sequential index buffer without measured
+        consumer benefit; diagnostic readback remains until P7d.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams and raster results against CPU across near
         terrain, horizon/limb, silhouettes, back-lit mountains, edits,
