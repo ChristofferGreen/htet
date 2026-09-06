@@ -1472,7 +1472,11 @@ topology, and complete-frame gates.
     No per-owner culling is permitted for the diagnostic front yet: P6 retains
     the complete candidate packet, so no omitted owner can create a finite
     preview boundary. CPU rendering remains authoritative.
-- [ ] **P7 — GPU-native watertight BCC surface generation.** P6a--P6c are
+- [ ] **P7 — GPU-native watertight BCC surface generation.** This adds a
+  second GPU terrain renderer beside the existing CPU terrain renderer; it
+  does not migrate or remove the CPU renderer. The app must provide a visible
+  CPU/GPU terrain-renderer toggle so either complete route can be selected for
+  comparison. P6a--P6c are
   complete, so the frozen Grande templates, revisioned restricted-green packet,
   exact dyadic edge identities, and halo/mixed-depth certificate are the sole
   topology authority while these ordered diagnostic leaves replace the legacy
@@ -1486,6 +1490,12 @@ topology, and complete-frame gates.
     that preserves canonical output order and its fail-closed header. Match
     the mixed-depth CPU oracle and bound the production-directory run before
     a live render slot can use it. No renderer consumer may change.
+    The required layout is one count per fixed root slot, a recursive
+    256-lane exclusive block scan with one bounded block-sum level per pass,
+    and a descending uniform-add pass before parallel scatter. Every phase
+    observes the same failure lane; no scatter occurs unless the final total
+    fits capacity. This is deliberately not an atomic-reservation stream:
+    atomic reservation would make canonical P7b2 ordering scheduler-dependent.
   - [ ] **P7c2b1b — Live private-slot candidate chain.** Drive P6 compact
     owners/templates through P7a classification/root generation, P7b2 base
     triangles, P7c1b projection, and P7c2a `SceneVertex` expansion in one
@@ -1502,7 +1512,11 @@ topology, and complete-frame gates.
     one completed GPU generation, otherwise retaining the CPU front. No
     consumer may independently advance, retain a differently rebased surface,
     or consume a partial update. Avoid a sequential index buffer unless it has
-    measured consumer benefit; readback remains diagnostic until P7d.
+    measured consumer benefit; readback remains diagnostic until P7d. Add a
+    visible CPU/GPU terrain-renderer toggle: CPU selects the existing CPU
+    renderer, while GPU selects only a complete qualified GPU generation and
+    reports an unavailable GPU candidate instead of rendering partial work.
+    Test both selections.
   - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
     horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
     shapes. Require stream, incidence/winding, normal-direction distribution,
@@ -1518,7 +1532,8 @@ topology, and complete-frame gates.
   and require 4–8 ms for generation plus 16.7 ms for the complete 60 Hz frame,
   with 33 ms as the first acceptable milestone. Promote only after actual Metal
   camera motion is stable and visually and topologically equivalent to the
-  oracle.
+  oracle. Retain the CPU/GPU terrain-renderer toggle as the user-visible
+  selector between the two renderers.
 - [ ] **P9 — Conditional traversal/front optimization.** Start only if direct
   on-demand traversal misses P8's latency gate and profiling identifies repeated
   traversal or compaction as a dominant stage. Compare it with a bounded

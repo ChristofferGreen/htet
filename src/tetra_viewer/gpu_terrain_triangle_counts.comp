@@ -1,0 +1,15 @@
+#version 450
+// P7c2b1b0 phase one: validate and count every fixed P7b1 root slot in
+// parallel.  Offsets are deliberately not allocated atomically: the following
+// exclusive scan preserves the canonical P7b2 stream order.
+layout(std430,binding=0) readonly buffer Roots { uint words[]; } roots_buffer;
+layout(std430,binding=1) readonly buffer Owners { uint words[]; } owners;
+layout(std430,binding=2) readonly buffer Templates { uint words[]; } templates;
+layout(std430,binding=3) buffer Counts { uint values[]; } counts;
+layout(std430,binding=4) buffer Status { uint words[]; } status;
+layout(push_constant) uniform Parameters { uint owner_count; uint root_slot_count; } parameters;
+layout(local_size_x=256) in;
+const uvec2 edges[6]=uvec2[6](uvec2(0,1),uvec2(0,2),uvec2(0,3),uvec2(1,2),uvec2(1,3),uvec2(2,3));
+uint crossings(uint signs){uint result=0u;for(uint e=0u;e<6u;++e)result+=((signs>>edges[e].x)&1u)!=((signs>>edges[e].y)&1u)?1u:0u;return result;}
+bool topology(uint record){uint owner=roots_buffer.words[record],cell=roots_buffer.words[record+1u];if(owner>=parameters.owner_count)return false;uint mask=owners.words[owner*12u+10u];return mask<64u&&templates.words[mask*28u+25u]==mask&&cell<templates.words[mask*28u+24u];}
+void main(){uint index=gl_GlobalInvocationID.x;if(index>=parameters.root_slot_count)return;if(roots_buffer.words[2u]!=0u){atomicOr(status.words[1u],1u);return;}uint record=4u+index*24u,signs=roots_buffer.words[record+2u],actual=roots_buffer.words[record+3u],mask=0u;for(uint e=0u;e<6u;++e)if(((signs>>edges[e].x)&1u)!=((signs>>edges[e].y)&1u))mask|=1u<<e;uint required=bitCount(mask);if(!topology(record)||signs>15u||actual!=required||roots_buffer.words[record+22u]!=mask){atomicOr(status.words[1u],1u);return;}counts.values[index]=required==3u?1u:required==4u?2u:0u;}

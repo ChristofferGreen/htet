@@ -1,0 +1,20 @@
+#version 450
+// Inclusive hierarchy primitive for P7c2b1b0.  Each dispatch scans 256 input
+// values per workgroup, writes their exclusive offsets and one block total.
+// The host recursively scans block totals, then invokes add_offsets while
+// descending.  No atomic allocation participates in stream ordering.
+layout(std430,binding=0) readonly buffer Input { uint values[]; } input_values;
+layout(std430,binding=1) buffer Offsets { uint values[]; } output_offsets;
+layout(std430,binding=2) buffer Totals { uint values[]; } block_totals;
+layout(push_constant) uniform Parameters { uint count; uint add_offsets; } parameters;
+layout(local_size_x=256) in;
+shared uint scratch[256];
+void main(){
+  uint lane=gl_LocalInvocationID.x,index=gl_GlobalInvocationID.x;
+  scratch[lane]=index<parameters.count?input_values.values[index]:0u;
+  barrier();
+  for(uint step=1u;step<256u;step<<=1u){uint value=lane>=step?scratch[lane-step]:0u;barrier();scratch[lane]+=value;barrier();}
+  if(index<parameters.count){uint base=lane==0u?0u:scratch[lane-1u];
+    output_offsets.values[index]=base+(parameters.add_offsets!=0u?block_totals.values[gl_WorkGroupID.x]:0u);}
+  if(lane==255u)block_totals.values[gl_WorkGroupID.x]=scratch[lane];
+}

@@ -52,6 +52,9 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.vert -o ${TETRA_SHADER_DIR}/scene.vert.spv
@@ -72,9 +75,12 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangles.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangle_counts.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_exclusive_scan.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangle_scatter.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_project.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_draw.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_field.glsl)
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_exclusive_scan.comp gpu_terrain_triangle_scatter.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_field.glsl)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv

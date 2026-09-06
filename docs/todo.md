@@ -345,8 +345,12 @@ until every leaf is complete.
 
 ## Active chain: GPU-resident BCC render front
 
-The production direction is one cross-backend visual front derived from the
-persistent BCC hierarchy—not a cube-sphere or other second terrain authority.
+The production direction adds a second, cross-backend GPU terrain renderer
+derived from the persistent BCC hierarchy—not a cube-sphere or other second
+terrain authority. The existing CPU terrain renderer remains available as the
+reference/fallback; this is not a migration that removes it. The app must
+expose a visible CPU/GPU terrain-renderer toggle so either complete renderer
+can be selected for comparison.
 For this chain, “GPU terrain generation” means that camera-driven selection,
 field evaluation, surface construction, and publication remain on the GPU.
 The CPU may remain authoritative for persistence, editing, collision, export,
@@ -389,7 +393,10 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
         atomically retain the CPU front. A consumer may not independently
         observe a newer, partial, or differently rebased surface. Retain no
         sequential index buffer without measured consumer benefit; diagnostic
-        readback remains until P7d.
+        readback remains until P7d. Add the visible CPU/GPU terrain-renderer
+        toggle: CPU selects the existing renderer; GPU selects only one fully
+        qualified, complete GPU generation and visibly reports unavailable
+        rather than exposing partial work. Exercise both selections in tests.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
         Compare compact streams and raster results against CPU across near
         terrain, horizon/limb, silhouettes, back-lit mountains, edits,
@@ -406,7 +413,8 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       preceding complete revision; a partial new front is never drawable.
       Qualify actual Metal captures and moving-camera geometry, wireframe,
       shadow, and performance evidence; require 4–8 ms generation and 16.7 ms,
-      or initially 33 ms, complete-frame gates before promotion.
+      or initially 33 ms, complete-frame gates before promotion. Preserve the
+      CPU/GPU terrain-renderer toggle as the user-facing route selector.
 - [ ] **P9 — Add a persistent active front only if measurements require it.**
       Trigger this only if P8 profiling identifies repeated hierarchy traversal
       or compaction as a dominant missed-budget stage. Compare bounded

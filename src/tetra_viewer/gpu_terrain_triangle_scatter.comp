@@ -1,0 +1,12 @@
+#version 450
+// P7c2b1b0 final phase.  The scanned offset is canonical, so parallel writes
+// retain P7b2's byte-for-byte root-slot ordering without atomic reservation.
+layout(std430,binding=0) readonly buffer Roots { uint words[]; } roots_buffer;
+layout(std430,binding=1) readonly buffer Counts { uint values[]; } counts;
+layout(std430,binding=2) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=3) buffer Output { uint words[]; } output_buffer;
+layout(push_constant) uniform Parameters { uint root_slot_count; uint capacity; } parameters;
+layout(local_size_x=256) in;
+const uvec2 e[6]=uvec2[6](uvec2(0,1),uvec2(0,2),uvec2(0,3),uvec2(1,2),uvec2(1,3),uvec2(2,3));
+uvec3 cut(uint s,uint t){const uvec3 q[32]=uvec3[32](uvec3(0),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0,3,4),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(1,3,5),uvec3(0),uvec3(0,2,5),uvec3(0,5,3),uvec3(0,1,5),uvec3(0,5,4),uvec3(2,4,5),uvec3(0),uvec3(2,4,5),uvec3(0),uvec3(0,1,5),uvec3(0,5,4),uvec3(0,2,5),uvec3(0,5,3),uvec3(1,3,5),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(0,3,4),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0),uvec3(0));return q[s*2u+t];}
+void main(){uint i=gl_GlobalInvocationID.x;if(i>=parameters.root_slot_count||output_buffer.words[1u]!=0u)return;uint n=counts.values[i],d=offsets.values[i];if(d+n>parameters.capacity){atomicOr(output_buffer.words[1u],1u);return;}uint r=4u+i*24u,s=roots_buffer.words[r+2u];for(uint t=0u;t<n;++t){uvec3 x=cut(s,t);uint o=4u+(d+t)*16u;output_buffer.words[o]=roots_buffer.words[r];output_buffer.words[o+1u]=roots_buffer.words[r+1u];output_buffer.words[o+2u]=s;output_buffer.words[o+3u]=x.x|(x.y<<8u)|(x.z<<16u);for(uint c=0u;c<3u;++c)for(uint a=0u;a<3u;++a)output_buffer.words[o+4u+c*3u+a]=roots_buffer.words[r+4u+x[c]*3u+a];}}
