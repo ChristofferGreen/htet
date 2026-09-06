@@ -1,0 +1,195 @@
+#version 450
+
+// P7a2 is deliberately a separate, non-drawable diagnostic.  It consumes the
+// compact P6 owner/template grammar and P7a1 field tuple; CPU roots, normals,
+// midpoint projections, and legacy 448-byte terrain-cell records are absent.
+layout(std430,binding=0) readonly buffer Owners { uint words[]; } owners;
+layout(std430,binding=1) readonly buffer Templates { uint words[]; } templates;
+layout(std430,binding=2) readonly buffer Field { uvec4 lanes[]; } field;
+// Header: attempted records, crossing cells, overflow/failure, reserved.
+// Records use a fixed 24-cell stride per owner: owner, template-cell,
+// negative-corner mask, crossing count. The host ignores all payload on error.
+layout(std430,binding=3) buffer Output { uint words[]; } output_buffer;
+layout(push_constant) uniform Parameters {
+  uint owner_count; uint record_capacity; uint source_revision_low;
+  uint source_revision_high;
+} parameters;
+layout(local_size_x=1) in;
+
+const uint max_red_depth=38u;
+const uint cells_per_owner=24u;
+const ivec2 tet_edges[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),
+  ivec2(1,2),ivec2(1,3),ivec2(2,3));
+
+float lane(uint index,uint component) { return uintBitsToFloat(field.lanes[index][component]); }
+bool finite(float value) { return !isnan(value)&&!isinf(value); }
+float saturate(float value) { return clamp(value,0.0,1.0); }
+float smooth01(float value) { value=saturate(value); return value*value*(3.0-2.0*value); }
+
+vec3 gradient(uint hash) {
+  const float s=.7071067811865475;
+  switch(hash%12u) {
+    case 0u:return vec3(s,s,0);case 1u:return vec3(-s,s,0);
+    case 2u:return vec3(s,-s,0);case 3u:return vec3(-s,-s,0);
+    case 4u:return vec3(s,0,s);case 5u:return vec3(-s,0,s);
+    case 6u:return vec3(s,0,-s);case 7u:return vec3(-s,0,-s);
+    case 8u:return vec3(0,s,s);case 9u:return vec3(0,-s,s);
+    case 10u:return vec3(0,s,-s);default:return vec3(0,-s,-s);
+  }
+}
+uint hash3(ivec3 value) {
+  uint hash=uint(value.x)*0x8da6b343u^uint(value.y)*0xd8163841u^
+      uint(value.z)*0xcb1ab31fu;
+  hash^=hash>>13u;hash*=0x85ebca6bu;hash^=hash>>16u;return hash;
+}
+float fade(float value) { return value*value*value*(value*(value*6.0-15.0)+10.0); }
+float gradient_noise(vec3 point) {
+  const ivec3 cell=ivec3(floor(point));const vec3 f=fract(point);
+  const float u=fade(f.x),v=fade(f.y),w=fade(f.z);
+  float values[8];uint index=0u;
+  for(int z=0;z<2;++z)for(int y=0;y<2;++y)for(int x=0;x<2;++x) {
+    const ivec3 delta=ivec3(x,y,z);
+    values[index++]=dot(gradient(hash3(cell+delta)),f-vec3(delta));
+  }
+  const float x00=mix(values[0],values[1],u),x10=mix(values[2],values[3],u);
+  const float x01=mix(values[4],values[5],u),x11=mix(values[6],values[7],u);
+  return mix(mix(x00,x10,v),mix(x01,x11,v),w);
+}
+
+float resolved(float frequency,float footprint) {
+  if(!(footprint>0.0)||!(abs(frequency)>0.0))return 1.0;
+  return smooth01(1.0/(abs(frequency)*footprint)-1.75);
+}
+float terrain_displacement(vec3 direction) {
+  const float secondary=lane(1u,1u),frequency=lane(1u,2u),footprint=lane(1u,3u);
+  const vec4 a=vec4(lane(2u,0u),lane(2u,1u),lane(2u,2u),lane(2u,3u));
+  const vec4 b=vec4(lane(3u,0u),lane(3u,1u),lane(3u,2u),lane(3u,3u));
+  const vec4 c=vec4(lane(4u,0u),lane(4u,1u),lane(4u,2u),lane(4u,3u));
+  const vec4 d=vec4(lane(5u,0u),lane(5u,1u),lane(5u,2u),lane(5u,3u));
+  const vec4 e=vec4(lane(6u,0u),lane(6u,1u),lane(6u,2u),lane(6u,3u));
+  const vec4 f=vec4(lane(7u,0u),lane(7u,1u),lane(7u,2u),lane(7u,3u));
+  const float radius=f.z;
+  const float sample_noise=float(0); // keeps all offsets below visibly local.
+  float height=a.x;
+  #define SAMPLE(freq,offset) gradient_noise(direction*(radius*(freq))+(offset))
+  height+=a.y*resolved(a.z,footprint)*SAMPLE(a.z,vec3(11.371,-7.219,3.117));
+  const float mountain_scale=b.w;
+  const float range=saturate((SAMPLE(a.w*0.0+b.y*mountain_scale,
+      vec3(-20.077,30.861,7.193))-.08)/.30);
+  const float ridge=saturate((1.0-abs(SAMPLE(b.x*mountain_scale,
+      vec3(6.691,13.733,-4.337)))-.30)/.68);
+  const float range_resolution=resolved(b.y*mountain_scale,footprint);
+  const float ridge_resolution=resolved(b.x*mountain_scale,footprint);
+  const float carrier=mix(.6634,ridge*ridge,ridge_resolution);
+  float mountain_fade=1.0;
+  if(c.y>c.x)mountain_fade=smooth01((acos(clamp(direction.y,-1.0,1.0))*radius-c.x)/(c.y-c.x));
+  height+=a.w*b.z*mountain_fade*range_resolution*range*range*carrier;
+  height+=c.z*resolved(c.w,footprint)*SAMPLE(c.w,vec3(4.117,7.731,-2.513));
+  const float region=saturate((SAMPLE(d.z,vec3(-2.719,5.303,8.117))+.12)/.30);
+  height+=d.x*min(resolved(d.z,footprint),resolved(d.y,footprint))*region*
+      SAMPLE(d.y,vec3(-6.337,1.819,9.173));
+  height+=e.z*resolved(e.w,footprint)*SAMPLE(e.w,vec3(13.117,-11.731,2.337));
+  float amplitude=secondary,current_frequency=frequency;
+  for(int octave=0;octave<4;++octave) {
+    height+=amplitude*resolved(current_frequency,footprint)*
+        SAMPLE(current_frequency,vec3(0));
+    amplitude*=.5;current_frequency*=2.0;
+  }
+  if(f.y>f.x)height*=smooth01((acos(clamp(direction.y,-1.0,1.0))*radius-f.x)/(f.y-f.x));
+  #undef SAMPLE
+  return height+sample_noise;
+}
+
+bool valid_field() {
+  for(uint i=0u;i<10u;++i)for(uint c=0u;c<4u;++c)if(!finite(lane(i,c)))return false;
+  return field.lanes[10u].x==parameters.source_revision_low&&
+      field.lanes[10u].y==parameters.source_revision_high&&
+      lane(1u,0u)==4.0&&lane(0u,3u)>0.0&&lane(7u,2u)>0.0&&lane(9u,3u)>0.0&&
+      (lane(7u,3u)==0.0||lane(7u,3u)==1.0);
+}
+uint path_bit(uvec2 path,uint bit) {
+  if(bit<64u)return (path.x>>bit)&1u;
+  return (path.y>>(bit-64u))&1u;
+}
+uint child_digit(uvec2 path,uint depth,uint index) {
+  const uint bit=3u*(depth-index-1u);
+  return path_bit(path,bit)|(path_bit(path,bit+1u)<<1u)|(path_bit(path,bit+2u)<<2u);
+}
+vec3 root_vertex(uint root,uint corner) {
+  const uint table[48]=uint[48](0,2,3,8, 0,3,1,8, 4,5,7,8, 4,7,6,8,
+    0,1,5,8, 0,5,4,8, 2,6,7,8, 2,7,3,8, 0,4,6,8, 0,6,2,8,
+    1,3,7,8, 1,7,5,8);
+  const uint vertex=table[root*4u+corner];
+  const vec3 values[9]=vec3[9](vec3(0),vec3(2,0,0),vec3(0,2,0),vec3(2,2,0),
+    vec3(0,0,2),vec3(2,0,2),vec3(0,2,2),vec3(2,2,2),vec3(1));
+  return values[vertex]*.5;
+}
+bool reconstruct(uint owner,out vec3 geometry[4]) {
+  const uint base=owner*12u;const uint high=owners.words[base+1u];
+  const uint low0=owners.words[base+2u],low1=owners.words[base+3u];
+  const uint root=(high>>26u)&63u,depth=(high>>20u)&63u;
+  if(root>=12u||depth>max_red_depth)return false;
+  for(uint i=0u;i<4u;++i)geometry[i]=root_vertex(root,i);
+  const uvec2 path=uvec2(low0,low1);
+  for(uint level=0u;level<depth;++level) {
+    vec3 midpoint[6];for(uint edge=0u;edge<6u;++edge)midpoint[edge]=
+        .5*(geometry[tet_edges[edge].x]+geometry[tet_edges[edge].y]);
+    const float diagonal_lengths[3]=float[3](dot(midpoint[5]-midpoint[0],midpoint[5]-midpoint[0]),
+      dot(midpoint[4]-midpoint[1],midpoint[4]-midpoint[1]),dot(midpoint[3]-midpoint[2],midpoint[3]-midpoint[2]));
+    uint diagonal=0u;if(diagonal_lengths[1]<diagonal_lengths[diagonal])diagonal=1u;
+    if(diagonal_lengths[2]<diagonal_lengths[diagonal])diagonal=2u;
+    vec3 old[4];for(uint i=0u;i<4u;++i)old[i]=geometry[i];
+    const uint digit=child_digit(path,depth,level);
+    if(digit==0u){geometry[0]=old[0];geometry[1]=midpoint[0];geometry[2]=midpoint[1];geometry[3]=midpoint[2];}
+    else if(digit==1u){geometry[0]=old[1];geometry[1]=midpoint[0];geometry[2]=midpoint[3];geometry[3]=midpoint[4];}
+    else if(digit==2u){geometry[0]=old[2];geometry[1]=midpoint[1];geometry[2]=midpoint[3];geometry[3]=midpoint[5];}
+    else if(digit==3u){geometry[0]=old[3];geometry[1]=midpoint[2];geometry[2]=midpoint[4];geometry[3]=midpoint[5];}
+    else {
+      const uint poles[3][2]=uint[3][2](uint[2](0,5),uint[2](1,4),uint[2](2,3));
+      const uint ring[3][4]=uint[3][4](uint[4](1,2,4,3),uint[4](0,2,5,3),uint[4](0,1,5,4));
+      const uint r=digit-4u;geometry[0]=midpoint[poles[diagonal][0]];
+      geometry[1]=midpoint[ring[diagonal][r]];
+      geometry[2]=midpoint[ring[diagonal][(r+1u)&3u]];
+      geometry[3]=midpoint[poles[diagonal][1]];
+    }
+  }
+  return true;
+}
+float signed_distance(vec3 root_point) {
+  const vec3 world=root_point*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));
+  const vec3 centre=vec3(lane(0u,0u),lane(0u,1u),lane(0u,2u));
+  const float planet_radius=lane(7u,2u);const vec3 offset=world-(centre-vec3(0,planet_radius,0));
+  const float length_offset=length(offset);if(!(length_offset>1.e-15))return -planet_radius;
+  float displacement=terrain_displacement(offset/length_offset);
+  if(lane(7u,3u)==1.0) {
+    const float half_width=max(lane(8u,2u),1.e-12);
+    displacement=lane(8u,1u)*max(0.0,1.0-abs((world.z-centre.z)-lane(8u,0u))/half_width);
+  }
+  return length_offset-(planet_radius+displacement);
+}
+void main() {
+  const uint owner=gl_GlobalInvocationID.x;if(owner>=parameters.owner_count)return;
+  if(!valid_field()){atomicOr(output_buffer.words[2],1u);return;}
+  vec3 geometry[4];if(!reconstruct(owner,geometry)){atomicOr(output_buffer.words[2],1u);return;}
+  const uint owner_base=owner*12u,mask=owners.words[owner_base+10u];
+  if(mask>=64u){atomicOr(output_buffer.words[2],1u);return;}
+  const uint template_base=mask*28u,count=templates.words[template_base+24u];
+  if(count>cells_per_owner||templates.words[template_base+25u]!=mask){atomicOr(output_buffer.words[2],1u);return;}
+  // Grande point order: m03,m02,m01,v0,m13,m12,v1,m23,v2,v3.
+  vec3 midpoint[6];for(uint edge=0u;edge<6u;++edge)
+    midpoint[edge]=.5*(geometry[tet_edges[edge].x]+geometry[tet_edges[edge].y]);
+  vec3 points[10]=vec3[10](midpoint[2],midpoint[1],midpoint[0],geometry[0],
+      midpoint[4],midpoint[3],geometry[1],midpoint[5],geometry[2],geometry[3]);
+  for(uint cell=0u;cell<count;++cell) {
+    atomicAdd(output_buffer.words[0],1u);const uint packed=templates.words[template_base+cell];
+    uint negative=0u,crossings=0u;uint indices[4]=uint[4](packed&255u,(packed>>8u)&255u,(packed>>16u)&255u,(packed>>24u)&255u);
+    if(indices[0]>=10u||indices[1]>=10u||indices[2]>=10u||indices[3]>=10u){atomicOr(output_buffer.words[2],1u);return;}
+    for(uint corner=0u;corner<4u;++corner)if(signed_distance(points[indices[corner]])<0.0)negative|=1u<<corner;
+    for(uint edge=0u;edge<6u;++edge)if(((negative>>tet_edges[edge].x)&1u)!=((negative>>tet_edges[edge].y)&1u))++crossings;
+    if(crossings>=3u)atomicAdd(output_buffer.words[1],1u);
+    const uint output_index=owner*cells_per_owner+cell;
+    if(output_index>=parameters.record_capacity){atomicOr(output_buffer.words[2],1u);return;}
+    const uint record=4u+output_index*4u;output_buffer.words[record]=owner;output_buffer.words[record+1u]=cell;
+    output_buffer.words[record+2u]=negative;output_buffer.words[record+3u]=crossings;
+  }
+}

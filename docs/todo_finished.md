@@ -2,6 +2,15 @@
 
 ## 2026-09-06
 
+- [x] **P7a2 — Qualify compact Metal field classification.** Added a separate
+  SPIR-V/MSL compute kernel that reconstructs P6 BCC owners and Grande template
+  cells from compact addresses, evaluates the planetary field tuple at every
+  corner, and emits only sign/crossing records. The Metal fixture matched the
+  independent CPU oracle for 33 mixed-depth records in fixed and revisioned
+  field-motion cases, and rejects zero capacity, stale tuple revision, and an
+  invalid owner mask. The legacy 448-byte terrain-cell ABI is not bound and no
+  renderer resource is created; P7b owns roots and any triangle output.
+
 - [x] **P7a1 — Freeze the compact field ABI and CPU reconstruction oracle.**
   Added a 176-byte, 16-byte-aligned GPU tuple that carries the complete
   `Sphere`/`TerrainParameters` and domain contract with source/field revisions.

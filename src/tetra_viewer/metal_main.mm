@@ -1238,6 +1238,135 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
   return true;
 }
 
+// P7a2's hardware gate uses no legacy terrain-cell payload and deliberately
+// creates no drawable.  It verifies that the translated kernel reconstructs
+// the compact P6 BCC owners and evaluates the P7a1 planetary field tuple.
+bool run_metal_gpu_terrain_classify_smoke_test(id<MTLDevice> device) {
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_terrain_classify.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  if(pipeline==nil){
+    std::fprintf(stderr,"Metal terrain-classification pipeline creation failed: %s\n",
+        error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return false;
+  }
+  std::vector<tetra::WorldTetAddress> candidates;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    candidates.push_back(tetra::WorldTetAddress::root(root));
+  candidates.erase(std::ranges::find(candidates,tetra::WorldTetAddress::root(0U)));
+  for(std::uint8_t child=0U;child<8U;++child)
+    candidates.push_back(tetra::WorldTetAddress::root(0U).child(child));
+  std::ranges::sort(candidates);
+  const auto packet=tetra::make_gpu_green_mask_packet(candidates,101U);
+  const auto templates=tetra::make_gpu_green_template_table();
+  tetra::GpuTerrainFieldTupleParameters field_parameters;
+  field_parameters.source_revision=101U;field_parameters.field_revision=19U;
+  field_parameters.domain.world_extent=1.0;
+  field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  // Keep every classification sample away from an implicit zero crossing so
+  // this parity gate tests the shared float grammar rather than tie-breaking
+  // between CPU double and device float arithmetic.
+  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  auto& terrain=field_parameters.field.terrain;
+  terrain.planet_radius=.37;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
+  const auto expected=tetra::gpu_terrain_classify_packet(packet,tuple,100000U);
+  if(expected.overflow||expected.records.empty()){
+    std::fprintf(stderr,"Metal terrain-classification host oracle is empty or overflowing\n");
+    return false;
+  }
+  const auto make_buffer=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:length
+        options:MTLResourceStorageModeShared];
+  };
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(queue==nil){std::fprintf(stderr,"Metal terrain-classification queue creation failed\n");return false;}
+  const auto dispatch=[&](const tetra::GpuTerrainFieldTuple& input_tuple,
+                          std::vector<tetra::GpuGreenMaskOwnerRecord> owners,
+                          std::uint32_t capacity,bool expect_failure){
+    const auto expected_for_tuple=expect_failure?
+        tetra::GpuTerrainClassification{}:tetra::gpu_terrain_classify_packet(
+            packet,input_tuple,100000U);
+    const std::size_t output_words=4U+
+        std::max<std::size_t>(capacity,packet.owners.size()*24U)*4U;
+    std::vector<std::uint32_t> zeroed(output_words);
+    id<MTLBuffer> field_buffer=make_buffer(&input_tuple,sizeof(input_tuple));
+    id<MTLBuffer> owner_buffer=make_buffer(owners.data(),
+        owners.size()*sizeof(owners.front()));
+    id<MTLBuffer> template_buffer=make_buffer(templates.data(),sizeof(templates));
+    id<MTLBuffer> output=make_buffer(zeroed.data(),
+        zeroed.size()*sizeof(zeroed.front()));
+    const std::array<std::uint32_t,4> parameters{
+        static_cast<std::uint32_t>(owners.size()),capacity,101U,0U};
+    if(field_buffer==nil||owner_buffer==nil||template_buffer==nil||output==nil){
+      std::fprintf(stderr,"Metal terrain-classification buffer allocation failed\n");return false;
+    }
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:field_buffer offset:0U atIndex:0U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:1U];
+    [encoder setBuffer:owner_buffer offset:0U atIndex:2U];
+    [encoder setBuffer:output offset:0U atIndex:3U];
+    [encoder setBuffer:template_buffer offset:0U atIndex:4U];
+    [encoder dispatchThreads:MTLSizeMake(owners.size(),1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted){
+      std::fprintf(stderr,"Metal terrain-classification command failed\n");return false;
+    }
+    const auto* words=static_cast<const std::uint32_t*>(output.contents);
+    if(expect_failure&&words[2]==0U){
+      std::fprintf(stderr,"Metal terrain-classification failed to reject malformed input\n");return false;
+    }
+    if(expect_failure)return true;
+    const bool header_matches=words[2]==0U&&words[0]==expected_for_tuple.attempted_records&&
+        words[1]==expected_for_tuple.crossing_cells;
+    std::uint32_t device_crossing_records{};
+    for(std::size_t owner_index=0U;owner_index<owners.size();++owner_index)
+      for(std::size_t cell=0U;cell<24U;++cell)
+        if(words[4U+(owner_index*24U+cell)*4U+3U]>=3U)++device_crossing_records;
+    for(const auto& record:expected_for_tuple.records) {
+      const std::size_t output_index=static_cast<std::size_t>(record.owner_index)*24U+
+          record.template_cell;
+      if(output_index>=capacity){std::fprintf(stderr,"Metal terrain-classification output capacity mismatch\n");return false;}
+      const auto offset=4U+output_index*4U;
+      if(words[offset]!=record.owner_index||words[offset+1U]!=record.template_cell||
+         words[offset+2U]!=record.corner_negative_mask||
+         words[offset+3U]!=record.crossing_count){
+        std::fprintf(stderr,"Metal terrain-classification record mismatch at %zu: %u/%u/%u/%u expected %u/%u/%u/%u\n",
+            output_index,words[offset],words[offset+1U],words[offset+2U],words[offset+3U],
+            record.owner_index,record.template_cell,record.corner_negative_mask,
+            record.crossing_count);return false;
+      }
+    }
+    if(!header_matches){
+      std::fprintf(stderr,"Metal terrain-classification header mismatch %u %u %u expected %u %u records %u\n",
+          words[0],words[1],words[2],expected.attempted_records,
+          expected_for_tuple.crossing_cells,device_crossing_records);return false;
+    }
+    return true;
+  };
+  const auto capacity=static_cast<std::uint32_t>(packet.owners.size()*24U);
+  if(!dispatch(tuple,packet.owners,capacity,false))return false;
+  auto moved=tuple;moved.centre_radius[0]+=.03125F;
+  moved.revision_lanes[2]+=1U;
+  if(!dispatch(moved,packet.owners,capacity,false))return false;
+  if(!dispatch(tuple,packet.owners,0U,true))return false;
+  auto stale=tuple;stale.revision_lanes[0]^=1U;
+  if(!dispatch(stale,packet.owners,capacity,true))return false;
+  auto malformed=packet.owners;malformed.front().mask=64U;
+  if(!dispatch(tuple,std::move(malformed),capacity,true))return false;
+  std::printf("{\"event\":\"metal_gpu_terrain_classify\","
+              "\"owners\":%zu,\"records\":%u,\"passed\":true}\n",
+              packet.owners.size(),expected.attempted_records);
+  return true;
+}
+
 // P5b mirrors the Vulkan extraction qualification without connecting the
 // result to Metal rendering.  The records are the legacy CPU-precomputed ABI;
 // this fixture establishes that its translated kernel writes the same compact
@@ -3658,6 +3787,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
   const bool gpu_terrain_extract_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
+  const bool gpu_terrain_classify_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-classify-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
@@ -3926,7 +4057,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_runtime_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -3939,6 +4070,7 @@ int main(int argc,char** argv) {
                         "--metal-atmosphere-compiler-check|"
                         "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
+                        "--metal-gpu-terrain-classify-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
@@ -4005,6 +4137,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
     if(gpu_terrain_extract_smoke_test)
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
+    if(gpu_terrain_classify_smoke_test)
+      return run_metal_gpu_terrain_classify_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
@@ -4048,6 +4182,14 @@ int main(int argc,char** argv) {
             device,path.string().c_str());
         if(extractor_library==nil||
            [extractor_library newFunctionWithName:@"main0"]==nil)return 1;
+      }
+      {
+        const auto path=std::filesystem::path(
+            TETRA_METAL_ATMOSPHERE_SHADER_DIR)/"gpu_terrain_classify.comp.metal";
+        id<MTLLibrary> classifier_library=make_file_shader_library(
+            device,path.string().c_str());
+        if(classifier_library==nil||
+           [classifier_library newFunctionWithName:@"main0"]==nil)return 1;
       }
       constexpr std::array<const char*,11> graphics_shaders{
           "scene.vert","scene.frag","wire.frag","edge.vert","edge.frag",

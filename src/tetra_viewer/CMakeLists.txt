@@ -50,6 +50,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
          ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.vert -o ${TETRA_SHADER_DIR}/scene.vert.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.frag -o ${TETRA_SHADER_DIR}/scene.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/wire.frag -o ${TETRA_SHADER_DIR}/wire.frag.spv
@@ -66,7 +67,8 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/atmosphere_reference_hillaire.comp -o ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_lod.comp -o ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp)
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv
@@ -78,7 +80,8 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   ${TETRA_SHADER_DIR}/atmosphere_faithful.comp.spv
   ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
-  ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv)
+  ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv)
   add_dependencies(tetra_viewer tetra_viewer_shaders)
   add_dependencies(tetra_world tetra_viewer_shaders)
   target_compile_definitions(tetra_viewer_application PRIVATE TETRA_VIEWER_SHADER_DIR="${TETRA_SHADER_DIR}")
@@ -232,6 +235,19 @@ if(APPLE AND TETRA_BUILD_METAL)
             --output ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
     DEPENDS gpu_terrain_extract.comp spirv-cross
     VERBATIM)
+  set(TETRA_METAL_GPU_TERRAIN_CLASSIFY_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_terrain_classify.comp.spv)
+  set(TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_terrain_classify.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp
+            -o ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
+    DEPENDS gpu_terrain_classify.comp spirv-cross
+    VERBATIM)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_SPV
     ${TETRA_METAL_SHADER_DIR}/atmosphere_reference_hillaire.spv)
   set(TETRA_METAL_REFERENCE_ATMOSPHERE_MSL
@@ -252,6 +268,7 @@ if(APPLE AND TETRA_BUILD_METAL)
             ${TETRA_METAL_GRAPHICS_SHADERS}
             ${TETRA_METAL_GPU_LOD_MSL}
             ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
+            ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
             ${TETRA_METAL_REFERENCE_ATMOSPHERE_MSL})
   add_dependencies(tetra_world_metal tetra_world_metal_shaders)
   target_compile_definitions(tetra_world_metal PRIVATE
@@ -264,6 +281,8 @@ if(APPLE AND TETRA_BUILD_METAL)
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-lod-selector-smoke-test)
   add_test(NAME "metal GPU terrain extraction parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-extract-smoke-test)
+  add_test(NAME "metal GPU terrain classification parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-classify-smoke-test)
   add_test(NAME "metal GPU terrain runtime parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-runtime-smoke-test)
   # P5c2 drives the real hidden render loop with the diagnostic packets on;

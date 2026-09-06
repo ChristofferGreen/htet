@@ -6,6 +6,14 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 03:08 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 500 tests passed after P7a2, including the translated Metal compact-classification parity fixture.
+
+- 2026-09-06 02:56 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-gpu-terrain-classify-smoke-test` | failures: none | notes: P7a2 matched its 33-record mixed-depth CPU oracle in fixed and revisioned field-motion cases; zero-capacity, stale-tuple, and malformed-owner dispatches failed closed.
+
+- 2026-09-06 02:49 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 TetWorldMetal --metal-gpu-terrain-classify-smoke-test` | failures: none | notes: P7a2 fixed Metal compact-classification fixture matched all 33 CPU-oracle records and rejected stale, malformed, and zero-capacity inputs.
+
+- 2026-09-06 02:42 CEST | fail | mode: Release | command: `cmake --build build/release --target tetra_world_metal_shaders -j 4` | failures: `gpu_terrain_classify.comp` | notes: GLSL rejected the local identifier `out` as a reserved qualifier; renamed it to `output_index` before rebuilding the shader target.
+
 - 2026-09-06 02:37 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 499 tests passed after P7a1; the final gate includes the mixed-depth planetary BCC classification oracle and all existing Metal diagnostics.
 
 - 2026-09-06 02:24 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^GPU terrain (field tuple preserves the complete procedural contract|classification reconstructs BCC field signs)$'` | failures: none | notes: P7a1's compact field tuple and independent mixed-depth planetary BCC classification oracle both passed.

@@ -34,6 +34,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7a1's 176-byte aligned field tuple carries every `Sphere` and planetary-terrain scalar plus domain and source/field revisions; its host oracle reconstructs Grande cells solely from P6 owner addresses and fails closed on stale packets or insufficient record capacity.
 - Evidence: The focused Release regression round-trips every parameter and independently matches all corner-sign/crossing records for a mixed-depth planetary BCC front.
 
+### gpu-terrain-metal-classification
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, classification
+- Fact: P7a2 uses a separate non-drawable SPIR-V/MSL kernel with only P6 compact owners/templates and the P7a1 tuple, writing fixed-stride Grande corner-sign/crossing records and treating any malformed or capacity-invalid dispatch as unusable.
+- Evidence: The hidden Metal fixture matched 33 independent CPU-oracle records for fixed and revisioned field-motion packets, then rejected zero capacity, stale tuple revision, and an invalid owner mask.
+
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization
