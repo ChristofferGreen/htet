@@ -23,82 +23,7 @@ const ivec2 tet_edges[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),
 
 float lane(uint index,uint component) { return uintBitsToFloat(field.lanes[index][component]); }
 bool finite(float value) { return !isnan(value)&&!isinf(value); }
-float saturate(float value) { return clamp(value,0.0,1.0); }
-float smooth01(float value) { value=saturate(value); return value*value*(3.0-2.0*value); }
-
-vec3 gradient(uint hash) {
-  const float s=.7071067811865475;
-  switch(hash%12u) {
-    case 0u:return vec3(s,s,0);case 1u:return vec3(-s,s,0);
-    case 2u:return vec3(s,-s,0);case 3u:return vec3(-s,-s,0);
-    case 4u:return vec3(s,0,s);case 5u:return vec3(-s,0,s);
-    case 6u:return vec3(s,0,-s);case 7u:return vec3(-s,0,-s);
-    case 8u:return vec3(0,s,s);case 9u:return vec3(0,-s,s);
-    case 10u:return vec3(0,s,-s);default:return vec3(0,-s,-s);
-  }
-}
-uint hash3(ivec3 value) {
-  uint hash=uint(value.x)*0x8da6b343u^uint(value.y)*0xd8163841u^
-      uint(value.z)*0xcb1ab31fu;
-  hash^=hash>>13u;hash*=0x85ebca6bu;hash^=hash>>16u;return hash;
-}
-float fade(float value) { return value*value*value*(value*(value*6.0-15.0)+10.0); }
-float gradient_noise(vec3 point) {
-  const ivec3 cell=ivec3(floor(point));const vec3 f=fract(point);
-  const float u=fade(f.x),v=fade(f.y),w=fade(f.z);
-  float values[8];uint index=0u;
-  for(int z=0;z<2;++z)for(int y=0;y<2;++y)for(int x=0;x<2;++x) {
-    const ivec3 delta=ivec3(x,y,z);
-    values[index++]=dot(gradient(hash3(cell+delta)),f-vec3(delta));
-  }
-  const float x00=mix(values[0],values[1],u),x10=mix(values[2],values[3],u);
-  const float x01=mix(values[4],values[5],u),x11=mix(values[6],values[7],u);
-  return mix(mix(x00,x10,v),mix(x01,x11,v),w);
-}
-
-float resolved(float frequency,float footprint) {
-  if(!(footprint>0.0)||!(abs(frequency)>0.0))return 1.0;
-  return smooth01(1.0/(abs(frequency)*footprint)-1.75);
-}
-float terrain_displacement(vec3 direction) {
-  const float secondary=lane(1u,1u),frequency=lane(1u,2u),footprint=lane(1u,3u);
-  const vec4 a=vec4(lane(2u,0u),lane(2u,1u),lane(2u,2u),lane(2u,3u));
-  const vec4 b=vec4(lane(3u,0u),lane(3u,1u),lane(3u,2u),lane(3u,3u));
-  const vec4 c=vec4(lane(4u,0u),lane(4u,1u),lane(4u,2u),lane(4u,3u));
-  const vec4 d=vec4(lane(5u,0u),lane(5u,1u),lane(5u,2u),lane(5u,3u));
-  const vec4 e=vec4(lane(6u,0u),lane(6u,1u),lane(6u,2u),lane(6u,3u));
-  const vec4 f=vec4(lane(7u,0u),lane(7u,1u),lane(7u,2u),lane(7u,3u));
-  const float radius=f.z;
-  const float sample_noise=float(0); // keeps all offsets below visibly local.
-  float height=a.x;
-  #define SAMPLE(freq,offset) gradient_noise(direction*(radius*(freq))+(offset))
-  height+=a.y*resolved(a.z,footprint)*SAMPLE(a.z,vec3(11.371,-7.219,3.117));
-  const float mountain_scale=b.w;
-  const float range=saturate((SAMPLE(a.w*0.0+b.y*mountain_scale,
-      vec3(-20.077,30.861,7.193))-.08)/.30);
-  const float ridge=saturate((1.0-abs(SAMPLE(b.x*mountain_scale,
-      vec3(6.691,13.733,-4.337)))-.30)/.68);
-  const float range_resolution=resolved(b.y*mountain_scale,footprint);
-  const float ridge_resolution=resolved(b.x*mountain_scale,footprint);
-  const float carrier=mix(.6634,ridge*ridge,ridge_resolution);
-  float mountain_fade=1.0;
-  if(c.y>c.x)mountain_fade=smooth01((acos(clamp(direction.y,-1.0,1.0))*radius-c.x)/(c.y-c.x));
-  height+=a.w*b.z*mountain_fade*range_resolution*range*range*carrier;
-  height+=c.z*resolved(c.w,footprint)*SAMPLE(c.w,vec3(4.117,7.731,-2.513));
-  const float region=saturate((SAMPLE(d.z,vec3(-2.719,5.303,8.117))+.12)/.30);
-  height+=d.x*min(resolved(d.z,footprint),resolved(d.y,footprint))*region*
-      SAMPLE(d.y,vec3(-6.337,1.819,9.173));
-  height+=e.z*resolved(e.w,footprint)*SAMPLE(e.w,vec3(13.117,-11.731,2.337));
-  float amplitude=secondary,current_frequency=frequency;
-  for(int octave=0;octave<4;++octave) {
-    height+=amplitude*resolved(current_frequency,footprint)*
-        SAMPLE(current_frequency,vec3(0));
-    amplitude*=.25;current_frequency*=2.0;
-  }
-  if(f.y>f.x)height*=smooth01((acos(clamp(direction.y,-1.0,1.0))*radius-f.x)/(f.y-f.x));
-  #undef SAMPLE
-  return height+sample_noise;
-}
+#include "gpu_terrain_field.glsl"
 
 bool valid_field() {
   for(uint i=0u;i<10u;++i)for(uint c=0u;c<4u;++c)if(!finite(lane(i,c)))return false;
@@ -156,16 +81,7 @@ bool reconstruct(uint owner,out vec3 geometry[4]) {
   return true;
 }
 float signed_distance(vec3 root_point) {
-  const vec3 world=root_point*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));
-  const vec3 centre=vec3(lane(0u,0u),lane(0u,1u),lane(0u,2u));
-  const float planet_radius=lane(7u,2u);const vec3 offset=world-(centre-vec3(0,planet_radius,0));
-  const float length_offset=length(offset);if(!(length_offset>1.e-15))return -planet_radius;
-  float displacement=terrain_displacement(offset/length_offset);
-  if(lane(7u,3u)==1.0) {
-    const float half_width=max(lane(8u,2u),1.e-12);
-    displacement=lane(8u,1u)*max(0.0,1.0-abs((world.z-centre.z)-lane(8u,0u))/half_width);
-  }
-  return length_offset-(planet_radius+displacement);
+  return terrain_field_signed_distance(root_point,lane(1u,3u));
 }
 void main() {
   const uint owner=gl_GlobalInvocationID.x;if(owner>=parameters.owner_count)return;

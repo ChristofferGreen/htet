@@ -1480,11 +1480,6 @@ topology, and complete-frame gates.
   diagnostic is complete and remains non-drawable; P7b's device roots and
   compact base-triangle diagnostic are complete. P7c is the current executable
   leaf.
-  - [ ] **P7c1b — Device projection and normal diagnostic.** Consume P7b2's
-    compact base triangles with a revisioned camera/origin tuple, reproduce
-    the production midpoint projection and outward flat normals, and compare
-    diagnostic geometry against the CPU oracle for fixed/moving origins,
-    invalid input, and capacity exhaustion. No drawable consumer is permitted.
   - [ ] **P7c2 — Shared complete-generation consumer binding.** Only after
     P7c1 parity, bind opaque, wireframe, shadow, and ray tracing to exactly one
     completed geometry generation, otherwise retaining the CPU front. Avoid a
@@ -1492,7 +1487,9 @@ topology, and complete-frame gates.
     remains diagnostic until P7d.
   - [ ] **P7d — Full GPU-native parity qualification.** Test near terrain,
     horizon/limb, silhouette, back-lit mountains, edits, cutaways, and implicit
-    shapes; reject stale/partial/overflow output. CPU fallback remains until P8.
+    shapes. Require stream, incidence/winding, normal, depth, and colour parity
+    and reject stale, partial, non-finite, degenerate, or overflow output. CPU
+    fallback remains until P8.
 - [ ] **P8 — Readback-free publication and performance qualification.** Keep
   selection, compaction, generated geometry/edge streams, indirect arguments,
   raster, shadow, and ray-tracing consumption device-local. Camera movement
@@ -1512,8 +1509,10 @@ topology, and complete-frame gates.
   conflict handling, and ping-pong complete fronts, plus an optional fVDB-
   inspired address sort/group/compact pass and measured sparse-versus-dense
   block thresholds. Do not permit the temporary foldovers accepted by some GPU
-  LOD schemes. Retain only the simplest method that materially improves the
-  complete frame without changing geometry or introducing camera stalls.
+  LOD schemes. These are scheduling experiments over the qualified direct BCC
+  extractor, never replacement surface/topology authorities. Retain only the
+  simplest method that materially improves the complete frame without changing
+  geometry or introducing camera stalls.
 - [ ] **P10 — Later authoritative GPU conforming volume.** Only after the
   render-only path is complete, separately implement GPU BCC closure, mutation,
   neighbour and face ownership repair, rollback, and CPU persistence/collision

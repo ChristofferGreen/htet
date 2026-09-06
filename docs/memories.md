@@ -46,6 +46,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7b2 compacts P7b1 root slots only after validating their P6 owner/template identity and completing a capacity-before-write canonical cut-cycle scan, so malformed, stale, missing-root, and overflowing input cannot publish a partial base-triangle stream.
 - Evidence: The compact CPU oracle and translated Metal fixture matched fixed and moved planetary streams, while hardware cases explicitly fail closed for overflow, stale/malformed, and missing-root inputs and preserve a valid empty-stream result.
 
+### gpu-terrain-projected-geometry
+- Updated: 2026-09-06
+- Tags: metal, gpu, terrain, bcc, projection, parity
+- Fact: P7c1b's diagnostic projected-geometry stream expands each compact P7b2 triangle into six camera-relative vertices and four outward child normals using the shared full terrain grammar and a half-footprint midpoint projection, with no drawable consumer.
+- Evidence: The translated Metal fixture matched the CPU oracle for fixed/moved field and render-origin cases and rejected stale tuple, malformed, degenerate, overflow, and empty-stream inputs without publishing a partial result.
+
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-05
 - Tags: bcc, gpu-lod, hierarchy, serialization

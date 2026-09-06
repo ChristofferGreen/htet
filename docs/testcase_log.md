@@ -6,6 +6,10 @@
 
 ## Recent Test Runs
 
+- 2026-09-06 03:58 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 504 tests passed in 641.27 seconds after P7c1b; the full suite includes the new translated Metal projected-geometry parity and CPU-front-retention gates.
+
+- 2026-09-06 03:46 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain (classification|base triangle|projected geometry) parity$'` | failures: none | notes: P7c1b's translated Metal projection fixture passed fixed/moved field and origin CPU-oracle parity plus stale, malformed, degenerate, overflow, and empty-stream fail-closed cases; the shared field refactor retained classification and base-triangle parity.
+
 - 2026-09-06 03:38 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 503 tests passed with P7c1a's CPU geometry oracle and translated diagnostic ABI present; no GPU geometry was promoted to rendering.
 
 - 2026-09-06 03:26 CEST | pass | mode: Release | command: `cmake --build build/release --target tetra_tests -j 4 && build/release/tetra_tests --test-case='GPU terrain projection preserves midpoint and normal contract'` | failures: none | notes: P7c1a oracle passed sphere and planetary half-footprint midpoint projection, camera-relative normal, and capacity checks.
@@ -281,6 +285,8 @@
 - 2026-09-03 local | pass | mode: P3 aerial lookup isolation | command: `./scripts/compile.sh --release`; hidden serialized `aerial-refresh` timing profile; hidden aerial diagnostic atmosphere-frame smoke | failures: none | notes: all 471 release tests passed in 612.98 s; 300 current aerial dispatch timestamps measured 1.6165/2.2015 ms median/p95; the active diagnostic allocated 32,967,116 nominal atmosphere bytes and the reference-temporal lazy baseline remains 22,350,316 bytes.
 
 ## Resolved Failures
+
+- [x] gpu_terrain_project.comp | resolved: 2026-09-06 03:42 CEST | validating command: `cmake --build build/release --target tetra_viewer_shaders -j 4` | notes: reverted invalid complete-shader import; GLSL shader translation is healthy while a dedicated field-helper extraction is prepared.
 
 - [x] blocked world resource rejection recovery timeout | resolved: 2026-09-05 23:20 CEST | validating command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^blocked world resource rejection preserves the complete published front$'` | notes: raised finite correctness polling limits to 30 seconds; the focused Release test passed in 39.28 seconds.
 

@@ -362,22 +362,19 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. P7c is now the sole active implementation
       leaf.
-  - [ ] **P7c1b — Project and orient compact GPU base triangles.** Use the
-        compact camera-relative geometry ABI and use it to project P7b2 roots,
-        derive outward flat normals, and emit a diagnostic vertex stream.
-        Prove exact CPU-oracle position/normal/count parity across fixed and
-        moving origins, malformed inputs, and capacity failure. Stop rule: no
-        drawable, shadow, wireframe, or ray-tracing consumer may bind it.
   - [ ] **P7c2 — Bind one qualified GPU geometry generation to consumers.**
         After P7c1 parity, make opaque, wireframe, shadow, and ray-tracing
         consumers select the same complete generation or atomically retain the
         CPU front. Retain no sequential index buffer without measured consumer
         benefit; diagnostic readback remains until P7d.
   - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
-        Compare compact streams against CPU across near terrain, horizon/limb,
-        silhouettes, back-lit mountains, edits, cutaways, and implicit shapes;
-        reject stale, partial, and overflow revisions. Acceptance is identical
-        topology/geometry quality with CPU fallback retained pending P8.
+        Compare compact streams and raster results against CPU across near
+        terrain, horizon/limb, silhouettes, back-lit mountains, edits,
+        cutaways, and implicit shapes. Verify watertight incidence, winding,
+        normals, depth, and colour as well as count and bounds; reject stale,
+        partial, non-finite, degenerate, and overflow revisions. Acceptance is
+        identical topology/geometry/image quality with CPU fallback retained
+        pending P8.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
       selection, compaction, geometry/edge streams, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback
@@ -395,7 +392,8 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete fronts against direct traversal and optional fVDB-style grouping.
       Never expose the temporary foldovers permitted by some published GPU LOD
       schemes. Retain the persistent path only for a measured complete-frame
-      improvement with identical visual and topology results.
+      improvement with identical visual and topology results. This is a
+      scheduling optimization, not a replacement topology/extraction authority.
 - [ ] **P10 — Move the authoritative conforming volume to the GPU.** Treat GPU
       BCC closure, mutations, neighbour/face repair, rollback, and
       persistence/collision reconciliation as a later independent milestone.

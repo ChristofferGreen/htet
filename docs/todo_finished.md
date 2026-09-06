@@ -2,13 +2,24 @@
 
 ## 2026-09-06
 
+- [x] **P7c1b — Project and orient compact GPU base triangles.** Extracted the
+  complete deterministic planetary-field grammar into a version-free helper
+  shared by classification and projection, preserving the 0.25 octave gain.
+  The new non-drawable projection diagnostic consumes only P7b2 compact roots
+  and the revisioned P7a tuple, uses half-footprint field projection for child
+  midpoints, and emits camera-relative six-vertex/four-normal records. The
+  translated Metal fixture compares identity, positions, and outward normals
+  against the CPU oracle for fixed and moved fields and origins; it also fails
+  closed on stale tuples, malformed input, degeneracy, overflow, and empty
+  streams. No raster, shadow, wireframe, or ray-tracing consumer binds it.
+
 - [x] **P7c1a — Freeze compact geometry projection ABI.** Added the
   diagnostic-only compact-triangle expansion kernel, Metal/Vulkan translation
   wiring, and a CPU oracle for camera-relative roots, half-footprint projected
   midpoints, outward child normals, invalid origins, degeneracy, and capacity.
-  The focused sphere and planetary-terrain regression passes. Full device
-  midpoint-field parity remains the distinct P7c1b leaf; no consumer binds
-  this diagnostic stream.
+  The focused sphere and planetary-terrain regression passes. P7c1b later
+  completed device midpoint-field parity; no consumer binds this diagnostic
+  stream.
 
 - [x] **P7b2 — Compact base-triangle emission.** Added a separate translated
   Metal compute diagnostic that consumes only P7b1 fixed-stride root records,

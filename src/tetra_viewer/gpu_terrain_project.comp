@@ -1,23 +1,70 @@
 #version 450
-// P7c1 diagnostic geometry expansion. P7b2 records are world-space roots;
-// this stage only makes camera-relative vertices and flat normals. It is not
-// bound by any drawable, shadow, or ray-tracing command.
+// P7c1b is a non-drawable parity diagnostic. It consumes P7b2's complete
+// compact triangle stream and the P7a tuple, then exactly mirrors the CPU
+// projected one-to-four child geometry contract.
 layout(std430,binding=0) readonly buffer Triangles { uint words[]; } input_triangles;
-layout(std430,binding=1) buffer Geometry { uint words[]; } output_geometry;
-layout(push_constant) uniform Parameters { uint triangle_count; uint capacity; vec3 render_origin; } parameters;
-layout(local_size_x=64) in;
-bool finite3(vec3 v){return !(any(isnan(v))||any(isinf(v)));}
+layout(std430,binding=1) readonly buffer Field { uvec4 lanes[]; } field;
+layout(std430,binding=2) buffer Geometry { uint words[]; } output_geometry;
+layout(push_constant) uniform Parameters {
+  uint triangle_count; uint capacity; uint reserved0; uint reserved1;
+  vec4 render_origin; uint source_revision_low; uint source_revision_high;
+} parameters;
+layout(local_size_x=1) in;
+
+float lane(uint index,uint component){return uintBitsToFloat(field.lanes[index][component]);}
+bool finite(float value){return !isnan(value)&&!isinf(value);}
+bool finite3(vec3 value){return finite(value.x)&&finite(value.y)&&finite(value.z);}
+#include "gpu_terrain_field.glsl"
+
+bool valid_field(){
+  for(uint i=0u;i<10u;++i)for(uint c=0u;c<4u;++c)if(!finite(lane(i,c)))return false;
+  return field.lanes[10u].x==parameters.source_revision_low&&field.lanes[10u].y==parameters.source_revision_high&&
+      lane(1u,0u)==4.0&&lane(0u,3u)>0.0&&lane(7u,2u)>0.0&&lane(9u,3u)>0.0&&
+      (lane(7u,3u)==0.0||lane(7u,3u)==1.0);
+}
+void fail(){atomicOr(output_geometry.words[1u],1u);}
 void main(){
-  uint index=gl_GlobalInvocationID.x;if(index>=parameters.triangle_count)return;
-  if(index>=parameters.capacity){atomicOr(output_geometry.words[1],1u);return;}
-  uint source=4u+index*16u,destination=4u+index*24u;
-  vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
-  vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
-  vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
-  vec3 n=cross(b-a,c-a);float l=length(n);if(!finite3(a)||!finite3(b)||!finite3(c)||!(l>1e-15)){atomicOr(output_geometry.words[1],1u);return;}n/=l;
-  output_geometry.words[destination]=input_triangles.words[source];output_geometry.words[destination+1u]=input_triangles.words[source+1u];
-  vec3 points[3]=vec3[3](a-parameters.render_origin,b-parameters.render_origin,c-parameters.render_origin);
-  for(uint v=0u;v<3u;++v)for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+2u+v*3u+axis]=floatBitsToUint(points[v][axis]);
-  for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+11u+axis]=floatBitsToUint(n[axis]);
-  atomicAdd(output_geometry.words[0],1u);
+  // A diagnostic serial preflight prevents exposing a partial stream on any
+  // malformed, stale, degenerate, or capacity-failed invocation.
+  if(gl_GlobalInvocationID.x!=0u)return;
+  if(input_triangles.words[1u]!=0u||!finite3(parameters.render_origin.xyz)||!valid_field()){fail();return;}
+  if(parameters.triangle_count>parameters.capacity){fail();return;}
+  for(uint index=0u;index<parameters.triangle_count;++index){
+    const uint source=4u+index*16u;
+    const vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
+    const vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
+    const vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
+    if(!finite3(a)||!finite3(b)||!finite3(c)){fail();return;}
+    const float midpoint_footprint=lane(1u,3u)>0.0?lane(1u,3u)*.5:lane(1u,3u);
+    const vec3 ab=terrain_field_project_to_surface((a+b)*.5,midpoint_footprint);
+    const vec3 bc=terrain_field_project_to_surface((b+c)*.5,midpoint_footprint);
+    const vec3 ca=terrain_field_project_to_surface((c+a)*.5,midpoint_footprint);
+    if(!finite3(ab)||!finite3(bc)||!finite3(ca)){fail();return;}
+    const vec3 points[6]=vec3[6](a,ab,ca,b,bc,c);
+    const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
+    for(uint face=0u;face<4u;++face){
+      vec3 normal=cross(points[faces[face].y]-points[faces[face].x],points[faces[face].z]-points[faces[face].x]);
+      const vec3 outward=terrain_field_normal((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u));
+      if(dot(normal,outward)<0.0)normal=-normal;
+      if(!finite3(normal)||!(length(normal)>1.e-15)){fail();return;}
+    }
+  }
+  for(uint index=0u;index<parameters.triangle_count;++index){
+    const uint source=4u+index*16u,destination=4u+index*36u;
+    const vec3 a=vec3(uintBitsToFloat(input_triangles.words[source+4u]),uintBitsToFloat(input_triangles.words[source+5u]),uintBitsToFloat(input_triangles.words[source+6u]));
+    const vec3 b=vec3(uintBitsToFloat(input_triangles.words[source+7u]),uintBitsToFloat(input_triangles.words[source+8u]),uintBitsToFloat(input_triangles.words[source+9u]));
+    const vec3 c=vec3(uintBitsToFloat(input_triangles.words[source+10u]),uintBitsToFloat(input_triangles.words[source+11u]),uintBitsToFloat(input_triangles.words[source+12u]));
+    const float midpoint_footprint=lane(1u,3u)>0.0?lane(1u,3u)*.5:lane(1u,3u);
+    const vec3 points[6]=vec3[6](a,terrain_field_project_to_surface((a+b)*.5,midpoint_footprint),terrain_field_project_to_surface((c+a)*.5,midpoint_footprint),b,terrain_field_project_to_surface((b+c)*.5,midpoint_footprint),c);
+    const uvec3 faces[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));
+    for(uint word=0u;word<4u;++word)output_geometry.words[destination+word]=input_triangles.words[source+word];
+    for(uint vertex=0u;vertex<6u;++vertex)for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+4u+vertex*3u+axis]=floatBitsToUint(points[vertex][axis]-parameters.render_origin[axis]);
+    for(uint face=0u;face<4u;++face){
+      vec3 normal=cross(points[faces[face].y]-points[faces[face].x],points[faces[face].z]-points[faces[face].x]);
+      if(dot(normal,terrain_field_normal((points[faces[face].x]+points[faces[face].y]+points[faces[face].z])/3.0,lane(1u,3u)))<0.0)normal=-normal;
+      normal/=length(normal);
+      for(uint axis=0u;axis<3u;++axis)output_geometry.words[destination+22u+face*3u+axis]=floatBitsToUint(normal[axis]);
+    }
+  }
+  output_geometry.words[0u]=parameters.triangle_count;
 }
