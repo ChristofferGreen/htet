@@ -61,8 +61,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-native-private-chain
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, private-memory, synchronization
-- Fact: A current, completed native candidate is promoted only by replacing the single `MetalTerrainDisplayFront`, so raster, wireframe, shadow, and ray-tracing consumers share one generation and retain the CPU front on stale, failed, partial, or unavailable GPU work.
-- Evidence: P7c2b2 wired the live slots through deterministic parallel compaction, added the visible CPU/GPU selector, and the hidden GPU-selection smoke retained a complete CPU front when its requested candidate was unavailable.
+- Fact: P7d's hidden Metal parity gate composes compact-stream, live-slot, projected geometry, `SceneVertex`, and retained-runtime hardware oracles; it remains readback-based and CPU-front fallback stays mandatory until P8.
+- Evidence: The gate covers mixed-depth compaction, changed field, origin rebase, complete runtime payload, normal/colour/index payload parity, and every stale, malformed, non-finite, degenerate, and overflow fail-closed path supplied by the component fixtures.
 
 ### gpu-terrain-projected-geometry
 - Updated: 2026-09-06

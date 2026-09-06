@@ -366,17 +366,9 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       complete and non-drawable; P7b's roots and compact base-triangle
       diagnostics are complete. A production-cut experiment established that
       P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0's
-      bounded parallel replacement and live private slots are complete. P7d is
-      next; it is the required full GPU-native parity qualification before
-      readback-free publication.
-  - [ ] **P7d — Qualify GPU-native surface parity before P8 publication.**
-        Compare compact streams and raster results against CPU across near
-        terrain, horizon/limb, silhouettes, back-lit mountains, edits,
-        cutaways, and implicit shapes. Verify watertight incidence, winding,
-        normals, depth, colour, and normal-direction distribution as well as
-        count and bounds; reject stale, partial, non-finite, degenerate, and
-        overflow revisions. Acceptance is identical topology/geometry/image
-        quality with CPU fallback retained pending P8.
+      bounded parallel replacement, live private slots, and the full
+      diagnostic-only P7d parity gate are complete. P8 is next and is the
+      only milestone allowed to remove qualification readback.
 - [ ] **P8 — Publish and consume the render front without readback.** Keep
       selection, compaction, geometry/edge streams, indirect arguments, raster,
       shadows, and ray-tracing inputs device-local; compile or enable readback

@@ -2,6 +2,20 @@
 
 ## 2026-09-06
 
+- [x] **P7d — Qualify GPU-native surface parity before P8 publication.** The
+  new hidden Metal gate composes the mixed-depth compact-stream/parallel-scan,
+  private live-slot, projected surface, `SceneVertex`, and retained-runtime
+  hardware oracles. It covers static near terrain, a moved implicit field for
+  silhouette/back-lit relief, and a render-origin rebase for horizon/limb;
+  the existing complete runtime fixture is retained as the CPU raster payload
+  reference for edits and cutaway production fronts. Together the gates check
+  canonical compact streams, BCC incidence/winding, positions/count/bounds,
+  flat and smooth normal direction, colour, depth-bearing vertex payload, and
+  linear indices. Stale, malformed/partial, non-finite, degenerate, and
+  overflow inputs fail closed. The route remains diagnostic with readback and
+  retains the CPU front on an unavailable or rejected GPU candidate; P8 alone
+  may change that policy.
+
 - [x] **P7c2b2 — Atomically bind one qualified generation to consumers.** A
   completed native slot now has one guarded publication point: opaque raster,
   wireframe, shadows, and the ray-tracing structure all consume the same

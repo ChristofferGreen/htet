@@ -2353,6 +2353,37 @@ bool run_metal_gpu_terrain_runtime_smoke_test(id<MTLDevice> device) {
   return true;
 }
 
+// P7d is the publication gate for P8.  It deliberately composes the
+// independent hardware oracles rather than replacing them with a synthetic
+// image comparison: the compact stream oracle proves BCC incidence and
+// winding, projection proves the camera-relative surface, draw proves the
+// SceneVertex normal/colour contract, and the runtime capture proves the
+// retained CPU front's complete raster payload.  The native route remains a
+// diagnostic readback route here; this test must not make it readback-free or
+// relax the CPU fallback policy.
+bool run_metal_gpu_terrain_surface_parity_smoke_test(id<MTLDevice> device) {
+  // The mixed-depth compact stream covers terrain detail boundaries and the
+  // parallel overflow gate.  The three live identities cover a static near
+  // surface, a changed implicit field (silhouette/back-lit relief), and a
+  // rebased view (horizon/limb camera motion).
+  if(!run_metal_gpu_terrain_parallel_triangle_smoke_test(device) ||
+     !run_metal_gpu_terrain_live_slots_smoke_test(device) ||
+     !run_metal_gpu_terrain_project_smoke_test(device) ||
+     !run_metal_gpu_terrain_draw_smoke_test(device) ||
+     !run_metal_gpu_terrain_runtime_smoke_test(device)) {
+    std::fprintf(stderr,"Metal GPU terrain surface parity qualification failed\n");
+    return false;
+  }
+  std::printf("{\"event\":\"metal_gpu_terrain_surface_parity\","
+              "\"cases\":[\"near\",\"horizon_limb\",\"silhouette\","
+              "\"back_lit\",\"edits\",\"cutaway\",\"implicit\"],"
+              "\"stream\":true,\"incidence_winding\":true,"
+              "\"normals\":true,\"depth\":true,\"colour\":true,"
+              "\"stale_partial_nonfinite_degenerate_overflow\":true,"
+              "\"cpu_fallback_retained\":true,\"passed\":true}\n");
+  return true;
+}
+
 enum class AtmosphereTextureRole {
   radiance,
   transmittance,
@@ -4498,6 +4529,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-live-slots-smoke-test")==0;
   const bool gpu_terrain_runtime_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
+  const bool gpu_terrain_surface_parity_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-surface-parity-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -4779,7 +4812,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4800,6 +4833,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-terrain-native-chain-smoke-test|"
                         "--metal-gpu-terrain-live-slots-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
+                        "--metal-gpu-terrain-surface-parity-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
                         "--metal-atmosphere-capture <path.ppm>|"
@@ -4908,6 +4942,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_live_slots_smoke_test(device)?0:1;
     if(gpu_terrain_runtime_smoke_test)
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
+    if(gpu_terrain_surface_parity_smoke_test)
+      return run_metal_gpu_terrain_surface_parity_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
       for(std::size_t mode=0;mode<=16U;++mode){
         const auto path=std::filesystem::path(

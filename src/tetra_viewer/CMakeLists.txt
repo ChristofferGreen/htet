@@ -367,6 +367,12 @@ if(APPLE AND TETRA_BUILD_METAL)
       $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-live-slots-smoke-test)
   add_test(NAME "metal GPU terrain runtime parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-runtime-smoke-test)
+  # P7d composes the hardware compact-stream, native-slot, SceneVertex, and
+  # retained-front oracles into the final diagnostic-only parity gate before
+  # P8 may remove any readback.
+  add_test(NAME "metal GPU terrain full surface parity qualification"
+    COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-surface-parity-smoke-test)
   # P5c2 drives the real hidden render loop with the diagnostic packets on;
   # the test asserts completed/accepted/stale slots while CPU terrain remains
   # the only drawable front.
