@@ -625,6 +625,26 @@ class TerrainRuntime {
       const noexcept { return nullptr; }
   [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
   world_conforming_volume() const noexcept { return nullptr; }
+  // Volume consumers must capture this with a publication and subsequently
+  // request the directory/volume through the matching-token accessors. This
+  // prevents collision, cutaway, export, and GPU sidecars from combining
+  // pieces of different complete volume fronts.
+  [[nodiscard]] virtual std::optional<tetra::GpuConformingVolumeAuthorityToken>
+  world_volume_authority_token() const noexcept { return std::nullopt; }
+  [[nodiscard]] virtual const tetra::WorldCutDirectory*
+  world_cut_directory(const tetra::GpuConformingVolumeAuthorityToken&) const noexcept {
+    return nullptr;
+  }
+  [[nodiscard]] virtual const tetra::WorldBlockedConformingVolume*
+  world_conforming_volume(const tetra::GpuConformingVolumeAuthorityToken&) const noexcept {
+    return nullptr;
+  }
+  [[nodiscard]] virtual const PreparedScene* scene(
+      const tetra::GpuConformingVolumeAuthorityToken&) const noexcept { return nullptr; }
+  // Volume-mode collision keeps using the analytic field, but only after it
+  // has been captured with a complete matching volume front.
+  [[nodiscard]] virtual const tetra::Sphere* field(
+      const tetra::GpuConformingVolumeAuthorityToken&) const noexcept { return nullptr; }
   [[nodiscard]] virtual std::span<const tetra::GpuTerrainCellRecord>
   world_surface_gpu_cells() const noexcept { return {}; }
   // Immutable P6 topology sidecar published with the directory and scene.
@@ -719,6 +739,25 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   [[nodiscard]] const tetra::WorldBlockedConformingVolume*
   world_conforming_volume() const noexcept override {
     return &surface_cache_.conforming;
+  }
+  [[nodiscard]] std::optional<tetra::GpuConformingVolumeAuthorityToken>
+  world_volume_authority_token() const noexcept override { return volume_authority_; }
+  [[nodiscard]] const tetra::WorldCutDirectory* world_cut_directory(
+      const tetra::GpuConformingVolumeAuthorityToken& token) const noexcept override {
+    return volume_authority_&&token==*volume_authority_?directory_.get():nullptr;
+  }
+  [[nodiscard]] const tetra::WorldBlockedConformingVolume* world_conforming_volume(
+      const tetra::GpuConformingVolumeAuthorityToken& token) const noexcept override {
+    return volume_authority_&&token==*volume_authority_?
+        &surface_cache_.conforming:nullptr;
+  }
+  [[nodiscard]] const PreparedScene* scene(
+      const tetra::GpuConformingVolumeAuthorityToken& token) const noexcept override {
+    return volume_authority_&&token==*volume_authority_?&scene_:nullptr;
+  }
+  [[nodiscard]] const tetra::Sphere* field(
+      const tetra::GpuConformingVolumeAuthorityToken& token) const noexcept override {
+    return volume_authority_&&token==*volume_authority_?&field_:nullptr;
   }
   [[nodiscard]] std::span<const tetra::GpuTerrainCellRecord>
   world_surface_gpu_cells() const noexcept override {
@@ -817,6 +856,7 @@ class BlockedTerrainRuntime final : public TerrainRuntime {
   tetra::Camera camera_;
   tetra::Camera last_requested_camera_{};
   std::unique_ptr<tetra::WorldCutDirectory> directory_;
+  std::optional<tetra::GpuConformingVolumeAuthorityToken> volume_authority_;
   std::optional<std::vector<tetra::GpuTerrainCellRecord>> gpu_surface_cells_;
   std::optional<tetra::GpuGreenMaskPacket> gpu_green_mask_packet_;
   std::uint64_t gpu_surface_conforming_revision_{};

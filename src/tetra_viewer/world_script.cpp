@@ -896,14 +896,21 @@ int capture_world_runtime_view(std::string_view path,
   }
 
   constexpr int width=768,height=480;
+  const auto authority=runtime->world_volume_authority_token();
+  const auto* scene=authority?runtime->scene(*authority):nullptr;
+  const auto* volume=authority?runtime->world_conforming_volume(*authority):nullptr;
+  if(scene==nullptr||volume==nullptr){
+    errors<<"world capture lacks one matching complete volume authority\n";
+    return 1;
+  }
   using Pixel=std::array<unsigned char,3>;
   std::vector<Pixel> pixels(static_cast<std::size_t>(width*height),{15,20,28});
   std::vector<double> depths(static_cast<std::size_t>(width*height),0.0);
   const auto normalize=[&](tetra::Vec3 value){
     const double size=magnitude(value);return size>1.0e-12?value/size:tetra::Vec3{};};
-  const auto render_camera=camera.position-runtime->scene().render_origin;
+  const auto render_camera=camera.position-scene->render_origin;
   const auto projection=make_infinite_reversed_projection(
-      camera.position,runtime->scene().render_origin,forward,camera.up,
+      camera.position,scene->render_origin,forward,camera.up,
       camera.vertical_fov_radians,camera.aspect_ratio);
   struct Projected {
     double x{},y{},depth{},view_distance{};
@@ -918,7 +925,7 @@ int capture_world_runtime_view(std::string_view path,
   };
   const auto edge=[](Projected first,Projected second,double x,double y){
     return (x-first.x)*(second.y-first.y)-(y-first.y)*(second.x-first.x);};
-  const auto& vertices=runtime->scene().triangle_vertices;
+  const auto& vertices=scene->triangle_vertices;
   for(std::size_t triangle=0;triangle+2U<vertices.size();triangle+=3U){
     const auto& first=vertices[triangle];
     const auto& second=vertices[triangle+1U];

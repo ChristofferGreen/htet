@@ -248,6 +248,56 @@ class GpuConformingVolumeSlots final {
   std::array<std::optional<WorldCutDirectory>,2> slots_;
   std::uint32_t active_slot_{};
 };
+
+// P10d persistence is deliberately a small, versioned journal stream rather
+// than a serialized directory.  Replaying always stages the normal validated
+// transaction, so a corrupt or stale file cannot become topology authority.
+inline constexpr std::uint32_t gpu_conforming_volume_journal_format_version=1U;
+struct GpuConformingVolumeJournalRecord {
+  GpuConformingVolumeMutationHeader header{};
+  std::vector<GpuConformingVolumeDeviceCommand> commands;
+};
+[[nodiscard]] std::vector<std::uint8_t> serialize_gpu_conforming_volume_journal(
+    const GpuConformingVolumeMutation& mutation);
+[[nodiscard]] GpuConformingVolumeJournalRecord
+deserialize_gpu_conforming_volume_journal(std::span<const std::uint8_t> bytes);
+[[nodiscard]] std::uint64_t gpu_conforming_volume_hash(
+    const WorldCutDirectory& directory);
+
+// The three non-render consumers receive a proof token, not a mutable cut.
+// A token can only be obtained from the same complete front that was switched
+// after both logical-cut and conforming-volume hashes agreed.
+enum class GpuConformingVolumeConsumer : std::uint8_t {
+  collision, cutaway, export_data,
+};
+struct GpuConformingVolumeAuthorityToken {
+  std::uint64_t revision{};
+  std::uint64_t logical_cut_hash{};
+  std::uint64_t conforming_volume_hash{};
+  bool gpu_authoritative{};
+  auto operator<=>(const GpuConformingVolumeAuthorityToken&) const = default;
+};
+class GpuConformingVolumeAuthority final {
+ public:
+  explicit GpuConformingVolumeAuthority(WorldCutCheckpoint initial);
+  [[nodiscard]] const WorldCutDirectory& active() const noexcept;
+  [[nodiscard]] GpuConformingVolumeAuthorityToken token() const noexcept {
+    return token_;
+  }
+  [[nodiscard]] const WorldCutDirectory* consume(
+      GpuConformingVolumeConsumer consumer,
+      const GpuConformingVolumeAuthorityToken& token) const noexcept;
+  // The CPU candidate and device candidate are independently staged before
+  // authority changes. Any mismatch leaves the preceding complete authority.
+  [[nodiscard]] bool commit(const GpuConformingVolumeMutation& mutation,
+      std::uint32_t result_capacity,const std::function<bool()>& canceled={});
+  [[nodiscard]] bool replay(std::span<const std::uint8_t> bytes,
+      std::uint32_t result_capacity);
+ private:
+  WorldCutDirectory cpu_fallback_;
+  GpuConformingVolumeSlots gpu_slots_;
+  GpuConformingVolumeAuthorityToken token_{};
+};
 // Immutable P7a field/domain ABI.  The nine vec4 lanes preserve every scalar
 // used by Sphere and TerrainParameters; no sampled signs or CPU geometry are
 // permitted in this tuple.  The classification shader consumes this alongside

@@ -534,6 +534,15 @@
 
 ## 2026-09-07
 
+- [x] **P10d — Reconcile authoritative GPU volume with persistence and
+  collision.** Versioned, magic-tagged POD transaction journals replay only
+  after strict validation. Independently staged CPU and GPU candidates must
+  agree on revision, logical-cut hash, and conforming-volume hash before the
+  authority token flips. Runtime scene, field, directory, and volume accessors
+  reject retired tokens; Vulkan cutaway publication, scripted export/capture,
+  and Metal collision use the matching front. Fresh Release validation passed
+  all 519 tests after the headless initial-publication token was fixed.
+
 - [x] **P10a — Define the authoritative GPU-volume transaction ABI and CPU
   oracle.** Added a bounded, immutable split-proposal journal that begins
   before restricted-green closure: exact source revision and cut identity,

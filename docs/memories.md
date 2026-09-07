@@ -88,6 +88,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: GPU volume journals must be ingested as POD commands, independently validated, and staged into an inactive complete directory slot before the active-slot index flips.
 - Evidence: The native P10c smoke ingested the device-written nine-entry mixed-depth closure journal, published revision 803 atomically, and the 518-test Release gate verified split, merge, cancellation, malformed, stale, and overflow retention behavior.
 
+### gpu-volume-authority-replay
+- Updated: 2026-09-07
+- Tags: gpu, bcc, persistence, collision, authority
+- Fact: A device volume journal is persisted only as a versioned canonical POD transaction and can become shared collision, cutaway, and export authority only after independently staged CPU/GPU logical-cut and conforming-volume hashes agree.
+- Evidence: The P10d Release regression replays a split across restart with matching hashes for all three consumers, and retains CPU authority for stale identity, malformed command, and truncated journal inputs.
+
 ### gpu-terrain-production-root-expansion
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, performance, capacity

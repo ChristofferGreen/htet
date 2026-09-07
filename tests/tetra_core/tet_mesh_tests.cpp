@@ -845,6 +845,72 @@ TEST_CASE("GPU conforming volume mutations publish complete ping pong fronts") {
   CHECK(slots.active().revision()==113U);
 }
 
+TEST_CASE("GPU conforming volume authority persists exact complete consumers") {
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  const auto checkpoint=tetra::make_complete_world_cut_checkpoint(
+      roots,3U,211U,tetra::HierarchyResidencyTier::conforming_volume);
+  tetra::GpuConformingVolumeAuthority authority(checkpoint);
+  const auto initial=authority.token();
+  REQUIRE_FALSE(initial.gpu_authoritative);
+  for(const auto consumer:{tetra::GpuConformingVolumeConsumer::collision,
+                           tetra::GpuConformingVolumeConsumer::cutaway,
+                           tetra::GpuConformingVolumeConsumer::export_data})
+    CHECK(authority.consume(consumer,initial)!=nullptr);
+  auto stale=initial; ++stale.revision;
+  CHECK(authority.consume(tetra::GpuConformingVolumeConsumer::collision,stale)==nullptr);
+
+  const std::array device{tetra::GpuConformingVolumeDeviceCommand{
+      tetra::gpu_hierarchy_address_lanes(tetra::WorldTetAddress::root(0U)),0U,{}}};
+  const auto mutation=tetra::ingest_gpu_conforming_volume_journal(
+      authority.active(),device,211U,212U,256U);
+  REQUIRE(mutation.header.status==tetra::GpuConformingVolumeMutationStatus::ready);
+  const auto persisted=tetra::serialize_gpu_conforming_volume_journal(mutation);
+  const auto decoded=tetra::deserialize_gpu_conforming_volume_journal(persisted);
+  CHECK(decoded.header==mutation.header);
+  CHECK(decoded.commands==std::vector<tetra::GpuConformingVolumeDeviceCommand>(
+      device.begin(),device.end()));
+  REQUIRE(authority.replay(persisted,256U));
+  const auto published=authority.token();
+  CHECK(published.gpu_authoritative);
+  CHECK(published.revision==212U);
+  CHECK(published.logical_cut_hash==mutation.header.canonical_result_hash);
+  CHECK(published.conforming_volume_hash==tetra::gpu_conforming_volume_hash(
+      authority.active()));
+  for(const auto consumer:{tetra::GpuConformingVolumeConsumer::collision,
+                           tetra::GpuConformingVolumeConsumer::cutaway,
+                           tetra::GpuConformingVolumeConsumer::export_data}) {
+    const auto* complete=authority.consume(consumer,published);
+    REQUIRE(complete!=nullptr);
+    CHECK(complete->revision()==published.revision);
+    CHECK(complete->canonical_cut_hash()==published.logical_cut_hash);
+  }
+
+  // A restart replays the same immutable device journal and publishes the
+  // identical logical and conforming volume, never a partly reconstructed cut.
+  tetra::GpuConformingVolumeAuthority restarted(checkpoint);
+  REQUIRE(restarted.replay(persisted,256U));
+  CHECK(restarted.token()==published);
+
+  auto stale_bytes=persisted;
+  // source identity begins after magic, stream version, count, and the two
+  // revision lanes in the persisted POD header.
+  stale_bytes[32U]^=1U;
+  tetra::GpuConformingVolumeAuthority rejected_identity(checkpoint);
+  CHECK_FALSE(rejected_identity.replay(stale_bytes,256U));
+  CHECK(rejected_identity.token()==initial);
+  auto malformed_bytes=persisted;
+  // First command operation: prefix + four address lanes.
+  malformed_bytes[96U]=7U;
+  tetra::GpuConformingVolumeAuthority rejected_command(checkpoint);
+  CHECK_FALSE(rejected_command.replay(malformed_bytes,256U));
+  CHECK(rejected_command.token()==initial);
+  CHECK_THROWS_AS(static_cast<void>(tetra::deserialize_gpu_conforming_volume_journal(
+      std::span<const std::uint8_t>(persisted.data(),persisted.size()-1U))),
+      std::invalid_argument);
+}
+
 TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   std::vector<tetra::WorldTetAddress> roots;
   for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
@@ -2293,7 +2359,23 @@ TEST_CASE("blocked runtime publishes a retained P6 packet off the presentation t
   const auto require_matched_packet=[&] {
     const auto* packet=runtime.gpu_green_mask_packet();
     const auto* directory=runtime.world_cut_directory();
+    const auto authority=runtime.world_volume_authority_token();
     REQUIRE(packet!=nullptr);REQUIRE(directory!=nullptr);
+    REQUIRE(authority);
+    // These are the real runtime accessors used by volume consumers. They
+    // bind collision/cutaway/export inputs to the same directory and blocked
+    // conforming volume that was atomically adopted with the render scene.
+    CHECK(runtime.world_cut_directory(*authority)==directory);
+    const auto* volume=runtime.world_conforming_volume(*authority);
+    const auto* scene=runtime.scene(*authority);
+    const auto* collision_field=runtime.field(*authority);
+    REQUIRE(volume!=nullptr);
+    REQUIRE(scene!=nullptr);REQUIRE(collision_field!=nullptr);
+    CHECK(authority->revision==directory->revision());
+    CHECK(authority->logical_cut_hash==directory->canonical_cut_hash());
+    CHECK(authority->conforming_volume_hash==volume->canonical_hash);
+    CHECK(scene->render_origin.x==runtime.scene().render_origin.x);
+    CHECK(collision_field==&runtime.field());
     CHECK(packet->header.source_revision==directory->revision());
     CHECK_NOTHROW(tetra::validate_gpu_green_mask_packet(
         *packet,directory->revision()));
@@ -2308,6 +2390,7 @@ TEST_CASE("blocked runtime publishes a retained P6 packet off the presentation t
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   require_matched_packet();
+  const auto old_authority=*runtime.world_volume_authority_token();
   auto camera=runtime.diagnostics().published_camera_position;
   camera.x+=0.5;
   tetra::Camera moved;
@@ -2326,6 +2409,13 @@ TEST_CASE("blocked runtime publishes a retained P6 packet off the presentation t
   }
   CHECK_FALSE(runtime.diagnostics().busy);
   require_matched_packet();
+  if(const auto current=runtime.world_volume_authority_token();
+     current&&*current!=old_authority) {
+    CHECK(runtime.world_cut_directory(old_authority)==nullptr);
+    CHECK(runtime.world_conforming_volume(old_authority)==nullptr);
+    CHECK(runtime.scene(old_authority)==nullptr);
+    CHECK(runtime.field(old_authority)==nullptr);
+  }
 }
 
 TEST_CASE("analytic atmosphere ridge is an exact triangular planetary fixture") {

@@ -6215,7 +6215,14 @@ int main(int argc,char** argv) {
         }else if(runtime&&!((motion_test||gpu_terrain_performance_smoke_test)&&scene_vertex_count!=0U&&
                              motion_rendered_frames>=30U)){
           const auto previous_feet=controller.state().feet;
-          controller.advance(elapsed,movement,runtime->field());
+          const auto volume_authority=runtime->world_volume_authority_token();
+          const auto* collision_field=volume_authority?
+              runtime->field(*volume_authority):nullptr;
+          // First-person collision is analytic SDF collision, but it is only
+          // sampled once the field and complete conforming volume front share
+          // one authority token. A stale front retains the prior pose.
+          if(collision_field!=nullptr)
+            controller.advance(elapsed,movement,*collision_field);
           camera_changed=camera_changed||
               controller.state().feet.x!=previous_feet.x||
               controller.state().feet.y!=previous_feet.y||

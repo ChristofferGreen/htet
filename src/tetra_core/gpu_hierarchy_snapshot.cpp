@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <set>
@@ -543,6 +544,137 @@ bool GpuConformingVolumeSlots::commit(const GpuConformingVolumeMutation& mutatio
   } catch(const std::exception&) {
     return false;
   }
+}
+
+namespace {
+constexpr std::array<std::uint8_t,8> volume_journal_magic{
+    'T','E','T','V','O','L','J','R'};
+template<class T> void append_pod(std::vector<std::uint8_t>& bytes,const T& value) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  const auto* first=reinterpret_cast<const std::uint8_t*>(&value);
+  bytes.insert(bytes.end(),first,first+sizeof(T));
+}
+template<class T> T read_pod(std::span<const std::uint8_t> bytes,std::size_t& offset) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  if(offset>bytes.size()||bytes.size()-offset<sizeof(T))
+    throw std::invalid_argument("GPU volume journal is truncated");
+  T result{};
+  std::memcpy(&result,bytes.data()+offset,sizeof(T));
+  offset+=sizeof(T); return result;
+}
+GpuConformingVolumeAuthorityToken volume_token(const WorldCutDirectory& directory,
+                                                bool gpu_authoritative) {
+  return {directory.revision(),directory.canonical_cut_hash(),
+          gpu_conforming_volume_hash(directory),gpu_authoritative};
+}
+}  // namespace
+
+std::vector<std::uint8_t> serialize_gpu_conforming_volume_journal(
+    const GpuConformingVolumeMutation& mutation) {
+  if(mutation.header.status!=GpuConformingVolumeMutationStatus::ready ||
+     mutation.journal.empty())
+    throw std::invalid_argument("only ready GPU volume mutations persist");
+  std::vector<std::uint8_t> result;
+  result.reserve(volume_journal_magic.size()+sizeof(std::uint32_t)*2U+
+      sizeof(mutation.header)+mutation.journal.size()*sizeof(GpuConformingVolumeDeviceCommand));
+  result.insert(result.end(),volume_journal_magic.begin(),volume_journal_magic.end());
+  append_pod(result,gpu_conforming_volume_journal_format_version);
+  const auto count=static_cast<std::uint32_t>(mutation.journal.size());
+  append_pod(result,count); append_pod(result,mutation.header);
+  for(const auto& edit:mutation.journal) {
+    GpuConformingVolumeDeviceCommand command{gpu_hierarchy_address_lanes(edit.address),
+        edit.operation==WorldTopologyOperation::split?0U:1U,{}};
+    append_pod(result,command);
+  }
+  return result;
+}
+
+GpuConformingVolumeJournalRecord deserialize_gpu_conforming_volume_journal(
+    std::span<const std::uint8_t> bytes) {
+  constexpr std::size_t prefix=volume_journal_magic.size()+sizeof(std::uint32_t)*2U+
+      sizeof(GpuConformingVolumeMutationHeader);
+  if(bytes.size()<prefix || !std::equal(volume_journal_magic.begin(),
+      volume_journal_magic.end(),bytes.begin()))
+    throw std::invalid_argument("GPU volume journal has invalid magic");
+  std::size_t offset=volume_journal_magic.size();
+  if(read_pod<std::uint32_t>(bytes,offset)!=gpu_conforming_volume_journal_format_version)
+    throw std::invalid_argument("GPU volume journal version is unsupported");
+  const auto count=read_pod<std::uint32_t>(bytes,offset);
+  if(count==0U || count>(bytes.size()-offset-sizeof(GpuConformingVolumeMutationHeader)) /
+      sizeof(GpuConformingVolumeDeviceCommand))
+    throw std::invalid_argument("GPU volume journal command count is invalid");
+  GpuConformingVolumeJournalRecord result;
+  result.header=read_pod<GpuConformingVolumeMutationHeader>(bytes,offset);
+  if(result.header.format_version!=gpu_conforming_volume_proposal_format_version ||
+     result.header.status!=GpuConformingVolumeMutationStatus::ready)
+    throw std::invalid_argument("GPU volume journal header is invalid");
+  result.commands.reserve(count);
+  for(std::uint32_t index=0U;index<count;++index)
+    result.commands.push_back(read_pod<GpuConformingVolumeDeviceCommand>(bytes,offset));
+  if(offset!=bytes.size())throw std::invalid_argument("GPU volume journal has trailing bytes");
+  return result;
+}
+
+std::uint64_t gpu_conforming_volume_hash(const WorldCutDirectory& directory) {
+  WorldConformingClosureCache closure;
+  std::vector<WorldTetAddress> owners;
+  owners.reserve(directory.logical_owner_count());
+  directory.for_each_logical_owner([&](WorldTetAddress owner){owners.push_back(owner);});
+  static_cast<void>(close_world_conforming_cut(owners,&closure));
+  return reconstruct_blocked_world_conforming_volume(directory,closure).canonical_hash;
+}
+
+GpuConformingVolumeAuthority::GpuConformingVolumeAuthority(WorldCutCheckpoint initial)
+    : cpu_fallback_(initial),gpu_slots_(std::move(initial)) {
+  token_=volume_token(cpu_fallback_,false);
+}
+
+const WorldCutDirectory& GpuConformingVolumeAuthority::active() const noexcept {
+  return token_.gpu_authoritative?gpu_slots_.active():cpu_fallback_;
+}
+
+const WorldCutDirectory* GpuConformingVolumeAuthority::consume(
+    GpuConformingVolumeConsumer,const GpuConformingVolumeAuthorityToken& token) const noexcept {
+  return token==token_?&active():nullptr;
+}
+
+bool GpuConformingVolumeAuthority::commit(const GpuConformingVolumeMutation& mutation,
+    std::uint32_t result_capacity,const std::function<bool()>& canceled) {
+  if(canceled&&canceled())return false;
+  try {
+    // The independent fallback staging is intentional: a device slot cannot
+    // become authority merely because it agrees with itself.
+    validate_gpu_conforming_volume_mutation(cpu_fallback_,mutation,result_capacity);
+    WorldCutDirectory cpu_candidate(cpu_fallback_.checkpoint());
+    const auto staged=cpu_candidate.stage_transaction(mutation.journal,
+        mutation.header.result_revision,canceled);
+    cpu_candidate.publish(staged.manifest);
+    const auto cpu_token=volume_token(cpu_candidate,false);
+    if(cpu_token.logical_cut_hash!=mutation.header.canonical_result_hash ||
+       (canceled&&canceled()))return false;
+    if(!gpu_slots_.commit(mutation,result_capacity,canceled))return false;
+    const auto gpu_token=volume_token(gpu_slots_.active(),true);
+    if(gpu_token.revision!=cpu_token.revision ||
+       gpu_token.logical_cut_hash!=cpu_token.logical_cut_hash ||
+       gpu_token.conforming_volume_hash!=cpu_token.conforming_volume_hash)
+      return false;
+    cpu_fallback_=std::move(cpu_candidate);
+    token_=gpu_token;
+    return true;
+  } catch(const std::exception&) { return false; }
+}
+
+bool GpuConformingVolumeAuthority::replay(std::span<const std::uint8_t> bytes,
+    std::uint32_t result_capacity) {
+  try {
+    const auto record=deserialize_gpu_conforming_volume_journal(bytes);
+    const auto mutation=ingest_gpu_conforming_volume_journal(active(),record.commands,
+        record.header.source_revision,record.header.result_revision,result_capacity);
+    // The persisted header is an integrity proof. Recompute it rather than
+    // trusting either the saved result hash or an old device result.
+    if(mutation.header!=record.header)return false;
+    return commit(mutation,result_capacity);
+  } catch(const std::exception&) { return false; }
 }
 
 GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(

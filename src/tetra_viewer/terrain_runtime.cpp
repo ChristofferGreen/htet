@@ -1898,6 +1898,11 @@ BlockedTerrainRuntime::BlockedTerrainRuntime(
   gpu_green_mask_packet_=std::move(initial.gpu_green_mask_packet);
   published_view_identity_=initial.view_identity;
   surface_cache_=std::move(initial.surface_cache);
+  // Construction is the first complete publication too. Headless capture and
+  // collision may consume it before a later asynchronous update occurs.
+  volume_authority_=tetra::GpuConformingVolumeAuthorityToken{
+      directory_->revision(),directory_->canonical_cut_hash(),
+      surface_cache_.conforming.canonical_hash,false};
   hierarchy_demand_=std::move(initial.hierarchy_demand);
   detail_working_set_=std::move(initial.detail_working_set);
   atmosphere_shadow_front_=std::move(initial.atmosphere_shadow_front);
@@ -3286,6 +3291,13 @@ bool BlockedTerrainRuntime::update() {
     published_view_identity_=publication.view_identity;
     flat_scene_current_=false;
     surface_cache_=std::move(publication.surface_cache);
+    // Directory, complete conforming volume, and PreparedScene are adopted in
+    // this one publication block. The token is written only after both hashes
+    // are available, so a consumer cannot combine a new directory with an old
+    // cutaway/collision volume.
+    volume_authority_=tetra::GpuConformingVolumeAuthorityToken{
+        directory_->revision(),directory_->canonical_cut_hash(),
+        surface_cache_.conforming.canonical_hash,false};
     gpu_surface_cells_=
         std::move(publication.gpu_surface_cells);
     gpu_green_mask_packet_=

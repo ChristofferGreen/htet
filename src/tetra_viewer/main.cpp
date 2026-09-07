@@ -1990,11 +1990,19 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 ++world_gpu_capture_motion_frame_count;
             if(world_runtime&&
                runtime_status.scene_generation!=world_scene_generation){
+                const auto volume_authority=
+                    world_runtime->world_volume_authority_token();
+                const auto* authoritative_scene=volume_authority?
+                    world_runtime->scene(*volume_authority):nullptr;
+                // A cutaway-capable render scene must be captured through the
+                // same complete volume proof as collision/export consumers.
+                // If publication moved between reads, retain the prior scene.
+                if(authoritative_scene==nullptr)continue;
                 if(world_runtime->retained_surface()!=nullptr){
                     background_prepared_scene={};
                     background_prepared_scene.render_origin=
                         world_runtime->render_origin();
-                }else background_prepared_scene=world_runtime->scene();
+                }else background_prepared_scene=*authoritative_scene;
                 prepared_scene_mesh_revision=runtime_status.scene_mesh_revision;
                 world_scene_generation=runtime_status.scene_generation;
                 upload_dirty=true;
@@ -4561,9 +4569,14 @@ int tetra_viewer::run_application(int argc, char** argv,ApplicationMode mode)
                 else g_SceneRenderer.upload(prepared_scene.triangle_vertices,
                                             prepared_scene.hierarchy_line_vertices,
                                             overlay_lines);
-                if(world_mode&&world_runtime&&
-                   world_runtime->world_cut_directory()!=nullptr){
-                    const auto& directory=*world_runtime->world_cut_directory();
+                const auto volume_authority=world_runtime?
+                    world_runtime->world_volume_authority_token():std::nullopt;
+                if(world_mode&&world_runtime&&volume_authority){
+                    const auto* matching_directory=world_runtime->world_cut_directory(
+                        *volume_authority);
+                    if(matching_directory==nullptr)
+                        throw std::logic_error("world volume authority token lost its front");
+                    const auto& directory=*matching_directory;
                     if(g_SceneRenderer.gpu_lod_uploaded_revision()!=
                        directory.revision())
                         g_SceneRenderer.upload_gpu_hierarchy_snapshot(

@@ -410,11 +410,6 @@ performance-promotion decision.
       remain in the transaction validator. Stale, canceled, malformed, and
       overflowing journals preserve the preceding revision. Native mixed-depth
       closure-to-slot parity and focused split/merge/rollback tests pass.
-- [ ] **P10d — Reconcile authoritative GPU volume with persistence and
-      collision.** Version and replay the committed transaction journal,
-      prove CPU/GPU logical-cut and conforming-volume hash equality, and make
-      collision/cutaway/export consume only the matching complete authority.
-      Retain the CPU oracle/fallback until this reconciliation is exact.
 
 ## Completed/retired evidence: preview-first terrain response
 
