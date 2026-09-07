@@ -534,14 +534,35 @@
 
 ## 2026-09-07
 
-- [x] **P10d — Reconcile authoritative GPU volume with persistence and
-  collision.** Versioned, magic-tagged POD transaction journals replay only
-  after strict validation. Independently staged CPU and GPU candidates must
-  agree on revision, logical-cut hash, and conforming-volume hash before the
-  authority token flips. Runtime scene, field, directory, and volume accessors
-  reject retired tokens; Vulkan cutaway publication, scripted export/capture,
-  and Metal collision use the matching front. Fresh Release validation passed
-  all 519 tests after the headless initial-publication token was fixed.
+- [x] **P7e1 — Correct GPU-route provenance and default.** Restored CPU
+  terrain generation as the normal launch route and renamed the Metal toggle
+  to say that it selects GPU mesh emission from a CPU terrain source. A native
+  headless test asserts that an ordinary launch reports
+  `gpu_renderer_requested:false`; the opt-in route remains available for
+  comparison. The active P7 tracker is now split into device traversal,
+  on-device conforming-cut, and end-to-end provenance/performance leaves.
+
+- [x] **P10b — Qualify bounded GPU split closure.** The Metal smoke fixture
+  derives a deterministic closure journal through device seed, edge/ancestor
+  propagation, green promotion, face 2:1 closure, count/scan/scatter, and a
+  CPU-oracle comparison. It remains qualification infrastructure: its source
+  packet is host-built and it is not dispatched by the production runtime.
+
+- [x] **P10c — Qualify GPU journal commit and rollback.** A device-written
+  journal is ingested and checked by the CPU transaction oracle, then the
+  inactive `WorldCutDirectory` slot is reconstructed and atomically selected.
+  Split, merge, stale, malformed, cancellation, and rollback tests pass. This
+  is not a live device-resident directory commit; production runtime
+  publication remains CPU-owned.
+
+- [x] **P10d — Qualify volume journal persistence and matching consumers.**
+  Versioned, magic-tagged POD journals replay only after strict validation.
+  The core authority fixture independently stages CPU and GPU candidates and
+  requires matching revision/logical/conforming hashes before its token flips.
+  Runtime consumers use matching tokens, but the production runtime currently
+  mints a CPU-authoritative token for every publication; this work does not
+  establish live GPU volume authority. Fresh Release validation passed all 519
+  tests after the headless initial-publication token was fixed.
 
 - [x] **P10a — Define the authoritative GPU-volume transaction ABI and CPU
   oracle.** Added a bounded, immutable split-proposal journal that begins
@@ -552,9 +573,9 @@
   cannot mutate or publish the source volume. Independent validation replays
   the existing CPU transaction and rejects changed journals or malformed
   identities. Positive, stale, duplicate, capacity-overflow, and corrupted
-  output tests establish the fail-closed P10 device contract. P10b owns GPU
-  execution of this journal; P10c owns commits, repair, and rollback; P10d
-  owns persistence/collision reconciliation.
+  output tests establish the fail-closed P10 device contract. The later P10b,
+  P10c, and P10d qualification fixtures are recorded above; none is wired as
+  live GPU-volume authority in the production runtime.
 
 ## 2026-09-03
 

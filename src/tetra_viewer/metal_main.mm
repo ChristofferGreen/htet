@@ -4973,11 +4973,11 @@ int main(int argc,char** argv) {
   const bool metal_gpu_terrain_qualification=
       metal_gpu_terrain_native_diagnostic||
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_QUALIFICATION")!=nullptr;
-  // GPU terrain is the normal interactive route. Selecting it does not relax
-  // qualification: until a complete current native slot is promoted, the CPU
-  // front remains visible. Set TETWORLD_METAL_GPU_TERRAIN_RENDERER=0 to use
-  // the CPU renderer explicitly.
-  bool gpu_terrain_renderer_selected=true;
+  // GPU mesh emission remains an opt-in comparison route. It does not make
+  // terrain generation GPU-resident: the current P6 source packet is built by
+  // the CPU publication worker. Until P7e's device-owned selection and
+  // closure path exists, ordinary launches must retain CPU generation.
+  bool gpu_terrain_renderer_selected=gpu_terrain_performance_smoke_test;
   if(const char* value=std::getenv("TETWORLD_METAL_GPU_TERRAIN_RENDERER");
      value!=nullptr){
     if(std::strcmp(value,"0")==0)gpu_terrain_renderer_selected=false;
@@ -7307,12 +7307,13 @@ int main(int argc,char** argv) {
                   gpu_terrain_counters->failed.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(
                   gpu_terrain_counters->overflow.load(std::memory_order_relaxed)));
-          if(ImGui::Checkbox("Use GPU terrain renderer",
+          if(ImGui::Checkbox("Use GPU mesh emission (CPU terrain source)",
                              &gpu_terrain_renderer_selected))
             gpu_terrain_renderer_available=false;
           if(gpu_terrain_renderer_selected)
             ImGui::Text("GPU terrain: %s",gpu_terrain_renderer_available?
-                "qualified generation selected":"unavailable; retaining CPU front");
+                "GPU-emitted mesh; CPU selection/closure still active":
+                "unavailable; retaining CPU front");
           ImGui::Text("Resident %.1f MiB   cache %.1f MiB",
               static_cast<double>(diagnostics.resident_bytes)/(1024.0*1024.0),
               static_cast<double>(diagnostics.retained_cache_bytes)/

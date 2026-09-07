@@ -437,6 +437,15 @@ if(APPLE AND TETRA_BUILD_METAL)
       TETWORLD_METAL_GPU_TERRAIN_RENDERER=1
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  # GPU mesh emission is an opt-in comparison route until the live P7e path
+  # owns camera selection and closure. A normal launch must not report it as
+  # selected merely because the CPU front can be copied into private storage.
+  add_test(NAME "metal GPU mesh emission defaults to CPU terrain generation"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  set_tests_properties("metal GPU mesh emission defaults to CPU terrain generation"
+    PROPERTIES PASS_REGULAR_EXPRESSION "\\\"gpu_renderer_requested\\\":false")
   # P8b drives the selected renderer through the production moving-camera
   # loop.  It verifies the selected, complete private display front across
   # camera motion without enabling legacy candidate-payload readback. Native

@@ -345,34 +345,49 @@ until every leaf is complete.
 
 ## Active chain: GPU-resident BCC render front
 
-The production direction adds a second, cross-backend GPU terrain renderer
-derived from the persistent BCC hierarchy—not a cube-sphere or other second
-terrain authority. The existing CPU terrain renderer remains available as the
-reference/fallback; this is not a migration that removes it. The app must
-expose a visible CPU/GPU terrain-renderer toggle so either complete renderer
-can be selected for comparison.
-For this chain, “GPU terrain generation” means that camera-driven selection,
-field evaluation, surface construction, and publication remain on the GPU.
-The CPU may remain authoritative for persistence, editing, collision, export,
-and conforming-volume work until the later full-volume milestone. Details and
-evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
+The production goal is a GPU-derived render front from the persistent BCC
+hierarchy, not a second terrain authority. “GPU terrain generation” means the
+GPU owns camera-driven selection, conformity closure, owner-stream creation,
+surface construction, and render-front publication for a revisioned immutable
+world input. CPU remains the reference/fallback and may remain authoritative
+for persistence, editing, collision, and export until a separate volume
+promotion is proven. The current GPU mesh-emission route is useful comparison
+infrastructure, but it still consumes a CPU-built P6 packet and must not be
+called GPU terrain generation.
 
-- [ ] **P7 — Generate the watertight BCC surface on the GPU.** This replaces
-      the production dependency on CPU-precomputed `GpuTerrainCellRecord`
-      geometry in ordered, diagnostic-only leaves. P6a--P6c are complete: the
-      frozen Grande-template ABI, revisioned restricted-green masks, exact
-      dyadic edge directory, and mixed-depth halo proof are the exclusive
-      topology authority. P7a's compact field/classification diagnostic is
-      complete and non-drawable; P7b's roots and compact base-triangle
-      diagnostics are complete. A production-cut experiment established that
-      P7b2's serial diagnostic scan cannot enter the live chain; P7c2b1b0's
-      bounded parallel replacement, live private slots, and the full
-      diagnostic-only P7d parity gate are complete. P8 is next and is the
-      only milestone allowed to remove qualification readback.
+### P7e tracker — production GPU-derived render front
+
+P7a--P8c provide reusable shader, private-front, parity, and fail-closed
+infrastructure. They do not close P7 because CPU still performs selection,
+closure, source-packet construction, and the initial mesh seed. CPU terrain
+generation remains the normal launch default until every P7e leaf is complete.
+
+- [ ] **P7e2 — Publish immutable device traversal state.** Upload one
+      revisioned BCC hierarchy/geometry snapshot to persistent Metal storage
+      and retain it across camera motion. A live GPU selection pass must emit
+      bounded deterministic record marks for the current camera tuple; it must
+      not call CPU surface construction or create a CPU terrain packet. Cover
+      revision replacement, stale tuple rejection, overflow, and the existing
+      fixed/walk/orbit selector corpus.
+- [ ] **P7e3 — Construct a conforming GPU render cut.** Consume P7e2 marks
+      and derive canonical owner/green-mask state on-device through bounded
+      split and face/edge fixed points. Use hierarchy/block-local incidence,
+      never P10's quadratic host adjacency builder or a CPU closure packet.
+      Byte-compare root seams and mixed-depth cuts to the CPU oracle; failed,
+      stale, or overflowing work retains the prior front.
+- [ ] **P7e4 — Promote a provenance-proven GPU render front.** Feed P7e3
+      directly into owner-direct mesh emission and P8 private publication. A
+      moving-camera integration test must prove no post-bootstrap CPU surface
+      build, P6-packet construction, or CPU mesh seed on the selected route,
+      while preserving topology/image parity and an end-to-end camera-to-front
+      p95 improvement against the CPU baseline. Only then may GPU generation
+      become the default.
 ### P8 tracker — readback-free GPU terrain publication
 
-P8 is complete. P9 remains conditional on P8’s measured complete-frame
-result.
+P8 is complete only for private GPU mesh emission from a CPU-produced P6
+packet. It is not completion of P7e or evidence that CPU terrain generation
+has left the critical path. P9 remains conditional on P8’s measured
+complete-frame result.
 
 P8a1, P8b, and P8c are complete: the P6 packet is an immutable sidecar of the
 background terrain publication, and selected private-front motion is now
@@ -390,26 +405,6 @@ performance-promotion decision.
       schemes. Retain the persistent path only for a measured complete-frame
       improvement with identical visual and topology results. This is a
       scheduling optimization, not a replacement topology/extraction authority.
-- [x] **P10b — Execute bounded split closure on the GPU.** Consume P10a's
-      immutable source/request ABI on-device and emit its deterministic
-      closure journal through count/scan/scatter. In qualification mode it
-      must byte-compare to the P10a CPU oracle across root seams, mixed
-      depths, stale inputs, malformed addresses, duplicates, overlap, and
-      reservation overflow; failed work must leave the published CPU volume
-      untouched. The source packet now carries canonical inherited green masks
-      and bounded ancestor-edge incidence, so the device performs the actual
-      seed, edge propagation, restricted-green promotion, and 2:1 face fixed
-      point before its count/scan/scatter journal. Native mixed-depth parity
-      produces the same nine-entry journal as P10a; the source remains
-      immutable and qualification-only.
-- [x] **P10c — Commit GPU volume mutations with face repair and rollback.**
-      The device-written closure journal is ingested through a POD split/merge
-      ABI, checked against the P10a oracle, and staged into an inactive
-      complete `WorldCutDirectory` slot before one atomic ping-pong flip.
-      Complete-family merge eligibility and deterministic block/face repair
-      remain in the transaction validator. Stale, canceled, malformed, and
-      overflowing journals preserve the preceding revision. Native mixed-depth
-      closure-to-slot parity and focused split/merge/rollback tests pass.
 
 ## Completed/retired evidence: preview-first terrain response
 

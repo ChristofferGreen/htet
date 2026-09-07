@@ -67,13 +67,13 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-terrain-owner-direct-publication
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, private-memory
-- Fact: Selected GPU terrain uses owner-major count, a three-level deterministic scan, and direct `SceneVertex` emission, avoiding all root, compact-triangle, and projected intermediate allocation.
-- Evidence: A fresh 512-test Release gate completed 4,004 selected private GPU flights without failure, overflow, or CPU-front violations; nil omitted intermediates must also be skipped by Metal blit clears.
+- Fact: The opt-in Metal mesh-emission route uses owner-major count, a three-level deterministic scan, and direct `SceneVertex` emission from a CPU-built P6 owner packet, avoiding its GPU-side root, compact-triangle, and projected intermediates only.
+- Evidence: A fresh 512-test Release gate completed 4,004 selected private GPU flights without failure, overflow, or CPU-front violations; inspection of the runtime confirms CPU selection, closure, and P6 construction remain upstream.
 
 ### gpu-terrain-private-publication
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, private-memory, indirect, synchronization
-- Fact: P8a/P8b seed each complete CPU publication into private Metal vertex and indirect-argument buffers, and the selected GPU renderer preserves that generation-matched active front through live motion without normal candidate readback; native replacement may only use the private validate/copy/publish sequence.
+- Fact: P8a/P8b seed each complete CPU publication into private Metal vertex and indirect-argument buffers; the opt-in GPU mesh-emission route preserves that generation-matched active front through live motion without normal candidate readback, but is not a GPU-resident terrain-generation path.
 - Evidence: The hidden selected-GPU motion smoke settled in 89.18 seconds under its 120-second bound with the active private indirect handle selected and zero consumer-front violations; stale, failed, or overflowing native work cannot modify the prior buffers.
 
 ### gpu-volume-transaction-oracle
@@ -203,10 +203,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: The retained-front diagnostic matched the CPU triangle multiset and verified all 226,848 generated indices equal their referenced vertex slot.
 
 ### gpu-terrain-visible-parity
-- Updated: 2026-09-05
+- Updated: 2026-09-07
 - Tags: terrain, gpu, parity, image, latency
-- Fact: Realtime GPU surface LOD can draw the qualified double-buffered compute output indirectly while falling back to CPU for initial, stale, failed, or overflowing packets.
-- Evidence: Fixed and moving CPU/GPU captures matched colour and depth byte-for-byte; the 240-sample moving camera-to-present p50 was 8.330 ms CPU and 8.331 ms GPU on the display-limited test device.
+- Fact: Fixed and moving CPU/GPU mesh-emission captures match colour and depth, but their selected GPU route is still seeded by the CPU terrain front and therefore cannot establish GPU-resident terrain generation or an end-to-end latency gain.
+- Evidence: Runtime inspection found CPU selection, closure, P6 construction, and initial mesh seeding before private GPU emission; the 2026-09-07 P7e1 520-test Release gate restored CPU generation as the normal launch default.
 
 ### gpu-terrain-final-front-gate
 - Updated: 2026-09-05
