@@ -707,6 +707,58 @@ TEST_CASE("GPU green mask packet topology closes BCC depth and root boundaries")
   inspect(83U);
 }
 
+TEST_CASE("GPU conforming volume split proposals are exact and fail closed") {
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,71U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto source_hash=directory.canonical_cut_hash();
+  const auto source_owners=directory.logical_owner_count();
+  const std::array requested{tetra::WorldTetAddress::root(0U)};
+  const auto proposal=tetra::gpu_conforming_volume_split_proposal(
+      directory,requested,71U,72U,256U);
+  REQUIRE(proposal.header.status==tetra::GpuConformingVolumeProposalStatus::ready);
+  CHECK(proposal.header.source_identity==source_hash);
+  CHECK(proposal.header.requested_count==1U);
+  CHECK(proposal.header.result_count>source_owners);
+  CHECK(proposal.header.closure_count<=proposal.header.result_count);
+  CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_split_proposal(
+      directory,proposal,256U));
+  // Proposal construction is a private transaction: no source revision,
+  // owner set, or identity changes before an explicit later commit leaf.
+  CHECK(directory.revision()==71U);
+  CHECK(directory.logical_owner_count()==source_owners);
+  CHECK(directory.canonical_cut_hash()==source_hash);
+
+  const auto stale=tetra::gpu_conforming_volume_split_proposal(
+      directory,requested,70U,72U,256U);
+  CHECK(stale.header.status==tetra::GpuConformingVolumeProposalStatus::stale);
+  CHECK(stale.result_owners.empty());
+  const std::array duplicate{tetra::WorldTetAddress::root(0U),
+                             tetra::WorldTetAddress::root(0U)};
+  const auto malformed=tetra::gpu_conforming_volume_split_proposal(
+      directory,duplicate,71U,72U,256U);
+  CHECK(malformed.header.status==tetra::GpuConformingVolumeProposalStatus::malformed);
+  const auto overflow=tetra::gpu_conforming_volume_split_proposal(
+      directory,requested,71U,72U,1U);
+  CHECK(overflow.header.status==tetra::GpuConformingVolumeProposalStatus::overflow);
+  CHECK(overflow.result_owners.empty());
+
+  auto corrupt=proposal;
+  corrupt.header.canonical_result_hash^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_split_proposal(
+      directory,corrupt,256U),std::invalid_argument);
+  corrupt=proposal;
+  corrupt.result_owners.front()[0]^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_split_proposal(
+      directory,corrupt,256U),std::invalid_argument);
+  corrupt=proposal;
+  corrupt.header.status=tetra::GpuConformingVolumeProposalStatus::overflow;
+  CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_split_proposal(
+      directory,corrupt,256U),std::invalid_argument);
+}
+
 TEST_CASE("GPU terrain field tuple preserves the complete procedural contract") {
   tetra::GpuTerrainFieldTupleParameters parameters;
   parameters.source_revision=91U;parameters.field_revision=37U;

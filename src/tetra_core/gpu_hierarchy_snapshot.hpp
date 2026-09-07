@@ -87,6 +87,56 @@ struct GpuGreenMaskTopology {
   std::uint32_t nonmanifold_faces{};
   bool opposite_shared_orientations{true};
 };
+
+// P10a's transaction ABI deliberately begins before restricted-green closure.
+// Unlike GpuGreenMaskPacket (which is transport for an already closed render
+// front), this proposal carries requested red splits and the complete,
+// deterministic result of their closure.  The host implementation is the
+// byte-level oracle for the future device kernel; it never mutates its source
+// directory and failed proposals contain no partial result.
+inline constexpr std::uint32_t gpu_conforming_volume_proposal_format_version=1U;
+enum class GpuConformingVolumeProposalStatus : std::uint32_t {
+  ready=0U,
+  stale=1U,
+  malformed=2U,
+  overflow=3U,
+};
+struct alignas(16) GpuConformingVolumeProposalHeader {
+  std::uint64_t source_revision{};
+  std::uint64_t result_revision{};
+  std::uint64_t source_identity{};
+  std::uint64_t canonical_result_hash{};
+  std::uint32_t requested_count{};
+  std::uint32_t closure_count{};
+  std::uint32_t result_count{};
+  std::uint32_t format_version{gpu_conforming_volume_proposal_format_version};
+  GpuConformingVolumeProposalStatus status{
+      GpuConformingVolumeProposalStatus::malformed};
+  std::uint32_t reserved0{};
+  std::uint32_t reserved1{};
+  std::uint32_t reserved2{};
+  auto operator<=>(const GpuConformingVolumeProposalHeader&) const = default;
+};
+static_assert(sizeof(GpuConformingVolumeProposalHeader)==64U);
+struct GpuConformingVolumeProposal {
+  GpuConformingVolumeProposalHeader header{};
+  std::vector<std::array<std::uint32_t,4>> requested_splits;
+  std::vector<std::array<std::uint32_t,4>> closure_splits;
+  std::vector<std::array<std::uint32_t,4>> result_owners;
+};
+// The capacity is a preflight reservation for the complete replacement cut,
+// not a best-effort output limit.  An over-capacity proposal fails closed.
+[[nodiscard]] GpuConformingVolumeProposal
+gpu_conforming_volume_split_proposal(
+    const WorldCutDirectory& source,std::span<const WorldTetAddress> requested_splits,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity);
+// Independently replays the CPU transaction and rejects stale, malformed,
+// overflowing, or noncanonical candidate journals.  This is qualification
+// only; publication remains CPU-owned until the later P10 commit leaf.
+void validate_gpu_conforming_volume_split_proposal(
+    const WorldCutDirectory& source,const GpuConformingVolumeProposal& proposal,
+    std::uint32_t result_capacity);
 // Immutable P7a field/domain ABI.  The nine vec4 lanes preserve every scalar
 // used by Sphere and TerrainParameters; no sampled signs or CPU geometry are
 // permitted in this tuple.  The classification shader consumes this alongside

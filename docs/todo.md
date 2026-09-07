@@ -390,10 +390,23 @@ performance-promotion decision.
       schemes. Retain the persistent path only for a measured complete-frame
       improvement with identical visual and topology results. This is a
       scheduling optimization, not a replacement topology/extraction authority.
-- [ ] **P10 — Move the authoritative conforming volume to the GPU.** Treat GPU
-      BCC closure, mutations, neighbour/face repair, rollback, and
-      persistence/collision reconciliation as a later independent milestone.
-      It must not block completion or promotion of the render-only chain.
+- [ ] **P10b — Execute bounded split closure on the GPU.** Consume P10a's
+      immutable source/request ABI on-device and emit its deterministic
+      closure journal through count/scan/scatter. In qualification mode it
+      must byte-compare to the P10a CPU oracle across root seams, mixed
+      depths, stale inputs, malformed addresses, duplicates, overlap, and
+      reservation overflow; failed work must leave the published CPU volume
+      untouched.
+- [ ] **P10c — Commit GPU volume mutations with face repair and rollback.**
+      Add bounded split/merge journals, complete-family merge eligibility,
+      deterministic neighbour/face ownership repair, and ping-pong complete
+      volume slots. A rejected, stale, canceled, malformed, or overflowing
+      mutation retains the preceding complete revision.
+- [ ] **P10d — Reconcile authoritative GPU volume with persistence and
+      collision.** Version and replay the committed transaction journal,
+      prove CPU/GPU logical-cut and conforming-volume hash equality, and make
+      collision/cutaway/export consume only the matching complete authority.
+      Retain the CPU oracle/fallback until this reconciliation is exact.
 
 ## Completed/retired evidence: preview-first terrain response
 

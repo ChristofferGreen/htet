@@ -6,6 +6,7 @@
 
 ## Recent Test Runs
 
+- 2026-09-07 09:27 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh P10a transaction-ABI gate passed all 514 tests; the focused split-proposal oracle also passed stale, duplicate, overflow, corruption, and source-nonmutation checks.
 - 2026-09-07 08:36 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: metal GPU terrain owner-direct performance qualification | notes: fresh full-gate hardware run measured 8.2689 ms median / 18.1460 ms p95 generation (limit 8 ms); full-frame p95 6.2648 ms passed its 33.3333 ms milestone.
 - 2026-09-07 09:13 CEST | pass | mode: Release, hidden Metal | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain owner-direct performance qualification$'` | failures: none | notes: P8c2 passed the authorized provisional <=20 ms generation p95 gate: 6.7481 ms median / 10.8768 ms p95 generation, 1.7236 ms median / 3.3004 ms p95 full frame, 32/34 accepted, and zero failures, overflow, or CPU-front violations.
 - 2026-09-07 08:18 CEST | pass, non-repeatable | mode: Release, hidden Metal | command: `./scripts/compile.sh --release --skip-tests && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain owner-direct performance qualification$'` | failures: none | notes: one native P8c2 run measured 3.7290 ms median / 5.5346 ms p95 generation, but the fresh full gate later failed the same p95 requirement.

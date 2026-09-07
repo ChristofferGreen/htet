@@ -254,6 +254,102 @@ GpuGreenMaskPacket make_gpu_green_mask_packet_from_closure(
       candidates,closure,source_revision);
 }
 
+GpuConformingVolumeProposal gpu_conforming_volume_split_proposal(
+    const WorldCutDirectory& source,
+    std::span<const WorldTetAddress> requested_splits,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity) {
+  GpuConformingVolumeProposal result;
+  result.header.source_revision=expected_source_revision;
+  result.header.result_revision=result_revision;
+  result.header.source_identity=source.canonical_cut_hash();
+  if(expected_source_revision!=source.revision()) {
+    result.header.status=GpuConformingVolumeProposalStatus::stale;
+    return result;
+  }
+  if(result_revision<=expected_source_revision||requested_splits.empty()||
+     !std::ranges::is_sorted(requested_splits)||
+     std::ranges::adjacent_find(requested_splits)!=requested_splits.end()) {
+    result.header.status=GpuConformingVolumeProposalStatus::malformed;
+    return result;
+  }
+  std::vector<WorldTopologyEdit> edits;
+  edits.reserve(requested_splits.size());
+  for(const auto address:requested_splits)
+    edits.push_back({address,WorldTopologyOperation::split});
+  try {
+    // stage_transaction is deliberately invoked on a private snapshot.  This
+    // oracle establishes the all-or-nothing candidate journal without ever
+    // exposing topology work to consumers of the source directory.
+    const auto staged=source.stage_transaction(edits,result_revision);
+    WorldCutDirectory candidate(source.checkpoint());
+    candidate.publish(staged.manifest);
+    std::vector<WorldTetAddress> owners;
+    owners.reserve(candidate.logical_owner_count());
+    candidate.for_each_logical_owner(
+        [&](WorldTetAddress owner){owners.push_back(owner);});
+    std::ranges::sort(owners);
+    if(owners.size()>result_capacity) {
+      result.header.status=GpuConformingVolumeProposalStatus::overflow;
+      return result;
+    }
+    result.requested_splits.reserve(requested_splits.size());
+    for(const auto address:requested_splits)
+      result.requested_splits.push_back(gpu_hierarchy_address_lanes(address));
+    result.closure_splits.reserve(staged.transaction.closure_edits.size());
+    for(const auto address:staged.transaction.closure_edits)
+      result.closure_splits.push_back(gpu_hierarchy_address_lanes(address));
+    result.result_owners.reserve(owners.size());
+    for(const auto address:owners)
+      result.result_owners.push_back(gpu_hierarchy_address_lanes(address));
+    result.header.requested_count=static_cast<std::uint32_t>(
+        result.requested_splits.size());
+    result.header.closure_count=static_cast<std::uint32_t>(
+        result.closure_splits.size());
+    result.header.result_count=static_cast<std::uint32_t>(result.result_owners.size());
+    result.header.canonical_result_hash=staged.transaction.canonical_hash;
+    result.header.status=GpuConformingVolumeProposalStatus::ready;
+  }catch(const std::overflow_error&) {
+    result.header.status=GpuConformingVolumeProposalStatus::overflow;
+  }catch(const std::exception&) {
+    result.header.status=GpuConformingVolumeProposalStatus::malformed;
+  }
+  return result;
+}
+
+void validate_gpu_conforming_volume_split_proposal(
+    const WorldCutDirectory& source,const GpuConformingVolumeProposal& proposal,
+    std::uint32_t result_capacity) {
+  const auto& header=proposal.header;
+  if(header.format_version!=gpu_conforming_volume_proposal_format_version||
+     header.status!=GpuConformingVolumeProposalStatus::ready||
+     header.source_revision!=source.revision()||
+     header.source_identity!=source.canonical_cut_hash()||
+     header.result_revision<=header.source_revision||
+     header.requested_count!=proposal.requested_splits.size()||
+     header.closure_count!=proposal.closure_splits.size()||
+     header.result_count!=proposal.result_owners.size()||
+     header.result_count>result_capacity)
+    throw std::invalid_argument("GPU conforming-volume proposal header is invalid");
+  std::vector<WorldTetAddress> requested;
+  requested.reserve(proposal.requested_splits.size());
+  for(const auto lanes:proposal.requested_splits) {
+    if(!gpu_hierarchy_address_valid(lanes))
+      throw std::invalid_argument("GPU conforming-volume proposal address is invalid");
+    requested.push_back(gpu_hierarchy_address_from_lanes(lanes));
+  }
+  if(requested.empty()||!std::ranges::is_sorted(requested)||
+     std::ranges::adjacent_find(requested)!=requested.end())
+    throw std::invalid_argument("GPU conforming-volume proposal requests are not canonical");
+  const auto expected=gpu_conforming_volume_split_proposal(
+      source,requested,header.source_revision,header.result_revision,result_capacity);
+  if(expected.header.status!=GpuConformingVolumeProposalStatus::ready||
+     expected.header!=header||expected.requested_splits!=proposal.requested_splits||
+     expected.closure_splits!=proposal.closure_splits||
+     expected.result_owners!=proposal.result_owners)
+    throw std::invalid_argument("GPU conforming-volume proposal disagrees with CPU oracle");
+}
+
 GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
     const GpuTerrainFieldTupleParameters& parameters) {
   const auto& field=parameters.field;

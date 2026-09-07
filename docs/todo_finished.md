@@ -532,6 +532,21 @@
   sliced production publication viable because closure/surface work remains
   global; that bounded integration remains the next open leaf.
 
+## 2026-09-07
+
+- [x] **P10a — Define the authoritative GPU-volume transaction ABI and CPU
+  oracle.** Added a bounded, immutable split-proposal journal that begins
+  before restricted-green closure: exact source revision and cut identity,
+  canonical requested splits, closure-expanded split entries, replacement
+  owners, result hash, and explicit stale/malformed/overflow status. The
+  oracle stages only a private directory snapshot, so proposal construction
+  cannot mutate or publish the source volume. Independent validation replays
+  the existing CPU transaction and rejects changed journals or malformed
+  identities. Positive, stale, duplicate, capacity-overflow, and corrupted
+  output tests establish the fail-closed P10 device contract. P10b owns GPU
+  execution of this journal; P10c owns commits, repair, and rollback; P10d
+  owns persistence/collision reconciliation.
+
 ## 2026-09-03
 
 - [x] P10d final promotion audit and Default decision: P0--P9 source,

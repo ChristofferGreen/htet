@@ -76,6 +76,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P8a/P8b seed each complete CPU publication into private Metal vertex and indirect-argument buffers, and the selected GPU renderer preserves that generation-matched active front through live motion without normal candidate readback; native replacement may only use the private validate/copy/publish sequence.
 - Evidence: The hidden selected-GPU motion smoke settled in 89.18 seconds under its 120-second bound with the active private indirect handle selected and zero consumer-front violations; stale, failed, or overflowing native work cannot modify the prior buffers.
 
+### gpu-volume-transaction-oracle
+- Updated: 2026-09-07
+- Tags: gpu, bcc, closure, transaction, rollback
+- Fact: The first authoritative-volume GPU contract must begin with canonical requested split addresses and an immutable source revision/cut identity, because the P6 green-mask packet is already post-closure render transport and cannot establish topology authority.
+- Evidence: `GpuConformingVolumeProposal` privately replays `WorldCutDirectory::stage_transaction`, records closure-expanded splits and complete replacement owners, and its regression rejects stale, malformed, overflowing, and modified journals without mutating the source directory.
+
 ### gpu-terrain-production-root-expansion
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, performance, capacity
