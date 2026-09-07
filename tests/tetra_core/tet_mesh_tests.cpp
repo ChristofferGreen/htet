@@ -787,6 +787,64 @@ TEST_CASE("GPU conforming volume closure journals are canonical at root seams") 
   CHECK(directory.revision()==91U);
 }
 
+TEST_CASE("GPU conforming volume mutations publish complete ping pong fronts") {
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory source(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,111U,tetra::HierarchyResidencyTier::conforming_volume));
+  tetra::GpuConformingVolumeSlots slots(source.checkpoint());
+  const auto source_hash=slots.active().canonical_cut_hash();
+  const std::array split{tetra::WorldTopologyEdit{tetra::WorldTetAddress::root(0U),
+      tetra::WorldTopologyOperation::split}};
+  const std::array device_split{tetra::GpuConformingVolumeDeviceCommand{
+      tetra::gpu_hierarchy_address_lanes(split.front().address),0U,{}}};
+  const auto split_mutation=tetra::ingest_gpu_conforming_volume_journal(
+      slots.active(),device_split,111U,112U,256U);
+  REQUIRE(split_mutation.header.status==tetra::GpuConformingVolumeMutationStatus::ready);
+  CHECK(split_mutation.header.split_count==1U);
+  CHECK(split_mutation.header.merge_count==0U);
+  CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_mutation(
+      slots.active(),split_mutation,256U));
+  CHECK(slots.commit(split_mutation,256U));
+  CHECK(slots.active().revision()==112U);
+  CHECK(slots.active().canonical_cut_hash()!=source_hash);
+  CHECK(slots.active_slot()==1U);
+
+  const auto split_hash=slots.active().canonical_cut_hash();
+  auto corrupt=split_mutation;
+  corrupt.header.source_revision=112U;
+  CHECK_FALSE(slots.commit(corrupt,256U));
+  CHECK(slots.active().canonical_cut_hash()==split_hash);
+  const auto canceled=tetra::gpu_conforming_volume_mutation_oracle(
+      slots.active(),std::array{tetra::WorldTopologyEdit{tetra::WorldTetAddress::root(0U),
+      tetra::WorldTopologyOperation::merge}},112U,113U,256U);
+  REQUIRE(canceled.header.status==tetra::GpuConformingVolumeMutationStatus::ready);
+  CHECK_FALSE(slots.commit(canceled,256U,[]{return true;}));
+  CHECK(slots.active().revision()==112U);
+  CHECK(slots.commit(canceled,256U));
+  CHECK(slots.active().revision()==113U);
+  CHECK(slots.active().canonical_cut_hash()==source_hash);
+  CHECK(slots.active_slot()==0U);
+
+  auto bad_device=device_split;
+  bad_device.front().operation=7U;
+  const auto malformed=tetra::ingest_gpu_conforming_volume_journal(
+      slots.active(),bad_device,113U,114U,256U);
+  CHECK(malformed.header.status==tetra::GpuConformingVolumeMutationStatus::malformed);
+  CHECK_FALSE(slots.commit(malformed,256U));
+
+  // A parent cannot merge until its direct eight-child family is complete;
+  // malformed device work therefore cannot replace the last good front.
+  const std::array incomplete{tetra::WorldTopologyEdit{
+      tetra::WorldTetAddress::root(0U).child(0U),tetra::WorldTopologyOperation::merge}};
+  const auto invalid=tetra::gpu_conforming_volume_mutation_oracle(
+      slots.active(),incomplete,113U,114U,256U);
+  CHECK(invalid.header.status==tetra::GpuConformingVolumeMutationStatus::malformed);
+  CHECK_FALSE(slots.commit(invalid,256U));
+  CHECK(slots.active().revision()==113U);
+}
+
 TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   std::vector<tetra::WorldTetAddress> roots;
   for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)

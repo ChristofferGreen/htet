@@ -402,11 +402,14 @@ performance-promotion decision.
       point before its count/scan/scatter journal. Native mixed-depth parity
       produces the same nine-entry journal as P10a; the source remains
       immutable and qualification-only.
-- [ ] **P10c — Commit GPU volume mutations with face repair and rollback.**
-      Add bounded split/merge journals, complete-family merge eligibility,
-      deterministic neighbour/face ownership repair, and ping-pong complete
-      volume slots. A rejected, stale, canceled, malformed, or overflowing
-      mutation retains the preceding complete revision.
+- [x] **P10c — Commit GPU volume mutations with face repair and rollback.**
+      The device-written closure journal is ingested through a POD split/merge
+      ABI, checked against the P10a oracle, and staged into an inactive
+      complete `WorldCutDirectory` slot before one atomic ping-pong flip.
+      Complete-family merge eligibility and deterministic block/face repair
+      remain in the transaction validator. Stale, canceled, malformed, and
+      overflowing journals preserve the preceding revision. Native mixed-depth
+      closure-to-slot parity and focused split/merge/rollback tests pass.
 - [ ] **P10d — Reconcile authoritative GPU volume with persistence and
       collision.** Version and replay the committed transaction journal,
       prove CPU/GPU logical-cut and conforming-volume hash equality, and make

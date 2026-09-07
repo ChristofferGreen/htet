@@ -29,6 +29,12 @@ std::uint64_t join32(std::uint32_t low,std::uint32_t high) noexcept {
   return static_cast<std::uint64_t>(low)|(static_cast<std::uint64_t>(high)<<32U);
 }
 
+bool gpu_volume_addresses_overlap(WorldTetAddress first,WorldTetAddress second) {
+  if(first.root_id()!=second.root_id())return false;
+  const auto depth=std::min(first.red_depth(),second.red_depth());
+  return first.ancestor(depth)==second.ancestor(depth);
+}
+
 struct GpuSelectorProjection { float diameter{}; bool intersects{}; };
 
 // This deliberately mirrors gpu_lod.comp's float-sidecar arithmetic instead
@@ -388,6 +394,155 @@ void validate_gpu_conforming_volume_split_proposal(
      expected.closure_splits!=proposal.closure_splits||
      expected.result_owners!=proposal.result_owners)
     throw std::invalid_argument("GPU conforming-volume proposal disagrees with CPU oracle");
+}
+
+GpuConformingVolumeMutation gpu_conforming_volume_mutation_oracle(
+    const WorldCutDirectory& source,std::span<const WorldTopologyEdit> journal,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity) {
+  GpuConformingVolumeMutation result;
+  auto& header=result.header;
+  header.source_revision=expected_source_revision;
+  header.result_revision=result_revision;
+  header.source_identity=source.canonical_cut_hash();
+  if(expected_source_revision!=source.revision()) {
+    header.status=GpuConformingVolumeMutationStatus::stale;
+    return result;
+  }
+  if(journal.empty()||result_revision<=expected_source_revision) {
+    header.status=GpuConformingVolumeMutationStatus::malformed;
+    return result;
+  }
+  try {
+    result.journal.assign(journal.begin(),journal.end());
+    std::ranges::sort(result.journal);
+    if(std::ranges::adjacent_find(result.journal)!=result.journal.end())
+      throw std::invalid_argument("duplicate GPU volume command");
+    for(std::size_t i=0;i<result.journal.size();++i)
+      for(std::size_t j=i+1U;j<result.journal.size();++j)
+        if(gpu_volume_addresses_overlap(result.journal[i].address,result.journal[j].address))
+          throw std::invalid_argument("overlapping GPU volume command");
+    const auto staged=source.stage_transaction(result.journal,result_revision);
+    WorldCutDirectory candidate(source.checkpoint());
+    candidate.publish(staged.manifest);
+    std::vector<WorldTetAddress> owners;
+    owners.reserve(candidate.logical_owner_count());
+    candidate.for_each_logical_owner([&](WorldTetAddress owner){owners.push_back(owner);});
+    std::ranges::sort(owners);
+    if(owners.size()>result_capacity) {
+      result.journal.clear();
+      header.status=GpuConformingVolumeMutationStatus::overflow;
+      return result;
+    }
+    result.result_owners.reserve(owners.size());
+    for(const auto owner:owners)
+      result.result_owners.push_back(gpu_hierarchy_address_lanes(owner));
+    header.split_count=static_cast<std::uint32_t>(std::ranges::count(
+        result.journal,WorldTopologyOperation::split,
+        &WorldTopologyEdit::operation));
+    header.merge_count=static_cast<std::uint32_t>(std::ranges::count(
+        result.journal,WorldTopologyOperation::merge,
+        &WorldTopologyEdit::operation));
+    header.result_count=static_cast<std::uint32_t>(result.result_owners.size());
+    header.canonical_result_hash=candidate.canonical_cut_hash();
+    header.status=GpuConformingVolumeMutationStatus::ready;
+  } catch(const std::overflow_error&) {
+    result.journal.clear(); result.result_owners.clear();
+    header.status=GpuConformingVolumeMutationStatus::overflow;
+  } catch(const std::exception&) {
+    result.journal.clear(); result.result_owners.clear();
+    header.status=GpuConformingVolumeMutationStatus::malformed;
+  }
+  return result;
+}
+
+GpuConformingVolumeMutation ingest_gpu_conforming_volume_journal(
+    const WorldCutDirectory& source,
+    std::span<const GpuConformingVolumeDeviceCommand> device_journal,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity) {
+  std::vector<WorldTopologyEdit> journal;
+  journal.reserve(device_journal.size());
+  try {
+    for(const auto& device:device_journal) {
+      if(!gpu_hierarchy_address_valid(device.address) ||
+         (device.operation!=0U&&device.operation!=1U))
+        throw std::invalid_argument("GPU volume device command is malformed");
+      journal.push_back({gpu_hierarchy_address_from_lanes(device.address),
+          device.operation==0U?WorldTopologyOperation::split:
+                              WorldTopologyOperation::merge});
+    }
+  } catch(const std::exception&) {
+    GpuConformingVolumeMutation rejected;
+    rejected.header.source_revision=expected_source_revision;
+    rejected.header.result_revision=result_revision;
+    rejected.header.source_identity=source.canonical_cut_hash();
+    rejected.header.status=GpuConformingVolumeMutationStatus::malformed;
+    return rejected;
+  }
+  return gpu_conforming_volume_mutation_oracle(source,journal,
+                                                expected_source_revision,
+                                                result_revision,result_capacity);
+}
+
+void validate_gpu_conforming_volume_mutation(
+    const WorldCutDirectory& source,const GpuConformingVolumeMutation& mutation,
+    std::uint32_t result_capacity) {
+  const auto& h=mutation.header;
+  if(h.format_version!=gpu_conforming_volume_proposal_format_version ||
+     h.status!=GpuConformingVolumeMutationStatus::ready ||
+     h.source_revision!=source.revision() ||
+     h.source_identity!=source.canonical_cut_hash() ||
+     h.result_revision<=h.source_revision || h.result_count>result_capacity ||
+     h.result_count!=mutation.result_owners.size() || mutation.journal.empty() ||
+     h.split_count!=std::ranges::count(mutation.journal,WorldTopologyOperation::split,
+                                        &WorldTopologyEdit::operation) ||
+     h.merge_count!=std::ranges::count(mutation.journal,WorldTopologyOperation::merge,
+                                        &WorldTopologyEdit::operation))
+    throw std::invalid_argument("GPU conforming-volume mutation header is invalid");
+  if(!std::ranges::is_sorted(mutation.journal) ||
+     std::ranges::adjacent_find(mutation.journal)!=mutation.journal.end())
+    throw std::invalid_argument("GPU conforming-volume mutation journal is not canonical");
+  for(std::size_t i=0;i<mutation.journal.size();++i)
+    for(std::size_t j=i+1U;j<mutation.journal.size();++j)
+      if(gpu_volume_addresses_overlap(mutation.journal[i].address,
+                                      mutation.journal[j].address))
+        throw std::invalid_argument("GPU conforming-volume mutation journal overlaps");
+  const auto expected=gpu_conforming_volume_mutation_oracle(
+      source,mutation.journal,h.source_revision,h.result_revision,result_capacity);
+  if(expected.header!=h || expected.journal!=mutation.journal ||
+     expected.result_owners!=mutation.result_owners)
+    throw std::invalid_argument("GPU conforming-volume mutation disagrees with CPU oracle");
+}
+
+GpuConformingVolumeSlots::GpuConformingVolumeSlots(WorldCutCheckpoint initial) {
+  slots_[0].emplace(std::move(initial));
+}
+
+bool GpuConformingVolumeSlots::commit(const GpuConformingVolumeMutation& mutation,
+    std::uint32_t result_capacity,const std::function<bool()>& canceled) {
+  // A cancellation check is deliberately outside the try block: it never
+  // touches either slot, including an already prepared inactive one.
+  if(canceled&&canceled())return false;
+  try {
+    const auto& source=active();
+    validate_gpu_conforming_volume_mutation(source,mutation,result_capacity);
+    if(canceled&&canceled())return false;
+    WorldCutDirectory candidate(source.checkpoint());
+    const auto staged=candidate.stage_transaction(mutation.journal,
+                                                  mutation.header.result_revision,
+                                                  canceled);
+    candidate.publish(staged.manifest);
+    if(candidate.canonical_cut_hash()!=mutation.header.canonical_result_hash)
+      return false;
+    if(canceled&&canceled())return false;
+    const auto inactive=active_slot_^1U;
+    slots_[inactive].emplace(std::move(candidate));
+    active_slot_=inactive;
+    return true;
+  } catch(const std::exception&) {
+    return false;
+  }
 }
 
 GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(

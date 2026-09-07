@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -172,6 +173,81 @@ gpu_conforming_volume_split_proposal(
 void validate_gpu_conforming_volume_split_proposal(
     const WorldCutDirectory& source,const GpuConformingVolumeProposal& proposal,
     std::uint32_t result_capacity);
+
+// P10c's device-to-publication ABI.  The journal is produced by the device
+// closure/merge scheduler; the host only validates that immutable result and
+// flips a fully built inactive volume slot.  In particular, callers must not
+// mutate a WorldCutDirectory before submitting this record.
+enum class GpuConformingVolumeMutationStatus : std::uint32_t {
+  ready=0U,
+  stale=1U,
+  canceled=2U,
+  malformed=3U,
+  overflow=4U,
+};
+struct alignas(16) GpuConformingVolumeMutationHeader {
+  std::uint64_t source_revision{};
+  std::uint64_t result_revision{};
+  std::uint64_t source_identity{};
+  std::uint64_t canonical_result_hash{};
+  std::uint32_t split_count{};
+  std::uint32_t merge_count{};
+  std::uint32_t result_count{};
+  std::uint32_t format_version{gpu_conforming_volume_proposal_format_version};
+  GpuConformingVolumeMutationStatus status{
+      GpuConformingVolumeMutationStatus::malformed};
+  std::uint32_t reserved0{};
+  std::uint32_t reserved1{};
+  std::uint32_t reserved2{};
+  auto operator<=>(const GpuConformingVolumeMutationHeader&) const = default;
+};
+static_assert(sizeof(GpuConformingVolumeMutationHeader)==64U);
+struct GpuConformingVolumeMutation {
+  GpuConformingVolumeMutationHeader header{};
+  // Canonically sorted, non-overlapping device commands.  A merge names its
+  // parent and is legal only when all eight direct children are current leaves.
+  std::vector<WorldTopologyEdit> journal;
+  std::vector<std::array<std::uint32_t,4>> result_owners;
+};
+// Native GPU journal layout: four address lanes plus operation (0 split, 1
+// merge).  It is deliberately POD so Metal can write it directly; ingestion
+// rejects any unrecognised operation or noncanonical address before staging.
+struct alignas(16) GpuConformingVolumeDeviceCommand {
+  std::array<std::uint32_t,4> address{};
+  std::uint32_t operation{};
+  std::array<std::uint32_t,3> reserved{};
+  auto operator<=>(const GpuConformingVolumeDeviceCommand&) const = default;
+};
+static_assert(sizeof(GpuConformingVolumeDeviceCommand)==32U);
+[[nodiscard]] GpuConformingVolumeMutation gpu_conforming_volume_mutation_oracle(
+    const WorldCutDirectory& source,std::span<const WorldTopologyEdit> journal,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity);
+[[nodiscard]] GpuConformingVolumeMutation ingest_gpu_conforming_volume_journal(
+    const WorldCutDirectory& source,
+    std::span<const GpuConformingVolumeDeviceCommand> device_journal,
+    std::uint64_t expected_source_revision,std::uint64_t result_revision,
+    std::uint32_t result_capacity);
+void validate_gpu_conforming_volume_mutation(
+    const WorldCutDirectory& source,const GpuConformingVolumeMutation& mutation,
+    std::uint32_t result_capacity);
+
+// Two complete immutable directories are retained.  A valid device journal is
+// staged into the inactive slot and becomes visible in one pointer/index flip;
+// every unsuccessful submission leaves active() byte-for-byte unchanged.
+class GpuConformingVolumeSlots final {
+ public:
+  explicit GpuConformingVolumeSlots(WorldCutCheckpoint initial);
+  [[nodiscard]] const WorldCutDirectory& active() const noexcept {
+    return slots_[active_slot_].value();
+  }
+  [[nodiscard]] std::uint32_t active_slot() const noexcept { return active_slot_; }
+  [[nodiscard]] bool commit(const GpuConformingVolumeMutation& mutation,
+      std::uint32_t result_capacity,const std::function<bool()>& canceled={});
+ private:
+  std::array<std::optional<WorldCutDirectory>,2> slots_;
+  std::uint32_t active_slot_{};
+};
 // Immutable P7a field/domain ABI.  The nine vec4 lanes preserve every scalar
 // used by Sphere and TerrainParameters; no sampled signs or CPU geometry are
 // permitted in this tuple.  The classification shader consumes this alongside

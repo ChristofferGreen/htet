@@ -6,6 +6,7 @@
 
 ## Recent Test Runs
 
+- 2026-09-07 12:55 CEST | pass | mode: Release, native Metal P10c | command: `./scripts/compile.sh --release` | failures: none | notes: fresh P10c gate passed all 518 tests; the device-written mixed-depth closure journal was ingested into an inactive complete volume slot and atomically published at revision 803.
 - 2026-09-07 09:27 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh P10a transaction-ABI gate passed all 514 tests; the focused split-proposal oracle also passed stale, duplicate, overflow, corruption, and source-nonmutation checks.
 - 2026-09-07 12:30 CEST | pass | mode: native Metal P10b | command: `TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-volume-split-closure-smoke-test` | failures: none | notes: bounded device seed, ancestor-edge propagation, green promotion, and face 2:1 fixed point compacted a mixed-depth nine-entry journal byte-for-byte against P10a; source and CPU publication remained unchanged.
 - 2026-09-07 08:36 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: metal GPU terrain owner-direct performance qualification | notes: fresh full-gate hardware run measured 8.2689 ms median / 18.1460 ms p95 generation (limit 8 ms); full-frame p95 6.2648 ms passed its 33.3333 ms milestone.

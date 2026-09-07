@@ -82,6 +82,12 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: The first authoritative-volume GPU contract must begin with canonical requested split addresses and an immutable source revision/cut identity, because the P6 green-mask packet is already post-closure render transport and cannot establish topology authority.
 - Evidence: `GpuConformingVolumeProposal` privately replays `WorldCutDirectory::stage_transaction`, records closure-expanded splits and complete replacement owners, and its regression rejects stale, malformed, overflowing, and modified journals without mutating the source directory.
 
+### gpu-volume-slot-commit
+- Updated: 2026-09-07
+- Tags: gpu, metal, transaction, rollback, publication
+- Fact: GPU volume journals must be ingested as POD commands, independently validated, and staged into an inactive complete directory slot before the active-slot index flips.
+- Evidence: The native P10c smoke ingested the device-written nine-entry mixed-depth closure journal, published revision 803 atomically, and the 518-test Release gate verified split, merge, cancellation, malformed, stale, and overflow retention behavior.
+
 ### gpu-terrain-production-root-expansion
 - Updated: 2026-09-06
 - Tags: metal, gpu, terrain, bcc, performance, capacity

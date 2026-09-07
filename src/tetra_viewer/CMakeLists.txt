@@ -66,6 +66,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv
          ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv
          ${TETRA_SHADER_DIR}/gpu_volume_split_marks.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.vert -o ${TETRA_SHADER_DIR}/scene.vert.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/scene.frag -o ${TETRA_SHADER_DIR}/scene.frag.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/wire.frag -o ${TETRA_SHADER_DIR}/wire.frag.spv
@@ -98,7 +99,8 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_commit_publish.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_closure.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_marks.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_marks.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_triangle_scatter.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_terrain_field.glsl)
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_mutation_journal.comp -o ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_triangle_scatter.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_volume_mutation_journal.comp gpu_terrain_field.glsl)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv
@@ -112,7 +114,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
-  ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_emit.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_validate.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_copy.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv)
+  ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_emit.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_validate.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_copy.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv)
   add_dependencies(tetra_viewer tetra_viewer_shaders)
   add_dependencies(tetra_world tetra_viewer_shaders)
   target_compile_definitions(tetra_viewer_application PRIVATE TETRA_VIEWER_SHADER_DIR="${TETRA_SHADER_DIR}")
@@ -301,7 +303,8 @@ if(APPLE AND TETRA_BUILD_METAL)
           gpu_terrain_owner_finalize.comp
           gpu_terrain_owner_emit.comp
           gpu_volume_split_closure.comp
-          gpu_volume_split_marks.comp)
+          gpu_volume_split_marks.comp
+          gpu_volume_mutation_journal.comp)
     set(TETRA_PARALLEL_TRIANGLE_SPV
       ${TETRA_METAL_SHADER_DIR}/${TETRA_PARALLEL_TRIANGLE_SHADER}.spv)
     set(TETRA_PARALLEL_TRIANGLE_MSL

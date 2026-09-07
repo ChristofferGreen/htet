@@ -1,0 +1,23 @@
+#version 450
+// P10c: bounded device-side mutation-journal validation and compaction.  The
+// scheduler supplies candidate split/merge commands; this kernel is the last
+// device gate before host ingestion into an inactive authoritative volume slot.
+struct Command { uvec4 address; uint operation; uint reserved0; uint reserved1; uint reserved2; };
+layout(std430,binding=0) readonly buffer Input { Command commands[]; } input_commands;
+layout(std430,binding=1) buffer Counts { uint values[]; } counts;
+layout(std430,binding=2) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=3) buffer Output { Command commands[]; } output_commands;
+layout(std430,binding=4) buffer Status { uint words[]; } status;
+layout(push_constant) uniform Parameters { uint count; uint capacity; uint phase; } parameters;
+layout(local_size_x=256) in;
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(index>=parameters.count || status.words[0u]!=0u)return;
+  const Command command=input_commands.commands[index];
+  if(command.operation>1u) { atomicOr(status.words[0u],1u); return; }
+  if(parameters.phase==0u) { counts.values[index]=1u; return; }
+  const uint destination=offsets.values[index];
+  if(destination>=parameters.capacity) { atomicOr(status.words[0u],2u); return; }
+  output_commands.commands[destination]=command;
+}

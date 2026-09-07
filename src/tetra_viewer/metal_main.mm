@@ -1879,6 +1879,22 @@ bool run_metal_gpu_volume_split_closure_smoke_test(id<MTLDevice> device) {
       std::fprintf(stderr," expected %zu: %u %u %u %u\\n",i,expected[i][0],expected[i][1],expected[i][2],expected[i][3]);
     return false;
   }
+  // P10c ingests the actual device-written closure journal into an inactive
+  // complete volume slot.  The CPU oracle is a validator here, never the
+  // journal producer; a failed ingestion leaves the previous slot untouched.
+  std::vector<tetra::GpuConformingVolumeDeviceCommand> device_journal;
+  device_journal.reserve(actual_count);
+  const auto* device_output=static_cast<const std::array<std::uint32_t,4>*>(
+      output_buffer.contents);
+  for(std::uint32_t index=0U;index<actual_count;++index)
+    device_journal.push_back({device_output[index],0U,{}});
+  tetra::GpuConformingVolumeSlots volume_slots(source.checkpoint());
+  const auto mutation=tetra::ingest_gpu_conforming_volume_journal(
+      volume_slots.active(),device_journal,802U,803U,512U);
+  if(mutation.header.status!=tetra::GpuConformingVolumeMutationStatus::ready||
+     !volume_slots.commit(mutation,512U)||volume_slots.active().revision()!=803U||
+     volume_slots.active().canonical_cut_hash()!=oracle.header.canonical_result_hash)
+    return false;
   std::printf("{\"event\":\"metal_gpu_volume_split_closure\",\"closure\":%u,\"rounds_bounded\":true,\"passed\":true}\n",actual_count); return true;
 }
 
