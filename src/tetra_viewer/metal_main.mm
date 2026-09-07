@@ -4973,10 +4973,11 @@ int main(int argc,char** argv) {
   const bool metal_gpu_terrain_qualification=
       metal_gpu_terrain_native_diagnostic||
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_QUALIFICATION")!=nullptr;
-  // P7c2b2 keeps the CPU front authoritative unless the user explicitly
-  // selects GPU terrain.  Selecting it does not relax qualification: until a
-  // complete current native slot is promoted, the CPU front remains visible.
-  bool gpu_terrain_renderer_selected=gpu_terrain_performance_smoke_test;
+  // GPU terrain is the normal interactive route. Selecting it does not relax
+  // qualification: until a complete current native slot is promoted, the CPU
+  // front remains visible. Set TETWORLD_METAL_GPU_TERRAIN_RENDERER=0 to use
+  // the CPU renderer explicitly.
+  bool gpu_terrain_renderer_selected=true;
   if(const char* value=std::getenv("TETWORLD_METAL_GPU_TERRAIN_RENDERER");
      value!=nullptr){
     if(std::strcmp(value,"0")==0)gpu_terrain_renderer_selected=false;
