@@ -794,7 +794,7 @@ TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
       roots,3U,101U,tetra::HierarchyResidencyTier::conforming_volume));
   const auto packet=tetra::make_gpu_conforming_volume_source_packet(
-      directory,128U,1024U);
+      directory,128U,1024U,1024U);
   CHECK(packet.header.source_revision==101U);
   CHECK(packet.header.source_identity==directory.canonical_cut_hash());
   CHECK(packet.header.owner_count==roots.size());
@@ -802,13 +802,15 @@ TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   REQUIRE(!packet.face_pairs.empty());
   REQUIRE(!packet.edge_pairs.empty());
   CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_source_packet(
-      directory,packet,128U,1024U));
+      directory,packet,128U,1024U,1024U));
   CHECK_THROWS_AS(tetra::make_gpu_conforming_volume_source_packet(
-      directory,1U,1024U),std::overflow_error);
+      directory,1U,1024U,1024U),std::overflow_error);
+  CHECK_THROWS_AS(tetra::make_gpu_conforming_volume_source_packet(
+      directory,128U,1024U,1U),std::overflow_error);
   auto corrupt=packet;
   corrupt.edge_pairs.front()[0]^=1U;
   CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_source_packet(
-      directory,corrupt,128U,1024U),std::invalid_argument);
+      directory,corrupt,128U,1024U,1024U),std::invalid_argument);
 }
 
 TEST_CASE("GPU terrain field tuple preserves the complete procedural contract") {

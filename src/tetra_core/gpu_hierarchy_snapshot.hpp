@@ -148,10 +148,12 @@ struct GpuConformingVolumeSourcePacket {
 [[nodiscard]] GpuConformingVolumeSourcePacket
 make_gpu_conforming_volume_source_packet(const WorldCutDirectory& source,
                                          std::uint32_t owner_capacity,
-                                         std::uint32_t face_pair_capacity);
+                                         std::uint32_t face_pair_capacity,
+                                         std::uint32_t edge_pair_capacity);
 void validate_gpu_conforming_volume_source_packet(
     const WorldCutDirectory& source,const GpuConformingVolumeSourcePacket& packet,
-    std::uint32_t owner_capacity,std::uint32_t face_pair_capacity);
+    std::uint32_t owner_capacity,std::uint32_t face_pair_capacity,
+    std::uint32_t edge_pair_capacity);
 // The capacity is a preflight reservation for the complete replacement cut,
 // not a best-effort output limit.  An over-capacity proposal fails closed.
 [[nodiscard]] GpuConformingVolumeProposal
