@@ -759,6 +759,57 @@ TEST_CASE("GPU conforming volume split proposals are exact and fail closed") {
       directory,corrupt,256U),std::invalid_argument);
 }
 
+TEST_CASE("GPU conforming volume closure journals are canonical at root seams") {
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,91U,tetra::HierarchyResidencyTier::conforming_volume));
+  // Adjacent root requests exercise the seam path.  The P10b device work list
+  // is the sorted union of requested and closure-generated red splits.
+  const std::array requests{tetra::WorldTetAddress::root(0U),
+                            tetra::WorldTetAddress::root(1U)};
+  const auto proposal=tetra::gpu_conforming_volume_split_proposal(
+      directory,requests,91U,92U,512U);
+  REQUIRE(proposal.header.status==tetra::GpuConformingVolumeProposalStatus::ready);
+  std::vector<std::array<std::uint32_t,4>> journal=proposal.requested_splits;
+  journal.insert(journal.end(),proposal.closure_splits.begin(),
+      proposal.closure_splits.end());
+  std::ranges::sort(journal);
+  journal.erase(std::unique(journal.begin(),journal.end()),journal.end());
+  REQUIRE(journal.size()>=requests.size());
+  CHECK(std::ranges::is_sorted(journal));
+  CHECK(std::ranges::adjacent_find(journal)==journal.end());
+  CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_split_proposal(
+      directory,proposal,512U));
+  // The sealed proposal remains a pure snapshot; P10c is the first leaf
+  // permitted to publish a replacement volume.
+  CHECK(directory.revision()==91U);
+}
+
+TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory directory(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,101U,tetra::HierarchyResidencyTier::conforming_volume));
+  const auto packet=tetra::make_gpu_conforming_volume_source_packet(
+      directory,128U,1024U);
+  CHECK(packet.header.source_revision==101U);
+  CHECK(packet.header.source_identity==directory.canonical_cut_hash());
+  CHECK(packet.header.owner_count==roots.size());
+  CHECK(std::ranges::is_sorted(packet.owners));
+  REQUIRE(!packet.face_pairs.empty());
+  CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_source_packet(
+      directory,packet,128U,1024U));
+  CHECK_THROWS_AS(tetra::make_gpu_conforming_volume_source_packet(
+      directory,1U,1024U),std::overflow_error);
+  auto corrupt=packet;
+  corrupt.face_pairs.front()[0]^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_source_packet(
+      directory,corrupt,128U,1024U),std::invalid_argument);
+}
+
 TEST_CASE("GPU terrain field tuple preserves the complete procedural contract") {
   tetra::GpuTerrainFieldTupleParameters parameters;
   parameters.source_revision=91U;parameters.field_revision=37U;

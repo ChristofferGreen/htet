@@ -1,0 +1,28 @@
+#version 450
+// P10b qualification journal.  The immutable closure work list is compacted
+// on device in its canonical order: count, exclusive scan, then scatter.  It
+// is deliberately a proposal-only kernel; P10c owns changing any volume slot.
+layout(std430,binding=0) readonly buffer Closure { uvec4 addresses[]; } closure;
+layout(std430,binding=1) buffer Counts { uint values[]; } counts;
+layout(std430,binding=2) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=3) buffer Output { uvec4 addresses[]; } output_journal;
+layout(std430,binding=4) buffer Status { uint words[]; } status;
+layout(push_constant) uniform Parameters { uint count; uint capacity; uint phase; } parameters;
+layout(local_size_x=256) in;
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(index>=parameters.count || status.words[0u]!=0u)return;
+  // P10a validates the immutable address journal before it is admitted to
+  // this kernel. P10b deliberately does not invent a second, lossy device
+  // address decoder; qualification byte-compares its output to that oracle.
+  if(parameters.phase==0u) {
+    counts.values[index]=1u;
+    return;
+  }
+  const uint destination=offsets.values[index];
+  if(destination>=parameters.capacity) {
+    atomicOr(status.words[0u],2u);return;
+  }
+  output_journal.addresses[destination]=closure.addresses[index];
+}

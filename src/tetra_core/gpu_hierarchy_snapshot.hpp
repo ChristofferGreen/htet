@@ -124,6 +124,31 @@ struct GpuConformingVolumeProposal {
   std::vector<std::array<std::uint32_t,4>> closure_splits;
   std::vector<std::array<std::uint32_t,4>> result_owners;
 };
+// Immutable pre-closure source transport for P10b.  Leaves and face pairs are
+// globally canonical, so a device workgroup can replay bounded fixed-point
+// closure without consulting mutable WorldCutDirectory state.
+struct alignas(16) GpuConformingVolumeSourceHeader {
+  std::uint64_t source_revision{};
+  std::uint64_t source_identity{};
+  std::uint32_t owner_count{};
+  std::uint32_t face_pair_count{};
+  std::uint32_t format_version{gpu_conforming_volume_proposal_format_version};
+  std::uint32_t reserved{};
+  auto operator<=>(const GpuConformingVolumeSourceHeader&) const = default;
+};
+static_assert(sizeof(GpuConformingVolumeSourceHeader)==32U);
+struct GpuConformingVolumeSourcePacket {
+  GpuConformingVolumeSourceHeader header{};
+  std::vector<std::array<std::uint32_t,4>> owners;
+  std::vector<std::array<std::uint32_t,2>> face_pairs;
+};
+[[nodiscard]] GpuConformingVolumeSourcePacket
+make_gpu_conforming_volume_source_packet(const WorldCutDirectory& source,
+                                         std::uint32_t owner_capacity,
+                                         std::uint32_t face_pair_capacity);
+void validate_gpu_conforming_volume_source_packet(
+    const WorldCutDirectory& source,const GpuConformingVolumeSourcePacket& packet,
+    std::uint32_t owner_capacity,std::uint32_t face_pair_capacity);
 // The capacity is a preflight reservation for the complete replacement cut,
 // not a best-effort output limit.  An over-capacity proposal fails closed.
 [[nodiscard]] GpuConformingVolumeProposal

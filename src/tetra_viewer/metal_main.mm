@@ -1713,6 +1713,91 @@ bool run_metal_gpu_terrain_parallel_triangle_smoke_test(id<MTLDevice> device) {
 // P7c1b consumes the compact P7b2 stream but remains strictly diagnostic.
 // This readback fixture is its hardware oracle: production draw, shadow,
 // wireframe, and ray-tracing resources deliberately remain untouched.
+// P10b executes the immutable closure journal through the same bounded
+// count/scan/scatter shape used by the terrain compactor.  This is deliberately
+// qualification-only: the readback is checked against P10a and no directory
+// or published CPU volume is ever changed here.
+bool run_metal_gpu_volume_split_closure_smoke_test(id<MTLDevice> device) {
+  const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(directory/name).string().c_str());
+    NSError* error=nil;id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+    id<MTLComputePipelineState> result=function==nil?nil:
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if(result==nil)std::fprintf(stderr,"Metal GPU volume closure pipeline failed: %s\\n",
+        error==nil?"missing entry point":error.localizedDescription.UTF8String);
+    return result;
+  };
+  id<MTLComputePipelineState> closure_pipeline=pipeline("gpu_volume_split_closure.comp.metal");
+  id<MTLComputePipelineState> scan_pipeline=pipeline("gpu_terrain_exclusive_scan.comp.metal");
+  if(closure_pipeline==nil||scan_pipeline==nil)return false;
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory source(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,801U,tetra::HierarchyResidencyTier::conforming_volume));
+  const std::array requested{tetra::WorldTetAddress::root(0U)};
+  const auto oracle=tetra::gpu_conforming_volume_split_proposal(
+      source,requested,801U,802U,512U);
+  std::vector<std::array<std::uint32_t,4>> closure_worklist=oracle.requested_splits;
+  closure_worklist.insert(closure_worklist.end(),oracle.closure_splits.begin(),
+      oracle.closure_splits.end());
+  std::ranges::sort(closure_worklist);
+  closure_worklist.erase(std::unique(closure_worklist.begin(),closure_worklist.end()),
+      closure_worklist.end());
+  if(oracle.header.status!=tetra::GpuConformingVolumeProposalStatus::ready||
+     closure_worklist.empty()||closure_worklist.size()>256U) {
+    std::fprintf(stderr,"GPU volume closure oracle unavailable status %u worklist %zu\n",
+        static_cast<unsigned>(oracle.header.status),closure_worklist.size());
+    return false;
+  }
+  const auto make=[&](const void* bytes,NSUInteger length) {
+    return [device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];
+  };
+  const auto count=static_cast<std::uint32_t>(closure_worklist.size());
+  std::vector<std::uint32_t> zeroes(count,0U),offset_zeroes(count,0U),
+      total_zeroes(1U,0U),status_zeroes(1U,0U);
+  std::vector<std::array<std::uint32_t,4>> output(count);
+  id<MTLBuffer> input=make(closure_worklist.data(),
+      closure_worklist.size()*sizeof(closure_worklist.front()));
+  id<MTLBuffer> counts=make(zeroes.data(),zeroes.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> offsets=make(offset_zeroes.data(),offset_zeroes.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> totals=make(total_zeroes.data(),total_zeroes.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> result=make(output.data(),output.size()*sizeof(output.front()));
+  id<MTLBuffer> status=make(status_zeroes.data(),status_zeroes.size()*sizeof(std::uint32_t));
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(input==nil||counts==nil||offsets==nil||totals==nil||result==nil||status==nil||queue==nil)return false;
+  id<MTLCommandBuffer> command=[queue commandBuffer];
+  id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  const std::array<std::uint32_t,3> count_parameters{count,count,0U};
+  [encoder setComputePipelineState:closure_pipeline];[encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:0U];
+  [encoder setBuffer:input offset:0U atIndex:1U];[encoder setBuffer:counts offset:0U atIndex:2U];
+  [encoder setBuffer:offsets offset:0U atIndex:3U];[encoder setBuffer:result offset:0U atIndex:4U];[encoder setBuffer:status offset:0U atIndex:5U];
+  [encoder dispatchThreads:MTLSizeMake(count,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  encoder=[command computeCommandEncoder];const std::array<std::uint32_t,2> scan_parameters{count,0U};
+  [encoder setComputePipelineState:scan_pipeline];[encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
+  [encoder setBuffer:offsets offset:0U atIndex:1U];[encoder setBuffer:counts offset:0U atIndex:2U];[encoder setBuffer:totals offset:0U atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  encoder=[command computeCommandEncoder];const std::array<std::uint32_t,3> scatter_parameters{count,count,1U};
+  [encoder setComputePipelineState:closure_pipeline];[encoder setBytes:scatter_parameters.data() length:sizeof(scatter_parameters) atIndex:0U];
+  [encoder setBuffer:input offset:0U atIndex:1U];[encoder setBuffer:counts offset:0U atIndex:2U];[encoder setBuffer:offsets offset:0U atIndex:3U];[encoder setBuffer:result offset:0U atIndex:4U];[encoder setBuffer:status offset:0U atIndex:5U];
+  [encoder dispatchThreads:MTLSizeMake(count,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  [command commit];[command waitUntilCompleted];
+  if(command.status!=MTLCommandBufferStatusCompleted||
+     *static_cast<const std::uint32_t*>(status.contents)!=0U||
+     *static_cast<const std::uint32_t*>(totals.contents)!=count||
+     std::memcmp(result.contents,closure_worklist.data(),
+         closure_worklist.size()*sizeof(closure_worklist.front()))!=0) {
+    std::fprintf(stderr,"GPU volume closure mismatch status %lu journal %u total %u\n",
+        static_cast<unsigned long>(command.status),
+        *static_cast<const std::uint32_t*>(status.contents),
+        *static_cast<const std::uint32_t*>(totals.contents));
+    return false;
+  }
+  std::printf("{\"event\":\"metal_gpu_volume_split_closure\",\"closure\":%u,\"passed\":true}\n",count);
+  return true;
+}
+
 bool run_metal_gpu_terrain_project_smoke_test(id<MTLDevice> device) {
   const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
       "gpu_terrain_project.comp.metal";
@@ -4586,6 +4671,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-surface-parity-smoke-test")==0;
   const bool gpu_terrain_performance_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-performance-smoke-test")==0;
+  const bool gpu_volume_split_closure_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-volume-split-closure-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -4887,7 +4974,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -5038,6 +5125,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_terrain_runtime_smoke_test(device)?0:1;
     if(gpu_terrain_surface_parity_smoke_test)
       return run_metal_gpu_terrain_surface_parity_smoke_test(device)?0:1;
+    if(gpu_volume_split_closure_smoke_test)
+      return run_metal_gpu_volume_split_closure_smoke_test(device)?0:1;
     if(atmosphere_compiler_check){
       for(std::size_t mode=0;mode<=16U;++mode){
         const auto path=std::filesystem::path(

@@ -119,6 +119,46 @@ std::uint64_t green_mask_candidate_identity(
   return result;
 }
 
+double gpu_volume_dot(Vec3 a,Vec3 b) {
+  return a.x*b.x+a.y*b.y+a.z*b.z;
+}
+Vec3 gpu_volume_cross(Vec3 a,Vec3 b) {
+  return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
+}
+bool gpu_volume_point_in_triangle(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
+  const auto v0=b-a,v1=c-a,v2=point-a;
+  const double d00=gpu_volume_dot(v0,v0),d01=gpu_volume_dot(v0,v1);
+  const double d11=gpu_volume_dot(v1,v1),d20=gpu_volume_dot(v2,v0);
+  const double d21=gpu_volume_dot(v2,v1),denominator=d00*d11-d01*d01;
+  if(std::abs(denominator)<1.0e-30)return false;
+  const double u=(d11*d20-d01*d21)/denominator;
+  const double v=(d00*d21-d01*d20)/denominator;
+  return u>1.0e-10&&v>1.0e-10&&u+v<1.0-1.0e-10;
+}
+bool gpu_volume_face_adjacent(WorldTetAddress first,WorldTetAddress second) {
+  constexpr std::array<std::array<std::size_t,3>,4> faces{{
+      {{1U,2U,3U}},{{0U,2U,3U}},{{0U,1U,3U}},{{0U,1U,2U}}}};
+  const auto a=world_tetrahedron_geometry(first);
+  const auto b=world_tetrahedron_geometry(second);
+  for(const auto left:faces) {
+    const auto normal=gpu_volume_cross(a[left[1]]-a[left[0]],a[left[2]]-a[left[0]]);
+    const double scale=std::sqrt(gpu_volume_dot(normal,normal));
+    if(scale==0.0)continue;
+    for(const auto right:faces) {
+      const double plane0=std::abs(gpu_volume_dot(normal,b[right[0]]-a[left[0]]));
+      const double plane1=std::abs(gpu_volume_dot(normal,b[right[1]]-a[left[0]]));
+      const double plane2=std::abs(gpu_volume_dot(normal,b[right[2]]-a[left[0]]));
+      if(std::max({plane0,plane1,plane2})>scale*1.0e-12)continue;
+      const auto left_centre=(a[left[0]]+a[left[1]]+a[left[2]])/3.0;
+      const auto right_centre=(b[right[0]]+b[right[1]]+b[right[2]])/3.0;
+      if(gpu_volume_point_in_triangle(left_centre,b[right[0]],b[right[1]],b[right[2]])||
+         gpu_volume_point_in_triangle(right_centre,a[left[0]],a[left[1]],a[left[2]]))
+        return true;
+    }
+  }
+  return false;
+}
+
 void pack_green_mask_vertex(std::array<std::uint32_t,16>& lanes,
                             std::size_t offset,WorldVertexKey vertex) {
   lanes[offset+0U]=low32(static_cast<std::uint64_t>(vertex.x));
@@ -348,6 +388,50 @@ void validate_gpu_conforming_volume_split_proposal(
      expected.closure_splits!=proposal.closure_splits||
      expected.result_owners!=proposal.result_owners)
     throw std::invalid_argument("GPU conforming-volume proposal disagrees with CPU oracle");
+}
+
+GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
+    const WorldCutDirectory& source,std::uint32_t owner_capacity,
+    std::uint32_t face_pair_capacity) {
+  GpuConformingVolumeSourcePacket result;
+  result.header.source_revision=source.revision();
+  result.header.source_identity=source.canonical_cut_hash();
+  std::vector<WorldTetAddress> owners;
+  owners.reserve(source.logical_owner_count());
+  source.for_each_logical_owner([&](WorldTetAddress owner){owners.push_back(owner);});
+  std::ranges::sort(owners);
+  if(owners.empty()||owners.size()>owner_capacity)
+    throw std::overflow_error("GPU volume source owner reservation is insufficient");
+  for(std::size_t first=0U;first<owners.size();++first)
+    for(std::size_t second=first+1U;second<owners.size();++second)
+      if(gpu_volume_face_adjacent(owners[first],owners[second])) {
+        if(result.face_pairs.size()>=face_pair_capacity)
+          throw std::overflow_error("GPU volume source face reservation is insufficient");
+        result.face_pairs.push_back({static_cast<std::uint32_t>(first),
+                                    static_cast<std::uint32_t>(second)});
+      }
+  result.owners.reserve(owners.size());
+  for(const auto owner:owners)result.owners.push_back(gpu_hierarchy_address_lanes(owner));
+  result.header.owner_count=static_cast<std::uint32_t>(result.owners.size());
+  result.header.face_pair_count=static_cast<std::uint32_t>(result.face_pairs.size());
+  return result;
+}
+
+void validate_gpu_conforming_volume_source_packet(
+    const WorldCutDirectory& source,const GpuConformingVolumeSourcePacket& packet,
+    std::uint32_t owner_capacity,std::uint32_t face_pair_capacity) {
+  if(packet.header.format_version!=gpu_conforming_volume_proposal_format_version||
+     packet.header.source_revision!=source.revision()||
+     packet.header.source_identity!=source.canonical_cut_hash()||
+     packet.header.owner_count!=packet.owners.size()||
+     packet.header.face_pair_count!=packet.face_pairs.size()||
+     packet.owners.size()>owner_capacity||packet.face_pairs.size()>face_pair_capacity)
+    throw std::invalid_argument("GPU volume source packet header is invalid");
+  const auto expected=make_gpu_conforming_volume_source_packet(
+      source,owner_capacity,face_pair_capacity);
+  if(expected.header!=packet.header||expected.owners!=packet.owners||
+     expected.face_pairs!=packet.face_pairs)
+    throw std::invalid_argument("GPU volume source packet is not canonical");
 }
 
 GpuTerrainFieldTuple make_gpu_terrain_field_tuple(
