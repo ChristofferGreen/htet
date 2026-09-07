@@ -1070,6 +1070,8 @@ struct MetalGpuHierarchyLiveSelectionSlot {
 struct MetalGpuHierarchyLiveSelection {
   id<MTLBuffer> hierarchy=nil;
   id<MTLBuffer> children=nil;
+  id<MTLBuffer> parents=nil;
+  id<MTLBuffer> face_incidence=nil;
   id<MTLBuffer> inputs=nil;
   std::array<MetalGpuHierarchyLiveSelectionSlot,3> slots;
   std::uint64_t source_revision{};
@@ -1087,7 +1089,8 @@ struct MetalGpuHierarchyLiveSelection {
   std::uint64_t cursor{};
 
   [[nodiscard]] bool ready() const noexcept {
-    return hierarchy!=nil&&children!=nil&&inputs!=nil&&record_count!=0U&&
+    return hierarchy!=nil&&children!=nil&&parents!=nil&&face_incidence!=nil&&
+        inputs!=nil&&record_count!=0U&&
         mark_word_count!=0U;
   }
 };
@@ -1118,6 +1121,10 @@ bool configure_metal_gpu_hierarchy_live_selection(
       snapshot.records.size()*sizeof(snapshot.records.front()));
   replacement.children=make_shared(snapshot.child_indices.data(),
       snapshot.child_indices.size()*sizeof(std::uint32_t));
+  replacement.parents=make_shared(snapshot.parent_records.data(),
+      snapshot.parent_records.size()*sizeof(std::uint32_t));
+  replacement.face_incidence=make_shared(snapshot.face_incidence.data(),
+      snapshot.face_incidence.size()*sizeof(snapshot.face_incidence.front()));
   replacement.inputs=make_shared(snapshot.selection_records.data(),
       snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
   replacement.source_revision=snapshot.header.source_world_revision;
@@ -1133,7 +1140,9 @@ bool configure_metal_gpu_hierarchy_live_selection(
         options:MTLResourceStorageModePrivate];
     if(slot.tuple==nil||slot.marks==nil)return false;
   }
-  if(replacement.hierarchy==nil||replacement.children==nil||replacement.inputs==nil)
+  if(replacement.hierarchy==nil||replacement.children==nil||
+     replacement.parents==nil||replacement.face_incidence==nil||
+     replacement.inputs==nil)
     return false;
   selection=std::move(replacement);
   return true;
@@ -1526,6 +1535,14 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
   if(!configure_metal_gpu_hierarchy_live_selection(device,selection,first,43U,7U))
     return false;
   const auto first_hierarchy=selection.hierarchy;
+  const auto first_parents=selection.parents;
+  const auto first_faces=selection.face_incidence;
+  if(first_parents.length!=first.parent_records.size()*sizeof(std::uint32_t)||
+     first_faces.length!=first.face_incidence.size()*sizeof(first.face_incidence.front())||
+     std::memcmp(first_parents.contents,first.parent_records.data(),
+                 first_parents.length)!=0||
+     std::memcmp(first_faces.contents,first.face_incidence.data(),
+                 first_faces.length)!=0)return false;
   const auto tuple_for=[](std::uint64_t source,std::uint64_t field,
                           tetra::Vec3 position){
     tetra::Camera camera;
@@ -1548,7 +1565,8 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
   };
   if(!dispatch(tuple_for(41U,43U,{0.5,0.5,3.0}))||
      !configure_metal_gpu_hierarchy_live_selection(device,selection,first,43U,7U)||
-     selection.hierarchy!=first_hierarchy||
+     selection.hierarchy!=first_hierarchy||selection.parents!=first_parents||
+     selection.face_incidence!=first_faces||
      !dispatch(tuple_for(41U,43U,{0.7,0.5,2.8})))return false;
   if(encode_metal_gpu_hierarchy_live_selection([queue commandBuffer],pipeline,
       selection,tuple_for(47U,43U,{0.5,0.5,3.0}))||
@@ -1556,6 +1574,7 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
   if(!configure_metal_gpu_hierarchy_live_selection(device,selection,second,53U,9U)||
      selection.source_revision!=47U||selection.field_revision!=53U||
      selection.bootstrap_scene_generation!=9U||selection.submitted!=0U||
+     selection.parents==first_parents||selection.face_incidence==first_faces||
      !dispatch(tuple_for(47U,53U,{1.1,0.5,2.6})))return false;
   const bool passed=selection.accepted==1U&&selection.completed==1U&&
       selection.failed==0U&&selection.stale_rejected==0U;

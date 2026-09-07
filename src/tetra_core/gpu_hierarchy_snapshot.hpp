@@ -428,6 +428,21 @@ struct alignas(16) GpuHierarchySelectionRecord {
 static_assert(sizeof(GpuHierarchySelectionRecord)==112U);
 static_assert(alignof(GpuHierarchySelectionRecord)==16U);
 
+// One immutable same-depth face neighbour per local tetrahedron face.  A
+// missing entry is encoded as gpu_hierarchy_invalid_index in both lanes; a
+// different-depth neighbour is resolved by P7e3c through parent links rather
+// than approximated from float geometry.
+struct alignas(16) GpuHierarchyFaceIncidenceRecord {
+  std::array<std::uint32_t,4> neighbours{
+      gpu_hierarchy_invalid_index,gpu_hierarchy_invalid_index,
+      gpu_hierarchy_invalid_index,gpu_hierarchy_invalid_index};
+  std::array<std::uint32_t,4> neighbour_faces{
+      gpu_hierarchy_invalid_index,gpu_hierarchy_invalid_index,
+      gpu_hierarchy_invalid_index,gpu_hierarchy_invalid_index};
+};
+static_assert(sizeof(GpuHierarchyFaceIncidenceRecord)==32U);
+static_assert(alignof(GpuHierarchyFaceIncidenceRecord)==16U);
+
 // Camera- and field-dependent selector inputs are kept out of immutable
 // topology. The current selector is root-normalized to match its immutable
 // sidecars; render-origin-relative positions belong to generated geometry.
@@ -478,6 +493,11 @@ struct GpuHierarchySnapshot {
   // the only order in which a device-built selected frontier may be emitted.
   // It is topology metadata, not a CPU-produced surface or P6 packet.
   std::vector<std::uint32_t> canonical_record_indices;
+  // Parent and one-hop face topology are kept out of the 32-byte traversal
+  // record so P7e2's selector ABI remains stable. They are immutable,
+  // revision-bound device sidecars for P7e3's conforming-cut traversal.
+  std::vector<std::uint32_t> parent_records;
+  std::vector<GpuHierarchyFaceIncidenceRecord> face_incidence;
   // One immutable normalized-space geometry sidecar per hierarchy record.
   // P4 selector inputs add field bounds and camera-dependent parameters in
   // separate packets; they must not overload topology or draw buffers.

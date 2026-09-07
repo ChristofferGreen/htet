@@ -534,6 +534,17 @@
 
 ## 2026-09-07
 
+- [x] **P7e3b1 — Encode exact hierarchy face topology.** The immutable
+  revision-bound GPU hierarchy now provides parent-record links and a 32-byte
+  one-hop, same-depth face-incidence sidecar per tetrahedron. It derives exact
+  face keys from BCC integer vertex keys in a linear map, covers every root
+  seam, validates parent identity/face reciprocity/depth/key equality, and is
+  persistently uploaded alongside the P7e2 hierarchy without modifying the
+  selector ABI. Core and native-Metal checks cover roots, seams, malformed
+  face metadata, same-revision retention, and revision replacement. It is
+  topology only: mixed-depth traversal, edge ranges, closure, and rendering
+  remain the following P7e3b2/c leaves.
+
 - [x] **P7e3a — Materialize the canonical device candidate frontier.** The
   immutable hierarchy snapshot now carries a validated address-sorted record
   permutation without disturbing its compact traversal order. A new shared

@@ -5907,6 +5907,33 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       CHECK(previous<current);
     }
   }
+  std::array<std::uint32_t,tetra::bcc_root_tetrahedron_count> root_records{};
+  root_records.fill(tetra::gpu_hierarchy_invalid_index);
+  for(std::uint32_t record=0U;record<snapshot.records.size();++record) {
+    const auto address=tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address);
+    if(address.red_depth()==0U)root_records[address.root_id()]=record;
+    else {
+      const auto parent=snapshot.parent_records[record];
+      REQUIRE(parent<snapshot.records.size());
+      CHECK(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[parent].address)==
+            address.parent());
+    }
+  }
+  for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root) {
+    REQUIRE(root_records[root]!=tetra::gpu_hierarchy_invalid_index);
+    for(std::uint8_t face=0U;face<4U;++face) {
+      const auto& adjacency=tetra::bcc_root_face(root,face);
+      const auto neighbour=snapshot.face_incidence[root_records[root]].neighbours[face];
+      const auto neighbour_face=snapshot.face_incidence[root_records[root]].neighbour_faces[face];
+      if(adjacency.neighbour_root==0xffU) {
+        CHECK(neighbour==tetra::gpu_hierarchy_invalid_index);
+        CHECK(neighbour_face==tetra::gpu_hierarchy_invalid_index);
+      }else {
+        CHECK(neighbour==root_records[adjacency.neighbour_root]);
+        CHECK(neighbour_face==adjacency.neighbour_face);
+      }
+    }
+  }
   tetra::GpuHierarchyTraversalParameters coarse;
   coarse.camera.position={0.5,0.5,3.0};coarse.camera.forward={0.0,0.0,-1.0};
   coarse.camera.viewport_height_pixels=800.0;coarse.pixel_threshold=1.0e6;
@@ -5965,6 +5992,9 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   malformed=snapshot;
   std::swap(malformed.canonical_record_indices.front(),
             malformed.canonical_record_indices.back());
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
+  malformed=snapshot;
+  malformed.face_incidence[root_records[0U]].neighbours[0U]=root_records[0U];
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
 }
 

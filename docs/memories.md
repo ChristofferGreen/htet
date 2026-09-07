@@ -115,8 +115,8 @@ This file stores durable session-derived facts that are useful in later work. Ke
 ### gpu-hierarchy-snapshot
 - Updated: 2026-09-07
 - Tags: bcc, gpu-lod, hierarchy, serialization, ordering
-- Fact: `GpuHierarchySnapshot` materializes missing BCC ancestors, retains compact block-graph child indirection, and carries a separately validated address-sorted record permutation for deterministic device frontier compaction.
-- Evidence: The core hierarchy regression rejects malformed permutations, while the native Metal P7e3a fixture chains selector marks through count/scan/scatter and byte-compares canonical fixed/walk/orbit frontiers; the 524-test Release gate passed.
+- Fact: `GpuHierarchySnapshot` materializes missing BCC ancestors, retains compact block-graph child indirection, and carries validated address-sorted, parent-record, and exact same-depth face-incidence sidecars for deterministic device frontier compaction and topology traversal.
+- Evidence: Core regressions reject malformed permutations and face sidecars, verify root seams through `bcc_root_face`, and the native Metal state fixture verifies sidecar upload, retention, and replacement; P7e3a's selector-mark count/scan/scatter fixture byte-compares canonical fixed/walk/orbit frontiers.
 
 ### gpu-hierarchy-selector-geometry
 - Updated: 2026-09-05

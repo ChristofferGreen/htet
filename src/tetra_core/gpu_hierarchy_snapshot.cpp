@@ -19,6 +19,8 @@ constexpr std::uint32_t logical_owner_bit=1U<<10U;
 // intentionally an active-block root, not necessarily a world root: hierarchy
 // blocks may be streamed independently.
 constexpr std::uint32_t active_root_bit=1U<<11U;
+constexpr std::array<std::array<std::uint8_t,3>,4> tetrahedron_faces{{
+    {{1U,2U,3U}},{{0U,3U,2U}},{{0U,1U,3U}},{{0U,2U,1U}}}};
 
 std::uint32_t low32(std::uint64_t value) noexcept {
   return static_cast<std::uint32_t>(value);
@@ -1473,6 +1475,43 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
   std::ranges::sort(result.canonical_record_indices,{},[&](std::uint32_t index) {
     return gpu_hierarchy_address_from_lanes(result.records[index].address);
   });
+  result.parent_records.assign(result.records.size(),gpu_hierarchy_invalid_index);
+  result.face_incidence.resize(result.records.size());
+  for(std::uint32_t index=0U;index<result.records.size();++index) {
+    const auto address=gpu_hierarchy_address_from_lanes(result.records[index].address);
+    if(address.red_depth()!=0U)
+      result.parent_records[index]=all_indices.at(address.parent());
+  }
+  // This is a linear map over immutable face keys, not P10's pairwise source
+  // packet builder. It records only exact same-depth faces; parent traversal
+  // keeps a later device closure correct at a mixed-depth boundary.
+  using FaceIncidence=std::pair<std::uint32_t,std::uint32_t>;
+  std::map<WorldFaceKey,std::vector<FaceIncidence>> faces;
+  for(std::uint32_t index=0U;index<result.records.size();++index) {
+    const auto vertices=world_tetrahedron_vertex_keys(
+        gpu_hierarchy_address_from_lanes(result.records[index].address));
+    for(std::uint32_t face=0U;face<tetrahedron_faces.size();++face) {
+      const auto corners=tetrahedron_faces[face];
+      faces[world_face_key(vertices[corners[0]],vertices[corners[1]],
+          vertices[corners[2]])].push_back({index,face});
+    }
+  }
+  for(const auto& [face,incidences]:faces) {
+    (void)face;
+    if(incidences.size()>2U)
+      throw std::logic_error("GPU hierarchy face topology is nonmanifold");
+    if(incidences.size()!=2U)continue;
+    const auto first=incidences[0U],second=incidences[1U];
+    const auto first_depth=gpu_hierarchy_address_from_lanes(
+        result.records[first.first].address).red_depth();
+    const auto second_depth=gpu_hierarchy_address_from_lanes(
+        result.records[second.first].address).red_depth();
+    if(first_depth!=second_depth)continue;
+    result.face_incidence[first.first].neighbours[first.second]=second.first;
+    result.face_incidence[first.first].neighbour_faces[first.second]=second.second;
+    result.face_incidence[second.first].neighbours[second.second]=first.first;
+    result.face_incidence[second.first].neighbour_faces[second.second]=first.second;
+  }
   result.selection_records.reserve(result.records.size());
   for(const auto& record:result.records)
     result.selection_records.push_back(gpu_hierarchy_selection_record(record.address));
@@ -1489,6 +1528,8 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
      header.block_count!=snapshot.blocks.size()||
      header.record_count>header.record_capacity||header.block_count>header.block_capacity||
      snapshot.canonical_record_indices.size()!=snapshot.records.size()||
+     snapshot.parent_records.size()!=snapshot.records.size()||
+     snapshot.face_incidence.size()!=snapshot.records.size()||
      snapshot.selection_records.size()!=snapshot.records.size()||
      header.block_generations==0U||header.block_generations>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy snapshot header is malformed");
@@ -1555,6 +1596,38 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
     if((mask==0U)!=(record.child_base==gpu_hierarchy_invalid_index))
       throw std::invalid_argument("GPU hierarchy leaf encoding is malformed");
     const auto address=gpu_hierarchy_address_from_lanes(record.address);
+    const auto parent=snapshot.parent_records[index];
+    if((address.red_depth()==0U)!=(parent==gpu_hierarchy_invalid_index) ||
+       (parent!=gpu_hierarchy_invalid_index&&
+        (parent>=snapshot.records.size()||
+         gpu_hierarchy_address_from_lanes(snapshot.records[parent].address)!=
+             address.parent())))
+      throw std::invalid_argument("GPU hierarchy parent sidecar is malformed");
+    const auto vertices=world_tetrahedron_vertex_keys(address);
+    for(std::uint32_t face=0U;face<tetrahedron_faces.size();++face) {
+      const auto neighbour=snapshot.face_incidence[index].neighbours[face];
+      const auto neighbour_face=snapshot.face_incidence[index].neighbour_faces[face];
+      if((neighbour==gpu_hierarchy_invalid_index)!=
+         (neighbour_face==gpu_hierarchy_invalid_index))
+        throw std::invalid_argument("GPU hierarchy face sidecar is malformed");
+      if(neighbour==gpu_hierarchy_invalid_index)continue;
+      if(neighbour>=snapshot.records.size()||neighbour==index||
+         neighbour_face>=tetrahedron_faces.size()||
+         snapshot.face_incidence[neighbour].neighbours[neighbour_face]!=index||
+         snapshot.face_incidence[neighbour].neighbour_faces[neighbour_face]!=face)
+        throw std::invalid_argument("GPU hierarchy face sidecar is not reciprocal");
+      const auto neighbour_address=gpu_hierarchy_address_from_lanes(
+          snapshot.records[neighbour].address);
+      if(neighbour_address.red_depth()!=address.red_depth())
+        throw std::invalid_argument("GPU hierarchy face sidecar changes depth");
+      const auto corners=tetrahedron_faces[face];
+      const auto other_corners=tetrahedron_faces[neighbour_face];
+      const auto neighbour_vertices=world_tetrahedron_vertex_keys(neighbour_address);
+      if(world_face_key(vertices[corners[0]],vertices[corners[1]],vertices[corners[2]])!=
+         world_face_key(neighbour_vertices[other_corners[0]],
+             neighbour_vertices[other_corners[1]],neighbour_vertices[other_corners[2]]))
+        throw std::invalid_argument("GPU hierarchy face sidecar has the wrong face");
+    }
     const bool parent_is_resident=address.red_depth()>0U&&
         resident_addresses.contains(address.parent());
     if(((record.child_mask_flags&active_root_bit)!=0U)==parent_is_resident)
