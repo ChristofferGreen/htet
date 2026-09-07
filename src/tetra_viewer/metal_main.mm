@@ -3164,6 +3164,7 @@ struct MetalGpuStageTimings {
   std::atomic<double> shadows_milliseconds{};
   std::atomic<double> atmosphere_milliseconds{};
   std::atomic<double> terrain_milliseconds{};
+  std::atomic<double> terrain_generation_milliseconds{};
   std::atomic<double> composite_milliseconds{};
   std::atomic<double> depth_reduction_milliseconds{};
   std::atomic<double> screen_integration_milliseconds{};
@@ -3200,6 +3201,7 @@ struct MetalTimingProfileSamples {
   std::vector<double> irradiance_lookup_milliseconds;
   std::vector<double> aerial_lookup_milliseconds;
   std::vector<double> screen_integration_milliseconds;
+  std::vector<double> terrain_generation_milliseconds;
 
   void add(double milliseconds) {
     std::lock_guard lock(mutex);
@@ -3251,6 +3253,21 @@ struct MetalTimingProfileSamples {
       screen_integration_milliseconds.push_back(integration);
   }
 
+  // Unlike frame samples, this is recorded only for a command buffer that
+  // actually encoded the owner-direct terrain generation route.
+  void add_terrain_generation(double generation) {
+    std::lock_guard lock(mutex);
+    if(terrain_generation_milliseconds.size()<30U)
+      terrain_generation_milliseconds.push_back(generation);
+  }
+
+  [[nodiscard]] std::vector<double> ordered_terrain_generation() const {
+    std::lock_guard lock(mutex);
+    auto result=terrain_generation_milliseconds;
+    std::ranges::sort(result);
+    return result;
+  }
+
   [[nodiscard]] std::array<std::vector<double>,5U>
   ordered_lookups() const {
     std::lock_guard lock(mutex);
@@ -3277,7 +3294,9 @@ double timing_percentile(const std::vector<double>& ordered,double fraction) {
 }
 
 constexpr NSUInteger gpu_base_timestamp_count=7U;
-constexpr NSUInteger gpu_timestamp_count=25U;
+// 0..24 are the established frame/stage schema.  The final pair brackets
+// only owner-direct terrain generation through private publication.
+constexpr NSUInteger gpu_timestamp_count=27U;
 constexpr std::size_t gpu_timestamp_flight_count=3U;
 
 struct MetalTimestampFlight {
@@ -4562,6 +4581,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-terrain-runtime-smoke-test")==0;
   const bool gpu_terrain_surface_parity_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-surface-parity-smoke-test")==0;
+  const bool gpu_terrain_performance_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-terrain-performance-smoke-test")==0;
   const bool atmosphere_lut_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-atmosphere-lut-smoke-test")==0;
   const bool atmosphere_capture=argc==3&&
@@ -4702,6 +4723,7 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-validate-geometry")==0;
   const bool capture_test=write_capture||validation_test;
   const bool automated_test=smoke_test||motion_test||render_test||metalfx_test||soak_test||
+      gpu_terrain_performance_smoke_test||
       auto_resolution_test||timing_profile_test||overlay_test||shadow_test||capture_test||
       any_atmosphere_frame_test||atmosphere_quality_test||terrain_ray_oracle_test;
   // P6b uses the same profile knobs as the timing matrix for native captures
@@ -4764,13 +4786,14 @@ int main(int argc,char** argv) {
   // P7c2b2 keeps the CPU front authoritative unless the user explicitly
   // selects GPU terrain.  Selecting it does not relax qualification: until a
   // complete current native slot is promoted, the CPU front remains visible.
-  bool gpu_terrain_renderer_selected=false;
+  bool gpu_terrain_renderer_selected=gpu_terrain_performance_smoke_test;
   if(const char* value=std::getenv("TETWORLD_METAL_GPU_TERRAIN_RENDERER");
      value!=nullptr){
     if(std::strcmp(value,"0")==0)gpu_terrain_renderer_selected=false;
     else if(std::strcmp(value,"1")==0)gpu_terrain_renderer_selected=true;
     else { std::fprintf(stderr,"TETWORLD_METAL_GPU_TERRAIN_RENDERER must be 0 or 1\\n");return 2; }
   }
+  if(gpu_terrain_performance_smoke_test)gpu_terrain_renderer_selected=true;
   // P8c: MetalFX writes the final result directly to a non-framebuffer-only
   // drawable, avoiding the persistent output texture and presentation draw.
   // Keep the former path as an explicit paired qualification control.
@@ -4788,6 +4811,7 @@ int main(int argc,char** argv) {
   // automation-only, leaving normal GPU selection a quiet presentation
   // choice. P8c owns promotion of the root-expanded native generator.
   const bool metal_gpu_terrain_private_front_qualification=
+      gpu_terrain_performance_smoke_test||
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION")!=nullptr;
   if(metal_gpu_terrain_private_front_qualification&&
      !gpu_terrain_renderer_selected){
@@ -4860,7 +4884,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -4882,6 +4906,7 @@ int main(int argc,char** argv) {
                         "--metal-gpu-terrain-live-slots-smoke-test|"
                         "--metal-gpu-terrain-runtime-smoke-test|"
                         "--metal-gpu-terrain-surface-parity-smoke-test|"
+                        "--metal-gpu-terrain-performance-smoke-test|"
                         "--metal-atmosphere-lut-smoke-test|"
                         "--metal-atmosphere-frame-smoke-test|"
                         "--metal-atmosphere-capture <path.ppm>|"
@@ -5095,12 +5120,12 @@ int main(int argc,char** argv) {
     glfwWindowHint(GLFW_CLIENT_API,GLFW_NO_API);
     glfwWindowHint(GLFW_VISIBLE,hidden_window?GLFW_FALSE:GLFW_TRUE);
     GLFWwindow* window=glfwCreateWindow(capture_test?768:
-                                        ((smoke_test||motion_test||render_test||metalfx_test||
+                                        ((smoke_test||motion_test||gpu_terrain_performance_smoke_test||render_test||metalfx_test||
                                           overlay_test||shadow_test||
                                           any_atmosphere_frame_test||soak_test)?
                                              (interactive_capture_resolution?1440:960):1440),
                                         capture_test?480:
-                                        ((smoke_test||motion_test||render_test||metalfx_test||
+                                        ((smoke_test||motion_test||gpu_terrain_performance_smoke_test||render_test||metalfx_test||
                                           overlay_test||shadow_test||
                                           any_atmosphere_frame_test||soak_test)?
                                              (interactive_capture_resolution?900:600):900),
@@ -5174,9 +5199,10 @@ int main(int argc,char** argv) {
     NSUInteger shadow_texture_resolution=tetra_viewer::shadow_map_resolution;
     id<MTLCommandQueue> command_queue=[device newCommandQueue];
     id<MTLCounterSet> gpu_timestamp_counter_set=timestamp_counter_set(device);
-    const bool gpu_stage_timestamps_enabled=[] {
+    const bool gpu_stage_timestamps_enabled=[&] {
       const char* value=std::getenv("TETWORLD_METAL_STAGE_TIMESTAMPS");
-      return value!=nullptr&&std::strcmp(value,"0")!=0;
+      return gpu_terrain_performance_smoke_test||
+          (value!=nullptr&&std::strcmp(value,"0")!=0);
     }();
     // Diagnostic-only serialization gives a stage study one valid counter
     // flight per rendered frame. It is intentionally opt-in: normal timing
@@ -5640,7 +5666,8 @@ int main(int argc,char** argv) {
     // front must make observable progress quickly; retain the longer timeout
     // for the unrelated image and timing automation suites.
     const int smoke_timeout_seconds=
-        metal_gpu_terrain_private_front_qualification?120:
+        (metal_gpu_terrain_private_front_qualification||
+         gpu_terrain_performance_smoke_test)?120:
         (any_atmosphere_frame_test||metalfx_test||timing_profile_test||motion_test||soak_test?300:
          basic_automation_timeout_seconds);
     const auto smoke_deadline=previous_time+
@@ -5919,7 +5946,8 @@ int main(int argc,char** argv) {
         // Exercise both halves of the application camera protocol: move long
         // enough to publish interactive work, then release input and wait for
         // the exact settled pose before completing the smoke test.
-        if(((motion_test&&motion_rendered_frames<30U)||
+        if((((motion_test||gpu_terrain_performance_smoke_test)&&
+             motion_rendered_frames<30U)||
             (timing_profile_test&&
              timing_profile_class==TimingProfileClass::moving&&
              timing_profile_samples->size()<300U))&&
@@ -5929,7 +5957,7 @@ int main(int argc,char** argv) {
           // above the success threshold while remaining inside the published
           // production resource envelope; large travel belongs to the
           // dedicated camera-path benchmark.
-          movement.forward=motion_test?0.05:1.0;
+          movement.forward=(motion_test||gpu_terrain_performance_smoke_test)?0.05:1.0;
         if(metalfx_test&&scene_vertex_count!=0U&&metalfx_test_frames<20U){
           movement.forward=1.0;
           movement.right=0.35;
@@ -5992,7 +6020,7 @@ int main(int argc,char** argv) {
           }
           controller.state().velocity={};
           controller.state().grounded=false;
-        }else if(runtime&&!(motion_test&&scene_vertex_count!=0U&&
+        }else if(runtime&&!((motion_test||gpu_terrain_performance_smoke_test)&&scene_vertex_count!=0U&&
                              motion_rendered_frames>=30U)){
           const auto previous_feet=controller.state().feet;
           controller.advance(elapsed,movement,runtime->field());
@@ -6051,7 +6079,7 @@ int main(int argc,char** argv) {
           if(runtime_started_this_frame){
             runtime->set_camera(camera,false);
             runtime_camera_interactive=false;
-          }else if(motion_test&&scene_vertex_count!=0U&&
+          }else if((motion_test||gpu_terrain_performance_smoke_test)&&scene_vertex_count!=0U&&
                    motion_rendered_frames>=30U){
             // A hidden test window can run vastly faster than wall-clock
             // physics.  Hold the scripted final pose and state its settled
@@ -7126,6 +7154,24 @@ int main(int argc,char** argv) {
 
         id<MTLCommandBuffer> command_buffer=[command_queue commandBuffer];
         command_buffer.label=@"TetWorld frame";
+        // Acquire before native terrain work so a counter interval can bracket
+        // its full private generation and publication path.
+        MetalTimestampFlight* gpu_timestamp_flight=nullptr;
+        for(auto& flight:gpu_timestamp_flights){
+          bool available=false;
+          if(flight.samples!=nil&&flight.in_use->compare_exchange_strong(
+                 available,true,std::memory_order_acq_rel)){
+            gpu_timestamp_flight=&flight;
+            break;
+          }
+        }
+        id<MTLCounterSampleBuffer> gpu_timestamp_samples=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->samples;
+        id<MTLBuffer> gpu_timestamp_results=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->results;
+        id<MTLBuffer> gpu_timestamp_scratch=
+            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->scratch;
+        bool owner_direct_generation_encoded_this_frame=false;
         if(gpu_terrain_active_front.seed_pending&&
            gpu_terrain_active_front.vertices!=nil&&
            gpu_terrain_active_front.indirect_arguments!=nil&&
@@ -7438,6 +7484,8 @@ int main(int argc,char** argv) {
                   [compute setBuffer:slot.field offset:0U atIndex:0U];[compute setBytes:&draw_parameters length:sizeof(draw_parameters) atIndex:1U];[compute setBuffer:slot.vertices offset:0U atIndex:2U];[compute setBuffer:slot.projected offset:0U atIndex:3U];
                   [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
                   }else{
+                    encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                            gpu_timestamp_scratch,25U);
                     const std::array<std::uint32_t,4> owner_parameters{
                         static_cast<std::uint32_t>(owner_count),
                         static_cast<std::uint32_t>(source_revision),
@@ -7484,6 +7532,11 @@ int main(int argc,char** argv) {
                     id<MTLBlitCommandEncoder> read=[command_buffer blitCommandEncoder];
                     [read copyFromBuffer:slot.vertices sourceOffset:0U toBuffer:slot.readback destinationOffset:0U size:slot.readback.length];[read endEncoding];
                   }
+                  if(owner_direct){
+                    encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
+                                            gpu_timestamp_scratch,26U);
+                    owner_direct_generation_encoded_this_frame=true;
+                  }
                   const auto complete=slot.completed,success=slot.succeeded;
                   const auto counters=gpu_terrain_counters;id<MTLBuffer> readback=slot.readback;
                   const auto capacity=slot.vertex_capacity;
@@ -7516,21 +7569,6 @@ int main(int argc,char** argv) {
         bool reference_lookup_encoded_this_frame=false;
         bool aerial_lookup_encoded_this_frame=false;
         bool reference_screen_integration_encoded_this_frame=false;
-        MetalTimestampFlight* gpu_timestamp_flight=nullptr;
-        for(auto& flight:gpu_timestamp_flights){
-          bool available=false;
-          if(flight.samples!=nil&&flight.in_use->compare_exchange_strong(
-                 available,true,std::memory_order_acq_rel)){
-            gpu_timestamp_flight=&flight;
-            break;
-          }
-        }
-        id<MTLCounterSampleBuffer> gpu_timestamp_samples=
-            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->samples;
-        id<MTLBuffer> gpu_timestamp_results=
-            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->results;
-        id<MTLBuffer> gpu_timestamp_scratch=
-            gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->scratch;
         bool acceleration_structure_build_encoded=false;
         if(metal_ray_tracing_supported&&terrain_display_front.ready())
           static_cast<void>(encode_terrain_acceleration_structure_build(
@@ -8563,7 +8601,8 @@ int main(int argc,char** argv) {
         // Startup uploads and empty drawables are not representative rendered
         // frames.  In particular, including them hid forced lookup refreshes
         // behind the asynchronous terrain startup in early P2 runs.
-        const bool timing_profile_sample_eligible=(timing_profile_test||soak_test)&&
+        const bool timing_profile_sample_eligible=(timing_profile_test||soak_test||
+            gpu_terrain_performance_smoke_test)&&
             scene_vertex_count!=0U&&requested_preview_capture_ready&&
             requested_rt_capture_ready&&requested_profile_capture_ready;
         const bool timing_includes_metalfx=metalfx_temporal_active;
@@ -8612,6 +8651,19 @@ int main(int argc,char** argv) {
                     timestamps[second].timestamp-timestamps[first].timestamp)*
                     counter_timestamp_milliseconds;
               };
+              const bool terrain_generation_timing_valid=
+                  usable_sample(25U)&&usable_sample(26U)&&
+                  timestamps[26U].timestamp>=timestamps[25U].timestamp;
+              if(owner_direct_generation_encoded_this_frame&&
+                 terrain_generation_timing_valid){
+                const double generation_milliseconds=
+                    sampled_milliseconds(25U,26U);
+                stage_destination->terrain_generation_milliseconds.store(
+                    generation_milliseconds,std::memory_order_relaxed);
+                if(gpu_terrain_performance_smoke_test)
+                  profile_destination->add_terrain_generation(
+                      generation_milliseconds);
+              }
               const bool optical_lookup_timing_valid=usable_sample(21U)&&
                   usable_sample(22U)&&
                   timestamps[22U].timestamp>=timestamps[21U].timestamp;
@@ -8804,7 +8856,8 @@ int main(int argc,char** argv) {
                 std::chrono::steady_clock::now()-submission_started).count(),
             std::memory_order_relaxed);
         if(serial_timestamp_profile)[command_buffer waitUntilCompleted];
-        if(motion_test&&scene_vertex_count!=0U)++motion_rendered_frames;
+        if((motion_test||gpu_terrain_performance_smoke_test)&&
+           scene_vertex_count!=0U)++motion_rendered_frames;
         if(render_test&&scene_vertex_count!=0U)++render_test_frames;
         if(metalfx_test&&scene_vertex_count!=0U&&capture_buffer!=nil)
           ++metalfx_test_frames;
@@ -8851,6 +8904,9 @@ int main(int argc,char** argv) {
             (!auto_resolution_test||auto_resolution_test_frames>=
                  auto_resolution_required_frames)&&
             (!timing_profile_test||timing_profile_samples->size()>=300U)&&
+            (!gpu_terrain_performance_smoke_test||
+             (timing_profile_samples->size()>=300U&&
+              timing_profile_samples->ordered_terrain_generation().size()>=30U))&&
             (!overlay_test||overlay_test_frames>=10U)&&
             (!shadow_test||shadow_test_frames>=3U)&&
             (!any_atmosphere_frame_test||atmosphere_test_frames>=12U);
@@ -9534,6 +9590,49 @@ int main(int argc,char** argv) {
                               terrain_display_front.render_generation),
                           static_cast<unsigned long long>(
                               terrain_acceleration_structure.active_generation),
+                          passed?"true":"false");
+              if(!passed)result=1;
+            }else if(gpu_terrain_performance_smoke_test){
+              const auto frames=timing_profile_samples->ordered();
+              const auto generations=
+                  timing_profile_samples->ordered_terrain_generation();
+              constexpr double generation_limit_milliseconds=8.0;
+              constexpr double frame_limit_milliseconds=1000.0/30.0;
+              const double generation_p95=timing_percentile(generations,0.95);
+              const double frame_p95=timing_percentile(frames,0.95);
+              const bool passed=gpu_stage_timestamps_enabled&&
+                  generations.size()==30U&&frames.size()==300U&&
+                  generations.front()>0.0&&std::isfinite(generations.back())&&
+                  frames.front()>0.0&&std::isfinite(frames.back())&&
+                  generation_p95<=generation_limit_milliseconds&&
+                  frame_p95<=frame_limit_milliseconds&&
+                  gpu_terrain_renderer_available&&
+                  gpu_terrain_active_front.promoted&&
+                  gpu_terrain_counters->failed.load(std::memory_order_acquire)==0U&&
+                  gpu_terrain_counters->overflow.load(std::memory_order_acquire)==0U&&
+                  gpu_terrain_counters->cpu_front_violations.load(
+                      std::memory_order_acquire)==0U;
+              std::printf("{\"event\":\"metal_gpu_terrain_performance\","
+                          "\"generation_samples\":%zu,\"generation_median_ms\":%.4f,"
+                          "\"generation_p95_ms\":%.4f,\"generation_max_ms\":%.4f,"
+                          "\"generation_limit_ms\":%.4f,\"frame_samples\":%zu,"
+                          "\"frame_median_ms\":%.4f,\"frame_p95_ms\":%.4f,"
+                          "\"frame_max_ms\":%.4f,\"frame_limit_ms\":%.4f,"
+                          "\"stage_timestamps\":%s,\"selected\":true,"
+                          "\"dispatched\":%llu,\"accepted\":%llu,"
+                          "\"failed\":%llu,\"overflow\":%llu,"
+                          "\"cpu_front_violations\":%llu,\"passed\":%s}\n",
+                          generations.size(),timing_percentile(generations,0.50),
+                          generation_p95,generations.empty()?0.0:generations.back(),
+                          generation_limit_milliseconds,frames.size(),
+                          timing_percentile(frames,0.50),frame_p95,
+                          frames.empty()?0.0:frames.back(),frame_limit_milliseconds,
+                          gpu_stage_timestamps_enabled?"true":"false",
+                          static_cast<unsigned long long>(gpu_terrain_counters->dispatched.load(std::memory_order_acquire)),
+                          static_cast<unsigned long long>(gpu_terrain_counters->accepted.load(std::memory_order_acquire)),
+                          static_cast<unsigned long long>(gpu_terrain_counters->failed.load(std::memory_order_acquire)),
+                          static_cast<unsigned long long>(gpu_terrain_counters->overflow.load(std::memory_order_acquire)),
+                          static_cast<unsigned long long>(gpu_terrain_counters->cpu_front_violations.load(std::memory_order_acquire)),
                           passed?"true":"false");
               if(!passed)result=1;
             }else if(timing_profile_test){

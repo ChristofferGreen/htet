@@ -438,6 +438,12 @@ if(APPLE AND TETRA_BUILD_METAL)
       TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION=1
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
+  # P8c2 collects GPU counter evidence for the owner-direct generator and
+  # completed command-buffer frame interval on the selected private front.
+  add_test(NAME "metal GPU terrain owner-direct performance qualification"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-performance-smoke-test)
   set_target_properties(tetra_world_metal PROPERTIES
     OUTPUT_NAME "TetWorldMetal"
     MACOSX_BUNDLE TRUE
