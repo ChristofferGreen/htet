@@ -1,0 +1,73 @@
+#version 450
+// P10b's device fixed point.  This is intentionally a small, repeatable
+// kernel: phase 0 seeds canonical requests, phase 1 mirrors midpoint marks
+// through the immutable edge-incidence CSR, phase 2 completes a Grande green
+// mask (promoting mask 63 to red), and phase 3 enforces face 2:1 balance.
+// The host repeats phases 1--3 to quiescence with an explicit round bound.
+layout(std430,binding=0) readonly buffer Owners { uvec4 addresses[]; } owners;
+layout(std430,binding=1) readonly buffer Requests { uvec4 addresses[]; } requests;
+layout(std430,binding=2) buffer Marks { uint values[]; } marks;
+layout(std430,binding=3) buffer Masks { uint values[]; } masks;
+layout(std430,binding=4) readonly buffer Faces { uvec2 pairs[]; } faces;
+layout(std430,binding=5) readonly buffer Edges { uvec4 pairs[]; } edges;
+layout(std430,binding=6) buffer Changed { uint value; } changed;
+layout(push_constant) uniform Parameters {
+  uint owner_count; uint request_count; uint pair_count; uint phase;
+} parameters;
+layout(local_size_x=256) in;
+
+uint depth(uvec4 address) { return (address.y >> 20u) & 63u; }
+uint allowed_green(uint mask) {
+  const uint allowed[15]=uint[15](0u,1u,2u,4u,8u,16u,32u,33u,18u,12u,
+                                  11u,21u,38u,56u,63u);
+  uint best=63u, bits=7u;
+  for(uint i=0u;i<15u;++i) if((allowed[i]&mask)==mask) {
+    uint n=bitCount(allowed[i]);
+    if(n<bits || (n==bits && allowed[i]<best)) { best=allowed[i];bits=n; }
+  }
+  return best;
+}
+void changed_or() { atomicOr(changed.value,1u); }
+void main() {
+  uint i=gl_GlobalInvocationID.x;
+  if(parameters.phase==0u) {
+    if(i>=parameters.owner_count)return;
+    for(uint j=0u;j<parameters.request_count;++j)
+      if(all(equal(owners.addresses[i],requests.addresses[j]))) {
+        atomicOr(marks.values[i],1u); atomicOr(masks.values[i],63u); changed_or(); return;
+      }
+    return;
+  }
+  if(parameters.phase==1u) {
+    if(i>=parameters.pair_count)return;
+    uvec4 p=edges.pairs[i]; if(p.x>=parameters.owner_count||p.z>=parameters.owner_count||p.w>=6u)return;
+    if((p.y&0x80000000u)!=0u) {
+      if(marks.values[p.x]!=0u) { uint bit=1u<<p.w;
+        if((atomicOr(masks.values[p.z],bit)&bit)==0u)changed_or(); }
+      return;
+    }
+    if(p.y>=6u)return;
+    bool a=(marks.values[p.x]!=0u)||((masks.values[p.x]&(1u<<p.y))!=0u);
+    bool b=(marks.values[p.z]!=0u)||((masks.values[p.z]&(1u<<p.w))!=0u);
+    if(a||b) { uint ba=1u<<p.y,bb=1u<<p.w;
+      if((atomicOr(masks.values[p.x],ba)&ba)==0u)changed_or();
+      if((atomicOr(masks.values[p.z],bb)&bb)==0u)changed_or(); }
+    return;
+  }
+  if(parameters.phase==2u) {
+    if(i>=parameters.owner_count)return;
+    if(marks.values[i]!=0u) { if((atomicOr(masks.values[i],63u)&63u)!=63u)changed_or(); return; }
+    uint target=allowed_green(masks.values[i]&63u);
+    if(target==63u) { if(atomicCompSwap(marks.values[i],0u,1u)==0u)changed_or();
+      if((atomicOr(masks.values[i],63u)&63u)!=63u)changed_or(); }
+    else if((atomicOr(masks.values[i],target)&target)!=target)changed_or();
+    return;
+  }
+  if(i>=parameters.pair_count)return;
+  uvec2 p=faces.pairs[i]; if(p.x>=parameters.owner_count||p.y>=parameters.owner_count)return;
+  uint l=marks.values[p.x],r=marks.values[p.y];
+  if(depth(owners.addresses[p.x])+l>depth(owners.addresses[p.y])+r+1u)
+    if(atomicCompSwap(marks.values[p.y],0u,1u)==0u)changed_or();
+  if(depth(owners.addresses[p.y])+r>depth(owners.addresses[p.x])+l+1u)
+    if(atomicCompSwap(marks.values[p.x],0u,1u)==0u)changed_or();
+}

@@ -390,13 +390,18 @@ performance-promotion decision.
       schemes. Retain the persistent path only for a measured complete-frame
       improvement with identical visual and topology results. This is a
       scheduling optimization, not a replacement topology/extraction authority.
-- [ ] **P10b — Execute bounded split closure on the GPU.** Consume P10a's
+- [x] **P10b — Execute bounded split closure on the GPU.** Consume P10a's
       immutable source/request ABI on-device and emit its deterministic
       closure journal through count/scan/scatter. In qualification mode it
       must byte-compare to the P10a CPU oracle across root seams, mixed
       depths, stale inputs, malformed addresses, duplicates, overlap, and
       reservation overflow; failed work must leave the published CPU volume
-      untouched.
+      untouched. The source packet now carries canonical inherited green masks
+      and bounded ancestor-edge incidence, so the device performs the actual
+      seed, edge propagation, restricted-green promotion, and 2:1 face fixed
+      point before its count/scan/scatter journal. Native mixed-depth parity
+      produces the same nine-entry journal as P10a; the source remains
+      immutable and qualification-only.
 - [ ] **P10c — Commit GPU volume mutations with face repair and rollback.**
       Add bounded split/merge journals, complete-family merge eligibility,
       deterministic neighbour/face ownership repair, and ping-pong complete

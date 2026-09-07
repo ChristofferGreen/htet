@@ -1717,7 +1717,9 @@ bool run_metal_gpu_terrain_parallel_triangle_smoke_test(id<MTLDevice> device) {
 // count/scan/scatter shape used by the terrain compactor.  This is deliberately
 // qualification-only: the readback is checked against P10a and no directory
 // or published CPU volume is ever changed here.
-bool run_metal_gpu_volume_split_closure_smoke_test(id<MTLDevice> device) {
+// Retained as a transport regression fixture.  The P10b gate below exercises
+// the actual fixed point before using this same bounded compaction shape.
+[[maybe_unused]] bool run_metal_gpu_volume_split_closure_transport_test(id<MTLDevice> device) {
   const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
   const auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{
     id<MTLLibrary> library=make_file_shader_library(device,(directory/name).string().c_str());
@@ -1796,6 +1798,88 @@ bool run_metal_gpu_volume_split_closure_smoke_test(id<MTLDevice> device) {
   }
   std::printf("{\"event\":\"metal_gpu_volume_split_closure\",\"closure\":%u,\"passed\":true}\n",count);
   return true;
+}
+
+bool run_metal_gpu_volume_split_closure_smoke_test(id<MTLDevice> device) {
+  const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(directory/name).string().c_str());
+    NSError* error=nil; id<MTLFunction> function=[library newFunctionWithName:@"main0"];
+    return function==nil?nil:[device newComputePipelineStateWithFunction:function error:&error];
+  };
+  id<MTLComputePipelineState> marks_pipeline=pipeline("gpu_volume_split_marks.comp.metal");
+  id<MTLComputePipelineState> compact_pipeline=pipeline("gpu_volume_split_closure.comp.metal");
+  id<MTLComputePipelineState> scan_pipeline=pipeline("gpu_terrain_exclusive_scan.comp.metal");
+  if(marks_pipeline==nil||compact_pipeline==nil||scan_pipeline==nil)return false;
+  // Root seams plus a mixed-depth front exercise both independent device
+  // propagation mechanisms.  P10a remains the byte-for-byte oracle.
+  std::vector<tetra::WorldTetAddress> roots;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)
+    roots.push_back(tetra::WorldTetAddress::root(root));
+  tetra::WorldCutDirectory source(tetra::make_complete_world_cut_checkpoint(
+      roots,3U,801U,tetra::HierarchyResidencyTier::conforming_volume));
+  // Materialize a mixed-depth source before requesting adjacent children.
+  // This retains a root seam while forcing the device face-balance path.
+  const std::array first_split{tetra::WorldTopologyEdit{
+      tetra::WorldTetAddress::root(0U),tetra::WorldTopologyOperation::split}};
+  source.publish(source.stage_transaction(first_split,802U).manifest);
+  const std::array requested{tetra::WorldTetAddress::root(0U).child(0U),
+                             tetra::WorldTetAddress::root(0U).child(1U)};
+  const auto oracle=tetra::gpu_conforming_volume_split_proposal(source,requested,802U,803U,512U);
+  const auto packet=tetra::make_gpu_conforming_volume_source_packet(source,256U,4096U,4096U);
+  if(oracle.header.status!=tetra::GpuConformingVolumeProposalStatus::ready||
+     packet.owners.empty()||packet.owners.size()>256U)return false;
+  const auto make=[&](const void* p,NSUInteger n){return [device newBufferWithBytes:p length:n options:MTLResourceStorageModeShared];};
+  std::vector<std::uint32_t> zeros(packet.owners.size()), masks=packet.owner_masks, offsets(packet.owners.size());
+  std::uint32_t changed=0U,status=0U,total=0U;
+  std::vector<std::array<std::uint32_t,4>> output(packet.owners.size());
+  id<MTLBuffer> owners=make(packet.owners.data(),packet.owners.size()*sizeof(packet.owners.front()));
+  id<MTLBuffer> requests_buffer=make(requested.data(),requested.size()*sizeof(requested.front()));
+  id<MTLBuffer> marks=make(zeros.data(),zeros.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> mask_buffer=make(masks.data(),masks.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> faces=make(packet.face_pairs.data(),packet.face_pairs.size()*sizeof(packet.face_pairs.front()));
+  id<MTLBuffer> edges=make(packet.edge_pairs.data(),packet.edge_pairs.size()*sizeof(packet.edge_pairs.front()));
+  id<MTLBuffer> changed_buffer=make(&changed,sizeof(changed)); id<MTLBuffer> counts=make(zeros.data(),zeros.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> offset_buffer=make(offsets.data(),offsets.size()*sizeof(std::uint32_t)); id<MTLBuffer> total_buffer=make(&total,sizeof(total));
+  id<MTLBuffer> output_buffer=make(output.data(),output.size()*sizeof(output.front())); id<MTLBuffer> status_buffer=make(&status,sizeof(status));
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(owners==nil||requests_buffer==nil||marks==nil||mask_buffer==nil||faces==nil||edges==nil||changed_buffer==nil||counts==nil||offset_buffer==nil||total_buffer==nil||output_buffer==nil||status_buffer==nil||queue==nil)return false;
+  const auto dispatch_marks=[&](std::uint32_t phase,std::uint32_t pairs){
+    const std::array<std::uint32_t,4> params{static_cast<std::uint32_t>(packet.owners.size()),static_cast<std::uint32_t>(requested.size()),pairs,phase};
+    id<MTLCommandBuffer> command=[queue commandBuffer]; id<MTLComputeCommandEncoder> e=[command computeCommandEncoder];
+    [e setComputePipelineState:marks_pipeline]; [e setBuffer:changed_buffer offset:0 atIndex:0U];[e setBytes:params.data() length:sizeof(params) atIndex:1U];
+    [e setBuffer:owners offset:0 atIndex:2U];[e setBuffer:requests_buffer offset:0 atIndex:3U];[e setBuffer:marks offset:0 atIndex:4U];[e setBuffer:mask_buffer offset:0 atIndex:5U];[e setBuffer:edges offset:0 atIndex:6U];[e setBuffer:faces offset:0 atIndex:7U];
+    const auto work=phase==1U?pairs:phase==3U?pairs:static_cast<std::uint32_t>(packet.owners.size());
+    [e dispatchThreads:MTLSizeMake(work,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];[command commit];[command waitUntilCompleted];return command.status==MTLCommandBufferStatusCompleted;
+  };
+  if(!dispatch_marks(0U,0U))return false;
+  bool settled=false;
+  for(std::uint32_t round=0;round<=packet.owners.size()+8U;++round) {
+    *static_cast<std::uint32_t*>(changed_buffer.contents)=0U;
+    if(!dispatch_marks(1U,packet.header.edge_pair_count)||!dispatch_marks(2U,0U)||!dispatch_marks(3U,packet.header.face_pair_count))return false;
+    if(*static_cast<const std::uint32_t*>(changed_buffer.contents)==0U){settled=true;break;}
+  }
+  if(!settled)return false;
+  const std::array<std::uint32_t,3> count_params{static_cast<std::uint32_t>(packet.owners.size()),static_cast<std::uint32_t>(output.size()),0U};
+  id<MTLCommandBuffer> command=[queue commandBuffer];id<MTLComputeCommandEncoder> e=[command computeCommandEncoder];
+  [e setComputePipelineState:compact_pipeline];[e setBytes:count_params.data() length:sizeof(count_params) atIndex:0U];[e setBuffer:status_buffer offset:0 atIndex:1U];[e setBuffer:counts offset:0 atIndex:2U];[e setBuffer:marks offset:0 atIndex:3U];[e setBuffer:offset_buffer offset:0 atIndex:4U];[e setBuffer:output_buffer offset:0 atIndex:5U];[e setBuffer:owners offset:0 atIndex:6U];[e dispatchThreads:MTLSizeMake(packet.owners.size(),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];
+  e=[command computeCommandEncoder];const std::array<std::uint32_t,2> scan_params{static_cast<std::uint32_t>(packet.owners.size()),0U};[e setComputePipelineState:scan_pipeline];[e setBytes:scan_params.data() length:sizeof(scan_params) atIndex:0U];[e setBuffer:offset_buffer offset:0 atIndex:1U];[e setBuffer:counts offset:0 atIndex:2U];[e setBuffer:total_buffer offset:0 atIndex:3U];[e dispatchThreads:MTLSizeMake(256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];
+  const std::array<std::uint32_t,3> scatter_params{static_cast<std::uint32_t>(packet.owners.size()),static_cast<std::uint32_t>(output.size()),1U};e=[command computeCommandEncoder];[e setComputePipelineState:compact_pipeline];[e setBytes:scatter_params.data() length:sizeof(scatter_params) atIndex:0U];[e setBuffer:status_buffer offset:0 atIndex:1U];[e setBuffer:counts offset:0 atIndex:2U];[e setBuffer:marks offset:0 atIndex:3U];[e setBuffer:offset_buffer offset:0 atIndex:4U];[e setBuffer:output_buffer offset:0 atIndex:5U];[e setBuffer:owners offset:0 atIndex:6U];[e dispatchThreads:MTLSizeMake(packet.owners.size(),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];[command commit];[command waitUntilCompleted];
+  if(command.status!=MTLCommandBufferStatusCompleted||*static_cast<const std::uint32_t*>(status_buffer.contents)!=0U)return false;
+  std::vector<std::array<std::uint32_t,4>> expected=oracle.requested_splits;expected.insert(expected.end(),oracle.closure_splits.begin(),oracle.closure_splits.end());std::ranges::sort(expected);expected.erase(std::unique(expected.begin(),expected.end()),expected.end());
+  const auto actual_count=*static_cast<const std::uint32_t*>(total_buffer.contents);
+  if(actual_count!=expected.size()||actual_count>output.size()||
+     std::memcmp(output_buffer.contents,expected.data(),actual_count*sizeof(expected.front()))!=0) {
+    std::fprintf(stderr,"GPU volume device closure mismatch actual %u expected %zu\\n",actual_count,expected.size());
+    for(std::uint32_t i=0;i<actual_count;++i) {
+      const auto a=static_cast<const std::array<std::uint32_t,4>*>(output_buffer.contents)[i];
+      std::fprintf(stderr," actual %u: %u %u %u %u\\n",i,a[0],a[1],a[2],a[3]);
+    }
+    for(std::size_t i=0;i<expected.size();++i)
+      std::fprintf(stderr," expected %zu: %u %u %u %u\\n",i,expected[i][0],expected[i][1],expected[i][2],expected[i][3]);
+    return false;
+  }
+  std::printf("{\"event\":\"metal_gpu_volume_split_closure\",\"closure\":%u,\"rounds_bounded\":true,\"passed\":true}\n",actual_count); return true;
 }
 
 bool run_metal_gpu_terrain_project_smoke_test(id<MTLDevice> device) {

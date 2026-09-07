@@ -140,9 +140,14 @@ static_assert(sizeof(GpuConformingVolumeSourceHeader)==32U);
 struct GpuConformingVolumeSourcePacket {
   GpuConformingVolumeSourceHeader header{};
   std::vector<std::array<std::uint32_t,4>> owners;
+  // Exact restricted-green requirements already implied by the immutable
+  // source cut. These are source state, not transaction closure output.
+  std::vector<std::uint32_t> owner_masks;
   std::vector<std::array<std::uint32_t,2>> face_pairs;
   // {owner A, local edge A, owner B, local edge B}; canonical shared-edge
-  // incidences let the device propagate exact six-bit midpoint masks.
+  // incidences let the device propagate exact six-bit midpoint masks. If bit
+  // 31 of local edge A is set, this is an ancestor activation: selecting A
+  // activates B's edge because that edge is an exact ancestor midpoint.
   std::vector<std::array<std::uint32_t,4>> edge_pairs;
 };
 [[nodiscard]] GpuConformingVolumeSourcePacket

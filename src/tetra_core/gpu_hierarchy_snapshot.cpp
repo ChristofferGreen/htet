@@ -402,6 +402,10 @@ GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
   std::ranges::sort(owners);
   if(owners.empty()||owners.size()>owner_capacity)
     throw std::overflow_error("GPU volume source owner reservation is insufficient");
+  WorldConformingClosureCache source_closure;
+  const auto closed=close_world_conforming_cut(owners,&source_closure);
+  if(closed!=owners||source_closure.green_masks.size()!=owners.size())
+    throw std::logic_error("GPU volume source cut is not a canonical closed front");
   std::map<WorldEdgeKey,std::vector<std::array<std::uint32_t,2>>> edge_owners;
   for(std::size_t owner=0U;owner<owners.size();++owner) {
     const auto vertices=world_tetrahedron_vertex_keys(owners[owner]);
@@ -420,6 +424,28 @@ GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
             incidences[second][0U],incidences[second][1U]});
       }
   }
+  // A red request activates every ancestor's six midpoint edges.  Some such
+  // edges belong to a coarse neighbour, not to the requested leaf itself, so
+  // preserve those exact links explicitly instead of asking the device to
+  // reconstruct dyadic geometry from floats.
+  for(std::size_t owner=0U;owner<owners.size();++owner) {
+    auto ancestor=owners[owner];
+    while(ancestor.red_depth()>0U) {
+      ancestor=ancestor.parent();
+      const auto keys=world_tetrahedron_vertex_keys(ancestor);
+      for(std::size_t edge=0U;edge<tetrahedron_edges.size();++edge) {
+        const auto found=edge_owners.find(world_edge_key(
+            keys[tetrahedron_edges[edge][0U]],keys[tetrahedron_edges[edge][1U]]));
+        if(found==edge_owners.end())continue;
+        for(const auto target:found->second) {
+          if(result.edge_pairs.size()>=edge_pair_capacity)
+            throw std::overflow_error("GPU volume source edge reservation is insufficient");
+          result.edge_pairs.push_back({static_cast<std::uint32_t>(owner),
+              0x80000000U|static_cast<std::uint32_t>(edge),target[0U],target[1U]});
+        }
+      }
+    }
+  }
   for(std::size_t first=0U;first<owners.size();++first)
     for(std::size_t second=first+1U;second<owners.size();++second)
       if(gpu_volume_face_adjacent(owners[first],owners[second])) {
@@ -429,7 +455,10 @@ GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
                                     static_cast<std::uint32_t>(second)});
       }
   result.owners.reserve(owners.size());
-  for(const auto owner:owners)result.owners.push_back(gpu_hierarchy_address_lanes(owner));
+  for(std::size_t index=0U;index<owners.size();++index) {
+    result.owners.push_back(gpu_hierarchy_address_lanes(owners[index]));
+    result.owner_masks.push_back(source_closure.green_masks[index]);
+  }
   result.header.owner_count=static_cast<std::uint32_t>(result.owners.size());
   result.header.face_pair_count=static_cast<std::uint32_t>(result.face_pairs.size());
   result.header.edge_pair_count=static_cast<std::uint32_t>(result.edge_pairs.size());
@@ -446,12 +475,14 @@ void validate_gpu_conforming_volume_source_packet(
      packet.header.owner_count!=packet.owners.size()||
      packet.header.face_pair_count!=packet.face_pairs.size()||
      packet.header.edge_pair_count!=packet.edge_pairs.size()||
+     packet.owner_masks.size()!=packet.owners.size()||
      packet.owners.size()>owner_capacity||packet.face_pairs.size()>face_pair_capacity||
      packet.edge_pairs.size()>edge_pair_capacity)
     throw std::invalid_argument("GPU volume source packet header is invalid");
   const auto expected=make_gpu_conforming_volume_source_packet(
       source,owner_capacity,face_pair_capacity,edge_pair_capacity);
   if(expected.header!=packet.header||expected.owners!=packet.owners||
+     expected.owner_masks!=packet.owner_masks||
      expected.face_pairs!=packet.face_pairs||expected.edge_pairs!=packet.edge_pairs)
     throw std::invalid_argument("GPU volume source packet is not canonical");
 }

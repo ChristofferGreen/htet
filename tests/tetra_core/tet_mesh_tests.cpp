@@ -799,6 +799,10 @@ TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   CHECK(packet.header.source_identity==directory.canonical_cut_hash());
   CHECK(packet.header.owner_count==roots.size());
   CHECK(std::ranges::is_sorted(packet.owners));
+  CHECK(packet.owner_masks.size()==packet.owners.size());
+  CHECK(std::ranges::all_of(packet.owner_masks,[](std::uint32_t mask){
+    return (mask&~63U)==0U;
+  }));
   REQUIRE(!packet.face_pairs.empty());
   REQUIRE(!packet.edge_pairs.empty());
   CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_source_packet(
