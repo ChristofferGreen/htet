@@ -113,10 +113,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: The translated Metal fixture matched the CPU oracle for fixed/moved field and render-origin cases and rejected stale tuple, malformed, degenerate, overflow, and empty-stream inputs without publishing a partial result.
 
 ### gpu-hierarchy-snapshot
-- Updated: 2026-09-05
-- Tags: bcc, gpu-lod, hierarchy, serialization
-- Fact: `GpuHierarchySnapshot` materializes every missing BCC ancestor once and uses a separate immutable child-index table, allowing its 32-byte records to form one globally traversable streamed-block hierarchy without parent/child overlap.
-- Evidence: The Release snapshot regression checks every non-root record has its parent and every packed child index resolves exactly; the eleven-case hidden Vulkan corpus passed the exclusive-front gate.
+- Updated: 2026-09-07
+- Tags: bcc, gpu-lod, hierarchy, serialization, ordering
+- Fact: `GpuHierarchySnapshot` materializes missing BCC ancestors, retains compact block-graph child indirection, and carries a separately validated address-sorted record permutation for deterministic device frontier compaction.
+- Evidence: The core hierarchy regression rejects malformed permutations, while the native Metal P7e3a fixture chains selector marks through count/scan/scatter and byte-compares canonical fixed/walk/orbit frontiers; the 524-test Release gate passed.
 
 ### gpu-hierarchy-selector-geometry
 - Updated: 2026-09-05

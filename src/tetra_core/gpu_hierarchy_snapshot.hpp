@@ -473,6 +473,11 @@ struct GpuHierarchySnapshot {
   std::vector<std::uint32_t> child_indices;
   std::vector<GpuHierarchyBlockRecord> blocks;
   std::vector<std::uint32_t> logical_owner_records;
+  // Record storage follows block-graph traversal so child indirection stays
+  // compact.  The separate immutable permutation is address-sorted and is
+  // the only order in which a device-built selected frontier may be emitted.
+  // It is topology metadata, not a CPU-produced surface or P6 packet.
+  std::vector<std::uint32_t> canonical_record_indices;
   // One immutable normalized-space geometry sidecar per hierarchy record.
   // P4 selector inputs add field bounds and camera-dependent parameters in
   // separate packets; they must not overload topology or draw buffers.

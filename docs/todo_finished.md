@@ -534,6 +534,17 @@
 
 ## 2026-09-07
 
+- [x] **P7e3a — Materialize the canonical device candidate frontier.** The
+  immutable hierarchy snapshot now carries a validated address-sorted record
+  permutation without disturbing its compact traversal order. A new shared
+  Metal kernel consumes the actual P7e2 mark tail and uses a bounded
+  count/scan/scatter path to materialize 12-word candidate-owner records in
+  canonical world-address order. The native fixture chains fixed/walk/orbit
+  selection through that kernel, byte-compares the addresses to the CPU
+  traversal oracle, and rejects zero owner capacity. It creates no CPU P6
+  packet, no green-mask result, and no drawable; P7e3b/c own incidence and
+  closure respectively.
+
 - [x] **P7e2 — Publish immutable device traversal state.** The Metal runtime
   now has an opt-in live-selection route that uploads a revisioned immutable
   BCC hierarchy/geometry snapshot once, retains its GPU buffers across camera

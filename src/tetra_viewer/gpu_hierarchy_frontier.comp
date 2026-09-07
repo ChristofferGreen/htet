@@ -1,0 +1,90 @@
+#version 450
+
+// P7e3a compacts P7e2's deterministic selected-record marks into canonical
+// address order.  The source permutation is immutable hierarchy metadata;
+// this kernel never accepts a CPU surface, P6 packet, or host-built closure.
+// Output records deliberately share GpuGreenMaskOwnerRecord's 12-word shape:
+// P7e3b will fill the edge and green-mask lanes before P8 owner-direct
+// emission is allowed to consume them.
+layout(std430,binding=0) readonly buffer Hierarchy { uint words[]; } hierarchy;
+layout(std430,binding=1) readonly buffer Selection { uint words[]; } selection;
+layout(std430,binding=2) readonly buffer CanonicalRecords { uint values[]; } canonical;
+layout(std430,binding=3) buffer Counts { uint values[]; } counts;
+layout(std430,binding=4) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=5) buffer Owners { uint words[]; } owners;
+layout(std430,binding=6) buffer Status { uint words[]; } status;
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint selection_output_capacity;
+  uint mark_word_count;
+  uint owner_capacity;
+  uint phase;
+} parameters;
+layout(local_size_x=256) in;
+
+bool selected(uint record) {
+  const uint word=record>>5u;
+  if(word>=parameters.mark_word_count)return false;
+  return (selection.words[4u+parameters.selection_output_capacity+word]&
+          (1u<<(record&31u)))!=0u;
+}
+
+// The on-device ABI uses the exact packed address, so validation does not
+// depend on the float geometry sidecar.  Unused path bits must be zero,
+// matching gpu_hierarchy_address_valid().
+bool valid_address(uint record) {
+  const uint base=record*8u;
+  const uint high_low=hierarchy.words[base+0u];
+  const uint high_high=hierarchy.words[base+1u];
+  const uint low_low=hierarchy.words[base+2u];
+  const uint low_high=hierarchy.words[base+3u];
+  const uint root=(high_high>>26u)&63u;
+  const uint depth=(high_high>>20u)&63u;
+  if(root>=12u||depth>38u)return false;
+  const uint path_bits=depth*3u;
+  if(path_bits<=64u) {
+    if(high_low!=0u||(high_high&0x000fffffu)!=0u)return false;
+    if(path_bits<=32u)
+      return low_high==0u&&(path_bits==32u||low_low>>path_bits==0u);
+    if(path_bits==64u)return true;
+    return low_high>>(path_bits-32u)==0u;
+  }
+  const uint high_bits=path_bits-64u;
+  if(high_bits<=20u)
+    return high_low==0u&&
+        (high_bits==20u||(high_high&0x000fffffu)>>high_bits==0u);
+  return high_low>>(high_bits-20u)==0u;
+}
+
+void fail() { atomicOr(status.words[0u],1u); }
+
+void main() {
+  const uint order=gl_GlobalInvocationID.x;
+  if(parameters.phase==1u) {
+    if(order!=0u)return;
+    if(parameters.record_count==0u||selection.words[3u]!=0u) { fail(); return; }
+    const uint last=parameters.record_count-1u;
+    const uint total=offsets.values[last]+counts.values[last];
+    if(total==0u||total>parameters.owner_capacity) { fail(); return; }
+    status.words[1u]=total;
+    return;
+  }
+  if(order>=parameters.record_count||status.words[0u]!=0u)return;
+  const uint record=canonical.values[order];
+  if(record>=parameters.record_count||!valid_address(record)) { fail(); return; }
+  if(parameters.phase==0u) {
+    counts.values[order]=selected(record)?1u:0u;
+    return;
+  }
+  if(parameters.phase!=2u||!selected(record))return;
+  const uint destination=offsets.values[order];
+  if(destination>=parameters.owner_capacity) { fail(); return; }
+  const uint source=record*8u,destination_word=destination*12u;
+  owners.words[destination_word+0u]=hierarchy.words[source+0u];
+  owners.words[destination_word+1u]=hierarchy.words[source+1u];
+  owners.words[destination_word+2u]=hierarchy.words[source+2u];
+  owners.words[destination_word+3u]=hierarchy.words[source+3u];
+  for(uint lane=4u;lane<10u;++lane)owners.words[destination_word+lane]=0xffffffffu;
+  owners.words[destination_word+10u]=0u;
+  owners.words[destination_word+11u]=0u;
+}

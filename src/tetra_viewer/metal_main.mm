@@ -1567,6 +1567,201 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
   return passed;
 }
 
+// P7e3a chains the real selector marks through a deterministic count/scan/
+// scatter frontier build.  The fixture permits shared readback solely for its
+// oracle; the produced records are not a P6 packet and have no renderer
+// consumer until the following incidence and closure leaves are complete.
+bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0U;generation<3U;++generation)
+    mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())
+    leaves.push_back(tetra::world_tet_address(owner));
+  const tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,61U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,67U);
+  if(snapshot.records.empty()||snapshot.canonical_record_indices.size()!=
+      snapshot.records.size())return false;
+  const auto shader=[&](const char* name)->id<MTLComputePipelineState>{
+    const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
+    id<MTLLibrary> library=make_file_shader_library(device,path.string().c_str());
+    NSError* error=nil;
+    id<MTLFunction> function=library==nil?nil:[library newFunctionWithName:@"main0"];
+    id<MTLComputePipelineState> result=function==nil?nil:
+        [device newComputePipelineStateWithFunction:function error:&error];
+    if(result==nil)std::fprintf(stderr,"Metal hierarchy-frontier pipeline %s failed: %s\n",
+        name,error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return result;
+  };
+  id<MTLComputePipelineState> select=shader("gpu_lod.comp.metal");
+  id<MTLComputePipelineState> frontier=shader("gpu_hierarchy_frontier.comp.metal");
+  id<MTLComputePipelineState> scan=shader("gpu_terrain_exclusive_scan.comp.metal");
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(select==nil||frontier==nil||scan==nil||queue==nil)return false;
+  const auto make=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:std::max<NSUInteger>(length,4U)
+        options:MTLResourceStorageModeShared];
+  };
+  id<MTLBuffer> hierarchy=make(snapshot.records.data(),
+      snapshot.records.size()*sizeof(snapshot.records.front()));
+  id<MTLBuffer> children=make(snapshot.child_indices.data(),
+      snapshot.child_indices.size()*sizeof(snapshot.child_indices.front()));
+  id<MTLBuffer> inputs=make(snapshot.selection_records.data(),
+      snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
+  id<MTLBuffer> canonical=make(snapshot.canonical_record_indices.data(),
+      snapshot.canonical_record_indices.size()*sizeof(std::uint32_t));
+  if(hierarchy==nil||children==nil||inputs==nil||canonical==nil)return false;
+  const auto make_tuple=[](tetra::Vec3 position,tetra::Vec3 forward,
+                           float edge,float field,float limb){
+    return tetra::make_gpu_hierarchy_selection_tuple({
+        .camera={.position=position,.viewport_height_pixels=800.0,
+                 .forward=forward,.up={0.0,1.0,0.0},.aspect_ratio=1.0},
+        .render_origin={},.field_centre={0.5,0.5,0.5},.planet_radius=2.0,
+        .terrain_height_bound=0.1,.field_lipschitz=1.0,.edge_threshold=edge,
+        .field_threshold=field,.limb_threshold=limb,.merge_ratio=0.5,
+        .source_revision=61U,.field_revision=67U});
+  };
+  struct Case { tetra::Vec3 position,forward; float edge,field,limb; bool overflow; };
+  const std::array cases{
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,false},
+      Case{{.7,.5,2.8},{0.,0.,-1.},.5F,1.e6F,1.e6F,false},
+      Case{{3.,.5,.5},{-1.,0.,0.},1.e6F,.05F,1.e6F,false},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,true}};
+  const auto record_count=static_cast<std::uint32_t>(snapshot.records.size());
+  const auto mark_words=(record_count+31U)/32U;
+  const auto block_count=(record_count+255U)/256U;
+  std::size_t completed{};
+  for(const auto& test:cases) {
+    const auto tuple=make_tuple(test.position,test.forward,test.edge,test.field,test.limb);
+    const auto oracle=tetra::gpu_hierarchy_traverse(snapshot,
+        tetra::gpu_hierarchy_traversal_parameters(tuple));
+    if(oracle.selected_records.empty())return false;
+    const auto owner_capacity=test.overflow?0U:
+        static_cast<std::uint32_t>(oracle.selected_records.size());
+    std::vector<std::uint32_t> selection_words(4U+record_count+mark_words,0U);
+    std::vector<std::uint32_t> zeros(record_count,0U);
+    std::vector<std::uint32_t> block_zeros(block_count,0U);
+    std::vector<std::uint32_t> owner_words(
+        std::max<std::size_t>(1U,static_cast<std::size_t>(owner_capacity)*12U),0U);
+    const std::array<std::uint32_t,4> status_zeros{};
+    id<MTLBuffer> tuple_buffer=make(&tuple,sizeof(tuple));
+    id<MTLBuffer> selection_buffer=make(selection_words.data(),
+        selection_words.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> counts=make(zeros.data(),zeros.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> offsets=make(zeros.data(),zeros.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> added_offsets=make(zeros.data(),zeros.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> block_totals=make(block_zeros.data(),block_zeros.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> block_offsets=make(block_zeros.data(),block_zeros.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> scan_total=make(status_zeros.data(),sizeof(status_zeros));
+    id<MTLBuffer> owner_buffer=make(owner_words.data(),owner_words.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> status=make(status_zeros.data(),sizeof(status_zeros));
+    if(tuple_buffer==nil||selection_buffer==nil||counts==nil||offsets==nil||
+       added_offsets==nil||block_totals==nil||block_offsets==nil||scan_total==nil||
+       owner_buffer==nil||status==nil)return false;
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    const std::array<std::uint32_t,3> selection_parameters{
+        record_count,record_count,mark_words};
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:select];
+    [encoder setBuffer:hierarchy offset:0U atIndex:0U];
+    [encoder setBuffer:children offset:0U atIndex:1U];
+    [encoder setBuffer:inputs offset:0U atIndex:2U];
+    [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
+    [encoder setBytes:selection_parameters.data() length:sizeof(selection_parameters) atIndex:4U];
+    [encoder setBuffer:selection_buffer offset:0U atIndex:5U];
+    [encoder dispatchThreads:MTLSizeMake(record_count,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
+    const std::array<std::uint32_t,5> count_parameters{
+        record_count,record_count,mark_words,owner_capacity,0U};
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
+    [encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:0U];
+    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
+    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:offsets offset:0U atIndex:4U];
+    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
+    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    const std::array<std::uint32_t,2> scan_parameters{record_count,0U};
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
+    [encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
+    [encoder setBuffer:offsets offset:0U atIndex:1U]; [encoder setBuffer:counts offset:0U atIndex:2U];
+    [encoder setBuffer:block_totals offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    const std::array<std::uint32_t,2> block_scan_parameters{block_count,0U};
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
+    [encoder setBytes:block_scan_parameters.data() length:sizeof(block_scan_parameters) atIndex:0U];
+    [encoder setBuffer:block_offsets offset:0U atIndex:1U]; [encoder setBuffer:block_totals offset:0U atIndex:2U];
+    [encoder setBuffer:scan_total offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(256U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    const std::array<std::uint32_t,2> add_parameters{record_count,1U};
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
+    [encoder setBytes:add_parameters.data() length:sizeof(add_parameters) atIndex:0U];
+    [encoder setBuffer:added_offsets offset:0U atIndex:1U]; [encoder setBuffer:offsets offset:0U atIndex:2U];
+    [encoder setBuffer:block_offsets offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    auto frontier_parameters=count_parameters;frontier_parameters[4]=1U;
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
+    [encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
+    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
+    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:added_offsets offset:0U atIndex:4U];
+    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
+    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
+    frontier_parameters[4]=2U;
+    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
+    [encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
+    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
+    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:added_offsets offset:0U atIndex:4U];
+    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
+    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    [command commit]; [command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted) {
+      std::fprintf(stderr,"Metal hierarchy-frontier command failed: %ld\n",
+          static_cast<long>(command.status));
+      return false;
+    }
+    const auto* state=static_cast<const std::uint32_t*>(status.contents);
+    if(test.overflow) {
+      if(state[0u]==0u) {
+        std::fprintf(stderr,"Metal hierarchy-frontier overflow was accepted\n");
+        return false;
+      }
+      ++completed; continue;
+    }
+    if(state[0u]!=0u||state[1u]!=oracle.selected_records.size()) {
+      std::fprintf(stderr,"Metal hierarchy-frontier state %u/%u expected %zu\n",
+          state[0u],state[1u],oracle.selected_records.size());
+      return false;
+    }
+    std::vector<tetra::WorldTetAddress> expected;
+    for(const auto index:oracle.selected_records)
+      expected.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[index].address));
+    std::ranges::sort(expected);
+    const auto* device_words=static_cast<const std::uint32_t*>(owner_buffer.contents);
+    for(std::size_t index=0U;index<expected.size();++index) {
+      const std::array<std::uint32_t,4> lanes{{device_words[index*12U],
+          device_words[index*12U+1U],device_words[index*12U+2U],device_words[index*12U+3U]}};
+      if(tetra::gpu_hierarchy_address_from_lanes(lanes)!=expected[index]||
+         device_words[index*12U+10U]!=0U) {
+        std::fprintf(stderr,"Metal hierarchy-frontier record %zu mismatched\n",index);
+        return false;
+      }
+    }
+    ++completed;
+  }
+  std::printf("{\"event\":\"metal_gpu_hierarchy_frontier\","
+              "\"cases\":%zu,\"canonical\":true,\"overflow\":true,"
+              "\"passed\":true}\n",completed);
+  return completed==cases.size();
+}
+
 // P7a2's hardware gate uses no legacy terrain-cell payload and deliberately
 // creates no drawable.  It verifies that the translated kernel reconstructs
 // the compact P6 BCC owners and evaluates the P7a1 planetary field tuple.
@@ -4995,6 +5190,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
   const bool gpu_live_selection_state_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-live-selection-state-smoke-test")==0;
+  const bool gpu_hierarchy_frontier_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-hierarchy-frontier-smoke-test")==0;
   const bool gpu_terrain_extract_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
   const bool gpu_terrain_classify_smoke_test=argc==2&&
@@ -5333,7 +5530,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_live_selection_state_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_live_selection_state_smoke_test&&!gpu_hierarchy_frontier_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -5346,6 +5543,7 @@ int main(int argc,char** argv) {
                         "--metal-atmosphere-compiler-check|"
                         "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-gpu-live-selection-state-smoke-test|"
+                        "--metal-gpu-hierarchy-frontier-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
                         "--metal-gpu-terrain-classify-smoke-test|"
                         "--metal-gpu-terrain-triangle-smoke-test|"
@@ -5472,6 +5670,8 @@ int main(int argc,char** argv) {
       return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
     if(gpu_live_selection_state_smoke_test)
       return run_metal_gpu_live_selection_state_smoke_test(device)?0:1;
+    if(gpu_hierarchy_frontier_smoke_test)
+      return run_metal_gpu_hierarchy_frontier_smoke_test(device)?0:1;
     if(gpu_terrain_extract_smoke_test)
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
     if(gpu_terrain_classify_smoke_test)

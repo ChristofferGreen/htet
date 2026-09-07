@@ -1467,6 +1467,12 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
   result.header.record_capacity=result.header.record_count;
   result.header.block_count=static_cast<std::uint32_t>(result.blocks.size());
   result.header.block_capacity=result.header.block_count;
+  result.canonical_record_indices.resize(result.records.size());
+  for(std::uint32_t index=0U;index<result.records.size();++index)
+    result.canonical_record_indices[index]=index;
+  std::ranges::sort(result.canonical_record_indices,{},[&](std::uint32_t index) {
+    return gpu_hierarchy_address_from_lanes(result.records[index].address);
+  });
   result.selection_records.reserve(result.records.size());
   for(const auto& record:result.records)
     result.selection_records.push_back(gpu_hierarchy_selection_record(record.address));
@@ -1482,10 +1488,21 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
      header.record_count!=snapshot.records.size()||
      header.block_count!=snapshot.blocks.size()||
      header.record_count>header.record_capacity||header.block_count>header.block_capacity||
+     snapshot.canonical_record_indices.size()!=snapshot.records.size()||
      snapshot.selection_records.size()!=snapshot.records.size()||
      header.block_generations==0U||header.block_generations>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy snapshot header is malformed");
   std::vector<bool> record_covered(snapshot.records.size());
+  std::vector<bool> canonical_record_covered(snapshot.records.size());
+  for(std::size_t position=0U;position<snapshot.canonical_record_indices.size();++position) {
+    const auto index=snapshot.canonical_record_indices[position];
+    if(index>=snapshot.records.size()||canonical_record_covered[index]||
+       (position>0U&&!(gpu_hierarchy_address_from_lanes(
+           snapshot.records[snapshot.canonical_record_indices[position-1U]].address)<
+           gpu_hierarchy_address_from_lanes(snapshot.records[index].address))))
+      throw std::invalid_argument("GPU hierarchy canonical record order is malformed");
+    canonical_record_covered[index]=true;
+  }
   std::set<WorldTetAddress> resident_addresses;
   for(const auto& record:snapshot.records) {
     const auto address=gpu_hierarchy_address_from_lanes(record.address);

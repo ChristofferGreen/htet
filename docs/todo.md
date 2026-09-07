@@ -362,12 +362,16 @@ infrastructure. They do not close P7 because CPU still performs selection,
 closure, source-packet construction, and the initial mesh seed. CPU terrain
 generation remains the normal launch default until every P7e leaf is complete.
 
-- [ ] **P7e3 — Construct a conforming GPU render cut.** Consume P7e2 marks
-      and derive canonical owner/green-mask state on-device through bounded
-      split and face/edge fixed points. Use hierarchy/block-local incidence,
-      never P10's quadratic host adjacency builder or a CPU closure packet.
-      Byte-compare root seams and mixed-depth cuts to the CPU oracle; failed,
-      stale, or overflowing work retains the prior front.
+- [ ] **P7e3b — Derive immutable hierarchy-local incidence.** From the same
+      revisioned hierarchy that P7e2 selects, construct bounded exact
+      face/edge incidence sufficient for mixed-depth and root-seam closure.
+      Never reuse P10's quadratic host adjacency builder or a CPU P6 packet.
+      The result is immutable topology metadata, not a closure result.
+- [ ] **P7e3c — Close the device render cut.** Consume P7e3a's canonical
+      selected frontier and P7e3b's incidence to derive canonical
+      owner/green-mask records through bounded face/edge fixed points. Byte-
+      compare root seams and mixed-depth cuts to the CPU oracle; stale,
+      malformed, or overflowing work must retain the prior front.
 - [ ] **P7e4 — Promote a provenance-proven GPU render front.** Feed P7e3
       directly into owner-direct mesh emission and P8 private publication. A
       moving-camera integration test must prove no post-bootstrap CPU surface

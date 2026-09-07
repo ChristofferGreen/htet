@@ -5895,6 +5895,18 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
       leaves,1U,9U,tetra::HierarchyResidencyTier::surface));
   const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory);
+  REQUIRE(snapshot.canonical_record_indices.size()==snapshot.records.size());
+  for(std::size_t position=0U;position<snapshot.canonical_record_indices.size();++position) {
+    const auto record=snapshot.canonical_record_indices[position];
+    CHECK(record<snapshot.records.size());
+    if(position>0U) {
+      const auto previous=tetra::gpu_hierarchy_address_from_lanes(
+          snapshot.records[snapshot.canonical_record_indices[position-1U]].address);
+      const auto current=tetra::gpu_hierarchy_address_from_lanes(
+          snapshot.records[record].address);
+      CHECK(previous<current);
+    }
+  }
   tetra::GpuHierarchyTraversalParameters coarse;
   coarse.camera.position={0.5,0.5,3.0};coarse.camera.forward={0.0,0.0,-1.0};
   coarse.camera.viewport_height_pixels=800.0;coarse.pixel_threshold=1.0e6;
@@ -5949,6 +5961,10 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       {.pixel_threshold=0.0})),std::invalid_argument);
   auto malformed=snapshot;
   malformed.records.front().child_mask_flags&=~(1U<<11U);
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
+  malformed=snapshot;
+  std::swap(malformed.canonical_record_indices.front(),
+            malformed.canonical_record_indices.back());
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
 }
 
