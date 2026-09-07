@@ -362,15 +362,6 @@ infrastructure. They do not close P7 because CPU still performs selection,
 closure, source-packet construction, and the initial mesh seed. CPU terrain
 generation remains the normal launch default until every P7e leaf is complete.
 
-- [x] **P7e3c1 — Derive the device green-mask fixed point.** Consume P7e3a's
-      canonical selected frontier and P7e3b's immutable face/edge/ancestor
-      topology in a bounded device pass, producing canonical owner records
-      with green masks. It must fail closed on stale, malformed, or overflowed
-      input and never accept CPU P6 or closure output.
-- [x] **P7e3c2 — Qualify device closure parity and publication.** Drive c1 on
-      root-seam and mixed-depth cuts, byte-compare its owner/mask stream to
-      the CPU closure oracle, and retain the prior front on every failed
-      device result. Only this leaf may hand the stream to P7e4.
 - [ ] **P7e4 — Promote a provenance-proven GPU render front.** Feed P7e3
       directly into owner-direct mesh emission and P8 private publication. A
       moving-camera integration test must prove no post-bootstrap CPU surface

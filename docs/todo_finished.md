@@ -534,6 +534,29 @@
 
 ## 2026-09-07
 
+- [x] **P7e3c1 — Derive the device green-mask fixed point.** A bounded
+  device-only closure now consumes P7e2's selected-mark tail, P7e3a's
+  canonical count/scan/scatter frontier, and immutable P7e3b hierarchy
+  topology. It seeds ancestor edge requirements, reaches the restricted-green
+  fixed point, records red promotions against a stable cut, applies those
+  promotions in a separate pass, recompacts the canonical frontier, and emits
+  a distinct 12-word owner ABI: address, six hierarchy edge-range IDs, green
+  mask, and reflected orientation. It accepts neither a CPU P6 packet nor CPU
+  closure output or P10 source-packet adjacency; stale selector input,
+  malformed topology/orientation, budget exhaustion, and capacity overflow
+  fail closed before publication.
+
+- [x] **P7e3c2 — Qualify device closure parity and publication.** The native
+  Metal fixture byte-compares the device owner's address, hierarchy edge-range
+  IDs, green mask, and orientation with a CPU closure oracle used only for
+  comparison. It covers camera-selected cuts, interior mixed depth, root
+  seams, and a nonzero-green transition; stale selector state, malformed
+  vertex/orientation sidecars, and overflow retain the preceding owner buffer.
+  Focused closure tests and a fresh 524/524 Release gate passed; the isolated
+  live-selection regression passed in 318.60 s and its full-gate run passed in
+  303.85 s after P7e2 stopped allocating P7e3c-only sidecars. P7e4 alone may
+  consume this retained stream.
+
 - [x] **P7e3b2 — Encode bounded hierarchy edge incidence.** Immutable exact
   edge CSR ranges and per-record bounded ancestor-edge lists now accompany the
   hierarchy snapshot and are retained in Metal live-selection state. Validation
