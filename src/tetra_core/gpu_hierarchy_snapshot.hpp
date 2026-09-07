@@ -132,8 +132,8 @@ struct alignas(16) GpuConformingVolumeSourceHeader {
   std::uint64_t source_identity{};
   std::uint32_t owner_count{};
   std::uint32_t face_pair_count{};
+  std::uint32_t edge_pair_count{};
   std::uint32_t format_version{gpu_conforming_volume_proposal_format_version};
-  std::uint32_t reserved{};
   auto operator<=>(const GpuConformingVolumeSourceHeader&) const = default;
 };
 static_assert(sizeof(GpuConformingVolumeSourceHeader)==32U);
@@ -141,6 +141,9 @@ struct GpuConformingVolumeSourcePacket {
   GpuConformingVolumeSourceHeader header{};
   std::vector<std::array<std::uint32_t,4>> owners;
   std::vector<std::array<std::uint32_t,2>> face_pairs;
+  // {owner A, local edge A, owner B, local edge B}; canonical shared-edge
+  // incidences let the device propagate exact six-bit midpoint masks.
+  std::vector<std::array<std::uint32_t,4>> edge_pairs;
 };
 [[nodiscard]] GpuConformingVolumeSourcePacket
 make_gpu_conforming_volume_source_packet(const WorldCutDirectory& source,

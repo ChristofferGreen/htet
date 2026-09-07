@@ -402,6 +402,21 @@ GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
   std::ranges::sort(owners);
   if(owners.empty()||owners.size()>owner_capacity)
     throw std::overflow_error("GPU volume source owner reservation is insufficient");
+  std::map<WorldEdgeKey,std::vector<std::array<std::uint32_t,2>>> edge_owners;
+  for(std::size_t owner=0U;owner<owners.size();++owner) {
+    const auto vertices=world_tetrahedron_vertex_keys(owners[owner]);
+    for(std::size_t edge=0U;edge<tetrahedron_edges.size();++edge)
+      edge_owners[world_edge_key(vertices[tetrahedron_edges[edge][0U]],
+          vertices[tetrahedron_edges[edge][1U]])].push_back(
+              {static_cast<std::uint32_t>(owner),static_cast<std::uint32_t>(edge)});
+  }
+  for(const auto& [edge,incidences]:edge_owners) {
+    (void)edge;
+    for(std::size_t first=0U;first<incidences.size();++first)
+      for(std::size_t second=first+1U;second<incidences.size();++second)
+        result.edge_pairs.push_back({incidences[first][0U],incidences[first][1U],
+            incidences[second][0U],incidences[second][1U]});
+  }
   for(std::size_t first=0U;first<owners.size();++first)
     for(std::size_t second=first+1U;second<owners.size();++second)
       if(gpu_volume_face_adjacent(owners[first],owners[second])) {
@@ -414,6 +429,7 @@ GpuConformingVolumeSourcePacket make_gpu_conforming_volume_source_packet(
   for(const auto owner:owners)result.owners.push_back(gpu_hierarchy_address_lanes(owner));
   result.header.owner_count=static_cast<std::uint32_t>(result.owners.size());
   result.header.face_pair_count=static_cast<std::uint32_t>(result.face_pairs.size());
+  result.header.edge_pair_count=static_cast<std::uint32_t>(result.edge_pairs.size());
   return result;
 }
 
@@ -425,12 +441,13 @@ void validate_gpu_conforming_volume_source_packet(
      packet.header.source_identity!=source.canonical_cut_hash()||
      packet.header.owner_count!=packet.owners.size()||
      packet.header.face_pair_count!=packet.face_pairs.size()||
+     packet.header.edge_pair_count!=packet.edge_pairs.size()||
      packet.owners.size()>owner_capacity||packet.face_pairs.size()>face_pair_capacity)
     throw std::invalid_argument("GPU volume source packet header is invalid");
   const auto expected=make_gpu_conforming_volume_source_packet(
       source,owner_capacity,face_pair_capacity);
   if(expected.header!=packet.header||expected.owners!=packet.owners||
-     expected.face_pairs!=packet.face_pairs)
+     expected.face_pairs!=packet.face_pairs||expected.edge_pairs!=packet.edge_pairs)
     throw std::invalid_argument("GPU volume source packet is not canonical");
 }
 

@@ -800,12 +800,13 @@ TEST_CASE("GPU conforming volume source packet is canonical and bounded") {
   CHECK(packet.header.owner_count==roots.size());
   CHECK(std::ranges::is_sorted(packet.owners));
   REQUIRE(!packet.face_pairs.empty());
+  REQUIRE(!packet.edge_pairs.empty());
   CHECK_NOTHROW(tetra::validate_gpu_conforming_volume_source_packet(
       directory,packet,128U,1024U));
   CHECK_THROWS_AS(tetra::make_gpu_conforming_volume_source_packet(
       directory,1U,1024U),std::overflow_error);
   auto corrupt=packet;
-  corrupt.face_pairs.front()[0]^=1U;
+  corrupt.edge_pairs.front()[0]^=1U;
   CHECK_THROWS_AS(tetra::validate_gpu_conforming_volume_source_packet(
       directory,corrupt,128U,1024U),std::invalid_argument);
 }
