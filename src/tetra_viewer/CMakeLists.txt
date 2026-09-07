@@ -50,6 +50,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
          ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
          ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
@@ -84,6 +85,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/atmosphere_reference_hillaire.comp -o ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_lod.comp -o ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_frontier.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_closure.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangles.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
@@ -102,7 +104,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_closure.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_marks.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_marks.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_mutation_journal.comp -o ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_hierarchy_frontier.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_triangle_scatter.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_volume_mutation_journal.comp gpu_terrain_field.glsl)
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_hierarchy_frontier.comp gpu_hierarchy_closure.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_triangle_scatter.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_volume_mutation_journal.comp gpu_terrain_field.glsl)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv
@@ -115,6 +117,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_emit.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_validate.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_copy.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv)
@@ -269,6 +272,19 @@ if(APPLE AND TETRA_BUILD_METAL)
             --output ${TETRA_METAL_GPU_HIERARCHY_FRONTIER_MSL}
     DEPENDS gpu_hierarchy_frontier.comp spirv-cross
     VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_closure.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_closure.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_closure.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL}
+    DEPENDS gpu_hierarchy_closure.comp spirv-cross
+    VERBATIM)
   # P5a establishes only the extractor's shared shader ABI. Dispatch and
   # publication remain separately qualified P5b/P5c work.
   set(TETRA_METAL_GPU_TERRAIN_EXTRACT_SPV
@@ -387,6 +403,7 @@ if(APPLE AND TETRA_BUILD_METAL)
             ${TETRA_METAL_GRAPHICS_SHADERS}
             ${TETRA_METAL_GPU_LOD_MSL}
             ${TETRA_METAL_GPU_HIERARCHY_FRONTIER_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL}
             ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
             ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
             ${TETRA_METAL_GPU_TERRAIN_TRIANGLES_MSL}
@@ -490,7 +507,7 @@ if(APPLE AND TETRA_BUILD_METAL)
       --metal-gpu-hierarchy-frontier-smoke-test)
   set_tests_properties("metal GPU hierarchy frontier is canonical and bounded"
     PROPERTIES PASS_REGULAR_EXPRESSION
-      "\\\"canonical\\\":true,\\\"overflow\\\":true,\\\"passed\\\":true")
+      "\\\"canonical\\\":true,\\\"closure\\\":true,\\\"green_mask\\\":true,\\\"overflow\\\":true,\\\"passed\\\":true")
   # P8c2 collects GPU counter evidence for the owner-direct generator and
   # completed command-buffer frame interval on the selected private front.
   # Keep this independent performance qualification ahead of the long P8b

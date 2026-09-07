@@ -445,12 +445,31 @@ static_assert(alignof(GpuHierarchyFaceIncidenceRecord)==16U);
 
 struct GpuHierarchyEdgeRange { std::uint32_t first{}; std::uint32_t count{}; };
 struct GpuHierarchyEdgeIncidence { std::uint32_t record{}; std::uint32_t local_edge{}; };
+struct GpuHierarchyVertexRange { std::uint32_t first{}; std::uint32_t count{}; };
+struct GpuHierarchyVertexIncidence { std::uint32_t record{}; std::uint32_t local_corner{}; };
+struct alignas(16) GpuHierarchyVertexTopologyRecord {
+  std::array<std::uint32_t,4> vertex_ranges{};
+};
+static_assert(sizeof(GpuHierarchyVertexTopologyRecord)==16U);
 struct alignas(16) GpuHierarchyEdgeTopologyRecord {
   std::array<std::uint32_t,6> edge_ranges{};
   std::uint32_t ancestor_edge_first{};
   std::uint32_t ancestor_edge_count{};
 };
 static_assert(sizeof(GpuHierarchyEdgeTopologyRecord)==32U);
+
+// P7e3c's device-derived owner ABI. This is intentionally distinct from the
+// legacy P6 packet: lanes 4--9 name immutable hierarchy edge-range IDs, not
+// P6 edge-directory records. The GPU produces it only after its selected-mark
+// closure reaches a fixed point; P7e4 may consume it as its sole owner input.
+struct alignas(16) GpuHierarchyClosureOwnerRecord {
+  std::array<std::uint32_t,4> address{};
+  std::array<std::uint32_t,6> edge_ranges{};
+  std::uint32_t green_mask{};
+  std::uint32_t reflected_orientation{};
+};
+static_assert(sizeof(GpuHierarchyClosureOwnerRecord)==48U);
+static_assert(alignof(GpuHierarchyClosureOwnerRecord)==16U);
 
 // Camera- and field-dependent selector inputs are kept out of immutable
 // topology. The current selector is root-normalized to match its immutable
@@ -511,8 +530,16 @@ struct GpuHierarchySnapshot {
   // This is immutable topology: no selected owners or closure masks appear here.
   std::vector<GpuHierarchyEdgeRange> edge_ranges;
   std::vector<GpuHierarchyEdgeIncidence> edge_incidence;
+  // Exact vertex CSR finds selected depth witnesses across root seams and
+  // mixed-depth face interiors; P7e3c uses it for the 2:1 red repair rule.
+  std::vector<GpuHierarchyVertexRange> vertex_ranges;
+  std::vector<GpuHierarchyVertexIncidence> vertex_incidence;
+  std::vector<GpuHierarchyVertexTopologyRecord> vertex_topology;
   std::vector<GpuHierarchyEdgeTopologyRecord> edge_topology;
   std::vector<std::uint32_t> ancestor_edge_ranges;
+  // Exact orientation bit for the address-ordered tetrahedron. This immutable
+  // sidecar keeps device owner records independent of float reconstruction.
+  std::vector<std::uint32_t> orientation_flags;
   // One immutable normalized-space geometry sidecar per hierarchy record.
   // P4 selector inputs add field bounds and camera-dependent parameters in
   // separate packets; they must not overload topology or draw buffers.
@@ -635,7 +662,8 @@ class GpuHierarchyFrameRing {
 void validate_gpu_hierarchy_selection_tuple(const GpuHierarchySelectionTuple& tuple);
 
 [[nodiscard]] GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
-    const WorldCutDirectory& directory,std::uint64_t field_revision=0U);
+    const WorldCutDirectory& directory,std::uint64_t field_revision=0U,
+    bool include_closure_topology=true);
 void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot);
 [[nodiscard]] std::vector<GpuTerrainCellRecord> make_gpu_terrain_cell_records(
     const WorldBlockedConformingVolume& volume,

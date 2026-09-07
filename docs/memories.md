@@ -142,6 +142,18 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: Vulkan GPU hierarchy selection dispatches one bounded depth-first work list per explicitly encoded active-block root, with root-normalized camera inputs, and retains CPU terrain rendering on selector overflow or any later parity failure.
 - Evidence: Snapshot validation rejects an altered active-root flag; the P4c1a focused regression and 487-test Release gate passed, and the hidden MoltenVK run reported a completed 334,843-record traversal.
 
+### gpu-hierarchy-closure-sidecar-boundary
+- Updated: 2026-09-07
+- Tags: metal, gpu-lod, bcc, memory, topology
+- Fact: P7e3c's vertex-CSR and orientation sidecars are optional snapshot data and must be omitted from the P7e2-only live selector until P7e4 consumes the device closure stream.
+- Evidence: Constructing those closure-only sidecars for the live P7e2 selector made the native camera test report `gpu_available=false`; `make_gpu_hierarchy_snapshot(..., false)` restored it, with the rebuilt isolated test passing in 318.60 s and the final full-gate instance in 303.85 s.
+
+### gpu-hierarchy-device-closure
+- Updated: 2026-09-07
+- Tags: metal, gpu, bcc, closure, publication
+- Fact: P7e3c derives its owner stream entirely from P7e2 selected marks plus immutable hierarchy topology, using stable red-promotion marking followed by a separate application pass and recompact before a retained owner stream is eligible for P7e4.
+- Evidence: The native Metal fixture byte-compares canonical address, hierarchy edge-range IDs, green masks, and orientation for camera, interior mixed-depth, root-seam, and nonzero-green cuts; stale selector state, malformed vertex/orientation sidecars, and overflow leave the retained buffer unchanged; the fresh 524-test Release gate passed.
+
 ### gpu-hierarchy-selector-parity-oracle
 - Updated: 2026-09-05
 - Tags: gpu-lod, vulkan, oracle, parity

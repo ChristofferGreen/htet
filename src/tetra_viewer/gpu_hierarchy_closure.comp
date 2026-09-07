@@ -1,0 +1,272 @@
+#version 450
+// P7e3c1: a bounded, device-only restricted-green closure. P7e2 supplies
+// selection marks and P7e3a supplies their canonical count/offset stream;
+// every lookup below is an immutable P7e3b sidecar. This kernel accepts no P6
+// packet and no host closure result.
+layout(std430,binding=0) buffer Selection { uint words[]; } selection;
+layout(std430,binding=1) readonly buffer Hierarchy { uint words[]; } hierarchy;
+layout(std430,binding=2) readonly buffer Children { uint values[]; } children;
+layout(std430,binding=3) readonly buffer Canonical { uint values[]; } canonical;
+layout(std430,binding=4) readonly buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=5) readonly buffer Counts { uint values[]; } counts;
+// Four neighbour records followed by four reciprocal local-face indices.
+layout(std430,binding=6) readonly buffer Faces { uint words[]; } faces;
+// Six exact-edge range IDs followed by ancestor-range first/count.
+layout(std430,binding=7) readonly buffer EdgeTopology { uint words[]; } topology;
+layout(std430,binding=8) readonly buffer AncestorRanges { uint values[]; } ancestors;
+layout(std430,binding=9) readonly buffer Orientations { uint values[]; } orientations;
+layout(std430,binding=10) readonly buffer VertexTopology { uint values[]; } vertex_topology;
+layout(std430,binding=11) readonly buffer VertexRanges { uint words[]; } vertex_ranges;
+layout(std430,binding=12) readonly buffer VertexIncidence { uint words[]; } vertex_incidence;
+layout(std430,binding=13) buffer EdgeActive { uint values[]; } edge_marks;
+layout(std430,binding=14) buffer Owners { uint words[]; } owners;
+// [0] failure bits, [1] current green round changed, [2] promoted records,
+// [3] emitted owner count.
+layout(std430,binding=15) buffer Status { uint words[]; } status;
+// Phase 2 records promotions against a stable selected-bit snapshot. Phase 5
+// applies them afterwards, so one invocation cannot recursively refine a
+// child merely because another invocation selected it during the same launch.
+layout(std430,binding=16) buffer RedPromotions { uint values[]; } red_promotions;
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint selection_output_capacity;
+  uint mark_word_count;
+  uint owner_capacity;
+  uint edge_range_count;
+  uint ancestor_count;
+  uint phase; // 0 seed, 1 green round, 2 mark red, 3 quiesce, 4 emit, 5 apply red, 6 preflight
+  uint child_count;
+  uint vertex_range_count;
+  uint vertex_incidence_count;
+  uint reserved0;
+  uint reserved1;
+} P;
+layout(local_size_x=256) in;
+
+const uint invalid_index=0xffffffffu;
+const uint failure_malformed=1u;
+const uint failure_red_promotion=2u;
+const uint failure_overflow=4u;
+const uint failure_budget=8u;
+// Keep malformed-sidecar failures fail-closed, while retaining enough
+// classification for the host to diagnose which immutable contract was bad.
+const uint failure_address=16u;
+const uint failure_face=32u;
+const uint failure_edge=64u;
+const uint failure_vertex=128u;
+const uint failure_frontier=256u;
+const uint failure_orientation=512u;
+const uint failure_selection_input=8192u;
+const uint failure_vertex_empty=1024u;
+const uint failure_vertex_first=2048u;
+const uint failure_vertex_count=4096u;
+
+bool selected(uint record) {
+  const uint word=record>>5u;
+  return word<P.mark_word_count &&
+      (selection.words[4u+P.selection_output_capacity+word] &
+       (1u<<(record&31u)))!=0u;
+}
+void fail(uint reason) { atomicOr(status.words[0u],reason); }
+
+bool valid_address(uint record) {
+  const uint base=record*8u;
+  const uint high_low=hierarchy.words[base+0u];
+  const uint high_high=hierarchy.words[base+1u];
+  const uint low_low=hierarchy.words[base+2u];
+  const uint low_high=hierarchy.words[base+3u];
+  const uint root=(high_high>>26u)&63u;
+  const uint depth=(high_high>>20u)&63u;
+  if(root>=12u||depth>38u)return false;
+  const uint path_bits=depth*3u;
+  if(path_bits<=64u) {
+    if(high_low!=0u||(high_high&0x000fffffu)!=0u)return false;
+    if(path_bits<=32u)
+      return low_high==0u&&(path_bits==32u||low_low>>path_bits==0u);
+    if(path_bits==64u)return true;
+    return low_high>>(path_bits-32u)==0u;
+  }
+  const uint high_bits=path_bits-64u;
+  if(high_bits<=20u)
+    return high_low==0u&&
+        (high_bits==20u||(high_high&0x000fffffu)>>high_bits==0u);
+  return high_low>>(high_bits-20u)==0u;
+}
+
+bool valid_face_sidecar(uint record) {
+  const uint base=record*8u;
+  for(uint face=0u;face<4u;++face) {
+    const uint neighbour=faces.words[base+face];
+    const uint neighbour_face=faces.words[base+4u+face];
+    if((neighbour==invalid_index)!=(neighbour_face==invalid_index))return false;
+    if(neighbour==invalid_index)continue;
+    if(neighbour>=P.record_count||neighbour_face>=4u)return false;
+    const uint other=neighbour*8u;
+    if(faces.words[other+neighbour_face]!=record||
+       faces.words[other+4u+neighbour_face]!=face)return false;
+  }
+  return true;
+}
+
+bool valid_edges(uint record) {
+  const uint base=record*8u;
+  for(uint edge=0u;edge<6u;++edge)
+    if(topology.words[base+edge]>=P.edge_range_count)return false;
+  const uint first=topology.words[base+6u];
+  const uint count=topology.words[base+7u];
+  return first<=P.ancestor_count&&count<=P.ancestor_count-first;
+}
+
+bool valid_vertices(uint record) {
+  const uint base=record*4u;
+  for(uint corner=0u;corner<4u;++corner) {
+    const uint range=vertex_topology.values[base+corner];
+    if(range>=P.vertex_range_count) { fail(failure_vertex); return false; }
+    const uint first=vertex_ranges.words[range*2u];
+    const uint count=vertex_ranges.words[range*2u+1u];
+    if(count==0u) { fail(failure_vertex_empty); return false; }
+    if(first>P.vertex_incidence_count) { fail(failure_vertex_first); return false; }
+    if(count>P.vertex_incidence_count-first) { fail(failure_vertex_count); return false; }
+  }
+  return true;
+}
+
+bool vertex_requires_red_repair(uint record) {
+  const uint depth=(hierarchy.words[record*8u+1u]>>20u)&63u;
+  for(uint corner=0u;corner<4u;++corner) {
+    const uint range=vertex_topology.values[record*4u+corner];
+    const uint first=vertex_ranges.words[range*2u];
+    const uint count=vertex_ranges.words[range*2u+1u];
+    for(uint offset=0u;offset<count;++offset) {
+      const uint incidence=(first+offset)*2u;
+      const uint other=vertex_incidence.words[incidence];
+      if(other>=P.record_count||vertex_incidence.words[incidence+1u]>=4u) {
+        fail(failure_malformed);return false;
+      }
+      if(selected(other)&&((hierarchy.words[other*8u+1u]>>20u)&63u)>depth+1u)
+        return true;
+    }
+  }
+  return false;
+}
+
+uint active_mask(uint record) {
+  const uint base=record*8u;
+  uint result=0u;
+  for(uint edge=0u;edge<6u;++edge)
+    if(edge_marks.values[topology.words[base+edge]]!=0u)result|=1u<<edge;
+  return result;
+}
+
+// Exact CPU-oracle restricted-green set. 63 is a red-split sentinel: this
+// immutable hierarchy path has no mutation authority, and therefore rejects
+// it instead of emitting a nonconforming green owner.
+uint allowed_green_superset(uint mask) {
+  const uint allowed[15]=uint[15](0u,1u,2u,4u,8u,16u,32u,33u,18u,12u,
+      11u,21u,38u,56u,63u);
+  uint best=63u;
+  for(uint i=0u;i<15u;++i) {
+    const uint candidate=allowed[i];
+    if((candidate&mask)!=mask)continue;
+    const uint candidate_bits=bitCount(candidate);
+    const uint best_bits=bitCount(best);
+    if(candidate_bits<best_bits||(candidate_bits==best_bits&&candidate<best))
+      best=candidate;
+  }
+  return best;
+}
+
+void main() {
+  const uint order=gl_GlobalInvocationID.x;
+  if(order>=P.record_count||status.words[0u]!=0u)return;
+  // P7e2 marks carry their own failure/staleness latch. Never reinterpret a
+  // rejected selector result as a valid cut merely because its old bit tail
+  // happens to remain resident.
+  if(selection.words[3u]!=0u) { fail(failure_selection_input); return; }
+  const uint record=canonical.values[order];
+  if(record>=P.record_count) { fail(failure_malformed); return; }
+  if(!valid_address(record)) { fail(failure_address); return; }
+  if(!valid_face_sidecar(record)) { fail(failure_face); return; }
+  if(!valid_edges(record)) { fail(failure_edge); return; }
+  if(!valid_vertices(record)) return;
+  if(!selected(record)) {
+    if(P.phase==4u&&counts.values[order]!=0u)fail(failure_frontier);
+    return;
+  }
+  // Do this in a complete pass before phase 4. A bad immutable orientation
+  // therefore cannot leave a partially-written candidate owner stream that
+  // might be mistaken for a publishable front.
+  if(P.phase==6u) {
+    if(orientations.values[record]>1u)fail(failure_orientation);
+    return;
+  }
+  const uint base=record*8u;
+  if(P.phase==0u) {
+    // A selected descendant proves every ancestor was red-split. Atomics
+    // retain deterministic, bounded evidence when ancestry overlaps.
+    const uint first=topology.words[base+6u];
+    const uint count=topology.words[base+7u];
+    for(uint i=0u;i<count;++i) {
+      const uint range=ancestors.values[first+i];
+      if(range>=P.edge_range_count) { fail(failure_malformed); return; }
+      atomicOr(edge_marks.values[range],1u);
+    }
+    return;
+  }
+  const uint mask=active_mask(record);
+  const uint target=allowed_green_superset(mask);
+  if(P.phase==1u) {
+    if(target==63u)return;
+    for(uint edge=0u;edge<6u;++edge)if((target&(1u<<edge))!=0u&&
+        (mask&(1u<<edge))==0u) {
+      const uint range=topology.words[base+edge];
+      if((atomicOr(edge_marks.values[range],1u)&1u)==0u)
+        atomicOr(status.words[1u],1u);
+    }
+    return;
+  }
+  if(P.phase==2u) {
+    if(target!=63u&&!vertex_requires_red_repair(record))return;
+    // A six-edge requirement is not a legal green template. Validate the
+    // immutable replacement now, but do not alter selected bits until every
+    // invocation has observed the same input cut.
+    const uint child_base=hierarchy.words[base+4u];
+    const uint child_mask=hierarchy.words[base+5u]&0xffu;
+    if(child_mask!=0xffu||child_base==invalid_index||child_base>P.child_count||
+       8u>P.child_count-child_base) {
+      fail(failure_red_promotion);return;
+    }
+    atomicOr(red_promotions.values[record>>5u],1u<<(record&31u));
+    atomicAdd(status.words[2u],1u);
+    return;
+  }
+  if(P.phase==5u) {
+    if((red_promotions.values[record>>5u]&(1u<<(record&31u)))==0u)return;
+    const uint child_base=hierarchy.words[base+4u];
+    atomicAnd(selection.words[4u+P.selection_output_capacity+(record>>5u)],
+        ~(1u<<(record&31u)));
+    for(uint child=0u;child<8u;++child) {
+      const uint next=children.values[child_base+child];
+      if(next>=P.record_count) { fail(failure_malformed);return; }
+      atomicOr(selection.words[4u+P.selection_output_capacity+(next>>5u)],
+          1u<<(next&31u));
+    }
+    return;
+  }
+  if(P.phase==3u) {
+    if(status.words[1u]!=0u)fail(failure_budget);
+    return;
+  }
+  if(target==63u||P.phase!=4u||counts.values[order]!=1u) {
+    fail(target==63u?failure_red_promotion:failure_malformed);return;
+  }
+  const uint destination=offsets.values[order];
+  if(destination>=P.owner_capacity) { fail(failure_overflow); return; }
+  const uint output_base=destination*12u;
+  for(uint lane=0u;lane<4u;++lane)owners.words[output_base+lane]=hierarchy.words[record*8u+lane];
+  for(uint edge=0u;edge<6u;++edge)owners.words[output_base+4u+edge]=topology.words[base+edge];
+  owners.words[output_base+10u]=target;
+  if(orientations.values[record]>1u) { fail(failure_orientation);return; }
+  owners.words[output_base+11u]=orientations.values[record];
+  atomicAdd(status.words[3u],1u);
+}

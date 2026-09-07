@@ -1626,9 +1626,10 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
   };
   id<MTLComputePipelineState> select=shader("gpu_lod.comp.metal");
   id<MTLComputePipelineState> frontier=shader("gpu_hierarchy_frontier.comp.metal");
+  id<MTLComputePipelineState> closure=shader("gpu_hierarchy_closure.comp.metal");
   id<MTLComputePipelineState> scan=shader("gpu_terrain_exclusive_scan.comp.metal");
   id<MTLCommandQueue> queue=[device newCommandQueue];
-  if(select==nil||frontier==nil||scan==nil||queue==nil)return false;
+  if(select==nil||frontier==nil||closure==nil||scan==nil||queue==nil)return false;
   const auto make=[&](const void* bytes,NSUInteger length){
     return [device newBufferWithBytes:bytes length:std::max<NSUInteger>(length,4U)
         options:MTLResourceStorageModeShared];
@@ -1641,7 +1642,23 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
   id<MTLBuffer> canonical=make(snapshot.canonical_record_indices.data(),
       snapshot.canonical_record_indices.size()*sizeof(std::uint32_t));
-  if(hierarchy==nil||children==nil||inputs==nil||canonical==nil)return false;
+  id<MTLBuffer> faces=make(snapshot.face_incidence.data(),
+      snapshot.face_incidence.size()*sizeof(snapshot.face_incidence.front()));
+  id<MTLBuffer> edge_topology=make(snapshot.edge_topology.data(),
+      snapshot.edge_topology.size()*sizeof(snapshot.edge_topology.front()));
+  id<MTLBuffer> ancestors=make(snapshot.ancestor_edge_ranges.data(),
+      snapshot.ancestor_edge_ranges.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> orientations=make(snapshot.orientation_flags.data(),
+      snapshot.orientation_flags.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> vertex_topology=make(snapshot.vertex_topology.data(),
+      snapshot.vertex_topology.size()*sizeof(snapshot.vertex_topology.front()));
+  id<MTLBuffer> vertex_ranges=make(snapshot.vertex_ranges.data(),
+      snapshot.vertex_ranges.size()*sizeof(snapshot.vertex_ranges.front()));
+  id<MTLBuffer> vertex_incidence=make(snapshot.vertex_incidence.data(),
+      snapshot.vertex_incidence.size()*sizeof(snapshot.vertex_incidence.front()));
+  if(hierarchy==nil||children==nil||inputs==nil||canonical==nil||faces==nil||
+     edge_topology==nil||ancestors==nil||orientations==nil||vertex_topology==nil||
+     vertex_ranges==nil||vertex_incidence==nil)return false;
   const auto make_tuple=[](tetra::Vec3 position,tetra::Vec3 forward,
                            float edge,float field,float limb){
     return tetra::make_gpu_hierarchy_selection_tuple({
@@ -1652,28 +1669,73 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
         .field_threshold=field,.limb_threshold=limb,.merge_ratio=0.5,
         .source_revision=61U,.field_revision=67U});
   };
-  struct Case { tetra::Vec3 position,forward; float edge,field,limb; bool overflow; };
+  enum class ManualCut : std::uint8_t { none,interior_mixed,root_seam,green_transition };
+  enum class FailureCase : std::uint8_t { none,overflow,stale_selection,malformed_topology,malformed_orientation };
+  struct Case { tetra::Vec3 position,forward; float edge,field,limb; FailureCase failure; ManualCut manual; };
   const std::array cases{
-      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,false},
-      Case{{.7,.5,2.8},{0.,0.,-1.},.5F,1.e6F,1.e6F,false},
-      Case{{3.,.5,.5},{-1.,0.,0.},1.e6F,.05F,1.e6F,false},
-      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,true}};
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::none,ManualCut::none},
+      Case{{.7,.5,2.8},{0.,0.,-1.},.5F,1.e6F,1.e6F,FailureCase::none,ManualCut::none},
+      Case{{3.,.5,.5},{-1.,0.,0.},1.e6F,.05F,1.e6F,FailureCase::none,ManualCut::none},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::overflow,ManualCut::none},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::stale_selection,ManualCut::none},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::malformed_topology,ManualCut::none},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::malformed_orientation,ManualCut::none},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::none,ManualCut::interior_mixed},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::none,ManualCut::root_seam},
+      Case{{.5,.5,3.},{0.,0.,-1.},1.e6F,1.e6F,1.e6F,FailureCase::none,ManualCut::green_transition}};
   const auto record_count=static_cast<std::uint32_t>(snapshot.records.size());
   const auto mark_words=(record_count+31U)/32U;
   const auto block_count=(record_count+255U)/256U;
-  std::size_t completed{};
+  std::size_t completed{};bool saw_green_mask{};
   for(const auto& test:cases) {
     const auto tuple=make_tuple(test.position,test.forward,test.edge,test.field,test.limb);
     const auto oracle=tetra::gpu_hierarchy_traverse(snapshot,
         tetra::gpu_hierarchy_traversal_parameters(tuple));
-    if(oracle.selected_records.empty())return false;
-    const auto owner_capacity=test.overflow?0U:
-        static_cast<std::uint32_t>(oracle.selected_records.size());
+    if(test.manual==ManualCut::none&&oracle.selected_records.empty())return false;
+    const auto manually_selected=[&](tetra::WorldTetAddress address){
+      const auto interior=tetra::WorldTetAddress::root(0U).child(0U);
+      switch(test.manual) {
+      case ManualCut::none:return false;
+      case ManualCut::interior_mixed:
+        return address==interior||(address.red_depth()==3U&&!(address.root_id()==0U&&
+            address.ancestor(1U)==interior));
+      case ManualCut::root_seam:
+        return address.root_id()==0U?address.red_depth()==0U:address.red_depth()==3U;
+      case ManualCut::green_transition:
+        return address.root_id()==0U?address.red_depth()==1U:address.red_depth()==0U;
+      }
+      return false;
+    };
+    // The CPU closure is fixture-only oracle data. The GPU receives only its
+    // requested P7e2 marks and immutable hierarchy sidecars; none of these
+    // closed owners or masks is ever uploaded back into the device flow.
+    std::vector<tetra::WorldTetAddress> requested;
+    if(test.manual!=ManualCut::none) {
+      for(std::uint32_t record=0U;record<record_count;++record) {
+        const auto address=tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address);
+        if(manually_selected(address))requested.push_back(address);
+      }
+    } else for(const auto record:oracle.selected_records)
+      requested.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address));
+    std::ranges::sort(requested);if(requested.empty())return false;
+    tetra::WorldConformingClosureCache closure_oracle;
+    const auto expected=tetra::close_world_conforming_cut(requested,&closure_oracle);
+    if(expected.empty()||expected.size()!=closure_oracle.green_masks.size())return false;
+    const auto owner_capacity=test.failure==FailureCase::overflow?0U:
+        static_cast<std::uint32_t>(record_count);
     std::vector<std::uint32_t> selection_words(4U+record_count+mark_words,0U);
+    if(test.failure==FailureCase::stale_selection)selection_words[3U]=1U;
+    if(test.manual!=ManualCut::none)for(std::uint32_t record=0U;record<record_count;++record) {
+      const auto address=tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address);
+      if(!manually_selected(address))continue;
+      selection_words[4U+record_count+(record>>5U)]|=1U<<(record&31U);
+    }
     std::vector<std::uint32_t> zeros(record_count,0U);
     std::vector<std::uint32_t> block_zeros(block_count,0U);
     std::vector<std::uint32_t> owner_words(
         std::max<std::size_t>(1U,static_cast<std::size_t>(owner_capacity)*12U),0U);
+    constexpr std::uint32_t retained_owner_sentinel=0xa5c3f17eU;
+    std::vector<std::uint32_t> retained_owner_words(owner_words.size(),retained_owner_sentinel);
     const std::array<std::uint32_t,4> status_zeros{};
     id<MTLBuffer> tuple_buffer=make(&tuple,sizeof(tuple));
     id<MTLBuffer> selection_buffer=make(selection_words.data(),
@@ -1685,109 +1747,264 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
     id<MTLBuffer> block_offsets=make(block_zeros.data(),block_zeros.size()*sizeof(std::uint32_t));
     id<MTLBuffer> scan_total=make(status_zeros.data(),sizeof(status_zeros));
     id<MTLBuffer> owner_buffer=make(owner_words.data(),owner_words.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> retained_owner_buffer=make(retained_owner_words.data(),
+        retained_owner_words.size()*sizeof(std::uint32_t));
     id<MTLBuffer> status=make(status_zeros.data(),sizeof(status_zeros));
+    std::vector<std::uint32_t> inactive_edges(
+        std::max<std::size_t>(1U,snapshot.edge_ranges.size()),0U);
+    id<MTLBuffer> edge_marks=make(inactive_edges.data(),
+        inactive_edges.size()*sizeof(std::uint32_t));
+    std::vector<std::uint32_t> no_red_promotions(
+        std::max<std::size_t>(1U,static_cast<std::size_t>(mark_words)),0U);
+    id<MTLBuffer> red_promotions=make(no_red_promotions.data(),
+        no_red_promotions.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> closure_status=make(status_zeros.data(),sizeof(status_zeros));
+    id<MTLBuffer> case_vertex_ranges=vertex_ranges;
+    id<MTLBuffer> case_orientations=orientations;
+    if(test.failure==FailureCase::malformed_topology) {
+      auto malformed=snapshot.vertex_ranges;
+      malformed.front().count=0U;
+      case_vertex_ranges=make(malformed.data(),malformed.size()*sizeof(malformed.front()));
+    }
+    if(test.failure==FailureCase::malformed_orientation) {
+      std::vector<std::uint32_t> malformed(snapshot.orientation_flags.size(),2U);
+      case_orientations=make(malformed.data(),malformed.size()*sizeof(std::uint32_t));
+    }
     if(tuple_buffer==nil||selection_buffer==nil||counts==nil||offsets==nil||
        added_offsets==nil||block_totals==nil||block_offsets==nil||scan_total==nil||
-       owner_buffer==nil||status==nil)return false;
+       owner_buffer==nil||status==nil||edge_marks==nil||red_promotions==nil||
+       closure_status==nil||retained_owner_buffer==nil||case_vertex_ranges==nil||
+       case_orientations==nil)return false;
     id<MTLCommandBuffer> command=[queue commandBuffer];
     const std::array<std::uint32_t,3> selection_parameters{
         record_count,record_count,mark_words};
-    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-    [encoder setComputePipelineState:select];
-    [encoder setBuffer:hierarchy offset:0U atIndex:0U];
-    [encoder setBuffer:children offset:0U atIndex:1U];
-    [encoder setBuffer:inputs offset:0U atIndex:2U];
-    [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
-    [encoder setBytes:selection_parameters.data() length:sizeof(selection_parameters) atIndex:4U];
-    [encoder setBuffer:selection_buffer offset:0U atIndex:5U];
-    [encoder dispatchThreads:MTLSizeMake(record_count,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
+    id<MTLComputeCommandEncoder> encoder=nil;
+    if(test.manual==ManualCut::none) {
+      encoder=[command computeCommandEncoder];
+      [encoder setComputePipelineState:select];
+      [encoder setBuffer:hierarchy offset:0U atIndex:0U];
+      [encoder setBuffer:children offset:0U atIndex:1U];
+      [encoder setBuffer:inputs offset:0U atIndex:2U];
+      [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
+      [encoder setBytes:selection_parameters.data() length:sizeof(selection_parameters) atIndex:4U];
+      [encoder setBuffer:selection_buffer offset:0U atIndex:5U];
+      [encoder dispatchThreads:MTLSizeMake(record_count,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
+    }
     const std::array<std::uint32_t,5> count_parameters{
         record_count,record_count,mark_words,owner_capacity,0U};
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
-    [encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:0U];
-    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
-    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:offsets offset:0U atIndex:4U];
-    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
-    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
-    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
-    const std::array<std::uint32_t,2> scan_parameters{record_count,0U};
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
-    [encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
-    [encoder setBuffer:offsets offset:0U atIndex:1U]; [encoder setBuffer:counts offset:0U atIndex:2U];
-    [encoder setBuffer:block_totals offset:0U atIndex:3U];
-    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
-    const std::array<std::uint32_t,2> block_scan_parameters{block_count,0U};
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
-    [encoder setBytes:block_scan_parameters.data() length:sizeof(block_scan_parameters) atIndex:0U];
-    [encoder setBuffer:block_offsets offset:0U atIndex:1U]; [encoder setBuffer:block_totals offset:0U atIndex:2U];
-    [encoder setBuffer:scan_total offset:0U atIndex:3U];
-    [encoder dispatchThreads:MTLSizeMake(256U,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
-    const std::array<std::uint32_t,2> add_parameters{record_count,1U};
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:scan];
-    [encoder setBytes:add_parameters.data() length:sizeof(add_parameters) atIndex:0U];
-    [encoder setBuffer:added_offsets offset:0U atIndex:1U]; [encoder setBuffer:offsets offset:0U atIndex:2U];
-    [encoder setBuffer:block_offsets offset:0U atIndex:3U];
-    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
-    auto frontier_parameters=count_parameters;frontier_parameters[4]=1U;
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
-    [encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
-    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
-    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:added_offsets offset:0U atIndex:4U];
-    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
-    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
-    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
-    frontier_parameters[4]=2U;
-    encoder=[command computeCommandEncoder]; [encoder setComputePipelineState:frontier];
-    [encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
-    [encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [encoder setBuffer:hierarchy offset:0U atIndex:2U];
-    [encoder setBuffer:status offset:0U atIndex:3U]; [encoder setBuffer:added_offsets offset:0U atIndex:4U];
-    [encoder setBuffer:counts offset:0U atIndex:5U]; [encoder setBuffer:canonical offset:0U atIndex:6U];
-    [encoder setBuffer:owner_buffer offset:0U atIndex:7U];
-    [encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
-         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [encoder endEncoding];
+    // P7e3a is deliberately repeated after every device-side red repair:
+    // `counts` and `offsets` are a view of the selected-bit tail, never an
+    // authority that may survive a changed cut.
+    const auto encode_frontier=[&](id<MTLCommandBuffer> frontier_command){
+      id<MTLComputeCommandEncoder> frontier_encoder=[frontier_command computeCommandEncoder];
+      [frontier_encoder setComputePipelineState:frontier];
+      [frontier_encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [frontier_encoder setBuffer:hierarchy offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:status offset:0U atIndex:3U]; [frontier_encoder setBuffer:offsets offset:0U atIndex:4U];
+      [frontier_encoder setBuffer:counts offset:0U atIndex:5U]; [frontier_encoder setBuffer:canonical offset:0U atIndex:6U];
+      [frontier_encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [frontier_encoder endEncoding];
+      const std::array<std::uint32_t,2> scan_parameters{record_count,0U};
+      frontier_encoder=[frontier_command computeCommandEncoder]; [frontier_encoder setComputePipelineState:scan];
+      [frontier_encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:offsets offset:0U atIndex:1U]; [frontier_encoder setBuffer:counts offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:block_totals offset:0U atIndex:3U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [frontier_encoder endEncoding];
+      const std::array<std::uint32_t,2> block_scan_parameters{block_count,0U};
+      frontier_encoder=[frontier_command computeCommandEncoder]; [frontier_encoder setComputePipelineState:scan];
+      [frontier_encoder setBytes:block_scan_parameters.data() length:sizeof(block_scan_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:block_offsets offset:0U atIndex:1U]; [frontier_encoder setBuffer:block_totals offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:scan_total offset:0U atIndex:3U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [frontier_encoder endEncoding];
+      const std::array<std::uint32_t,2> add_parameters{record_count,1U};
+      frontier_encoder=[frontier_command computeCommandEncoder]; [frontier_encoder setComputePipelineState:scan];
+      [frontier_encoder setBytes:add_parameters.data() length:sizeof(add_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:added_offsets offset:0U atIndex:1U]; [frontier_encoder setBuffer:offsets offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:block_offsets offset:0U atIndex:3U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [frontier_encoder endEncoding];
+      auto frontier_parameters=count_parameters;frontier_parameters[4]=1U;
+      frontier_encoder=[frontier_command computeCommandEncoder]; [frontier_encoder setComputePipelineState:frontier];
+      [frontier_encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [frontier_encoder setBuffer:hierarchy offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:status offset:0U atIndex:3U]; [frontier_encoder setBuffer:added_offsets offset:0U atIndex:4U];
+      [frontier_encoder setBuffer:counts offset:0U atIndex:5U]; [frontier_encoder setBuffer:canonical offset:0U atIndex:6U];
+      [frontier_encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [frontier_encoder endEncoding];
+      frontier_parameters[4]=2U;
+      frontier_encoder=[frontier_command computeCommandEncoder]; [frontier_encoder setComputePipelineState:frontier];
+      [frontier_encoder setBytes:frontier_parameters.data() length:sizeof(frontier_parameters) atIndex:0U];
+      [frontier_encoder setBuffer:selection_buffer offset:0U atIndex:1U]; [frontier_encoder setBuffer:hierarchy offset:0U atIndex:2U];
+      [frontier_encoder setBuffer:status offset:0U atIndex:3U]; [frontier_encoder setBuffer:added_offsets offset:0U atIndex:4U];
+      [frontier_encoder setBuffer:counts offset:0U atIndex:5U]; [frontier_encoder setBuffer:canonical offset:0U atIndex:6U];
+      [frontier_encoder setBuffer:owner_buffer offset:0U atIndex:7U];
+      [frontier_encoder dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)]; [frontier_encoder endEncoding];
+    };
+    // P7e3c1 is deliberately a separate device chain: P7e2 mark tail ->
+    // P7e3a canonical offsets -> immutable topology -> owner/mask stream.
+    // Readback below is fixture-only; no CPU closure result is supplied here.
+    const std::array<std::uint32_t,12> closure_parameters{record_count,
+        record_count,mark_words,owner_capacity,
+        static_cast<std::uint32_t>(snapshot.edge_ranges.size()),
+        static_cast<std::uint32_t>(snapshot.ancestor_edge_ranges.size()),0U,
+        static_cast<std::uint32_t>(snapshot.child_indices.size()),
+        static_cast<std::uint32_t>(snapshot.vertex_ranges.size()),
+        static_cast<std::uint32_t>(snapshot.vertex_incidence.size()),0U,0U};
+    const auto encode_closure=[&](id<MTLCommandBuffer> closure_command,
+                                  std::uint32_t phase){
+      auto parameters=closure_parameters;parameters[6]=phase;
+      id<MTLComputeCommandEncoder> local=[closure_command computeCommandEncoder];
+      [local setComputePipelineState:closure];
+      [local setBytes:parameters.data() length:sizeof(parameters) atIndex:0U];
+      [local setBuffer:selection_buffer offset:0U atIndex:1U];
+      [local setBuffer:closure_status offset:0U atIndex:2U];
+      [local setBuffer:hierarchy offset:0U atIndex:3U];
+      [local setBuffer:faces offset:0U atIndex:4U];
+      [local setBuffer:edge_topology offset:0U atIndex:5U];
+      [local setBuffer:vertex_topology offset:0U atIndex:6U];
+      [local setBuffer:case_vertex_ranges offset:0U atIndex:7U];
+      [local setBuffer:vertex_incidence offset:0U atIndex:8U];
+      [local setBuffer:edge_marks offset:0U atIndex:9U];
+      [local setBuffer:canonical offset:0U atIndex:10U];
+      [local setBuffer:counts offset:0U atIndex:11U];
+      [local setBuffer:case_orientations offset:0U atIndex:12U];
+      [local setBuffer:ancestors offset:0U atIndex:13U];
+      [local setBuffer:red_promotions offset:0U atIndex:14U];
+      [local setBuffer:children offset:0U atIndex:15U];
+      [local setBuffer:added_offsets offset:0U atIndex:16U];
+      [local setBuffer:owner_buffer offset:0U atIndex:17U];
+      [local dispatchThreads:MTLSizeMake(block_count*256U,1U,1U)
+           threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      [local endEncoding];
+    };
+    const auto retained_intact=[&]{
+      const auto* retained=static_cast<const std::uint32_t*>(retained_owner_buffer.contents);
+      return std::ranges::all_of(std::span(retained,retained_owner_words.size()),
+          [](std::uint32_t word){return word==retained_owner_sentinel;});
+    };
+    bool closure_converged{};std::uint32_t closure_failure{};
+    for(std::uint32_t repair_round=0U;repair_round<=tetra::maximum_world_red_depth;
+        ++repair_round) {
+      id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+      [clear fillBuffer:closure_status range:NSMakeRange(0U,sizeof(status_zeros)) value:0U];
+      [clear fillBuffer:edge_marks range:NSMakeRange(0U,edge_marks.length) value:0U];
+      [clear fillBuffer:red_promotions range:NSMakeRange(0U,red_promotions.length) value:0U];
+      [clear endEncoding];
+      encode_frontier(command);
+      encode_closure(command,0U);
+      // A green mask can only gain one of six local edges in a round. Forty-
+      // eight rounds exceeds the immutable hierarchy's maximum depth and the
+      // six-edge local fixed point; a non-quiescent result fails below.
+      for(std::uint32_t round=0U;round<48U;++round) {
+        clear=[command blitCommandEncoder];
+        [clear fillBuffer:closure_status range:NSMakeRange(sizeof(std::uint32_t),
+            sizeof(std::uint32_t)) value:0U]; [clear endEncoding];
+        encode_closure(command,1U);
+      }
+      encode_closure(command,3U);
+      encode_closure(command,2U);
+      encode_closure(command,5U);
+      [command commit]; [command waitUntilCompleted];
+      if(command.status!=MTLCommandBufferStatusCompleted) {
+        std::fprintf(stderr,"Metal hierarchy-frontier command failed: %ld\n",
+            static_cast<long>(command.status));
+        return false;
+      }
+      const auto* closure_round_state=static_cast<const std::uint32_t*>(closure_status.contents);
+      if(closure_round_state[0U]!=0U) { closure_failure=closure_round_state[0U]; break; }
+      if(closure_round_state[2U]==0U) { closure_converged=true; break; }
+      command=[queue commandBuffer];
+    }
+    if(!closure_converged) {
+      if(test.failure==FailureCase::none||closure_failure==0U||!retained_intact()) {
+        std::fprintf(stderr,"Metal hierarchy-closure unexpected repair failure case %zu: %u\n",completed,closure_failure);
+        return false;
+      }
+      ++completed;continue;
+    }
+    command=[queue commandBuffer];
+    encode_closure(command,6U);
+    [command commit]; [command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted)return false;
+    auto closure_state=static_cast<const std::uint32_t*>(closure_status.contents);
+    if(closure_state[0U]!=0U) {
+      if(test.failure==FailureCase::none||!retained_intact()) {
+        std::fprintf(stderr,"Metal hierarchy-closure unexpected preflight failure case %zu: %u\n",completed,closure_state[0U]);
+        return false;
+      }
+      ++completed;continue;
+    }
+    command=[queue commandBuffer];
+    encode_closure(command,4U);
     [command commit]; [command waitUntilCompleted];
     if(command.status!=MTLCommandBufferStatusCompleted) {
-      std::fprintf(stderr,"Metal hierarchy-frontier command failed: %ld\n",
+      std::fprintf(stderr,"Metal hierarchy-frontier emission failed: %ld\n",
           static_cast<long>(command.status));
       return false;
     }
-    const auto* state=static_cast<const std::uint32_t*>(status.contents);
-    if(test.overflow) {
-      if(state[0u]==0u) {
-        std::fprintf(stderr,"Metal hierarchy-frontier overflow was accepted\n");
+    closure_state=static_cast<const std::uint32_t*>(closure_status.contents);
+    if(test.failure!=FailureCase::none) {
+      if(closure_state[0U]==0U||!retained_intact()) {
+        std::fprintf(stderr,"Metal hierarchy-closure expected rejection missing case %zu: %u\n",completed,closure_state[0U]);
         return false;
       }
-      ++completed; continue;
+      ++completed;continue;
     }
-    if(state[0u]!=0u||state[1u]!=oracle.selected_records.size()) {
+    const auto* state=static_cast<const std::uint32_t*>(status.contents);
+    if(state[0u]!=0u||state[1u]!=expected.size()) {
       std::fprintf(stderr,"Metal hierarchy-frontier state %u/%u expected %zu\n",
-          state[0u],state[1u],oracle.selected_records.size());
+          state[0u],state[1u],expected.size());
       return false;
     }
-    std::vector<tetra::WorldTetAddress> expected;
-    for(const auto index:oracle.selected_records)
-      expected.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[index].address));
-    std::ranges::sort(expected);
+    if(closure_state[0U]!=0U||closure_state[1U]!=0U||closure_state[2U]!=0U||
+       closure_state[3U]!=expected.size()) {
+      std::fprintf(stderr,"Metal hierarchy-closure state %u/%u/%u/%u expected %zu\n",
+          closure_state[0U],closure_state[1U],closure_state[2U],closure_state[3U],
+          expected.size());
+      return false;
+    }
     const auto* device_words=static_cast<const std::uint32_t*>(owner_buffer.contents);
     for(std::size_t index=0U;index<expected.size();++index) {
       const std::array<std::uint32_t,4> lanes{{device_words[index*12U],
           device_words[index*12U+1U],device_words[index*12U+2U],device_words[index*12U+3U]}};
-      if(tetra::gpu_hierarchy_address_from_lanes(lanes)!=expected[index]||
-         device_words[index*12U+10U]!=0U) {
+      if(tetra::gpu_hierarchy_address_from_lanes(lanes)!=expected[index]) {
         std::fprintf(stderr,"Metal hierarchy-frontier record %zu mismatched\n",index);
         return false;
       }
+      const auto found=std::ranges::find_if(snapshot.records,[&](const auto& record){
+        return tetra::gpu_hierarchy_address_from_lanes(record.address)==expected[index];
+      });
+      if(found==snapshot.records.end())return false;
+      const auto record_index=static_cast<std::size_t>(found-snapshot.records.begin());
+      for(std::size_t edge=0U;edge<6U;++edge)
+        if(device_words[index*12U+4U+edge]!=snapshot.edge_topology[record_index].edge_ranges[edge])
+          return false;
+      if(device_words[index*12U+10U]!=closure_oracle.green_masks[index]||
+         device_words[index*12U+11U]!=snapshot.orientation_flags[record_index])return false;
+      saw_green_mask|=closure_oracle.green_masks[index]!=0U;
     }
+    // c2 publication is a one-way device copy after the independent CPU
+    // oracle has qualified the complete candidate. Rejected candidates above
+    // never touch this retained owner front.
+    command=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> publish=[command blitCommandEncoder];
+    [publish copyFromBuffer:owner_buffer sourceOffset:0U toBuffer:retained_owner_buffer
+              destinationOffset:0U size:owner_buffer.length];
+    [publish endEncoding]; [command commit]; [command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted)return false;
+    if(std::memcmp(retained_owner_buffer.contents,owner_buffer.contents,
+                   owner_buffer.length)!=0)return false;
     ++completed;
   }
   std::printf("{\"event\":\"metal_gpu_hierarchy_frontier\","
-              "\"cases\":%zu,\"canonical\":true,\"overflow\":true,"
-              "\"passed\":true}\n",completed);
+              "\"cases\":%zu,\"canonical\":true,\"closure\":true,\"green_mask\":%s,"
+              "\"overflow\":true,\"passed\":true}\n",completed,
+      saw_green_mask?"true":"false");
   return completed==cases.size();
 }
 
@@ -6757,7 +6974,7 @@ int main(int argc,char** argv) {
               try {
                 if(configure_metal_gpu_hierarchy_live_selection(device,
                     gpu_hierarchy_live_selection,
-                    tetra::make_gpu_hierarchy_snapshot(*directory,field_revision),
+                    tetra::make_gpu_hierarchy_snapshot(*directory,field_revision,false),
                     field_revision,runtime->diagnostics().scene_generation)){
                   const auto& profile=runtime->profile();
                   const auto& field=runtime->field();

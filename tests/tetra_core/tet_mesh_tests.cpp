@@ -5896,6 +5896,10 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       leaves,1U,9U,tetra::HierarchyResidencyTier::surface));
   const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory);
   REQUIRE(snapshot.canonical_record_indices.size()==snapshot.records.size());
+  REQUIRE(snapshot.orientation_flags.size()==snapshot.records.size());
+  REQUIRE(snapshot.vertex_topology.size()==snapshot.records.size());
+  REQUIRE_FALSE(snapshot.vertex_ranges.empty());
+  REQUIRE_FALSE(snapshot.vertex_incidence.empty());
   for(std::size_t position=0U;position<snapshot.canonical_record_indices.size();++position) {
     const auto record=snapshot.canonical_record_indices[position];
     CHECK(record<snapshot.records.size());
@@ -5911,6 +5915,7 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   root_records.fill(tetra::gpu_hierarchy_invalid_index);
   for(std::uint32_t record=0U;record<snapshot.records.size();++record) {
     const auto address=tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address);
+    CHECK(snapshot.orientation_flags[record]<=1U);
     if(address.red_depth()==0U)root_records[address.root_id()]=record;
     else {
       const auto parent=snapshot.parent_records[record];
@@ -6005,6 +6010,12 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   malformed=snapshot;
   malformed.edge_topology[root_records[0U]].edge_ranges[0U]=
       static_cast<std::uint32_t>(malformed.edge_ranges.size());
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
+  malformed=snapshot;
+  malformed.orientation_flags[root_records[0U]]^=1U;
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
+  malformed=snapshot;
+  malformed.vertex_ranges.front().count=0U;
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
 }
 
