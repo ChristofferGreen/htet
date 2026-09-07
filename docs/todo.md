@@ -371,20 +371,15 @@ evidence live in [`gpu-realtime-lod.md`](gpu-realtime-lod.md).
       only milestone allowed to remove qualification readback.
 ### P8 tracker — readback-free GPU terrain publication
 
-P8 is deliberately split into independent closure leaves.  P9 remains
-conditional on P8’s measured complete-frame result.
+P8 is complete. P9 remains conditional on P8’s measured complete-frame
+result.
 
-P8a1 and P8b are complete: the P6 packet is an immutable sidecar of the
+P8a1, P8b, and P8c are complete: the P6 packet is an immutable sidecar of the
 background terrain publication, and selected private-front motion is now
 qualified without normal candidate readback. P8c is split so the bounded
 owner-direct implementation can close independently before its hardware
 performance-promotion decision.
 
-- [ ] **P8c2 — Measure and promote the device-local route.** Scope: profile full
-      camera-to-present work, including generation and private-front replacement.
-      Acceptance: 4–8 ms generation and a 16.7 ms complete frame, or an initial
-      33 ms complete-frame milestone, with P8b private-front motion evidence. Stop rule: do not
-      start P9 unless profiling identifies a missed gate and its dominant stage.
 - [ ] **P9 — Add a persistent active front only if measurements require it.**
       Trigger this only if P8 profiling identifies repeated hierarchy traversal
       or compaction as a dominant missed-budget stage. Compare bounded

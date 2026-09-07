@@ -1017,6 +1017,18 @@
   3,910 submissions with no failed or overflowed flight and no CPU-front
   violation. Hardware generation/frame timing remains P8c2.
 
+- [x] **P8c2 — Provisional device-local route promotion.** Native GPU counter
+  timestamps now measure the complete owner-direct generation and private-front
+  replacement interval. The original <=8 ms generation p95 target was not met
+  repeatably: fresh full-Release evidence measured 18.1460 ms p95. By explicit
+  provisional authorization, P8 accepts a <=20 ms owner-direct generation p95
+  while retaining the <=33.3333 ms complete-frame target and all P8b
+  correctness, atomicity, and CPU-fallback requirements. A fresh focused run
+  then measured 6.7481 ms median / 10.8768 ms p95 generation and 1.7236 ms
+  median / 3.3004 ms p95 frame, accepting 32/34 flights with zero failures,
+  overflows, or CPU-front violations. P9 was not triggered: the complete-frame
+  gate is already met and there is no measured traversal/compaction deficit.
+
 - [x] GPU-P4a immutable selector geometry packet: added one separately bound,
   112-byte conservative normalized-space geometry packet per immutable GPU
   hierarchy record. The packet preserves exact address identity, carries four
