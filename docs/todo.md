@@ -362,13 +362,6 @@ infrastructure. They do not close P7 because CPU still performs selection,
 closure, source-packet construction, and the initial mesh seed. CPU terrain
 generation remains the normal launch default until every P7e leaf is complete.
 
-- [ ] **P7e2 — Publish immutable device traversal state.** Upload one
-      revisioned BCC hierarchy/geometry snapshot to persistent Metal storage
-      and retain it across camera motion. A live GPU selection pass must emit
-      bounded deterministic record marks for the current camera tuple; it must
-      not call CPU surface construction or create a CPU terrain packet. Cover
-      revision replacement, stale tuple rejection, overflow, and the existing
-      fixed/walk/orbit selector corpus.
 - [ ] **P7e3 — Construct a conforming GPU render cut.** Consume P7e2 marks
       and derive canonical owner/green-mask state on-device through bounded
       split and face/edge fixed points. Use hierarchy/block-local incidence,

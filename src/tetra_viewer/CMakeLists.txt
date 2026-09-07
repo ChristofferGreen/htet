@@ -446,6 +446,28 @@ if(APPLE AND TETRA_BUILD_METAL)
       $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
   set_tests_properties("metal GPU mesh emission defaults to CPU terrain generation"
     PROPERTIES PASS_REGULAR_EXPRESSION "\\\"gpu_renderer_requested\\\":false")
+  add_test(NAME "metal GPU live hierarchy selection freezes CPU generation"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_GPU_TERRAIN_LIVE_SELECTION=1
+      $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  set_tests_properties("metal GPU live hierarchy selection freezes CPU generation"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"gpu_live_selection\\\":\\{\\\"enabled\\\":true,\\\"submitted\\\":[1-9][0-9]*,\\\"completed\\\":[1-9][0-9]*,\\\"accepted\\\":[1-9][0-9]*,\\\"failed\\\":0,\\\"cpu_generation_violations\\\":0\\}")
+  add_test(NAME "metal GPU live hierarchy selection follows camera without CPU terrain"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_GPU_TERRAIN_LIVE_SELECTION=1
+      $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
+  set_tests_properties("metal GPU live hierarchy selection follows camera without CPU terrain"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"gpu_live_selection\\\":\\{\\\"enabled\\\":true,\\\"submitted\\\":[2-9][0-9]*,\\\"completed\\\":[2-9][0-9]*,\\\"accepted\\\":[2-9][0-9]*,\\\"failed\\\":0,\\\"cpu_generation_violations\\\":0\\}")
+  add_test(NAME "metal GPU live hierarchy selection state contract"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-live-selection-state-smoke-test)
+  set_tests_properties("metal GPU live hierarchy selection state contract"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"revision_replaced\\\":true,\\\"persistent\\\":true,\\\"accepted\\\":1,\\\"failed\\\":0,\\\"passed\\\":true")
   # P8b drives the selected renderer through the production moving-camera
   # loop.  It verifies the selected, complete private display front across
   # camera motion without enabling legacy candidate-payload readback. Native

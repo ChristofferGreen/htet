@@ -125,10 +125,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: Snapshot validation derives and checks every sidecar from exact BCC geometry, rejects altered bounds, and the off-screen Vulkan GPU-LOD diagnostic completed after the sidecar was separately bound and synchronized.
 
 ### gpu-hierarchy-selector-metal
-- Updated: 2026-09-05
-- Tags: gpu-lod, metal, spirv, parity
-- Fact: Metal selector qualification compiles the shared `gpu_lod.comp` SPIR-V through SPIRV-Cross and compares its hardware output to the float-ABI oracle; Metal rendering remains on the CPU terrain front until later extraction parity.
-- Evidence: The hidden five-case Metal fixture checks coarse, edge, field, limb, and zero-capacity overflow dispatches, and the 490-test Release gate passed.
+- Updated: 2026-09-07
+- Tags: gpu-lod, metal, spirv, parity, residency
+- Fact: The shared `gpu_lod.comp` shader now writes a bounded deterministic per-record mark tail in addition to its diagnostic append stream, and the opt-in Metal P7e2 route retains one immutable snapshot through camera motion while freezing CPU terrain publication after bootstrap.
+- Evidence: Fixed/walk/orbit hardware mark parity, overflow, stale tuple, same-revision retention, revision replacement, and a 30-flight moving-camera run with zero CPU-generation violations passed in the 523-test Release gate.
 
 ### gpu-hierarchy-selector-tuple
 - Updated: 2026-09-05

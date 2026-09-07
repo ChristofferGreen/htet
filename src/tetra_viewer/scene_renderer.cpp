@@ -343,7 +343,7 @@ void SceneRenderer::initialize(VkPhysicalDevice physical_device, VkDevice device
                             &atmosphere_pipeline_layout_)!=VK_SUCCESS)
     throw std::runtime_error("unable to create atmosphere pipeline layout");
   VkPushConstantRange gpu_lod_push{VK_SHADER_STAGE_COMPUTE_BIT,0,
-                                   sizeof(std::uint32_t)*2U};
+                                   sizeof(std::uint32_t)*3U};
   VkPipelineLayoutCreateInfo gpu_lod_pipeline_layout{
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   gpu_lod_pipeline_layout.setLayoutCount=1U;
@@ -903,6 +903,11 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   // ordinary near-surface frame measures traversal rather than artificial
   // output truncation; overflow remains an explicit fail-closed condition.
   constexpr std::size_t gpu_lod_output_capacity=1048576U;
+  // The immutable hierarchy buffers are capped at 64 MiB and records are
+  // 32 bytes, so 65,536 words cover one deterministic selection mark per
+  // possible resident record.  The append stream above remains diagnostic;
+  // P7e consumes this persistent mark tail rather than its atomic order.
+  constexpr std::size_t gpu_lod_mark_word_capacity=65536U;
   gpu_lod_hierarchy_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_child_indices_=allocate_gpu_lod_buffer(64U*1024U*1024U);
   gpu_lod_selection_inputs_=allocate_gpu_lod_buffer(64U*1024U*1024U);
@@ -914,7 +919,8 @@ void SceneRenderer::recreate(VkExtent2D extent, std::uint32_t image_count,
   gpu_lod_outputs_.reserve(image_count);
   for(std::uint32_t index=0;index<image_count;++index)
     gpu_lod_outputs_.push_back(allocate_gpu_lod_buffer(
-        sizeof(std::uint32_t)*(4U+gpu_lod_output_capacity)));
+        sizeof(std::uint32_t)*(4U+gpu_lod_output_capacity+
+                               gpu_lod_mark_word_capacity)));
   gpu_terrain_cell_buffers_.clear();gpu_terrain_output_buffers_.clear();gpu_terrain_index_buffers_.clear();
   gpu_terrain_slot_revisions_.assign(image_count,0U);gpu_terrain_slot_pending_.assign(image_count,false);
   gpu_terrain_timing_pending_.assign(image_count,false);
@@ -2213,7 +2219,7 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
       gpu_lod_hierarchy_upload_pending_=false;
     }
     vkCmdFillBuffer(command_buffer,gpu_lod_output.buffer,0,
-                    sizeof(std::uint32_t)*4U,0U);
+                    gpu_lod_output.capacity,0U);
     VkBufferMemoryBarrier prepare{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
     prepare.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
     prepare.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
@@ -2226,8 +2232,8 @@ void SceneRenderer::record(VkCommandBuffer command_buffer,VkImageView colour_vie
     vkCmdBindPipeline(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,gpu_lod_pipeline_);
     vkCmdBindDescriptorSets(command_buffer,VK_PIPELINE_BIND_POINT_COMPUTE,
         gpu_lod_pipeline_layout_,0,1,&gpu_lod_descriptor_sets_.at(image_index),0,nullptr);
-    const std::array<std::uint32_t,2> push{
-        gpu_lod_dispatch_status_.hierarchy_records,1048576U};
+    const std::array<std::uint32_t,3> push{
+        gpu_lod_dispatch_status_.hierarchy_records,1048576U,65536U};
     vkCmdPushConstants(command_buffer,gpu_lod_pipeline_layout_,VK_SHADER_STAGE_COMPUTE_BIT,
         0,sizeof(push),push.data());
     // Each invocation traverses one immutable active-root tree. Dispatching

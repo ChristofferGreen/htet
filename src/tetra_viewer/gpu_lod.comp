@@ -18,6 +18,10 @@ layout(std430,binding=4) readonly buffer ChildIndices { uint values[]; } child_i
 layout(push_constant) uniform SelectorParameters {
   uint record_count;
   uint output_capacity;
+  // The append stream remains a diagnostic oracle.  The persistent tail is
+  // the live P7e2 contract: one deterministic selection bit per immutable
+  // hierarchy record, consumed by later device-only closure work.
+  uint mark_word_count;
 } parameters;
 
 const uint child_mask=0xffu;
@@ -116,6 +120,11 @@ void main() {
         const uint output_index=atomicAdd(output_buffer.words[0],1u);
         if(output_index<parameters.output_capacity)
           output_buffer.words[4u+output_index]=record_index;
+        else atomicOr(output_buffer.words[3],1u);
+        const uint mark_word=record_index>>5u;
+        if(mark_word<parameters.mark_word_count)
+          atomicOr(output_buffer.words[4u+parameters.output_capacity+mark_word],
+                   1u<<(record_index&31u));
         else atomicOr(output_buffer.words[3],1u);
         if(depth==0u)break; --depth; ++next_child[depth]; continue;
       }

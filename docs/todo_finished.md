@@ -534,6 +534,19 @@
 
 ## 2026-09-07
 
+- [x] **P7e2 — Publish immutable device traversal state.** The Metal runtime
+  now has an opt-in live-selection route that uploads a revisioned immutable
+  BCC hierarchy/geometry snapshot once, retains its GPU buffers across camera
+  motion, and writes one deterministic selected-record bit per hierarchy
+  record. It freezes the completed CPU bootstrap front and cannot call runtime
+  camera publication, CPU surface construction, P6 packet construction, or
+  CPU mesh seeding afterwards. Metal checks cover fixed/walk/orbit mark parity,
+  zero-capacity overflow, same-revision buffer retention, source-revision
+  replacement, stale-tuple rejection, and a moving-camera route with zero
+  post-bootstrap CPU-generation violations. Fresh Release validation passed
+  all 523 tests. The marks have no render consumer until P7e3 builds their
+  conforming owner stream.
+
 - [x] **P7e1 — Correct GPU-route provenance and default.** Restored CPU
   terrain generation as the normal launch route and renamed the Metal toggle
   to say that it selects GPU mesh emission from a CPU terrain source. A native

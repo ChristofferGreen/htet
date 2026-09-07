@@ -1052,6 +1052,155 @@ struct MetalGpuTerrainActiveFront {
       std::make_shared<std::atomic<bool>>(false);
 };
 
+// P7e2 keeps immutable hierarchy data and the resulting selection marks in
+// device storage across camera motion.  Its mark buffer deliberately has no
+// CPU readback or terrain draw consumer yet: P7e3 owns conforming closure and
+// P7e4 owns render-front promotion.
+struct MetalGpuHierarchyLiveSelectionSlot {
+  id<MTLBuffer> tuple=nil;
+  id<MTLBuffer> marks=nil;
+  std::uint64_t tuple_identity{};
+  bool pending{};
+  std::shared_ptr<std::atomic<bool>> completed=
+      std::make_shared<std::atomic<bool>>(false);
+  std::shared_ptr<std::atomic<bool>> succeeded=
+      std::make_shared<std::atomic<bool>>(false);
+};
+
+struct MetalGpuHierarchyLiveSelection {
+  id<MTLBuffer> hierarchy=nil;
+  id<MTLBuffer> children=nil;
+  id<MTLBuffer> inputs=nil;
+  std::array<MetalGpuHierarchyLiveSelectionSlot,3> slots;
+  std::uint64_t source_revision{};
+  std::uint64_t field_revision{};
+  std::uint64_t bootstrap_scene_generation{};
+  std::uint32_t record_count{};
+  std::uint32_t output_capacity{};
+  std::uint32_t mark_word_count{};
+  std::uint64_t submitted{};
+  std::uint64_t completed{};
+  std::uint64_t accepted{};
+  std::uint64_t stale_rejected{};
+  std::uint64_t failed{};
+  std::uint64_t cpu_generation_violations{};
+  std::uint64_t cursor{};
+
+  [[nodiscard]] bool ready() const noexcept {
+    return hierarchy!=nil&&children!=nil&&inputs!=nil&&record_count!=0U&&
+        mark_word_count!=0U;
+  }
+};
+
+bool configure_metal_gpu_hierarchy_live_selection(
+    id<MTLDevice> device,MetalGpuHierarchyLiveSelection& selection,
+    const tetra::GpuHierarchySnapshot& snapshot,std::uint64_t field_revision,
+    std::uint64_t bootstrap_scene_generation) {
+  tetra::validate_gpu_hierarchy_snapshot(snapshot);
+  constexpr std::size_t maximum_records=1048576U;
+  if(snapshot.header.source_world_revision==0U||field_revision==0U||
+     snapshot.records.empty()||snapshot.records.size()>maximum_records||
+     snapshot.records.size()>std::numeric_limits<std::uint32_t>::max())return false;
+  if(selection.ready()&&selection.source_revision==
+         snapshot.header.source_world_revision&&
+     selection.field_revision==field_revision&&selection.record_count==
+         snapshot.records.size())return true;
+  const auto make_shared=[device](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:std::max<NSUInteger>(length,4U)
+                              options:MTLResourceStorageModeShared];
+  };
+  const auto mark_words=(snapshot.records.size()+31U)/32U;
+  const auto output_words=4U+snapshot.records.size()+mark_words;
+  if(output_words>std::numeric_limits<NSUInteger>::max()/sizeof(std::uint32_t))
+    return false;
+  MetalGpuHierarchyLiveSelection replacement;
+  replacement.hierarchy=make_shared(snapshot.records.data(),
+      snapshot.records.size()*sizeof(snapshot.records.front()));
+  replacement.children=make_shared(snapshot.child_indices.data(),
+      snapshot.child_indices.size()*sizeof(std::uint32_t));
+  replacement.inputs=make_shared(snapshot.selection_records.data(),
+      snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
+  replacement.source_revision=snapshot.header.source_world_revision;
+  replacement.field_revision=field_revision;
+  replacement.bootstrap_scene_generation=bootstrap_scene_generation;
+  replacement.record_count=static_cast<std::uint32_t>(snapshot.records.size());
+  replacement.output_capacity=replacement.record_count;
+  replacement.mark_word_count=static_cast<std::uint32_t>(mark_words);
+  for(auto& slot:replacement.slots){
+    slot.tuple=[device newBufferWithLength:sizeof(tetra::GpuHierarchySelectionTuple)
+        options:MTLResourceStorageModeShared];
+    slot.marks=[device newBufferWithLength:output_words*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    if(slot.tuple==nil||slot.marks==nil)return false;
+  }
+  if(replacement.hierarchy==nil||replacement.children==nil||replacement.inputs==nil)
+    return false;
+  selection=std::move(replacement);
+  return true;
+}
+
+void retire_metal_gpu_hierarchy_live_selection(
+    MetalGpuHierarchyLiveSelection& selection) {
+  for(auto& slot:selection.slots)if(slot.pending&&
+      slot.completed->load(std::memory_order_acquire)){
+    slot.pending=false;
+    ++selection.completed;
+    if(slot.succeeded->load(std::memory_order_acquire))++selection.accepted;
+    else ++selection.failed;
+  }
+}
+
+bool encode_metal_gpu_hierarchy_live_selection(
+    id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
+    MetalGpuHierarchyLiveSelection& selection,
+    const tetra::GpuHierarchySelectionTuple& tuple) {
+  if(!selection.ready()||pipeline==nil)return false;
+  const auto source_revision=static_cast<std::uint64_t>(tuple.revision_lanes[0])|
+      (static_cast<std::uint64_t>(tuple.revision_lanes[1])<<32U);
+  const auto field_revision=static_cast<std::uint64_t>(tuple.revision_lanes[2])|
+      (static_cast<std::uint64_t>(tuple.revision_lanes[3])<<32U);
+  if(source_revision!=selection.source_revision||field_revision!=selection.field_revision){
+    ++selection.stale_rejected;
+    return false;
+  }
+  MetalGpuHierarchyLiveSelectionSlot* selected=nullptr;
+  for(std::size_t attempt=0U;attempt<selection.slots.size();++attempt){
+    auto& candidate=selection.slots[(selection.cursor+attempt)%selection.slots.size()];
+    if(!candidate.pending){selected=&candidate;selection.cursor+=attempt+1U;break;}
+  }
+  if(selected==nullptr)return false;
+  std::memcpy(selected->tuple.contents,&tuple,sizeof(tuple));
+  id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+  [clear fillBuffer:selected->marks range:NSMakeRange(0U,selected->marks.length)
+               value:0U];
+  [clear endEncoding];
+  const std::array<std::uint32_t,3> parameters{selection.record_count,
+      selection.output_capacity,selection.mark_word_count};
+  id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:pipeline];
+  [encoder setBuffer:selection.hierarchy offset:0U atIndex:0U];
+  [encoder setBuffer:selection.children offset:0U atIndex:1U];
+  [encoder setBuffer:selection.inputs offset:0U atIndex:2U];
+  [encoder setBuffer:selected->tuple offset:0U atIndex:3U];
+  [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
+  [encoder setBuffer:selected->marks offset:0U atIndex:5U];
+  [encoder dispatchThreads:MTLSizeMake(selection.record_count,1U,1U)
+       threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+  [encoder endEncoding];
+  selected->tuple_identity=tetra::gpu_hierarchy_selection_tuple_identity(tuple);
+  selected->completed->store(false,std::memory_order_release);
+  selected->succeeded->store(false,std::memory_order_release);
+  selected->pending=true;
+  const auto completed=selected->completed,success=selected->succeeded;
+  [command addCompletedHandler:^(id<MTLCommandBuffer> finished){
+    success->store(finished.status==MTLCommandBufferStatusCompleted,
+                   std::memory_order_release);
+    completed->store(true,std::memory_order_release);
+  }];
+  ++selection.submitted;
+  return true;
+}
+
 struct alignas(16) MetalGpuTerrainGeometryParameters {
   std::uint32_t count{},capacity{},reserved0{},reserved1{};
   std::array<float,4> origin{};
@@ -1250,9 +1399,10 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
   if(queue==nil)return false;
 
   constexpr std::uint32_t output_capacity=65536U;
-  const auto make_tuple=[](float edge,float field,float limb){
+  const auto make_tuple=[](tetra::Vec3 position,tetra::Vec3 forward,
+                           float edge,float field,float limb){
     tetra::GpuHierarchySelectionTupleParameters p;
-    p.camera.position={0.5,0.5,3.0};p.camera.forward={0.0,0.0,-1.0};
+    p.camera.position=position;p.camera.forward=forward;
     p.camera.up={0.0,1.0,0.0};p.camera.viewport_height_pixels=800.0;
     p.camera.aspect_ratio=1.0;p.render_origin={};p.field_centre={0.5,0.5,0.5};
     p.planet_radius=2.0;p.terrain_height_bound=0.1;p.field_lipschitz=1.0;
@@ -1262,31 +1412,41 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
   };
   struct SelectorCase {
     const char* name;
+    tetra::Vec3 position,forward;
     float edge,field,limb;
     std::uint32_t capacity;
   };
   constexpr std::array cases{
-      SelectorCase{"coarse",1.0e6F,1.0e6F,1.0e6F,output_capacity},
-      SelectorCase{"edge",0.5F,1.0e6F,1.0e6F,output_capacity},
-      SelectorCase{"field",1.0e6F,0.05F,1.0e6F,output_capacity},
-      SelectorCase{"limb",1.0e6F,1.0e6F,0.02F,output_capacity},
+      SelectorCase{"fixed",{0.5,0.5,3.0},{0.0,0.0,-1.0},
+                   1.0e6F,1.0e6F,1.0e6F,output_capacity},
+      SelectorCase{"walk",{0.7,0.5,2.8},{0.0,0.0,-1.0},
+                   0.5F,1.0e6F,1.0e6F,output_capacity},
+      SelectorCase{"orbit",{3.0,0.5,0.5},{-1.0,0.0,0.0},
+                   1.0e6F,0.05F,1.0e6F,output_capacity},
+      SelectorCase{"limb",{0.5,0.5,3.0},{0.0,0.0,-1.0},
+                   1.0e6F,1.0e6F,0.02F,output_capacity},
       // A full selector result with zero writable entries is the hardware
       // overflow/fail-closed contract; the interactive Metal renderer still
       // draws its CPU front because this diagnostic can never be promoted.
-      SelectorCase{"overflow",1.0e6F,1.0e6F,1.0e6F,0U}};
+      SelectorCase{"overflow",{0.5,0.5,3.0},{0.0,0.0,-1.0},
+                   1.0e6F,1.0e6F,1.0e6F,0U}};
   std::size_t completed{};
   for(const auto& selector_case:cases){
-    const auto tuple=make_tuple(selector_case.edge,selector_case.field,
+    const auto tuple=make_tuple(selector_case.position,selector_case.forward,
+                                selector_case.edge,selector_case.field,
                                 selector_case.limb);
     const auto oracle=tetra::gpu_hierarchy_traverse(snapshot,
         tetra::gpu_hierarchy_traversal_parameters(tuple));
     if(oracle.selected_records.size()>output_capacity)return false;
     id<MTLBuffer> tuple_buffer=make_buffer(&tuple,sizeof(tuple));
-    std::vector<std::uint32_t> zeroed(4U+selector_case.capacity,0U);
+    const std::size_t mark_word_count=(snapshot.records.size()+31U)/32U;
+    std::vector<std::uint32_t> zeroed(4U+selector_case.capacity+
+                                      mark_word_count,0U);
     id<MTLBuffer> output=make_buffer(zeroed.data(),
         zeroed.size()*sizeof(zeroed.front()));
-    const std::array<std::uint32_t,2> parameters{
-        static_cast<std::uint32_t>(snapshot.records.size()),selector_case.capacity};
+    const std::array<std::uint32_t,3> parameters{
+        static_cast<std::uint32_t>(snapshot.records.size()),selector_case.capacity,
+        static_cast<std::uint32_t>(mark_word_count)};
     if(tuple_buffer==nil||output==nil)return false;
     id<MTLCommandBuffer> command=[queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
@@ -1315,12 +1475,96 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
       std::ranges::sort(values);return values;
     };
     if(canonical(std::move(device))!=canonical(oracle.selected_records))return false;
+    std::vector<std::uint32_t> marked;
+    for(std::size_t word=0U;word<mark_word_count;++word){
+      std::uint32_t bits=words[4U+selector_case.capacity+word];
+      while(bits!=0U){
+        const auto lane=static_cast<std::uint32_t>(std::countr_zero(bits));
+        marked.push_back(static_cast<std::uint32_t>(word*32U+lane));
+        bits&=bits-1U;
+      }
+    }
+    if(canonical(std::move(marked))!=canonical(oracle.selected_records))return false;
     ++completed;
   }
   std::printf("{\"event\":\"metal_gpu_lod_selector\","
               "\"cases\":%zu,\"records\":%zu,\"passed\":true}\n",
               completed,snapshot.records.size());
   return true;
+}
+
+// P7e2 exercises the production-state lifetime separately from the readback
+// parity fixture above.  It proves immutable buffers survive camera tuples,
+// a source revision replaces every old flight, and a stale tuple cannot be
+// encoded into the current mark front.
+bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(
+      tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned int generation=0U;generation<3U;++generation)
+    mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> owners;
+  for(const auto owner:mesh.logical_red_owners())
+    owners.push_back(tetra::world_tet_address(owner));
+  const auto snapshot_for=[&](std::uint64_t source,std::uint64_t field){
+    const tetra::WorldCutDirectory directory(
+        tetra::make_sparse_world_cut_checkpoint(
+            owners,1U,source,tetra::HierarchyResidencyTier::surface));
+    return tetra::make_gpu_hierarchy_snapshot(directory,field);
+  };
+  const auto first=snapshot_for(41U,43U);
+  const auto second=snapshot_for(47U,53U);
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_lod.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=library==nil?nil:
+      [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"main0"]
+                                             error:&error];
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(pipeline==nil||queue==nil)return false;
+  MetalGpuHierarchyLiveSelection selection;
+  if(!configure_metal_gpu_hierarchy_live_selection(device,selection,first,43U,7U))
+    return false;
+  const auto first_hierarchy=selection.hierarchy;
+  const auto tuple_for=[](std::uint64_t source,std::uint64_t field,
+                          tetra::Vec3 position){
+    tetra::Camera camera;
+    camera.position=position;camera.forward={0.0,0.0,-1.0};
+    camera.up={0.0,1.0,0.0};camera.viewport_height_pixels=800.0;
+    camera.aspect_ratio=1.0;
+    return tetra::make_gpu_hierarchy_selection_tuple({
+        .camera=camera,.render_origin={},.field_centre={0.5,0.5,0.5},
+        .planet_radius=2.0,.terrain_height_bound=0.1,.field_lipschitz=1.0,
+        .edge_threshold=0.5,.field_threshold=0.05,.limb_threshold=0.02,
+        .merge_ratio=0.5,.source_revision=source,.field_revision=field});
+  };
+  const auto dispatch=[&](const tetra::GpuHierarchySelectionTuple& tuple){
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    if(!encode_metal_gpu_hierarchy_live_selection(command,pipeline,selection,tuple))
+      return false;
+    [command commit];[command waitUntilCompleted];
+    retire_metal_gpu_hierarchy_live_selection(selection);
+    return command.status==MTLCommandBufferStatusCompleted;
+  };
+  if(!dispatch(tuple_for(41U,43U,{0.5,0.5,3.0}))||
+     !configure_metal_gpu_hierarchy_live_selection(device,selection,first,43U,7U)||
+     selection.hierarchy!=first_hierarchy||
+     !dispatch(tuple_for(41U,43U,{0.7,0.5,2.8})))return false;
+  if(encode_metal_gpu_hierarchy_live_selection([queue commandBuffer],pipeline,
+      selection,tuple_for(47U,43U,{0.5,0.5,3.0}))||
+     selection.stale_rejected!=1U)return false;
+  if(!configure_metal_gpu_hierarchy_live_selection(device,selection,second,53U,9U)||
+     selection.source_revision!=47U||selection.field_revision!=53U||
+     selection.bootstrap_scene_generation!=9U||selection.submitted!=0U||
+     !dispatch(tuple_for(47U,53U,{1.1,0.5,2.6})))return false;
+  const bool passed=selection.accepted==1U&&selection.completed==1U&&
+      selection.failed==0U&&selection.stale_rejected==0U;
+  std::printf("{\"event\":\"metal_gpu_live_selection_state\","
+              "\"revision_replaced\":true,\"persistent\":true,"
+              "\"accepted\":%llu,\"failed\":%llu,\"passed\":%s}\n",
+      static_cast<unsigned long long>(selection.accepted),
+      static_cast<unsigned long long>(selection.failed),passed?"true":"false");
+  return passed;
 }
 
 // P7a2's hardware gate uses no legacy terrain-cell payload and deliberately
@@ -4749,6 +4993,8 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-atmosphere-compiler-check")==0;
   const bool gpu_lod_selector_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-lod-selector-smoke-test")==0;
+  const bool gpu_live_selection_state_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-live-selection-state-smoke-test")==0;
   const bool gpu_terrain_extract_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
   const bool gpu_terrain_classify_smoke_test=argc==2&&
@@ -4985,6 +5231,18 @@ int main(int argc,char** argv) {
     else { std::fprintf(stderr,"TETWORLD_METAL_GPU_TERRAIN_RENDERER must be 0 or 1\\n");return 2; }
   }
   if(gpu_terrain_performance_smoke_test)gpu_terrain_renderer_selected=true;
+  // P7e2 is intentionally a separate opt-in route from P8's CPU-source-fed
+  // mesh emission.  It freezes the completed bootstrap front and drives only
+  // persistent GPU hierarchy selection while P7e3 closure is still pending.
+  const bool metal_gpu_terrain_live_selection=
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_LIVE_SELECTION")!=nullptr;
+  if(metal_gpu_terrain_live_selection&&
+     (gpu_terrain_renderer_selected||metal_gpu_terrain_native_diagnostic||
+      metal_gpu_terrain_diagnostic)){
+    std::fprintf(stderr,"TETWORLD_METAL_GPU_TERRAIN_LIVE_SELECTION cannot be "
+                        "combined with CPU-source GPU mesh emission diagnostics\n");
+    return 2;
+  }
   // P8c: MetalFX writes the final result directly to a non-framebuffer-only
   // drawable, avoiding the persistent output texture and presentation draw.
   // Keep the former path as an explicit paired qualification control.
@@ -5075,7 +5333,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_live_selection_state_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -5087,6 +5345,7 @@ int main(int argc,char** argv) {
                         "--metal-terrain-ray-oracle-smoke-test|--metal-smoke-test|"
                         "--metal-atmosphere-compiler-check|"
                         "--metal-gpu-lod-selector-smoke-test|"
+                        "--metal-gpu-live-selection-state-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
                         "--metal-gpu-terrain-classify-smoke-test|"
                         "--metal-gpu-terrain-triangle-smoke-test|"
@@ -5150,6 +5409,7 @@ int main(int argc,char** argv) {
     id<MTLComputePipelineState> gpu_terrain_commit_validate_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_commit_copy_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_commit_publish_pipeline=nil;
+    id<MTLComputePipelineState> gpu_lod_live_selection_pipeline=nil;
     if(metal_gpu_terrain_diagnostic){
       const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
           "gpu_terrain_extract.comp.metal";
@@ -5159,7 +5419,8 @@ int main(int argc,char** argv) {
           [device newComputePipelineStateWithFunction:[extract_library newFunctionWithName:@"main0"] error:&extract_error];
       if(gpu_terrain_extract_pipeline==nil)return 1;
     }
-    if(metal_gpu_terrain_native_diagnostic||gpu_terrain_renderer_selected){
+    if(metal_gpu_terrain_native_diagnostic||gpu_terrain_renderer_selected||
+       metal_gpu_terrain_live_selection){
       const auto make_pipeline=[&](const char* name)->id<MTLComputePipelineState>{
         const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
         id<MTLLibrary> shader_library=make_file_shader_library(device,path.string().c_str());
@@ -5180,6 +5441,8 @@ int main(int argc,char** argv) {
       gpu_terrain_commit_validate_pipeline=make_pipeline("gpu_terrain_commit_validate.comp.metal");
       gpu_terrain_commit_copy_pipeline=make_pipeline("gpu_terrain_commit_copy.comp.metal");
       gpu_terrain_commit_publish_pipeline=make_pipeline("gpu_terrain_commit_publish.comp.metal");
+      if(metal_gpu_terrain_live_selection)
+        gpu_lod_live_selection_pipeline=make_pipeline("gpu_lod.comp.metal");
       if(gpu_terrain_classify_pipeline==nil||gpu_terrain_count_pipeline==nil||
          gpu_terrain_scan_pipeline==nil||gpu_terrain_finalize_pipeline==nil||
          gpu_terrain_scatter_pipeline==nil||
@@ -5189,7 +5452,8 @@ int main(int argc,char** argv) {
          gpu_terrain_project_pipeline==nil||gpu_terrain_draw_pipeline==nil||
          gpu_terrain_commit_validate_pipeline==nil||
          gpu_terrain_commit_copy_pipeline==nil||
-         gpu_terrain_commit_publish_pipeline==nil)return 1;
+         gpu_terrain_commit_publish_pipeline==nil||
+         (metal_gpu_terrain_live_selection&&gpu_lod_live_selection_pipeline==nil))return 1;
     }
     const bool metal_ray_tracing_supported=[](id<MTLDevice> candidate){
       if(@available(macOS 11.0,*))return candidate.supportsRaytracing;
@@ -5206,6 +5470,8 @@ int main(int argc,char** argv) {
     if(atmosphere_lut_smoke_test)return run_atmosphere_lut_smoke_test(device);
     if(gpu_lod_selector_smoke_test)
       return run_metal_gpu_lod_selector_smoke_test(device)?0:1;
+    if(gpu_live_selection_state_smoke_test)
+      return run_metal_gpu_live_selection_state_smoke_test(device)?0:1;
     if(gpu_terrain_extract_smoke_test)
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
     if(gpu_terrain_classify_smoke_test)
@@ -5492,6 +5758,7 @@ int main(int argc,char** argv) {
     MetalGpuTerrainPacketUpload gpu_terrain_packet_upload;
     std::uint64_t gpu_terrain_native_slot_cursor{};
     bool gpu_terrain_renderer_available{};
+    MetalGpuHierarchyLiveSelection gpu_hierarchy_live_selection;
     auto gpu_terrain_counters=
         std::make_shared<MetalGpuTerrainDiagnosticCounters>();
     std::size_t peak_terrain_display_transition_bytes{};
@@ -6241,7 +6508,72 @@ int main(int argc,char** argv) {
           runtime=runtime_startup.get();
           runtime_started_this_frame=true;
         }
+        std::optional<tetra::GpuHierarchySelectionTuple>
+            gpu_hierarchy_live_selection_tuple;
         if(runtime){
+          if(metal_gpu_terrain_live_selection){
+            // This is the P7e2 cutover boundary. The runtime's completed
+            // bootstrap publication supplies immutable hierarchy storage once,
+            // but camera motion below may not call set_camera(), update(),
+            // CPU surface construction, or P6 packet creation.
+            const auto published_view=runtime->published_view_identity();
+            if(!terrain_front_coordinator.state().current_view.valid()&&
+               published_view.valid())
+              terrain_front_coordinator=
+                  tetra_viewer::TerrainFrontCoordinator(published_view);
+            const auto* directory=runtime->world_cut_directory();
+            const auto field_revision=published_view.valid()?
+                published_view.field_revision:0U;
+            if(directory!=nullptr&&field_revision!=0U){
+              try {
+                if(configure_metal_gpu_hierarchy_live_selection(device,
+                    gpu_hierarchy_live_selection,
+                    tetra::make_gpu_hierarchy_snapshot(*directory,field_revision),
+                    field_revision,runtime->diagnostics().scene_generation)){
+                  const auto& profile=runtime->profile();
+                  const auto& field=runtime->field();
+                  auto selector_camera=camera;
+                  selector_camera.position=profile.domain.to_root(camera.position);
+                  const auto selector_field_centre=
+                      profile.domain.to_root(field.centre);
+                  gpu_hierarchy_live_selection_tuple=
+                      tetra::make_gpu_hierarchy_selection_tuple({
+                        .camera=selector_camera,.render_origin={},
+                        .field_centre=selector_field_centre,
+                        .planet_radius=field.terrain.planet_radius/
+                            profile.domain.world_extent,
+                        .terrain_height_bound=tetra::terrain_height_magnitude_bound(field)/
+                            profile.domain.world_extent,
+                        .field_lipschitz=tetra::implicit_field_lipschitz_bound(field)*
+                            profile.domain.world_extent,
+                        .edge_threshold=profile.pixel_threshold,
+                        .field_threshold=profile.field_error_pixel_threshold,
+                        .limb_threshold=profile.limb_error_pixel_threshold,
+                        .merge_ratio=profile.lod_merge_threshold_ratio,
+                        .source_revision=directory->revision(),
+                        .field_revision=field_revision});
+                }
+              }catch(const std::exception& error){
+                std::fprintf(stderr,"GPU live hierarchy selection disabled: %s\n",
+                             error.what());
+              }
+            }
+            runtime_camera_interactive=false;
+            force_runtime_camera=false;
+            diagnostics=runtime->diagnostics();
+            if(gpu_hierarchy_live_selection.ready()&&
+               diagnostics.scene_generation!=
+                   gpu_hierarchy_live_selection.bootstrap_scene_generation)
+              ++gpu_hierarchy_live_selection.cpu_generation_violations;
+            // The bootstrap CPU front is deliberately rendered unchanged
+            // until P7e3 can turn these marks into a conforming owner stream.
+            // Publishing this one front is permitted bootstrap work; later
+            // camera frames above do not ask the runtime for another scene.
+            if(diagnostics.scene_generation!=0U&&
+               (diagnostics.scene_generation!=uploaded_generation||
+                !terrain_display_front.ready()))
+              static_cast<void>(publish_terrain_display({},std::nullopt));
+          }else{
           runtime->set_gpu_terrain_extraction_diagnostic(
               metal_gpu_terrain_diagnostic||metal_gpu_terrain_native_diagnostic||
               gpu_terrain_renderer_selected);
@@ -6420,6 +6752,7 @@ int main(int argc,char** argv) {
             // Preserve the exact front after the event. This is test-only;
             // normal interactive preview reacquisition remains unchanged.
             preview_enabled=false;
+          }
           }
         }
         single_step=false;
@@ -7314,6 +7647,10 @@ int main(int argc,char** argv) {
             ImGui::Text("GPU terrain: %s",gpu_terrain_renderer_available?
                 "GPU-emitted mesh; CPU selection/closure still active":
                 "unavailable; retaining CPU front");
+          if(metal_gpu_terrain_live_selection)
+            ImGui::Text("GPU selection marks %llu/%llu; CPU bootstrap front frozen",
+                static_cast<unsigned long long>(gpu_hierarchy_live_selection.accepted),
+                static_cast<unsigned long long>(gpu_hierarchy_live_selection.submitted));
           ImGui::Text("Resident %.1f MiB   cache %.1f MiB",
               static_cast<double>(diagnostics.resident_bytes)/(1024.0*1024.0),
               static_cast<double>(diagnostics.retained_cache_bytes)/
@@ -7392,6 +7729,15 @@ int main(int argc,char** argv) {
                                    std::memory_order_release);
           }];
           gpu_terrain_active_front.seed_pending=false;
+        }
+        if(gpu_hierarchy_live_selection_tuple&&
+           gpu_lod_live_selection_pipeline!=nil){
+          retire_metal_gpu_hierarchy_live_selection(
+              gpu_hierarchy_live_selection);
+          static_cast<void>(encode_metal_gpu_hierarchy_live_selection(
+              command_buffer,gpu_lod_live_selection_pipeline,
+              gpu_hierarchy_live_selection,
+              *gpu_hierarchy_live_selection_tuple));
         }
         if(metal_gpu_terrain_diagnostic&&gpu_terrain_extract_pipeline!=nil&&runtime&&
            !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
@@ -9105,6 +9451,12 @@ int main(int argc,char** argv) {
                 gpu_terrain_counters->overflow.load(std::memory_order_acquire)==0U&&
                   gpu_terrain_counters->cpu_front_violations.load(
                     std::memory_order_acquire)==0U))&&
+            (!metal_gpu_terrain_live_selection||
+             (gpu_hierarchy_live_selection.submitted!=0U&&
+              gpu_hierarchy_live_selection.completed!=0U&&
+              gpu_hierarchy_live_selection.accepted!=0U&&
+              gpu_hierarchy_live_selection.failed==0U&&
+              gpu_hierarchy_live_selection.cpu_generation_violations==0U))&&
             (!gpu_terrain_renderer_selected||
              (gpu_terrain_renderer_available&&gpu_terrain_active_front.promoted&&
               terrain_display_front.exact_indirect_arguments==
@@ -10060,9 +10412,18 @@ int main(int argc,char** argv) {
                   (dispatched!=0U&&completed!=0U&&accepted!=0U&&
                    stale_rejected!=0U&&failed==0U&&overflow==0U&&
                    cpu_front_frames!=0U&&cpu_front_violations==0U);
+              const bool gpu_live_selection_passed=
+                  !metal_gpu_terrain_live_selection||
+                  (gpu_hierarchy_live_selection.submitted>=2U&&
+                   gpu_hierarchy_live_selection.completed>=2U&&
+                   gpu_hierarchy_live_selection.accepted>=2U&&
+                   gpu_hierarchy_live_selection.failed==0U&&
+                   gpu_hierarchy_live_selection.cpu_generation_violations==0U);
               const bool passed=distance>0.001&&
-                  published_distance<1.0e-8&&diagnostics.converged&&
-                  !diagnostics.busy&&!runtime_camera_interactive&&gpu_slots_passed&&
+                  (metal_gpu_terrain_live_selection||published_distance<1.0e-8)&&
+                  diagnostics.converged&&!diagnostics.busy&&
+                  !runtime_camera_interactive&&gpu_slots_passed&&
+                  gpu_live_selection_passed&&
                   (!metal_gpu_terrain_private_front_qualification||
                    (gpu_terrain_renderer_available&&
                     gpu_terrain_active_front.promoted&&
@@ -10078,6 +10439,10 @@ int main(int argc,char** argv) {
                           "\"stale_rejected\":%llu,\"failed\":%llu,"
                           "\"overflow\":%llu,\"cpu_front_frames\":%llu,"
                           "\"cpu_front_violations\":%llu},"
+                          "\"gpu_live_selection\":{\"enabled\":%s,"
+                          "\"submitted\":%llu,\"completed\":%llu,"
+                          "\"accepted\":%llu,\"failed\":%llu,"
+                          "\"cpu_generation_violations\":%llu},"
                           "\"passed\":%s}\n",
                           motion_rendered_frames,distance,
                           published_distance,scene_vertex_count/3U,
@@ -10089,6 +10454,17 @@ int main(int argc,char** argv) {
                           static_cast<unsigned long long>(overflow),
                           static_cast<unsigned long long>(cpu_front_frames),
                           static_cast<unsigned long long>(cpu_front_violations),
+                          metal_gpu_terrain_live_selection?"true":"false",
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.submitted),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.completed),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.accepted),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.failed),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.cpu_generation_violations),
                           passed?"true":"false");
               if(!passed)result=1;
             }else{
@@ -10109,6 +10485,10 @@ int main(int argc,char** argv) {
                           "\"scene_generation\":%llu,\"triangles\":%zu,"
                           "\"gpu_renderer_requested\":%s,"
                           "\"gpu_renderer_available\":%s,"
+                          "\"gpu_live_selection\":{\"enabled\":%s,"
+                          "\"submitted\":%llu,\"completed\":%llu,"
+                          "\"accepted\":%llu,\"failed\":%llu,"
+                          "\"cpu_generation_violations\":%llu},"
                           "\"gpu_slots\":{\"dispatched\":%llu,"
                           "\"completed\":%llu,\"accepted\":%llu,"
                           "\"failed\":%llu,\"overflow\":%llu,"
@@ -10118,6 +10498,17 @@ int main(int argc,char** argv) {
                           scene_vertex_count/3U,
                           gpu_terrain_renderer_selected?"true":"false",
                           gpu_terrain_renderer_available?"true":"false",
+                          metal_gpu_terrain_live_selection?"true":"false",
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.submitted),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.completed),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.accepted),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.failed),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.cpu_generation_violations),
                           static_cast<unsigned long long>(dispatched),
                           static_cast<unsigned long long>(completed),
                           static_cast<unsigned long long>(accepted),

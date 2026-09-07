@@ -6,6 +6,7 @@
 
 ## Recent Test Runs
 
+- 2026-09-07 17:30 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh final P7e2 gate passed all 523 tests; persistent Metal hierarchy marks followed the camera with zero post-bootstrap CPU-generation violations, while no GPU conforming owner stream or GPU terrain front was claimed.
 - 2026-09-07 17:01 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh final P7e1 gate passed all 520 tests; normal Metal launch reports CPU terrain generation, while the separate GPU-mesh-emission qualification remains opt-in and CPU-source-fed.
 - 2026-09-07 16:46 CEST | pass | mode: Release, native Metal | command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU mesh emission defaults to CPU terrain generation$'` | failures: none | notes: ordinary launch reported `gpu_renderer_requested:false`; GPU mesh emission remains opt-in.
 - 2026-09-07 16:44 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh baseline passed all 519 tests before correcting GPU-route provenance and its default selection.
