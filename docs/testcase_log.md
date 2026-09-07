@@ -6,6 +6,7 @@
 
 ## Recent Test Runs
 
+- 2026-09-07 19:25 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: P7e3b2 full gate passed all 524 tests; live GPU-selection camera test completed in 300.35 s with no failure.
 - 2026-09-07 18:56 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh full gate passed all 524 tests. The P8 CPU-seeded owner-direct diagnostic passed its documented 60 ms p95 regression ceiling; P7e4 remains responsible for a comparative GPU-resident camera-to-front improvement gate.
 - 2026-09-07 18:38 CEST | pass, isolated rerun | mode: Release, native Metal | command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain owner-direct performance qualification$'` | failures: none | notes: freshly rebuilt isolated P8c2 qualification passed in 51.88 s after the full-suite p95 outlier below; this confirms the failure is an environment-sensitive performance outlier, not a deterministic functional failure.
 - 2026-09-07 18:20 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: metal GPU terrain owner-direct performance qualification | notes: 523/524 tests passed; the CPU-source P8 owner-direct diagnostic measured 14.7267 ms median / 58.8695 ms p95 generation against its 20 ms limit while frame p95 was 4.9902 ms and all correctness/provenance counters were clean. Reproduce isolated before treating it as a code regression.

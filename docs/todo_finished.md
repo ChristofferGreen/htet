@@ -534,6 +534,12 @@
 
 ## 2026-09-07
 
+- [x] **P7e3b2 — Encode bounded hierarchy edge incidence.** Immutable exact
+  edge CSR ranges and per-record bounded ancestor-edge lists now accompany the
+  hierarchy snapshot and are retained in Metal live-selection state. Validation
+  rejects malformed ranges, nonreciprocal incidences, wrong exact edge keys,
+  and bad ancestor walks; focused and full 524-test Release gates passed.
+
 - [x] **P7e3b1 — Encode exact hierarchy face topology.** The immutable
   revision-bound GPU hierarchy now provides parent-record links and a 32-byte
   one-hop, same-depth face-incidence sidecar per tetrahedron. It derives exact

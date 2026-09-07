@@ -1512,6 +1512,33 @@ GpuHierarchySnapshot make_gpu_hierarchy_snapshot(
     result.face_incidence[second.first].neighbours[second.second]=first.first;
     result.face_incidence[second.first].neighbour_faces[second.second]=first.second;
   }
+  std::map<WorldEdgeKey,std::vector<GpuHierarchyEdgeIncidence>> edges;
+  result.edge_topology.resize(result.records.size());
+  for(std::uint32_t index=0U;index<result.records.size();++index) {
+    const auto vertices=world_tetrahedron_vertex_keys(
+        gpu_hierarchy_address_from_lanes(result.records[index].address));
+    for(std::uint32_t edge=0U;edge<tetrahedron_edges.size();++edge)
+      edges[world_edge_key(vertices[tetrahedron_edges[edge][0U]],
+          vertices[tetrahedron_edges[edge][1U]])].push_back({index,edge});
+  }
+  for(const auto& [edge,incidences]:edges) {
+    (void)edge;
+    const auto range=static_cast<std::uint32_t>(result.edge_ranges.size());
+    result.edge_ranges.push_back({static_cast<std::uint32_t>(result.edge_incidence.size()),
+                                  static_cast<std::uint32_t>(incidences.size())});
+    result.edge_incidence.insert(result.edge_incidence.end(),incidences.begin(),incidences.end());
+    for(const auto incidence:incidences)result.edge_topology[incidence.record].edge_ranges[incidence.local_edge]=range;
+  }
+  for(std::uint32_t index=0U;index<result.records.size();++index) {
+    auto& topology=result.edge_topology[index];
+    topology.ancestor_edge_first=static_cast<std::uint32_t>(result.ancestor_edge_ranges.size());
+    for(auto parent=result.parent_records[index];parent!=gpu_hierarchy_invalid_index;
+        parent=result.parent_records[parent])
+      result.ancestor_edge_ranges.insert(result.ancestor_edge_ranges.end(),
+          result.edge_topology[parent].edge_ranges.begin(),result.edge_topology[parent].edge_ranges.end());
+    topology.ancestor_edge_count=static_cast<std::uint32_t>(result.ancestor_edge_ranges.size())-
+        topology.ancestor_edge_first;
+  }
   result.selection_records.reserve(result.records.size());
   for(const auto& record:result.records)
     result.selection_records.push_back(gpu_hierarchy_selection_record(record.address));
@@ -1530,6 +1557,7 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
      snapshot.canonical_record_indices.size()!=snapshot.records.size()||
      snapshot.parent_records.size()!=snapshot.records.size()||
      snapshot.face_incidence.size()!=snapshot.records.size()||
+     snapshot.edge_topology.size()!=snapshot.records.size()||
      snapshot.selection_records.size()!=snapshot.records.size()||
      header.block_generations==0U||header.block_generations>maximum_world_red_depth)
     throw std::invalid_argument("GPU hierarchy snapshot header is malformed");
@@ -1603,6 +1631,27 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
          gpu_hierarchy_address_from_lanes(snapshot.records[parent].address)!=
              address.parent())))
       throw std::invalid_argument("GPU hierarchy parent sidecar is malformed");
+    const auto& edge_topology=snapshot.edge_topology[index];
+    if(edge_topology.ancestor_edge_first>snapshot.ancestor_edge_ranges.size()||
+       edge_topology.ancestor_edge_count>snapshot.ancestor_edge_ranges.size()-edge_topology.ancestor_edge_first)
+      throw std::invalid_argument("GPU hierarchy ancestor-edge sidecar is malformed");
+    for(std::uint32_t edge=0U;edge<tetrahedron_edges.size();++edge) {
+      const auto range_index=edge_topology.edge_ranges[edge];
+      if(range_index>=snapshot.edge_ranges.size())throw std::invalid_argument("GPU hierarchy edge range is malformed");
+      const auto range=snapshot.edge_ranges[range_index];
+      if(range.first>snapshot.edge_incidence.size()||range.count>snapshot.edge_incidence.size()-range.first)
+        throw std::invalid_argument("GPU hierarchy edge incidence is malformed");
+    }
+    std::vector<std::uint32_t> expected_ancestor_ranges;
+    for(auto ancestor=parent;ancestor!=gpu_hierarchy_invalid_index;
+        ancestor=snapshot.parent_records[ancestor])
+      expected_ancestor_ranges.insert(expected_ancestor_ranges.end(),
+          snapshot.edge_topology[ancestor].edge_ranges.begin(),
+          snapshot.edge_topology[ancestor].edge_ranges.end());
+    if(expected_ancestor_ranges.size()!=edge_topology.ancestor_edge_count||
+       !std::equal(expected_ancestor_ranges.begin(),expected_ancestor_ranges.end(),
+           snapshot.ancestor_edge_ranges.begin()+edge_topology.ancestor_edge_first))
+      throw std::invalid_argument("GPU hierarchy ancestor-edge traversal is malformed");
     const auto vertices=world_tetrahedron_vertex_keys(address);
     for(std::uint32_t face=0U;face<tetrahedron_faces.size();++face) {
       const auto neighbour=snapshot.face_incidence[index].neighbours[face];
@@ -1646,6 +1695,30 @@ void validate_gpu_hierarchy_snapshot(const GpuHierarchySnapshot& snapshot) {
         throw std::invalid_argument("GPU hierarchy child index is malformed");
       if(snapshot.records[child_index].address!=gpu_hierarchy_child(record.address,child))
         throw std::invalid_argument("GPU hierarchy child address is malformed");
+    }
+  }
+  for(std::uint32_t range_index=0U;range_index<snapshot.edge_ranges.size();++range_index) {
+    const auto range=snapshot.edge_ranges[range_index];
+    if(range.count==0U||range.first>snapshot.edge_incidence.size()||
+       range.count>snapshot.edge_incidence.size()-range.first)
+      throw std::invalid_argument("GPU hierarchy edge range is malformed");
+    const auto first=snapshot.edge_incidence[range.first];
+    if(first.record>=snapshot.records.size()||first.local_edge>=tetrahedron_edges.size())
+      throw std::invalid_argument("GPU hierarchy edge incidence is malformed");
+    const auto first_vertices=world_tetrahedron_vertex_keys(
+        gpu_hierarchy_address_from_lanes(snapshot.records[first.record].address));
+    const auto key=world_edge_key(first_vertices[tetrahedron_edges[first.local_edge][0U]],
+        first_vertices[tetrahedron_edges[first.local_edge][1U]]);
+    for(std::uint32_t offset=0U;offset<range.count;++offset) {
+      const auto incidence=snapshot.edge_incidence[range.first+offset];
+      if(incidence.record>=snapshot.records.size()||incidence.local_edge>=tetrahedron_edges.size()||
+         snapshot.edge_topology[incidence.record].edge_ranges[incidence.local_edge]!=range_index)
+        throw std::invalid_argument("GPU hierarchy edge incidence is not reciprocal");
+      const auto vertices=world_tetrahedron_vertex_keys(gpu_hierarchy_address_from_lanes(
+          snapshot.records[incidence.record].address));
+      if(world_edge_key(vertices[tetrahedron_edges[incidence.local_edge][0U]],
+          vertices[tetrahedron_edges[incidence.local_edge][1U]])!=key)
+        throw std::invalid_argument("GPU hierarchy edge incidence has the wrong edge");
     }
   }
   std::vector<bool> listed_owner(snapshot.records.size());

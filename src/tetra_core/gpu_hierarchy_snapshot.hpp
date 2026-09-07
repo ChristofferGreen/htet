@@ -443,6 +443,15 @@ struct alignas(16) GpuHierarchyFaceIncidenceRecord {
 static_assert(sizeof(GpuHierarchyFaceIncidenceRecord)==32U);
 static_assert(alignof(GpuHierarchyFaceIncidenceRecord)==16U);
 
+struct GpuHierarchyEdgeRange { std::uint32_t first{}; std::uint32_t count{}; };
+struct GpuHierarchyEdgeIncidence { std::uint32_t record{}; std::uint32_t local_edge{}; };
+struct alignas(16) GpuHierarchyEdgeTopologyRecord {
+  std::array<std::uint32_t,6> edge_ranges{};
+  std::uint32_t ancestor_edge_first{};
+  std::uint32_t ancestor_edge_count{};
+};
+static_assert(sizeof(GpuHierarchyEdgeTopologyRecord)==32U);
+
 // Camera- and field-dependent selector inputs are kept out of immutable
 // topology. The current selector is root-normalized to match its immutable
 // sidecars; render-origin-relative positions belong to generated geometry.
@@ -498,6 +507,12 @@ struct GpuHierarchySnapshot {
   // revision-bound device sidecars for P7e3's conforming-cut traversal.
   std::vector<std::uint32_t> parent_records;
   std::vector<GpuHierarchyFaceIncidenceRecord> face_incidence;
+  // Exact-edge CSR plus the bounded union of every ancestor's six edge ranges.
+  // This is immutable topology: no selected owners or closure masks appear here.
+  std::vector<GpuHierarchyEdgeRange> edge_ranges;
+  std::vector<GpuHierarchyEdgeIncidence> edge_incidence;
+  std::vector<GpuHierarchyEdgeTopologyRecord> edge_topology;
+  std::vector<std::uint32_t> ancestor_edge_ranges;
   // One immutable normalized-space geometry sidecar per hierarchy record.
   // P4 selector inputs add field bounds and camera-dependent parameters in
   // separate packets; they must not overload topology or draw buffers.

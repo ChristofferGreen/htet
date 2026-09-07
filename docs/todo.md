@@ -362,10 +362,6 @@ infrastructure. They do not close P7 because CPU still performs selection,
 closure, source-packet construction, and the initial mesh seed. CPU terrain
 generation remains the normal launch default until every P7e leaf is complete.
 
-- [ ] **P7e3b2 — Encode bounded hierarchy edge incidence.** Add the compact
-      immutable edge ranges and cross-depth traversal metadata P7e3c needs
-      to close the selected frontier through face and edge fixed points. It
-      must remain revision-bound topology input, never a CPU closure result.
 - [ ] **P7e3c — Close the device render cut.** Consume P7e3a's canonical
       selected frontier and P7e3b's incidence to derive canonical
       owner/green-mask records through bounded face/edge fixed points. Byte-

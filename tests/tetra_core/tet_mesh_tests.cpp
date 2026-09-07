@@ -5917,6 +5917,12 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
       REQUIRE(parent<snapshot.records.size());
       CHECK(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[parent].address)==
             address.parent());
+      CHECK(snapshot.edge_topology[record].ancestor_edge_count==address.red_depth()*6U);
+    }
+    for(std::uint32_t edge=0U;edge<6U;++edge) {
+      const auto range=snapshot.edge_ranges[snapshot.edge_topology[record].edge_ranges[edge]];
+      CHECK(range.count!=0U);
+      CHECK(range.first+range.count<=snapshot.edge_incidence.size());
     }
   }
   for(std::uint8_t root=0U;root<tetra::bcc_root_tetrahedron_count;++root) {
@@ -5995,6 +6001,10 @@ TEST_CASE("GPU hierarchy traversal is deterministic and conservatively terminate
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
   malformed=snapshot;
   malformed.face_incidence[root_records[0U]].neighbours[0U]=root_records[0U];
+  CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
+  malformed=snapshot;
+  malformed.edge_topology[root_records[0U]].edge_ranges[0U]=
+      static_cast<std::uint32_t>(malformed.edge_ranges.size());
   CHECK_THROWS_AS(tetra::validate_gpu_hierarchy_snapshot(malformed),std::invalid_argument);
 }
 
