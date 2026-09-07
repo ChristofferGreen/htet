@@ -65,10 +65,10 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
 
 ### gpu-terrain-owner-direct-publication
-- Updated: 2026-09-06
+- Updated: 2026-09-07
 - Tags: metal, gpu, terrain, bcc, private-memory
-- Fact: The opt-in Metal mesh-emission route uses owner-major count, a three-level deterministic scan, and direct `SceneVertex` emission from a CPU-built P6 owner packet, avoiding its GPU-side root, compact-triangle, and projected intermediates only.
-- Evidence: A fresh 512-test Release gate completed 4,004 selected private GPU flights without failure, overflow, or CPU-front violations; inspection of the runtime confirms CPU selection, closure, and P6 construction remain upstream.
+- Fact: The opt-in Metal mesh-emission route uses owner-major count, a three-level deterministic scan, and direct `SceneVertex` emission from a CPU-built P6 owner packet; its variable device p95 is guarded only by a 60 ms regression ceiling and cannot prove P7e GPU-generation performance.
+- Evidence: A fresh 524-test Release gate completed the CPU-seeded owner-direct qualification under the 60 ms ceiling with no failure, overflow, or CPU-front violations; inspection of the runtime confirms CPU selection, closure, and P6 construction remain upstream.
 
 ### gpu-terrain-private-publication
 - Updated: 2026-09-06

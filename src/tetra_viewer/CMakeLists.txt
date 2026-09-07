@@ -491,6 +491,16 @@ if(APPLE AND TETRA_BUILD_METAL)
   set_tests_properties("metal GPU hierarchy frontier is canonical and bounded"
     PROPERTIES PASS_REGULAR_EXPRESSION
       "\\\"canonical\\\":true,\\\"overflow\\\":true,\\\"passed\\\":true")
+  # P8c2 collects GPU counter evidence for the owner-direct generator and
+  # completed command-buffer frame interval on the selected private front.
+  # Keep this independent performance qualification ahead of the long P8b
+  # private-front motion stress test: the latter intentionally leaves a large
+  # graphics workload immediately before process exit and distorted this
+  # test's device p95 despite a clean isolated run.
+  add_test(NAME "metal GPU terrain owner-direct performance qualification"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-performance-smoke-test)
   # P8b drives the selected renderer through the production moving-camera
   # loop.  It verifies the selected, complete private display front across
   # camera motion without enabling legacy candidate-payload readback. Native
@@ -501,12 +511,6 @@ if(APPLE AND TETRA_BUILD_METAL)
       TETWORLD_METAL_GPU_TERRAIN_PRIVATE_FRONT_QUALIFICATION=1
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
-  # P8c2 collects GPU counter evidence for the owner-direct generator and
-  # completed command-buffer frame interval on the selected private front.
-  add_test(NAME "metal GPU terrain owner-direct performance qualification"
-    COMMAND ${CMAKE_COMMAND} -E env
-      TETWORLD_METAL_BACKGROUND=1
-      $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-performance-smoke-test)
   add_test(NAME "metal GPU conforming volume split closure parity"
     COMMAND $<TARGET_FILE:tetra_world_metal>
       --metal-gpu-volume-split-closure-smoke-test)
