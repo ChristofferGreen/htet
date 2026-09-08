@@ -1,0 +1,206 @@
+#version 450
+
+// P7e4a1's sparse restricted-green closure. The canonical compact active
+// list is the work queue: every data-parallel phase is dispatched through the
+// grid derived from its device-written header. `queue` is private, persistent
+// round state, never a CPU-polled counter:
+// [0] changed, [1] completed rounds, [2] failure bits, [3] quiesced,
+// [4] device-zeroed round-grid observations.
+// Output has a compact-list header followed by one green mask per canonical
+// active-list entry. P8 still owns turning these masks into terrain owners.
+layout(std430,binding=0) readonly buffer ActiveList { uint words[]; } active_list;
+layout(std430,binding=1) readonly buffer CanonicalRanks { uint values[]; } ranks;
+// Six edge-range IDs followed by ancestor-range first/count per record.
+layout(std430,binding=2) readonly buffer EdgeTopology { uint words[]; } topology;
+layout(std430,binding=3) readonly buffer AncestorRanges { uint values[]; } ancestors;
+layout(std430,binding=4) buffer EdgeMarks { uint values[]; } edge_marks;
+layout(std430,binding=5) buffer GreenQueue { uint words[]; } queue;
+// Padded MTLDispatchThreadgroupsIndirectArguments record.
+layout(std430,binding=6) buffer DispatchArgs { uint words[]; } dispatch_args;
+layout(std430,binding=7) buffer GreenMasks { uint words[]; } masks;
+
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint edge_range_count;
+  uint ancestor_count;
+  uint round_limit;
+  // 0 bootstrap, 1 clear, 2 seed, 3 clear-round, 4 propagate,
+  // 5 finish-round, 6 emit, 7 fixture-only forced budget latch, 8 rearm emit.
+  // Only
+  // 0/3/5/7 are scalar controllers.
+  uint phase;
+} P;
+layout(local_size_x=256) in;
+
+const uint failure_header=1u;
+const uint failure_record=2u;
+const uint failure_topology=4u;
+const uint failure_order=8u;
+const uint failure_budget=16u;
+
+void fail(uint reason) { atomicOr(queue.words[2u],reason); }
+void zero_grid() {
+  dispatch_args.words[0u]=0u; dispatch_args.words[1u]=1u;
+  dispatch_args.words[2u]=1u; dispatch_args.words[3u]=0u;
+}
+
+bool active_contains(uint record,uint count) {
+  // The list was radix-canonicalized by immutable record rank. This binary
+  // search deliberately survives snapshot record-layout changes.
+  uint lo=0u,hi=count; const uint rank=ranks.values[record];
+  while(lo<hi) {
+    const uint mid=lo+(hi-lo)/2u,other=active_list.words[4u+mid];
+    if(other>=P.record_count) { fail(failure_record); return false; }
+    if(ranks.values[other]<rank)lo=mid+1u; else hi=mid;
+  }
+  return lo<count&&active_list.words[4u+lo]==record;
+}
+
+bool valid_record(uint index,out uint record) {
+  record=active_list.words[4u+index];
+  if(record>=P.record_count) { fail(failure_record); return false; }
+  if(index>0u) {
+    const uint previous=active_list.words[4u+index-1u];
+    if(previous>=P.record_count||ranks.values[previous]>=ranks.values[record]) {
+      fail(failure_order); return false;
+    }
+  }
+  // Enforce canonical membership too: duplicates and stale ping/pong lists
+  // fail before they can influence a green mask.
+  return active_contains(record,active_list.words[0u]);
+}
+
+bool valid_topology(uint record,out uint first,out uint count) {
+  const uint base=record*8u;
+  for(uint edge=0u;edge<6u;++edge)
+    if(topology.words[base+edge]>=P.edge_range_count) {
+      fail(failure_topology); return false;
+    }
+  first=topology.words[base+6u]; count=topology.words[base+7u];
+  if(first>P.ancestor_count||count>P.ancestor_count-first) {
+    fail(failure_topology); return false;
+  }
+  return true;
+}
+
+uint allowed_green_superset(uint required) {
+  const uint allowed[15]=uint[15](0u,1u,2u,4u,8u,16u,32u,33u,18u,12u,
+      11u,21u,38u,56u,63u);
+  uint best=63u;
+  for(uint i=0u;i<15u;++i) {
+    const uint candidate=allowed[i];
+    if((candidate&required)!=required)continue;
+    const uint bits=bitCount(candidate),best_bits=bitCount(best);
+    if(bits<best_bits||(bits==best_bits&&candidate<best))best=candidate;
+  }
+  return best;
+}
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(P.phase==0u) {
+    if(index!=0u)return;
+    // Red phase 6 latches this dispatch record once a preceding canonical
+    // red round was quiescent.  Keep the already-computed masks intact and
+    // turn every later data-parallel green phase into a zero-grid no-op.
+    if(dispatch_args.words[3u]!=0u) {
+      dispatch_args.words[0u]=0u; dispatch_args.words[1u]=1u;
+      dispatch_args.words[2u]=1u; return;
+    }
+    queue.words[0u]=0u; queue.words[1u]=0u; queue.words[2u]=0u; queue.words[3u]=0u; queue.words[4u]=0u;
+    masks.words[0u]=0u; masks.words[1u]=active_list.words[1u]; masks.words[2u]=0u; masks.words[3u]=0u;
+    const uint count=active_list.words[0u];
+    if(active_list.words[2u]!=0u||count==0u||count>active_list.words[1u]) {
+      fail(failure_header); zero_grid(); return;
+    }
+    dispatch_args.words[0u]=(count+255u)/256u; dispatch_args.words[1u]=1u;
+    dispatch_args.words[2u]=1u; dispatch_args.words[3u]=0u;
+    return;
+  }
+  const uint count=active_list.words[0u];
+  if(P.phase==3u) {
+    if(index==0u&&queue.words[2u]==0u&&queue.words[3u]==0u)queue.words[0u]=0u;
+    return;
+  }
+  if(P.phase==5u) {
+    if(index!=0u||queue.words[2u]!=0u||queue.words[3u]!=0u)return;
+    if(queue.words[0u]==0u) {
+      queue.words[3u]=1u; queue.words[4u]+=1u;
+      // Later scheduled green propagate grids become real zero-grid work,
+      // rather than full-list dispatches that merely return on `quiesced`.
+      zero_grid(); return;
+    }
+    // `round_limit` is the first forbidden changing round: a changing pass
+    // numbered N fails at N >= limit. Thus a limit of zero accepts an already
+    // quiescent cut but rejects its first required propagation.
+    queue.words[1u]+=1u;
+    if(queue.words[1u]>=P.round_limit)fail(failure_budget);
+    return;
+  }
+  // Fault injection exercises the same device budget latch as an exhausted
+  // round schedule, without making the fixture depend on a particular cut
+  // requiring a phase-4 addition. Production never schedules phase 7.
+  if(P.phase==7u) {
+    if(index==0u) { fail(failure_budget); zero_grid(); }
+    return;
+  }
+  if(P.phase==8u) {
+    if(index==0u&&queue.words[2u]==0u&&queue.words[3u]!=0u) {
+      const uint count=active_list.words[0u];
+      dispatch_args.words[0u]=(count+255u)/256u; dispatch_args.words[1u]=1u;
+      dispatch_args.words[2u]=1u; dispatch_args.words[3u]=0u;
+    }
+    return;
+  }
+  if(index>=count||queue.words[2u]!=0u)return;
+  uint record; if(!valid_record(index,record))return;
+  uint first,ancestor_count; if(!valid_topology(record,first,ancestor_count))return;
+  const uint base=record*8u;
+  if(P.phase==1u) {
+    // Clear precisely the ranges reachable from this sparse candidate, never
+    // an O(record_count) hierarchy grid.
+    for(uint edge=0u;edge<6u;++edge)
+      atomicExchange(edge_marks.values[topology.words[base+edge]],0u);
+    for(uint i=0u;i<ancestor_count;++i) {
+      const uint range=ancestors.values[first+i];
+      if(range>=P.edge_range_count) { fail(failure_topology); return; }
+      atomicExchange(edge_marks.values[range],0u);
+    }
+    return;
+  }
+  if(P.phase==2u) {
+    for(uint i=0u;i<ancestor_count;++i) {
+      const uint range=ancestors.values[first+i];
+      if(range>=P.edge_range_count) { fail(failure_topology); return; }
+      atomicOr(edge_marks.values[range],1u);
+    }
+    return;
+  }
+  if(P.phase==4u) {
+    if(queue.words[3u]!=0u)return;
+    uint required=0u;
+    for(uint edge=0u;edge<6u;++edge)
+      if(edge_marks.values[topology.words[base+edge]]!=0u)required|=1u<<edge;
+    const uint target=allowed_green_superset(required);
+    // 63 is the restricted-green sentinel, not malformed topology. Preserve
+    // its raw edge requirement for compact red repair; that later stage owns
+    // replacing this parent by its ordered red children.
+    if(target==63u)return;
+    for(uint edge=0u;edge<6u;++edge)if((target&(1u<<edge))!=0u&&
+        (required&(1u<<edge))==0u)
+      if((atomicOr(edge_marks.values[topology.words[base+edge]],1u)&1u)==0u)
+        atomicOr(queue.words[0u],1u);
+    return;
+  }
+  if(P.phase==6u) {
+    if(queue.words[2u]!=0u||queue.words[3u]==0u)return;
+    uint value=0u;
+    for(uint edge=0u;edge<6u;++edge)
+      if(edge_marks.values[topology.words[base+edge]]!=0u)value|=1u<<edge;
+    masks.words[4u+index]=value;
+    if(index==0u) {
+      masks.words[0u]=count; masks.words[1u]=active_list.words[1u];
+      masks.words[2u]=0u; masks.words[3u]=1u;
+    }
+  }
+}

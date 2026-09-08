@@ -1,0 +1,68 @@
+#version 450
+
+// P7e4a1's first vertical ABI: P7e2 appends selected record IDs while its
+// twelve immutable roots are traversed.  This pass validates that append
+// header, copies it into a distinct compact active list, and derives the
+// first indirect grid solely from the device-written selected count.
+//
+// Compact list ABI (both ping/pong lists):
+//   [0] count, [1] capacity, [2] failure bits, [3] reserved, [4..] record IDs
+// Indirect ABI: one padded 16-byte MTLDispatchThreadgroupsIndirectArguments
+// record: [x threadgroups, y=1, z=1, padding=0].  Later P7e4a1 closure and P8
+// stages must consume/produce this ABI; no CPU count readback is permitted.
+layout(std430,binding=0) readonly buffer SelectionAppend { uint words[]; } selection;
+layout(std430,binding=1) buffer CompactActive { uint words[]; } active_list;
+layout(std430,binding=2) buffer DispatchArgs { uint words[]; } dispatch_args;
+
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint selection_capacity;
+  uint active_capacity;
+  uint phase; // 0: validate/arm, 1: indirect append-list copy
+  uint reserved;
+} P;
+
+layout(local_size_x=256) in;
+
+const uint failure_selection_overflow=1u;
+const uint failure_selection_empty=2u;
+const uint failure_record_range=4u;
+
+void zero_grid() {
+  dispatch_args.words[0u]=0u;
+  dispatch_args.words[1u]=1u;
+  dispatch_args.words[2u]=1u;
+  dispatch_args.words[3u]=0u;
+}
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(P.phase==0u) {
+    if(index!=0u)return;
+    const uint count=selection.words[0u];
+    const uint selection_failure=selection.words[3u];
+    active_list.words[0u]=count;
+    active_list.words[1u]=P.active_capacity;
+    active_list.words[2u]=0u;
+    active_list.words[3u]=0u;
+    if(selection_failure!=0u||count>P.selection_capacity||count>P.active_capacity)
+      active_list.words[2u]|=failure_selection_overflow;
+    if(count==0u)active_list.words[2u]|=failure_selection_empty;
+    if(active_list.words[2u]!=0u) { zero_grid(); return; }
+    // One workgroup covers 256 compact records. The copy dispatch itself is
+    // indirect; subsequent sparse closure/P8 passes will reuse this form.
+    dispatch_args.words[0u]=(count+255u)/256u;
+    dispatch_args.words[1u]=1u;
+    dispatch_args.words[2u]=1u;
+    dispatch_args.words[3u]=0u;
+    return;
+  }
+  if(P.phase!=1u||index>=active_list.words[0u]||active_list.words[2u]!=0u)return;
+  const uint record=selection.words[4u+index];
+  if(record>=P.record_count) {
+    atomicOr(active_list.words[2u],failure_record_range);
+    zero_grid();
+    return;
+  }
+  active_list.words[4u+index]=record;
+}

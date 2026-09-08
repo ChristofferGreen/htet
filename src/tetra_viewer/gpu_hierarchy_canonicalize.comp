@@ -1,0 +1,85 @@
+#version 450
+
+// Stable, device-only radix canonicalization for P7e4a1 compact record lists.
+// Six 4-bit passes cover the production 24-bit hierarchy record rank. Every
+// data-parallel phase uses the count-derived indirect grid armed by the compact
+// worklist header; only the 16-bin prefix controller is scalar.
+layout(std430,binding=0) readonly buffer InputList { uint words[]; } input_list;
+layout(std430,binding=1) buffer OutputList { uint words[]; } output_list;
+layout(std430,binding=2) readonly buffer CanonicalRanks { uint values[]; } ranks;
+layout(std430,binding=3) buffer Histogram { uint values[]; } histogram;
+layout(std430,binding=4) buffer HistogramOffsets { uint values[]; } offsets;
+layout(std430,binding=5) buffer BinBases { uint values[]; } bases;
+// Red phase 6 writes word 3 once the compact fixed point is quiescent.
+// Canonicalization must honor that device-only gate too, including its scalar
+// prefix phase, or a converged live cut would still pay five radix passes.
+layout(std430,binding=6) readonly buffer DispatchArgs { uint words[]; } dispatch_args;
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint phase; // 0 histogram, 1 scalar prefix, 2 stable scatter
+  uint shift;
+  uint reserved;
+} P;
+layout(local_size_x=256) in;
+shared uint bins[16];
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(dispatch_args.words[3u]!=0u)return;
+  const uint count=input_list.words[0u];
+  if(input_list.words[2u]!=0u||count==0u)return;
+const uint groups=(count+255u)/256u;
+  // The immutable rank sidecar is presently a 20-bit record ordinal. Never
+  // truncate a larger snapshot into six passes: fail before any rank access.
+  // Production front ancestry can legitimately exceed one million records.
+  if(P.record_count>(1u<<24u)) {
+    if(index==0u)atomicOr(output_list.words[2u],16u);
+    return;
+  }
+  if(P.phase==0u) {
+    if(gl_LocalInvocationID.x<16u)bins[gl_LocalInvocationID.x]=0u;
+    barrier();
+    if(index<count) {
+      const uint record=input_list.words[4u+index];
+      if(record>=P.record_count) { atomicOr(output_list.words[2u],4u); }
+      else atomicAdd(bins[(ranks.values[record]>>P.shift)&15u],1u);
+    }
+    barrier();
+    if(gl_LocalInvocationID.x<16u)
+      histogram.values[gl_WorkGroupID.x*16u+gl_LocalInvocationID.x]=bins[gl_LocalInvocationID.x];
+    return;
+  }
+  if(P.phase==1u) {
+    if(index!=0u)return;
+    uint cursor=0u;
+    for(uint bin=0u;bin<16u;++bin) {
+      bases.values[bin]=cursor;
+      for(uint group=0u;group<groups;++group) {
+        const uint slot=group*16u+bin;
+        offsets.values[slot]=cursor;
+        cursor+=histogram.values[slot];
+      }
+    }
+    if(cursor!=count)atomicOr(output_list.words[2u],8u);
+    return;
+  }
+  if(index>=count||output_list.words[2u]!=0u)return;
+  const uint record=input_list.words[4u+index];
+  if(record>=P.record_count) { atomicOr(output_list.words[2u],4u);return; }
+  const uint digit=(ranks.values[record]>>P.shift)&15u;
+  if(P.phase!=2u)return;
+  if(index==0u) {
+    output_list.words[0u]=count;
+    output_list.words[1u]=input_list.words[1u];
+    output_list.words[2u]=0u;
+    output_list.words[3u]=0u;
+  }
+  uint local_rank=0u;
+  const uint first=gl_WorkGroupID.x*256u;
+  for(uint prior=first;prior<index;++prior) {
+    const uint prior_record=input_list.words[4u+prior];
+    if(prior_record>=P.record_count) { atomicOr(output_list.words[2u],4u);return; }
+    local_rank+=((ranks.values[prior_record]>>P.shift)&15u)==digit?1u:0u;
+  }
+  output_list.words[4u+offsets.values[gl_WorkGroupID.x*16u+digit]+local_rank]=record;
+}

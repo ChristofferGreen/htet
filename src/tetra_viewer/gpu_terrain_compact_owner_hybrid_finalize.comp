@@ -1,0 +1,22 @@
+#version 450
+// P7e4e final transaction gate: validate emission, arm copy, and publish
+// arguments in one scalar dispatch. Rejection leaves the retained front alone.
+layout(std430,binding=0) buffer Status {uint words[];} status;
+layout(std430,binding=1) buffer CopyDispatch {uint words[];} copy_dispatch;
+layout(std430,binding=2) readonly buffer Candidate {uint words[];} candidate;
+layout(std430,binding=3) buffer Arguments {uint words[];} arguments;
+layout(push_constant) uniform Parameters {uint vertex_capacity;} P;
+layout(local_size_x=1) in;
+void main(){if(gl_GlobalInvocationID.x!=0u)return;
+  status.words[0u]=0u;
+  copy_dispatch.words[0u]=0u;copy_dispatch.words[1u]=1u;
+  copy_dispatch.words[2u]=1u;copy_dispatch.words[3u]=0u;
+  if(status.words[1u]!=0u||candidate.words[1u]!=0u||candidate.words[0u]==0u||
+     candidate.words[0u]>P.vertex_capacity||candidate.words[0u]%3u!=0u||
+     candidate.words[2u]>P.vertex_capacity/12u||
+     candidate.words[2u]*12u!=candidate.words[0u]){status.words[1u]=1u;return;}
+  status.words[0u]=1u;
+  copy_dispatch.words[0u]=(candidate.words[0u]*18u+255u)/256u;
+  arguments.words[0u]=candidate.words[0u];arguments.words[1u]=1u;
+  arguments.words[2u]=0u;arguments.words[3u]=0u;
+}

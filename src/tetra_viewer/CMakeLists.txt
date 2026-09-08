@@ -50,7 +50,14 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
          ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
          ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
          ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_worklist.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_canonicalize.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_green_closure.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_repair.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_scan.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_owner_materialize.comp.spv
          ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
+         ${TETRA_SHADER_DIR}/gpu_hierarchy_closure_control.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
          ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
@@ -85,7 +92,14 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/atmosphere_reference_hillaire.comp -o ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_lod.comp -o ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_frontier.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_worklist.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_worklist.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_canonicalize.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_canonicalize.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_green_closure.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_green_closure.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_red_repair.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_repair.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_red_scan.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_scan.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_owner_materialize.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_owner_materialize.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_closure.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
+  COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_closure_control.comp -o ${TETRA_SHADER_DIR}/gpu_hierarchy_closure_control.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_extract.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_classify.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_terrain_triangles.comp -o ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv
@@ -104,7 +118,7 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_closure.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_split_marks.comp -o ${TETRA_SHADER_DIR}/gpu_volume_split_marks.comp.spv
   COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_volume_mutation_journal.comp -o ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv
-    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_hierarchy_frontier.comp gpu_hierarchy_closure.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_triangle_scatter.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_volume_mutation_journal.comp gpu_terrain_field.glsl)
+    DEPENDS scene.vert scene.frag wire.frag edge.vert edge.frag shadow.vert sky.vert sky.frag fullscreen.vert tone_map.frag atmosphere.comp atmosphere_reference_hillaire.comp gpu_lod.comp gpu_hierarchy_frontier.comp gpu_hierarchy_compact_worklist.comp gpu_hierarchy_canonicalize.comp gpu_hierarchy_compact_green_closure.comp gpu_hierarchy_compact_red_repair.comp gpu_hierarchy_compact_red_scan.comp gpu_hierarchy_compact_owner_materialize.comp gpu_hierarchy_closure.comp gpu_hierarchy_closure_control.comp gpu_terrain_extract.comp gpu_terrain_classify.comp gpu_terrain_triangles.comp gpu_terrain_triangle_counts.comp gpu_terrain_triangle_finalize.comp gpu_terrain_owner_counts.comp gpu_terrain_owner_finalize.comp gpu_terrain_owner_emit.comp gpu_terrain_project.comp gpu_terrain_draw.comp gpu_terrain_commit_validate.comp gpu_terrain_commit_copy.comp gpu_terrain_commit_publish.comp gpu_volume_split_closure.comp gpu_volume_split_marks.comp gpu_volume_mutation_journal.comp gpu_terrain_field.glsl)
   add_custom_target(tetra_viewer_shaders DEPENDS
   ${TETRA_SHADER_DIR}/scene.vert.spv ${TETRA_SHADER_DIR}/scene.frag.spv ${TETRA_SHADER_DIR}/wire.frag.spv
   ${TETRA_SHADER_DIR}/edge.vert.spv ${TETRA_SHADER_DIR}/edge.frag.spv
@@ -117,7 +131,14 @@ if(TETRA_VULKAN_VIEWER_AVAILABLE)
   ${TETRA_SHADER_DIR}/atmosphere_reference_hillaire.comp.spv
   ${TETRA_SHADER_DIR}/gpu_lod.comp.spv
   ${TETRA_SHADER_DIR}/gpu_hierarchy_frontier.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_worklist.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_canonicalize.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_green_closure.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_repair.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_red_scan.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_compact_owner_materialize.comp.spv
   ${TETRA_SHADER_DIR}/gpu_hierarchy_closure.comp.spv
+  ${TETRA_SHADER_DIR}/gpu_hierarchy_closure_control.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_extract.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_classify.comp.spv
   ${TETRA_SHADER_DIR}/gpu_terrain_triangles.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_exclusive_scan.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_triangle_scatter.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_counts.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_finalize.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_owner_emit.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_project.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_draw.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_validate.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_copy.comp.spv ${TETRA_SHADER_DIR}/gpu_terrain_commit_publish.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_split_closure.comp.spv ${TETRA_SHADER_DIR}/gpu_volume_mutation_journal.comp.spv)
@@ -272,6 +293,84 @@ if(APPLE AND TETRA_BUILD_METAL)
             --output ${TETRA_METAL_GPU_HIERARCHY_FRONTIER_MSL}
     DEPENDS gpu_hierarchy_frontier.comp spirv-cross
     VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_worklist.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_worklist.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_worklist.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_MSL}
+    DEPENDS gpu_hierarchy_compact_worklist.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_canonicalize.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_canonicalize.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_canonicalize.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_MSL}
+    DEPENDS gpu_hierarchy_canonicalize.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_green_closure.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_green_closure.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_green_closure.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_MSL}
+    DEPENDS gpu_hierarchy_compact_green_closure.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_red_repair.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_red_repair.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_red_repair.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_MSL}
+    DEPENDS gpu_hierarchy_compact_red_repair.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_red_scan.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_red_scan.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_red_scan.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_MSL}
+    DEPENDS gpu_hierarchy_compact_red_scan.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_owner_materialize.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_compact_owner_materialize.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_compact_owner_materialize.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_MSL}
+    DEPENDS gpu_hierarchy_compact_owner_materialize.comp spirv-cross
+    VERBATIM)
   set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_SPV
     ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_closure.comp.spv)
   set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL
@@ -284,6 +383,19 @@ if(APPLE AND TETRA_BUILD_METAL)
             --msl --msl-version 20400
             --output ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL}
     DEPENDS gpu_hierarchy_closure.comp spirv-cross
+    VERBATIM)
+  set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_SPV
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_closure_control.comp.spv)
+  set(TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_MSL
+    ${TETRA_METAL_SHADER_DIR}/gpu_hierarchy_closure_control.comp.metal)
+  add_custom_command(
+    OUTPUT ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_MSL}
+    COMMAND ${METAL_GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/gpu_hierarchy_closure_control.comp
+            -o ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_SPV}
+    COMMAND $<TARGET_FILE:spirv-cross> ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_SPV}
+            --msl --msl-version 20400
+            --output ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_MSL}
+    DEPENDS gpu_hierarchy_closure_control.comp spirv-cross
     VERBATIM)
   # P5a establishes only the extractor's shared shader ABI. Dispatch and
   # publication remain separately qualified P5b/P5c work.
@@ -334,6 +446,19 @@ if(APPLE AND TETRA_BUILD_METAL)
           gpu_terrain_owner_counts.comp
           gpu_terrain_owner_finalize.comp
           gpu_terrain_owner_emit.comp
+          gpu_terrain_compact_owner_control.comp
+          gpu_terrain_compact_owner_count.comp
+          gpu_terrain_compact_owner_scan.comp
+          gpu_terrain_compact_owner_emit.comp
+          gpu_terrain_compact_owner_triangle_emit.comp
+          gpu_terrain_compact_owner_microbatch.comp
+          gpu_terrain_compact_owner_microbatch_validate.comp
+          gpu_terrain_compact_owner_hybrid_scan.comp
+          gpu_terrain_compact_owner_hybrid_finalize.comp
+          gpu_terrain_compact_owner_trace.comp
+          gpu_terrain_compact_owner_validate.comp
+          gpu_terrain_compact_owner_copy.comp
+          gpu_terrain_compact_owner_publish.comp
           gpu_volume_split_closure.comp
           gpu_volume_split_marks.comp
           gpu_volume_mutation_journal.comp)
@@ -403,7 +528,14 @@ if(APPLE AND TETRA_BUILD_METAL)
             ${TETRA_METAL_GRAPHICS_SHADERS}
             ${TETRA_METAL_GPU_LOD_MSL}
             ${TETRA_METAL_GPU_HIERARCHY_FRONTIER_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_COMPACT_WORKLIST_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_CANONICALIZE_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_COMPACT_GREEN_CLOSURE_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_REPAIR_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_COMPACT_RED_SCAN_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_COMPACT_OWNER_MATERIALIZE_MSL}
             ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_MSL}
+            ${TETRA_METAL_GPU_HIERARCHY_CLOSURE_CONTROL_MSL}
             ${TETRA_METAL_GPU_TERRAIN_EXTRACT_MSL}
             ${TETRA_METAL_GPU_TERRAIN_CLASSIFY_MSL}
             ${TETRA_METAL_GPU_TERRAIN_TRIANGLES_MSL}
@@ -440,11 +572,22 @@ if(APPLE AND TETRA_BUILD_METAL)
   add_test(NAME "metal GPU terrain native private chain parity"
     COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-native-chain-smoke-test)
+  add_test(NAME "metal GPU compact owner P8 private-front parity"
+    COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-compact-owner-p8-smoke-test)
   add_test(NAME "metal GPU terrain live private slots"
     COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-live-slots-smoke-test)
   add_test(NAME "metal GPU terrain runtime parity"
     COMMAND $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-runtime-smoke-test)
+  # This is the production front contract: an actual BlockedTerrainRuntime
+  # publication is regenerated through selector -> closure -> owners -> P8
+  # and compared with its CPU SceneVertex front, including camera coverage and
+  # depth. It intentionally fails while any incomplete device front remains.
+  add_test(NAME "metal GPU production device-front parity"
+    COMMAND ${CMAKE_COMMAND} -E env TETWORLD_METAL_BACKGROUND=1
+      $<TARGET_FILE:tetra_world_metal> --metal-gpu-production-front-parity-smoke-test)
+  set_tests_properties("metal GPU production device-front parity" PROPERTIES TIMEOUT 360)
   # P7d composes the hardware compact-stream, native-slot, SceneVertex, and
   # retained-front oracles into the final diagnostic-only parity gate before
   # P8 may remove any readback.
@@ -496,6 +639,9 @@ if(APPLE AND TETRA_BUILD_METAL)
   set_tests_properties("metal GPU live hierarchy selection follows camera without CPU terrain"
     PROPERTIES PASS_REGULAR_EXPRESSION
       "\\\"gpu_live_selection\\\":\\{\\\"enabled\\\":true,\\\"submitted\\\":[2-9][0-9]*,\\\"completed\\\":[2-9][0-9]*,\\\"accepted\\\":[2-9][0-9]*,\\\"failed\\\":0,\\\"cpu_generation_violations\\\":0\\}")
+  # P7e4a's fixed full-snapshot candidate has no passing CTest because a
+  # normal live camera flight is nonviable. P7e4a1 adds its own compact-list
+  # contract test before it replaces this fenced prototype.
   add_test(NAME "metal GPU live hierarchy selection state contract"
     COMMAND $<TARGET_FILE:tetra_world_metal>
       --metal-gpu-live-selection-state-smoke-test)
@@ -508,6 +654,100 @@ if(APPLE AND TETRA_BUILD_METAL)
   set_tests_properties("metal GPU hierarchy frontier is canonical and bounded"
     PROPERTIES PASS_REGULAR_EXPRESSION
       "\\\"canonical\\\":true,\\\"closure\\\":true,\\\"green_mask\\\":true,\\\"overflow\\\":true,\\\"passed\\\":true")
+  add_test(NAME "metal GPU compact green closure parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-green-closure-smoke-test)
+  set_tests_properties("metal GPU compact green closure parity"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"green\\\":true,\\\"malformed_retained\\\":true,\\\"budget_retained\\\":true,\\\"red_terminal_latched\\\":true,\\\"device_quiesced\\\":true,\\\"passed\\\":true")
+  add_test(NAME "metal GPU compact red scan large-list parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-red-scan-large-smoke-test)
+  set_tests_properties("metal GPU compact red scan large-list parity"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"count\\\":66952,\\\"blocks\\\":262,\\\"levels\\\":2,.*\\\"passed\\\":true")
+  add_test(NAME "metal GPU compact live closure encoder"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-live-closure-smoke-test)
+  set_tests_properties("metal GPU compact live closure encoder"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"selector_submitted\\\":1,\\\"compact_encoded\\\":1,\\\"compact_completed\\\":1,\\\"direct_red_rounds\\\":8,\\\"final_latched\\\":1,\\\"p8_owner_materialization\\\":true,\\\"p8_encoded\\\":1,\\\"p8_completed\\\":1,\\\"p8_rejected\\\":0,\\\"p8_private_commit\\\":true,\\\"passed\\\":true")
+  # Qualification-only payload readback: the fixture reconstructs the CPU
+  # closed cut from the same immutable snapshot/camera tuple, then compares
+  # it to the completed compact private front.  The normal device route is
+  # deliberately still scalar-audit-only.
+  add_test(NAME "metal GPU compact live private-front exact parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-live-parity-smoke-test)
+  set_tests_properties("metal GPU compact live private-front exact parity"
+    PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+      "\\\"root_seam\\\":true,\\\"mixed_depth\\\":true,\\\"moving_camera\\\":true,\\\"field_change\\\":true,\\\"image_parity\\\":true,\\\"failure_retains\\\":true,\\\"stale_revision\\\":true,\\\"p8_hybrid\\\":false,\\\"passed\\\":true")
+  add_test(NAME "metal GPU compact P8 hybrid exact parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-hybrid-parity-smoke-test)
+  set_tests_properties("metal GPU compact P8 hybrid exact parity"
+    PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+      "\\\"root_seam\\\":true,\\\"mixed_depth\\\":true,\\\"moving_camera\\\":true,\\\"field_change\\\":true,\\\"image_parity\\\":true,\\\"failure_retains\\\":true,\\\"stale_revision\\\":true,\\\"p8_hybrid\\\":true,\\\"passed\\\":true")
+  # P7e4c measures the real compact selector→closure→P8 private-front route
+  # against the independently executed CPU reference on the same moving
+  # camera tuples. It records a result even when GPU p95 is not faster; CPU
+  # remains the default until a separate promotion decision is justified.
+  add_test(NAME "metal GPU compact camera-to-private-front p95 benchmark"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-live-performance-smoke-test)
+  set_tests_properties("metal GPU compact camera-to-private-front p95 benchmark"
+    PROPERTIES TIMEOUT 90 PASS_REGULAR_EXPRESSION
+      "\\\"profiles\\\":2,\\\"warmup\\\":4,\\\"samples\\\":30,.*\\\"material_p95_ratio\\\":0.90,.*\\\"benchmark_payload_readback\\\":false,.*\\\"passed\\\":true")
+  # P7e4a1's device-front camera proof stays opt-in.  These are deliberately
+  # bounded: terminal output includes the last reached phase and scalar P8
+  # audit, so timeout output cannot be mistaken for a shader failure.
+  add_test(NAME "metal GPU device-front motion commits private P8 front"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=1
+      TETWORLD_METAL_DEVICE_FRONT_SMOKE_TIMEOUT_SECONDS=60
+      $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
+  set_tests_properties("metal GPU device-front motion commits private P8 front"
+    PROPERTIES TIMEOUT 90 PASS_REGULAR_EXPRESSION
+      "\\\"p8_private_commit\\\":true,.*\\\"display_front\\\":{\\\"promotions\\\":[1-9][0-9]*,\\\"private_frames\\\":[1-9][0-9]*,\\\"bootstrap_fallback_frames\\\":0,\\\"binding_violations\\\":0,\\\"private_vertices_bound\\\":true,\\\"private_indirect_bound\\\":true,\\\"indexed_exact_selection\\\":false,.*\\\"passed\\\":true")
+  # This follows the ordinary interactive selection path, but ends under the
+  # usual bounded test harness. Full-front correctness is separately checked
+  # by the device-front parity fixture.
+  add_test(NAME "metal GPU device-front is ordinary-launch default"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_DEVICE_FRONT_SMOKE_TIMEOUT_SECONDS=60
+      $<TARGET_FILE:tetra_world_metal> --metal-device-front-default-smoke-test)
+  set_tests_properties("metal GPU device-front is ordinary-launch default"
+    PROPERTIES TIMEOUT 90 PASS_REGULAR_EXPRESSION
+      "\\\"p8_private_commit\\\":true,\\\"device_front_default_selected\\\":true,\\\"complete_front_vertices\\\":{\\\"cpu_bootstrap\\\":[1-9][0-9]*,\\\"gpu_p8\\\":[1-9][0-9]*,\\\"exact\\\":true},.*\\\"display_front\\\":{\\\"promotions\\\":[1-9][0-9]*,\\\"private_frames\\\":[1-9][0-9]*,\\\"bootstrap_fallback_frames\\\":0,\\\"binding_violations\\\":0,\\\"private_vertices_bound\\\":true,\\\"private_indirect_bound\\\":true,\\\"indexed_exact_selection\\\":false,.*\\\"p6_requests\\\":0,\\\"cpu_surface_build_requests\\\":0,.*\\\"passed\\\":true")
+  # Operators can explicitly return to the established CPU route.  Keep this
+  # independent of automated-test defaults so it proves an explicit CPU
+  # override takes precedence over the interactive device-front default.
+  add_test(NAME "metal GPU device-front CPU override selects fallback"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=0
+      $<TARGET_FILE:tetra_world_metal> --metal-smoke-test)
+  set_tests_properties("metal GPU device-front CPU override selects fallback"
+    PROPERTIES TIMEOUT 60 PASS_REGULAR_EXPRESSION
+      "\\\"gpu_renderer_requested\\\":false,\\\"gpu_renderer_available\\\":false,\\\"gpu_live_selection\\\":{\\\"enabled\\\":false,\\\"submitted\\\":0,\\\"completed\\\":0,\\\"accepted\\\":0,\\\"failed\\\":0,\\\"cpu_generation_violations\\\":0}")
+  add_test(NAME "metal GPU device-front motion rejects failed P8 input"
+    COMMAND ${CMAKE_COMMAND} -E env
+      TETWORLD_METAL_BACKGROUND=1
+      TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=1
+      TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT_INJECT_GREEN_BUDGET_FAILURE=1
+      TETWORLD_METAL_DEVICE_FRONT_SMOKE_TIMEOUT_SECONDS=60
+      $<TARGET_FILE:tetra_world_metal> --metal-motion-smoke-test)
+  set_tests_properties("metal GPU device-front motion rejects failed P8 input"
+    PROPERTIES TIMEOUT 90 PASS_REGULAR_EXPRESSION
+      "\\\"p8_rejected\\\":[1-9][0-9]*,\\\"p8_private_commit\\\":false,.*\\\"display_front\\\":{\\\"promotions\\\":0,\\\"private_frames\\\":0,\\\"bootstrap_fallback_frames\\\":[1-9][0-9]*,\\\"binding_violations\\\":0,\\\"private_vertices_bound\\\":false,\\\"private_indirect_bound\\\":false,\\\"indexed_exact_selection\\\":false,\\\"bootstrap_vertices_retained\\\":true,\\\"bootstrap_indirect_retained\\\":true},.*\\\"passed\\\":true")
+  add_test(NAME "metal GPU compact owner materializer parity"
+    COMMAND $<TARGET_FILE:tetra_world_metal>
+      --metal-gpu-compact-owner-materialize-smoke-test)
+  set_tests_properties("metal GPU compact owner materializer parity"
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "\\\"word_parity\\\":true,\\\"malformed_retained\\\":true,\\\"capacity_retained\\\":true,\\\"record_retained\\\":true,\\\"mask_failed\\\":true,\\\"passed\\\":true")
   # P8c2 collects GPU counter evidence for the owner-direct generator and
   # completed command-buffer frame interval on the selected private front.
   # Keep this independent performance qualification ahead of the long P8b
@@ -518,6 +758,9 @@ if(APPLE AND TETRA_BUILD_METAL)
     COMMAND ${CMAKE_COMMAND} -E env
       TETWORLD_METAL_BACKGROUND=1
       $<TARGET_FILE:tetra_world_metal> --metal-gpu-terrain-performance-smoke-test)
+  set_tests_properties("metal GPU terrain owner-direct performance qualification"
+    PROPERTIES TIMEOUT 120 PASS_REGULAR_EXPRESSION
+      "\\\"generation_samples\\\":30,.*\\\"generation_limit_ms\\\":60\\.0000,.*\\\"frame_limit_ms\\\":33\\.3333,.*\\\"passed\\\":true")
   # P8b drives the selected renderer through the production moving-camera
   # loop.  It verifies the selected, complete private display front across
   # camera motion without enabling legacy candidate-payload readback. Native

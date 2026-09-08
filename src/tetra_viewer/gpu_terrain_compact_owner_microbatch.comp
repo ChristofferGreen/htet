@@ -1,0 +1,52 @@
+#version 450
+
+// P7e4d's comparison-only P8 route. A single 1,024-lane workgroup computes
+// each compact owner's triangle count, an ordered in-workgroup prefix, and
+// its SceneVertex output. The 1,024-owner limit is an admission contract:
+// larger streams fail closed instead of being truncated.
+layout(std430,binding=0) readonly buffer Owners {uint words[];} owners;
+layout(std430,binding=1) readonly buffer Templates {uint words[];} templates;
+layout(std430,binding=2) readonly buffer Field {uvec4 lanes[];} field;
+layout(std430,binding=3) buffer Vertices {uint words[];} outv;
+layout(std430,binding=4) readonly buffer OwnerHeader {uint words[];} owner_header;
+layout(std430,binding=5) buffer Status {uint words[];} status;
+layout(std430,binding=6) buffer CopyDispatch {uint words[];} copy_dispatch;
+layout(std430,binding=7) buffer Counts {uint values[];} count_output;
+layout(std430,binding=8) buffer Offsets {uint values[];} offset_output;
+layout(push_constant) uniform Parameters {
+  uint capacity;uint unused;vec4 origin;uint source_low;uint source_high;uint pad0;uint pad1;
+} P;
+layout(local_size_x=1024) in;
+
+const ivec2 E[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),ivec2(1,2),ivec2(1,3),ivec2(2,3));
+const uvec3 CUT[32]=uvec3[32](uvec3(0),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0,3,4),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(1,3,5),uvec3(0),uvec3(0,2,5),uvec3(0,5,3),uvec3(0,1,5),uvec3(0,5,4),uvec3(2,4,5),uvec3(0),uvec3(2,4,5),uvec3(0),uvec3(0,1,5),uvec3(0,5,4),uvec3(0,2,5),uvec3(0,5,3),uvec3(1,3,5),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(0,3,4),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0),uvec3(0));
+shared uint counts[1024];shared uint prefix[1024];shared uint owner_count;shared uint failed;
+
+float lane(uint i,uint c){return uintBitsToFloat(field.lanes[i][c]);}
+bool F(float x){return !isnan(x)&&!isinf(x);} bool F3(vec3 x){return F(x.x)&&F(x.y)&&F(x.z);}
+#include "gpu_terrain_field.glsl"
+uint B(uvec2 p,uint i){return i<64u?(p.x>>i)&1u:(p.y>>(i-64u))&1u;}
+uint D(uvec2 p,uint d,uint i){uint b=3u*(d-i-1u);return B(p,b)|(B(p,b+1u)<<1u)|(B(p,b+2u)<<2u);}
+vec3 R(uint r,uint c){const uint t[48]=uint[48](0,2,3,8,0,3,1,8,4,5,7,8,4,7,6,8,0,1,5,8,0,5,4,8,2,6,7,8,2,7,3,8,0,4,6,8,0,6,2,8,1,3,7,8,1,7,5,8);const vec3 v[9]=vec3[9](vec3(0),vec3(2,0,0),vec3(0,2,0),vec3(2,2,0),vec3(0,0,2),vec3(2,0,2),vec3(0,2,2),vec3(2,2,2),vec3(1));return v[t[r*4u+c]]*.5;}
+bool G(uint o,out vec3 g[4]){uint b=o*12u,h=owners.words[b+1u],r=(h>>26u)&63u,d=(h>>20u)&63u;if(r>=12u||d>38u)return false;for(uint i=0u;i<4u;++i)g[i]=R(r,i);uvec2 p=uvec2(owners.words[b+2u],owners.words[b+3u]);for(uint l=0u;l<d;++l){vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 a[4];for(uint i=0u;i<4u;++i)a[i]=g[i];uint x=D(p,d,l);if(x==0u){g[0]=a[0];g[1]=m[0];g[2]=m[1];g[3]=m[2];}else if(x==1u){g[0]=a[1];g[1]=m[0];g[2]=m[3];g[3]=m[4];}else if(x==2u){g[0]=a[2];g[1]=m[1];g[2]=m[3];g[3]=m[5];}else if(x==3u){g[0]=a[3];g[1]=m[2];g[2]=m[4];g[3]=m[5];}else{uint q=x-4u;const uint A[3]=uint[3](0,1,2),Z[3]=uint[3](5,4,3),H[12]=uint[12](1,2,4,3,0,2,5,3,0,1,5,4);uint k=0u;float x0=dot(m[5]-m[0],m[5]-m[0]),x1=dot(m[4]-m[1],m[4]-m[1]),x2=dot(m[3]-m[2],m[3]-m[2]);if(x1<x0)k=1u;if(x2<(k==0u?x0:x1))k=2u;g[0]=m[A[k]];g[1]=m[H[k*4u+q]];g[2]=m[H[k*4u+((q+1u)&3u)]];g[3]=m[Z[k]];}}return true;}
+vec3 root(vec3 a,vec3 b){float fa=terrain_field_signed_distance(a,lane(1u,3u));for(uint i=0u;i<40u;++i){vec3 m=.5*(a+b);if((fa<0.0)==(terrain_field_signed_distance(m,lane(1u,3u))<0.0)){a=m;fa=terrain_field_signed_distance(m,lane(1u,3u));}else b=m;}return .5*(a+b)*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));}
+void V(uint n,vec3 p,vec3 normal_value,vec3 smooth_normal,uint c){uint d=4u+n*18u;outv.words[d]=floatBitsToUint(p.x);outv.words[d+1u]=floatBitsToUint(p.y);outv.words[d+2u]=floatBitsToUint(p.z);outv.words[d+3u]=floatBitsToUint(.43);outv.words[d+4u]=floatBitsToUint(.45);outv.words[d+5u]=floatBitsToUint(.47);outv.words[d+6u]=floatBitsToUint(normal_value.x);outv.words[d+7u]=floatBitsToUint(normal_value.y);outv.words[d+8u]=floatBitsToUint(normal_value.z);outv.words[d+9u]=floatBitsToUint(-2.0);outv.words[d+10u]=0u;outv.words[d+11u]=floatBitsToUint(7.0);outv.words[d+12u]=floatBitsToUint(c==0u?1.:0.);outv.words[d+13u]=floatBitsToUint(c==1u?1.:0.);outv.words[d+14u]=floatBitsToUint(c==2u?1.:0.);outv.words[d+15u]=floatBitsToUint(smooth_normal.x);outv.words[d+16u]=floatBitsToUint(smooth_normal.y);outv.words[d+17u]=floatBitsToUint(smooth_normal.z);}
+bool valid_field(){for(uint i=0u;i<10u;++i)for(uint c=0u;c<4u;++c)if(!F(lane(i,c)))return false;return field.lanes[10u].x==P.source_low&&field.lanes[10u].y==P.source_high&&lane(1u,0u)==4.0&&lane(0u,3u)>0.0&&lane(7u,2u)>0.0&&lane(9u,3u)>0.0;}
+
+void main(){
+  const uint index=gl_LocalInvocationID.x;
+  if(index==0u){owner_count=owner_header.words[0u];failed=0u;status.words[0u]=0u;status.words[1u]=0u;outv.words[0u]=0u;outv.words[1u]=0u;outv.words[2u]=0u;outv.words[3u]=0u;copy_dispatch.words[0u]=0u;copy_dispatch.words[1u]=1u;copy_dispatch.words[2u]=1u;copy_dispatch.words[3u]=0u;
+    if(P.capacity==0u||owner_count==0u||owner_count>1024u||owner_count>owner_header.words[1u]||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u)failed=1u;}
+  barrier();
+  counts[index]=0u;
+  if(index<owner_count&&failed==0u){
+    if(!valid_field()){atomicOr(failed,1u);}else{vec3 g[4];uint mask=owners.words[index*12u+10u];if(!G(index,g)||mask>=64u||templates.words[mask*28u+25u]!=mask){atomicOr(failed,1u);}else{vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);uint n=templates.words[mask*28u+24u];if(n>24u){atomicOr(failed,1u);}else for(uint cell=0u;cell<n;++cell){uint x=templates.words[mask*28u+cell],s=0u;for(uint k=0u;k<4u;++k){uint v=(x>>(8u*k))&255u;if(v>=10u){atomicOr(failed,1u);break;}if(terrain_field_signed_distance(p[v],lane(1u,3u))<0.)s|=1u<<k;}uint crossings=0u;for(uint e=0u;e<6u;++e)crossings+=((s>>E[e].x)&1u)!=((s>>E[e].y)&1u)?1u:0u;counts[index]+=crossings==3u?1u:crossings==4u?2u:0u;}}}}
+  prefix[index]=counts[index];barrier();
+  for(uint step=1u;step<1024u;step<<=1u){uint add=index>=step?prefix[index-step]:0u;barrier();prefix[index]+=add;barrier();}
+  if(index<owner_count){count_output.values[index]=counts[index];offset_output.values[index]=index==0u?0u:prefix[index-1u];}
+  if(index==0u){uint triangles=prefix[owner_count-1u];if(failed!=0u||triangles==0u||triangles>P.capacity/12u){status.words[1u]=1u;outv.words[1u]=1u;}else{outv.words[0u]=triangles*12u;outv.words[2u]=triangles;copy_dispatch.words[0u]=(outv.words[0u]*18u+255u)/256u;}}
+  barrier();
+  if(index>=owner_count||failed!=0u||outv.words[1u]!=0u)return;
+  vec3 g[4];uint mask=owners.words[index*12u+10u];if(!G(index,g)||mask>=64u){atomicOr(outv.words[1u],2u);return;}vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);uint n=templates.words[mask*28u+24u],written=0u,offset=index==0u?0u:prefix[index-1u];for(uint cell=0u;cell<n;++cell){uint x=templates.words[mask*28u+cell],s=0u,ix[4];for(uint k=0u;k<4u;++k){ix[k]=(x>>(8u*k))&255u;if(ix[k]>=10u){atomicOr(outv.words[1u],2u);return;}if(terrain_field_signed_distance(p[ix[k]],lane(1u,3u))<0.)s|=1u<<k;}vec3 q[6];for(uint e=0u;e<6u;++e)if(((s>>E[e].x)&1u)!=((s>>E[e].y)&1u))q[e]=root(p[ix[E[e].x]],p[ix[E[e].y]]);uint crossings=0u;for(uint e=0u;e<6u;++e)crossings+=((s>>E[e].x)&1u)!=((s>>E[e].y)&1u)?1u:0u;uint tc=crossings==3u?1u:crossings==4u?2u:0u;for(uint t=0u;t<tc;++t){uvec3 ce=CUT[s*2u+t];vec3 a=q[ce.x],b=q[ce.y],c=q[ce.z];vec3 ab=terrain_field_project_to_surface_world((a+b)*.5,lane(1u,3u)*.5)-P.origin.xyz,bc=terrain_field_project_to_surface_world((b+c)*.5,lane(1u,3u)*.5)-P.origin.xyz,ca=terrain_field_project_to_surface_world((c+a)*.5,lane(1u,3u)*.5)-P.origin.xyz;vec3 pts[6]=vec3[6](a-P.origin.xyz,ab,ca,b-P.origin.xyz,bc,c-P.origin.xyz);vec3 sn[6];for(uint k=0u;k<6u;++k)sn[k]=terrain_field_normal_world(pts[k]+P.origin.xyz,lane(1u,3u));const uvec3 f[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));for(uint z=0u;z<4u;++z){vec3 cv=cross(pts[f[z].y]-pts[f[z].x],pts[f[z].z]-pts[f[z].x]);float cl=dot(cv,cv);vec3 no=cl>1.e-20?normalize(cv):sn[f[z].x];if(!F3(no)){atomicOr(outv.words[1u],4u);return;}uint base=(offset+written)*12u+z*3u;for(uint k=0u;k<3u;++k)V(base+k,pts[f[z][k]],no,sn[f[z][k]],k);}++written;}}
+  if(written!=counts[index])atomicOr(outv.words[1u],8u);
+}

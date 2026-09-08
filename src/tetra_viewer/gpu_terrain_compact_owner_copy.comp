@@ -1,0 +1,9 @@
+#version 450
+// P7e4a1 private-only retained-front copy; grid 3 is device-armed after
+// geometry validation. A rejected candidate cannot write the prior front.
+layout(std430,binding=0) readonly buffer Source {uint words[];} source;
+layout(std430,binding=1) readonly buffer Status {uint words[];} status;
+layout(std430,binding=2) buffer Destination {uint words[];} destination;
+layout(local_size_x=256) in;
+void main(){uint word=gl_GlobalInvocationID.x;
+ if(status.words[0u]!=0u&&word<source.words[0u]*18u)destination.words[word]=source.words[4u+word];}

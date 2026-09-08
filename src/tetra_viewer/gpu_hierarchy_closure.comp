@@ -21,7 +21,7 @@ layout(std430,binding=12) readonly buffer VertexIncidence { uint words[]; } vert
 layout(std430,binding=13) buffer EdgeActive { uint values[]; } edge_marks;
 layout(std430,binding=14) buffer Owners { uint words[]; } owners;
 // [0] failure bits, [1] current green round changed, [2] promoted records,
-// [3] emitted owner count.
+// [3] emitted owner count, [4] persistent green-quiesced latch.
 layout(std430,binding=15) buffer Status { uint words[]; } status;
 // Phase 2 records promotions against a stable selected-bit snapshot. Phase 5
 // applies them afterwards, so one invocation cannot recursively refine a
@@ -34,7 +34,7 @@ layout(push_constant) uniform Parameters {
   uint owner_capacity;
   uint edge_range_count;
   uint ancestor_count;
-  uint phase; // 0 seed, 1 green round, 2 mark red, 3 quiesce, 4 emit, 5 apply red, 6 preflight
+  uint phase; // 0 seed, 1 green round, 2 mark red, 3 quiesce, 4 emit, 5 apply red, 6 preflight, 7 red budget, 8 green budget
   uint child_count;
   uint vertex_range_count;
   uint vertex_incidence_count;
@@ -179,6 +179,22 @@ uint allowed_green_superset(uint mask) {
 void main() {
   const uint order=gl_GlobalInvocationID.x;
   if(order>=P.record_count||status.words[0u]!=0u)return;
+  // The final device-only green-budget check deliberately touches neither
+  // selected marks nor immutable sidecars.  Once a preceding phase has
+  // reported a separate failure it remains latched in word zero; otherwise
+  // this phase fails exactly when the bounded schedule never quiesced.
+  if(P.phase==8u) {
+    if(status.words[4u]==0u)fail(failure_budget);
+    return;
+  }
+  // A red promotion leaves the current canonical compaction valid only as a
+  // repair input.  Never emit it: the next device-scheduled repair is the
+  // only route that may form a final owner stream.
+  if(P.phase==4u&&status.words[2u]!=0u)return;
+  // The quiesced latch persists across scheduled green rounds.  Put this
+  // before every selection/topology access so the unused tail of the fixed
+  // schedule performs no whole-sidecar reads and needs no host polling.
+  if((P.phase==1u||P.phase==3u)&&status.words[4u]!=0u)return;
   // P7e2 marks carry their own failure/staleness latch. Never reinterpret a
   // rejected selector result as a valid cut merely because its old bit tail
   // happens to remain resident.
@@ -189,6 +205,14 @@ void main() {
   if(!valid_face_sidecar(record)) { fail(failure_face); return; }
   if(!valid_edges(record)) { fail(failure_edge); return; }
   if(!valid_vertices(record)) return;
+  // After the fixed device repair budget, no record may still request a red
+  // promotion.  This lets a live route fail closed without reading a per-pass
+  // promotion counter back to the host.
+  if(P.phase==7u) {
+    if((red_promotions.values[record>>5u]&(1u<<(record&31u)))!=0u)
+      fail(failure_budget);
+    return;
+  }
   if(!selected(record)) {
     if(P.phase==4u&&counts.values[order]!=0u)fail(failure_frontier);
     return;
@@ -254,7 +278,7 @@ void main() {
     return;
   }
   if(P.phase==3u) {
-    if(status.words[1u]!=0u)fail(failure_budget);
+    if(status.words[1u]==0u)atomicOr(status.words[4u],1u);
     return;
   }
   if(target==63u||P.phase!=4u||counts.values[order]!=1u) {

@@ -1,0 +1,42 @@
+#version 450
+// P7e4a1 P8: compact-owner SceneVertex emission. Its grid is device-derived;
+ // the host provides only immutable field/origin values and capacity.
+layout(std430,binding=0) readonly buffer Owners {uint words[];} owners;
+layout(std430,binding=1) readonly buffer Templates {uint words[];} templates;
+layout(std430,binding=2) readonly buffer Field {uvec4 lanes[];} field;
+layout(std430,binding=3) readonly buffer Counts {uint values[];} counts;
+layout(std430,binding=4) readonly buffer Offsets {uint values[];} offsets;
+layout(std430,binding=5) buffer Vertices {uint words[];} outv;
+layout(std430,binding=6) readonly buffer OwnerHeader {uint words[];} owner_header;
+// Count has already evaluated and packed four sign bits per template cell.
+// Reusing them removes duplicate field evaluations while preserving the exact
+// same field tuple and canonical owner/cell order used for count admission.
+layout(std430,binding=7) readonly buffer Signs {uint values[];} signs;
+layout(push_constant) uniform Parameters {uint capacity;uint unused;vec4 origin;uint source_low;uint source_high;uint pad0;uint pad1;} P;
+layout(local_size_x=64) in;
+const ivec2 E[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),ivec2(1,2),ivec2(1,3),ivec2(2,3));
+const uvec3 CUT[32]=uvec3[32](uvec3(0),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0,3,4),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(1,3,5),uvec3(0),uvec3(0,2,5),uvec3(0,5,3),uvec3(0,1,5),uvec3(0,5,4),uvec3(2,4,5),uvec3(0),uvec3(2,4,5),uvec3(0),uvec3(0,1,5),uvec3(0,5,4),uvec3(0,2,5),uvec3(0,5,3),uvec3(1,3,5),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(0,3,4),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0),uvec3(0));
+float lane(uint i,uint c){return uintBitsToFloat(field.lanes[i][c]);} bool F(float x){return !isnan(x)&&!isinf(x);} bool F3(vec3 x){return F(x.x)&&F(x.y)&&F(x.z);} 
+#include "gpu_terrain_field.glsl"
+uint B(uvec2 p,uint i){return i<64u?(p.x>>i)&1u:(p.y>>(i-64u))&1u;}uint D(uvec2 p,uint d,uint i){uint b=3u*(d-i-1u);return B(p,b)|(B(p,b+1u)<<1u)|(B(p,b+2u)<<2u);}
+vec3 R(uint r,uint c){const uint t[48]=uint[48](0,2,3,8,0,3,1,8,4,5,7,8,4,7,6,8,0,1,5,8,0,5,4,8,2,6,7,8,2,7,3,8,0,4,6,8,0,6,2,8,1,3,7,8,1,7,5,8);const vec3 v[9]=vec3[9](vec3(0),vec3(2,0,0),vec3(0,2,0),vec3(2,2,0),vec3(0,0,2),vec3(2,0,2),vec3(0,2,2),vec3(2,2,2),vec3(1));return v[t[r*4u+c]]*.5;}
+bool G(uint o,out vec3 g[4]){uint b=o*12u,h=owners.words[b+1u],r=(h>>26u)&63u,d=(h>>20u)&63u;if(r>=12u||d>38u)return false;for(uint i=0u;i<4u;++i)g[i]=R(r,i);uvec2 p=uvec2(owners.words[b+2u],owners.words[b+3u]);for(uint l=0u;l<d;++l){vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 a[4];for(uint i=0u;i<4u;++i)a[i]=g[i];uint x=D(p,d,l);if(x==0u){g[0]=a[0];g[1]=m[0];g[2]=m[1];g[3]=m[2];}else if(x==1u){g[0]=a[1];g[1]=m[0];g[2]=m[3];g[3]=m[4];}else if(x==2u){g[0]=a[2];g[1]=m[1];g[2]=m[3];g[3]=m[5];}else if(x==3u){g[0]=a[3];g[1]=m[2];g[2]=m[4];g[3]=m[5];}else{uint q=x-4u;const uint A[3]=uint[3](0,1,2),Z[3]=uint[3](5,4,3),H[12]=uint[12](1,2,4,3,0,2,5,3,0,1,5,4);uint k=0u;float x0=dot(m[5]-m[0],m[5]-m[0]),x1=dot(m[4]-m[1],m[4]-m[1]),x2=dot(m[3]-m[2],m[3]-m[2]);if(x1<x0)k=1u;if(x2<(k==0u?x0:x1))k=2u;g[0]=m[A[k]];g[1]=m[H[k*4u+q]];g[2]=m[H[k*4u+((q+1u)&3u)]];g[3]=m[Z[k]];}}return true;}
+// The qualified compact route uses unit world scale and root edges no longer
+// than sqrt(.5). Twenty bisections leave at most sqrt(.5)/2^20 (<6.8e-7),
+// comfortably below the unchanged 2e-3 geometry oracle tolerance. Both
+// 16- and 12-step candidates changed the independent image oracle by 1/9216.
+vec3 root(vec3 a,vec3 b){float fa=terrain_field_signed_distance(a,lane(1u,3u));for(uint i=0u;i<20u;++i){vec3 m=.5*(a+b);if((fa<0.0)==(terrain_field_signed_distance(m,lane(1u,3u))<0.0)){a=m;fa=terrain_field_signed_distance(m,lane(1u,3u));}else b=m;}return .5*(a+b)*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));}
+// This emit-local projection preserves the shared field grammar and root
+// solver. It is a bounded comparison of the midpoint Newton loop only.
+// The final Newton-step normal is the best available smooth-normal estimate
+// for a projected midpoint. Reuse it for the emitted vertex rather than
+// immediately sampling the same field again. A midpoint already within the
+// convergence epsilon has no Newton-step normal, so retain its exact final
+// point evaluation in that exceptional case.
+vec3 project_midpoint(vec3 point,out vec3 smooth_normal){bool evaluated=false;for(int iteration=0;iteration<4;++iteration){const float distance=terrain_field_signed_distance_world(point,lane(1u,3u)*.5);if(abs(distance)<1.e-10)break;smooth_normal=terrain_field_normal_world(point,lane(1u,3u)*.5);evaluated=true;point-=smooth_normal*distance;}if(!evaluated)smooth_normal=terrain_field_normal_world(point,lane(1u,3u)*.5);return point;}
+void V(uint n,vec3 p,vec3 normal_value,vec3 smooth_normal,uint c){uint d=4u+n*18u;outv.words[d]=floatBitsToUint(p.x);outv.words[d+1u]=floatBitsToUint(p.y);outv.words[d+2u]=floatBitsToUint(p.z);outv.words[d+3u]=floatBitsToUint(.43);outv.words[d+4u]=floatBitsToUint(.45);outv.words[d+5u]=floatBitsToUint(.47);outv.words[d+6u]=floatBitsToUint(normal_value.x);outv.words[d+7u]=floatBitsToUint(normal_value.y);outv.words[d+8u]=floatBitsToUint(normal_value.z);outv.words[d+9u]=floatBitsToUint(-2.0);outv.words[d+10u]=0u;outv.words[d+11u]=floatBitsToUint(7.0);outv.words[d+12u]=floatBitsToUint(c==0u?1.:0.);outv.words[d+13u]=floatBitsToUint(c==1u?1.:0.);outv.words[d+14u]=floatBitsToUint(c==2u?1.:0.);outv.words[d+15u]=floatBitsToUint(smooth_normal.x);outv.words[d+16u]=floatBitsToUint(smooth_normal.y);outv.words[d+17u]=floatBitsToUint(smooth_normal.z);}
+void main(){uint o=gl_GlobalInvocationID.x;if(o>=owner_header.words[0u]||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u||outv.words[1u]!=0u)return;vec3 g[4];uint mask=owners.words[o*12u+10u];if(!G(o,g)||mask>=64u){atomicOr(outv.words[1u],1u);return;}vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);uint n=templates.words[mask*28u+24u],written=0u;for(uint cell=0u;cell<n;++cell){uint x=templates.words[mask*28u+cell],ix[4];for(uint k=0u;k<4u;++k){ix[k]=(x>>(8u*k))&255u;if(ix[k]>=10u){atomicOr(outv.words[1u],2u);return;}}uint s=(signs.values[o*3u+cell/8u]>>((cell&7u)*4u))&15u;uint eMask=0u;vec3 q[6];for(uint e=0u;e<6u;++e)if(((s>>E[e].x)&1u)!=((s>>E[e].y)&1u)){eMask|=1u<<e;q[e]=root(p[ix[E[e].x]],p[ix[E[e].y]]);}uint crossing_count=0u;for(uint edge=0u;edge<6u;++edge)crossing_count+=((s>>E[edge].x)&1u)!=((s>>E[edge].y)&1u)?1u:0u;
+uint tc=crossing_count==3u?1u:crossing_count==4u?2u:0u;for(uint t=0u;t<tc;++t){uvec3 ce=CUT[s*2u+t];vec3 a=q[ce.x],b=q[ce.y],c=q[ce.z],sn[6];vec3 ab=project_midpoint((a+b)*.5,sn[1])-P.origin.xyz,bc=project_midpoint((b+c)*.5,sn[4])-P.origin.xyz,ca=project_midpoint((c+a)*.5,sn[2])-P.origin.xyz;vec3 pts[6]=vec3[6](a-P.origin.xyz,ab,ca,b-P.origin.xyz,bc,c-P.origin.xyz);sn[0]=terrain_field_normal_world(a,lane(1u,3u));sn[3]=terrain_field_normal_world(b,lane(1u,3u));sn[5]=terrain_field_normal_world(c,lane(1u,3u));const uvec3 f[4]=uvec3[4](uvec3(0,1,2),uvec3(1,3,4),uvec3(2,4,5),uvec3(1,4,2));for(uint z=0u;z<4u;++z){vec3 cross_value=cross(pts[f[z].y]-pts[f[z].x],pts[f[z].z]-pts[f[z].x]);
+float cross_length=dot(cross_value,cross_value);
+vec3 no=cross_length>1.e-20?normalize(cross_value):sn[f[z].x];
+if(!F3(no)){atomicOr(outv.words[1u],4u);return;}uint base=(offsets.values[o]+written)*12u+z*3u;for(uint k=0u;k<3u;++k)V(base+k,pts[f[z][k]],no,sn[f[z][k]],k);}++written;}}if(written!=counts.values[o])atomicOr(outv.words[1u],8u);}

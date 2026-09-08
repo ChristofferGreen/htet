@@ -1,0 +1,54 @@
+#version 450
+// P7e4a1 P8 hierarchical owner scan. Each pass discovers its exact range
+// from the private owner header; the host selects only a fixed phase number.
+layout(std430,binding=0) readonly buffer Counts {uint values[];} counts;
+layout(std430,binding=1) buffer Offsets {uint values[];} offsets;
+layout(std430,binding=2) buffer BlockTotals {uint values[];} block_totals;
+layout(std430,binding=3) buffer BlockOffsets {uint values[];} block_offsets;
+layout(std430,binding=4) buffer LevelTotals {uint values[];} level_totals;
+layout(std430,binding=5) buffer LevelOffsets {uint values[];} level_offsets;
+layout(std430,binding=6) readonly buffer OwnerHeader {uint words[];} owner_header;
+layout(std430,binding=7) buffer Vertices {uint words[];} vertices;
+layout(std430,binding=8) buffer Status {uint words[];} status;
+layout(std430,binding=9) buffer Dispatches {uint words[];} dispatches;
+layout(push_constant) uniform Parameters {uint phase;uint vertex_capacity;} P;
+layout(local_size_x=256) in;
+shared uint scratch[256]; shared uint next_scratch[256]; shared uint total;
+uint owner_count(){return owner_header.words[0u];}
+uint block_count(){return (owner_count()+255u)/256u;}
+uint super_count(){return (block_count()+255u)/256u;}
+uint phase_count(){return P.phase==0u||P.phase==5u?owner_count():(P.phase==1u||P.phase==4u?block_count():super_count());}
+uint value_at(uint index){
+ if(P.phase==0u)return counts.values[index];
+ if(P.phase==1u)return block_totals.values[index];
+ return level_totals.values[index];
+}
+void store_offset(uint index,uint value){
+ if(P.phase==0u)offsets.values[index]=value;
+ else if(P.phase==1u)block_offsets.values[index]=value;
+ else level_offsets.values[index]=value;
+}
+void store_total(uint group,uint value){
+ if(P.phase==0u)block_totals.values[group]=value;
+ else if(P.phase==1u)level_totals.values[group]=value;
+}
+void grid(uint slot,uint groups){uint b=slot*4u;dispatches.words[b]=groups;
+ dispatches.words[b+1u]=1u;dispatches.words[b+2u]=1u;dispatches.words[b+3u]=0u;}
+void main(){
+ if(P.phase==6u){if(gl_GlobalInvocationID.x!=0u)return;
+   if(status.words[1u]!=0u||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u||owner_count()==0u){vertices.words[1u]=1u;return;}
+   uint last=owner_count()-1u;uint triangles=offsets.values[last]+counts.values[last];
+   if(triangles==0u||triangles>P.vertex_capacity/12u){status.words[1u]=1u;vertices.words[0u]=0u;vertices.words[1u]=1u;vertices.words[2u]=0u;grid(8u,0u);return;}
+   vertices.words[0u]=triangles*12u;vertices.words[1u]=0u;vertices.words[2u]=triangles;
+   grid(8u,(vertices.words[0u]*18u+255u)/256u);return;
+ }
+ if(status.words[1u]!=0u||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u)return;
+ uint lane=gl_LocalInvocationID.x,index=gl_GlobalInvocationID.x,n=phase_count();
+ if(P.phase==4u){if(index<n)block_offsets.values[index]+=level_offsets.values[gl_WorkGroupID.x];return;}
+ if(P.phase==5u){if(index<n)offsets.values[index]+=block_offsets.values[gl_WorkGroupID.x];return;}
+ scratch[lane]=index<n?value_at(index):0u;barrier();
+ for(uint step=1u;step<256u;step<<=1u){next_scratch[lane]=scratch[lane]+(lane>=step?scratch[lane-step]:0u);barrier();scratch[lane]=next_scratch[lane];barrier();}
+ if(lane==0u)total=scratch[255u];barrier();
+ if(index<n)store_offset(index,lane==0u?0u:scratch[lane-1u]);
+ if(lane==255u&&P.phase!=2u)store_total(gl_WorkGroupID.x,total);
+}

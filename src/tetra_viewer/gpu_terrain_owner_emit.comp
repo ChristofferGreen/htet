@@ -8,8 +8,16 @@ layout(std430,binding=2) readonly buffer Field {uvec4 lanes[];} field;
 layout(std430,binding=3) readonly buffer Counts {uint values[];} counts;
 layout(std430,binding=4) readonly buffer Offsets {uint values[];} offsets;
 layout(std430,binding=5) buffer Vertices {uint words[];} outv;
+layout(std430,binding=7) readonly buffer OwnerHeader {uint words[];} owner_header;
 layout(push_constant) uniform Parameters {uint owner_count;uint vertex_capacity;vec4 origin;uint source_low;uint source_high;uint pad0;uint pad1;} P;
 layout(local_size_x=64) in;
+uvec3 native_owner_invocation_id(){return gl_GlobalInvocationID;}
+uvec3 gated_owner_invocation_id(){
+  const uvec3 id=native_owner_invocation_id();
+  return uvec3(owner_header.words[0u]!=0u||id.x>=owner_header.words[3u]?
+      P.owner_count:id.x,id.y,id.z);
+}
+#define gl_GlobalInvocationID gated_owner_invocation_id()
 const ivec2 E[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),ivec2(1,2),ivec2(1,3),ivec2(2,3));
 const uvec3 CUT[32]=uvec3[32](uvec3(0),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0,3,4),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(1,3,5),uvec3(0),uvec3(0,2,5),uvec3(0,5,3),uvec3(0,1,5),uvec3(0,5,4),uvec3(2,4,5),uvec3(0),uvec3(2,4,5),uvec3(0),uvec3(0,1,5),uvec3(0,5,4),uvec3(0,2,5),uvec3(0,5,3),uvec3(1,3,5),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(0,3,4),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0),uvec3(0));
 float lane(uint i,uint c){return uintBitsToFloat(field.lanes[i][c]);} bool F(float x){return !isnan(x)&&!isinf(x);} bool F3(vec3 x){return F(x.x)&&F(x.y)&&F(x.z);} 

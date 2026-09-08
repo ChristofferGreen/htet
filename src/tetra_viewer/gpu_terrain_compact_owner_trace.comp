@@ -1,0 +1,32 @@
+#version 450
+// Qualification-only, post-completion compact P8 diagnostic.  This shader is
+// never bound by the live route: it reconstructs one materialized owner into a
+// shared test buffer so the parity fixture can identify the first bad stage.
+layout(std430,binding=0) readonly buffer Owners {uint words[];} owners;
+layout(std430,binding=1) readonly buffer Templates {uint words[];} templates;
+layout(std430,binding=2) readonly buffer Field {uvec4 lanes[];} field;
+layout(std430,binding=3) readonly buffer OwnerHeader {uint words[];} owner_header;
+layout(std430,binding=4) buffer Trace {uint words[];} trace;
+// ABI-identical to the compact emitter: `owner` occupies its capacity lane.
+layout(push_constant) uniform Parameters {uint owner;uint unused;vec4 origin;uint source_low;uint source_high;uint pad0;uint pad1;} P;
+layout(local_size_x=1) in;
+const ivec2 E[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),ivec2(1,2),ivec2(1,3),ivec2(2,3));
+const uvec3 CUT[32]=uvec3[32](uvec3(0),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0,3,4),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(1,3,5),uvec3(0),uvec3(0,2,5),uvec3(0,5,3),uvec3(0,1,5),uvec3(0,5,4),uvec3(2,4,5),uvec3(0),uvec3(2,4,5),uvec3(0),uvec3(0,1,5),uvec3(0,5,4),uvec3(0,2,5),uvec3(0,5,3),uvec3(1,3,5),uvec3(0),uvec3(1,2,4),uvec3(1,4,3),uvec3(0,3,4),uvec3(0),uvec3(0,1,2),uvec3(0),uvec3(0),uvec3(0));
+float lane(uint i,uint c){return uintBitsToFloat(field.lanes[i][c]);}
+#include "gpu_terrain_field.glsl"
+uint B(uvec2 p,uint i){return i<64u?(p.x>>i)&1u:(p.y>>(i-64u))&1u;}
+uint D(uvec2 p,uint d,uint i){uint b=3u*(d-i-1u);return B(p,b)|(B(p,b+1u)<<1u)|(B(p,b+2u)<<2u);}
+vec3 R(uint r,uint c){const uint t[48]=uint[48](0,2,3,8,0,3,1,8,4,5,7,8,4,7,6,8,0,1,5,8,0,5,4,8,2,6,7,8,2,7,3,8,0,4,6,8,0,6,2,8,1,3,7,8,1,7,5,8);const vec3 v[9]=vec3[9](vec3(0),vec3(2,0,0),vec3(0,2,0),vec3(2,2,0),vec3(0,0,2),vec3(2,0,2),vec3(0,2,2),vec3(2,2,2),vec3(1));return v[t[r*4u+c]]*.5;}
+bool G(uint o,out vec3 g[4]){uint b=o*12u,h=owners.words[b+1u],r=(h>>26u)&63u,d=(h>>20u)&63u;if(r>=12u||d>38u)return false;for(uint i=0u;i<4u;++i)g[i]=R(r,i);uvec2 p=uvec2(owners.words[b+2u],owners.words[b+3u]);for(uint l=0u;l<d;++l){vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 a[4];for(uint i=0u;i<4u;++i)a[i]=g[i];uint x=D(p,d,l);if(x==0u){g[0]=a[0];g[1]=m[0];g[2]=m[1];g[3]=m[2];}else if(x==1u){g[0]=a[1];g[1]=m[0];g[2]=m[3];g[3]=m[4];}else if(x==2u){g[0]=a[2];g[1]=m[1];g[2]=m[3];g[3]=m[5];}else if(x==3u){g[0]=a[3];g[1]=m[2];g[2]=m[4];g[3]=m[5];}else{uint q=x-4u;const uint A[3]=uint[3](0,1,2),Z[3]=uint[3](5,4,3),H[12]=uint[12](1,2,4,3,0,2,5,3,0,1,5,4);uint k=0u;float x0=dot(m[5]-m[0],m[5]-m[0]),x1=dot(m[4]-m[1],m[4]-m[1]),x2=dot(m[3]-m[2],m[3]-m[2]);if(x1<x0)k=1u;if(x2<(k==0u?x0:x1))k=2u;g[0]=m[A[k]];g[1]=m[H[k*4u+q]];g[2]=m[H[k*4u+((q+1u)&3u)]];g[3]=m[Z[k]];}}return true;}
+vec3 root(vec3 a,vec3 b){float fa=terrain_field_signed_distance(a,lane(1u,3u));for(uint i=0u;i<40u;++i){vec3 m=.5*(a+b);if((fa<0.0)==(terrain_field_signed_distance(m,lane(1u,3u))<0.0)){a=m;fa=terrain_field_signed_distance(m,lane(1u,3u));}else b=m;}return .5*(a+b)*lane(9u,3u)+vec3(lane(9u,0u),lane(9u,1u),lane(9u,2u));}
+void W(uint i,float v){trace.words[i]=floatBitsToUint(v);}
+void main(){
+  trace.words[0u]=P.owner;trace.words[1u]=0u;W(2u,P.origin.x);W(3u,P.origin.y);W(4u,P.origin.z);
+  if(P.owner>=owner_header.words[0u]||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u)return;
+  vec3 g[4];if(!G(P.owner,g))return;
+  trace.words[1u]=1u;uint base=P.owner*12u;for(uint i=0u;i<4u;++i)trace.words[5u+i]=owners.words[base+i];
+  for(uint i=0u;i<4u;++i){W(9u+i*3u,g[i].x);W(10u+i*3u,g[i].y);W(11u+i*3u,g[i].z);}
+  uint mask=owners.words[base+10u],n=templates.words[mask*28u+24u];trace.words[21u]=mask;trace.words[22u]=n;
+  vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[E[e].x]+g[E[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);
+  for(uint cell=0u;cell<n;++cell){uint at=24u+cell*40u,x=templates.words[mask*28u+cell],s=0u,ix[4];for(uint k=0u;k<4u;++k){ix[k]=(x>>(8u*k))&255u;if(terrain_field_signed_distance(p[ix[k]],lane(1u,3u))<0.)s|=1u<<k;}uint eMask=0u;vec3 q[6];for(uint e=0u;e<6u;++e)if(((s>>E[e].x)&1u)!=((s>>E[e].y)&1u)){eMask|=1u<<e;q[e]=root(p[ix[E[e].x]],p[ix[E[e].y]]);}trace.words[at]=x;trace.words[at+1u]=s;trace.words[at+2u]=eMask;uint tc=(eMask==0u?0u:(bitCount(eMask)==3?1u:2u));trace.words[at+3u]=tc;uvec3 c=CUT[s*2u];trace.words[at+4u]=c.x;trace.words[at+5u]=c.y;trace.words[at+6u]=c.z;for(uint k=0u;k<3u;++k){vec3 v=q[c[k]];W(at+7u+k*3u,v.x);W(at+8u+k*3u,v.y);W(at+9u+k*3u,v.z);}if(tc!=0u){vec3 a=q[c.x],b=q[c.y],d=q[c.z];vec3 v[6]=vec3[6](a-P.origin.xyz,terrain_field_project_to_surface_world((a+b)*.5,lane(1u,3u)*.5)-P.origin.xyz,terrain_field_project_to_surface_world((d+a)*.5,lane(1u,3u)*.5)-P.origin.xyz,b-P.origin.xyz,terrain_field_project_to_surface_world((b+d)*.5,lane(1u,3u)*.5)-P.origin.xyz,d-P.origin.xyz);for(uint k=0u;k<6u;++k){W(at+16u+k*3u,v[k].x);W(at+17u+k*3u,v[k].y);W(at+18u+k*3u,v[k].z);}}}
+}

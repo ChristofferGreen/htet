@@ -23,8 +23,10 @@
 
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
+#import <Metal/MTLCounters.h>
 #import <MetalFX/MetalFX.h>
 #import <QuartzCore/CAMetalLayer.h>
+#include <mach/mach_time.h>
 #include <simd/simd.h>
 
 #include <algorithm>
@@ -43,6 +45,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <numbers>
 #include <numeric>
@@ -949,6 +952,23 @@ struct MetalGpuTerrainDiagnosticCounters {
   std::atomic<std::uint64_t> overflow{};
   std::atomic<std::uint64_t> cpu_front_frames{};
   std::atomic<std::uint64_t> cpu_front_violations{};
+  std::atomic<std::uint64_t> device_closure_submitted{};
+  std::atomic<std::uint64_t> device_owner_submitted{};
+  std::atomic<std::uint64_t> p6_requests{};
+  std::atomic<std::uint64_t> cpu_surface_build_requests{};
+  std::atomic<std::uint64_t> immutable_snapshot_builds{};
+  std::atomic<std::uint64_t> candidate_payload_readback_requests{};
+  std::atomic<std::uint64_t> device_front_rejections{};
+  std::atomic<std::uint64_t> device_front_private_commits{};
+  std::atomic<std::uint64_t> device_front_injections{};
+  std::atomic<std::uint64_t> post_bootstrap_seed_attempts{};
+  // These are pointer-identity observations taken at actual draw encoding.
+  // They prove the device-front P8 publication reached a raster consumer
+  // without mapping candidate geometry back to the CPU.
+  std::atomic<std::uint64_t> device_front_display_promotions{};
+  std::atomic<std::uint64_t> device_front_display_frames{};
+  std::atomic<std::uint64_t> device_front_display_binding_violations{};
+  std::atomic<std::uint64_t> device_front_bootstrap_fallback_frames{};
 };
 
 // P5c2 diagnostic slots are deliberately separate from the immutable CPU
@@ -982,6 +1002,9 @@ struct MetalGpuTerrainDiagnosticSlot {
 struct MetalGpuTerrainNativeDiagnosticSlot {
   id<MTLBuffer> field=nil;
   id<MTLBuffer> owners=nil;
+  // P8's CPU-source route supplies a trivial all-active header; P7e4a binds
+  // P7e3c's device-written closure header at this same ABI boundary.
+  id<MTLBuffer> owner_header=nil;
   id<MTLBuffer> templates=nil;
   id<MTLBuffer> roots=nil;
   id<MTLBuffer> counts=nil;
@@ -1000,6 +1023,10 @@ struct MetalGpuTerrainNativeDiagnosticSlot {
   id<MTLBuffer> vertices=nil;
   id<MTLBuffer> commit_control=nil;
   id<MTLBuffer> readback=nil;
+  // P7e4a audits only this two-word private commit control, never an owner or
+  // terrain-vertex payload. It proves both successful private publication and
+  // injected rejection without making a candidate CPU-visible.
+  id<MTLBuffer> control_audit=nil;
   tetra::GpuTerrainFieldTuple tuple{};
   std::uint64_t scene_generation{};
   std::uint64_t source_revision{};
@@ -1007,6 +1034,7 @@ struct MetalGpuTerrainNativeDiagnosticSlot {
   std::uint64_t candidate_identity{};
   tetra::Vec3 render_origin{};
   std::uint32_t vertex_capacity{};
+  bool expected_rejection{};
   bool pending{};
   std::shared_ptr<std::atomic<bool>> completed=
       std::make_shared<std::atomic<bool>>(false);
@@ -1048,6 +1076,10 @@ struct MetalGpuTerrainActiveFront {
   std::uint32_t vertex_capacity{};
   bool seed_pending{};
   bool promoted{};
+  // The compact P8 workspace is reused across flights.  This stamp lets the
+  // renderer publish a new completed private front once per successful P8
+  // audit, rather than repeatedly mutating one display generation.
+  std::uint64_t displayed_p8_commits{};
   std::shared_ptr<std::atomic<bool>> completed=
       std::make_shared<std::atomic<bool>>(false);
 };
@@ -1070,43 +1102,249 @@ struct MetalGpuHierarchyLiveSelectionSlot {
 struct MetalGpuHierarchyLiveSelection {
   id<MTLBuffer> hierarchy=nil;
   id<MTLBuffer> children=nil;
+  id<MTLBuffer> roots=nil;
+  id<MTLBuffer> canonical=nil;
   id<MTLBuffer> parents=nil;
   id<MTLBuffer> face_incidence=nil;
   id<MTLBuffer> edge_topology=nil;
   id<MTLBuffer> edge_ranges=nil;
   id<MTLBuffer> edge_incidence=nil;
   id<MTLBuffer> ancestor_edge_ranges=nil;
+  id<MTLBuffer> orientations=nil;
+  id<MTLBuffer> vertex_topology=nil;
+  id<MTLBuffer> vertex_ranges=nil;
+  id<MTLBuffer> vertex_incidence=nil;
   id<MTLBuffer> inputs=nil;
+  // One bounded closure workspace is deliberately serialized.  P7e4a's
+  // compact owners and scalar header never leave device memory; a subsequent
+  // flight waits for this command buffer to complete before reusing it.
+  id<MTLBuffer> closure_owners=nil;
+  id<MTLBuffer> closure_counts=nil;
+  id<MTLBuffer> closure_offsets=nil;
+  id<MTLBuffer> closure_added_offsets=nil;
+  id<MTLBuffer> closure_block_totals=nil;
+  id<MTLBuffer> closure_block_offsets=nil;
+  id<MTLBuffer> closure_scan_total=nil;
+  id<MTLBuffer> closure_edge_marks=nil;
+  id<MTLBuffer> closure_red_promotions=nil;
+  id<MTLBuffer> closure_status=nil;
+  // Two aligned MTLDispatchThreadgroupsIndirectArguments records: repair and
+  // green.  They stay private; only a
+  // scalar audit copy is exposed to the P7e4a smoke.
+  id<MTLBuffer> closure_dispatch_args=nil;
+  id<MTLBuffer> closure_control_audit=nil;
+  // P7e4a1 compact-list ABI: each private ping/pong allocation starts with
+  // four uints (count, capacity, failure bits, reserved), followed by compact
+  // record IDs. The closure queues share this header shape. The three padded
+  // indirect records are selected-copy, closure, and P8 respectively.
+  id<MTLBuffer> compact_selected_ping=nil;
+  id<MTLBuffer> compact_selected_pong=nil;
+  id<MTLBuffer> compact_closure_queue_ping=nil;
+  id<MTLBuffer> compact_closure_queue_pong=nil;
+  id<MTLBuffer> compact_dispatch_args=nil;
+  id<MTLBuffer> compact_canonical_ranks=nil;
+  id<MTLBuffer> compact_histogram=nil;
+  id<MTLBuffer> compact_histogram_offsets=nil;
+  id<MTLBuffer> compact_bin_bases=nil;
+  // P7e4a1 compact closure sidecars.  These are capacity-sized allocations,
+  // but every data-parallel use is driven by compact_dispatch_args, which is
+  // armed from the device-written compact-list header.
+  id<MTLBuffer> compact_edge_marks=nil;
+  id<MTLBuffer> compact_green_masks=nil;
+  id<MTLBuffer> compact_green_control=nil;
+  id<MTLBuffer> compact_red_status=nil;
+  id<MTLBuffer> compact_expand_counts=nil;
+  id<MTLBuffer> compact_expand_offsets=nil;
+  id<MTLBuffer> compact_block_totals=nil;
+  id<MTLBuffer> compact_block_offsets=nil;
+  id<MTLBuffer> compact_level_totals=nil;
+  id<MTLBuffer> compact_level_offsets=nil;
+  id<MTLBuffer> compact_scan_total=nil;
+  // Device-latched final compact result. It removes ping/pong identity from
+  // the future P8 boundary without asking the CPU which repair round won.
+  id<MTLBuffer> compact_final_active=nil;
+  id<MTLBuffer> compact_final_masks=nil;
+  // P7e4a1's staged 12-word owner stream.  It has no terrain/P8 consumer in
+  // this leaf; validity is published only in compact_owner_header after the
+  // indirect materializer has completed without a device failure.
+  id<MTLBuffer> compact_owner_stream=nil;
+  id<MTLBuffer> compact_owner_header=nil;
+  id<MTLBuffer> compact_owner_dispatch_args=nil;
+  // Dedicated compact P8 workspace.  Unlike the legacy P8c slot, all work
+  // bounds come from compact_owner_header and private indirect records.
+  id<MTLBuffer> compact_p8_field=nil;
+  id<MTLBuffer> compact_p8_templates=nil;
+  id<MTLBuffer> compact_p8_counts=nil;
+  id<MTLBuffer> compact_p8_offsets=nil;
+  id<MTLBuffer> compact_p8_block_totals=nil;
+  id<MTLBuffer> compact_p8_block_offsets=nil;
+  id<MTLBuffer> compact_p8_level_totals=nil;
+  id<MTLBuffer> compact_p8_level_offsets=nil;
+  id<MTLBuffer> compact_p8_signs=nil;
+  id<MTLBuffer> compact_p8_candidate=nil;
+  id<MTLBuffer> compact_p8_status=nil;
+  id<MTLBuffer> compact_p8_dispatches=nil;
+  id<MTLBuffer> compact_p8_microbatch_copy_dispatch=nil;
+  // P7e4k's device-produced three-word indirect grid. The hybrid prefix
+  // admission pass arms it; CPU neither supplies nor observes its count.
+  id<MTLBuffer> compact_p8_triangle_dispatch=nil;
+  id<MTLBuffer> compact_p8_audit=nil;
+  std::uint32_t compact_p8_vertex_capacity{};
+  // Completion-only scalar audit.  It contains stage status, never a
+  // candidate owner or terrain payload, and is inspected only after the
+  // command buffer completes by the live smoke.
+  id<MTLBuffer> compact_closure_audit=nil;
+  std::array<std::uint32_t,13> compact_last_closure_audit{};
+  std::array<std::uint32_t,4> compact_last_selected_header{};
+  std::array<std::uint32_t,4> compact_last_final_active_header{};
+  std::array<std::uint32_t,4> compact_last_final_masks_header{};
+  bool closure_pending{};
+  std::shared_ptr<std::atomic<bool>> closure_completed=
+      std::make_shared<std::atomic<bool>>(false);
+  std::uint32_t closure_slot_index{std::numeric_limits<std::uint32_t>::max()};
   std::array<MetalGpuHierarchyLiveSelectionSlot,3> slots;
   std::uint64_t source_revision{};
   std::uint64_t field_revision{};
   std::uint64_t bootstrap_scene_generation{};
   std::uint32_t record_count{};
+  std::uint32_t root_count{};
   std::uint32_t output_capacity{};
   std::uint32_t mark_word_count{};
+  // The ordinary device display front must reproduce the complete published
+  // CPU cut.  Generic GPU-LOD diagnostics retain view-local selection.
+  bool require_complete_front{};
   std::uint64_t submitted{};
   std::uint64_t completed{};
   std::uint64_t accepted{};
   std::uint64_t stale_rejected{};
   std::uint64_t failed{};
   std::uint64_t cpu_generation_violations{};
+  std::uint64_t indirect_zero_grid_observations{};
+  std::uint64_t compact_closure_encoded{};
+  std::uint64_t compact_closure_completed{};
+  std::uint64_t compact_red_encoded{};
+  std::uint64_t compact_closure_rejected{};
+  std::uint64_t compact_quiescent{};
+  std::uint64_t compact_p8_encoded{};
+  std::uint64_t compact_p8_completed{};
+  std::uint64_t compact_p8_private_commits{};
+  std::uint64_t compact_p8_rejected{};
+  std::array<std::uint32_t,6> compact_p8_last_audit{};
+  std::array<std::uint32_t,4> compact_p8_last_owner_header{};
+  // Device-front progress is host-side timing of submitted boundaries and
+  // completed scalar audits.  It deliberately contains no owner or terrain
+  // payload and makes an automated-launch timeout diagnostically useful.
+  std::uint64_t compact_owner_materialization_encoded{};
+  std::chrono::steady_clock::time_point device_front_bootstrap_at{};
+  std::chrono::steady_clock::time_point device_front_selector_at{};
+  std::chrono::steady_clock::time_point device_front_closure_at{};
+  std::chrono::steady_clock::time_point device_front_materializer_at{};
+  std::chrono::steady_clock::time_point device_front_p8_at{};
+  std::chrono::steady_clock::time_point device_front_p8_completed_at{};
+  double device_front_last_p8_completion_milliseconds{-1.0};
   std::uint64_t cursor{};
 
   [[nodiscard]] bool ready() const noexcept {
-    return hierarchy!=nil&&children!=nil&&parents!=nil&&face_incidence!=nil&&edge_topology!=nil&&edge_ranges!=nil&&edge_incidence!=nil&&ancestor_edge_ranges!=nil&&
-        inputs!=nil&&record_count!=0U&&
+    return hierarchy!=nil&&children!=nil&&roots!=nil&&parents!=nil&&face_incidence!=nil&&edge_topology!=nil&&edge_ranges!=nil&&edge_incidence!=nil&&ancestor_edge_ranges!=nil&&
+        inputs!=nil&&record_count!=0U&&root_count!=0U&&root_count<=12U&&
         mark_word_count!=0U;
   }
+  [[nodiscard]] bool closure_ready() const noexcept {
+    return ready()&&canonical!=nil&&orientations!=nil&&vertex_topology!=nil&&
+        vertex_ranges!=nil&&vertex_incidence!=nil&&closure_owners!=nil&&
+        closure_counts!=nil&&closure_offsets!=nil&&closure_added_offsets!=nil&&
+        closure_block_totals!=nil&&closure_block_offsets!=nil&&
+        closure_scan_total!=nil&&closure_edge_marks!=nil&&
+        closure_red_promotions!=nil&&closure_status!=nil&&
+        closure_dispatch_args!=nil&&closure_control_audit!=nil;
+  }
+  [[nodiscard]] bool compact_worklist_ready() const noexcept {
+    return ready()&&compact_selected_ping!=nil&&compact_selected_pong!=nil&&
+        compact_closure_queue_ping!=nil&&compact_closure_queue_pong!=nil&&
+        compact_dispatch_args!=nil&&compact_canonical_ranks!=nil&&
+        compact_histogram!=nil&&compact_histogram_offsets!=nil&&
+        compact_bin_bases!=nil;
+  }
+  [[nodiscard]] bool compact_closure_ready() const noexcept {
+    return compact_worklist_ready()&&orientations!=nil&&vertex_topology!=nil&&
+        vertex_ranges!=nil&&vertex_incidence!=nil&&compact_edge_marks!=nil&&
+        compact_green_masks!=nil&&compact_green_control!=nil&&
+        compact_red_status!=nil&&compact_expand_counts!=nil&&
+        compact_expand_offsets!=nil&&compact_block_totals!=nil&&
+        compact_block_offsets!=nil&&compact_level_totals!=nil&&
+        compact_level_offsets!=nil&&compact_scan_total!=nil&&
+        compact_final_active!=nil&&compact_final_masks!=nil&&
+        compact_closure_audit!=nil;
+  }
+  [[nodiscard]] bool compact_owner_ready() const noexcept {
+    return compact_closure_ready()&&compact_owner_stream!=nil&&
+        compact_owner_header!=nil&&compact_owner_dispatch_args!=nil;
+  }
+  [[nodiscard]] bool compact_p8_ready() const noexcept {
+    return compact_owner_ready()&&compact_p8_field!=nil&&
+        compact_p8_templates!=nil&&compact_p8_counts!=nil&&
+        compact_p8_offsets!=nil&&compact_p8_block_totals!=nil&&
+        compact_p8_block_offsets!=nil&&compact_p8_level_totals!=nil&&
+        compact_p8_level_offsets!=nil&&compact_p8_signs!=nil&&
+        compact_p8_candidate!=nil&&compact_p8_status!=nil&&
+        compact_p8_dispatches!=nil&&compact_p8_microbatch_copy_dispatch!=nil&&
+        compact_p8_triangle_dispatch!=nil&&compact_p8_audit!=nil&&
+        compact_p8_vertex_capacity!=0U;
+  }
 };
+
+bool ensure_metal_gpu_hierarchy_compact_p8_workspace(
+    id<MTLDevice> device,MetalGpuHierarchyLiveSelection& selection,
+    std::uint32_t vertex_capacity) {
+  if(device==nil||!selection.compact_owner_ready()||vertex_capacity==0U)return false;
+  if(selection.compact_p8_ready()&&
+     selection.compact_p8_vertex_capacity==vertex_capacity)return true;
+  const auto owner_capacity=selection.output_capacity;
+  const auto blocks=(owner_capacity+255U)/256U;
+  const auto levels=std::max(1U,(blocks+255U)/256U);
+  const auto words=[](std::size_t count)->std::optional<NSUInteger>{
+    if(count>std::numeric_limits<NSUInteger>::max()/sizeof(std::uint32_t))
+      return std::nullopt;
+    return static_cast<NSUInteger>(count*sizeof(std::uint32_t));
+  };
+  const auto count_words=words(owner_capacity),block_words=words(blocks),
+      level_words=words(levels),sign_words=words(std::size_t(owner_capacity)*3U),
+      candidate_words=words(4U+std::size_t(vertex_capacity)*18U);
+  if(!count_words||!block_words||!level_words||!sign_words||!candidate_words)return false;
+  selection.compact_p8_counts=[device newBufferWithLength:*count_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_offsets=[device newBufferWithLength:*count_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_block_totals=[device newBufferWithLength:*block_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_block_offsets=[device newBufferWithLength:*block_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_level_totals=[device newBufferWithLength:*level_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_level_offsets=[device newBufferWithLength:*level_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_signs=[device newBufferWithLength:*sign_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_candidate=[device newBufferWithLength:*candidate_words options:MTLResourceStorageModePrivate];
+  selection.compact_p8_status=[device newBufferWithLength:2U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  selection.compact_p8_dispatches=[device newBufferWithLength:9U*4U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  selection.compact_p8_microbatch_copy_dispatch=[device newBufferWithLength:
+      4U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  selection.compact_p8_triangle_dispatch=[device newBufferWithLength:
+      3U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  // Six P8 result words plus the four-word staged owner header are the
+  // bounded failure audit for a live flight.  Neither is terrain payload.
+  selection.compact_p8_audit=[device newBufferWithLength:10U*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+  selection.compact_p8_vertex_capacity=vertex_capacity;
+  return selection.compact_p8_ready();
+}
 
 bool configure_metal_gpu_hierarchy_live_selection(
     id<MTLDevice> device,MetalGpuHierarchyLiveSelection& selection,
     const tetra::GpuHierarchySnapshot& snapshot,std::uint64_t field_revision,
     std::uint64_t bootstrap_scene_generation) {
   tetra::validate_gpu_hierarchy_snapshot(snapshot);
-  constexpr std::size_t maximum_records=1048576U;
   if(snapshot.header.source_world_revision==0U||field_revision==0U||
-     snapshot.records.empty()||snapshot.records.size()>maximum_records||
+     // Production directories legitimately contain more than one million
+     // immutable ancestry records.  The old fixed diagnostic cap rejected
+     // such a front before a single GPU stage ran, guaranteeing that the
+     // device renderer could never reproduce the production CPU front.
+     // Every downstream dispatch and byte computation is checked below.
+     snapshot.records.empty()||
+     snapshot.records.size()>(std::size_t{1U}<<24U)||
      snapshot.records.size()>std::numeric_limits<std::uint32_t>::max())return false;
   if(selection.ready()&&selection.source_revision==
          snapshot.header.source_world_revision&&
@@ -1125,6 +1363,15 @@ bool configure_metal_gpu_hierarchy_live_selection(
       snapshot.records.size()*sizeof(snapshot.records.front()));
   replacement.children=make_shared(snapshot.child_indices.data(),
       snapshot.child_indices.size()*sizeof(std::uint32_t));
+  std::vector<std::uint32_t> root_indices;
+  for(std::uint32_t index=0U;index<snapshot.records.size();++index)
+    if((snapshot.records[index].child_mask_flags&0x800U)!=0U)
+      root_indices.push_back(index);
+  if(root_indices.empty()||root_indices.size()>12U)return false;
+  replacement.roots=make_shared(root_indices.data(),
+      root_indices.size()*sizeof(std::uint32_t));
+  replacement.canonical=make_shared(snapshot.canonical_record_indices.data(),
+      snapshot.canonical_record_indices.size()*sizeof(std::uint32_t));
   replacement.parents=make_shared(snapshot.parent_records.data(),
       snapshot.parent_records.size()*sizeof(std::uint32_t));
   replacement.face_incidence=make_shared(snapshot.face_incidence.data(),
@@ -1133,14 +1380,140 @@ bool configure_metal_gpu_hierarchy_live_selection(
   replacement.edge_ranges=make_shared(snapshot.edge_ranges.data(),snapshot.edge_ranges.size()*sizeof(snapshot.edge_ranges.front()));
   replacement.edge_incidence=make_shared(snapshot.edge_incidence.data(),snapshot.edge_incidence.size()*sizeof(snapshot.edge_incidence.front()));
   replacement.ancestor_edge_ranges=make_shared(snapshot.ancestor_edge_ranges.data(),snapshot.ancestor_edge_ranges.size()*sizeof(std::uint32_t));
+  if(!snapshot.vertex_topology.empty()){
+    replacement.orientations=make_shared(snapshot.orientation_flags.data(),
+        snapshot.orientation_flags.size()*sizeof(std::uint32_t));
+    replacement.vertex_topology=make_shared(snapshot.vertex_topology.data(),
+        snapshot.vertex_topology.size()*sizeof(snapshot.vertex_topology.front()));
+    replacement.vertex_ranges=make_shared(snapshot.vertex_ranges.data(),
+        snapshot.vertex_ranges.size()*sizeof(snapshot.vertex_ranges.front()));
+    replacement.vertex_incidence=make_shared(snapshot.vertex_incidence.data(),
+        snapshot.vertex_incidence.size()*sizeof(snapshot.vertex_incidence.front()));
+  }
   replacement.inputs=make_shared(snapshot.selection_records.data(),
       snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
   replacement.source_revision=snapshot.header.source_world_revision;
   replacement.field_revision=field_revision;
   replacement.bootstrap_scene_generation=bootstrap_scene_generation;
   replacement.record_count=static_cast<std::uint32_t>(snapshot.records.size());
+  replacement.root_count=static_cast<std::uint32_t>(root_indices.size());
   replacement.output_capacity=replacement.record_count;
   replacement.mark_word_count=static_cast<std::uint32_t>(mark_words);
+  // This allocation establishes P7e4a1's compact selected-list and closure
+  // queue ABI. Capacity is an allocation guard, never a normal dispatch
+  // bound: each later stage takes its grid from a private produced count.
+  const auto compact_words=static_cast<std::size_t>(4U)+snapshot.records.size();
+  if(compact_words>std::numeric_limits<NSUInteger>::max()/sizeof(std::uint32_t))
+    return false;
+  const auto compact_bytes=static_cast<NSUInteger>(compact_words*sizeof(std::uint32_t));
+  replacement.compact_selected_ping=[device newBufferWithLength:compact_bytes
+      options:MTLResourceStorageModePrivate];
+  replacement.compact_selected_pong=[device newBufferWithLength:compact_bytes
+      options:MTLResourceStorageModePrivate];
+  replacement.compact_closure_queue_ping=[device newBufferWithLength:compact_bytes
+      options:MTLResourceStorageModePrivate];
+  replacement.compact_closure_queue_pong=[device newBufferWithLength:compact_bytes
+      options:MTLResourceStorageModePrivate];
+  replacement.compact_dispatch_args=[device newBufferWithLength:12U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModePrivate];
+  std::vector<std::uint32_t> canonical_ranks(snapshot.records.size());
+  for(std::uint32_t rank=0U;rank<snapshot.canonical_record_indices.size();++rank)
+    canonical_ranks[snapshot.canonical_record_indices[rank]]=rank;
+  replacement.compact_canonical_ranks=make_shared(canonical_ranks.data(),
+      canonical_ranks.size()*sizeof(std::uint32_t));
+  const auto histogram_words=((snapshot.records.size()+255U)/256U)*16U;
+  replacement.compact_histogram=[device newBufferWithLength:
+      histogram_words*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  replacement.compact_histogram_offsets=[device newBufferWithLength:
+      histogram_words*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+  replacement.compact_bin_bases=[device newBufferWithLength:16U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModePrivate];
+  if(!replacement.compact_worklist_ready())return false;
+  if(!snapshot.vertex_topology.empty()){
+    const auto words=[](std::size_t count)->std::optional<NSUInteger>{
+      if(count>std::numeric_limits<NSUInteger>::max()/sizeof(std::uint32_t))
+        return std::nullopt;
+      return static_cast<NSUInteger>(count*sizeof(std::uint32_t));
+    };
+    const auto blocks=(snapshot.records.size()+255U)/256U;
+    const auto owner_words=words(snapshot.records.size()*12U);
+    const auto record_words=words(snapshot.records.size());
+    const auto block_words=words(blocks);
+    const auto edge_words=words(snapshot.edge_ranges.size());
+    const auto promotion_words=words(mark_words);
+    if(!owner_words||!record_words||!block_words||!edge_words||!promotion_words)
+      return false;
+    replacement.closure_owners=[device newBufferWithLength:*owner_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_counts=[device newBufferWithLength:*record_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_offsets=[device newBufferWithLength:*record_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_added_offsets=[device newBufferWithLength:*record_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_block_totals=[device newBufferWithLength:*block_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_block_offsets=[device newBufferWithLength:*block_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_scan_total=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_edge_marks=[device newBufferWithLength:*edge_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_red_promotions=[device newBufferWithLength:*promotion_words
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_status=[device newBufferWithLength:5U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_dispatch_args=[device newBufferWithLength:8U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.closure_control_audit=[device newBufferWithLength:8U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModeShared];
+    // The compact path deliberately has distinct sidecars from P7e4a's
+    // fenced full-snapshot prototype above.  A normal P7e4a1 flight must not
+    // accidentally bind a record-count owner stream from that prototype.
+    const auto compact_edge_words=words(std::max<std::size_t>(snapshot.edge_ranges.size(),1U));
+    const auto compact_list_words=words(compact_words);
+    const auto compact_record_words=words(snapshot.records.size());
+    const auto compact_block_words=words(std::max<std::size_t>(blocks,1U));
+    const auto compact_level_words=words(std::max<std::size_t>((blocks+255U)/256U,1U));
+    if(!compact_edge_words||!compact_list_words||!compact_record_words||
+       !compact_block_words||!compact_level_words)return false;
+    replacement.compact_edge_marks=[device newBufferWithLength:*compact_edge_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_green_masks=[device newBufferWithLength:*compact_list_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_green_control=[device newBufferWithLength:5U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_red_status=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_expand_counts=[device newBufferWithLength:*compact_record_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_expand_offsets=[device newBufferWithLength:*compact_record_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_block_totals=[device newBufferWithLength:*compact_block_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_block_offsets=[device newBufferWithLength:*compact_block_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_level_totals=[device newBufferWithLength:*compact_level_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_level_offsets=[device newBufferWithLength:*compact_level_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_scan_total=[device newBufferWithLength:sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_final_active=[device newBufferWithLength:*compact_list_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_final_masks=[device newBufferWithLength:*compact_list_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_owner_stream=[device newBufferWithLength:*owner_words
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_owner_header=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    replacement.compact_owner_dispatch_args=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModePrivate];
+    // Scalar only: the selected/final compact-list headers localize a
+    // handoff failure without exposing record IDs or terrain payload.
+    replacement.compact_closure_audit=[device newBufferWithLength:25U*sizeof(std::uint32_t)
+        options:MTLResourceStorageModeShared];
+  }
   for(auto& slot:replacement.slots){
     slot.tuple=[device newBufferWithLength:sizeof(tetra::GpuHierarchySelectionTuple)
         options:MTLResourceStorageModeShared];
@@ -1148,16 +1521,74 @@ bool configure_metal_gpu_hierarchy_live_selection(
         options:MTLResourceStorageModePrivate];
     if(slot.tuple==nil||slot.marks==nil)return false;
   }
-  if(replacement.hierarchy==nil||replacement.children==nil||
+  if(replacement.hierarchy==nil||replacement.children==nil||replacement.roots==nil||replacement.canonical==nil||
      replacement.parents==nil||replacement.face_incidence==nil||replacement.edge_topology==nil||replacement.edge_ranges==nil||replacement.edge_incidence==nil||replacement.ancestor_edge_ranges==nil||
      replacement.inputs==nil)
     return false;
+  if(!snapshot.vertex_topology.empty()&&
+     (!replacement.closure_ready()||!replacement.compact_closure_ready()))return false;
   selection=std::move(replacement);
+  selection.device_front_bootstrap_at=std::chrono::steady_clock::now();
   return true;
+}
+
+const char* metal_gpu_hierarchy_device_front_phase(
+    const MetalGpuHierarchyLiveSelection& selection) {
+  if(!selection.ready())return "bootstrap";
+  if(selection.compact_p8_encoded>selection.compact_p8_completed)
+    return "p8_in_flight";
+  if(selection.compact_p8_private_commits!=0U)return "private_front_committed";
+  if(selection.compact_p8_rejected!=0U)return "p8_rejected";
+  if(selection.compact_owner_materialization_encoded!=0U)return "p8_pending";
+  if(selection.compact_closure_encoded!=0U)return "owner_materializer_pending";
+  if(selection.submitted!=0U)return "closure_pending";
+  return "selector_pending";
 }
 
 void retire_metal_gpu_hierarchy_live_selection(
     MetalGpuHierarchyLiveSelection& selection) {
+  if(selection.closure_pending&&
+     selection.closure_completed->load(std::memory_order_acquire)) {
+    const auto* audit=static_cast<const std::uint32_t*>(
+        selection.compact_closure_audit.contents);
+    // The audit is copied only after the final compact green pass.  It is a
+    // completion diagnostic, not an intermediate count readback: words 2
+    // and 5 are respectively final-green and red failure latches.
+    if(audit!=nullptr)std::copy_n(audit,selection.compact_last_closure_audit.size(),
+                                  selection.compact_last_closure_audit.begin());
+    if(audit!=nullptr&&audit[2U]==0U&&audit[5U]==0U) {
+      ++selection.compact_closure_completed;
+      if(audit[4U]!=0U&&audit[12U]!=0U)++selection.compact_quiescent;
+    } else ++selection.compact_closure_rejected;
+    if(audit!=nullptr) {
+      std::copy_n(audit+13U,selection.compact_last_selected_header.size(),
+                  selection.compact_last_selected_header.begin());
+      std::copy_n(audit+17U,selection.compact_last_final_active_header.size(),
+                  selection.compact_last_final_active_header.begin());
+      std::copy_n(audit+21U,selection.compact_last_final_masks_header.size(),
+                  selection.compact_last_final_masks_header.begin());
+    }
+    if(selection.compact_p8_encoded>selection.compact_p8_completed) {
+      const auto* p8=static_cast<const std::uint32_t*>(
+          selection.compact_p8_audit.contents);
+      ++selection.compact_p8_completed;
+      if(p8!=nullptr)std::copy_n(p8,selection.compact_p8_last_audit.size(),
+                                 selection.compact_p8_last_audit.begin());
+      if(p8!=nullptr)std::copy_n(p8+selection.compact_p8_last_audit.size(),
+                                 selection.compact_p8_last_owner_header.size(),
+                                 selection.compact_p8_last_owner_header.begin());
+      if(p8!=nullptr&&p8[0U]==1U&&p8[1U]==0U&&p8[2U]!=0U&&
+         p8[3U]==0U&&p8[4U]!=0U)++selection.compact_p8_private_commits;
+      else ++selection.compact_p8_rejected;
+      selection.device_front_p8_completed_at=std::chrono::steady_clock::now();
+      if(selection.device_front_p8_at.time_since_epoch().count()!=0)
+        selection.device_front_last_p8_completion_milliseconds=
+            std::chrono::duration<double,std::milli>(
+                selection.device_front_p8_completed_at-
+                selection.device_front_p8_at).count();
+    }
+    selection.closure_pending=false;
+  }
   for(auto& slot:selection.slots)if(slot.pending&&
       slot.completed->load(std::memory_order_acquire)){
     slot.pending=false;
@@ -1167,8 +1598,1152 @@ void retire_metal_gpu_hierarchy_live_selection(
   }
 }
 
+// P7e4a1's real live closure schedule.  It starts from P7e2's appended
+// selection list, never from the full immutable record array.  All candidate
+// work grids come from the private compact-list header; scalar controllers
+// only arm/validate those grids and are intentionally fixed in number.
+//
+// The final canonical list and green masks remain private in `selection` for
+// P8's future owner materializer.  This function deliberately stops there:
+// the old P8 owner shaders take a CPU-sized owner count and cannot consume
+// this ABI without reintroducing the record-count dispatch this path removes.
+bool encode_metal_gpu_hierarchy_live_compact_closure(
+    id<MTLCommandBuffer> command,id<MTLComputePipelineState> canonicalize,
+    id<MTLComputePipelineState> green,id<MTLComputePipelineState> red,
+    id<MTLComputePipelineState> red_scan,
+    MetalGpuHierarchyLiveSelection& selection,bool inject_green_budget_failure,
+    std::uint32_t diagnostic_stop=std::numeric_limits<std::uint32_t>::max()) {
+  if(!selection.compact_closure_ready()||selection.closure_pending||
+     canonicalize==nil||green==nil||red==nil||red_scan==nil)return false;
+  constexpr NSUInteger input_grid_offset=0U;
+  constexpr NSUInteger output_grid_offset=4U*sizeof(std::uint32_t);
+  constexpr std::uint32_t green_round_limit=8U;
+  constexpr std::uint32_t red_repair_budget=8U;
+  const auto records=selection.record_count;
+  id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+  // `compact_selected_ping` was just filled by the worklist pass.  Every
+  // other capacity-sized sidecar is either completely overwritten before a
+  // successful consumer reads it or is fail-closed by its compact four-word
+  // header.  Resetting whole allocations here needlessly dominated the
+  // no-red flight, especially as the snapshot capacity grows.  Clear just
+  // those headers, so a malformed/failed command cannot reuse a previous
+  // result while the valid data-parallel stages retain their exact writes.
+  constexpr NSUInteger compact_header_bytes=4U*sizeof(std::uint32_t);
+  for(id<MTLBuffer> buffer:{selection.compact_selected_pong,
+      selection.compact_closure_queue_ping,selection.compact_closure_queue_pong,
+      selection.compact_final_active,selection.compact_final_masks})
+    [clear fillBuffer:buffer range:NSMakeRange(0U,compact_header_bytes) value:0U];
+  // Red status carries a per-flight failure/round latch, so its complete tiny
+  // control record (not a capacity-sized payload) must start cleared.
+  [clear fillBuffer:selection.compact_red_status
+              range:NSMakeRange(0U,compact_header_bytes) value:0U];
+  [clear endEncoding];
+  // Diagnostic-only cumulative stop points let the benchmark place command
+  // boundaries at valid dependencies without counters or CPU readback. Normal
+  // closure uses the default sentinel and retains its original one-buffer ABI.
+  if(diagnostic_stop==0U)return true;
+
+  const auto encode_canonical=[&](id<MTLBuffer> first,id<MTLBuffer> second,
+                                   NSUInteger grid_offset)->id<MTLBuffer>{
+    id<MTLBuffer> input=first,output=second;
+    // The radix passes depend on the preceding pass's private buffers, but
+    // do not need a command-encoder boundary.  Keeping them in one compute
+    // encoder avoids a large number of tiny Metal encoder submissions while
+    // retaining the same ordered dispatch schedule and an explicit buffer
+    // visibility barrier between every dependent pass.
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    for(std::uint32_t shift=0U;shift<24U;shift+=4U)
+      for(std::uint32_t phase=0U;phase<3U;++phase) {
+        const std::array<std::uint32_t,4> parameters{records,phase,shift,0U};
+        [encoder setComputePipelineState:canonicalize];
+        // Generated MSL ABI: device quiescence gate, input, parameters,
+        // output, ranks, histogram, bin bases, histogram offsets.
+        [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:0U];
+        [encoder setBuffer:input offset:0U atIndex:1U];
+        [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+        [encoder setBuffer:output offset:0U atIndex:3U];
+        [encoder setBuffer:selection.compact_canonical_ranks offset:0U atIndex:4U];
+        [encoder setBuffer:selection.compact_histogram offset:0U atIndex:5U];
+        [encoder setBuffer:selection.compact_bin_bases offset:0U atIndex:6U];
+        [encoder setBuffer:selection.compact_histogram_offsets offset:0U atIndex:7U];
+        if(phase==1U)
+          [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+               threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+        else
+          [encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+              indirectBufferOffset:grid_offset
+              threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        if(phase==2U)std::swap(input,output);
+      }
+    [encoder endEncoding];
+    return input;
+  };
+  const auto encode_green=[&](id<MTLBuffer> active,bool inject_failure){
+    // Phase 0 itself initializes the mutable sparse sidecars.  Do not clear
+    // them on the host before testing the red quiescence gate: a gated final
+    // green pass must preserve the already latched masks and zero-grid count.
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    const auto dispatch=[&](std::uint32_t phase,bool indirect){
+      const std::array<std::uint32_t,5> parameters{records,
+          static_cast<std::uint32_t>(selection.edge_ranges.length/sizeof(std::uint32_t)/2U),
+          static_cast<std::uint32_t>(selection.ancestor_edge_ranges.length/sizeof(std::uint32_t)),
+          green_round_limit,phase};
+      [encoder setComputePipelineState:green];
+      // Generated MSL ABI: queue, dispatch, ranks, active, parameters,
+      // topology, masks, marks, ancestors.
+      [encoder setBuffer:selection.compact_green_control offset:0U atIndex:0U];
+      [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      [encoder setBuffer:selection.compact_canonical_ranks offset:0U atIndex:2U];
+      [encoder setBuffer:active offset:0U atIndex:3U];
+      [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
+      [encoder setBuffer:selection.edge_topology offset:0U atIndex:5U];
+      [encoder setBuffer:selection.compact_green_masks offset:0U atIndex:6U];
+      [encoder setBuffer:selection.compact_edge_marks offset:0U atIndex:7U];
+      [encoder setBuffer:selection.ancestor_edge_ranges offset:0U atIndex:8U];
+      if(indirect)
+        [encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+            indirectBufferOffset:input_grid_offset
+            threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+            threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    };
+    dispatch(0U,false); dispatch(1U,true); dispatch(2U,true);
+    if(inject_failure)dispatch(7U,false);
+    else for(std::uint32_t round=0U;round<green_round_limit;++round) {
+      dispatch(3U,false);dispatch(4U,true);dispatch(5U,false);
+    }
+    dispatch(8U,false);
+    dispatch(6U,true);
+    [encoder endEncoding];
+  };
+  const auto encode_red=[&](id<MTLBuffer> active,id<MTLBuffer> output){
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    const auto red_dispatch=[&](std::uint32_t phase,bool indirect){
+      const std::array<std::uint32_t,6> parameters{records,
+          static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+          static_cast<std::uint32_t>(selection.vertex_ranges.length/(2U*sizeof(std::uint32_t))),
+          static_cast<std::uint32_t>(selection.vertex_incidence.length/(2U*sizeof(std::uint32_t))),
+          red_repair_budget,phase};
+      [encoder setComputePipelineState:red];
+      // Generated MSL ABI mirrors the compact-red fixture.
+      [encoder setBuffer:selection.compact_red_status offset:0U atIndex:0U];
+      [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+      [encoder setBuffer:selection.compact_canonical_ranks offset:0U atIndex:3U];
+      [encoder setBuffer:active offset:0U atIndex:4U];
+      [encoder setBuffer:selection.parents offset:0U atIndex:5U];
+      [encoder setBuffer:selection.hierarchy offset:0U atIndex:6U];
+      [encoder setBuffer:selection.vertex_topology offset:0U atIndex:7U];
+      [encoder setBuffer:selection.vertex_ranges offset:0U atIndex:8U];
+      [encoder setBuffer:selection.vertex_incidence offset:0U atIndex:9U];
+      [encoder setBuffer:output offset:0U atIndex:10U];
+      [encoder setBuffer:selection.compact_green_masks offset:0U atIndex:11U];
+      [encoder setBuffer:selection.compact_scan_total offset:0U atIndex:12U];
+      [encoder setBuffer:selection.compact_final_active offset:0U atIndex:13U];
+      [encoder setBuffer:selection.compact_final_masks offset:0U atIndex:14U];
+      [encoder setBuffer:selection.compact_expand_counts offset:0U atIndex:15U];
+      [encoder setBuffer:selection.compact_expand_offsets offset:0U atIndex:16U];
+      [encoder setBuffer:selection.children offset:0U atIndex:17U];
+      if(indirect)[encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+          indirectBufferOffset:(phase==3U||phase==7U)?output_grid_offset:input_grid_offset
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    };
+    const auto scan_dispatch=[&](std::uint32_t phase,bool indirect){
+      [encoder setComputePipelineState:red_scan];
+      [encoder setBuffer:active offset:0U atIndex:0U];
+      [encoder setBytes:&phase length:sizeof(phase) atIndex:1U];
+      [encoder setBuffer:selection.compact_expand_counts offset:0U atIndex:2U];
+      [encoder setBuffer:selection.compact_expand_offsets offset:0U atIndex:3U];
+      [encoder setBuffer:selection.compact_block_totals offset:0U atIndex:4U];
+      [encoder setBuffer:selection.compact_block_offsets offset:0U atIndex:5U];
+      [encoder setBuffer:selection.compact_level_totals offset:0U atIndex:6U];
+      [encoder setBuffer:selection.compact_level_offsets offset:0U atIndex:7U];
+      [encoder setBuffer:selection.compact_scan_total offset:0U atIndex:8U];
+      if(indirect)[encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+          indirectBufferOffset:phase==7U?output_grid_offset:input_grid_offset
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      // Phase 2 scans the tiny superblock stream with the same 256-lane
+      // prefix primitive.  It has one workgroup but not one thread: with
+      // more than one superblock, a scalar dispatch reads uninitialized
+      // threadgroup lanes and can falsely report capacity exhaustion.
+      else if(phase==2U)[encoder dispatchThreads:MTLSizeMake(256U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    };
+    red_dispatch(0U,false);red_dispatch(1U,true);
+    scan_dispatch(0U,true);scan_dispatch(1U,true);scan_dispatch(2U,false);
+    scan_dispatch(3U,true);red_dispatch(2U,false);red_dispatch(3U,true);
+    red_dispatch(4U,false);
+    [encoder endEncoding];
+  };
+
+  // P7e2 append -> canonical compact list -> bounded green/red fixed point.
+  // The red output grid is wholly device-produced and becomes the next
+  // canonicalizer's input grid.  We intentionally execute the bounded
+  // schedule even after quiescence: no CPU observes a red count between
+  // rounds.  The red terminal phase latches a failure if repair remains at
+  // the end of the fixed budget.
+  id<MTLBuffer> canonical_active=encode_canonical(selection.compact_selected_ping,
+      selection.compact_selected_pong,input_grid_offset);
+  if(diagnostic_stop==1U)return true;
+  if(inject_green_budget_failure)encode_green(canonical_active,true);
+  else {
+    for(std::uint32_t round=0U;round<red_repair_budget;++round) {
+      encode_green(canonical_active,false);
+      if(diagnostic_stop==2U)return true;
+      id<MTLBuffer> red_output=(round&1U)==0U?
+          selection.compact_closure_queue_pong:
+          selection.compact_closure_queue_ping;
+      // A red round writes every live entry before consuming it: phase 0
+      // overwrites the compact header, phase 1 overwrites every live count,
+      // the four scan phases overwrite their complete live block hierarchy,
+      // and phase 3 scatters every output position below the newly written
+      // total.  The initial closure clear already initializes failure state.
+      // Clearing these capacity-sized sidecars again was therefore pure work;
+      // after device quiescence it occurred eight times despite all indirect
+      // grids being zero.  Retaining the fixed repair schedule but removing
+      // this redundant blit preserves the device-only fail-closed boundary.
+      if(diagnostic_stop==3U)return true;
+      encode_red(canonical_active,red_output);
+      if(diagnostic_stop==4U)return true;
+      ++selection.compact_red_encoded;
+      id<MTLBuffer> canonical_destination=(round&1U)==0U?
+          selection.compact_selected_ping:selection.compact_selected_pong;
+      canonical_active=encode_canonical(red_output,canonical_destination,
+          output_grid_offset);
+      if(diagnostic_stop==5U)return true;
+      // Only after the just-produced canonical list exists may red mark the
+      // next scheduled round as quiescent.  From then on green/red grids and
+      // every radix phase are gated on device; the host never reads a count
+      // or decides whether another repair is needed.
+      const std::uint32_t quiesce_phase=6U;
+      const std::array<std::uint32_t,6> quiesce_parameters{records,
+          static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+          static_cast<std::uint32_t>(selection.vertex_ranges.length/(2U*sizeof(std::uint32_t))),
+          static_cast<std::uint32_t>(selection.vertex_incidence.length/(2U*sizeof(std::uint32_t))),
+          red_repair_budget,quiesce_phase};
+      id<MTLComputeCommandEncoder> quiesce=[command computeCommandEncoder];
+      [quiesce setComputePipelineState:red];
+      [quiesce setBuffer:selection.compact_red_status offset:0U atIndex:0U];
+      [quiesce setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      [quiesce setBytes:quiesce_parameters.data() length:sizeof(quiesce_parameters) atIndex:2U];
+      [quiesce setBuffer:selection.compact_final_active offset:0U atIndex:13U];
+      [quiesce setBuffer:selection.compact_final_masks offset:0U atIndex:14U];
+      [quiesce dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [quiesce endEncoding];
+      id<MTLComputeCommandEncoder> final_copy=[command computeCommandEncoder];
+      [final_copy setComputePipelineState:red];
+      [final_copy setBuffer:selection.compact_red_status offset:0U atIndex:0U];
+      [final_copy setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      const std::array<std::uint32_t,6> final_copy_parameters{records,
+          static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+          static_cast<std::uint32_t>(selection.vertex_ranges.length/(2U*sizeof(std::uint32_t))),
+          static_cast<std::uint32_t>(selection.vertex_incidence.length/(2U*sizeof(std::uint32_t))),
+          red_repair_budget,7U};
+      [final_copy setBytes:final_copy_parameters.data() length:sizeof(final_copy_parameters) atIndex:2U];
+      [final_copy setBuffer:canonical_active offset:0U atIndex:4U];
+      [final_copy setBuffer:selection.compact_green_masks offset:0U atIndex:11U];
+      [final_copy setBuffer:selection.compact_final_active offset:0U atIndex:13U];
+      [final_copy setBuffer:selection.compact_final_masks offset:0U atIndex:14U];
+      [final_copy dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+          indirectBufferOffset:output_grid_offset
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      [final_copy endEncoding];
+      const std::array<std::uint32_t,6> close_copy_parameters{records,
+          static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+          static_cast<std::uint32_t>(selection.vertex_ranges.length/(2U*sizeof(std::uint32_t))),
+          static_cast<std::uint32_t>(selection.vertex_incidence.length/(2U*sizeof(std::uint32_t))),
+          red_repair_budget,8U};
+      id<MTLComputeCommandEncoder> close_copy=[command computeCommandEncoder];
+      [close_copy setComputePipelineState:red];
+      [close_copy setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      [close_copy setBytes:close_copy_parameters.data() length:sizeof(close_copy_parameters) atIndex:2U];
+      [close_copy dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [close_copy endEncoding];
+    }
+    // Probe the post-eighth-repair canonical list, rather than the predicate
+    // that caused that last repair.  A final allowed repair may itself reach
+    // the fixed point.  This extra green/predicate-only round makes that
+    // distinction on device without scanning, scattering, or CPU polling.
+    encode_green(canonical_active,false);
+    const auto red_probe=[&](std::uint32_t phase,bool indirect){
+      const std::array<std::uint32_t,6> parameters{records,
+          static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+          static_cast<std::uint32_t>(selection.vertex_ranges.length/(2U*sizeof(std::uint32_t))),
+          static_cast<std::uint32_t>(selection.vertex_incidence.length/(2U*sizeof(std::uint32_t))),
+          red_repair_budget,phase};
+      id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+      [encoder setComputePipelineState:red];
+      [encoder setBuffer:selection.compact_red_status offset:0U atIndex:0U];
+      [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:1U];
+      [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+      [encoder setBuffer:selection.compact_canonical_ranks offset:0U atIndex:3U];
+      [encoder setBuffer:canonical_active offset:0U atIndex:4U];
+      [encoder setBuffer:selection.parents offset:0U atIndex:5U];
+      [encoder setBuffer:selection.hierarchy offset:0U atIndex:6U];
+      [encoder setBuffer:selection.vertex_topology offset:0U atIndex:7U];
+      [encoder setBuffer:selection.vertex_ranges offset:0U atIndex:8U];
+      [encoder setBuffer:selection.vertex_incidence offset:0U atIndex:9U];
+      // Predicate and terminal do not dereference the output/scan sidecars,
+      // but binding the complete ABI keeps this controller safely reusable.
+      [encoder setBuffer:selection.compact_closure_queue_ping offset:0U atIndex:10U];
+      [encoder setBuffer:selection.compact_green_masks offset:0U atIndex:11U];
+      [encoder setBuffer:selection.compact_scan_total offset:0U atIndex:12U];
+      [encoder setBuffer:selection.compact_final_active offset:0U atIndex:13U];
+      [encoder setBuffer:selection.compact_final_masks offset:0U atIndex:14U];
+      [encoder setBuffer:selection.compact_expand_counts offset:0U atIndex:15U];
+      [encoder setBuffer:selection.compact_expand_offsets offset:0U atIndex:16U];
+      [encoder setBuffer:selection.children offset:0U atIndex:17U];
+      if(indirect)[encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+          indirectBufferOffset:phase==7U?output_grid_offset:input_grid_offset
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [encoder endEncoding];
+    };
+    // A nonzero fresh predicate latches terminal failure before P8 can
+    // materialize its future owner stream.
+    red_probe(0U,false);red_probe(1U,true);red_probe(5U,false);
+    // If the post-budget probe is clean it is the first authoritative
+    // quiescent list, so latch/copy it too.  If it still has red work, phase
+    // 5 has poisoned status and phases 6/7 become harmless no-ops.
+    red_probe(6U,false);red_probe(7U,true);red_probe(8U,false);
+  }
+  // The final green queue and the red status are copied only for completion
+  // evidence.  No count, record ID, owner, or vertex payload is read back.
+  id<MTLBlitCommandEncoder> audit=[command blitCommandEncoder];
+  [audit copyFromBuffer:selection.compact_green_control sourceOffset:0U
+               toBuffer:selection.compact_closure_audit destinationOffset:0U
+                   size:5U*sizeof(std::uint32_t)];
+  [audit copyFromBuffer:selection.compact_red_status sourceOffset:0U
+               toBuffer:selection.compact_closure_audit
+      destinationOffset:5U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+  [audit copyFromBuffer:selection.compact_dispatch_args sourceOffset:0U
+               toBuffer:selection.compact_closure_audit
+      destinationOffset:9U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+  [audit copyFromBuffer:selection.compact_selected_ping sourceOffset:0U
+               toBuffer:selection.compact_closure_audit
+      destinationOffset:13U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+  [audit copyFromBuffer:selection.compact_final_active sourceOffset:0U
+               toBuffer:selection.compact_closure_audit
+      destinationOffset:17U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+  [audit copyFromBuffer:selection.compact_final_masks sourceOffset:0U
+               toBuffer:selection.compact_closure_audit
+      destinationOffset:21U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+  [audit endEncoding];
+  selection.closure_completed->store(false,std::memory_order_release);
+  selection.closure_pending=true;
+  const auto completed=selection.closure_completed;
+  [command addCompletedHandler:^(id<MTLCommandBuffer> finished){
+    completed->store(finished.status==MTLCommandBufferStatusCompleted,
+                     std::memory_order_release);
+  }];
+  ++selection.compact_closure_encoded;
+  selection.device_front_closure_at=std::chrono::steady_clock::now();
+  return true;
+}
+
+// P7e4a1's sole production-facing operation.  The controller consumes the
+// device-latched compact pair and writes an indirect grid; the host supplies
+// neither a live owner count nor a record-count-sized dispatch.  This leaf
+// deliberately stops at the staged owner stream, before P8's count/emit ABI.
+bool encode_metal_gpu_hierarchy_compact_owner_materialize(
+    id<MTLCommandBuffer> command,id<MTLComputePipelineState> materialize,
+    MetalGpuHierarchyLiveSelection& selection) {
+  if(command==nil||materialize==nil||!selection.compact_owner_ready())return false;
+  const std::array<std::uint32_t,4> parameters{selection.record_count,
+      selection.output_capacity,0U,0U};
+  const auto encode=[&](std::uint32_t phase,bool indirect) {
+    auto phase_parameters=parameters;
+    phase_parameters[2U]=phase;
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:materialize];
+    // Generated MSL ABI is audited by the owner-materializer smoke.  The
+    // input headers, immutable topology, staged stream/header, and indirect
+    // grid are all explicit private buffers.
+    // SPIRV-Cross groups writable buffers first: dispatch, header,
+    // parameters, then compact inputs and immutable topology.
+    [encoder setBuffer:selection.compact_owner_dispatch_args offset:0U atIndex:0U];
+    [encoder setBuffer:selection.compact_owner_header offset:0U atIndex:1U];
+    [encoder setBytes:phase_parameters.data() length:sizeof(phase_parameters)
+          atIndex:2U];
+    [encoder setBuffer:selection.compact_final_active offset:0U atIndex:3U];
+    [encoder setBuffer:selection.compact_final_masks offset:0U atIndex:4U];
+    [encoder setBuffer:selection.orientations offset:0U atIndex:5U];
+    [encoder setBuffer:selection.compact_owner_stream offset:0U atIndex:6U];
+    [encoder setBuffer:selection.hierarchy offset:0U atIndex:7U];
+    [encoder setBuffer:selection.edge_topology offset:0U atIndex:8U];
+    if(indirect)
+      [encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_owner_dispatch_args
+          indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+    else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];
+  };
+  encode(0U,false);
+  encode(1U,true);
+  encode(2U,true);
+  encode(3U,false);
+  ++selection.compact_owner_materialization_encoded;
+  selection.device_front_materializer_at=std::chrono::steady_clock::now();
+  return true;
+}
+
+// P7e4a1 P8 is deliberately a separate ABI from the legacy P8c owner route:
+// every data-parallel grid comes from the private owner/result headers.  The
+// host supplies immutable field data, render origin, and allocation capacity,
+// never a current owner count or candidate payload.
+struct MetalCompactOwnerP8Pipelines {
+  id<MTLComputePipelineState> control=nil,count=nil,scan=nil,emit=nil,triangle_emit=nil;
+  id<MTLComputePipelineState> validate=nil,copy=nil,publish=nil;
+  id<MTLComputePipelineState> microbatch=nil,microbatch_validate=nil;
+  id<MTLComputePipelineState> hybrid_scan=nil,hybrid_finalize=nil;
+};
+struct alignas(16) MetalCompactOwnerEmitParameters {
+  std::uint32_t capacity{},unused{},padding0{},padding1{};
+  std::array<float,4> origin{};
+  std::uint32_t source_low{},source_high{},pad0{},pad1{};
+};
+static_assert(sizeof(MetalCompactOwnerEmitParameters)==48U);
+static_assert(offsetof(MetalCompactOwnerEmitParameters,origin)==16U);
+static_assert(offsetof(MetalCompactOwnerEmitParameters,source_low)==32U);
+
+id<MTLLibrary> make_file_shader_library(id<MTLDevice> device,
+                                        const char* path);
+
+bool encode_metal_gpu_hierarchy_compact_owner_p8(
+    id<MTLCommandBuffer> command,const MetalCompactOwnerP8Pipelines& p,
+    id<MTLBuffer> owners,id<MTLBuffer> owner_header,id<MTLBuffer> field,
+    id<MTLBuffer> templates,id<MTLBuffer> counts,id<MTLBuffer> offsets,
+    id<MTLBuffer> block_totals,id<MTLBuffer> block_offsets,
+    id<MTLBuffer> level_totals,id<MTLBuffer> level_offsets,
+    id<MTLBuffer> signs,id<MTLBuffer> candidate,id<MTLBuffer> status,
+    id<MTLBuffer> dispatches,id<MTLBuffer> retained,id<MTLBuffer> arguments,
+    std::uint32_t vertex_capacity,tetra::Vec3 origin,std::uint64_t source,
+    std::uint32_t stop_after=6U) {
+  if(command==nil||p.control==nil||p.count==nil||p.scan==nil||p.emit==nil||
+     p.validate==nil||p.copy==nil||p.publish==nil||owners==nil||
+     owner_header==nil||field==nil||templates==nil||counts==nil||offsets==nil||
+     block_totals==nil||block_offsets==nil||level_totals==nil||level_offsets==nil||
+     signs==nil||candidate==nil||status==nil||dispatches==nil||retained==nil||
+     arguments==nil)return false;
+  const std::array<std::uint32_t,1> cap{vertex_capacity};
+  const std::array<std::uint32_t,4> count_parameters{
+      static_cast<std::uint32_t>(source),static_cast<std::uint32_t>(source>>32U),0U,0U};
+  const MetalCompactOwnerEmitParameters emit_parameters{vertex_capacity,0U,0U,0U,
+      {static_cast<float>(origin.x),static_cast<float>(origin.y),
+       static_cast<float>(origin.z),0.0F},static_cast<std::uint32_t>(source),
+      static_cast<std::uint32_t>(source>>32U),0U,0U};
+  id<MTLComputeCommandEncoder> e=[command computeCommandEncoder];
+  // Generated ABI: dispatches, status, candidate, parameters, owner-header.
+  [e setComputePipelineState:p.control];[e setBuffer:dispatches offset:0 atIndex:0];
+  [e setBuffer:status offset:0 atIndex:1];[e setBuffer:candidate offset:0 atIndex:2];
+  [e setBytes:cap.data() length:sizeof(cap) atIndex:3];[e setBuffer:owner_header offset:0 atIndex:4];
+  [e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];[e endEncoding];
+  if(stop_after==0U)return true;
+  e=[command computeCommandEncoder];[e setComputePipelineState:p.count];
+  [e setBuffer:field offset:0 atIndex:0];[e setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:1];
+  // Generated MSL ABI: field, parameters, owners, counts, status, header,
+  // signs, templates. Keep this explicit: a shifted count buffer makes every
+  // later prefix/candidate result look like a valid zero-output rejection.
+  [e setBuffer:owners offset:0 atIndex:2];[e setBuffer:counts offset:0 atIndex:3];
+  [e setBuffer:status offset:0 atIndex:4];[e setBuffer:owner_header offset:0 atIndex:5];
+  [e setBuffer:signs offset:0 atIndex:6];[e setBuffer:templates offset:0 atIndex:7];
+  [e dispatchThreadgroupsWithIndirectBuffer:dispatches indirectBufferOffset:0 threadsPerThreadgroup:MTLSizeMake(64,1,1)];[e endEncoding];
+  if(stop_after==1U)return true;
+  const std::array<std::uint32_t,6> scan_phases{0U,1U,2U,4U,5U,6U};
+  for(const auto phase:scan_phases) {
+    const std::array<std::uint32_t,2> scan_parameters{phase,vertex_capacity};
+    const NSUInteger grid_offset=(phase==0U?16U:phase==1U?32U:phase==2U?48U:
+        phase==4U?64U:phase==5U?80U:96U);
+    e=[command computeCommandEncoder];[e setComputePipelineState:p.scan];
+    // Generated ABI: owner header, parameters, counts, ascending totals,
+    // output offsets, descending offsets, dispatches, status, candidate.
+    [e setBuffer:owner_header offset:0 atIndex:0];
+    [e setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:1];
+    [e setBuffer:counts offset:0 atIndex:2];[e setBuffer:block_totals offset:0 atIndex:3];
+    [e setBuffer:level_totals offset:0 atIndex:4];[e setBuffer:offsets offset:0 atIndex:5];
+    [e setBuffer:block_offsets offset:0 atIndex:6];[e setBuffer:level_offsets offset:0 atIndex:7];
+    [e setBuffer:dispatches offset:0 atIndex:8];[e setBuffer:status offset:0 atIndex:9];
+    [e setBuffer:candidate offset:0 atIndex:10];
+    [e dispatchThreadgroupsWithIndirectBuffer:dispatches indirectBufferOffset:grid_offset threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];
+  }
+  if(stop_after==2U)return true;
+  e=[command computeCommandEncoder];[e setComputePipelineState:p.emit];
+  [e setBuffer:field offset:0 atIndex:0];[e setBuffer:owners offset:0 atIndex:1];
+  [e setBuffer:candidate offset:0 atIndex:2];[e setBuffer:owner_header offset:0 atIndex:3];
+  // Generated ABI: field, owners, candidate, header, templates, packed signs,
+  // parameters, offsets, counts. Emission must consume count's sign evidence.
+  [e setBuffer:templates offset:0 atIndex:4];[e setBuffer:signs offset:0 atIndex:5];
+  [e setBytes:&emit_parameters length:sizeof(emit_parameters) atIndex:6];
+  [e setBuffer:offsets offset:0 atIndex:7];[e setBuffer:counts offset:0 atIndex:8];
+  [e dispatchThreadgroupsWithIndirectBuffer:dispatches indirectBufferOffset:112U threadsPerThreadgroup:MTLSizeMake(64,1,1)];[e endEncoding];
+  if(stop_after==3U)return true;
+  e=[command computeCommandEncoder];[e setComputePipelineState:p.validate];
+  [e setBuffer:status offset:0 atIndex:0];[e setBuffer:candidate offset:0 atIndex:1];[e setBytes:cap.data() length:sizeof(cap) atIndex:2];
+  [e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];[e endEncoding];
+  if(stop_after==4U)return true;
+  e=[command computeCommandEncoder];[e setComputePipelineState:p.copy];
+  [e setBuffer:status offset:0 atIndex:0];[e setBuffer:candidate offset:0 atIndex:1];[e setBuffer:retained offset:0 atIndex:2];
+  [e dispatchThreadgroupsWithIndirectBuffer:dispatches indirectBufferOffset:128U threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];
+  if(stop_after==5U)return true;
+  e=[command computeCommandEncoder];[e setComputePipelineState:p.publish];
+  [e setBuffer:status offset:0 atIndex:0];[e setBuffer:arguments offset:0 atIndex:1];[e setBuffer:candidate offset:0 atIndex:2];
+  [e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];[e endEncoding];
+  return true;
+}
+
+// P7e4d comparison route. The microbatch kernel itself enforces the
+// 1,024-owner tier from the private owner header; this host code never reads
+// or branches on that count. Validation remains before retained-front copy.
+bool encode_metal_gpu_hierarchy_compact_owner_p8_microbatch(
+    id<MTLCommandBuffer> command,const MetalCompactOwnerP8Pipelines& p,
+    id<MTLBuffer> owners,id<MTLBuffer> owner_header,id<MTLBuffer> field,
+    id<MTLBuffer> templates,id<MTLBuffer> candidate,id<MTLBuffer> status,
+    id<MTLBuffer> copy_dispatch,id<MTLBuffer> counts,id<MTLBuffer> offsets,
+    id<MTLBuffer> retained,id<MTLBuffer> arguments,std::uint32_t vertex_capacity,
+    tetra::Vec3 origin,std::uint64_t source) {
+  if(command==nil||p.microbatch==nil||p.microbatch_validate==nil||p.copy==nil||
+     p.publish==nil||owners==nil||owner_header==nil||field==nil||
+     templates==nil||candidate==nil||status==nil||copy_dispatch==nil||
+     counts==nil||offsets==nil||retained==nil||arguments==nil)return false;
+  const std::array<std::uint32_t,1> cap{vertex_capacity};
+  const MetalCompactOwnerEmitParameters parameters{vertex_capacity,0U,0U,0U,
+      {static_cast<float>(origin.x),static_cast<float>(origin.y),
+       static_cast<float>(origin.z),0.0F},static_cast<std::uint32_t>(source),
+      static_cast<std::uint32_t>(source>>32U),0U,0U};
+  id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+  // Generated MSL ABI: field, owners, candidate, parameters, owner header,
+  // status, templates. One 1,024-thread group owns count/prefix/emission.
+  [encoder setComputePipelineState:p.microbatch];
+  [encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBuffer:owners offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder setBytes:&parameters length:sizeof(parameters) atIndex:3U];
+  [encoder setBuffer:owner_header offset:0U atIndex:4U];
+  [encoder setBuffer:status offset:0U atIndex:5U];
+  [encoder setBuffer:copy_dispatch offset:0U atIndex:6U];
+  [encoder setBuffer:templates offset:0U atIndex:7U];
+  [encoder setBuffer:counts offset:0U atIndex:8U];
+  [encoder setBuffer:offsets offset:0U atIndex:9U];
+  [encoder dispatchThreadgroups:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1024U,1U,1U)];
+  [encoder endEncoding];
+  encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.microbatch_validate];
+  // Generated ABI: status, private copy grid, candidate, capacity.
+  [encoder setBuffer:status offset:0U atIndex:0U];
+  [encoder setBuffer:copy_dispatch offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder setBytes:cap.data() length:sizeof(cap) atIndex:3U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+  [encoder endEncoding];
+  // Both microbatch construction and validation leave this device-produced
+  // grid zero on failure, so an invalid candidate cannot copy its payload.
+  encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.copy];
+  [encoder setBuffer:status offset:0U atIndex:0U];
+  [encoder setBuffer:candidate offset:0U atIndex:1U];
+  [encoder setBuffer:retained offset:0U atIndex:2U];
+  [encoder dispatchThreadgroupsWithIndirectBuffer:copy_dispatch
+      indirectBufferOffset:0U
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+  [encoder endEncoding];
+  encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.publish];
+  [encoder setBuffer:status offset:0U atIndex:0U];
+  [encoder setBuffer:arguments offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+  [encoder endEncoding];
+  return true;
+}
+
+// P7e4e comparison route: only the bounded prefix/header step is serialised
+// into one workgroup. Count/sign and emission retain their parallel kernels.
+bool encode_metal_gpu_hierarchy_compact_owner_p8_hybrid(
+    id<MTLCommandBuffer> command,const MetalCompactOwnerP8Pipelines& p,
+    id<MTLBuffer> owners,id<MTLBuffer> owner_header,id<MTLBuffer> field,
+    id<MTLBuffer> templates,id<MTLBuffer> candidate,id<MTLBuffer> status,
+    id<MTLBuffer> copy_dispatch,id<MTLBuffer> triangle_dispatch,
+    id<MTLBuffer> counts,id<MTLBuffer> offsets,
+    id<MTLBuffer> signs,id<MTLBuffer> retained,id<MTLBuffer> arguments,
+    std::uint32_t vertex_capacity,tetra::Vec3 origin,std::uint64_t source,
+    std::uint32_t first_stage=0U,std::uint32_t last_stage=4U) {
+  if(command==nil||p.count==nil||p.hybrid_scan==nil||p.triangle_emit==nil||
+     p.hybrid_finalize==nil||p.copy==nil||owners==nil||owner_header==nil||
+     field==nil||templates==nil||candidate==nil||status==nil||
+     copy_dispatch==nil||triangle_dispatch==nil||counts==nil||offsets==nil||signs==nil||
+     retained==nil||arguments==nil||first_stage>last_stage||last_stage>4U)return false;
+  const std::array<std::uint32_t,1> cap{vertex_capacity};
+  // reserved0 selects per-owner failure sentinels. The scan folds those after
+  // parallel count work, avoiding the old scalar setup/control dispatch.
+  const std::array<std::uint32_t,4> count_parameters{
+      static_cast<std::uint32_t>(source),static_cast<std::uint32_t>(source>>32U),1U,0U};
+  const MetalCompactOwnerEmitParameters emit_parameters{vertex_capacity,0U,0U,0U,
+      {static_cast<float>(origin.x),static_cast<float>(origin.y),
+       static_cast<float>(origin.z),0.0F},static_cast<std::uint32_t>(source),
+      static_cast<std::uint32_t>(source>>32U),0U,0U};
+  id<MTLComputeCommandEncoder> encoder=nil;
+  // This fixed 1,024-thread grid is bounded by the count kernel's header
+  // guards. It deliberately remains parallel (16 x 64-thread groups).
+  if(first_stage<=0U&&last_stage>=0U){encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.count];
+  [encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBytes:count_parameters.data() length:sizeof(count_parameters) atIndex:1U];
+  [encoder setBuffer:owners offset:0U atIndex:2U];
+  [encoder setBuffer:counts offset:0U atIndex:3U];
+  [encoder setBuffer:status offset:0U atIndex:4U];
+  [encoder setBuffer:owner_header offset:0U atIndex:5U];
+  [encoder setBuffer:signs offset:0U atIndex:6U];
+  [encoder setBuffer:templates offset:0U atIndex:7U];
+  [encoder dispatchThreads:MTLSizeMake(1024U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];
+  [encoder endEncoding];
+  }
+  if(first_stage<=1U&&last_stage>=1U){encoder=[command computeCommandEncoder];
+  // Generated MSL ABI: owner header, status, candidate, triangle dispatch,
+  // parameters, counts, offsets. This is the sole one-workgroup prefix/header
+  // operation; it also arms the private triangle-emission grid.
+  [encoder setComputePipelineState:p.hybrid_scan];
+  [encoder setBuffer:owner_header offset:0U atIndex:0U];
+  [encoder setBuffer:status offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder setBuffer:triangle_dispatch offset:0U atIndex:3U];
+  [encoder setBytes:cap.data() length:sizeof(cap) atIndex:4U];
+  [encoder setBuffer:counts offset:0U atIndex:5U];
+  [encoder setBuffer:offsets offset:0U atIndex:6U];
+  [encoder dispatchThreadgroups:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1024U,1U,1U)];
+  [encoder endEncoding];
+  }
+  if(first_stage<=2U&&last_stage>=2U){encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.triangle_emit];
+  [encoder setBuffer:field offset:0U atIndex:0U];
+  [encoder setBuffer:owners offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder setBuffer:owner_header offset:0U atIndex:3U];
+  [encoder setBuffer:offsets offset:0U atIndex:4U];
+  [encoder setBuffer:counts offset:0U atIndex:5U];
+  [encoder setBuffer:templates offset:0U atIndex:6U];
+  [encoder setBuffer:signs offset:0U atIndex:7U];
+  [encoder setBytes:&emit_parameters length:sizeof(emit_parameters) atIndex:8U];
+  [encoder dispatchThreadgroupsWithIndirectBuffer:triangle_dispatch
+      indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(64U,1U,1U)];
+  [encoder endEncoding];
+  }
+  if(first_stage<=3U&&last_stage>=3U){encoder=[command computeCommandEncoder];
+  // Generated ABI: status, actual copy grid, candidate, capacity, arguments.
+  [encoder setComputePipelineState:p.hybrid_finalize];
+  [encoder setBuffer:status offset:0U atIndex:0U];
+  [encoder setBuffer:copy_dispatch offset:0U atIndex:1U];
+  [encoder setBuffer:candidate offset:0U atIndex:2U];
+  [encoder setBytes:cap.data() length:sizeof(cap) atIndex:3U];
+  [encoder setBuffer:arguments offset:0U atIndex:4U];
+  [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+  [encoder endEncoding];
+  }
+  if(first_stage<=4U&&last_stage>=4U){encoder=[command computeCommandEncoder];
+  [encoder setComputePipelineState:p.copy];
+  [encoder setBuffer:status offset:0U atIndex:0U];
+  [encoder setBuffer:candidate offset:0U atIndex:1U];
+  [encoder setBuffer:retained offset:0U atIndex:2U];
+  [encoder dispatchThreadgroupsWithIndirectBuffer:copy_dispatch indirectBufferOffset:0U
+         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+  [encoder endEncoding];
+  }
+  return true;
+}
+
+// Hardware fixture for the dedicated compact P8 ABI.  The owner input is a
+// bounded test stand-in for the preceding private materializer; geometry and
+// retained-front arguments are copied back only after completion for oracle
+// comparison.
+bool run_metal_gpu_compact_owner_p8_smoke_test(id<MTLDevice> device) {
+  const auto directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(directory/name).string().c_str());
+    NSError* error=nil;id<MTLFunction> function=library==nil?nil:[library newFunctionWithName:@"main0"];
+    return function==nil?nil:[device newComputePipelineStateWithFunction:function error:&error];
+  };
+  MetalCompactOwnerP8Pipelines p{pipeline("gpu_terrain_compact_owner_control.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_count.comp.metal"),pipeline("gpu_terrain_compact_owner_scan.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_emit.comp.metal"),pipeline("gpu_terrain_compact_owner_triangle_emit.comp.metal"),pipeline("gpu_terrain_compact_owner_validate.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_copy.comp.metal"),pipeline("gpu_terrain_compact_owner_publish.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_microbatch.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_microbatch_validate.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_hybrid_scan.comp.metal"),
+      pipeline("gpu_terrain_compact_owner_hybrid_finalize.comp.metal")};
+  if(p.control==nil||p.count==nil||p.scan==nil||p.emit==nil||p.triangle_emit==nil||p.validate==nil||
+     p.copy==nil||p.publish==nil||p.microbatch==nil||p.microbatch_validate==nil||
+     p.hybrid_scan==nil||p.hybrid_finalize==nil){
+    std::fprintf(stderr,"compact P8 fixture pipeline creation failed (microbatch=%s)\n",
+        p.microbatch==nil?"false":"true");return false;
+  }
+  tetra::GpuTerrainFieldTupleParameters fp;fp.source_revision=719U;fp.field_revision=3U;
+  fp.domain.world_extent=1.0;fp.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  fp.field.centre={.5,.52,.5};fp.field.radius=.37;fp.field.terrain.planet_radius=.37;
+  const auto tuple=tetra::make_gpu_terrain_field_tuple(fp);
+  std::vector<tetra::WorldTetAddress> addresses;
+  for(std::uint8_t root=0;root<tetra::bcc_root_tetrahedron_count;++root)addresses.push_back(tetra::WorldTetAddress::root(root));
+  const auto packet=tetra::make_gpu_green_mask_packet(addresses,fp.source_revision);
+  const auto templates=tetra::make_gpu_green_template_table();
+  const auto expected_roots=tetra::gpu_terrain_root_packet(packet,tuple,100000U);
+  auto expected_base=tetra::gpu_terrain_base_triangles(expected_roots,100000U);
+  for(auto& triangle:expected_base)for(auto& root:triangle.roots){root.x=float(root.x);root.y=float(root.y);root.z=float(root.z);}
+  const auto expected=tetra::gpu_terrain_project_base_triangles(expected_base,
+      tetra::gpu_terrain_field_tuple_sphere(tuple),{},100000U);
+  const std::uint32_t owners=static_cast<std::uint32_t>(packet.owners.size());
+  const std::uint32_t vertices=static_cast<std::uint32_t>(expected.size()*12U);
+  if(owners==0U||vertices==0U)return false;
+  const auto shared=[&](const void* data,NSUInteger bytes){return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];};
+  const auto private_buffer=[&](NSUInteger bytes){return [device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];};
+  const std::array<std::uint32_t,4> owner_words{owners,owners,0U,1U};
+  id<MTLBuffer> field=shared(&tuple,sizeof(tuple)),owner=shared(packet.owners.data(),packet.owners.size()*sizeof(packet.owners.front()));
+  id<MTLBuffer> stencil=shared(templates.data(),sizeof(templates)),header=shared(owner_words.data(),sizeof(owner_words));
+  id<MTLBuffer> counts=private_buffer(owners*4U),offsets=private_buffer(owners*4U),block_totals=private_buffer(((owners+255U)/256U)*4U),block_offsets=private_buffer(((owners+255U)/256U)*4U);
+  id<MTLBuffer> level_totals=private_buffer(std::max(1U,(owners+65535U)/65536U)*4U),level_offsets=private_buffer(std::max(1U,(owners+65535U)/65536U)*4U),signs=private_buffer(owners*12U);
+  id<MTLBuffer> candidate=private_buffer((4U+vertices*18U)*4U),status=private_buffer(8U),dispatches=private_buffer(9U*16U),microbatch_copy_dispatch=private_buffer(16U),triangle_dispatch=private_buffer(12U);
+  id<MTLBuffer> retained=private_buffer(vertices*18U*4U),arguments=private_buffer(16U);
+  id<MTLBuffer> readback=[device newBufferWithLength:vertices*18U*4U
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> read_arguments=[device newBufferWithLength:16U
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> failed_readback=[device newBufferWithLength:vertices*18U*4U
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> failed_arguments=[device newBufferWithLength:16U
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> stage_audit=[device newBufferWithLength:42U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(field==nil||owner==nil||stencil==nil||header==nil||counts==nil||offsets==nil||block_totals==nil||block_offsets==nil||level_totals==nil||level_offsets==nil||signs==nil||candidate==nil||status==nil||dispatches==nil||microbatch_copy_dispatch==nil||triangle_dispatch==nil||retained==nil||arguments==nil||readback==nil||read_arguments==nil||failed_readback==nil||failed_arguments==nil||stage_audit==nil||queue==nil)return false;
+  // Keep stage isolation in this fixture: a translated shader fault must be
+  // attributable before this route can be composed into the live command
+  // buffer.  No stage payload is read back here.
+  for(std::uint32_t stage=0U;stage<=6U;++stage) {
+    id<MTLCommandBuffer> probe=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> probe_clear=[probe blitCommandEncoder];
+    for(id<MTLBuffer> b:{counts,offsets,block_totals,block_offsets,level_totals,
+                         level_offsets,signs,candidate,status,dispatches,retained})
+      [probe_clear fillBuffer:b range:NSMakeRange(0,b.length) value:0U];
+    [probe_clear endEncoding];
+    if(!encode_metal_gpu_hierarchy_compact_owner_p8(probe,p,owner,header,field,
+         stencil,counts,offsets,block_totals,block_offsets,level_totals,
+         level_offsets,signs,candidate,status,dispatches,retained,arguments,
+         vertices,{},fp.source_revision,stage))return false;
+    [probe commit];[probe waitUntilCompleted];
+    if(probe.status!=MTLCommandBufferStatusCompleted) {
+      std::fprintf(stderr,"compact P8 fixture failed at stage %u\n",stage);
+      return false;
+    }
+    id<MTLCommandBuffer> audit_command=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> audit=[audit_command blitCommandEncoder];
+    [audit copyFromBuffer:status sourceOffset:0U toBuffer:stage_audit
+          destinationOffset:0U size:2U*sizeof(std::uint32_t)];
+    [audit copyFromBuffer:candidate sourceOffset:0U toBuffer:stage_audit
+          destinationOffset:2U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [audit copyFromBuffer:dispatches sourceOffset:0U toBuffer:stage_audit
+          destinationOffset:6U*sizeof(std::uint32_t) size:36U*sizeof(std::uint32_t)];
+    [audit endEncoding];[audit_command commit];[audit_command waitUntilCompleted];
+    const auto* audit_words=static_cast<const std::uint32_t*>(stage_audit.contents);
+    if(audit_command.status!=MTLCommandBufferStatusCompleted||audit_words==nullptr) {
+      std::fprintf(stderr,"compact P8 fixture audit transfer failed after stage %u\n",stage);
+      return false;
+    }
+    std::fprintf(stderr,"compact P8 stage %u: status=%u/%u candidate=%u/%u/%u grids=%u,%u,%u\n",
+        stage,audit_words[0U],audit_words[1U],audit_words[2U],audit_words[3U],
+        audit_words[4U],audit_words[6U],audit_words[10U],audit_words[34U]);
+  }
+  id<MTLCommandBuffer> command=[queue commandBuffer];id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+  for(id<MTLBuffer> b:{counts,offsets,block_totals,block_offsets,level_totals,level_offsets,signs,candidate,status,dispatches,retained})[clear fillBuffer:b range:NSMakeRange(0,b.length) value:0U];
+  [clear endEncoding];
+  if(!encode_metal_gpu_hierarchy_compact_owner_p8(command,p,owner,header,field,stencil,counts,offsets,block_totals,block_offsets,level_totals,level_offsets,signs,candidate,status,dispatches,retained,arguments,vertices,{},fp.source_revision))return false;
+  [command commit];[command waitUntilCompleted];
+  // Readback is deliberately a separate completed-command probe: it keeps
+  // Metal's compute-to-private-front dependency distinct from the fixture's
+  // diagnostic transfer and mirrors the live path's no-payload-readback rule.
+  if(command.status!=MTLCommandBufferStatusCompleted) {
+    std::fprintf(stderr,"compact P8 fixture generation command failed: status=%ld\n",
+        static_cast<long>(command.status));return false;
+  }
+  id<MTLCommandBuffer> read_command=[queue commandBuffer];
+  id<MTLBlitCommandEncoder> copy=[read_command blitCommandEncoder];
+  [copy copyFromBuffer:retained sourceOffset:0 toBuffer:readback destinationOffset:0 size:readback.length];
+  [copy copyFromBuffer:arguments sourceOffset:0 toBuffer:read_arguments destinationOffset:0 size:16U];
+  [copy endEncoding];[read_command commit];[read_command waitUntilCompleted];
+  const auto* words=static_cast<const std::uint32_t*>(readback.contents);const auto* args=static_cast<const std::uint32_t*>(read_arguments.contents);
+  if(read_command.status!=MTLCommandBufferStatusCompleted||words==nullptr||args==nullptr||args[0]!=vertices||args[1]!=1U){
+    std::fprintf(stderr,"compact P8 fixture commit failed: status=%ld args=%u,%u expected=%u error=%s\n",
+        static_cast<long>(read_command.status),args==nullptr?0U:args[0U],args==nullptr?0U:args[1U],vertices,
+        read_command.error==nil?"none":read_command.error.localizedDescription.UTF8String);return false;
+  }
+  constexpr std::array<std::array<std::uint32_t,3>,4> faces{{{{0U,1U,2U}},{{1U,3U,4U}},{{2U,4U,5U}},{{1U,4U,2U}}}};
+  for(std::size_t triangle=0;triangle<expected.size();++triangle)for(std::size_t face=0;face<4;++face)for(std::size_t corner=0;corner<3;++corner){
+    const auto base=(triangle*12U+face*3U+corner)*18U;const auto& point=expected[triangle].vertices[faces[face][corner]];
+    for(std::size_t axis=0;axis<3;++axis){const float got=std::bit_cast<float>(words[base+axis]);const double want=axis==0?point.x:axis==1?point.y:point.z;if(!std::isfinite(got)||std::abs(double(got)-want)>2.e-3)return false;}
+  }
+  // The small root fixture is admitted by the 1,024-owner tier. Compare the
+  // complete retained payload and published draw arguments to the full P8
+  // route before exercising its fail-closed cases.
+  std::memcpy(header.contents,owner_words.data(),sizeof(owner_words));
+  id<MTLCommandBuffer> micro=[queue commandBuffer];
+  if(!encode_metal_gpu_hierarchy_compact_owner_p8_hybrid(
+       micro,p,owner,header,field,stencil,candidate,status,microbatch_copy_dispatch,triangle_dispatch,counts,offsets,signs,retained,arguments,
+       vertices,{},fp.source_revision)) {
+    std::fprintf(stderr,"compact P8 hybrid encoder rejected fixture\n");
+    return false;
+  }
+  [micro commit];[micro waitUntilCompleted];
+  if(micro.status!=MTLCommandBufferStatusCompleted) {
+    std::fprintf(stderr,"compact P8 hybrid failed: status=%ld error=%s\n",
+        static_cast<long>(micro.status),micro.error==nil?"none":
+        micro.error.localizedDescription.UTF8String);
+    return false;
+  }
+  id<MTLCommandBuffer> micro_read=[queue commandBuffer];
+  id<MTLBlitCommandEncoder> micro_copy=[micro_read blitCommandEncoder];
+  [micro_copy copyFromBuffer:retained sourceOffset:0U toBuffer:failed_readback
+             destinationOffset:0U size:failed_readback.length];
+  [micro_copy copyFromBuffer:arguments sourceOffset:0U toBuffer:failed_arguments
+             destinationOffset:0U size:failed_arguments.length];
+  [micro_copy endEncoding];[micro_read commit];[micro_read waitUntilCompleted];
+  if(micro_read.status!=MTLCommandBufferStatusCompleted)return false;
+  if(std::memcmp(readback.contents,failed_readback.contents,readback.length)!=0) {
+    const auto* full=static_cast<const std::uint32_t*>(readback.contents);
+    const auto* compact=static_cast<const std::uint32_t*>(failed_readback.contents);
+    std::size_t first=0U;
+    while(first<readback.length/sizeof(std::uint32_t)&&full[first]==compact[first])++first;
+    std::fprintf(stderr,"compact P8 hybrid payload mismatch at word %zu: %u != %u\n",
+        first,full[first],compact[first]);
+    return false;
+  }
+  if(std::memcmp(read_arguments.contents,failed_arguments.contents,
+                 read_arguments.length)!=0) {
+    const auto* full=static_cast<const std::uint32_t*>(read_arguments.contents);
+    const auto* compact=static_cast<const std::uint32_t*>(failed_arguments.contents);
+    std::fprintf(stderr,"compact P8 hybrid arguments mismatch: %u/%u != %u/%u\n",
+        full[0U],full[1U],compact[0U],compact[1U]);
+    return false;
+  }
+  const auto retains_prior=[&](const std::array<std::uint32_t,4>& bad_header,
+                               std::uint64_t source,std::uint32_t capacity)->bool {
+    std::memcpy(header.contents,bad_header.data(),sizeof(bad_header));
+    id<MTLCommandBuffer> failed=[queue commandBuffer];
+    if(!encode_metal_gpu_hierarchy_compact_owner_p8(failed,p,owner,header,field,
+         stencil,counts,offsets,block_totals,block_offsets,level_totals,
+         level_offsets,signs,candidate,status,dispatches,retained,arguments,
+         capacity,{},source))return false;
+    [failed commit];[failed waitUntilCompleted];
+    if(failed.status!=MTLCommandBufferStatusCompleted)return false;
+    id<MTLCommandBuffer> audit=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit=[audit blitCommandEncoder];
+    [blit copyFromBuffer:retained sourceOffset:0U toBuffer:failed_readback
+          destinationOffset:0U size:failed_readback.length];
+    [blit copyFromBuffer:arguments sourceOffset:0U toBuffer:failed_arguments
+          destinationOffset:0U size:failed_arguments.length];
+    [blit endEncoding];[audit commit];[audit waitUntilCompleted];
+    return audit.status==MTLCommandBufferStatusCompleted&&
+        std::memcmp(readback.contents,failed_readback.contents,readback.length)==0&&
+        std::memcmp(read_arguments.contents,failed_arguments.contents,
+                    read_arguments.length)==0;
+  };
+  const std::array<std::uint32_t,4> malformed_header{owners,owners,1U,1U};
+  const std::array<std::uint32_t,4> capacity_header{owners,owners-1U,0U,1U};
+  if(!retains_prior(malformed_header,fp.source_revision,vertices)||
+     !retains_prior(capacity_header,fp.source_revision,vertices)||
+     !retains_prior(owner_words,fp.source_revision+1U,vertices)||
+     !retains_prior(owner_words,fp.source_revision,0U)) {
+    std::fprintf(stderr,"compact P8 full route failed a retained-front check\n");
+    return false;
+  }
+  const auto micro_retains_prior=[&](const std::array<std::uint32_t,4>& bad_header,
+                                     std::uint64_t source,std::uint32_t capacity)->bool {
+    std::memcpy(header.contents,bad_header.data(),sizeof(bad_header));
+    id<MTLCommandBuffer> failed=[queue commandBuffer];
+    if(!encode_metal_gpu_hierarchy_compact_owner_p8_hybrid(
+         failed,p,owner,header,field,stencil,candidate,status,microbatch_copy_dispatch,triangle_dispatch,counts,offsets,signs,retained,arguments,
+         capacity,{},source))return false;
+    [failed commit];[failed waitUntilCompleted];
+    if(failed.status!=MTLCommandBufferStatusCompleted)return false;
+    id<MTLCommandBuffer> audit=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit=[audit blitCommandEncoder];
+    [blit copyFromBuffer:retained sourceOffset:0U toBuffer:failed_readback
+          destinationOffset:0U size:failed_readback.length];
+    [blit copyFromBuffer:arguments sourceOffset:0U toBuffer:failed_arguments
+          destinationOffset:0U size:failed_arguments.length];
+    [blit endEncoding];[audit commit];[audit waitUntilCompleted];
+    return audit.status==MTLCommandBufferStatusCompleted&&
+        std::memcmp(readback.contents,failed_readback.contents,readback.length)==0&&
+        std::memcmp(read_arguments.contents,failed_arguments.contents,
+                    read_arguments.length)==0;
+  };
+  const std::array<std::uint32_t,4> oversized_header{1025U,1025U,0U,1U};
+  const bool micro_malformed=micro_retains_prior(malformed_header,fp.source_revision,vertices);
+  const bool micro_capacity=micro_retains_prior(capacity_header,fp.source_revision,vertices);
+  const bool micro_stale=micro_retains_prior(owner_words,fp.source_revision+1U,vertices);
+  const bool micro_zero_capacity=micro_retains_prior(owner_words,fp.source_revision,0U);
+  const bool micro_oversized=micro_retains_prior(oversized_header,fp.source_revision,vertices);
+  if(!micro_malformed||!micro_capacity||!micro_stale||!micro_zero_capacity||
+     !micro_oversized) {
+    std::fprintf(stderr,"compact P8 hybrid retained checks malformed=%d capacity=%d stale=%d zero=%d oversized=%d\n",
+        micro_malformed,micro_capacity,micro_stale,micro_zero_capacity,micro_oversized);
+    return false;
+  }
+  std::printf("{\"event\":\"metal_gpu_compact_owner_p8\",\"owners\":%u,\"vertices\":%u,\"private_commit\":true,\"hybrid_exact\":true,\"hybrid_retains\":true,\"hybrid_capacity_rejected\":true,\"passed\":true}\n",owners,vertices);
+  return true;
+}
+
+// Regression fixture for P7e4a1's second scan level. A production compact
+// list can exceed 256 blocks, while its input-derived dispatch is larger than
+// the tiny superblock stream. Execute that larger grid deliberately and prove
+// the private scan returns its exact sum without overrunning level storage.
+bool run_metal_gpu_hierarchy_compact_red_scan_large_smoke_test(
+    id<MTLDevice> device) {
+  const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_hierarchy_compact_red_scan.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,path.string().c_str());
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=library==nil?nil:
+      [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"main0"] error:&error];
+  constexpr std::uint32_t count=66952U;
+  constexpr std::uint32_t blocks=(count+255U)/256U;
+  constexpr std::uint32_t levels=(blocks+255U)/256U;
+  std::vector<std::uint32_t> counts(count);
+  std::uint32_t expected{};
+  for(std::uint32_t index=0U;index<count;++index) {
+    counts[index]=(index%17U)==0U?8U:1U;
+    expected+=counts[index];
+  }
+  const std::array<std::uint32_t,4> header{count,count,0U,0U};
+  const auto shared=[&](const void* data,NSUInteger bytes){return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];};
+  const auto private_buffer=[&](NSUInteger bytes){return [device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];};
+  id<MTLBuffer> active=shared(header.data(),sizeof(header)),values=shared(counts.data(),counts.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> offsets=private_buffer(count*sizeof(std::uint32_t)),block_totals=private_buffer(blocks*sizeof(std::uint32_t)),block_offsets=private_buffer(blocks*sizeof(std::uint32_t)),scan_total=private_buffer(sizeof(std::uint32_t)),level_totals=private_buffer(levels*sizeof(std::uint32_t)),level_offsets=private_buffer(levels*sizeof(std::uint32_t));
+  id<MTLBuffer> audit=[device newBufferWithLength:3U*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(pipeline==nil||active==nil||values==nil||offsets==nil||block_totals==nil||block_offsets==nil||scan_total==nil||level_totals==nil||level_offsets==nil||audit==nil||queue==nil)return false;
+  const auto encode=[&](id<MTLCommandBuffer> command,std::uint32_t phase,std::uint32_t groups){
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:pipeline];[encoder setBuffer:active offset:0U atIndex:0U];[encoder setBytes:&phase length:sizeof(phase) atIndex:1U];[encoder setBuffer:values offset:0U atIndex:2U];[encoder setBuffer:offsets offset:0U atIndex:3U];[encoder setBuffer:block_totals offset:0U atIndex:4U];[encoder setBuffer:block_offsets offset:0U atIndex:5U];[encoder setBuffer:level_totals offset:0U atIndex:6U];[encoder setBuffer:level_offsets offset:0U atIndex:7U];[encoder setBuffer:scan_total offset:0U atIndex:8U];
+    [encoder dispatchThreadgroups:MTLSizeMake(groups,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  };
+  id<MTLCommandBuffer> command=[queue commandBuffer];
+  encode(command,0U,blocks);
+  // Mimic the larger live input grid. Phase 1 itself must reject the surplus.
+  encode(command,1U,blocks);encode(command,2U,1U);encode(command,3U,blocks);
+  id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];
+  [copy copyFromBuffer:scan_total sourceOffset:0U toBuffer:audit destinationOffset:0U size:sizeof(std::uint32_t)];
+  [copy copyFromBuffer:level_totals sourceOffset:0U toBuffer:audit destinationOffset:sizeof(std::uint32_t) size:2U*sizeof(std::uint32_t)];
+  [copy endEncoding];[command commit];[command waitUntilCompleted];
+  const auto* words=static_cast<const std::uint32_t*>(audit.contents);
+  const bool passed=command.status==MTLCommandBufferStatusCompleted&&words!=nullptr&&words[0U]==expected&&words[1U]+words[2U]==expected;
+  std::printf("{\"event\":\"metal_gpu_compact_red_scan_large\",\"count\":%u,\"blocks\":%u,\"levels\":%u,\"total\":%u,\"expected\":%u,\"passed\":%s}\\n",count,blocks,levels,words==nullptr?0U:words[0U],expected,passed?"true":"false");
+  return passed;
+}
+
+// P7e4a's live closure is a fixed, fully device-resident schedule.  The host
+// does not inspect green-round or red-promotion counters: all bounded repair
+// rounds execute in one command buffer, and the final phase poisons the
+// closure header if any red work remains.  P8 consumes that header directly.
+bool encode_metal_gpu_hierarchy_live_closure(
+    id<MTLCommandBuffer> command,id<MTLComputePipelineState> frontier,
+    id<MTLComputePipelineState> scan,id<MTLComputePipelineState> closure,
+    id<MTLComputePipelineState> control,
+    MetalGpuHierarchyLiveSelection& selection,bool inject_green_budget_failure) {
+  if(!selection.closure_ready()||selection.closure_pending||frontier==nil||
+     scan==nil||closure==nil||control==nil||selection.closure_slot_index>=selection.slots.size())
+    return false;
+  const auto records=selection.record_count;
+  const auto blocks=(records+255U)/256U;
+  constexpr NSUInteger repair_indirect_offset=0U;
+  constexpr NSUInteger green_indirect_offset=4U*sizeof(std::uint32_t);
+  const auto closure_slot=&selection.slots[selection.closure_slot_index];
+  id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+  for(id<MTLBuffer> buffer:{selection.closure_owners,selection.closure_counts,
+      selection.closure_offsets,selection.closure_added_offsets,
+      selection.closure_block_totals,selection.closure_block_offsets,
+      selection.closure_scan_total,selection.closure_edge_marks,
+      selection.closure_red_promotions,selection.closure_status,
+      selection.closure_dispatch_args})
+    [clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+  [clear endEncoding];
+  std::memset(selection.closure_control_audit.contents,0,
+      selection.closure_control_audit.length);
+  const auto encode_control=[&](std::uint32_t action){
+    const std::array<std::uint32_t,2> parameters{blocks,action};
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:control];
+    // SPIRV-Cross orders the writable indirect arguments before parameters
+    // and the read-only status sidecar; keep this in lockstep with MSL.
+    [encoder setBuffer:selection.closure_dispatch_args offset:0U atIndex:0U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:1U];
+    [encoder setBuffer:selection.closure_status offset:0U atIndex:2U];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
+  };
+  const std::array<std::uint32_t,5> frontier_parameters{
+      records,selection.output_capacity,selection.mark_word_count,records,0U};
+  const auto encode_frontier=[&](NSUInteger indirect_offset){
+    auto parameters=frontier_parameters;
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:frontier];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:0U];
+    [encoder setBuffer:closure_slot->marks offset:0U atIndex:1U];
+    [encoder setBuffer:selection.hierarchy offset:0U atIndex:2U];
+    [encoder setBuffer:selection.closure_status offset:0U atIndex:3U];
+    [encoder setBuffer:selection.closure_offsets offset:0U atIndex:4U];
+    [encoder setBuffer:selection.closure_counts offset:0U atIndex:5U];
+    [encoder setBuffer:selection.canonical offset:0U atIndex:6U];
+    [encoder setBuffer:selection.closure_owners offset:0U atIndex:7U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+    const std::array<std::uint32_t,2> scan_parameters{records,0U};
+    encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];
+    [encoder setBytes:scan_parameters.data() length:sizeof(scan_parameters) atIndex:0U];
+    [encoder setBuffer:selection.closure_offsets offset:0U atIndex:1U];
+    [encoder setBuffer:selection.closure_counts offset:0U atIndex:2U];
+    [encoder setBuffer:selection.closure_block_totals offset:0U atIndex:3U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+    const std::array<std::uint32_t,2> block_parameters{blocks,0U};
+    encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];
+    [encoder setBytes:block_parameters.data() length:sizeof(block_parameters) atIndex:0U];
+    [encoder setBuffer:selection.closure_block_offsets offset:0U atIndex:1U];
+    [encoder setBuffer:selection.closure_block_totals offset:0U atIndex:2U];
+    [encoder setBuffer:selection.closure_scan_total offset:0U atIndex:3U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+    const std::array<std::uint32_t,2> add_parameters{records,1U};
+    encoder=[command computeCommandEncoder];[encoder setComputePipelineState:scan];
+    [encoder setBytes:add_parameters.data() length:sizeof(add_parameters) atIndex:0U];
+    [encoder setBuffer:selection.closure_added_offsets offset:0U atIndex:1U];
+    [encoder setBuffer:selection.closure_offsets offset:0U atIndex:2U];
+    [encoder setBuffer:selection.closure_block_offsets offset:0U atIndex:3U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+    parameters[4]=1U;encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:frontier];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:0U];
+    [encoder setBuffer:closure_slot->marks offset:0U atIndex:1U];
+    [encoder setBuffer:selection.hierarchy offset:0U atIndex:2U];
+    [encoder setBuffer:selection.closure_status offset:0U atIndex:3U];
+    [encoder setBuffer:selection.closure_added_offsets offset:0U atIndex:4U];
+    [encoder setBuffer:selection.closure_counts offset:0U atIndex:5U];
+    [encoder setBuffer:selection.canonical offset:0U atIndex:6U];
+    [encoder setBuffer:selection.closure_owners offset:0U atIndex:7U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+  };
+  const std::array<std::uint32_t,12> closure_parameters{records,
+      selection.output_capacity,selection.mark_word_count,records,
+      static_cast<std::uint32_t>(selection.edge_ranges.length/sizeof(tetra::GpuHierarchyEdgeRange)),
+      static_cast<std::uint32_t>(selection.ancestor_edge_ranges.length/sizeof(std::uint32_t)),0U,
+      static_cast<std::uint32_t>(selection.children.length/sizeof(std::uint32_t)),
+      static_cast<std::uint32_t>(selection.vertex_ranges.length/sizeof(tetra::GpuHierarchyVertexRange)),
+      static_cast<std::uint32_t>(selection.vertex_incidence.length/sizeof(tetra::GpuHierarchyVertexIncidence)),0U,0U};
+  const auto encode_closure=[&](std::uint32_t phase,NSUInteger indirect_offset){
+    auto parameters=closure_parameters;parameters[6]=phase;
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:closure];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:0U];
+    [encoder setBuffer:closure_slot->marks offset:0U atIndex:1U];
+    [encoder setBuffer:selection.closure_status offset:0U atIndex:2U];
+    [encoder setBuffer:selection.hierarchy offset:0U atIndex:3U];
+    [encoder setBuffer:selection.face_incidence offset:0U atIndex:4U];
+    [encoder setBuffer:selection.edge_topology offset:0U atIndex:5U];
+    [encoder setBuffer:selection.vertex_topology offset:0U atIndex:6U];
+    [encoder setBuffer:selection.vertex_ranges offset:0U atIndex:7U];
+    [encoder setBuffer:selection.vertex_incidence offset:0U atIndex:8U];
+    [encoder setBuffer:selection.closure_edge_marks offset:0U atIndex:9U];
+    [encoder setBuffer:selection.canonical offset:0U atIndex:10U];
+    // SPIRV-Cross orders these four active SSBOs by their first use in the
+    // closure shader: red promotions precede counts/orientation/ancestors.
+    // Keep this explicit Metal ABI in lockstep with the generated signature.
+    [encoder setBuffer:selection.closure_red_promotions offset:0U atIndex:11U];
+    [encoder setBuffer:selection.closure_counts offset:0U atIndex:12U];
+    [encoder setBuffer:selection.orientations offset:0U atIndex:13U];
+    [encoder setBuffer:selection.ancestor_edge_ranges offset:0U atIndex:14U];
+    [encoder setBuffer:selection.children offset:0U atIndex:15U];
+    [encoder setBuffer:selection.closure_added_offsets offset:0U atIndex:16U];
+    [encoder setBuffer:selection.closure_owners offset:0U atIndex:17U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.closure_dispatch_args
+        indirectBufferOffset:indirect_offset
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+  };
+  // This is a live rendering gate, not the exhaustive P7e3c fixture: bound
+  // its command-buffer footprint deliberately.  Any cut needing more work
+  // fails device-only in phase 8 (green) or the control red-budget check and P8 retains the
+  // complete bootstrap front.  The fixture below still exhaustively proves
+  // the 48-round/max-depth closure schedule.
+  constexpr std::uint32_t live_repair_rounds=1U;
+  constexpr std::uint32_t live_green_rounds=1U;
+  const auto green_rounds=inject_green_budget_failure?0U:live_green_rounds;
+  encode_control(0U);
+  for(std::uint32_t repair=0U;repair<live_repair_rounds;++repair){
+    clear=[command blitCommandEncoder];
+    [clear fillBuffer:selection.closure_edge_marks range:NSMakeRange(0U,selection.closure_edge_marks.length) value:0U];
+    [clear fillBuffer:selection.closure_red_promotions range:NSMakeRange(0U,selection.closure_red_promotions.length) value:0U];
+    // Preserve emitted-owner count (word 3): once a no-red repair has
+    // produced the final stream, subsequent device-zeroed repair iterations
+    // must not erase P8's private header.
+    [clear fillBuffer:selection.closure_status range:NSMakeRange(sizeof(std::uint32_t),2U*sizeof(std::uint32_t)) value:0U];
+    [clear fillBuffer:selection.closure_status range:NSMakeRange(4U*sizeof(std::uint32_t),sizeof(std::uint32_t)) value:0U];
+    [clear endEncoding];
+    encode_frontier(repair_indirect_offset);
+    encode_closure(0U,repair_indirect_offset);
+    encode_control(1U);
+    for(std::uint32_t green=0U;green<green_rounds;++green){
+      clear=[command blitCommandEncoder];
+      [clear fillBuffer:selection.closure_status range:NSMakeRange(sizeof(std::uint32_t),sizeof(std::uint32_t)) value:0U];[clear endEncoding];
+      encode_closure(1U,green_indirect_offset);
+      encode_control(2U);
+    }
+    encode_closure(8U,repair_indirect_offset);
+    encode_closure(2U,repair_indirect_offset);
+    encode_closure(6U,repair_indirect_offset);
+    encode_closure(4U,repair_indirect_offset);
+    encode_closure(5U,repair_indirect_offset);
+    encode_control(3U);
+  }
+  // The last active repair already compacted the exact selected marks.  This
+  // scalar device control is the live red-budget terminal: it preserves that
+  // first no-red owner stream, or latches failure before P8 can consume it.
+  encode_control(6U);
+  clear=[command blitCommandEncoder];
+  [clear copyFromBuffer:selection.closure_dispatch_args sourceOffset:0U
+      toBuffer:selection.closure_control_audit destinationOffset:0U
+      size:selection.closure_control_audit.length];
+  [clear endEncoding];
+  selection.closure_completed->store(false,std::memory_order_release);
+  selection.closure_pending=true;
+  const auto completed=selection.closure_completed;
+  [command addCompletedHandler:^(id<MTLCommandBuffer> finished){
+    completed->store(finished.status==MTLCommandBufferStatusCompleted,
+                     std::memory_order_release);
+  }];
+  return true;
+}
+
 bool encode_metal_gpu_hierarchy_live_selection(
     id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
+    id<MTLComputePipelineState> compact_worklist,
     MetalGpuHierarchyLiveSelection& selection,
     const tetra::GpuHierarchySelectionTuple& tuple) {
   if(!selection.ready()||pipeline==nil)return false;
@@ -1191,8 +2766,9 @@ bool encode_metal_gpu_hierarchy_live_selection(
   [clear fillBuffer:selected->marks range:NSMakeRange(0U,selected->marks.length)
                value:0U];
   [clear endEncoding];
-  const std::array<std::uint32_t,3> parameters{selection.record_count,
-      selection.output_capacity,selection.mark_word_count};
+  const std::array<std::uint32_t,5> parameters{selection.record_count,
+      selection.output_capacity,selection.mark_word_count,selection.root_count,
+      selection.require_complete_front?1U:0U};
   id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
   [encoder setComputePipelineState:pipeline];
   [encoder setBuffer:selection.hierarchy offset:0U atIndex:0U];
@@ -1200,11 +2776,43 @@ bool encode_metal_gpu_hierarchy_live_selection(
   [encoder setBuffer:selection.inputs offset:0U atIndex:2U];
   [encoder setBuffer:selected->tuple offset:0U atIndex:3U];
   [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
-  [encoder setBuffer:selected->marks offset:0U atIndex:5U];
-  [encoder dispatchThreads:MTLSizeMake(selection.record_count,1U,1U)
+  [encoder setBuffer:selection.roots offset:0U atIndex:5U];
+  [encoder setBuffer:selected->marks offset:0U atIndex:6U];
+  // The root-index list is immutable snapshot metadata and contains no more
+  // than the twelve BCC roots. It replaces the former record-count grid.
+  [encoder dispatchThreads:MTLSizeMake(selection.root_count,1U,1U)
        threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
   [encoder endEncoding];
+  if(compact_worklist!=nil) {
+    if(!selection.compact_worklist_ready())return false;
+    // P7e4a1's vertical seed: arm a private indirect grid from P7e2's
+    // appended count, then copy that many entries into the distinct compact
+    // active list. No host observes or supplies the selected count.
+    const std::array<std::uint32_t,5> worklist_arm{selection.record_count,
+        selection.output_capacity,selection.output_capacity,0U,0U};
+    encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:compact_worklist];
+    [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:0U];
+    [encoder setBytes:worklist_arm.data() length:sizeof(worklist_arm) atIndex:1U];
+    [encoder setBuffer:selected->marks offset:0U atIndex:2U];
+    [encoder setBuffer:selection.compact_selected_ping offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];
+    auto worklist_copy=worklist_arm;worklist_copy[3U]=1U;
+    encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:compact_worklist];
+    [encoder setBuffer:selection.compact_dispatch_args offset:0U atIndex:0U];
+    [encoder setBytes:worklist_copy.data() length:sizeof(worklist_copy) atIndex:1U];
+    [encoder setBuffer:selected->marks offset:0U atIndex:2U];
+    [encoder setBuffer:selection.compact_selected_ping offset:0U atIndex:3U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:selection.compact_dispatch_args
+        indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+    [encoder endEncoding];
+  }
   selected->tuple_identity=tetra::gpu_hierarchy_selection_tuple_identity(tuple);
+  selection.closure_slot_index=static_cast<std::uint32_t>(
+      selected-selection.slots.data());
   selected->completed->store(false,std::memory_order_release);
   selected->succeeded->store(false,std::memory_order_release);
   selected->pending=true;
@@ -1215,6 +2823,7 @@ bool encode_metal_gpu_hierarchy_live_selection(
     completed->store(true,std::memory_order_release);
   }];
   ++selection.submitted;
+  selection.device_front_selector_at=std::chrono::steady_clock::now();
   return true;
 }
 
@@ -1401,6 +3010,22 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
         error.localizedDescription.UTF8String);
     return false;
   }
+  const auto worklist_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_hierarchy_compact_worklist.comp.metal";
+  id<MTLLibrary> worklist_library=make_file_shader_library(
+      device,worklist_path.string().c_str());
+  id<MTLComputePipelineState> worklist=worklist_library==nil?nil:
+      [device newComputePipelineStateWithFunction:
+          [worklist_library newFunctionWithName:@"main0"] error:&error];
+  if(worklist==nil)return false;
+  const auto canonicalize_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_hierarchy_canonicalize.comp.metal";
+  id<MTLLibrary> canonicalize_library=make_file_shader_library(
+      device,canonicalize_path.string().c_str());
+  id<MTLComputePipelineState> canonicalize=canonicalize_library==nil?nil:
+      [device newComputePipelineStateWithFunction:
+          [canonicalize_library newFunctionWithName:@"main0"] error:&error];
+  if(canonicalize==nil)return false;
   const auto make_buffer=[&](const void* bytes,NSUInteger length){
     return [device newBufferWithBytes:bytes length:length
         options:MTLResourceStorageModeShared];
@@ -1411,7 +3036,13 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
       snapshot.child_indices.size()*sizeof(snapshot.child_indices.front()));
   id<MTLBuffer> inputs=make_buffer(snapshot.selection_records.data(),
       snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
-  if(hierarchy==nil||children==nil||inputs==nil)return false;
+  std::vector<std::uint32_t> root_indices;
+  for(std::uint32_t index=0U;index<snapshot.records.size();++index)
+    if((snapshot.records[index].child_mask_flags&0x800U)!=0U)
+      root_indices.push_back(index);
+  id<MTLBuffer> roots=root_indices.empty()||root_indices.size()>12U?nil:
+      make_buffer(root_indices.data(),root_indices.size()*sizeof(std::uint32_t));
+  if(hierarchy==nil||children==nil||inputs==nil||roots==nil)return false;
   id<MTLCommandQueue> queue=[device newCommandQueue];
   if(queue==nil)return false;
 
@@ -1461,9 +3092,10 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
                                       mark_word_count,0U);
     id<MTLBuffer> output=make_buffer(zeroed.data(),
         zeroed.size()*sizeof(zeroed.front()));
-    const std::array<std::uint32_t,3> parameters{
+    const std::array<std::uint32_t,4> parameters{
         static_cast<std::uint32_t>(snapshot.records.size()),selector_case.capacity,
-        static_cast<std::uint32_t>(mark_word_count)};
+        static_cast<std::uint32_t>(mark_word_count),
+        static_cast<std::uint32_t>(root_indices.size())};
     if(tuple_buffer==nil||output==nil)return false;
     id<MTLCommandBuffer> command=[queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
@@ -1473,8 +3105,9 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
     [encoder setBuffer:inputs offset:0U atIndex:2U];
     [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
     [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
-    [encoder setBuffer:output offset:0U atIndex:5U];
-    [encoder dispatchThreads:MTLSizeMake(snapshot.records.size(),1U,1U)
+    [encoder setBuffer:roots offset:0U atIndex:5U];
+    [encoder setBuffer:output offset:0U atIndex:6U];
+    [encoder dispatchThreads:MTLSizeMake(root_indices.size(),1U,1U)
          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
     [encoder endEncoding];[command commit];[command waitUntilCompleted];
     if(command.status!=MTLCommandBufferStatusCompleted){std::fprintf(stderr,"Metal terrain project command status %ld\n",static_cast<long>(command.status));return false;}
@@ -1502,8 +3135,181 @@ bool run_metal_gpu_lod_selector_smoke_test(id<MTLDevice> device) {
       }
     }
     if(canonical(std::move(marked))!=canonical(oracle.selected_records))return false;
+    // P7e4a1's vertical compact-list seed consumes P7e2's append stream
+    // exactly as written, but derives its dispatch grid from that private
+    // count. Fixture memory is shared solely to prove the ABI; the live route
+    // keeps both buffers private and performs no count/payload readback.
+    std::vector<std::uint32_t> compact_words(4U+selector_case.capacity,0U);
+    std::array<std::uint32_t,4> dispatch_words{99U,99U,99U,99U};
+    id<MTLBuffer> compact=make_buffer(compact_words.data(),
+        compact_words.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> dispatch_args=make_buffer(dispatch_words.data(),
+        sizeof(dispatch_words));
+    if(compact==nil||dispatch_args==nil)return false;
+    std::array<std::uint32_t,5> worklist_parameters{
+        static_cast<std::uint32_t>(snapshot.records.size()),selector_case.capacity,
+        selector_case.capacity,0U,0U};
+    id<MTLCommandBuffer> worklist_command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> worklist_encoder=[worklist_command computeCommandEncoder];
+    [worklist_encoder setComputePipelineState:worklist];
+    [worklist_encoder setBuffer:dispatch_args offset:0U atIndex:0U];
+    [worklist_encoder setBytes:worklist_parameters.data()
+                  length:sizeof(worklist_parameters) atIndex:1U];
+    [worklist_encoder setBuffer:output offset:0U atIndex:2U];
+    [worklist_encoder setBuffer:compact offset:0U atIndex:3U];
+    [worklist_encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [worklist_encoder endEncoding];
+    worklist_parameters[3U]=1U;
+    worklist_encoder=[worklist_command computeCommandEncoder];
+    [worklist_encoder setComputePipelineState:worklist];
+    [worklist_encoder setBuffer:dispatch_args offset:0U atIndex:0U];
+    [worklist_encoder setBytes:worklist_parameters.data()
+                  length:sizeof(worklist_parameters) atIndex:1U];
+    [worklist_encoder setBuffer:output offset:0U atIndex:2U];
+    [worklist_encoder setBuffer:compact offset:0U atIndex:3U];
+    [worklist_encoder dispatchThreadgroupsWithIndirectBuffer:dispatch_args
+        indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+    [worklist_encoder endEncoding];[worklist_command commit];
+    [worklist_command waitUntilCompleted];
+    const auto* compact_result=static_cast<const std::uint32_t*>(compact.contents);
+    const auto* indirect_result=static_cast<const std::uint32_t*>(dispatch_args.contents);
+    if(worklist_command.status!=MTLCommandBufferStatusCompleted||
+       compact_result==nullptr||indirect_result==nullptr||
+       compact_result[0U]!=count||compact_result[1U]!=selector_case.capacity||
+       compact_result[2U]!=0U||indirect_result[0U]!=(count+255U)/256U||
+       indirect_result[1U]!=1U||indirect_result[2U]!=1U||
+       !std::equal(device.begin(),device.end(),compact_result+4U))return false;
+    // Canonical ranks are immutable snapshot metadata. Five stable radix
+    // passes turn the nondeterministic root-append order into the exact
+    // address-canonical owner order required before ping/pong closure.
+    std::vector<std::uint32_t> ranks(snapshot.records.size());
+    for(std::uint32_t rank=0U;rank<snapshot.canonical_record_indices.size();++rank)
+      ranks[snapshot.canonical_record_indices[rank]]=rank;
+    const auto groups=(count+255U)/256U;
+    std::vector<std::uint32_t> histogram(std::max<std::uint32_t>(groups*16U,1U));
+    std::vector<std::uint32_t> histogram_offsets(histogram.size());
+    std::array<std::uint32_t,16> bin_bases{};
+    std::vector<std::uint32_t> canonical_words(4U+selector_case.capacity,0U);
+    id<MTLBuffer> rank_buffer=make_buffer(ranks.data(),ranks.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> histogram_buffer=make_buffer(histogram.data(),histogram.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> histogram_offsets_buffer=make_buffer(histogram_offsets.data(),histogram_offsets.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> bin_bases_buffer=make_buffer(bin_bases.data(),sizeof(bin_bases));
+    id<MTLBuffer> canonical_buffer=make_buffer(canonical_words.data(),canonical_words.size()*sizeof(std::uint32_t));
+    if(rank_buffer==nil||histogram_buffer==nil||histogram_offsets_buffer==nil||
+       bin_bases_buffer==nil||canonical_buffer==nil)return false;
+    id<MTLBuffer> canonical_input=compact,canonical_output=canonical_buffer;
+    id<MTLCommandBuffer> canonical_command=[queue commandBuffer];
+    for(std::uint32_t shift=0U;shift<20U;shift+=4U) {
+      const auto encode_canonical=[&](std::uint32_t phase,bool indirect){
+        const std::array<std::uint32_t,4> parameters{
+            static_cast<std::uint32_t>(snapshot.records.size()),phase,shift,0U};
+        id<MTLComputeCommandEncoder> e=[canonical_command computeCommandEncoder];
+        [e setComputePipelineState:canonicalize];
+        // Generated MSL ABI: gate/input/parameters/output/ranks/histogram/bases/offsets.
+        [e setBuffer:dispatch_args offset:0U atIndex:0U];
+        [e setBuffer:canonical_input offset:0U atIndex:1U];
+        [e setBytes:parameters.data() length:sizeof(parameters) atIndex:2U];
+        [e setBuffer:canonical_output offset:0U atIndex:3U];
+        [e setBuffer:rank_buffer offset:0U atIndex:4U];
+        [e setBuffer:histogram_buffer offset:0U atIndex:5U];
+        [e setBuffer:bin_bases_buffer offset:0U atIndex:6U];
+        [e setBuffer:histogram_offsets_buffer offset:0U atIndex:7U];
+        if(indirect)[e dispatchThreadgroupsWithIndirectBuffer:dispatch_args
+            indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+        else [e dispatchThreads:MTLSizeMake(1U,1U,1U)
+            threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+        [e endEncoding];
+      };
+      encode_canonical(0U,true);encode_canonical(1U,false);encode_canonical(2U,true);
+      std::swap(canonical_input,canonical_output);
+    }
+    [canonical_command commit];[canonical_command waitUntilCompleted];
+    const auto* canonical_result=static_cast<const std::uint32_t*>(canonical_input.contents);
+    std::vector<std::uint32_t> expected=oracle.selected_records;
+    std::ranges::sort(expected,{},[&](std::uint32_t record){return ranks[record];});
+    if(canonical_command.status!=MTLCommandBufferStatusCompleted||canonical_result==nullptr||
+       canonical_result[0U]!=count||canonical_result[2U]!=0U||
+       !std::equal(expected.begin(),expected.end(),canonical_result+4U)) {
+      std::fprintf(stderr,"Metal compact canonicalize failed: status=%ld count=%u/%u failure=%u first=%u expected=%u\n",
+          static_cast<long>(canonical_command.status),canonical_result==nullptr?0U:canonical_result[0U],count,
+          canonical_result==nullptr?0U:canonical_result[2U],canonical_result==nullptr?0U:canonical_result[4U],
+          expected.empty()?0U:expected.front());
+      return false;
+    }
+    std::vector<std::uint32_t> oversized_words(4U+selector_case.capacity,0U);
+    id<MTLBuffer> oversized=make_buffer(oversized_words.data(),
+        oversized_words.size()*sizeof(std::uint32_t));
+    if(oversized==nil)return false;
+    const std::array<std::uint32_t,4> oversized_parameters{
+        (1U<<20U)+1U,0U,0U,0U};
+    id<MTLCommandBuffer> oversized_command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> oversized_encoder=[oversized_command computeCommandEncoder];
+    [oversized_encoder setComputePipelineState:canonicalize];
+    [oversized_encoder setBuffer:dispatch_args offset:0U atIndex:0U];
+    [oversized_encoder setBuffer:compact offset:0U atIndex:1U];
+    [oversized_encoder setBytes:oversized_parameters.data()
+                        length:sizeof(oversized_parameters) atIndex:2U];
+    [oversized_encoder setBuffer:oversized offset:0U atIndex:3U];
+    [oversized_encoder setBuffer:rank_buffer offset:0U atIndex:4U];
+    [oversized_encoder setBuffer:histogram_buffer offset:0U atIndex:5U];
+    [oversized_encoder setBuffer:bin_bases_buffer offset:0U atIndex:6U];
+    [oversized_encoder setBuffer:histogram_offsets_buffer offset:0U atIndex:7U];
+    [oversized_encoder dispatchThreadgroupsWithIndirectBuffer:dispatch_args
+        indirectBufferOffset:0U threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+    [oversized_encoder endEncoding];[oversized_command commit];[oversized_command waitUntilCompleted];
+    const auto* oversized_result=static_cast<const std::uint32_t*>(oversized.contents);
+    if(oversized_command.status!=MTLCommandBufferStatusCompleted||
+       oversized_result==nullptr||oversized_result[2U]!=16U)return false;
     ++completed;
   }
+  // Fail-closed worklist ABI coverage: a bad append header arms no indirect
+  // work; a malformed record is detected by the indirect copy and retires its
+  // grid before any later consumer can run.
+  const auto worklist_failure=[&](std::vector<std::uint32_t> source,
+                                  std::uint32_t selection_capacity,
+                                  std::uint32_t active_capacity,
+                                  std::uint32_t expected_failure){
+    source.resize(std::max<std::size_t>(source.size(),4U),0U);
+    std::vector<std::uint32_t> destination(
+        4U+std::max<std::uint32_t>(active_capacity,1U),0U);
+    std::array<std::uint32_t,4> args{99U,99U,99U,99U};
+    id<MTLBuffer> source_buffer=make_buffer(source.data(),
+        source.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> destination_buffer=make_buffer(destination.data(),
+        destination.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> args_buffer=make_buffer(args.data(),sizeof(args));
+    if(source_buffer==nil||destination_buffer==nil||args_buffer==nil)return false;
+    std::array<std::uint32_t,5> parameters{
+        static_cast<std::uint32_t>(snapshot.records.size()),selection_capacity,
+        active_capacity,0U,0U};
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:worklist];[encoder setBuffer:args_buffer offset:0U atIndex:0U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:1U];
+    [encoder setBuffer:source_buffer offset:0U atIndex:2U];
+    [encoder setBuffer:destination_buffer offset:0U atIndex:3U];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+         threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[encoder endEncoding];
+    parameters[3U]=1U;encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:worklist];[encoder setBuffer:args_buffer offset:0U atIndex:0U];
+    [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:1U];
+    [encoder setBuffer:source_buffer offset:0U atIndex:2U];
+    [encoder setBuffer:destination_buffer offset:0U atIndex:3U];
+    [encoder dispatchThreadgroupsWithIndirectBuffer:args_buffer indirectBufferOffset:0U
+        threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[encoder endEncoding];
+    [command commit];[command waitUntilCompleted];
+    const auto* header=static_cast<const std::uint32_t*>(destination_buffer.contents);
+    const auto* grid=static_cast<const std::uint32_t*>(args_buffer.contents);
+    return command.status==MTLCommandBufferStatusCompleted&&header!=nullptr&&
+        grid!=nullptr&&header[2U]==expected_failure&&grid[0U]==0U&&
+        grid[1U]==1U&&grid[2U]==1U;
+  };
+  if(!worklist_failure({0U,0U,0U,0U},1U,1U,2U)||
+     !worklist_failure({2U,0U,0U,0U,0U,1U},1U,1U,1U)||
+     !worklist_failure({1U,0U,0U,0U,
+                         static_cast<std::uint32_t>(snapshot.records.size())},
+                        1U,1U,4U))return false;
   std::printf("{\"event\":\"metal_gpu_lod_selector\","
               "\"cases\":%zu,\"records\":%zu,\"passed\":true}\n",
               completed,snapshot.records.size());
@@ -1567,7 +3373,7 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
   };
   const auto dispatch=[&](const tetra::GpuHierarchySelectionTuple& tuple){
     id<MTLCommandBuffer> command=[queue commandBuffer];
-    if(!encode_metal_gpu_hierarchy_live_selection(command,pipeline,selection,tuple))
+    if(!encode_metal_gpu_hierarchy_live_selection(command,pipeline,nil,selection,tuple))
       return false;
     [command commit];[command waitUntilCompleted];
     retire_metal_gpu_hierarchy_live_selection(selection);
@@ -1578,7 +3384,7 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
      selection.hierarchy!=first_hierarchy||selection.parents!=first_parents||
      selection.face_incidence!=first_faces||selection.edge_topology!=first_edges||
      !dispatch(tuple_for(41U,43U,{0.7,0.5,2.8})))return false;
-  if(encode_metal_gpu_hierarchy_live_selection([queue commandBuffer],pipeline,
+  if(encode_metal_gpu_hierarchy_live_selection([queue commandBuffer],pipeline,nil,
       selection,tuple_for(47U,43U,{0.5,0.5,3.0}))||
      selection.stale_rejected!=1U)return false;
   if(!configure_metal_gpu_hierarchy_live_selection(device,selection,second,53U,9U)||
@@ -1593,6 +3399,1452 @@ bool run_metal_gpu_live_selection_state_smoke_test(id<MTLDevice> device) {
               "\"accepted\":%llu,\"failed\":%llu,\"passed\":%s}\n",
       static_cast<unsigned long long>(selection.accepted),
       static_cast<unsigned long long>(selection.failed),passed?"true":"false");
+  return passed;
+}
+
+// Isolate the production encoder from renderer/world bootstrap timing.  This
+// builds one modest immutable snapshot, runs the exact live selector and
+// compact closure command buffer, then reads completion latches only.
+bool run_metal_gpu_compact_live_closure_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned generation=0U;generation<3U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> owners;
+  for(const auto owner:mesh.logical_red_owners())owners.push_back(tetra::world_tet_address(owner));
+  const tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      owners,1U,79U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,83U);
+  const auto pipeline_for=[&](const char* name)->id<MTLComputePipelineState>{
+    const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
+    id<MTLLibrary> library=make_file_shader_library(device,path.string().c_str());
+    NSError* error=nil;
+    return library==nil?nil:[device newComputePipelineStateWithFunction:
+        [library newFunctionWithName:@"main0"] error:&error];
+  };
+  id<MTLComputePipelineState> selector=pipeline_for("gpu_lod.comp.metal");
+  id<MTLComputePipelineState> worklist=pipeline_for("gpu_hierarchy_compact_worklist.comp.metal");
+  id<MTLComputePipelineState> canonicalize=pipeline_for("gpu_hierarchy_canonicalize.comp.metal");
+  id<MTLComputePipelineState> green=pipeline_for("gpu_hierarchy_compact_green_closure.comp.metal");
+  id<MTLComputePipelineState> red=pipeline_for("gpu_hierarchy_compact_red_repair.comp.metal");
+  id<MTLComputePipelineState> scan=pipeline_for("gpu_hierarchy_compact_red_scan.comp.metal");
+  id<MTLComputePipelineState> materialize=pipeline_for("gpu_hierarchy_compact_owner_materialize.comp.metal");
+  MetalCompactOwnerP8Pipelines p8{pipeline_for("gpu_terrain_compact_owner_control.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_count.comp.metal"),pipeline_for("gpu_terrain_compact_owner_scan.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_triangle_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_copy.comp.metal"),pipeline_for("gpu_terrain_compact_owner_publish.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_microbatch.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_microbatch_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_hybrid_scan.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_hybrid_finalize.comp.metal")};
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(selector==nil||worklist==nil||canonicalize==nil||green==nil||red==nil||scan==nil||materialize==nil||
+     p8.control==nil||p8.count==nil||p8.scan==nil||p8.emit==nil||p8.triangle_emit==nil||p8.validate==nil||p8.copy==nil||p8.publish==nil||p8.hybrid_scan==nil||p8.hybrid_finalize==nil||queue==nil)return false;
+  MetalGpuHierarchyLiveSelection selection;
+  if(!configure_metal_gpu_hierarchy_live_selection(device,selection,snapshot,83U,11U))return false;
+  tetra::Camera camera;
+  camera.position={0.5,0.5,3.0};camera.forward={0.0,0.0,-1.0};camera.up={0.0,1.0,0.0};
+  camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.0;
+  const auto tuple=tetra::make_gpu_hierarchy_selection_tuple({
+      .camera=camera,.render_origin={},.field_centre={0.5,0.5,0.5},
+      .planet_radius=2.0,.terrain_height_bound=0.1,.field_lipschitz=1.0,
+      .edge_threshold=0.5,.field_threshold=0.05,.limb_threshold=0.02,
+      .merge_ratio=0.5,.source_revision=79U,.field_revision=83U});
+  tetra::GpuTerrainFieldTupleParameters terrain_parameters;
+  terrain_parameters.source_revision=79U;terrain_parameters.field_revision=83U;
+  terrain_parameters.domain.world_extent=1.0;terrain_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  terrain_parameters.field.centre={.5,.52,.5};terrain_parameters.field.radius=.37;
+  terrain_parameters.field.terrain.planet_radius=.37;
+  const auto terrain_tuple=tetra::make_gpu_terrain_field_tuple(terrain_parameters);
+  const auto templates=tetra::make_gpu_green_template_table();
+  selection.compact_p8_field=[device newBufferWithBytes:&terrain_tuple length:sizeof(terrain_tuple)
+      options:MTLResourceStorageModeShared];
+  selection.compact_p8_templates=[device newBufferWithBytes:templates.data() length:sizeof(templates)
+      options:MTLResourceStorageModeShared];
+  constexpr std::uint32_t p8_vertex_capacity=65536U;
+  id<MTLBuffer> retained=[device newBufferWithLength:p8_vertex_capacity*
+      sizeof(tetra_viewer::SceneVertex) options:MTLResourceStorageModePrivate];
+  id<MTLBuffer> arguments=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModePrivate];
+  if(retained==nil||arguments==nil||
+     !ensure_metal_gpu_hierarchy_compact_p8_workspace(device,selection,p8_vertex_capacity))
+    return false;
+  id<MTLCommandBuffer> command=[queue commandBuffer];
+  if(!encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,tuple)||
+     !encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,
+         scan,selection,false)||
+     !encode_metal_gpu_hierarchy_compact_owner_materialize(command,materialize,selection)||
+     !encode_metal_gpu_hierarchy_compact_owner_p8(command,p8,
+         selection.compact_owner_stream,selection.compact_owner_header,
+         selection.compact_p8_field,selection.compact_p8_templates,
+         selection.compact_p8_counts,selection.compact_p8_offsets,
+         selection.compact_p8_block_totals,selection.compact_p8_block_offsets,
+         selection.compact_p8_level_totals,selection.compact_p8_level_offsets,
+         selection.compact_p8_signs,selection.compact_p8_candidate,
+         selection.compact_p8_status,selection.compact_p8_dispatches,
+         retained,arguments,p8_vertex_capacity,{},79U))return false;
+  // Retire this only with the closure command that produced its owner
+  // header.  The audit below is scalar-only: status plus candidate header,
+  // never compact-owner or vertex payload.
+  ++selection.compact_p8_encoded;
+  id<MTLBlitCommandEncoder> p8_audit=[command blitCommandEncoder];
+  [p8_audit copyFromBuffer:selection.compact_p8_status sourceOffset:0U
+       toBuffer:selection.compact_p8_audit destinationOffset:0U
+           size:2U*sizeof(std::uint32_t)];
+  [p8_audit copyFromBuffer:selection.compact_p8_candidate sourceOffset:0U
+       toBuffer:selection.compact_p8_audit destinationOffset:2U*sizeof(std::uint32_t)
+           size:4U*sizeof(std::uint32_t)];
+  [p8_audit copyFromBuffer:selection.compact_owner_header sourceOffset:0U
+       toBuffer:selection.compact_p8_audit destinationOffset:6U*sizeof(std::uint32_t)
+           size:4U*sizeof(std::uint32_t)];
+  [p8_audit endEncoding];
+  [command commit];[command waitUntilCompleted];
+  retire_metal_gpu_hierarchy_live_selection(selection);
+  const bool passed=command.status==MTLCommandBufferStatusCompleted&&
+      selection.submitted==1U&&selection.completed==1U&&selection.accepted==1U&&
+      selection.compact_closure_encoded==1U&&selection.compact_red_encoded==8U&&
+      selection.compact_closure_completed==1U&&selection.compact_quiescent==1U&&
+      selection.compact_closure_rejected==0U&&
+      selection.compact_p8_encoded==1U&&selection.compact_p8_completed==1U&&
+      selection.compact_p8_private_commits==1U&&selection.compact_p8_rejected==0U&&
+      static_cast<const std::uint32_t*>(selection.compact_p8_audit.contents)[0U]==1U&&
+      static_cast<const std::uint32_t*>(selection.compact_p8_audit.contents)[1U]==0U&&
+      static_cast<const std::uint32_t*>(selection.compact_p8_audit.contents)[2U]!=0U&&
+      static_cast<const std::uint32_t*>(selection.compact_p8_audit.contents)[3U]==0U;
+  std::printf("{\"event\":\"metal_gpu_compact_live_closure\","
+              "\"bootstrap_records\":%u,\"selector_submitted\":%llu,"
+              "\"compact_encoded\":%llu,\"compact_completed\":%llu,"
+              "\"direct_red_rounds\":%llu,\"final_latched\":%llu,"
+              "\"p8_owner_materialization\":%s,\"p8_encoded\":%llu,"
+              "\"p8_completed\":%llu,\"p8_rejected\":%llu,"
+              "\"p8_private_commit\":%s,\"passed\":%s}\n",
+      selection.record_count,static_cast<unsigned long long>(selection.submitted),
+      static_cast<unsigned long long>(selection.compact_closure_encoded),
+      static_cast<unsigned long long>(selection.compact_closure_completed),
+      static_cast<unsigned long long>(selection.compact_red_encoded),
+      static_cast<unsigned long long>(selection.compact_quiescent),
+      selection.compact_p8_encoded!=0U?"true":"false",
+      static_cast<unsigned long long>(selection.compact_p8_encoded),
+      static_cast<unsigned long long>(selection.compact_p8_completed),
+      static_cast<unsigned long long>(selection.compact_p8_rejected),
+      selection.compact_p8_private_commits!=0U?"true":"false",
+      passed?"true":"false");
+  return passed;
+}
+
+// Qualification-only end-to-end oracle for the real compact device front.
+// Unlike the scalar live-closure smoke above, this deliberately reads the
+// completed private front in a separate command buffer and compares it to an
+// independently closed CPU cut.  Nothing in the interactive route calls this
+// function or allocates its payload readback buffers.
+bool run_metal_gpu_compact_live_parity_smoke_test(id<MTLDevice> device,
+                                                  bool run_p95_benchmark=false,
+                                                  bool use_hybrid=false) {
+  const auto shader_directory=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline_for=[&](const char* name)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(shader_directory/name).string().c_str());
+    NSError* error=nil;
+    return library==nil?nil:[device newComputePipelineStateWithFunction:
+        [library newFunctionWithName:@"main0"] error:&error];
+  };
+  id<MTLComputePipelineState> selector=pipeline_for("gpu_lod.comp.metal");
+  id<MTLComputePipelineState> worklist=pipeline_for("gpu_hierarchy_compact_worklist.comp.metal");
+  id<MTLComputePipelineState> canonicalize=pipeline_for("gpu_hierarchy_canonicalize.comp.metal");
+  id<MTLComputePipelineState> green=pipeline_for("gpu_hierarchy_compact_green_closure.comp.metal");
+  id<MTLComputePipelineState> red=pipeline_for("gpu_hierarchy_compact_red_repair.comp.metal");
+  id<MTLComputePipelineState> scan=pipeline_for("gpu_hierarchy_compact_red_scan.comp.metal");
+  id<MTLComputePipelineState> materialize=pipeline_for("gpu_hierarchy_compact_owner_materialize.comp.metal");
+  id<MTLComputePipelineState> owner_trace=pipeline_for("gpu_terrain_compact_owner_trace.comp.metal");
+  MetalCompactOwnerP8Pipelines p8{pipeline_for("gpu_terrain_compact_owner_control.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_count.comp.metal"),pipeline_for("gpu_terrain_compact_owner_scan.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_triangle_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_copy.comp.metal"),pipeline_for("gpu_terrain_compact_owner_publish.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_microbatch.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_microbatch_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_hybrid_scan.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_hybrid_finalize.comp.metal")};
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(selector==nil||worklist==nil||canonicalize==nil||green==nil||red==nil||
+     scan==nil||materialize==nil||owner_trace==nil||p8.control==nil||p8.count==nil||p8.scan==nil||
+     p8.emit==nil||p8.validate==nil||p8.copy==nil||p8.publish==nil||
+     (use_hybrid&&(p8.triangle_emit==nil||p8.hybrid_scan==nil||p8.hybrid_finalize==nil))||queue==nil)
+    return false;
+
+  // This source is intentionally mixed depth.  The first root is split once
+  // after a uniform two-level refinement, exercising root seams and the
+  // closure's mixed-depth repair rather than a uniform leaf-only shortcut.
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned generation=0U;generation<2U;++generation)mesh.refine_all_binary();
+  if(mesh.logical_red_owners().empty()||
+     !mesh.refine_selected_binary({mesh.logical_red_owners().front()}))return false;
+  std::vector<tetra::WorldTetAddress> owners;
+  for(const auto owner:mesh.logical_red_owners())owners.push_back(tetra::world_tet_address(owner));
+  constexpr std::uint64_t source_revision=719U,field_revision=83U;
+  const tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      owners,1U,source_revision,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,field_revision);
+  try { tetra::validate_gpu_hierarchy_snapshot(snapshot); }
+  catch(const std::exception& error) {
+    std::fprintf(stderr,"compact live parity fixture snapshot is invalid: %s\n",error.what());
+    return false;
+  }
+  MetalGpuHierarchyLiveSelection selection;
+  if(!configure_metal_gpu_hierarchy_live_selection(device,selection,snapshot,
+      field_revision,17U))return false;
+  tetra::GpuTerrainFieldTupleParameters field_parameters;
+  field_parameters.source_revision=source_revision;field_parameters.field_revision=field_revision;
+  field_parameters.domain.world_extent=1.0;field_parameters.field.kind=tetra::ImplicitShapeKind::perlin_terrain;
+  field_parameters.field.centre={.5,.52,.5};field_parameters.field.radius=.37;
+  field_parameters.field.terrain.planet_radius=.37;
+  const auto field_tuple=tetra::make_gpu_terrain_field_tuple(field_parameters);
+  const auto templates=tetra::make_gpu_green_template_table();
+  selection.compact_p8_field=[device newBufferWithBytes:&field_tuple length:sizeof(field_tuple)
+      options:MTLResourceStorageModeShared];
+  selection.compact_p8_templates=[device newBufferWithBytes:templates.data() length:sizeof(templates)
+      options:MTLResourceStorageModeShared];
+  constexpr std::uint32_t vertex_capacity=262144U;
+  id<MTLBuffer> retained=[device newBufferWithLength:std::size_t(vertex_capacity)*18U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModePrivate];
+  id<MTLBuffer> arguments=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModePrivate];
+  // These two shared buffers are test-oracle-only.  The successful command
+  // has completed before the blit, so they cannot accidentally become a live
+  // candidate transport path.
+  id<MTLBuffer> retained_readback=[device newBufferWithLength:retained.length
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> arguments_readback=[device newBufferWithLength:arguments.length
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> candidate_readback=nil;
+  id<MTLBuffer> owner_readback=[device newBufferWithLength:
+      std::size_t(selection.output_capacity)*12U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> owner_header_readback=[device newBufferWithLength:4U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  // P8's per-owner count/offset is read only by this qualification fixture,
+  // after completion.  It lets the diagnostic associate a retained vertex
+  // mismatch with one canonical compact owner without making that payload a
+  // live transport path.
+  id<MTLBuffer> count_readback=[device newBufferWithLength:
+      std::size_t(selection.output_capacity)*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> offset_readback=[device newBufferWithLength:
+      std::size_t(selection.output_capacity)*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  // 24 header/owner/geometry words plus 24 fixed-size cell records.  This is
+  // a deliberately test-only one-owner trace, never an input to rendering.
+  id<MTLBuffer> owner_trace_readback=[device newBufferWithLength:1024U*sizeof(std::uint32_t)
+      options:MTLResourceStorageModeShared];
+  if(selection.compact_p8_field==nil||selection.compact_p8_templates==nil||retained==nil||
+     arguments==nil||retained_readback==nil||arguments_readback==nil||owner_readback==nil||
+     owner_header_readback==nil||count_readback==nil||offset_readback==nil||
+     owner_trace_readback==nil||
+     !ensure_metal_gpu_hierarchy_compact_p8_workspace(device,selection,vertex_capacity))return false;
+  candidate_readback=[device newBufferWithLength:selection.compact_p8_candidate.length
+      options:MTLResourceStorageModeShared];
+  if(candidate_readback==nil)return false;
+
+  const auto make_tuple=[](tetra::Vec3 position,tetra::Vec3 origin,
+                           std::uint64_t tuple_field_revision) {
+    tetra::Camera camera;
+    camera.position=position;camera.forward={0.0,0.0,-1.0};camera.up={0.0,1.0,0.0};
+    camera.viewport_height_pixels=800.0;camera.aspect_ratio=1.0;
+    return tetra::make_gpu_hierarchy_selection_tuple({.camera=camera,.render_origin=origin,
+        .field_centre={.5,.5,.5},.planet_radius=2.0,.terrain_height_bound=.1,
+        .field_lipschitz=1.0,.edge_threshold=.5,.field_threshold=.05,
+        .limb_threshold=.02,.merge_ratio=.5,.source_revision=source_revision,
+        .field_revision=tuple_field_revision});
+  };
+  const auto oracle_geometry=[&](const tetra::GpuHierarchySelectionTuple& tuple,
+                                 const tetra::GpuTerrainFieldTuple& terrain,
+                                 tetra::Vec3 origin,
+                                 std::vector<tetra::GpuTerrainProjectedTriangleRecord>& geometry) {
+    const auto traversal=tetra::gpu_hierarchy_traverse(snapshot,
+        tetra::gpu_hierarchy_traversal_parameters(tuple));
+    std::vector<tetra::WorldTetAddress> candidates;
+    candidates.reserve(traversal.selected_records.size());
+    for(const auto record:traversal.selected_records) {
+      if(record>=snapshot.records.size())return false;
+      candidates.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address));
+    }
+    std::ranges::sort(candidates);
+    if(candidates.empty()||std::ranges::adjacent_find(candidates)!=candidates.end())return false;
+    const auto packet=tetra::make_gpu_green_mask_packet(candidates,source_revision);
+    auto roots=tetra::gpu_terrain_root_packet(packet,terrain,vertex_capacity);
+    auto base=tetra::gpu_terrain_base_triangles(roots,vertex_capacity);
+    for(auto& triangle:base)for(auto& root:triangle.roots) {
+      root.x=static_cast<float>(root.x);root.y=static_cast<float>(root.y);root.z=static_cast<float>(root.z);
+    }
+    geometry=tetra::gpu_terrain_project_base_triangles(base,
+        tetra::gpu_terrain_field_tuple_sphere(terrain),origin,vertex_capacity);
+    return !geometry.empty()&&geometry.size()<=vertex_capacity/12U;
+  };
+  const auto read_retained=[&]() {
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];
+    [copy copyFromBuffer:retained sourceOffset:0U toBuffer:retained_readback
+        destinationOffset:0U size:retained.length];
+    [copy copyFromBuffer:arguments sourceOffset:0U toBuffer:arguments_readback
+        destinationOffset:0U size:arguments.length];
+    [copy copyFromBuffer:selection.compact_p8_candidate sourceOffset:0U toBuffer:candidate_readback
+        destinationOffset:0U size:candidate_readback.length];
+    [copy endEncoding];[command commit];[command waitUntilCompleted];
+    return command.status==MTLCommandBufferStatusCompleted;
+  };
+  const auto read_owners=[&]() {
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];
+    [copy copyFromBuffer:selection.compact_owner_header sourceOffset:0U
+        toBuffer:owner_header_readback destinationOffset:0U size:owner_header_readback.length];
+    [copy copyFromBuffer:selection.compact_owner_stream sourceOffset:0U
+        toBuffer:owner_readback destinationOffset:0U size:owner_readback.length];
+    [copy copyFromBuffer:selection.compact_p8_counts sourceOffset:0U
+        toBuffer:count_readback destinationOffset:0U size:count_readback.length];
+    [copy copyFromBuffer:selection.compact_p8_offsets sourceOffset:0U
+        toBuffer:offset_readback destinationOffset:0U size:offset_readback.length];
+    [copy endEncoding];[command commit];[command waitUntilCompleted];
+    return command.status==MTLCommandBufferStatusCompleted;
+  };
+  const auto compare_owners=[&](const tetra::GpuHierarchySelectionTuple& tuple) {
+    const auto traversal=tetra::gpu_hierarchy_traverse(snapshot,
+        tetra::gpu_hierarchy_traversal_parameters(tuple));
+    std::vector<tetra::WorldTetAddress> candidates;
+    for(const auto record:traversal.selected_records)
+      candidates.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address));
+    std::ranges::sort(candidates);
+    const auto packet=tetra::make_gpu_green_mask_packet(candidates,source_revision);
+    const auto* header=static_cast<const std::uint32_t*>(owner_header_readback.contents);
+    const auto* words=static_cast<const std::uint32_t*>(owner_readback.contents);
+    if(header==nullptr||words==nullptr||header[0U]!=packet.owners.size()||header[2U]!=0U||header[3U]!=1U) {
+      std::fprintf(stderr,"compact live owner header mismatch: got=%u/%u/%u/%u expected=%zu\n",
+          header==nullptr?0U:header[0U],header==nullptr?0U:header[1U],
+          header==nullptr?0U:header[2U],header==nullptr?0U:header[3U],packet.owners.size());
+      return false;
+    }
+    // The six edge lanes intentionally name different immutable directories
+    // on the two routes (P6's packet edge table vs compact snapshot ranges).
+    // They are not geometry identity. Address, green mask, and orientation
+    // are the independently comparable closed-owner contract.
+    std::vector<std::array<std::uint32_t,6U>> expected,actual;
+    expected.reserve(packet.owners.size());actual.reserve(packet.owners.size());
+    for(const auto& owner:packet.owners) {
+      std::array<std::uint32_t,6U> value{};
+      std::copy(owner.address.begin(),owner.address.end(),value.begin());
+      value[4U]=owner.mask;value[5U]=owner.reflected_orientation;expected.push_back(value);
+    }
+    for(std::size_t index=0U;index<packet.owners.size();++index) {
+      std::array<std::uint32_t,6U> value{};
+      std::copy_n(words+index*12U,4U,value.begin());
+      value[4U]=words[index*12U+10U];value[5U]=words[index*12U+11U];actual.push_back(value);
+    }
+    std::ranges::sort(expected);std::ranges::sort(actual);
+    if(expected!=actual) {
+      for(std::size_t index=0U;index<expected.size();++index)if(expected[index]!=actual[index]) {
+        std::fprintf(stderr,"compact live owner mismatch at %zu: CPU=%u/%u/%u/%u mask=%u GPU=%u/%u/%u/%u mask=%u\n",
+            index,expected[index][0U],expected[index][1U],expected[index][2U],expected[index][3U],expected[index][4U],
+            actual[index][0U],actual[index][1U],actual[index][2U],actual[index][3U],actual[index][4U]);
+        break;
+      }
+      return false;
+    }
+    return true;
+  };
+  const auto trace_owner=[&](std::uint32_t owner_index,
+                             const tetra::GpuTerrainFieldTuple& terrain,tetra::Vec3 origin) {
+    auto* trace=static_cast<std::uint32_t*>(owner_trace_readback.contents);
+    const auto* owner_words=static_cast<const std::uint32_t*>(owner_readback.contents);
+    if(trace==nullptr||owner_words==nullptr)return;
+    std::fill_n(trace,1024U,0U);
+    const MetalCompactOwnerEmitParameters parameters{owner_index,0U,0U,0U,
+        {static_cast<float>(origin.x),static_cast<float>(origin.y),static_cast<float>(origin.z),0.0F},0U,0U,0U,0U};
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+    [encoder setComputePipelineState:owner_trace];
+    // SPIRV-Cross orders this test kernel's MSL resources by its translated
+    // ABI (Field, Owners, Trace, parameters, header, templates), not by the
+    // source declaration order.
+    [encoder setBuffer:selection.compact_p8_field offset:0U atIndex:0U];
+    [encoder setBuffer:selection.compact_owner_stream offset:0U atIndex:1U];
+    [encoder setBuffer:owner_trace_readback offset:0U atIndex:2U];
+    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:3U];
+    [encoder setBuffer:selection.compact_owner_header offset:0U atIndex:4U];
+    [encoder setBuffer:selection.compact_p8_templates offset:0U atIndex:5U];
+    [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+        threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+    [encoder endEncoding];[command commit];[command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted||trace[1U]!=1U) {
+      std::fprintf(stderr,"compact live parity owner trace unavailable: command=%ld owner=%u header=%u/%u/%u/%u trace=%u/%u\\n",
+          static_cast<long>(command.status),owner_index,
+          static_cast<const std::uint32_t*>(owner_header_readback.contents)[0U],
+          static_cast<const std::uint32_t*>(owner_header_readback.contents)[1U],
+          static_cast<const std::uint32_t*>(owner_header_readback.contents)[2U],
+          static_cast<const std::uint32_t*>(owner_header_readback.contents)[3U],trace[0U],trace[1U]);
+      return;
+    }
+    std::array<std::uint32_t,4> lanes{};
+    std::copy_n(owner_words+owner_index*12U,4U,lanes.begin());
+    const auto address=tetra::gpu_hierarchy_address_from_lanes(lanes);
+    const auto exact=tetra::world_tetrahedron_geometry(address);
+    const auto quantized=[](tetra::Vec3 point) {
+      return tetra::Vec3{static_cast<float>(point.x),static_cast<float>(point.y),
+                         static_cast<float>(point.z)};
+    };
+    std::array<tetra::Vec3,4> geometry{};
+    for(std::size_t i=0U;i<geometry.size();++i)geometry[i]=quantized(exact[i]);
+    bool reconstruction_differs=false;
+    std::fprintf(stderr,"compact live parity owner trace owner=%u address=%u/%u/%u/%u origin=(%.9g,%.9g,%.9g) mask=%u cells=%u\\n",
+        owner_index,lanes[0U],lanes[1U],lanes[2U],lanes[3U],std::bit_cast<float>(trace[2U]),
+        std::bit_cast<float>(trace[3U]),std::bit_cast<float>(trace[4U]),trace[21U],trace[22U]);
+    for(std::size_t i=0U;i<geometry.size();++i) {
+      const tetra::Vec3 gpu{std::bit_cast<float>(trace[9U+i*3U]),
+          std::bit_cast<float>(trace[10U+i*3U]),std::bit_cast<float>(trace[11U+i*3U])};
+      reconstruction_differs|=std::abs(geometry[i].x-gpu.x)>1.e-6||
+          std::abs(geometry[i].y-gpu.y)>1.e-6||std::abs(geometry[i].z-gpu.z)>1.e-6;
+      std::fprintf(stderr,"  G[%zu] cpu=(%.9g,%.9g,%.9g) gpu=(%.9g,%.9g,%.9g)\\n",i,
+          geometry[i].x,geometry[i].y,geometry[i].z,gpu.x,gpu.y,gpu.z);
+    }
+    constexpr std::array<std::array<std::size_t,2>,6> edges{{{{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+    constexpr std::array<std::array<std::uint8_t,3>,32> cuts{{
+        {{0,0,0}},{{0,0,0}},{{0,1,2}},{{0,0,0}},{{0,3,4}},{{0,0,0}},{{1,2,4}},{{1,4,3}},
+        {{1,3,5}},{{0,0,0}},{{0,2,5}},{{0,5,3}},{{0,1,5}},{{0,5,4}},{{2,4,5}},{{0,0,0}},
+        {{2,4,5}},{{0,0,0}},{{0,1,5}},{{0,5,4}},{{0,2,5}},{{0,5,3}},{{1,3,5}},{{0,0,0}},
+        {{1,2,4}},{{1,4,3}},{{0,3,4}},{{0,0,0}},{{0,1,2}},{{0,0,0}},{{0,0,0}},{{0,0,0}}}};
+    std::array<tetra::Vec3,6> midpoints{};
+    for(std::size_t e=0U;e<midpoints.size();++e)
+      midpoints[e]=quantized((geometry[edges[e][0U]]+geometry[edges[e][1U]])/2.0);
+    const std::array<tetra::Vec3,10> points{{midpoints[2U],midpoints[1U],midpoints[0U],geometry[0U],
+        midpoints[4U],midpoints[3U],geometry[1U],midpoints[5U],geometry[2U],geometry[3U]}};
+    const auto field=tetra::gpu_terrain_field_tuple_sphere(terrain);
+    const tetra::WorldStreamingDemand::Domain domain{{terrain.domain_origin_extent[0U],
+        terrain.domain_origin_extent[1U],terrain.domain_origin_extent[2U]},terrain.domain_origin_extent[3U]};
+    const auto mask=trace[21U];
+    const auto cell_count=std::min(trace[22U],24U);
+    bool topology_differs=false,root_differs=false;
+    for(std::uint32_t cell=0U;cell<cell_count;++cell) {
+      const auto at=24U+cell*40U;const auto packed=trace[at];
+      std::array<std::uint8_t,4> corner{};std::uint32_t signs{};
+      for(std::size_t k=0U;k<corner.size();++k) {
+        corner[k]=static_cast<std::uint8_t>(packed>>(k*8U));
+        if(field.signed_distance(domain.to_world(points[corner[k]]))<0.0)signs|=1U<<k;
+      }
+      std::uint32_t edge_mask{};
+      std::array<tetra::Vec3,6> roots{};
+      for(std::size_t edge=0U;edge<edges.size();++edge)if(
+          ((signs>>edges[edge][0U])&1U)!=((signs>>edges[edge][1U])&1U)) {
+        edge_mask|=1U<<edge;
+        roots[edge]=quantized(field.edge_intersection(domain.to_world(points[corner[edges[edge][0U]]]),
+            domain.to_world(points[corner[edges[edge][1U]]])));
+      }
+      const auto cut=cuts[signs*2U];
+      const bool cell_topology=signs!=trace[at+1U]||edge_mask!=trace[at+2U]||
+          cut[0U]!=trace[at+4U]||cut[1U]!=trace[at+5U]||cut[2U]!=trace[at+6U];
+      topology_differs|=cell_topology;
+      std::fprintf(stderr,"  cell=%u packed=%u signs cpu=%u gpu=%u edges cpu=%u gpu=%u cut cpu=%u/%u/%u gpu=%u/%u/%u\\n",
+          cell,packed,signs,trace[at+1U],edge_mask,trace[at+2U],cut[0U],cut[1U],cut[2U],
+          trace[at+4U],trace[at+5U],trace[at+6U]);
+      for(std::size_t k=0U;k<3U;++k) {
+        const tetra::Vec3 gpu{std::bit_cast<float>(trace[at+7U+k*3U]),
+            std::bit_cast<float>(trace[at+8U+k*3U]),std::bit_cast<float>(trace[at+9U+k*3U])};
+        const auto& cpu=roots[cut[k]];
+        root_differs|=std::abs(cpu.x-gpu.x)>2.e-4||std::abs(cpu.y-gpu.y)>2.e-4||
+            std::abs(cpu.z-gpu.z)>2.e-4;
+        std::fprintf(stderr,"    root edge=%u cpu=(%.9g,%.9g,%.9g) gpu=(%.9g,%.9g,%.9g)\\n",
+            cut[k],cpu.x,cpu.y,cpu.z,gpu.x,gpu.y,gpu.z);
+      }
+      if(trace[at+3U]!=0U)for(std::size_t k=0U;k<6U;++k)
+        std::fprintf(stderr,"    emit-point[%zu] gpu=(%.9g,%.9g,%.9g)\\n",k,
+            std::bit_cast<float>(trace[at+16U+k*3U]),
+            std::bit_cast<float>(trace[at+17U+k*3U]),
+            std::bit_cast<float>(trace[at+18U+k*3U]));
+    }
+    std::fprintf(stderr,"  first divergent stage=%s\\n",reconstruction_differs?"reconstruction":
+        topology_differs?"field_classification_or_template":root_differs?"root_intersection":
+        "projection_or_retained_copy");
+  };
+  const auto compare_geometry=[&](const std::vector<tetra::GpuTerrainProjectedTriangleRecord>& expected,
+                                  const tetra::GpuHierarchySelectionTuple& tuple,
+                                  const tetra::GpuTerrainFieldTuple& terrain,tetra::Vec3 origin) {
+    const auto* words=static_cast<const std::uint32_t*>(retained_readback.contents);
+    const auto* args=static_cast<const std::uint32_t*>(arguments_readback.contents);
+    const auto* candidate_words=static_cast<const std::uint32_t*>(candidate_readback.contents);
+    const auto* owner_words=static_cast<const std::uint32_t*>(owner_readback.contents);
+    const auto* owner_header=static_cast<const std::uint32_t*>(owner_header_readback.contents);
+    const auto* counts=static_cast<const std::uint32_t*>(count_readback.contents);
+    const auto* offsets=static_cast<const std::uint32_t*>(offset_readback.contents);
+    const std::uint32_t expected_vertices=static_cast<std::uint32_t>(expected.size()*12U);
+    if(words==nullptr||args==nullptr||candidate_words==nullptr||args[0U]!=expected_vertices||args[1U]!=1U) {
+      std::fprintf(stderr,"compact live parity argument mismatch: got=%u/%u expected=%u/1\n",
+          args==nullptr?0U:args[0U],args==nullptr?0U:args[1U],expected_vertices);
+      return false;
+    }
+    constexpr std::array<std::array<std::uint32_t,3>,4> faces{{{{0U,1U,2U}},{{1U,3U,4U}},{{2U,4U,5U}},{{1U,4U,2U}}}};
+    // The retained front is compact-owner ordered, unlike the CPU packet's
+    // address order. Associate each compact range with its exact CPU owner
+    // before doing the unordered-set check below; this gives the diagnostic a
+    // concrete first owner/cell rather than an arbitrary sorted coordinate.
+    const auto traversal=tetra::gpu_hierarchy_traverse(snapshot,
+        tetra::gpu_hierarchy_traversal_parameters(tuple));
+    std::vector<tetra::WorldTetAddress> candidates;
+    candidates.reserve(traversal.selected_records.size());
+    for(const auto record:traversal.selected_records) {
+      if(record>=snapshot.records.size())return false;
+      candidates.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address));
+    }
+    std::ranges::sort(candidates);
+    const auto packet=tetra::make_gpu_green_mask_packet(candidates,source_revision);
+    using OwnerKey=std::array<std::uint32_t,6U>;
+    std::map<OwnerKey,std::vector<const tetra::GpuTerrainProjectedTriangleRecord*>> expected_by_owner;
+    for(const auto& owner:packet.owners) {
+      OwnerKey key{};std::copy(owner.address.begin(),owner.address.end(),key.begin());
+      key[4U]=owner.mask;key[5U]=owner.reflected_orientation;
+      expected_by_owner.try_emplace(key);
+    }
+    for(const auto& record:expected) {
+      if(record.source.owner_index>=packet.owners.size())return false;
+      const auto& owner=packet.owners[record.source.owner_index];
+      OwnerKey key{};std::copy(owner.address.begin(),owner.address.end(),key.begin());
+      key[4U]=owner.mask;key[5U]=owner.reflected_orientation;
+      expected_by_owner[key].push_back(&record);
+    }
+    if(owner_words==nullptr||owner_header==nullptr||counts==nullptr||offsets==nullptr||
+       owner_header[0U]>selection.output_capacity)return false;
+    std::uint32_t expected_offset{};
+    for(std::uint32_t owner_index=0U;owner_index<owner_header[0U];++owner_index) {
+      OwnerKey key{};std::copy_n(owner_words+owner_index*12U,4U,key.begin());
+      key[4U]=owner_words[owner_index*12U+10U];key[5U]=owner_words[owner_index*12U+11U];
+      const auto found=expected_by_owner.find(key);
+      if(found==expected_by_owner.end()||counts[owner_index]!=found->second.size()||
+         offsets[owner_index]!=expected_offset) {
+        std::fprintf(stderr,"compact live parity owner range differs at owner %u: GPU offset/triangles=%u/%u CPU offset/triangles=%u/%zu\\n",
+            owner_index,offsets[owner_index],counts[owner_index],expected_offset,
+            found==expected_by_owner.end()?0U:found->second.size());
+        trace_owner(owner_index,terrain,origin);return false;
+      }
+      for(std::size_t local=0U;local<found->second.size()*12U;++local) {
+        const auto triangle=local/12U,face=(local%12U)/3U,corner=local%3U;
+        const auto& point=found->second[triangle]->vertices[faces[face][corner]];
+        const auto base=(static_cast<std::size_t>(offsets[owner_index])*12U+local)*18U;
+        for(std::size_t axis=0U;axis<3U;++axis) {
+          const float value=std::bit_cast<float>(words[base+axis]);
+          const float candidate_value=std::bit_cast<float>(candidate_words[4U+base+axis]);
+          const double wanted=axis==0U?point.x:axis==1U?point.y:point.z;
+          if(!std::isfinite(value)||std::abs(static_cast<double>(value)-wanted)>2.e-3) {
+            std::fprintf(stderr,"compact live parity owner geometry mismatch owner=%u local=%zu axis=%zu candidate=%.9g retained=%.9g CPU=%.9g stage=%s\\n",
+                owner_index,local,axis,static_cast<double>(candidate_value),static_cast<double>(value),wanted,
+                std::abs(static_cast<double>(candidate_value)-wanted)>2.e-3?"emit_or_projection":"retained_copy");
+            const auto first_triangle=(local/12U)*12U;
+            for(std::size_t probe=0U;probe<6U;++probe) {
+              const auto probe_face=probe==0U?0U:probe==1U?0U:probe==2U?0U:probe==3U?1U:probe==4U?1U:1U;
+              const auto probe_corner=probe==0U?0U:probe==1U?1U:probe==2U?2U:probe==3U?1U:probe==4U?3U:4U;
+              const auto& cpu=found->second[first_triangle/12U]->vertices[faces[probe_face][probe_corner]];
+              const auto candidate_base=(static_cast<std::size_t>(offsets[owner_index])*12U+first_triangle+probe)*18U;
+              std::fprintf(stderr,"  emitted[%zu] candidate=(%.9g,%.9g,%.9g) cpu=(%.9g,%.9g,%.9g)\\n",probe,
+                  std::bit_cast<float>(candidate_words[4U+candidate_base]),
+                  std::bit_cast<float>(candidate_words[5U+candidate_base]),
+                  std::bit_cast<float>(candidate_words[6U+candidate_base]),cpu.x,cpu.y,cpu.z);
+            }
+            const auto& sought=found->second[first_triangle/12U]->vertices[0U];
+            std::uint32_t found_vertex=std::numeric_limits<std::uint32_t>::max();
+            for(std::uint32_t vertex=0U;vertex<args[0U];++vertex) {
+              const auto probe=4U+static_cast<std::size_t>(vertex)*18U;
+              if(std::abs(std::bit_cast<float>(candidate_words[probe])-sought.x)<2.e-3&&
+                 std::abs(std::bit_cast<float>(candidate_words[probe+1U])-sought.y)<2.e-3&&
+                 std::abs(std::bit_cast<float>(candidate_words[probe+2U])-sought.z)<2.e-3) {
+                found_vertex=vertex;break;
+              }
+            }
+            std::fprintf(stderr,"  expected first owner vertex expected-index=%u found-candidate-index=%u\\n",
+                offsets[owner_index]*12U+static_cast<std::uint32_t>(first_triangle),found_vertex);
+            trace_owner(owner_index,terrain,origin);return false;
+          }
+        }
+      }
+      expected_offset+=counts[owner_index];
+    }
+    // This keyed comparison is stronger than a globally sorted position set:
+    // every emitted vertex is tied to its compact owner, cell and local face.
+    return true;
+  };
+  const auto compare_capture=[&](const std::vector<tetra::GpuTerrainProjectedTriangleRecord>& expected) {
+    // A deterministic 96x96 orthographic capture.  This is intentionally a
+    // tiny independent image oracle: matching a count or an unordered set of
+    // vertices would miss winding/order defects that create visual seams.
+    constexpr int side=96;
+    std::array<double,4> bounds{std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()};
+    for(const auto& triangle:expected)for(const auto& point:triangle.vertices) {
+      bounds[0]=std::min(bounds[0],point.x);bounds[1]=std::max(bounds[1],point.x);
+      bounds[2]=std::min(bounds[2],point.y);bounds[3]=std::max(bounds[3],point.y);
+    }
+    if(!(bounds[1]>bounds[0])||!(bounds[3]>bounds[2]))return false;
+    const auto rasterize=[&](const auto& vertex_at) {
+      std::array<std::uint8_t,side*side> pixels{};
+      const auto point=[&](std::size_t vertex) {
+        const auto value=vertex_at(vertex);
+        // The oracle captures coverage on a fixed 1/64-pixel subgrid.  It
+        // deliberately removes CPU-double versus device-float noise below a
+        // display sample while still requiring bit-identical captured pixels.
+        const auto quantize=[](double value){return std::round(value*64.0)/64.0;};
+        return std::array<double,2>{quantize((value[0]-bounds[0])/(bounds[1]-bounds[0])*(side-1)),
+            quantize((value[1]-bounds[2])/(bounds[3]-bounds[2])*(side-1))};
+      };
+      const auto edge=[](const auto& a,const auto& b,double x,double y) {
+        return (x-a[0])*(b[1]-a[1])-(y-a[1])*(b[0]-a[0]);
+      };
+      const auto vertices=expected.size()*12U;
+      for(std::size_t base=0U;base<vertices;base+=3U) {
+        const auto a=point(base),b=point(base+1U),c=point(base+2U);
+        const auto area=edge(a,b,c[0],c[1]);
+        if(std::abs(area)<1.e-9)continue;
+        for(int y=0;y<side;++y)for(int x=0;x<side;++x) {
+          const auto ab=edge(a,b,x,y),bc=edge(b,c,x,y),ca=edge(c,a,x,y);
+          if((ab>=0.0&&bc>=0.0&&ca>=0.0)||(ab<=0.0&&bc<=0.0&&ca<=0.0))
+            pixels[static_cast<std::size_t>(y*side+x)]=1U;
+        }
+      }
+      return pixels;
+    };
+    constexpr std::array<std::array<std::uint32_t,3>,4> faces{{{{0U,1U,2U}},{{1U,3U,4U}},{{2U,4U,5U}},{{1U,4U,2U}}}};
+    const auto cpu=rasterize([&](std::size_t index) {
+      const auto triangle=index/12U,corner=index%3U,face=(index%12U)/3U;
+      const auto& value=expected[triangle].vertices[faces[face][corner]];
+      return std::array<double,2>{value.x,value.y};
+    });
+    const auto* words=static_cast<const std::uint32_t*>(retained_readback.contents);
+    if(words==nullptr)return false;
+    const auto gpu=rasterize([&](std::size_t index) {
+      return std::array<double,2>{std::bit_cast<float>(words[index*18U]),
+          std::bit_cast<float>(words[index*18U+1U])};
+    });
+    if(cpu==gpu)return true;
+    std::size_t mismatch{};
+    for(std::size_t pixel=0U;pixel<cpu.size();++pixel)mismatch+=cpu[pixel]!=gpu[pixel];
+    std::fprintf(stderr,"compact live parity image differs at %zu/%zu pixels\\n",mismatch,cpu.size());
+    return false;
+  };
+  struct CompactExecutionTiming {
+    double selector_encode_ms{},closure_encode_ms{},materialize_encode_ms{},
+        p8_encode_ms{},audit_encode_ms{},commit_wait_ms{},total_ms{};
+    double gpu_command_ms{};
+    std::uint32_t owners{},triangles{};
+  };
+  const auto execute=[&](const tetra::GpuHierarchySelectionTuple& tuple,tetra::Vec3 origin,
+                         bool inject_green_budget_failure,CompactExecutionTiming* timing=nullptr) {
+    const auto total_begin=std::chrono::steady_clock::now();
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    const auto selector_begin=std::chrono::steady_clock::now();
+    const bool selector_ok=encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,tuple);
+    const auto selector_end=std::chrono::steady_clock::now();
+    const bool closure_ok=selector_ok&&encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,scan,
+          selection,inject_green_budget_failure);
+    const auto closure_end=std::chrono::steady_clock::now();
+    const bool materialize_ok=closure_ok&&encode_metal_gpu_hierarchy_compact_owner_materialize(command,materialize,selection);
+    const auto materialize_end=std::chrono::steady_clock::now();
+    const bool p8_ok=materialize_ok&&(use_hybrid?
+        encode_metal_gpu_hierarchy_compact_owner_p8_hybrid(command,p8,
+          selection.compact_owner_stream,selection.compact_owner_header,
+          selection.compact_p8_field,selection.compact_p8_templates,
+          selection.compact_p8_candidate,selection.compact_p8_status,
+          selection.compact_p8_microbatch_copy_dispatch,selection.compact_p8_triangle_dispatch,
+          selection.compact_p8_counts,
+          selection.compact_p8_offsets,selection.compact_p8_signs,retained,arguments,
+          vertex_capacity,origin,source_revision):
+        encode_metal_gpu_hierarchy_compact_owner_p8(command,p8,selection.compact_owner_stream,
+          selection.compact_owner_header,selection.compact_p8_field,selection.compact_p8_templates,
+          selection.compact_p8_counts,selection.compact_p8_offsets,selection.compact_p8_block_totals,
+          selection.compact_p8_block_offsets,selection.compact_p8_level_totals,
+          selection.compact_p8_level_offsets,selection.compact_p8_signs,selection.compact_p8_candidate,
+          selection.compact_p8_status,selection.compact_p8_dispatches,retained,arguments,
+          vertex_capacity,origin,source_revision));
+    const auto p8_end=std::chrono::steady_clock::now();
+    if(!p8_ok)return false;
+    ++selection.compact_p8_encoded;
+    const auto audit_begin=std::chrono::steady_clock::now();
+    id<MTLBlitCommandEncoder> audit=[command blitCommandEncoder];
+    [audit copyFromBuffer:selection.compact_p8_status sourceOffset:0U
+        toBuffer:selection.compact_p8_audit destinationOffset:0U size:2U*sizeof(std::uint32_t)];
+    [audit copyFromBuffer:selection.compact_p8_candidate sourceOffset:0U
+        toBuffer:selection.compact_p8_audit destinationOffset:2U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [audit copyFromBuffer:selection.compact_owner_header sourceOffset:0U
+        toBuffer:selection.compact_p8_audit destinationOffset:6U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [audit endEncoding];
+    const auto audit_end=std::chrono::steady_clock::now();
+    const auto wait_begin=std::chrono::steady_clock::now();
+    [command commit];[command waitUntilCompleted];
+    const auto wait_end=std::chrono::steady_clock::now();
+    retire_metal_gpu_hierarchy_live_selection(selection);
+    if(timing!=nullptr) {
+      const auto elapsed=[](auto start,auto end) {
+        return std::chrono::duration<double,std::milli>(end-start).count();
+      };
+      timing->selector_encode_ms=elapsed(selector_begin,selector_end);
+      timing->closure_encode_ms=elapsed(selector_end,closure_end);
+      timing->materialize_encode_ms=elapsed(closure_end,materialize_end);
+      timing->p8_encode_ms=elapsed(materialize_end,p8_end);
+      timing->audit_encode_ms=elapsed(audit_begin,audit_end);
+      timing->commit_wait_ms=elapsed(wait_begin,wait_end);
+      timing->total_ms=elapsed(total_begin,wait_end);
+      timing->gpu_command_ms=command.GPUEndTime>=command.GPUStartTime?
+          (command.GPUEndTime-command.GPUStartTime)*1000.0:0.0;
+      timing->owners=selection.compact_p8_last_owner_header[0U];
+      timing->triangles=selection.compact_p8_last_audit[4U];
+    }
+    return command.status==MTLCommandBufferStatusCompleted;
+  };
+  const auto first_tuple=make_tuple({0.0,.5,3.0},{.125,-.25,.375},field_revision);
+  const auto second_tuple=make_tuple({.7,.5,2.8},{-.25,.125,.5},field_revision);
+  std::vector<tetra::GpuTerrainProjectedTriangleRecord> first_expected,second_expected;
+  const bool first_oracle=oracle_geometry(first_tuple,field_tuple,{.125,-.25,.375},first_expected);
+  const bool first_encoded=first_oracle&&execute(first_tuple,{.125,-.25,.375},false);
+  const bool first_owner_read=first_encoded&&read_owners();
+  const bool first_owner_parity=first_owner_read&&compare_owners(first_tuple);
+  const bool first_read=first_encoded&&read_retained();
+  const bool first_committed=first_owner_parity&&first_read&&
+      compare_geometry(first_expected,first_tuple,field_tuple,{.125,-.25,.375});
+  const bool image_parity=first_committed&&compare_capture(first_expected);
+  const bool second_oracle=oracle_geometry(second_tuple,field_tuple,{-.25,.125,.5},second_expected);
+  const bool second_encoded=first_committed&&second_oracle&&
+      execute(second_tuple,{-.25,.125,.5},false);
+  const bool second_owner_parity=second_encoded&&read_owners()&&compare_owners(second_tuple);
+  const bool moving_parity=second_owner_parity&&read_retained()&&
+      compare_geometry(second_expected,second_tuple,field_tuple,{-.25,.125,.5});
+  // A field revision replaces the immutable selector snapshot and P8 field
+  // tuple as one unit.  The source world revision stays fixed, so this catches
+  // an accidental reuse of a prior-field private front.
+  const auto changed_snapshot=tetra::make_gpu_hierarchy_snapshot(directory,field_revision+1U);
+  auto changed_field_parameters=field_parameters;
+  changed_field_parameters.field_revision=field_revision+1U;
+  changed_field_parameters.field.centre.x-=.03125;
+  changed_field_parameters.field.radius=.31;
+  const auto changed_field_tuple=tetra::make_gpu_terrain_field_tuple(changed_field_parameters);
+  const bool field_configured=moving_parity&&configure_metal_gpu_hierarchy_live_selection(
+      device,selection,changed_snapshot,field_revision+1U,19U);
+  if(field_configured) {
+    selection.compact_p8_field=[device newBufferWithBytes:&changed_field_tuple length:sizeof(changed_field_tuple)
+        options:MTLResourceStorageModeShared];
+    selection.compact_p8_templates=[device newBufferWithBytes:templates.data() length:sizeof(templates)
+        options:MTLResourceStorageModeShared];
+  }
+  const auto field_tuple_camera=make_tuple({.2,.55,2.9},{-.125,.25,-.375},field_revision+1U);
+  std::vector<tetra::GpuTerrainProjectedTriangleRecord> field_expected;
+  const bool field_encoded=field_configured&&selection.compact_p8_field!=nil&&
+      selection.compact_p8_templates!=nil&&ensure_metal_gpu_hierarchy_compact_p8_workspace(
+          device,selection,vertex_capacity)&&oracle_geometry(field_tuple_camera,changed_field_tuple,
+          {-.125,.25,-.375},field_expected)&&execute(field_tuple_camera,{-.125,.25,-.375},false)&&
+      read_owners()&&compare_owners(field_tuple_camera);
+  const bool field_parity=field_encoded&&read_retained()&&
+      compare_geometry(field_expected,field_tuple_camera,changed_field_tuple,{-.125,.25,-.375});
+  std::vector<std::uint32_t> retained_before(vertex_capacity*18U),arguments_before(4U);
+  if(field_parity) {
+    std::memcpy(retained_before.data(),retained_readback.contents,retained_readback.length);
+    std::memcpy(arguments_before.data(),arguments_readback.contents,arguments_readback.length);
+  }
+  const bool failed_command=field_parity&&execute(field_tuple_camera,{-.125,.25,-.375},true)&&read_retained();
+  const bool failure_retains=failed_command&&selection.compact_p8_rejected!=0U&&
+      std::memcmp(retained_before.data(),retained_readback.contents,retained_readback.length)==0&&
+      std::memcmp(arguments_before.data(),arguments_readback.contents,arguments_readback.length)==0;
+  auto stale_tuple=field_tuple_camera;
+  stale_tuple.revision_lanes[0U]=static_cast<std::uint32_t>(source_revision+1U);
+  const bool stale_rejected=!encode_metal_gpu_hierarchy_live_selection([queue commandBuffer],selector,
+      worklist,selection,stale_tuple)&&selection.stale_rejected!=0U;
+  std::array<std::vector<double>,2U> cpu_profiles,gpu_profiles;
+  std::array<std::vector<double>,2U> selector_encode_profiles,closure_encode_profiles,
+      materialize_encode_profiles,p8_encode_profiles,wait_profiles,gpu_command_profiles;
+  // This diagnostic runs after the normal qualification samples.  It splits
+  // the same private-buffer route into stage command buffers solely to obtain
+  // device timestamps; the production route remains a single command buffer
+  // and no owner/vertex payload is read back here.
+    std::array<std::vector<double>,2U> selector_device_profiles,closure_device_profiles,
+      materialize_device_profiles,p8_device_profiles,p8_count_device_profiles,
+      p8_scan_device_profiles,p8_emit_device_profiles,p8_finalize_copy_device_profiles;
+    // P7e4m derives closure substage attribution from matched cumulative
+    // command-buffer spans. These remain diagnostic-only: each prefix is
+    // replayed from a fresh private selection input and no payload is copied.
+    std::array<std::vector<double>,2U> closure_clear_device_profiles,
+      closure_initial_canonical_device_profiles,closure_green_device_profiles,
+      closure_red_clear_device_profiles,closure_red_work_device_profiles,
+      closure_followup_canonical_device_profiles;
+  bool benchmark_valid=!run_p95_benchmark;
+  if(run_p95_benchmark&&moving_parity&&image_parity&&field_parity&&failure_retains&&stale_rejected) {
+    // This is deliberately a matched, device-front-only timing loop.  The
+    // CPU side independently performs the same selector/closure/root/project
+    // oracle.  The GPU interval starts with the identical moving camera tuple
+    // and ends only after its compact P8 private front has completed.  No
+    // candidate or retained payload is read during these samples.
+    constexpr std::uint32_t profiles=2U,warmup=4U,samples=30U;
+    for(std::uint32_t profile=0U;profile<profiles;++profile)for(auto* values:{
+        &cpu_profiles[profile],&gpu_profiles[profile],&selector_encode_profiles[profile],
+        &closure_encode_profiles[profile],&materialize_encode_profiles[profile],
+        &p8_encode_profiles[profile],&wait_profiles[profile],&gpu_command_profiles[profile]})
+      values->reserve(samples);
+    bool cpu_ok=true,gpu_ok=true;
+    std::uint32_t minimum_owners=std::numeric_limits<std::uint32_t>::max(),maximum_owners{};
+    std::uint32_t minimum_triangles=std::numeric_limits<std::uint32_t>::max(),maximum_triangles{};
+    for(std::uint32_t profile=0U;profile<profiles;++profile) {
+      for(std::uint32_t sample=0U;sample<warmup+samples;++sample) {
+        // Each profile repeats precisely the same camera/origin sequence;
+        // only post-warmup tuples contribute to its independently reported
+        // percentile. The CPU routine is the exact fallback/reference work
+        // used by the parity gate: traverse, close, root, base and project.
+        const double t=static_cast<double>(sample);
+        const tetra::Vec3 origin{-.125+t/1024.0,.25-t/2048.0,-.375+t/4096.0};
+        const auto tuple=make_tuple({.2+t/640.0,.55,2.9-t/960.0},origin,field_revision+1U);
+        std::vector<tetra::GpuTerrainProjectedTriangleRecord> cpu_geometry;
+        const auto cpu_begin=std::chrono::steady_clock::now();
+        cpu_ok&=oracle_geometry(tuple,changed_field_tuple,origin,cpu_geometry);
+        const auto cpu_end=std::chrono::steady_clock::now();
+        const auto gpu_begin=std::chrono::steady_clock::now();
+        CompactExecutionTiming execution;
+        gpu_ok&=execute(tuple,origin,false,&execution);
+        const auto gpu_end=std::chrono::steady_clock::now();
+        if(sample>=warmup) {
+          cpu_profiles[profile].push_back(std::chrono::duration<double,std::milli>(cpu_end-cpu_begin).count());
+          gpu_profiles[profile].push_back(std::chrono::duration<double,std::milli>(gpu_end-gpu_begin).count());
+          selector_encode_profiles[profile].push_back(execution.selector_encode_ms);
+          closure_encode_profiles[profile].push_back(execution.closure_encode_ms);
+          materialize_encode_profiles[profile].push_back(execution.materialize_encode_ms);
+          p8_encode_profiles[profile].push_back(execution.p8_encode_ms);
+          wait_profiles[profile].push_back(execution.commit_wait_ms);
+          gpu_command_profiles[profile].push_back(execution.gpu_command_ms);
+          minimum_owners=std::min(minimum_owners,execution.owners);
+          maximum_owners=std::max(maximum_owners,execution.owners);
+          minimum_triangles=std::min(minimum_triangles,execution.triangles);
+          maximum_triangles=std::max(maximum_triangles,execution.triangles);
+        }
+      }
+    }
+    constexpr std::uint32_t stage_samples=3U;
+    bool stage_isolation_ok=true;
+    bool closure_attribution_ok=true;
+    std::uint32_t minimum_active=std::numeric_limits<std::uint32_t>::max(),maximum_active{};
+    std::uint32_t minimum_red_rounds=std::numeric_limits<std::uint32_t>::max(),maximum_red_rounds{};
+    const auto run_stage=[&](const auto& encode,double& device_ms) {
+      id<MTLCommandBuffer> command=[queue commandBuffer];
+      if(!encode(command))return false;
+      [command commit];[command waitUntilCompleted];
+      if(command.status!=MTLCommandBufferStatusCompleted||
+         command.GPUEndTime<command.GPUStartTime)return false;
+      device_ms=(command.GPUEndTime-command.GPUStartTime)*1000.0;
+      return std::isfinite(device_ms)&&device_ms>=0.0;
+    };
+    for(std::uint32_t profile=0U;profile<profiles;++profile) {
+      for(auto* values:{&selector_device_profiles[profile],&closure_device_profiles[profile],
+          &materialize_device_profiles[profile],&p8_device_profiles[profile],
+          &p8_count_device_profiles[profile],&p8_scan_device_profiles[profile],
+          &p8_emit_device_profiles[profile],&p8_finalize_copy_device_profiles[profile],
+          &closure_clear_device_profiles[profile],&closure_initial_canonical_device_profiles[profile],
+          &closure_green_device_profiles[profile],&closure_red_clear_device_profiles[profile],
+          &closure_red_work_device_profiles[profile],&closure_followup_canonical_device_profiles[profile]})values->reserve(stage_samples);
+      for(std::uint32_t sample=0U;sample<stage_samples;++sample) {
+        const double t=static_cast<double>(sample+warmup);
+        const tetra::Vec3 origin{-.125+t/1024.0,.25-t/2048.0,-.375+t/4096.0};
+        const auto tuple=make_tuple({.2+t/640.0,.55,2.9-t/960.0},origin,field_revision+1U);
+        double selector_device{},closure_device{},materialize_device{},p8_device{};
+        double p8_count_device{},p8_scan_device{},p8_emit_device{},p8_finalize_copy_device{};
+        stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,tuple);
+        },selector_device);
+        retire_metal_gpu_hierarchy_live_selection(selection);
+        stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,scan,
+              selection,false);
+        },closure_device);
+        retire_metal_gpu_hierarchy_live_selection(selection);
+        if(stage_isolation_ok) {
+          minimum_active=std::min(minimum_active,selection.compact_last_final_active_header[0U]);
+          maximum_active=std::max(maximum_active,selection.compact_last_final_active_header[0U]);
+          minimum_red_rounds=std::min(minimum_red_rounds,selection.compact_last_closure_audit[7U]);
+          maximum_red_rounds=std::max(maximum_red_rounds,selection.compact_last_closure_audit[7U]);
+        }
+        // Replay six cumulative closure prefixes from a freshly selected
+        // private input. Adjacent differences are computed per sample, not
+        // from independent percentiles, so every attributed interval covers
+        // the actual dependency chain that precedes it.
+        std::array<double,6U> closure_cumulative{};
+        bool sample_attribution_ok=stage_isolation_ok;
+        for(std::uint32_t stop=0U;stop<closure_cumulative.size()&&sample_attribution_ok;++stop) {
+          double ignored{};
+          sample_attribution_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,tuple);
+          },ignored);
+          retire_metal_gpu_hierarchy_live_selection(selection);
+          sample_attribution_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,scan,
+                selection,false,stop);
+          },closure_cumulative[stop]);
+        }
+        // Device command timing is expected to grow monotonically for these
+        // nested prefixes. Permit only 0.01ms timestamp quantization noise;
+        // otherwise omit all substage attribution rather than report a
+        // synthetic negative interval.
+        constexpr double closure_timing_noise_ms=.01;
+        std::array<double,6U> closure_stages{};
+        if(sample_attribution_ok) {
+          closure_stages[0U]=closure_cumulative[0U];
+          for(std::size_t stage=1U;stage<closure_stages.size();++stage) {
+            const double difference=closure_cumulative[stage]-closure_cumulative[stage-1U];
+            if(!std::isfinite(difference)||difference< -closure_timing_noise_ms) {
+              sample_attribution_ok=false;break;
+            }
+            closure_stages[stage]=std::max(0.0,difference);
+          }
+        }
+        closure_attribution_ok&=sample_attribution_ok;
+        if(sample_attribution_ok) {
+          closure_clear_device_profiles[profile].push_back(closure_stages[0U]);
+          closure_initial_canonical_device_profiles[profile].push_back(closure_stages[1U]);
+          closure_green_device_profiles[profile].push_back(closure_stages[2U]);
+          closure_red_clear_device_profiles[profile].push_back(closure_stages[3U]);
+          closure_red_work_device_profiles[profile].push_back(closure_stages[4U]);
+          closure_followup_canonical_device_profiles[profile].push_back(closure_stages[5U]);
+        }
+        // Prefix replay leaves the workspace at the final diagnostic stop,
+        // not at the published closure result. Rebuild that complete private
+        // dependency chain before timing the materializer/P8 stages below.
+        double restored_selector{},restored_closure{};
+        stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,tuple);
+        },restored_selector);
+        retire_metal_gpu_hierarchy_live_selection(selection);
+        stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,scan,
+              selection,false);
+        },restored_closure);
+        retire_metal_gpu_hierarchy_live_selection(selection);
+        stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_compact_owner_materialize(command,materialize,selection);
+        },materialize_device);
+        const auto hybrid_stage=[&](id<MTLCommandBuffer> command,
+                                    std::uint32_t first,std::uint32_t last) {
+          return encode_metal_gpu_hierarchy_compact_owner_p8_hybrid(command,p8,
+              selection.compact_owner_stream,selection.compact_owner_header,
+              selection.compact_p8_field,selection.compact_p8_templates,
+              selection.compact_p8_candidate,selection.compact_p8_status,
+              selection.compact_p8_microbatch_copy_dispatch,selection.compact_p8_triangle_dispatch,
+              selection.compact_p8_counts,
+              selection.compact_p8_offsets,selection.compact_p8_signs,retained,arguments,
+              vertex_capacity,origin,source_revision,first,last);
+        };
+        if(use_hybrid) {
+          stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return hybrid_stage(command,0U,0U);},p8_count_device);
+          stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return hybrid_stage(command,1U,1U);},p8_scan_device);
+          stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return hybrid_stage(command,2U,2U);},p8_emit_device);
+          stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+            return hybrid_stage(command,3U,4U);},p8_finalize_copy_device);
+          p8_device=p8_count_device+p8_scan_device+p8_emit_device+
+              p8_finalize_copy_device;
+        } else stage_isolation_ok&=run_stage([&](id<MTLCommandBuffer> command) {
+          return encode_metal_gpu_hierarchy_compact_owner_p8(command,p8,
+              selection.compact_owner_stream,selection.compact_owner_header,
+              selection.compact_p8_field,selection.compact_p8_templates,
+              selection.compact_p8_counts,selection.compact_p8_offsets,
+              selection.compact_p8_block_totals,selection.compact_p8_block_offsets,
+              selection.compact_p8_level_totals,selection.compact_p8_level_offsets,
+              selection.compact_p8_signs,selection.compact_p8_candidate,
+              selection.compact_p8_status,selection.compact_p8_dispatches,
+              retained,arguments,vertex_capacity,origin,source_revision);
+        },p8_device);
+        if(stage_isolation_ok) {
+          selector_device_profiles[profile].push_back(selector_device);
+          closure_device_profiles[profile].push_back(closure_device);
+          materialize_device_profiles[profile].push_back(materialize_device);
+          p8_device_profiles[profile].push_back(p8_device);
+          p8_count_device_profiles[profile].push_back(p8_count_device);
+          p8_scan_device_profiles[profile].push_back(p8_scan_device);
+          p8_emit_device_profiles[profile].push_back(p8_emit_device);
+          p8_finalize_copy_device_profiles[profile].push_back(p8_finalize_copy_device);
+        }
+      }
+    }
+    for(auto& profile:cpu_profiles)std::ranges::sort(profile);
+    for(auto& profile:gpu_profiles)std::ranges::sort(profile);
+    for(auto* profiles:{&selector_encode_profiles,&closure_encode_profiles,&materialize_encode_profiles,
+        &p8_encode_profiles,&wait_profiles,&gpu_command_profiles})
+      for(auto& profile:*profiles)std::ranges::sort(profile);
+    for(auto* profiles:{&selector_device_profiles,&closure_device_profiles,
+        &materialize_device_profiles,&p8_device_profiles,&p8_count_device_profiles,
+        &p8_scan_device_profiles,&p8_emit_device_profiles,
+        &p8_finalize_copy_device_profiles})for(auto& profile:*profiles) {
+      std::ranges::sort(profile);
+      stage_isolation_ok&=profile.size()==stage_samples;
+    }
+    for(auto* profiles:{&closure_clear_device_profiles,
+        &closure_initial_canonical_device_profiles,&closure_green_device_profiles,
+        &closure_red_clear_device_profiles,&closure_red_work_device_profiles,
+        &closure_followup_canonical_device_profiles})for(auto& profile:*profiles) {
+      std::ranges::sort(profile);
+      closure_attribution_ok&=profile.size()==stage_samples;
+    }
+    benchmark_valid=cpu_ok&&gpu_ok&&stage_isolation_ok&&selection.cpu_generation_violations==0U&&
+        selection.compact_p8_encoded>=profiles*(warmup+samples)&&minimum_owners>0U&&minimum_triangles>0U;
+    for(std::uint32_t profile=0U;profile<profiles;++profile)
+      benchmark_valid&=cpu_profiles[profile].size()==samples&&gpu_profiles[profile].size()==samples&&
+          cpu_profiles[profile].front()>0.0&&gpu_profiles[profile].front()>0.0&&
+          std::isfinite(cpu_profiles[profile].back())&&std::isfinite(gpu_profiles[profile].back());
+    const auto percentile=[](const std::vector<double>& values,double fraction) {
+      const auto index=static_cast<std::size_t>(std::ceil(fraction*(values.size()-1U)));
+      return values[std::min(index,values.size()-1U)];
+    };
+    const double cpu_p50_0=percentile(cpu_profiles[0U],.50),cpu_p95_0=percentile(cpu_profiles[0U],.95);
+    const double gpu_p50_0=percentile(gpu_profiles[0U],.50),gpu_p95_0=percentile(gpu_profiles[0U],.95);
+    const double cpu_p50_1=percentile(cpu_profiles[1U],.50),cpu_p95_1=percentile(cpu_profiles[1U],.95);
+    const double gpu_p50_1=percentile(gpu_profiles[1U],.50),gpu_p95_1=percentile(gpu_profiles[1U],.95);
+    const auto pair_p95=[&](const auto& profiles) {
+      return std::array<double,2U>{percentile(profiles[0U],.95),percentile(profiles[1U],.95)};
+    };
+    const auto selector_p95=pair_p95(selector_encode_profiles),closure_p95=pair_p95(closure_encode_profiles),
+        materialize_p95=pair_p95(materialize_encode_profiles),p8_p95=pair_p95(p8_encode_profiles),
+        wait_p95=pair_p95(wait_profiles),gpu_command_p95=pair_p95(gpu_command_profiles),
+        selector_device_p95=pair_p95(selector_device_profiles),
+        closure_device_p95=pair_p95(closure_device_profiles),
+        materialize_device_p95=pair_p95(materialize_device_profiles),
+        p8_device_p95=pair_p95(p8_device_profiles),
+        p8_count_device_p95=pair_p95(p8_count_device_profiles),
+        p8_scan_device_p95=pair_p95(p8_scan_device_profiles),
+        p8_emit_device_p95=pair_p95(p8_emit_device_profiles),
+        p8_finalize_copy_device_p95=pair_p95(p8_finalize_copy_device_profiles);
+    const auto closure_attribution_json=[&](const auto& values) {
+      if(!closure_attribution_ok)return std::string("null");
+      const auto p95=pair_p95(values);
+      char result[64];
+      std::snprintf(result,sizeof(result),"[%.4f,%.4f]",p95[0U],p95[1U]);
+      return std::string(result);
+    };
+    const auto closure_clear_device_json=closure_attribution_json(closure_clear_device_profiles),
+        closure_initial_canonical_device_json=closure_attribution_json(closure_initial_canonical_device_profiles),
+        closure_green_device_json=closure_attribution_json(closure_green_device_profiles),
+        closure_red_clear_device_json=closure_attribution_json(closure_red_clear_device_profiles),
+        closure_red_work_device_json=closure_attribution_json(closure_red_work_device_profiles),
+        closure_followup_canonical_device_json=closure_attribution_json(closure_followup_canonical_device_profiles);
+    constexpr double material_p95_ratio=0.90;
+    const bool materially_improved=gpu_p95_0<=cpu_p95_0*material_p95_ratio&&
+        gpu_p95_1<=cpu_p95_1*material_p95_ratio;
+    std::printf("{\"event\":\"metal_gpu_compact_camera_to_private_front\","
+                "\"profiles\":%u,\"warmup\":%u,\"samples\":%zu,"
+                "\"cpu_p50_ms\":[%.4f,%.4f],\"cpu_p95_ms\":[%.4f,%.4f],"
+                "\"gpu_p50_ms\":[%.4f,%.4f],\"gpu_p95_ms\":[%.4f,%.4f],"
+                "\"p95_ratio\":[%.4f,%.4f],\"material_p95_ratio\":%.2f,"
+                "\"selector_encode_p95_ms\":[%.4f,%.4f],\"closure_encode_p95_ms\":[%.4f,%.4f],"
+                "\"materialize_encode_p95_ms\":[%.4f,%.4f],\"p8_encode_p95_ms\":[%.4f,%.4f],"
+                "\"host_commit_wait_p95_ms\":[%.4f,%.4f],\"gpu_command_p95_ms\":[%.4f,%.4f],"
+                "\"stage_isolation_samples\":%u,\"selector_device_p95_ms\":[%.4f,%.4f],"
+                "\"closure_device_p95_ms\":[%.4f,%.4f],\"materialize_device_p95_ms\":[%.4f,%.4f],"
+                "\"closure_substage_attribution_available\":%s,"
+                "\"closure_clear_device_p95_ms\":%s,\"closure_initial_canonical_device_p95_ms\":%s,"
+                "\"closure_green_device_p95_ms\":%s,\"closure_red_clear_device_p95_ms\":%s,"
+                "\"closure_red_work_device_p95_ms\":%s,\"closure_followup_canonical_device_p95_ms\":%s,"
+                "\"p8_device_p95_ms\":[%.4f,%.4f],\"stage_isolation_payload_readback\":false,"
+                "\"p8_count_device_p95_ms\":[%.4f,%.4f],\"p8_scan_device_p95_ms\":[%.4f,%.4f],"
+                "\"p8_emit_device_p95_ms\":[%.4f,%.4f],\"p8_finalize_copy_device_p95_ms\":[%.4f,%.4f],"
+                "\"closure_active_owners\":[%u,%u],\"closure_red_rounds\":[%u,%u],"
+                "\"selected_owners\":[%u,%u],\"emitted_triangles\":[%u,%u],"
+                "\"gpu_p95_materially_improved_both\":%s,"
+                "\"outcome\":\"%s\",\"benchmark_payload_readback\":false,"
+                "\"cpu_generation_violations\":%llu,\"passed\":%s}\n",
+        profiles,warmup,cpu_profiles[0U].size(),cpu_p50_0,cpu_p50_1,cpu_p95_0,cpu_p95_1,
+        gpu_p50_0,gpu_p50_1,gpu_p95_0,gpu_p95_1,cpu_p95_0>0.0?gpu_p95_0/cpu_p95_0:0.0,
+        cpu_p95_1>0.0?gpu_p95_1/cpu_p95_1:0.0,material_p95_ratio,
+        selector_p95[0U],selector_p95[1U],closure_p95[0U],closure_p95[1U],
+        materialize_p95[0U],materialize_p95[1U],p8_p95[0U],p8_p95[1U],
+        wait_p95[0U],wait_p95[1U],gpu_command_p95[0U],gpu_command_p95[1U],
+        stage_samples,selector_device_p95[0U],selector_device_p95[1U],
+        closure_device_p95[0U],closure_device_p95[1U],
+        materialize_device_p95[0U],materialize_device_p95[1U],
+        closure_attribution_ok?"true":"false",
+        closure_clear_device_json.c_str(),closure_initial_canonical_device_json.c_str(),
+        closure_green_device_json.c_str(),closure_red_clear_device_json.c_str(),
+        closure_red_work_device_json.c_str(),closure_followup_canonical_device_json.c_str(),
+        p8_device_p95[0U],p8_device_p95[1U],
+        p8_count_device_p95[0U],p8_count_device_p95[1U],
+        p8_scan_device_p95[0U],p8_scan_device_p95[1U],
+        p8_emit_device_p95[0U],p8_emit_device_p95[1U],
+        p8_finalize_copy_device_p95[0U],p8_finalize_copy_device_p95[1U],
+        minimum_active,maximum_active,minimum_red_rounds,maximum_red_rounds,
+        minimum_owners,maximum_owners,minimum_triangles,maximum_triangles,
+        materially_improved?"true":"false",
+        materially_improved?"promoted_gpu_default":"rejected_promotion_gate",
+        static_cast<unsigned long long>(selection.cpu_generation_violations),
+        benchmark_valid?"true":"false");
+  }
+  const bool passed=moving_parity&&image_parity&&field_parity&&failure_retains&&stale_rejected&&benchmark_valid;
+  std::printf("{\"event\":\"metal_gpu_compact_live_parity\",\"first_oracle\":%s,"
+              "\"first_encoded\":%s,\"first_owner_parity\":%s,\"first_read\":%s,"
+              "\"root_seam\":%s,\"mixed_depth\":%s,\"moving_camera\":%s,"
+              "\"field_change\":%s,\"image_parity\":%s,\"failure_retains\":%s,"
+              "\"stale_revision\":%s,\"p8_hybrid\":%s,\"passed\":%s}\n",
+      first_oracle?"true":"false",first_encoded?"true":"false",
+      first_owner_parity?"true":"false",first_read?"true":"false",
+      first_committed?"true":"false",first_oracle?"true":"false",
+      moving_parity?"true":"false",field_parity?"true":"false",
+      image_parity?"true":"false",failure_retains?"true":"false",
+      stale_rejected?"true":"false",use_hybrid?"true":"false",passed?"true":"false");
+  return passed;
+}
+
+// This is deliberately an integration qualification, rather than another
+// compact-fixture oracle.  The reference is the exact `PreparedScene` that
+// BlockedTerrainRuntime has published for the camera/field/revision under
+// test.  The device result is generated only through the compact selector,
+// closure, owner materializer, and P8 emitter; the two shared buffers below
+// are post-completion test readback and are never inputs to that path.
+bool run_metal_gpu_production_front_parity_smoke_test(id<MTLDevice> device) {
+  const auto shaders=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR);
+  const auto pipeline_for=[&](const char* name)->id<MTLComputePipelineState>{
+    id<MTLLibrary> library=make_file_shader_library(device,(shaders/name).string().c_str());
+    NSError* error=nil;id<MTLFunction> function=library==nil?nil:[library newFunctionWithName:@"main0"];
+    return function==nil?nil:[device newComputePipelineStateWithFunction:function error:&error];
+  };
+  id<MTLComputePipelineState> selector=pipeline_for("gpu_lod.comp.metal");
+  id<MTLComputePipelineState> worklist=pipeline_for("gpu_hierarchy_compact_worklist.comp.metal");
+  id<MTLComputePipelineState> canonicalize=pipeline_for("gpu_hierarchy_canonicalize.comp.metal");
+  id<MTLComputePipelineState> green=pipeline_for("gpu_hierarchy_compact_green_closure.comp.metal");
+  id<MTLComputePipelineState> red=pipeline_for("gpu_hierarchy_compact_red_repair.comp.metal");
+  id<MTLComputePipelineState> red_scan=pipeline_for("gpu_hierarchy_compact_red_scan.comp.metal");
+  id<MTLComputePipelineState> materialize=pipeline_for("gpu_hierarchy_compact_owner_materialize.comp.metal");
+  MetalCompactOwnerP8Pipelines p8{pipeline_for("gpu_terrain_compact_owner_control.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_count.comp.metal"),pipeline_for("gpu_terrain_compact_owner_scan.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_triangle_emit.comp.metal"),pipeline_for("gpu_terrain_compact_owner_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_copy.comp.metal"),pipeline_for("gpu_terrain_compact_owner_publish.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_microbatch.comp.metal"),pipeline_for("gpu_terrain_compact_owner_microbatch_validate.comp.metal"),
+      pipeline_for("gpu_terrain_compact_owner_hybrid_scan.comp.metal"),pipeline_for("gpu_terrain_compact_owner_hybrid_finalize.comp.metal")};
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(selector==nil||worklist==nil||canonicalize==nil||green==nil||red==nil||
+     red_scan==nil||materialize==nil||p8.control==nil||p8.count==nil||p8.scan==nil||
+     p8.emit==nil||p8.validate==nil||p8.copy==nil||p8.publish==nil||queue==nil)return false;
+
+  struct QuantizedVertex { std::array<std::int64_t,6> lanes{}; auto operator<=>(const QuantizedVertex&) const=default; };
+  using QuantizedTriangle=std::array<QuantizedVertex,3>;
+  const auto canonical_triangles=[](std::span<const tetra_viewer::SceneVertex> vertices) {
+    std::vector<QuantizedTriangle> result;result.reserve(vertices.size()/3U);
+    constexpr double position_unit=1.e-3,normal_unit=2.e-3;
+    const auto quantize=[](float value,double unit) { return static_cast<std::int64_t>(std::llround(static_cast<double>(value)/unit)); };
+    for(std::size_t index=0U;index+2U<vertices.size();index+=3U) {
+      QuantizedTriangle triangle{};
+      for(std::size_t corner=0U;corner<3U;++corner)for(std::size_t axis=0U;axis<3U;++axis) {
+        triangle[corner].lanes[axis]=quantize(vertices[index+corner].position[axis],position_unit);
+        triangle[corner].lanes[axis+3U]=quantize(vertices[index+corner].normal[axis],normal_unit);
+      }
+      std::ranges::sort(triangle);result.push_back(triangle);
+    }
+    std::ranges::sort(result);return result;
+  };
+  // A full camera-frame CPU rasterizer.  It records nearest reversed-Z depth
+  // and coverage after the same camera projection as the renderer.  It is
+  // independent from the P8 owner/cell ordering comparison above.
+  const auto frame_capture=[](std::span<const tetra_viewer::SceneVertex> vertices,
+                              const tetra::Camera& camera,tetra::Vec3 origin) {
+    constexpr int width=160,height=90;
+    struct Capture { std::array<std::uint8_t,width*height> coverage{}; std::array<std::uint16_t,width*height> depth{}; } out;
+    const auto projection=tetra_viewer::make_infinite_reversed_projection(
+        camera.position,origin,camera.forward,camera.up,camera.vertical_fov_radians,
+        camera.aspect_ratio);
+    const auto edge=[](const std::array<double,2>& a,const std::array<double,2>& b,double x,double y) {
+      return (x-a[0])*(b[1]-a[1])-(y-a[1])*(b[0]-a[0]);
+    };
+    for(std::size_t base=0U;base+2U<vertices.size();base+=3U) {
+      std::array<std::array<double,2>,3> p{};std::array<double,3> z{};bool usable=true;
+      for(std::size_t corner=0U;corner<3U;++corner) {
+        const auto q=projection.project({vertices[base+corner].position[0],vertices[base+corner].position[1],vertices[base+corner].position[2]});
+        // The production front is already tessellated finely; excluding a
+        // straddling edge rather than inventing a clipping path keeps this
+        // oracle deterministic while still covering the entire visible frame.
+        usable&=q.visible;p[corner]={(q.ndc_x*.5+.5)*(width-1),(q.ndc_y*.5+.5)*(height-1)};z[corner]=q.depth;
+      }
+      if(!usable)continue;
+      const double area=edge(p[0],p[1],p[2][0],p[2][1]);if(std::abs(area)<1.e-12)continue;
+      const int xmin=std::max(0,static_cast<int>(std::floor(std::min({p[0][0],p[1][0],p[2][0]}))));
+      const int xmax=std::min(width-1,static_cast<int>(std::ceil(std::max({p[0][0],p[1][0],p[2][0]}))));
+      const int ymin=std::max(0,static_cast<int>(std::floor(std::min({p[0][1],p[1][1],p[2][1]}))));
+      const int ymax=std::min(height-1,static_cast<int>(std::ceil(std::max({p[0][1],p[1][1],p[2][1]}))));
+      for(int y=ymin;y<=ymax;++y)for(int x=xmin;x<=xmax;++x) {
+        const double a=edge(p[1],p[2],x+.5,y+.5)/area,b=edge(p[2],p[0],x+.5,y+.5)/area,c=1.0-a-b;
+        if(a<0.0||b<0.0||c<0.0)continue;
+        const auto index=static_cast<std::size_t>(y*width+x);const double depth=a*z[0]+b*z[1]+c*z[2];
+        const auto packed=static_cast<std::uint16_t>(std::clamp(std::llround(depth*65535.0),0LL,65535LL));
+        if(!out.coverage[index]||packed>out.depth[index]) { out.coverage[index]=1U;out.depth[index]=packed; }
+      }
+    }
+    return out;
+  };
+  const auto wait_for_front=[](tetra_viewer::TerrainRuntime& runtime) {
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(120);
+    while(std::chrono::steady_clock::now()<deadline) {
+      static_cast<void>(runtime.update());const auto d=runtime.diagnostics();
+      if(d.converged&&!d.busy&&runtime.world_cut_directory()!=nullptr&&
+         !runtime.scene().triangle_vertices.empty())return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+  };
+  const auto run_case=[&](tetra_viewer::TerrainRuntime& runtime,const tetra::Camera& camera,
+                          const char* name) {
+    if(!wait_for_front(runtime)) { std::printf("production parity %s: runtime did not publish\n",name);return false; }
+    const auto& cpu=runtime.scene().triangle_vertices;const auto* directory=runtime.world_cut_directory();
+    const auto profile=runtime.profile();const auto field_revision=runtime.published_view_identity().field_revision;
+    const auto source_revision=directory==nullptr?0U:directory->revision();const auto origin=runtime.render_origin();
+    if(directory==nullptr||source_revision==0U||cpu.empty()||cpu.size()%3U!=0U||
+       cpu.size()>std::numeric_limits<std::uint32_t>::max()) { std::printf("production parity %s: invalid CPU publication\n",name);return false; }
+    std::size_t cpu_logical_owners{};
+    directory->for_each_logical_owner([&](tetra::WorldTetAddress){++cpu_logical_owners;});
+    const auto snapshot=tetra::make_gpu_hierarchy_snapshot(*directory,field_revision,true);
+    MetalGpuHierarchyLiveSelection selection;
+    if(!configure_metal_gpu_hierarchy_live_selection(device,selection,snapshot,field_revision,
+        runtime.diagnostics().scene_generation)) { std::printf("production parity %s: GPU snapshot configuration failed (records=%zu)\n",name,snapshot.records.size());return false; }
+    selection.require_complete_front=true;
+    auto surface_field=runtime.field();surface_field.sampling_footprint=
+        tetra_viewer::planetary_surface_sampling_footprint(runtime.field(),camera,profile.pixel_threshold);
+    tetra::GpuTerrainFieldTupleParameters parameters{.field=surface_field,.domain=profile.domain,
+        .source_revision=source_revision,.field_revision=field_revision};
+    const auto tuple_field=tetra::make_gpu_terrain_field_tuple(parameters);
+    const auto templates=tetra::make_gpu_green_template_table();
+    selection.compact_p8_field=[device newBufferWithBytes:&tuple_field length:sizeof(tuple_field) options:MTLResourceStorageModeShared];
+    selection.compact_p8_templates=[device newBufferWithBytes:templates.data() length:sizeof(templates) options:MTLResourceStorageModeShared];
+    const auto capacity=static_cast<std::uint32_t>(cpu.size());
+    id<MTLBuffer> gpu=[device newBufferWithLength:static_cast<NSUInteger>(capacity)*sizeof(tetra_viewer::SceneVertex) options:MTLResourceStorageModePrivate];
+    id<MTLBuffer> args=[device newBufferWithLength:4U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
+    id<MTLBuffer> gpu_readback=[device newBufferWithLength:gpu==nil?0U:gpu.length options:MTLResourceStorageModeShared];
+    id<MTLBuffer> args_readback=[device newBufferWithLength:4U*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> owners_readback=[device newBufferWithLength:4U*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> closure_headers_readback=[device newBufferWithLength:24U*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    if(selection.compact_p8_field==nil||selection.compact_p8_templates==nil||gpu==nil||args==nil||gpu_readback==nil||
+       args_readback==nil||owners_readback==nil||closure_headers_readback==nil||!ensure_metal_gpu_hierarchy_compact_p8_workspace(device,selection,capacity)) { std::printf("production parity %s: GPU workspace allocation failed\n",name);return false; }
+    auto selector_camera=camera;selector_camera.position=profile.domain.to_root(camera.position);
+    const auto select_tuple=tetra::make_gpu_hierarchy_selection_tuple({.camera=selector_camera,.render_origin={},
+      .field_centre=profile.domain.to_root(runtime.field().centre),.planet_radius=runtime.field().terrain.planet_radius/profile.domain.world_extent,
+      .terrain_height_bound=tetra::terrain_height_magnitude_bound(runtime.field())/profile.domain.world_extent,
+      .field_lipschitz=tetra::implicit_field_lipschitz_bound(runtime.field())*profile.domain.world_extent,
+      .edge_threshold=profile.pixel_threshold,.field_threshold=profile.field_error_pixel_threshold,
+      .limb_threshold=profile.limb_error_pixel_threshold,.merge_ratio=profile.lod_merge_threshold_ratio,
+      .source_revision=source_revision,.field_revision=field_revision});
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    const bool encoded=encode_metal_gpu_hierarchy_live_selection(command,selector,worklist,selection,select_tuple)&&
+      encode_metal_gpu_hierarchy_live_compact_closure(command,canonicalize,green,red,red_scan,selection,false)&&
+      encode_metal_gpu_hierarchy_compact_owner_materialize(command,materialize,selection)&&
+      encode_metal_gpu_hierarchy_compact_owner_p8(command,p8,selection.compact_owner_stream,selection.compact_owner_header,
+        selection.compact_p8_field,selection.compact_p8_templates,selection.compact_p8_counts,selection.compact_p8_offsets,
+        selection.compact_p8_block_totals,selection.compact_p8_block_offsets,selection.compact_p8_level_totals,
+        selection.compact_p8_level_offsets,selection.compact_p8_signs,selection.compact_p8_candidate,selection.compact_p8_status,
+        selection.compact_p8_dispatches,gpu,args,capacity,origin,source_revision);
+    if(!encoded) { std::printf("production parity %s: GPU chain encode failed\n",name);return false; }++selection.compact_p8_encoded;
+    id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];
+    [copy copyFromBuffer:gpu sourceOffset:0U toBuffer:gpu_readback destinationOffset:0U size:gpu.length];
+    [copy copyFromBuffer:args sourceOffset:0U toBuffer:args_readback destinationOffset:0U size:args.length];
+    [copy copyFromBuffer:selection.compact_owner_header sourceOffset:0U toBuffer:owners_readback destinationOffset:0U size:owners_readback.length];
+    [copy copyFromBuffer:selection.compact_selected_ping sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:0U size:4U*sizeof(std::uint32_t)];
+    [copy copyFromBuffer:selection.compact_selected_pong sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:4U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [copy copyFromBuffer:selection.compact_green_masks sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:8U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [copy copyFromBuffer:selection.slots[selection.closure_slot_index].marks sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:12U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [copy copyFromBuffer:selection.compact_closure_queue_ping sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:16U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [copy copyFromBuffer:selection.compact_closure_queue_pong sourceOffset:0U toBuffer:closure_headers_readback destinationOffset:20U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+    [copy endEncoding];[command commit];[command waitUntilCompleted];retire_metal_gpu_hierarchy_live_selection(selection);
+    const auto* gpu_count=static_cast<const std::uint32_t*>(args_readback.contents);
+    const auto* owners=static_cast<const std::uint32_t*>(owners_readback.contents);
+    const auto* closure_headers=static_cast<const std::uint32_t*>(closure_headers_readback.contents);
+    const auto gpu_vertices=gpu_count==nullptr?0U:gpu_count[0U];
+    const auto gpu_triangles=gpu_vertices/3U;
+    const auto cpu_triangles=cpu.size()/3U;
+    std::printf("production parity %s: cpu_triangles=%zu cpu_logical_owners=%zu gpu_owners=%u gpu_triangles=%u selected=%u final=%u ping=%u/%u/%u/%u pong=%u/%u/%u/%u masks=%u/%u/%u/%u selector=%u/%u/%u/%u queue_ping=%u/%u/%u/%u queue_pong=%u/%u/%u/%u closure=%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u p8=%u/%u/%u/%u\n",
+        name,cpu_triangles,cpu_logical_owners,owners==nullptr?0U:owners[0U],gpu_triangles,selection.compact_last_selected_header[0U],
+        selection.compact_last_final_active_header[0U],
+        closure_headers==nullptr?0U:closure_headers[0U],closure_headers==nullptr?0U:closure_headers[1U],closure_headers==nullptr?0U:closure_headers[2U],closure_headers==nullptr?0U:closure_headers[3U],
+        closure_headers==nullptr?0U:closure_headers[4U],closure_headers==nullptr?0U:closure_headers[5U],closure_headers==nullptr?0U:closure_headers[6U],closure_headers==nullptr?0U:closure_headers[7U],
+        closure_headers==nullptr?0U:closure_headers[8U],closure_headers==nullptr?0U:closure_headers[9U],closure_headers==nullptr?0U:closure_headers[10U],closure_headers==nullptr?0U:closure_headers[11U],
+        closure_headers==nullptr?0U:closure_headers[12U],closure_headers==nullptr?0U:closure_headers[13U],closure_headers==nullptr?0U:closure_headers[14U],closure_headers==nullptr?0U:closure_headers[15U],
+        closure_headers==nullptr?0U:closure_headers[16U],closure_headers==nullptr?0U:closure_headers[17U],closure_headers==nullptr?0U:closure_headers[18U],closure_headers==nullptr?0U:closure_headers[19U],
+        closure_headers==nullptr?0U:closure_headers[20U],closure_headers==nullptr?0U:closure_headers[21U],closure_headers==nullptr?0U:closure_headers[22U],closure_headers==nullptr?0U:closure_headers[23U],
+        selection.compact_last_closure_audit[0U],selection.compact_last_closure_audit[1U],selection.compact_last_closure_audit[2U],
+        selection.compact_last_closure_audit[3U],selection.compact_last_closure_audit[4U],selection.compact_last_closure_audit[5U],
+        selection.compact_last_closure_audit[6U],selection.compact_last_closure_audit[7U],selection.compact_last_closure_audit[8U],
+        selection.compact_last_closure_audit[9U],selection.compact_last_closure_audit[10U],selection.compact_last_closure_audit[11U],
+        selection.compact_last_closure_audit[12U],selection.compact_p8_last_audit[0U],selection.compact_p8_last_audit[1U],
+        selection.compact_p8_last_audit[2U],selection.compact_p8_last_audit[4U]);
+    if(command.status!=MTLCommandBufferStatusCompleted||gpu_count==nullptr||owners==nullptr||gpu_vertices!=cpu.size()||
+       gpu_vertices%3U!=0U)return false;
+    const auto* gpu_vertices_data=static_cast<const tetra_viewer::SceneVertex*>(gpu_readback.contents);
+    if(gpu_vertices_data==nullptr)return false;
+    const std::span gpu_span{gpu_vertices_data,static_cast<std::size_t>(gpu_vertices)};
+    const auto cpu_topology=canonical_triangles(cpu);const auto gpu_topology=canonical_triangles(gpu_span);
+    if(cpu_topology!=gpu_topology) { std::printf("production parity %s: canonical topology/payload differs\n",name);return false; }
+    const auto cpu_frame=frame_capture(cpu,camera,origin),gpu_frame=frame_capture(gpu_span,camera,origin);
+    std::size_t coverage_mismatch{},depth_mismatch{};
+    for(std::size_t pixel=0U;pixel<cpu_frame.coverage.size();++pixel) {
+      coverage_mismatch+=cpu_frame.coverage[pixel]!=gpu_frame.coverage[pixel];
+      depth_mismatch+=cpu_frame.coverage[pixel]&&gpu_frame.coverage[pixel]&&
+          std::abs(static_cast<int>(cpu_frame.depth[pixel])-static_cast<int>(gpu_frame.depth[pixel]))>2;
+    }
+    if(coverage_mismatch!=0U||depth_mismatch!=0U) {
+      std::printf("production parity %s: full-frame coverage/depth mismatch=%zu/%zu\n",name,coverage_mismatch,depth_mismatch);return false;
+    }
+    return true;
+  };
+  tetra::Camera first;first.position={0.5,0.72,0.68};first.forward={0.0,-0.2,-1.0};first.up={0.0,1.0,0.0};
+  first.viewport_height_pixels=800.0;first.aspect_ratio=16.0/9.0;
+  auto runtime=tetra_viewer::make_production_terrain_runtime(tetra_viewer::production_world_profile(),first);
+  const bool static_parity=run_case(*runtime,first,"static");
+  tetra::Camera moved=first;moved.position.x+=0.45;moved.position.z-=0.3;moved.forward={-.15,-.2,-1.0};
+  runtime->set_camera(moved,false);
+  const bool motion_rebase=static_parity&&run_case(*runtime,moved,"motion_rebase");
+  auto changed_profile=tetra_viewer::production_world_profile();changed_profile.terrain.height_offset+=0.125;
+  auto changed=tetra_viewer::make_production_terrain_runtime(changed_profile,moved);
+  const bool field_change=motion_rebase&&run_case(*changed,moved,"field_change");
+  const bool passed=static_parity&&motion_rebase&&field_change;
+  std::printf("{\"event\":\"metal_gpu_production_front_parity\",\"static\":%s,\"motion_rebase\":%s,\"field_change\":%s,\"passed\":%s}\n",
+      static_parity?"true":"false",motion_rebase?"true":"false",field_change?"true":"false",passed?"true":"false");
+  return passed;
+}
+
+// This deliberately bypasses selector/closure scheduling: P7e4a1's oracle is
+// the lossless, word-for-word projection of a stable compact list through the
+// immutable snapshot sidecars.  The test makes the private final pair visible
+// only through a test-only blit readback; no owner payload reaches a renderer.
+bool run_metal_gpu_compact_owner_materialize_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned generation=0U;generation<2U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> owners;
+  for(const auto owner:mesh.logical_red_owners())owners.push_back(tetra::world_tet_address(owner));
+  const tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      owners,1U,97U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,101U);
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_hierarchy_compact_owner_materialize.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  NSError* error=nil;
+  id<MTLComputePipelineState> pipeline=library==nil?nil:
+      [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"main0"]
+                                             error:&error];
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  MetalGpuHierarchyLiveSelection selection;
+  if(pipeline==nil||queue==nil||
+     !configure_metal_gpu_hierarchy_live_selection(device,selection,snapshot,101U,13U)||
+     !selection.compact_owner_ready()||snapshot.records.size()<3U)return false;
+  const std::array<std::uint32_t,3> selected{
+      snapshot.canonical_record_indices[0U],
+      snapshot.canonical_record_indices[snapshot.canonical_record_indices.size()/2U],
+      snapshot.canonical_record_indices.back()};
+  std::vector<std::uint32_t> expected(selected.size()*12U);
+  for(std::size_t index=0U;index<selected.size();++index) {
+    const auto record=selected[index];
+    const auto output=index*12U;
+    std::copy_n(snapshot.records[record].address.begin(),4U,expected.begin()+output);
+    std::copy_n(snapshot.edge_topology[record].edge_ranges.begin(),6U,
+                expected.begin()+output+4U);
+    expected[output+10U]=static_cast<std::uint32_t>(index*9U);
+    expected[output+11U]=snapshot.orientation_flags[record];
+  }
+  const auto read_words=[&](id<MTLBuffer> buffer,std::size_t words) {
+    return [device newBufferWithLength:std::max<NSUInteger>(words*sizeof(std::uint32_t),4U)
+                                options:MTLResourceStorageModeShared];
+  };
+  const auto run=[&](const std::vector<std::uint32_t>& active,
+                     const std::vector<std::uint32_t>& masks,
+                     const std::vector<std::uint32_t>& initial,
+                     std::uint32_t owner_capacity,
+                     std::vector<std::uint32_t>& result,
+                     std::array<std::uint32_t,4>& header) {
+    id<MTLBuffer> active_source=[device newBufferWithBytes:active.data()
+        length:active.size()*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> masks_source=[device newBufferWithBytes:masks.data()
+        length:masks.size()*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> initial_source=[device newBufferWithBytes:initial.data()
+        length:initial.size()*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> output=read_words(selection.compact_owner_stream,
+        initial.size());
+    id<MTLBuffer> header_output=read_words(selection.compact_owner_header,4U);
+    if(active_source==nil||masks_source==nil||initial_source==nil||
+       output==nil||header_output==nil)return false;
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    id<MTLBlitCommandEncoder> seed=[command blitCommandEncoder];
+    [seed copyFromBuffer:active_source sourceOffset:0U
+                toBuffer:selection.compact_final_active destinationOffset:0U
+                    size:active.size()*sizeof(std::uint32_t)];
+    [seed copyFromBuffer:masks_source sourceOffset:0U
+                toBuffer:selection.compact_final_masks destinationOffset:0U
+                    size:masks.size()*sizeof(std::uint32_t)];
+    [seed copyFromBuffer:initial_source sourceOffset:0U
+                toBuffer:selection.compact_owner_stream destinationOffset:0U
+                    size:initial.size()*sizeof(std::uint32_t)];
+    [seed endEncoding];
+    const auto saved_capacity=selection.output_capacity;
+    selection.output_capacity=owner_capacity;
+    const bool encoded=encode_metal_gpu_hierarchy_compact_owner_materialize(
+        command,pipeline,selection);
+    selection.output_capacity=saved_capacity;
+    if(!encoded)return false;
+    id<MTLBlitCommandEncoder> readback=[command blitCommandEncoder];
+    [readback copyFromBuffer:selection.compact_owner_stream sourceOffset:0U
+                   toBuffer:output destinationOffset:0U
+                       size:initial.size()*sizeof(std::uint32_t)];
+    [readback copyFromBuffer:selection.compact_owner_header sourceOffset:0U
+                   toBuffer:header_output destinationOffset:0U
+                       size:4U*sizeof(std::uint32_t)];
+    [readback endEncoding]; [command commit]; [command waitUntilCompleted];
+    const auto* output_words=static_cast<const std::uint32_t*>(output.contents);
+    const auto* header_words=static_cast<const std::uint32_t*>(header_output.contents);
+    if(command.status!=MTLCommandBufferStatusCompleted||output_words==nullptr||
+       header_words==nullptr)return false;
+    result.assign(output_words,output_words+initial.size());
+    std::copy_n(header_words,4U,header.begin());
+    return true;
+  };
+  std::vector<std::uint32_t> active(4U+snapshot.records.size(),0U),
+      masks(4U+snapshot.records.size(),0U);
+  active[0U]=static_cast<std::uint32_t>(selected.size());
+  active[1U]=static_cast<std::uint32_t>(snapshot.records.size());
+  active[3U]=1U;
+  masks[0U]=active[0U]; masks[1U]=active[1U]; masks[3U]=1U;
+  for(std::size_t index=0U;index<selected.size();++index) {
+    active[4U+index]=selected[index];
+    masks[4U+index]=expected[index*12U+10U];
+  }
+  const std::vector<std::uint32_t> sentinel(snapshot.records.size()*12U,0xdecafbadU);
+  std::vector<std::uint32_t> result;
+  std::array<std::uint32_t,4> header{};
+  if(!run(active,masks,sentinel,static_cast<std::uint32_t>(snapshot.records.size()),
+          result,header))return false;
+  const bool word_parity=header==std::array<std::uint32_t,4>{
+      static_cast<std::uint32_t>(selected.size()),
+      static_cast<std::uint32_t>(snapshot.records.size()),0U,1U}&&
+      std::equal(expected.begin(),expected.end(),result.begin());
+  active[2U]=1U;
+  std::vector<std::uint32_t> malformed_result;
+  std::array<std::uint32_t,4> malformed_header{};
+  const bool malformed_retained=run(active,masks,sentinel,
+      static_cast<std::uint32_t>(snapshot.records.size()),malformed_result,
+      malformed_header)&&malformed_result==sentinel&&malformed_header[0U]==0U&&
+      malformed_header[2U]==1U&&malformed_header[3U]==0U;
+  active[2U]=0U;
+  std::vector<std::uint32_t> capacity_result;
+  std::array<std::uint32_t,4> capacity_header{};
+  const bool capacity_retained=run(active,masks,sentinel,
+      static_cast<std::uint32_t>(selected.size()-1U),capacity_result,
+      capacity_header)&&capacity_result==sentinel&&capacity_header[0U]==0U&&
+      capacity_header[2U]==4U&&capacity_header[3U]==0U;
+  active[4U]=static_cast<std::uint32_t>(snapshot.records.size());
+  std::vector<std::uint32_t> record_result;
+  std::array<std::uint32_t,4> record_header{};
+  const bool record_retained=run(active,masks,sentinel,
+      static_cast<std::uint32_t>(snapshot.records.size()),record_result,
+      record_header)&&record_result==sentinel&&record_header[0U]==0U&&
+      record_header[2U]==2U&&record_header[3U]==0U;
+  active[4U]=selected[0U];
+  masks[4U]=64U;
+  std::vector<std::uint32_t> mask_result;
+  std::array<std::uint32_t,4> mask_header{};
+  const bool mask_failed=run(active,masks,sentinel,
+      static_cast<std::uint32_t>(snapshot.records.size()),mask_result,
+      mask_header)&&mask_result==sentinel&&mask_header[0U]==0U&&mask_header[2U]==8U&&
+      mask_header[3U]==0U;
+  const bool passed=word_parity&&malformed_retained&&capacity_retained&&
+      record_retained&&mask_failed;
+  std::printf("{\"event\":\"metal_gpu_compact_owner_materialize\","
+              "\"word_parity\":%s,\"malformed_retained\":%s,"
+              "\"capacity_retained\":%s,\"record_retained\":%s,"
+              "\"mask_failed\":%s,\"passed\":%s}\n",
+      word_parity?"true":"false",malformed_retained?"true":"false",
+      capacity_retained?"true":"false",record_retained?"true":"false",
+      mask_failed?"true":"false",
+      passed?"true":"false");
   return passed;
 }
 
@@ -1613,6 +4865,12 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
   const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,67U);
   if(snapshot.records.empty()||snapshot.canonical_record_indices.size()!=
       snapshot.records.size())return false;
+  if(snapshot.orientation_flags.size()!=snapshot.records.size()||
+     std::ranges::any_of(snapshot.orientation_flags,
+        [](std::uint32_t value){return value>1U;})){
+    std::fprintf(stderr,"Metal hierarchy fixture has invalid CPU orientations\\n");
+    return false;
+  }
   const auto shader=[&](const char* name)->id<MTLComputePipelineState>{
     const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
     id<MTLLibrary> library=make_file_shader_library(device,path.string().c_str());
@@ -1640,6 +4898,12 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       snapshot.child_indices.size()*sizeof(snapshot.child_indices.front()));
   id<MTLBuffer> inputs=make(snapshot.selection_records.data(),
       snapshot.selection_records.size()*sizeof(snapshot.selection_records.front()));
+  std::vector<std::uint32_t> root_indices;
+  for(std::uint32_t index=0U;index<snapshot.records.size();++index)
+    if((snapshot.records[index].child_mask_flags&0x800U)!=0U)
+      root_indices.push_back(index);
+  id<MTLBuffer> roots=root_indices.empty()||root_indices.size()>12U?nil:
+      make(root_indices.data(),root_indices.size()*sizeof(std::uint32_t));
   id<MTLBuffer> canonical=make(snapshot.canonical_record_indices.data(),
       snapshot.canonical_record_indices.size()*sizeof(std::uint32_t));
   id<MTLBuffer> faces=make(snapshot.face_incidence.data(),
@@ -1656,7 +4920,7 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       snapshot.vertex_ranges.size()*sizeof(snapshot.vertex_ranges.front()));
   id<MTLBuffer> vertex_incidence=make(snapshot.vertex_incidence.data(),
       snapshot.vertex_incidence.size()*sizeof(snapshot.vertex_incidence.front()));
-  if(hierarchy==nil||children==nil||inputs==nil||canonical==nil||faces==nil||
+  if(hierarchy==nil||children==nil||inputs==nil||roots==nil||canonical==nil||faces==nil||
      edge_topology==nil||ancestors==nil||orientations==nil||vertex_topology==nil||
      vertex_ranges==nil||vertex_incidence==nil)return false;
   const auto make_tuple=[](tetra::Vec3 position,tetra::Vec3 forward,
@@ -1736,7 +5000,7 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
         std::max<std::size_t>(1U,static_cast<std::size_t>(owner_capacity)*12U),0U);
     constexpr std::uint32_t retained_owner_sentinel=0xa5c3f17eU;
     std::vector<std::uint32_t> retained_owner_words(owner_words.size(),retained_owner_sentinel);
-    const std::array<std::uint32_t,4> status_zeros{};
+    const std::array<std::uint32_t,5> status_zeros{};
     id<MTLBuffer> tuple_buffer=make(&tuple,sizeof(tuple));
     id<MTLBuffer> selection_buffer=make(selection_words.data(),
         selection_words.size()*sizeof(std::uint32_t));
@@ -1776,8 +5040,9 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
        closure_status==nil||retained_owner_buffer==nil||case_vertex_ranges==nil||
        case_orientations==nil)return false;
     id<MTLCommandBuffer> command=[queue commandBuffer];
-    const std::array<std::uint32_t,3> selection_parameters{
-        record_count,record_count,mark_words};
+    const std::array<std::uint32_t,4> selection_parameters{
+        record_count,record_count,mark_words,
+        static_cast<std::uint32_t>(root_indices.size())};
     id<MTLComputeCommandEncoder> encoder=nil;
     if(test.manual==ManualCut::none) {
       encoder=[command computeCommandEncoder];
@@ -1787,8 +5052,9 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       [encoder setBuffer:inputs offset:0U atIndex:2U];
       [encoder setBuffer:tuple_buffer offset:0U atIndex:3U];
       [encoder setBytes:selection_parameters.data() length:sizeof(selection_parameters) atIndex:4U];
-      [encoder setBuffer:selection_buffer offset:0U atIndex:5U];
-      [encoder dispatchThreads:MTLSizeMake(record_count,1U,1U)
+      [encoder setBuffer:roots offset:0U atIndex:5U];
+      [encoder setBuffer:selection_buffer offset:0U atIndex:6U];
+      [encoder dispatchThreads:MTLSizeMake(root_indices.size(),1U,1U)
            threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)]; [encoder endEncoding];
     }
     const std::array<std::uint32_t,5> count_parameters{
@@ -1871,10 +5137,10 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       [local setBuffer:vertex_incidence offset:0U atIndex:8U];
       [local setBuffer:edge_marks offset:0U atIndex:9U];
       [local setBuffer:canonical offset:0U atIndex:10U];
-      [local setBuffer:counts offset:0U atIndex:11U];
-      [local setBuffer:case_orientations offset:0U atIndex:12U];
-      [local setBuffer:ancestors offset:0U atIndex:13U];
-      [local setBuffer:red_promotions offset:0U atIndex:14U];
+      [local setBuffer:red_promotions offset:0U atIndex:11U];
+      [local setBuffer:counts offset:0U atIndex:12U];
+      [local setBuffer:case_orientations offset:0U atIndex:13U];
+      [local setBuffer:ancestors offset:0U atIndex:14U];
       [local setBuffer:children offset:0U atIndex:15U];
       [local setBuffer:added_offsets offset:0U atIndex:16U];
       [local setBuffer:owner_buffer offset:0U atIndex:17U];
@@ -1905,8 +5171,9 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
         [clear fillBuffer:closure_status range:NSMakeRange(sizeof(std::uint32_t),
             sizeof(std::uint32_t)) value:0U]; [clear endEncoding];
         encode_closure(command,1U);
+        encode_closure(command,3U);
       }
-      encode_closure(command,3U);
+      encode_closure(command,8U);
       encode_closure(command,2U);
       encode_closure(command,5U);
       [command commit]; [command waitUntilCompleted];
@@ -1962,9 +5229,10 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
       return false;
     }
     if(closure_state[0U]!=0U||closure_state[1U]!=0U||closure_state[2U]!=0U||
-       closure_state[3U]!=expected.size()) {
-      std::fprintf(stderr,"Metal hierarchy-closure state %u/%u/%u/%u expected %zu\n",
+       closure_state[3U]!=expected.size()||closure_state[4U]!=1U) {
+      std::fprintf(stderr,"Metal hierarchy-closure state %u/%u/%u/%u/%u expected %zu\n",
           closure_state[0U],closure_state[1U],closure_state[2U],closure_state[3U],
+          closure_state[4U],
           expected.size());
       return false;
     }
@@ -2006,6 +5274,399 @@ bool run_metal_gpu_hierarchy_frontier_smoke_test(id<MTLDevice> device) {
               "\"overflow\":true,\"passed\":true}\n",completed,
       saw_green_mask?"true":"false");
   return completed==cases.size();
+}
+
+// P7e4a1's compact green fixture intentionally stops before red repair and
+// P8. It proves that the selected canonical list itself drives every green
+// pass, without reviving P7e4a's record-count closure prototype.
+bool run_metal_gpu_hierarchy_compact_green_closure_smoke_test(id<MTLDevice> device) {
+  auto mesh=tetra::TetMesh::make_unit_cube(tetra::SubdivisionMethod::bcc_red_green);
+  for(unsigned generation=0U;generation<3U;++generation)mesh.refine_all_binary();
+  std::vector<tetra::WorldTetAddress> leaves;
+  for(const auto owner:mesh.logical_red_owners())leaves.push_back(tetra::world_tet_address(owner));
+  const tetra::WorldCutDirectory directory(tetra::make_sparse_world_cut_checkpoint(
+      leaves,1U,71U,tetra::HierarchyResidencyTier::surface));
+  const auto snapshot=tetra::make_gpu_hierarchy_snapshot(directory,73U);
+  if(snapshot.records.empty()||snapshot.canonical_record_indices.size()!=snapshot.records.size()||
+     snapshot.edge_topology.size()!=snapshot.records.size()) {
+    std::fprintf(stderr,"Metal compact green fixture snapshot sidecars are incomplete\n");
+    return false;
+  }
+  const auto shader_path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
+      "gpu_hierarchy_compact_green_closure.comp.metal";
+  id<MTLLibrary> library=make_file_shader_library(device,shader_path.string().c_str());
+  NSError* error=nil;
+  id<MTLFunction> function=library==nil?nil:[library newFunctionWithName:@"main0"];
+  id<MTLComputePipelineState> pipeline=function==nil?nil:
+      [device newComputePipelineStateWithFunction:function error:&error];
+  const auto companion_pipeline=[&](const char* name)->id<MTLComputePipelineState>{
+    const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/name;
+    id<MTLLibrary> companion=make_file_shader_library(device,path.string().c_str());
+    NSError* companion_error=nil;
+    return companion==nil?nil:[device newComputePipelineStateWithFunction:
+        [companion newFunctionWithName:@"main0"] error:&companion_error];
+  };
+  id<MTLComputePipelineState> red_pipeline=companion_pipeline("gpu_hierarchy_compact_red_repair.comp.metal");
+  id<MTLComputePipelineState> red_scan_pipeline=companion_pipeline("gpu_hierarchy_compact_red_scan.comp.metal");
+  id<MTLComputePipelineState> canonicalize_pipeline=companion_pipeline("gpu_hierarchy_canonicalize.comp.metal");
+  id<MTLCommandQueue> queue=[device newCommandQueue];
+  if(pipeline==nil||red_pipeline==nil||red_scan_pipeline==nil||canonicalize_pipeline==nil||queue==nil) {
+    std::fprintf(stderr,"Metal compact green pipeline failed: %s\n",
+        error==nil?"missing translated entry point":error.localizedDescription.UTF8String);
+    return false;
+  }
+  const auto make=[&](const void* bytes,NSUInteger length){
+    return [device newBufferWithBytes:bytes length:std::max<NSUInteger>(length,4U)
+        options:MTLResourceStorageModeShared];
+  };
+  std::vector<std::uint32_t> ranks(snapshot.records.size());
+  for(std::uint32_t rank=0U;rank<snapshot.canonical_record_indices.size();++rank)
+    ranks[snapshot.canonical_record_indices[rank]]=rank;
+  id<MTLBuffer> rank_buffer=make(ranks.data(),ranks.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> topology_buffer=make(snapshot.edge_topology.data(),
+      snapshot.edge_topology.size()*sizeof(snapshot.edge_topology.front()));
+  id<MTLBuffer> ancestor_buffer=make(snapshot.ancestor_edge_ranges.data(),
+      snapshot.ancestor_edge_ranges.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> parent_buffer=make(snapshot.parent_records.data(),
+      snapshot.parent_records.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> hierarchy_buffer=make(snapshot.records.data(),
+      snapshot.records.size()*sizeof(snapshot.records.front()));
+  id<MTLBuffer> child_buffer=make(snapshot.child_indices.data(),
+      snapshot.child_indices.size()*sizeof(std::uint32_t));
+  id<MTLBuffer> vertex_topology_buffer=make(snapshot.vertex_topology.data(),
+      snapshot.vertex_topology.size()*sizeof(snapshot.vertex_topology.front()));
+  id<MTLBuffer> vertex_ranges_buffer=make(snapshot.vertex_ranges.data(),
+      snapshot.vertex_ranges.size()*sizeof(snapshot.vertex_ranges.front()));
+  id<MTLBuffer> vertex_incidence_buffer=make(snapshot.vertex_incidence.data(),
+      snapshot.vertex_incidence.size()*sizeof(snapshot.vertex_incidence.front()));
+  if(rank_buffer==nil||topology_buffer==nil||ancestor_buffer==nil||parent_buffer==nil||
+     hierarchy_buffer==nil||child_buffer==nil||vertex_topology_buffer==nil||
+     vertex_ranges_buffer==nil||vertex_incidence_buffer==nil) {
+    std::fprintf(stderr,"Metal compact green fixture buffer allocation failed\n");
+    return false;
+  }
+  const auto record_count=static_cast<std::uint32_t>(snapshot.records.size());
+  enum class Cut : std::uint8_t { fixed, root_seam, mixed, red_repaired };
+  const std::array cuts{Cut::fixed,Cut::root_seam,Cut::mixed,Cut::red_repaired};
+  std::size_t completed{}; bool saw_green{};
+  for(const auto cut:cuts) {
+    std::vector<std::uint32_t> selected;
+    for(std::uint32_t record=0U;record<record_count;++record) {
+      const auto address=tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address);
+      bool include=false;
+      if(cut==Cut::fixed)include=address.red_depth()==0U;
+      else if(cut==Cut::root_seam)
+        include=address.root_id()==0U?address.red_depth()==1U:address.red_depth()==0U;
+      else if(cut==Cut::mixed)
+        include=(address.root_id()==0U||address.root_id()==1U)?
+            address.red_depth()==1U:address.red_depth()==0U;
+      else
+        include=address.root_id()==0U?address.red_depth()==2U:
+            (address.root_id()==1U?address.red_depth()==1U:address.red_depth()==0U);
+      if(include)selected.push_back(record);
+    }
+    std::ranges::sort(selected,{},[&](std::uint32_t record){return ranks[record];});
+    std::vector<tetra::WorldTetAddress> requested;
+    for(const auto record:selected)
+      requested.push_back(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[record].address));
+    // The CPU oracle defines closure order by WorldTetAddress. The compact
+    // rank sidecar is required to represent that same canonical order below.
+    std::ranges::sort(requested);
+    tetra::WorldConformingClosureCache oracle_cache;
+    const auto expected=tetra::close_world_conforming_cut(requested,&oracle_cache);
+    // This is specifically a green-only slice. A cut needing red replacement
+    // belongs to the next sparse-closure leaf, not a silently partial fixture.
+    if(cut!=Cut::red_repaired&&
+       (expected!=requested||expected.size()!=oracle_cache.green_masks.size())) {
+      std::fprintf(stderr,"Compact green fixture cut %u unexpectedly needs red repair: requested=%zu closed=%zu\n",
+          static_cast<unsigned>(cut),requested.size(),expected.size());
+      return false;
+    }
+    if(cut==Cut::red_repaired&&expected.size()<=requested.size())return false;
+    for(std::size_t index=0U;cut!=Cut::red_repaired&&index<selected.size();++index)
+      if(tetra::gpu_hierarchy_address_from_lanes(snapshot.records[selected[index]].address)!=
+         expected[index])return false;
+    const auto active_capacity=cut==Cut::red_repaired?record_count:
+        static_cast<std::uint32_t>(selected.size());
+    std::vector<std::uint32_t> active_words(4U+active_capacity,0U);
+    active_words[0U]=static_cast<std::uint32_t>(selected.size());
+    active_words[1U]=active_capacity;
+    std::copy(selected.begin(),selected.end(),active_words.begin()+4U);
+    std::vector<std::uint32_t> edge_marks(std::max<std::size_t>(snapshot.edge_ranges.size(),1U),0U);
+    std::array<std::uint32_t,5> control{};
+    std::array<std::uint32_t,4> arguments{99U,99U,99U,0U};
+    std::vector<std::uint32_t> mask_words(4U+active_capacity,0U);
+    id<MTLBuffer> active_buffer=make(active_words.data(),active_words.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> edge_buffer=make(edge_marks.data(),edge_marks.size()*sizeof(std::uint32_t));
+    id<MTLBuffer> control_buffer=make(control.data(),sizeof(control));
+    id<MTLBuffer> arguments_buffer=make(arguments.data(),sizeof(arguments));
+    id<MTLBuffer> masks_buffer=make(mask_words.data(),mask_words.size()*sizeof(std::uint32_t));
+    if(active_buffer==nil||edge_buffer==nil||control_buffer==nil||arguments_buffer==nil||masks_buffer==nil) {
+      std::fprintf(stderr,"Metal compact green candidate allocation failed\n");
+      return false;
+    }
+    const auto encode=[&](id<MTLCommandBuffer> command,std::uint32_t phase,bool indirect,
+                          std::uint32_t round_limit=8U){
+      const std::array<std::uint32_t,5> parameters{record_count,
+          static_cast<std::uint32_t>(snapshot.edge_ranges.size()),
+          static_cast<std::uint32_t>(snapshot.ancestor_edge_ranges.size()),round_limit,phase};
+      id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+      [encoder setComputePipelineState:pipeline];
+      // Generated MSL ABI: queue, dispatch, ranks, active, parameters,
+      // topology, masks, marks, ancestors.
+      [encoder setBuffer:control_buffer offset:0U atIndex:0U];
+      [encoder setBuffer:arguments_buffer offset:0U atIndex:1U];
+      [encoder setBuffer:rank_buffer offset:0U atIndex:2U];
+      [encoder setBuffer:active_buffer offset:0U atIndex:3U];
+      [encoder setBytes:parameters.data() length:sizeof(parameters) atIndex:4U];
+      [encoder setBuffer:topology_buffer offset:0U atIndex:5U];
+      [encoder setBuffer:masks_buffer offset:0U atIndex:6U];
+      [encoder setBuffer:edge_buffer offset:0U atIndex:7U];
+      [encoder setBuffer:ancestor_buffer offset:0U atIndex:8U];
+      if(indirect)[encoder dispatchThreadgroupsWithIndirectBuffer:arguments_buffer indirectBufferOffset:0U
+          threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
+      else [encoder dispatchThreads:MTLSizeMake(1U,1U,1U)
+          threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];
+      [encoder endEncoding];
+    };
+    id<MTLCommandBuffer> command=[queue commandBuffer];
+    encode(command,0U,false); encode(command,1U,true); encode(command,2U,true);
+    // Fixed command-buffer schedule: its only convergence observation is the
+    // private queue latch, never a CPU readback between rounds.
+    for(unsigned round=0U;round<8U;++round) {
+      encode(command,3U,false); encode(command,4U,true); encode(command,5U,false);
+    }
+    encode(command,8U,false);encode(command,6U,true); [command commit]; [command waitUntilCompleted];
+    const auto* state=static_cast<const std::uint32_t*>(control_buffer.contents);
+    const auto* device_masks=static_cast<const std::uint32_t*>(masks_buffer.contents);
+    const auto* device_args=static_cast<const std::uint32_t*>(arguments_buffer.contents);
+    if(command.status!=MTLCommandBufferStatusCompleted||state==nullptr||device_masks==nullptr||
+       device_args==nullptr||state[2U]!=0U||state[3U]!=1U||
+       state[4U]==0U||device_args[0U]!=(selected.size()+255U)/256U||device_args[1U]!=1U||device_args[2U]!=1U||
+       device_masks[0U]!=selected.size()||device_masks[2U]!=0U||device_masks[3U]!=1U) {
+      std::fprintf(stderr,"Metal compact green state rejected: %u/%u/%u/%u\n",
+          state==nullptr?0U:state[0U],state==nullptr?0U:state[1U],
+          state==nullptr?0U:state[2U],state==nullptr?0U:state[3U]);
+      return false;
+    }
+    for(std::size_t index=0U;cut!=Cut::red_repaired&&index<selected.size();++index) {
+      if(device_masks[4U+index]!=oracle_cache.green_masks[index]) {
+        std::fprintf(stderr,"Metal compact green mask mismatch at %zu: %u != %u\n",index,
+            device_masks[4U+index],oracle_cache.green_masks[index]);
+        return false;
+      }
+      saw_green|=device_masks[4U+index]!=0U;
+    }
+    if(cut==Cut::red_repaired) {
+      const auto blocks=static_cast<std::uint32_t>((selected.size()+255U)/256U);
+      std::vector<std::uint32_t> red_status(4U),expand_counts(record_count),expand_offsets(record_count);
+      std::vector<std::uint32_t> block_totals(std::max<std::uint32_t>(blocks,1U)),block_offsets(block_totals.size()),scan_total(1U);
+      std::vector<std::uint32_t> level_totals(std::max<std::uint32_t>((blocks+255U)/256U,1U)),level_offsets(level_totals.size());
+      std::vector<std::uint32_t> red_words(4U+record_count),canonical_words(4U+record_count),
+          final_active_words(4U+record_count),final_mask_words(4U+record_count);
+      std::array<std::uint32_t,8> red_args{};
+      id<MTLBuffer> red_status_buffer=make(red_status.data(),sizeof(red_status));
+      id<MTLBuffer> count_buffer=make(expand_counts.data(),expand_counts.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> offset_buffer=make(expand_offsets.data(),expand_offsets.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> total_buffer=make(scan_total.data(),sizeof(std::uint32_t));
+      id<MTLBuffer> block_total_buffer=make(block_totals.data(),block_totals.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> block_offset_buffer=make(block_offsets.data(),block_offsets.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> level_total_buffer=make(level_totals.data(),level_totals.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> level_offset_buffer=make(level_offsets.data(),level_offsets.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> red_output=make(red_words.data(),red_words.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> red_args_buffer=make(red_args.data(),sizeof(red_args));
+      id<MTLBuffer> canonical_output=make(canonical_words.data(),canonical_words.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> final_active_buffer=make(final_active_words.data(),final_active_words.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> final_mask_buffer=make(final_mask_words.data(),final_mask_words.size()*sizeof(std::uint32_t));
+      std::vector<std::uint32_t> histogram(std::max<std::uint32_t>(blocks*16U,1U)),histogram_offsets(histogram.size());
+      std::array<std::uint32_t,16> bin_bases{};
+      id<MTLBuffer> histogram_buffer=make(histogram.data(),histogram.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> histogram_offsets_buffer=make(histogram_offsets.data(),histogram_offsets.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> bin_bases_buffer=make(bin_bases.data(),sizeof(bin_bases));
+      if(red_status_buffer==nil||count_buffer==nil||offset_buffer==nil||total_buffer==nil||
+         block_total_buffer==nil||block_offset_buffer==nil||level_total_buffer==nil||level_offset_buffer==nil||red_output==nil||red_args_buffer==nil||
+         canonical_output==nil||final_active_buffer==nil||final_mask_buffer==nil||
+         histogram_buffer==nil||histogram_offsets_buffer==nil||bin_bases_buffer==nil)return false;
+      const auto red_encode=[&](id<MTLCommandBuffer> target,std::uint32_t phase,bool indirect,
+                                std::uint32_t repair_budget=8U){
+        const std::array<std::uint32_t,6> p{record_count,static_cast<std::uint32_t>(snapshot.child_indices.size()),
+          static_cast<std::uint32_t>(snapshot.vertex_ranges.size()),static_cast<std::uint32_t>(snapshot.vertex_incidence.size()),repair_budget,phase};
+        id<MTLComputeCommandEncoder> e=[target computeCommandEncoder]; [e setComputePipelineState:red_pipeline];
+        [e setBuffer:red_status_buffer offset:0 atIndex:0];[e setBuffer:red_args_buffer offset:0 atIndex:1];[e setBytes:p.data() length:sizeof(p) atIndex:2];
+        [e setBuffer:rank_buffer offset:0 atIndex:3];[e setBuffer:active_buffer offset:0 atIndex:4];[e setBuffer:parent_buffer offset:0 atIndex:5];[e setBuffer:hierarchy_buffer offset:0 atIndex:6];[e setBuffer:vertex_topology_buffer offset:0 atIndex:7];[e setBuffer:vertex_ranges_buffer offset:0 atIndex:8];[e setBuffer:vertex_incidence_buffer offset:0 atIndex:9];[e setBuffer:red_output offset:0 atIndex:10];[e setBuffer:masks_buffer offset:0 atIndex:11];[e setBuffer:total_buffer offset:0 atIndex:12];[e setBuffer:final_active_buffer offset:0 atIndex:13];[e setBuffer:final_mask_buffer offset:0 atIndex:14];[e setBuffer:count_buffer offset:0 atIndex:15];[e setBuffer:offset_buffer offset:0 atIndex:16];[e setBuffer:child_buffer offset:0 atIndex:17];
+        if(indirect)[e dispatchThreadgroupsWithIndirectBuffer:red_args_buffer indirectBufferOffset:(phase==3U||phase==7U)?4U*sizeof(std::uint32_t):0U threadsPerThreadgroup:MTLSizeMake(256,1,1)];else [e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];[e endEncoding];
+      };
+      const auto scan_encode=[&](id<MTLCommandBuffer> target,std::uint32_t phase,bool indirect){
+        id<MTLComputeCommandEncoder> e=[target computeCommandEncoder];[e setComputePipelineState:red_scan_pipeline];
+        [e setBuffer:active_buffer offset:0 atIndex:0];[e setBytes:&phase length:sizeof(phase) atIndex:1];[e setBuffer:count_buffer offset:0 atIndex:2];[e setBuffer:offset_buffer offset:0 atIndex:3];[e setBuffer:block_total_buffer offset:0 atIndex:4];[e setBuffer:block_offset_buffer offset:0 atIndex:5];[e setBuffer:level_total_buffer offset:0 atIndex:6];[e setBuffer:level_offset_buffer offset:0 atIndex:7];[e setBuffer:total_buffer offset:0 atIndex:8];
+        if(indirect)[e dispatchThreadgroupsWithIndirectBuffer:red_args_buffer indirectBufferOffset:0 threadsPerThreadgroup:MTLSizeMake(256,1,1)];else [e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];[e endEncoding];
+      };
+      command=[queue commandBuffer];red_encode(command,0U,false);red_encode(command,1U,true);scan_encode(command,0U,true);scan_encode(command,1U,true);scan_encode(command,2U,false);scan_encode(command,3U,true);red_encode(command,2U,false);red_encode(command,3U,true);red_encode(command,4U,false);[command commit];[command waitUntilCompleted];
+      const auto* red_state=static_cast<const std::uint32_t*>(red_status_buffer.contents);const auto* red_result=static_cast<const std::uint32_t*>(red_output.contents);
+      if(command.status!=MTLCommandBufferStatusCompleted||red_state==nullptr||red_result==nullptr||red_state[0U]!=0U||red_state[1U]==0U||red_result[0U]!=expected.size())return false;
+      id<MTLBuffer> canonical_input=red_output,canonical_destination=canonical_output;
+      command=[queue commandBuffer];
+      for(std::uint32_t shift=0U;shift<20U;shift+=4U)for(std::uint32_t phase=0U;phase<3U;++phase) {
+        const std::array<std::uint32_t,4> p{record_count,phase,shift,0U};
+        id<MTLComputeCommandEncoder> e=[command computeCommandEncoder];[e setComputePipelineState:canonicalize_pipeline];
+        [e setBuffer:red_args_buffer offset:0 atIndex:0];[e setBuffer:canonical_input offset:0 atIndex:1];[e setBytes:p.data() length:sizeof(p) atIndex:2];[e setBuffer:canonical_destination offset:0 atIndex:3];[e setBuffer:rank_buffer offset:0 atIndex:4];[e setBuffer:histogram_buffer offset:0 atIndex:5];[e setBuffer:bin_bases_buffer offset:0 atIndex:6];[e setBuffer:histogram_offsets_buffer offset:0 atIndex:7];
+        if(phase==1U)[e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];else [e dispatchThreadgroupsWithIndirectBuffer:red_args_buffer indirectBufferOffset:4U*sizeof(std::uint32_t) threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];
+        if(phase==2U)std::swap(canonical_input,canonical_destination);
+      }
+      [command commit];[command waitUntilCompleted];
+      const auto* canonical_result=static_cast<const std::uint32_t*>(canonical_input.contents);
+      std::vector<std::uint32_t> expected_records;for(const auto address:expected){const auto found=std::ranges::find_if(snapshot.records,[&](const auto& r){return tetra::gpu_hierarchy_address_from_lanes(r.address)==address;});if(found==snapshot.records.end())return false;expected_records.push_back(static_cast<std::uint32_t>(found-snapshot.records.begin()));}std::ranges::sort(expected_records,{},[&](std::uint32_t r){return ranks[r];});
+      if(command.status!=MTLCommandBufferStatusCompleted||canonical_result==nullptr||canonical_result[0U]!=expected_records.size()||canonical_result[2U]!=0U||!std::equal(expected_records.begin(),expected_records.end(),canonical_result+4U))return false;
+      // The compact live encoder uses a fixed red repair schedule.  Verify
+      // its terminal latch directly: a red predicate still present at the
+      // exhausted budget must fail closed rather than leave a partial pong
+      // list that a future P8 owner materializer could consume.
+      command=[queue commandBuffer];
+      id<MTLBlitCommandEncoder> reset_red=[command blitCommandEncoder];
+      for(id<MTLBuffer> buffer:{red_status_buffer,red_args_buffer,red_output})
+        [reset_red fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
+      [reset_red endEncoding];
+      red_encode(command,0U,false,0U);red_encode(command,1U,true,0U);
+      red_encode(command,5U,false,0U);[command commit];[command waitUntilCompleted];
+      const auto* exhausted_status=static_cast<const std::uint32_t*>(red_status_buffer.contents);
+      if(command.status!=MTLCommandBufferStatusCompleted||exhausted_status==nullptr||
+         (exhausted_status[0U]&32U)==0U)return false;
+      // Red finalize must latch a capacity failure before scatter or any
+      // publishable pong header is produced.
+      std::vector<std::uint32_t> capacity_active{1U,1U,0U,0U,selected.front()};
+      std::vector<std::uint32_t> capacity_masks{1U,1U,0U,1U,0U},capacity_total{2U};
+      id<MTLBuffer> capacity_active_buffer=make(capacity_active.data(),capacity_active.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> capacity_masks_buffer=make(capacity_masks.data(),capacity_masks.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> capacity_total_buffer=make(capacity_total.data(),sizeof(std::uint32_t));
+      if(capacity_active_buffer==nil||capacity_masks_buffer==nil||capacity_total_buffer==nil)return false;
+      auto saved_red_active=active_buffer,saved_red_masks=masks_buffer,saved_red_total=total_buffer;
+      active_buffer=capacity_active_buffer;masks_buffer=capacity_masks_buffer;total_buffer=capacity_total_buffer;
+      command=[queue commandBuffer];
+      reset_red=[command blitCommandEncoder];
+      [reset_red fillBuffer:red_status_buffer range:NSMakeRange(0U,red_status_buffer.length) value:0U];
+      [reset_red endEncoding]; [command commit]; [command waitUntilCompleted];
+      if(command.status!=MTLCommandBufferStatusCompleted)return false;
+      command=[queue commandBuffer];red_encode(command,0U,false);red_encode(command,2U,false);[command commit];[command waitUntilCompleted];
+      const auto* capacity_status=static_cast<const std::uint32_t*>(red_status_buffer.contents);
+      active_buffer=saved_red_active;masks_buffer=saved_red_masks;total_buffer=saved_red_total;
+      if(command.status!=MTLCommandBufferStatusCompleted||capacity_status==nullptr||
+         (capacity_status[0U]&8U)==0U)return false;
+      std::array<std::uint32_t,4> post_control{},post_args{};
+      std::vector<std::uint32_t> post_edges(edge_marks.size()),post_masks(4U+record_count);
+      id<MTLBuffer> post_control_buffer=make(post_control.data(),sizeof(post_control));
+      id<MTLBuffer> post_args_buffer=make(post_args.data(),sizeof(post_args));
+      id<MTLBuffer> post_edge_buffer=make(post_edges.data(),post_edges.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> post_masks_buffer=make(post_masks.data(),post_masks.size()*sizeof(std::uint32_t));
+      if(post_control_buffer==nil||post_args_buffer==nil||post_edge_buffer==nil||post_masks_buffer==nil)return false;
+      auto saved_active=active_buffer,saved_control=control_buffer,saved_args=arguments_buffer,saved_edge=edge_buffer,saved_masks=masks_buffer;
+      active_buffer=canonical_input;control_buffer=post_control_buffer;arguments_buffer=post_args_buffer;edge_buffer=post_edge_buffer;masks_buffer=post_masks_buffer;
+      command=[queue commandBuffer];encode(command,0U,false);encode(command,1U,true);encode(command,2U,true);for(unsigned round=0U;round<8U;++round){encode(command,3U,false);encode(command,4U,true);encode(command,5U,false);}encode(command,8U,false);encode(command,6U,true);[command commit];[command waitUntilCompleted];
+      const auto* post_state=static_cast<const std::uint32_t*>(post_control_buffer.contents);const auto* post_result=static_cast<const std::uint32_t*>(post_masks_buffer.contents);
+      const bool masks_match=command.status==MTLCommandBufferStatusCompleted&&post_state!=nullptr&&post_result!=nullptr&&post_state[2U]==0U&&post_state[3U]==1U&&post_result[0U]==expected_records.size()&&std::equal(oracle_cache.green_masks.begin(),oracle_cache.green_masks.end(),post_result+4U);
+      // One repair is sufficient for this known red cut.  Re-run only the
+      // predicate/terminal pair on its post-repair canonical list to prove a
+      // final allowed repair can converge rather than being rejected merely
+      // because the pre-repair predicate was nonzero.
+      command=[queue commandBuffer];reset_red=[command blitCommandEncoder];
+      [reset_red fillBuffer:red_status_buffer range:NSMakeRange(0U,red_status_buffer.length) value:0U];
+      [reset_red fillBuffer:red_args_buffer range:NSMakeRange(0U,red_args_buffer.length) value:0U];
+      [reset_red endEncoding];red_encode(command,0U,false);red_encode(command,1U,true);
+      red_encode(command,5U,false);red_encode(command,6U,false);red_encode(command,7U,true);
+      [command commit];[command waitUntilCompleted];
+      const auto* converged_status=static_cast<const std::uint32_t*>(red_status_buffer.contents);
+      const auto* converged_args=static_cast<const std::uint32_t*>(red_args_buffer.contents);
+      const auto* final_active=static_cast<const std::uint32_t*>(final_active_buffer.contents);
+      const auto* final_masks=static_cast<const std::uint32_t*>(final_mask_buffer.contents);
+      const bool final_repair_converged=command.status==MTLCommandBufferStatusCompleted&&
+          converged_status!=nullptr&&converged_status[0U]==0U&&
+          converged_status[1U]==0U&&converged_args!=nullptr&&
+          converged_args[0U]==0U&&converged_args[3U]==1U&&
+          final_active!=nullptr&&final_masks!=nullptr&&
+          final_active[0U]==expected_records.size()&&final_active[2U]==0U&&
+          final_active[3U]==1U&&final_masks[0U]==expected_records.size()&&
+          final_masks[2U]==0U&&final_masks[3U]==1U&&
+          std::equal(expected_records.begin(),expected_records.end(),final_active+4U)&&
+          std::equal(oracle_cache.green_masks.begin(),oracle_cache.green_masks.end(),final_masks+4U);
+      active_buffer=saved_active;control_buffer=saved_control;arguments_buffer=saved_args;edge_buffer=saved_edge;masks_buffer=saved_masks;
+      if(!masks_match||!final_repair_converged)return false;
+    }
+    // Model publication with a distinct retained front. Invalid/budgeted
+    // candidates below can write no retained word.
+    std::vector<std::uint32_t> retained(mask_words.size(),0xa5c3f17eU);
+    id<MTLBuffer> retained_buffer=make(retained.data(),retained.size()*sizeof(std::uint32_t));
+    if(retained_buffer==nil) { std::fprintf(stderr,"Metal compact green retained allocation failed\n"); return false; }
+    command=[queue commandBuffer]; id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
+    [blit copyFromBuffer:masks_buffer sourceOffset:0U toBuffer:retained_buffer destinationOffset:0U
+                    size:masks_buffer.length]; [blit endEncoding]; [command commit]; [command waitUntilCompleted];
+    if(command.status!=MTLCommandBufferStatusCompleted||
+       std::memcmp(retained_buffer.contents,masks_buffer.contents,masks_buffer.length)!=0)return false;
+    const auto retained_before=std::vector<std::uint32_t>(
+        static_cast<const std::uint32_t*>(retained_buffer.contents),
+        static_cast<const std::uint32_t*>(retained_buffer.contents)+retained.size());
+    const auto rejects_and_retains=[&](bool malformed,bool budget){
+      auto bad_active=active_words;
+      if(malformed)bad_active[4U]=record_count;
+      id<MTLBuffer> bad_active_buffer=make(bad_active.data(),bad_active.size()*sizeof(std::uint32_t));
+      std::array<std::uint32_t,5> bad_control{};std::array<std::uint32_t,4> bad_args{99U,99U,99U,0U};
+      std::vector<std::uint32_t> bad_masks(4U+selected.size(),0U),bad_edges(edge_marks.size(),0U);
+      id<MTLBuffer> bad_control_buffer=make(bad_control.data(),sizeof(bad_control));
+      id<MTLBuffer> bad_args_buffer=make(bad_args.data(),sizeof(bad_args));
+      id<MTLBuffer> bad_masks_buffer=make(bad_masks.data(),bad_masks.size()*sizeof(std::uint32_t));
+      id<MTLBuffer> bad_edge_buffer=make(bad_edges.data(),bad_edges.size()*sizeof(std::uint32_t));
+      if(bad_active_buffer==nil||bad_control_buffer==nil||bad_args_buffer==nil||bad_masks_buffer==nil||bad_edge_buffer==nil)return false;
+      // Rebind the fixture's small private-style candidate set without ever
+      // touching the retained front.
+      auto saved_active=active_buffer,saved_control=control_buffer,saved_args=arguments_buffer,
+          saved_masks=masks_buffer,saved_edge=edge_buffer;
+      active_buffer=bad_active_buffer; control_buffer=bad_control_buffer; arguments_buffer=bad_args_buffer;
+      masks_buffer=bad_masks_buffer; edge_buffer=bad_edge_buffer;
+      id<MTLCommandBuffer> bad=[queue commandBuffer]; encode(bad,0U,false);
+      if(budget) {
+        // Device-side fault injection validates the budget latch and retained
+        // front without assuming a particular legal cut takes N rounds.
+        encode(bad,7U,false);
+      } else {
+        encode(bad,1U,true); encode(bad,2U,true);
+        for(unsigned round=0U;round<8U;++round) {
+          encode(bad,3U,false); encode(bad,4U,true); encode(bad,5U,false);
+        }
+      }
+      encode(bad,8U,false);encode(bad,6U,true); [bad commit]; [bad waitUntilCompleted];
+      const auto* bad_state=static_cast<const std::uint32_t*>(bad_control_buffer.contents);
+      const bool rejected=bad.status==MTLCommandBufferStatusCompleted&&bad_state!=nullptr&&bad_state[2U]!=0U&&
+          std::memcmp(retained_buffer.contents,retained_before.data(),retained_before.size()*sizeof(std::uint32_t))==0;
+      if(!rejected)std::fprintf(stderr,"Metal compact green reject failed: malformed=%d budget=%d status=%ld state=%u/%u/%u/%u retained=%d\n",
+          malformed,budget,static_cast<long>(bad.status),bad_state==nullptr?0U:bad_state[0U],
+          bad_state==nullptr?0U:bad_state[1U],bad_state==nullptr?0U:bad_state[2U],
+          bad_state==nullptr?0U:bad_state[3U],
+          std::memcmp(retained_buffer.contents,retained_before.data(),retained_before.size()*sizeof(std::uint32_t))==0);
+      active_buffer=saved_active; control_buffer=saved_control; arguments_buffer=saved_args;
+      masks_buffer=saved_masks; edge_buffer=saved_edge;
+      return rejected;
+    };
+    if(!rejects_and_retains(true,false)||
+       (cut==Cut::red_repaired&&!rejects_and_retains(false,true)))return false;
+    ++completed;
+  }
+  // Independent >1-block scan proof. These synthetic compact counts exercise
+  // the same device headers and all scan levels without relying on a camera
+  // cut being large enough to exceed one workgroup.
+  constexpr std::uint32_t scan_count=257U;
+  std::vector<std::uint32_t> scan_active(4U+scan_count),scan_counts(scan_count),scan_offsets(scan_count),scan_totals(2U),scan_block_offsets(2U),scan_level_totals(1U),scan_level_offsets(1U),scan_total(1U);
+  scan_active[0U]=scan_count;scan_active[1U]=scan_count;std::uint32_t expected_total{};
+  for(std::uint32_t i=0U;i<scan_count;++i){scan_counts[i]=(i%7U)+1U;expected_total+=scan_counts[i];}
+  const auto scan_make=[&](const auto& values){return make(values.data(),values.size()*sizeof(values.front()));};
+  id<MTLBuffer> sa=scan_make(scan_active),sc=scan_make(scan_counts),so=scan_make(scan_offsets),st=scan_make(scan_totals),sbo=scan_make(scan_block_offsets),slt=scan_make(scan_level_totals),slo=scan_make(scan_level_offsets),sum=scan_make(scan_total);
+  if(sa==nil||sc==nil||so==nil||st==nil||sbo==nil||slt==nil||slo==nil||sum==nil)return false;
+  std::array<std::uint32_t,4> scan_args{2U,1U,1U,0U};id<MTLBuffer> sargs=make(scan_args.data(),sizeof(scan_args));if(sargs==nil)return false;
+  id<MTLCommandBuffer> scan_command=[queue commandBuffer];
+  for(std::uint32_t phase=0U;phase<4U;++phase){id<MTLComputeCommandEncoder> e=[scan_command computeCommandEncoder];[e setComputePipelineState:red_scan_pipeline];[e setBuffer:sa offset:0 atIndex:0];[e setBytes:&phase length:sizeof(phase) atIndex:1];[e setBuffer:sc offset:0 atIndex:2];[e setBuffer:so offset:0 atIndex:3];[e setBuffer:st offset:0 atIndex:4];[e setBuffer:sbo offset:0 atIndex:5];[e setBuffer:slt offset:0 atIndex:6];[e setBuffer:slo offset:0 atIndex:7];[e setBuffer:sum offset:0 atIndex:8];if(phase==2U)[e dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];else [e dispatchThreadgroupsWithIndirectBuffer:sargs indirectBufferOffset:0 threadsPerThreadgroup:MTLSizeMake(256,1,1)];[e endEncoding];}
+  [scan_command commit];[scan_command waitUntilCompleted];const auto* scan_result=static_cast<const std::uint32_t*>(so.contents);const auto* scan_sum=static_cast<const std::uint32_t*>(sum.contents);std::uint32_t prefix{};if(scan_command.status!=MTLCommandBufferStatusCompleted||scan_result==nullptr||scan_sum==nullptr||scan_sum[0U]!=expected_total)return false;for(std::uint32_t i=0U;i<scan_count;++i){if(scan_result[i]!=prefix)return false;prefix+=scan_counts[i];}
+  std::printf("{\"event\":\"metal_gpu_compact_green_closure\",\"cases\":%zu,"
+              "\"green\":%s,\"malformed_retained\":true,\"budget_retained\":true,"
+              "\"red_terminal_latched\":true,\"device_quiesced\":true,\"passed\":true}\n",
+      completed,saw_green?"true":"false");
+  return completed==cuts.size()&&saw_green;
 }
 
 // P7a2's hardware gate uses no legacy terrain-cell payload and deliberately
@@ -5438,6 +9099,24 @@ int main(int argc,char** argv) {
       std::strcmp(argv[1],"--metal-gpu-live-selection-state-smoke-test")==0;
   const bool gpu_hierarchy_frontier_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-hierarchy-frontier-smoke-test")==0;
+  const bool gpu_compact_green_closure_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-green-closure-smoke-test")==0;
+  const bool gpu_compact_red_scan_large_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-red-scan-large-smoke-test")==0;
+  const bool gpu_compact_live_closure_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-live-closure-smoke-test")==0;
+  const bool gpu_compact_live_parity_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-live-parity-smoke-test")==0;
+  const bool gpu_production_front_parity_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-production-front-parity-smoke-test")==0;
+  const bool gpu_compact_live_performance_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-live-performance-smoke-test")==0;
+  const bool gpu_compact_hybrid_parity_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-hybrid-parity-smoke-test")==0;
+  const bool gpu_compact_owner_materialize_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-owner-materialize-smoke-test")==0;
+  const bool gpu_compact_owner_p8_smoke_test=argc==2&&
+      std::strcmp(argv[1],"--metal-gpu-compact-owner-p8-smoke-test")==0;
   const bool gpu_terrain_extract_smoke_test=argc==2&&
       std::strcmp(argv[1],"--metal-gpu-terrain-extract-smoke-test")==0;
   const bool gpu_terrain_classify_smoke_test=argc==2&&
@@ -5522,8 +9201,14 @@ int main(int argc,char** argv) {
   const bool any_atmosphere_frame_test=atmosphere_frame_test||
       atmosphere_quarter_test;
   const bool smoke_test=argc==2&&std::strcmp(argv[1],"--metal-smoke-test")==0;
+  // Automation needs a bounded counterpart for the normal interactive
+  // device-front selection. The production launch itself selects this route
+  // without an argument.
+  const bool device_front_default_test=argc==2&&
+      std::strcmp(argv[1],"--metal-device-front-default-smoke-test")==0;
   const bool motion_test=argc==2&&
-      std::strcmp(argv[1],"--metal-motion-smoke-test")==0;
+      (std::strcmp(argv[1],"--metal-motion-smoke-test")==0||
+       device_front_default_test);
   const bool render_test=argc==2&&
       std::strcmp(argv[1],"--metal-render-smoke-test")==0;
   const bool metalfx_test=argc==2&&
@@ -5662,10 +9347,9 @@ int main(int argc,char** argv) {
   const bool metal_gpu_terrain_qualification=
       metal_gpu_terrain_native_diagnostic||
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_QUALIFICATION")!=nullptr;
-  // GPU mesh emission remains an opt-in comparison route. It does not make
-  // terrain generation GPU-resident: the current P6 source packet is built by
-  // the CPU publication worker. Until P7e's device-owned selection and
-  // closure path exists, ordinary launches must retain CPU generation.
+  // The legacy P6 mesh-emission route is an opt-in comparison route.  It is
+  // CPU-fed and intentionally distinct from the experimental P7e4
+  // GPU-resident terrain route below.
   bool gpu_terrain_renderer_selected=gpu_terrain_performance_smoke_test;
   if(const char* value=std::getenv("TETWORLD_METAL_GPU_TERRAIN_RENDERER");
      value!=nullptr){
@@ -5674,11 +9358,68 @@ int main(int argc,char** argv) {
     else { std::fprintf(stderr,"TETWORLD_METAL_GPU_TERRAIN_RENDERER must be 0 or 1\\n");return 2; }
   }
   if(gpu_terrain_performance_smoke_test)gpu_terrain_renderer_selected=true;
-  // P7e2 is intentionally a separate opt-in route from P8's CPU-source-fed
-  // mesh emission.  It freezes the completed bootstrap front and drives only
-  // persistent GPU hierarchy selection while P7e3 closure is still pending.
-  const bool metal_gpu_terrain_live_selection=
+  // The compact device front is the ordinary interactive route. Tests and
+  // legacy P6 diagnostics retain their explicit CPU choices; the bounded
+  // ordinary-launch fixture below exercises the same route under automation.
+  // Parse an override as a value rather than an env-presence switch.
+  bool metal_gpu_terrain_device_front=!automated_test||device_front_default_test;
+  bool metal_gpu_terrain_device_front_explicit=false;
+  if(const char* value=std::getenv("TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT");
+     value!=nullptr){
+    metal_gpu_terrain_device_front_explicit=true;
+    if(std::strcmp(value,"0")==0)metal_gpu_terrain_device_front=false;
+    else if(std::strcmp(value,"1")==0)metal_gpu_terrain_device_front=true;
+    else {
+      std::fprintf(stderr,
+          "TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT must be 0 or 1\\n");
+      return 2;
+    }
+  }
+  const bool metal_gpu_terrain_live_selection_requested=
       std::getenv("TETWORLD_METAL_GPU_TERRAIN_LIVE_SELECTION")!=nullptr;
+  // These established qualification routes intentionally exercise their
+  // CPU-fed/CPU-front contracts. Do not make a default interactive choice
+  // silently alter their provenance; an explicit conflicting device request
+  // still reaches the existing incompatibility error below.
+  if(!metal_gpu_terrain_device_front_explicit&&
+     (metal_gpu_terrain_live_selection_requested||gpu_terrain_renderer_selected||
+      metal_gpu_terrain_native_diagnostic||metal_gpu_terrain_diagnostic))
+    metal_gpu_terrain_device_front=false;
+  // These test-only fault switches exercise P7e4a's private rejection path.
+  // They do not make the route selectable or change its normal output.
+  const bool metal_gpu_terrain_device_front_inject_failure=
+      metal_gpu_terrain_device_front&&
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT_INJECT_FAILURE")!=nullptr;
+  const bool metal_gpu_terrain_device_front_inject_capacity_failure=
+      metal_gpu_terrain_device_front&&
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT_INJECT_CAPACITY_FAILURE")!=nullptr;
+  const bool metal_gpu_terrain_device_front_inject_green_budget_failure=
+      metal_gpu_terrain_device_front&&
+      std::getenv("TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT_INJECT_GREEN_BUDGET_FAILURE")!=nullptr;
+  if(static_cast<unsigned>(metal_gpu_terrain_device_front_inject_failure)+
+     static_cast<unsigned>(metal_gpu_terrain_device_front_inject_capacity_failure)+
+     static_cast<unsigned>(metal_gpu_terrain_device_front_inject_green_budget_failure)>1U){
+    std::fprintf(stderr,"only one device-front failure injection may be active\\n");
+    return 2;
+  }
+  // A device-front moving smoke is deliberately bounded independently of the
+  // larger image suites.  Its terminal diagnostic names the last completed
+  // device phase, so a launch/runtime delay is never reported as P8 failure.
+  int device_front_smoke_timeout_seconds=60;
+  if(const char* value=std::getenv("TETWORLD_METAL_DEVICE_FRONT_SMOKE_TIMEOUT_SECONDS");
+     value!=nullptr){
+    char* end=nullptr;
+    const long seconds=std::strtol(value,&end,10);
+    if(!metal_gpu_terrain_device_front||!motion_test||end==value||*end!='\0'||
+       seconds<10L||seconds>120L){
+      std::fprintf(stderr,"TETWORLD_METAL_DEVICE_FRONT_SMOKE_TIMEOUT_SECONDS requires "
+                          "a device-front motion smoke and must be 10..120\\n");
+      return 2;
+    }
+    device_front_smoke_timeout_seconds=static_cast<int>(seconds);
+  }
+  bool metal_gpu_terrain_live_selection=metal_gpu_terrain_device_front||
+      metal_gpu_terrain_live_selection_requested;
   if(metal_gpu_terrain_live_selection&&
      (gpu_terrain_renderer_selected||metal_gpu_terrain_native_diagnostic||
       metal_gpu_terrain_diagnostic)){
@@ -5776,7 +9517,7 @@ int main(int argc,char** argv) {
       std::getenv("TETWORLD_METAL_HIDDEN_WINDOW")!=nullptr;
   const bool interactive_capture_resolution=atmosphere_capture&&
       std::getenv("TETWORLD_METAL_CAPTURE_INTERACTIVE_RESOLUTION")!=nullptr;
-  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_live_selection_state_smoke_test&&!gpu_hierarchy_frontier_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
+  if(argc>1&&!device_check&&!ray_visibility_smoke_test&&!terrain_ray_oracle_test&&!atmosphere_compiler_check&&!gpu_lod_selector_smoke_test&&!gpu_live_selection_state_smoke_test&&!gpu_hierarchy_frontier_smoke_test&&!gpu_compact_green_closure_smoke_test&&!gpu_compact_red_scan_large_smoke_test&&!gpu_compact_live_closure_smoke_test&&!gpu_compact_live_parity_smoke_test&&!gpu_production_front_parity_smoke_test&&!gpu_compact_live_performance_smoke_test&&!gpu_compact_hybrid_parity_smoke_test&&!gpu_compact_owner_materialize_smoke_test&&!gpu_compact_owner_p8_smoke_test&&!gpu_terrain_extract_smoke_test&&!gpu_terrain_classify_smoke_test&&!gpu_terrain_triangle_smoke_test&&!gpu_terrain_parallel_triangle_smoke_test&&!gpu_terrain_project_smoke_test&&!gpu_terrain_draw_smoke_test&&!gpu_terrain_native_chain_smoke_test&&!gpu_terrain_live_slots_smoke_test&&!gpu_terrain_runtime_smoke_test&&!gpu_terrain_surface_parity_smoke_test&&!gpu_terrain_performance_smoke_test&&!gpu_volume_split_closure_smoke_test&&
      !atmosphere_lut_smoke_test&&!smoke_test&&
      !any_atmosphere_frame_test&&
      !atmosphere_quality_test&&
@@ -5790,6 +9531,14 @@ int main(int argc,char** argv) {
                         "--metal-gpu-lod-selector-smoke-test|"
                         "--metal-gpu-live-selection-state-smoke-test|"
                         "--metal-gpu-hierarchy-frontier-smoke-test|"
+                        "--metal-gpu-compact-green-closure-smoke-test|"
+                        "--metal-gpu-compact-red-scan-large-smoke-test|"
+                        "--metal-gpu-compact-live-closure-smoke-test|"
+                        "--metal-gpu-compact-live-parity-smoke-test|"
+                        "--metal-gpu-production-front-parity-smoke-test|"
+                        "--metal-gpu-compact-live-performance-smoke-test|"
+                        "--metal-gpu-compact-owner-materialize-smoke-test|"
+                        "--metal-gpu-compact-owner-p8-smoke-test|"
                         "--metal-gpu-terrain-extract-smoke-test|"
                         "--metal-gpu-terrain-classify-smoke-test|"
                         "--metal-gpu-terrain-triangle-smoke-test|"
@@ -5854,6 +9603,13 @@ int main(int argc,char** argv) {
     id<MTLComputePipelineState> gpu_terrain_commit_copy_pipeline=nil;
     id<MTLComputePipelineState> gpu_terrain_commit_publish_pipeline=nil;
     id<MTLComputePipelineState> gpu_lod_live_selection_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_compact_worklist_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_canonicalize_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_compact_green_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_compact_red_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_compact_red_scan_pipeline=nil;
+    id<MTLComputePipelineState> gpu_hierarchy_compact_owner_materialize_pipeline=nil;
+    MetalCompactOwnerP8Pipelines gpu_hierarchy_compact_owner_p8_pipelines;
     if(metal_gpu_terrain_diagnostic){
       const auto path=std::filesystem::path(TETRA_METAL_ATMOSPHERE_SHADER_DIR)/
           "gpu_terrain_extract.comp.metal";
@@ -5887,6 +9643,33 @@ int main(int argc,char** argv) {
       gpu_terrain_commit_publish_pipeline=make_pipeline("gpu_terrain_commit_publish.comp.metal");
       if(metal_gpu_terrain_live_selection)
         gpu_lod_live_selection_pipeline=make_pipeline("gpu_lod.comp.metal");
+      if(metal_gpu_terrain_device_front){
+        gpu_hierarchy_compact_worklist_pipeline=
+            make_pipeline("gpu_hierarchy_compact_worklist.comp.metal");
+        gpu_hierarchy_canonicalize_pipeline=
+            make_pipeline("gpu_hierarchy_canonicalize.comp.metal");
+        gpu_hierarchy_compact_green_pipeline=
+            make_pipeline("gpu_hierarchy_compact_green_closure.comp.metal");
+        gpu_hierarchy_compact_red_pipeline=
+            make_pipeline("gpu_hierarchy_compact_red_repair.comp.metal");
+        gpu_hierarchy_compact_red_scan_pipeline=
+            make_pipeline("gpu_hierarchy_compact_red_scan.comp.metal");
+        gpu_hierarchy_compact_owner_materialize_pipeline=
+            make_pipeline("gpu_hierarchy_compact_owner_materialize.comp.metal");
+        gpu_hierarchy_compact_owner_p8_pipelines={
+            make_pipeline("gpu_terrain_compact_owner_control.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_count.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_scan.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_emit.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_triangle_emit.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_validate.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_copy.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_publish.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_microbatch.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_microbatch_validate.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_hybrid_scan.comp.metal"),
+            make_pipeline("gpu_terrain_compact_owner_hybrid_finalize.comp.metal")};
+      }
       if(gpu_terrain_classify_pipeline==nil||gpu_terrain_count_pipeline==nil||
          gpu_terrain_scan_pipeline==nil||gpu_terrain_finalize_pipeline==nil||
          gpu_terrain_scatter_pipeline==nil||
@@ -5897,7 +9680,24 @@ int main(int argc,char** argv) {
          gpu_terrain_commit_validate_pipeline==nil||
          gpu_terrain_commit_copy_pipeline==nil||
          gpu_terrain_commit_publish_pipeline==nil||
-         (metal_gpu_terrain_live_selection&&gpu_lod_live_selection_pipeline==nil))return 1;
+         (metal_gpu_terrain_live_selection&&gpu_lod_live_selection_pipeline==nil)||
+         (metal_gpu_terrain_device_front&&
+          (gpu_hierarchy_compact_worklist_pipeline==nil||
+           gpu_hierarchy_canonicalize_pipeline==nil||
+           gpu_hierarchy_compact_green_pipeline==nil||
+           gpu_hierarchy_compact_red_pipeline==nil||
+           gpu_hierarchy_compact_red_scan_pipeline==nil||
+           gpu_hierarchy_compact_owner_materialize_pipeline==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.control==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.count==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.scan==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.emit==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.triangle_emit==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.validate==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.copy==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.publish==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.hybrid_scan==nil||
+           gpu_hierarchy_compact_owner_p8_pipelines.hybrid_finalize==nil)))return 1;
     }
     const bool metal_ray_tracing_supported=[](id<MTLDevice> candidate){
       if(@available(macOS 11.0,*))return candidate.supportsRaytracing;
@@ -5918,6 +9718,24 @@ int main(int argc,char** argv) {
       return run_metal_gpu_live_selection_state_smoke_test(device)?0:1;
     if(gpu_hierarchy_frontier_smoke_test)
       return run_metal_gpu_hierarchy_frontier_smoke_test(device)?0:1;
+    if(gpu_compact_green_closure_smoke_test)
+      return run_metal_gpu_hierarchy_compact_green_closure_smoke_test(device)?0:1;
+    if(gpu_compact_red_scan_large_smoke_test)
+      return run_metal_gpu_hierarchy_compact_red_scan_large_smoke_test(device)?0:1;
+    if(gpu_compact_live_closure_smoke_test)
+      return run_metal_gpu_compact_live_closure_smoke_test(device)?0:1;
+    if(gpu_compact_live_parity_smoke_test)
+      return run_metal_gpu_compact_live_parity_smoke_test(device)?0:1;
+    if(gpu_production_front_parity_smoke_test)
+      return run_metal_gpu_production_front_parity_smoke_test(device)?0:1;
+    if(gpu_compact_live_performance_smoke_test)
+      return run_metal_gpu_compact_live_parity_smoke_test(device,true,true)?0:1;
+    if(gpu_compact_hybrid_parity_smoke_test)
+      return run_metal_gpu_compact_live_parity_smoke_test(device,false,true)?0:1;
+    if(gpu_compact_owner_materialize_smoke_test)
+      return run_metal_gpu_compact_owner_materialize_smoke_test(device)?0:1;
+    if(gpu_compact_owner_p8_smoke_test)
+      return run_metal_gpu_compact_owner_p8_smoke_test(device)?0:1;
     if(gpu_terrain_extract_smoke_test)
       return run_metal_gpu_terrain_extract_smoke_test(device)?0:1;
     if(gpu_terrain_classify_smoke_test)
@@ -6109,11 +9927,16 @@ int main(int argc,char** argv) {
       return gpu_terrain_performance_smoke_test||
           (value!=nullptr&&std::strcmp(value,"0")!=0);
     }();
-    // Diagnostic-only serialization gives a stage study one valid counter
-    // flight per rendered frame. It is intentionally opt-in: normal timing
-    // profiles retain their production-style asynchronous submission.
-    const bool serial_timestamp_profile=timing_profile_test&&
-        std::getenv("TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS")!=nullptr;
+    // The owner-direct performance qualification needs thirty actual GPU
+    // timestamp pairs, rather than whichever of its infrequent owner jobs
+    // happen to acquire one of the three asynchronous flights.  Serialize
+    // command completion for that test only, so each completed flight is
+    // retired before the next frame chooses a flight.  This does not change
+    // normal renderer scheduling or the measured device interval.  Other
+    // stage studies remain explicitly opt-in.
+    const bool serial_timestamp_collection=gpu_terrain_performance_smoke_test||
+        (timing_profile_test&&
+         std::getenv("TETWORLD_METAL_SERIAL_STAGE_TIMESTAMPS")!=nullptr);
     std::array<MetalTimestampFlight,gpu_timestamp_flight_count>
         gpu_timestamp_flights{};
     if(gpu_stage_timestamps_enabled)
@@ -6196,7 +10019,16 @@ int main(int argc,char** argv) {
         .level_count=6U,.cells_per_side=48U,.finest_spacing=0.125};
     tetra_viewer::TerrainDisplayPublicationPlanner terrain_display_planner;
     MetalTerrainDisplayFront terrain_display_front;
+    // Preserve the complete CPU bootstrap publication, not only its buffer
+    // identities.  The interactive device-front toggle restores this atomically
+    // before letting the CPU runtime resume publication.
+    MetalTerrainDisplayFront device_front_bootstrap_display;
     MetalGpuTerrainActiveFront gpu_terrain_active_front;
+    // Keep the one permitted CPU bootstrap draw handles solely as a fallback
+    // identity witness.  Device-front P8 rejection must continue drawing
+    // these handles; no failed private front may become visible.
+    id<MTLBuffer> device_front_bootstrap_vertices=nil;
+    id<MTLBuffer> device_front_bootstrap_indirect_arguments=nil;
     std::array<MetalGpuTerrainDiagnosticSlot,3> gpu_terrain_slots;
     std::uint64_t gpu_terrain_slot_cursor{};
     std::array<MetalGpuTerrainNativeDiagnosticSlot,3>
@@ -6572,6 +10404,8 @@ int main(int argc,char** argv) {
     // front must make observable progress quickly; retain the longer timeout
     // for the unrelated image and timing automation suites.
     const int smoke_timeout_seconds=
+        (metal_gpu_terrain_device_front&&motion_test)?
+        device_front_smoke_timeout_seconds:
         (metal_gpu_terrain_private_front_qualification||
          gpu_terrain_performance_smoke_test)?120:
         (any_atmosphere_frame_test||metalfx_test||timing_profile_test||motion_test||soak_test?300:
@@ -6652,6 +10486,12 @@ int main(int argc,char** argv) {
         std::shared_ptr<const tetra_viewer::PreviewSurfaceFront> preview,
         std::optional<tetra_viewer::PreviewRequestIdentity> preview_identity){
       if(!runtime)return false;
+      // The device-front route permits exactly one already-complete CPU
+      // display publication as its bootstrap.  Any later call would construct
+      // a CPU display/surface candidate and is a provenance violation.
+      if(metal_gpu_terrain_device_front&&terrain_display_front.ready())
+        gpu_terrain_counters->cpu_surface_build_requests.fetch_add(
+            1U,std::memory_order_relaxed);
       const auto exact_generation=runtime->diagnostics().scene_generation;
       const auto exact_view=runtime->published_view_identity();
       const auto& exact_scene=runtime->scene();
@@ -6755,6 +10595,13 @@ int main(int argc,char** argv) {
       candidate.render_generation=next_terrain_render_generation++;
       if(next_terrain_render_generation==0U)next_terrain_render_generation=1U;
       terrain_display_front=std::move(candidate);
+      if(metal_gpu_terrain_device_front&&device_front_bootstrap_vertices==nil&&
+         device_front_bootstrap_indirect_arguments==nil&&!terrain_display_front.preview_cpu){
+        device_front_bootstrap_vertices=terrain_display_front.exact_vertices;
+        device_front_bootstrap_indirect_arguments=
+            terrain_display_front.exact_indirect_arguments;
+        device_front_bootstrap_display=terrain_display_front;
+      }
       // Seed a fresh private active front from the complete CPU publication.
       // This is upload, not readback: subsequent GPU candidates replace it
       // only through P8's checked private-to-private commit passes.
@@ -6972,12 +10819,55 @@ int main(int argc,char** argv) {
                 published_view.field_revision:0U;
             if(directory!=nullptr&&field_revision!=0U){
               try {
-                if(configure_metal_gpu_hierarchy_live_selection(device,
-                    gpu_hierarchy_live_selection,
-                    tetra::make_gpu_hierarchy_snapshot(*directory,field_revision,false),
-                    field_revision,runtime->diagnostics().scene_generation)){
+                const auto source_revision=directory->revision();
+                // `make_gpu_hierarchy_snapshot` copies immutable CPU world
+                // metadata.  Do that only when the immutable source identity
+                // changes, never as a per-camera-frame precondition.
+                if(!gpu_hierarchy_live_selection.ready()||
+                   gpu_hierarchy_live_selection.source_revision!=source_revision||
+                   gpu_hierarchy_live_selection.field_revision!=field_revision){
+                  gpu_terrain_counters->immutable_snapshot_builds.fetch_add(
+                      1U,std::memory_order_relaxed);
+                  static_cast<void>(configure_metal_gpu_hierarchy_live_selection(
+                      device,gpu_hierarchy_live_selection,
+                      tetra::make_gpu_hierarchy_snapshot(*directory,field_revision,
+                          metal_gpu_terrain_device_front),
+                      field_revision,runtime->diagnostics().scene_generation));
+                }
+                // Unlike the diagnostic LOD selector, the drawable route
+                // cannot omit an off-frustum branch or substitute a coarse
+                // ancestor: the CPU front it replaces contains the complete
+                // published cut.
+                gpu_hierarchy_live_selection.require_complete_front=
+                    metal_gpu_terrain_device_front;
+                if(gpu_hierarchy_live_selection.ready()){
                   const auto& profile=runtime->profile();
                   const auto& field=runtime->field();
+                  if(metal_gpu_terrain_device_front&&
+                     gpu_hierarchy_live_selection.compact_p8_field==nil) {
+                    tetra::GpuTerrainFieldTupleParameters terrain_parameters;
+                    // The CPU display front extracts its surface with a
+                    // camera-quantized footprint. Reusing the unfiltered
+                    // world field here changes the implicit surface itself,
+                    // so the device path cannot have matching coverage.
+                    auto surface_field=field;
+                    surface_field.sampling_footprint=
+                        tetra_viewer::planetary_surface_sampling_footprint(
+                            field,camera,profile.pixel_threshold);
+                    terrain_parameters.field=surface_field;
+                    terrain_parameters.domain=profile.domain;
+                    terrain_parameters.source_revision=source_revision;
+                    terrain_parameters.field_revision=field_revision;
+                    const auto terrain_tuple=
+                        tetra::make_gpu_terrain_field_tuple(terrain_parameters);
+                    const auto templates=tetra::make_gpu_green_template_table();
+                    gpu_hierarchy_live_selection.compact_p8_field=
+                        [device newBufferWithBytes:&terrain_tuple length:sizeof(terrain_tuple)
+                          options:MTLResourceStorageModeShared];
+                    gpu_hierarchy_live_selection.compact_p8_templates=
+                        [device newBufferWithBytes:templates.data() length:sizeof(templates)
+                          options:MTLResourceStorageModeShared];
+                  }
                   auto selector_camera=camera;
                   selector_camera.position=profile.domain.to_root(camera.position);
                   const auto selector_field_centre=
@@ -7019,6 +10909,27 @@ int main(int argc,char** argv) {
                (diagnostics.scene_generation!=uploaded_generation||
                 !terrain_display_front.ready()))
               static_cast<void>(publish_terrain_display({},std::nullopt));
+            // P8 completions are meaningful on the device-front route even
+            // though P7e4a intentionally leaves the CPU display front drawn.
+            // Retire them here; the legacy branch below is not entered.
+            for(auto& slot:gpu_terrain_native_slots)if(slot.pending&&
+                slot.completed->load(std::memory_order_acquire)){
+              slot.pending=false;
+              const auto* current_directory=runtime->world_cut_directory();
+              const auto current_source=current_directory==nullptr?0U:
+                  current_directory->revision();
+              const auto current_field=runtime->published_view_identity().field_revision;
+              if(!slot.matches(diagnostics.scene_generation,current_source,
+                               current_field,runtime->render_origin())){
+                slot.succeeded->store(false,std::memory_order_release);
+                gpu_terrain_counters->stale_rejected.fetch_add(
+                    1U,std::memory_order_relaxed);
+              }else if(slot.succeeded->load(std::memory_order_acquire)){
+                gpu_terrain_counters->accepted.fetch_add(
+                    1U,std::memory_order_relaxed);
+                gpu_terrain_renderer_available=true;
+              }
+            }
           }else{
           runtime->set_gpu_terrain_extraction_diagnostic(
               metal_gpu_terrain_diagnostic||metal_gpu_terrain_native_diagnostic||
@@ -8086,15 +11997,53 @@ int main(int argc,char** argv) {
                   gpu_terrain_counters->failed.load(std::memory_order_relaxed)),
               static_cast<unsigned long long>(
                   gpu_terrain_counters->overflow.load(std::memory_order_relaxed)));
-          if(ImGui::Checkbox("Use GPU mesh emission (CPU terrain source)",
-                             &gpu_terrain_renderer_selected))
+          // P7e4 is the user-facing renderer choice.  The older P6 mesh
+          // emission experiment stays available through its explicit
+          // diagnostic environment route, but must not masquerade as this
+          // GPU-resident path: it still consumes CPU-built terrain packets.
+          const bool device_front_toggle_locked=
+              metal_gpu_terrain_device_front_explicit||
+              metal_gpu_terrain_live_selection_requested||
+              metal_gpu_terrain_diagnostic||metal_gpu_terrain_native_diagnostic||
+              gpu_terrain_renderer_selected;
+          if(device_front_toggle_locked)ImGui::BeginDisabled();
+          if(ImGui::Checkbox("Use GPU-resident terrain",
+                             &metal_gpu_terrain_device_front)){
+            metal_gpu_terrain_live_selection=metal_gpu_terrain_device_front||
+                metal_gpu_terrain_live_selection_requested;
             gpu_terrain_renderer_available=false;
-          if(gpu_terrain_renderer_selected)
-            ImGui::Text("GPU terrain: %s",gpu_terrain_renderer_available?
-                "GPU-emitted mesh; CPU selection/closure still active":
-                "unavailable; retaining CPU front");
+            if(!metal_gpu_terrain_device_front){
+              // Return to a complete CPU front immediately.  The normal CPU
+              // publication branch resumes on the next frame for the current
+              // camera; no incomplete or failed GPU candidate is exposed.
+              if(device_front_bootstrap_display.ready()){
+                terrain_display_front=device_front_bootstrap_display;
+                scene_vertices=terrain_display_front.exact_vertices;
+                scene_vertex_count=terrain_display_front.triangle_count()*3U;
+              }
+              force_runtime_camera=true;
+            }
+          }
+          if(device_front_toggle_locked)ImGui::EndDisabled();
+          if(metal_gpu_terrain_device_front_explicit)
+            ImGui::TextDisabled("Startup override: GPU-resident terrain is %s",
+                metal_gpu_terrain_device_front?"forced on":"forced off");
+          const bool device_private_front_active=
+              metal_gpu_terrain_device_front&&gpu_terrain_active_front.promoted&&
+              terrain_display_front.exact_vertices==gpu_terrain_active_front.vertices&&
+              terrain_display_front.exact_indirect_arguments==
+                  gpu_terrain_active_front.indirect_arguments&&
+              !terrain_display_front.indexed_exact_selection;
+          if(device_private_front_active)
+            ImGui::Text("GPU-resident terrain: active (direct private front)");
+          else if(metal_gpu_terrain_device_front)
+            ImGui::Text("GPU-resident terrain: starting (CPU bootstrap visible)");
+          else
+            ImGui::Text("CPU terrain fallback: active");
+          ImGui::TextDisabled("Set TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=0 "
+                              "to force CPU terrain at startup.");
           if(metal_gpu_terrain_live_selection)
-            ImGui::Text("GPU selection marks %llu/%llu; CPU bootstrap front frozen",
+            ImGui::Text("GPU selection marks %llu/%llu; CPU bootstrap front retained",
                 static_cast<unsigned long long>(gpu_hierarchy_live_selection.accepted),
                 static_cast<unsigned long long>(gpu_hierarchy_live_selection.submitted));
           ImGui::Text("Resident %.1f MiB   cache %.1f MiB",
@@ -8156,7 +12105,15 @@ int main(int argc,char** argv) {
         id<MTLBuffer> gpu_timestamp_scratch=
             gpu_timestamp_flight==nullptr?nil:gpu_timestamp_flight->scratch;
         bool owner_direct_generation_encoded_this_frame=false;
-        if(gpu_terrain_active_front.seed_pending&&
+        if(metal_gpu_terrain_device_front&&
+           gpu_terrain_active_front.seed_pending&&
+           gpu_hierarchy_live_selection.submitted!=0U){
+          // P7e4a1 stops at its compact closure output.  It neither seeds nor
+          // promotes the private terrain front: P8 owns that later boundary.
+          // Keep the CPU display front selected without treating an unused
+          // private allocation as a CPU-derived GPU candidate.
+          gpu_terrain_active_front.seed_pending=false;
+        }else if(gpu_terrain_active_front.seed_pending&&
            gpu_terrain_active_front.vertices!=nil&&
            gpu_terrain_active_front.indirect_arguments!=nil&&
            gpu_terrain_active_front.seed_vertices!=nil&&
@@ -8180,10 +12137,134 @@ int main(int argc,char** argv) {
            gpu_lod_live_selection_pipeline!=nil){
           retire_metal_gpu_hierarchy_live_selection(
               gpu_hierarchy_live_selection);
-          static_cast<void>(encode_metal_gpu_hierarchy_live_selection(
-              command_buffer,gpu_lod_live_selection_pipeline,
-              gpu_hierarchy_live_selection,
-              *gpu_hierarchy_live_selection_tuple));
+          // P7e4b: a compact P8 flight is allowed to replace the CPU
+          // bootstrap display front only after its command buffer has retired
+          // and its scalar private-commit audit is valid.  This deliberately
+          // copies no candidate payload or count: the completed P8 status is
+          // the sole host-visible admission record, while the actual vertex
+          // and indirect buffers stay private and are passed directly to draw.
+          if(metal_gpu_terrain_device_front&&runtime!=nullptr&&
+             gpu_hierarchy_live_selection.compact_p8_private_commits>
+                 gpu_terrain_active_front.displayed_p8_commits){
+            const auto& p8=gpu_hierarchy_live_selection.compact_p8_last_audit;
+            const auto* current_directory=runtime->world_cut_directory();
+            const auto current_source=current_directory==nullptr?0U:
+                current_directory->revision();
+            const auto current_field=runtime->published_view_identity().field_revision;
+            const auto current_origin=runtime->render_origin();
+            const bool audit_valid=p8[0U]==1U&&p8[1U]==0U&&p8[2U]!=0U&&
+                p8[3U]==0U&&p8[4U]!=0U&&p8[2U]%3U==0U&&
+                p8[2U]<=gpu_terrain_active_front.vertex_capacity;
+            // A private buffer is not sufficient admission evidence: the
+            // candidate must contain every vertex in the complete CPU front
+            // it proposes to replace.
+            const bool complete_front_vertex_parity=
+                device_front_bootstrap_display.exact_vertex_count!=0U&&
+                p8[2U]==device_front_bootstrap_display.exact_vertex_count;
+            const bool current_bootstrap=
+                !terrain_display_front.preview_cpu&&terrain_display_front.ready()&&
+                gpu_terrain_active_front.vertices!=nil&&
+                gpu_terrain_active_front.indirect_arguments!=nil&&
+                gpu_terrain_active_front.identity==terrain_display_front.identity&&
+                terrain_display_front.identity.exact_generation==
+                    gpu_hierarchy_live_selection.bootstrap_scene_generation&&
+                terrain_display_front.identity.exact_view.field_revision==
+                    gpu_hierarchy_live_selection.field_revision&&
+                current_source==gpu_hierarchy_live_selection.source_revision&&
+                current_field==gpu_hierarchy_live_selection.field_revision&&
+                terrain_display_front.identity.render_origin.x==current_origin.x&&
+                terrain_display_front.identity.render_origin.y==current_origin.y&&
+                terrain_display_front.identity.render_origin.z==current_origin.z;
+            if(audit_valid&&complete_front_vertex_parity&&current_bootstrap){
+              // Commit every coupled display handle as one new publication;
+              // consumers never observe a GPU vertex pointer with old CPU
+              // indexing/count metadata.
+              auto promoted=terrain_display_front;
+              promoted.exact_vertices=gpu_terrain_active_front.vertices;
+              promoted.exact_indices=nil;
+              promoted.exact_indirect_arguments=
+                  gpu_terrain_active_front.indirect_arguments;
+              promoted.indexed_exact_selection=false;
+              promoted.exact_vertex_count=p8[2U];
+              promoted.exact_index_count=0U;
+              promoted.render_generation=next_terrain_render_generation++;
+              if(next_terrain_render_generation==0U)
+                next_terrain_render_generation=1U;
+              terrain_display_front=std::move(promoted);
+              scene_vertices=terrain_display_front.exact_vertices;
+              scene_vertex_count=terrain_display_front.exact_vertex_count;
+              gpu_terrain_active_front.promoted=true;
+              gpu_terrain_active_front.displayed_p8_commits=
+                  gpu_hierarchy_live_selection.compact_p8_private_commits;
+              gpu_terrain_renderer_available=true;
+              gpu_terrain_counters->device_front_display_promotions.fetch_add(
+                  1U,std::memory_order_relaxed);
+            }
+          }
+          if(!metal_gpu_terrain_device_front||
+             !gpu_hierarchy_live_selection.closure_pending)
+            if(encode_metal_gpu_hierarchy_live_selection(
+                   command_buffer,gpu_lod_live_selection_pipeline,
+                   metal_gpu_terrain_device_front?
+                       gpu_hierarchy_compact_worklist_pipeline:nil,
+                   gpu_hierarchy_live_selection,
+                   *gpu_hierarchy_live_selection_tuple)&&
+               metal_gpu_terrain_device_front&&
+               encode_metal_gpu_hierarchy_live_compact_closure(
+                  command_buffer,gpu_hierarchy_canonicalize_pipeline,
+                  gpu_hierarchy_compact_green_pipeline,
+                  gpu_hierarchy_compact_red_pipeline,
+                  gpu_hierarchy_compact_red_scan_pipeline,
+                  gpu_hierarchy_live_selection,
+                  metal_gpu_terrain_device_front_inject_green_budget_failure)&&
+               encode_metal_gpu_hierarchy_compact_owner_materialize(
+                  command_buffer,gpu_hierarchy_compact_owner_materialize_pipeline,
+                  gpu_hierarchy_live_selection)&&
+               runtime!=nullptr&&gpu_terrain_active_front.vertices!=nil&&
+               gpu_terrain_active_front.indirect_arguments!=nil&&
+               ensure_metal_gpu_hierarchy_compact_p8_workspace(device,
+                  gpu_hierarchy_live_selection,
+                  gpu_terrain_active_front.vertex_capacity)&&
+               encode_metal_gpu_hierarchy_compact_owner_p8(command_buffer,
+                  gpu_hierarchy_compact_owner_p8_pipelines,
+                  gpu_hierarchy_live_selection.compact_owner_stream,
+                  gpu_hierarchy_live_selection.compact_owner_header,
+                  gpu_hierarchy_live_selection.compact_p8_field,
+                  gpu_hierarchy_live_selection.compact_p8_templates,
+                  gpu_hierarchy_live_selection.compact_p8_counts,
+                  gpu_hierarchy_live_selection.compact_p8_offsets,
+                  gpu_hierarchy_live_selection.compact_p8_block_totals,
+                  gpu_hierarchy_live_selection.compact_p8_block_offsets,
+                  gpu_hierarchy_live_selection.compact_p8_level_totals,
+                  gpu_hierarchy_live_selection.compact_p8_level_offsets,
+                  gpu_hierarchy_live_selection.compact_p8_signs,
+                  gpu_hierarchy_live_selection.compact_p8_candidate,
+                  gpu_hierarchy_live_selection.compact_p8_status,
+                  gpu_hierarchy_live_selection.compact_p8_dispatches,
+                  gpu_terrain_active_front.vertices,
+                  gpu_terrain_active_front.indirect_arguments,
+                  gpu_hierarchy_live_selection.compact_p8_vertex_capacity,
+                  runtime->render_origin(),
+                  gpu_hierarchy_live_selection.source_revision)) {
+              id<MTLBlitCommandEncoder> p8_audit=[command_buffer blitCommandEncoder];
+              [p8_audit copyFromBuffer:gpu_hierarchy_live_selection.compact_p8_status
+                   sourceOffset:0U toBuffer:gpu_hierarchy_live_selection.compact_p8_audit
+              destinationOffset:0U size:2U*sizeof(std::uint32_t)];
+              [p8_audit copyFromBuffer:gpu_hierarchy_live_selection.compact_p8_candidate
+                   sourceOffset:0U toBuffer:gpu_hierarchy_live_selection.compact_p8_audit
+              destinationOffset:2U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+              [p8_audit copyFromBuffer:gpu_hierarchy_live_selection.compact_owner_header
+                   sourceOffset:0U toBuffer:gpu_hierarchy_live_selection.compact_p8_audit
+              destinationOffset:6U*sizeof(std::uint32_t) size:4U*sizeof(std::uint32_t)];
+              [p8_audit endEncoding];
+              ++gpu_hierarchy_live_selection.compact_p8_encoded;
+              gpu_hierarchy_live_selection.device_front_p8_at=
+                  std::chrono::steady_clock::now();
+              gpu_terrain_counters->device_closure_submitted.fetch_add(1U,
+                  std::memory_order_relaxed);
+              gpu_terrain_counters->device_owner_submitted.fetch_add(1U,
+                  std::memory_order_relaxed);
+            }
         }
         if(metal_gpu_terrain_diagnostic&&gpu_terrain_extract_pipeline!=nil&&runtime&&
            !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
@@ -8268,9 +12349,10 @@ int main(int argc,char** argv) {
         }
         if((metal_gpu_terrain_native_diagnostic||gpu_terrain_renderer_selected)&&runtime&&
            !terrain_display_front.preview_cpu&&terrain_display_front.ready()){
-          // The native route captures a self-contained P6 packet only from a
-          // complete published directory.  It deliberately has no fallback to
-          // `world_surface_gpu_cells()`, which is the retired CPU geometry ABI.
+          // The legacy native route captures a self-contained P6 packet from a
+          // complete publication. P7e4a instead receives only the just-built
+          // device P7e3c owner stream and its device header; it never asks the
+          // runtime for P6 or CPU surface payloads.
           gpu_terrain_counters->cpu_front_frames.fetch_add(1U,
               std::memory_order_relaxed);
           if(scene_vertices!=terrain_display_front.exact_vertices||
@@ -8284,20 +12366,26 @@ int main(int argc,char** argv) {
           // The P6 sidecar was constructed by the private terrain
           // publication.  Never reconstruct closure (or its packet) from the
           // presenter: a missing/stale sidecar simply retains this front.
-          const auto* packet=runtime->gpu_green_mask_packet();
+          const auto* packet=[&]{
+            gpu_terrain_counters->p6_requests.fetch_add(1U,
+                std::memory_order_relaxed);
+            return runtime->gpu_green_mask_packet();
+          }();
           const auto origin=runtime->render_origin();
           const auto field_revision=runtime->published_view_identity().field_revision;
           const auto source_revision=directory==nullptr?0U:directory->revision();
           const auto vertex_count=terrain_display_front.exact_vertex_count;
-          if(!slot.pending&&directory!=nullptr&&packet!=nullptr&&
-             packet->header.source_revision==source_revision&&source_revision!=0U&&
+          if(!slot.pending&&directory!=nullptr&&
+             packet!=nullptr&&
+             (!packet||packet->header.source_revision==source_revision)&&source_revision!=0U&&
              diagnostics.scene_generation!=0U&&field_revision!=0U&&
              vertex_count>=12U&&
              vertex_count<=std::numeric_limits<std::uint32_t>::max()&&
              gpu_terrain_active_front.vertices!=nil&&
              gpu_terrain_active_front.indirect_arguments!=nil&&
              gpu_terrain_active_front.vertex_capacity>=vertex_count&&
-             gpu_terrain_active_front.identity==terrain_display_front.identity){
+             gpu_terrain_active_front.identity==terrain_display_front.identity&&
+             true){
             try {
               tetra::GpuTerrainFieldTupleParameters parameters;
               parameters.field=runtime->field();
@@ -8312,13 +12400,26 @@ int main(int argc,char** argv) {
               // diagnostic flights remain bounded to 768 MiB and are opt-in
               // only; P8c owns replacing the root-expanded live route.
               constexpr std::size_t maximum_slot_bytes=256U*1024U*1024U;
-              const std::size_t owner_count=packet->owners.size();
-              const bool owner_direct=gpu_terrain_renderer_selected;
+              const std::size_t owner_count=metal_gpu_terrain_device_front?
+                  gpu_hierarchy_live_selection.record_count:packet->owners.size();
+              const bool owner_direct=gpu_terrain_renderer_selected||
+                  metal_gpu_terrain_device_front;
+              const bool expected_rejection=metal_gpu_terrain_device_front&&
+                  (metal_gpu_terrain_device_front_inject_failure||
+                   metal_gpu_terrain_device_front_inject_capacity_failure||
+                   metal_gpu_terrain_device_front_inject_green_budget_failure);
               const std::size_t root_slots=owner_direct?owner_count:owner_count*24U;
               const std::size_t compaction_blocks=(root_slots+255U)/256U;
               const std::size_t super_blocks=(compaction_blocks+255U)/256U;
               const std::size_t triangle_capacity=vertex_count/12U;
-              const std::size_t vertex_capacity=vertex_count;
+              // P7e4a reuses the bootstrap private-front allocation only as
+              // a bounded candidate capacity.  A larger device result must
+              // fail P8 validation and retain that front; it is never clipped
+              // or resized from CPU candidate data.  The test switch forces
+              // precisely that failure mode without changing normal capacity.
+              const std::size_t vertex_capacity=
+                  metal_gpu_terrain_device_front_inject_capacity_failure?0U:
+                  vertex_count;
               const auto words_bytes=[](std::size_t words)->std::optional<std::size_t>{
                 if(words>(std::numeric_limits<std::size_t>::max()/sizeof(std::uint32_t)))
                   return std::nullopt;
@@ -8360,22 +12461,38 @@ int main(int argc,char** argv) {
                       options:MTLResourceStorageModeShared];
                 };
                 slot.field=shared(device,&tuple,sizeof(tuple));
-                if(gpu_terrain_packet_upload.source_revision!=source_revision||
-                   gpu_terrain_packet_upload.candidate_identity!=
-                       packet->header.candidate_identity||
-                   gpu_terrain_packet_upload.owner_count!=owner_count){
-                  gpu_terrain_packet_upload.owners=shared(device,
-                      packet->owners.data(),packet->owners.size()*
-                          sizeof(packet->owners.front()));
-                  gpu_terrain_packet_upload.templates=shared(
-                      device,templates.data(),sizeof(templates));
-                  gpu_terrain_packet_upload.source_revision=source_revision;
-                  gpu_terrain_packet_upload.candidate_identity=
-                      packet->header.candidate_identity;
-                  gpu_terrain_packet_upload.owner_count=owner_count;
+                if(metal_gpu_terrain_device_front){
+                  // Device closure output is already the 12-word P8 owner
+                  // shape. Its [failure, ..., emitted-count] header remains
+                  // private and is bound to the owner passes directly.
+                  slot.owners=gpu_hierarchy_live_selection.closure_owners;
+                  slot.owner_header=gpu_hierarchy_live_selection.closure_status;
+                  if(gpu_terrain_packet_upload.templates==nil)
+                    gpu_terrain_packet_upload.templates=shared(
+                        device,templates.data(),sizeof(templates));
+                  slot.templates=gpu_terrain_packet_upload.templates;
+                }else{
+                  const std::array<std::uint32_t,4> owner_header{0U,0U,0U,
+                      static_cast<std::uint32_t>(owner_count)};
+                  slot.owner_header=owner_direct?shared(device,owner_header.data(),
+                      sizeof(owner_header)):nil;
+                  if(gpu_terrain_packet_upload.source_revision!=source_revision||
+                     gpu_terrain_packet_upload.candidate_identity!=
+                         packet->header.candidate_identity||
+                     gpu_terrain_packet_upload.owner_count!=owner_count){
+                    gpu_terrain_packet_upload.owners=shared(device,
+                        packet->owners.data(),packet->owners.size()*
+                            sizeof(packet->owners.front()));
+                    gpu_terrain_packet_upload.templates=shared(
+                        device,templates.data(),sizeof(templates));
+                    gpu_terrain_packet_upload.source_revision=source_revision;
+                    gpu_terrain_packet_upload.candidate_identity=
+                        packet->header.candidate_identity;
+                    gpu_terrain_packet_upload.owner_count=owner_count;
+                  }
+                  slot.owners=gpu_terrain_packet_upload.owners;
+                  slot.templates=gpu_terrain_packet_upload.templates;
                 }
-                slot.owners=gpu_terrain_packet_upload.owners;
-                slot.templates=gpu_terrain_packet_upload.templates;
                 slot.roots=owner_direct?nil:[device newBufferWithLength:*roots_bytes
                     options:MTLResourceStorageModePrivate];
                 slot.counts=[device newBufferWithLength:*counts_bytes options:MTLResourceStorageModePrivate];
@@ -8395,24 +12512,37 @@ int main(int argc,char** argv) {
                     options:MTLResourceStorageModePrivate];
                 slot.commit_control=[device newBufferWithLength:
                     2U*sizeof(std::uint32_t) options:MTLResourceStorageModePrivate];
-                slot.readback=metal_gpu_terrain_qualification?
+                slot.readback=(!metal_gpu_terrain_device_front&&
+                    metal_gpu_terrain_qualification)?
                     [device newBufferWithLength:sizeof(std::uint32_t)*4U
+                        options:MTLResourceStorageModeShared]:nil;
+                slot.control_audit=metal_gpu_terrain_device_front?
+                    [device newBufferWithLength:2U*sizeof(std::uint32_t)
                         options:MTLResourceStorageModeShared]:nil;
                 if(slot.field&&slot.owners&&slot.templates&&
                    (owner_direct||slot.roots!=nil)&&slot.counts&&
-                   (!owner_direct||slot.signs!=nil)&&
+                   (!owner_direct||(slot.signs!=nil&&slot.owner_header!=nil))&&
                    slot.offsets&&slot.added_offsets&&slot.block_totals&&
                    slot.block_offsets&&slot.block_totals2&&slot.block_offsets2&&slot.compaction_status&&
                    (owner_direct||(slot.triangles!=nil&&slot.projected!=nil))&&
                    slot.vertices&&slot.commit_control&&
-                   (!metal_gpu_terrain_qualification||slot.readback!=nil)){
+                   (!metal_gpu_terrain_qualification||metal_gpu_terrain_device_front||
+                    slot.readback!=nil)&&(!metal_gpu_terrain_device_front||
+                    slot.control_audit!=nil)){
                   if(slot.readback!=nil)
                     std::memset(slot.readback.contents,0,slot.readback.length);
+                  if(slot.control_audit!=nil)
+                    std::memset(slot.control_audit.contents,0,
+                                slot.control_audit.length);
                   slot.tuple=tuple;slot.scene_generation=diagnostics.scene_generation;
                   slot.source_revision=source_revision;slot.field_revision=field_revision;
-                  slot.candidate_identity=packet->header.candidate_identity;
+                  slot.candidate_identity=packet==nullptr?
+                      gpu_hierarchy_live_selection.slots[
+                          gpu_hierarchy_live_selection.closure_slot_index].tuple_identity:
+                      packet->header.candidate_identity;
                   slot.render_origin=origin;
                   slot.vertex_capacity=static_cast<std::uint32_t>(vertex_capacity);
+                  slot.expected_rejection=expected_rejection;
                   slot.completed->store(false,std::memory_order_release);
                   slot.succeeded->store(false,std::memory_order_release);slot.pending=true;
                   id<MTLBlitCommandEncoder> clear=[command_buffer blitCommandEncoder];
@@ -8428,6 +12558,23 @@ int main(int argc,char** argv) {
                     if(buffer!=nil)
                       [clear fillBuffer:buffer range:NSMakeRange(0U,buffer.length) value:0U];
                   [clear endEncoding];
+                  if(metal_gpu_terrain_device_front_inject_failure){
+                    // Poison P7e3c's private header after closure and before
+                    // P8 count.  The owner-count shader propagates this to
+                    // P8 validation, so commit cannot replace the old front.
+                    clear=[command_buffer blitCommandEncoder];
+                    [clear fillBuffer:gpu_hierarchy_live_selection.closure_status
+                        range:NSMakeRange(0U,sizeof(std::uint32_t)) value:1U];
+                    [clear endEncoding];
+                    gpu_terrain_counters->device_front_injections.fetch_add(
+                        1U,std::memory_order_relaxed);
+                  }
+                  if(metal_gpu_terrain_device_front_inject_capacity_failure)
+                    gpu_terrain_counters->device_front_injections.fetch_add(
+                        1U,std::memory_order_relaxed);
+                  if(metal_gpu_terrain_device_front_inject_green_budget_failure)
+                    gpu_terrain_counters->device_front_injections.fetch_add(
+                        1U,std::memory_order_relaxed);
                   id<MTLComputeCommandEncoder> compute=nil;
                   if(!owner_direct){
                   const std::array<std::uint32_t,4> classify_parameters{
@@ -8488,13 +12635,17 @@ int main(int argc,char** argv) {
                         static_cast<std::uint32_t>(source_revision>>32U),0U};
                     id<MTLComputeCommandEncoder> owner_compute=[command_buffer computeCommandEncoder];
                     [owner_compute setComputePipelineState:gpu_terrain_owner_count_pipeline];
-                    [owner_compute setBuffer:slot.owners offset:0U atIndex:0U];
-                    [owner_compute setBuffer:slot.templates offset:0U atIndex:1U];
-                    [owner_compute setBuffer:slot.field offset:0U atIndex:2U];
-                    [owner_compute setBuffer:slot.counts offset:0U atIndex:3U];
-                    [owner_compute setBuffer:slot.compaction_status offset:0U atIndex:4U];
+                    // Header-first helpers make SPIRV-Cross emit this Metal
+                    // ABI: header/status/parameters/field/owners/signs/
+                    // templates/counts. Keep the host binding order explicit.
+                    [owner_compute setBuffer:slot.owner_header offset:0U atIndex:0U];
+                    [owner_compute setBuffer:slot.compaction_status offset:0U atIndex:1U];
+                    [owner_compute setBytes:owner_parameters.data() length:sizeof(owner_parameters) atIndex:2U];
+                    [owner_compute setBuffer:slot.field offset:0U atIndex:3U];
+                    [owner_compute setBuffer:slot.owners offset:0U atIndex:4U];
                     [owner_compute setBuffer:slot.signs offset:0U atIndex:5U];
-                    [owner_compute setBytes:owner_parameters.data() length:sizeof(owner_parameters) atIndex:6U];
+                    [owner_compute setBuffer:slot.templates offset:0U atIndex:6U];
+                    [owner_compute setBuffer:slot.counts offset:0U atIndex:7U];
                     [owner_compute dispatchThreads:MTLSizeMake(owner_count,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
                     const std::array<std::uint32_t,2> owner_scan{static_cast<std::uint32_t>(owner_count),0U};
                     owner_compute=[command_buffer computeCommandEncoder];[owner_compute setComputePipelineState:gpu_terrain_scan_pipeline];[owner_compute setBytes:owner_scan.data() length:sizeof(owner_scan) atIndex:0U];[owner_compute setBuffer:slot.offsets offset:0U atIndex:1U];[owner_compute setBuffer:slot.counts offset:0U atIndex:2U];[owner_compute setBuffer:slot.block_totals offset:0U atIndex:3U];[owner_compute dispatchThreads:MTLSizeMake(compaction_blocks*256U,1U,1U) threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];[owner_compute endEncoding];
@@ -8511,13 +12662,16 @@ int main(int argc,char** argv) {
                     MetalGpuTerrainGeometryParameters owner_emit{static_cast<std::uint32_t>(owner_count),static_cast<std::uint32_t>(vertex_capacity),0U,0U,{static_cast<float>(origin.x),static_cast<float>(origin.y),static_cast<float>(origin.z),0.0F},static_cast<std::uint32_t>(source_revision),static_cast<std::uint32_t>(source_revision>>32U),0U,0U};
                     owner_compute=[command_buffer computeCommandEncoder];
                     [owner_compute setComputePipelineState:gpu_terrain_owner_emit_pipeline];
-                    [owner_compute setBuffer:slot.owners offset:0U atIndex:0U];
-                    [owner_compute setBuffer:slot.templates offset:0U atIndex:1U];
+                    // Header/parameters/field/owners/vertices/templates/
+                    // offsets/counts is the generated owner-emit Metal ABI.
+                    [owner_compute setBuffer:slot.owner_header offset:0U atIndex:0U];
+                    [owner_compute setBytes:&owner_emit length:sizeof(owner_emit) atIndex:1U];
                     [owner_compute setBuffer:slot.field offset:0U atIndex:2U];
-                    [owner_compute setBuffer:slot.counts offset:0U atIndex:3U];
-                    [owner_compute setBuffer:slot.added_offsets offset:0U atIndex:4U];
-                    [owner_compute setBuffer:slot.vertices offset:0U atIndex:5U];
-                    [owner_compute setBytes:&owner_emit length:sizeof(owner_emit) atIndex:6U];
+                    [owner_compute setBuffer:slot.owners offset:0U atIndex:3U];
+                    [owner_compute setBuffer:slot.vertices offset:0U atIndex:4U];
+                    [owner_compute setBuffer:slot.templates offset:0U atIndex:5U];
+                    [owner_compute setBuffer:slot.added_offsets offset:0U atIndex:6U];
+                    [owner_compute setBuffer:slot.counts offset:0U atIndex:7U];
                     [owner_compute dispatchThreads:MTLSizeMake(owner_count,1U,1U)
                         threadsPerThreadgroup:MTLSizeMake(256U,1U,1U)];
                     [owner_compute endEncoding];
@@ -8537,17 +12691,34 @@ int main(int argc,char** argv) {
                   [compute setBuffer:slot.commit_control offset:0U atIndex:0U];[compute setBuffer:gpu_terrain_active_front.indirect_arguments offset:0U atIndex:1U];
                   [compute dispatchThreads:MTLSizeMake(1U,1U,1U) threadsPerThreadgroup:MTLSizeMake(1U,1U,1U)];[compute endEncoding];
                   if(slot.readback!=nil){
+                    gpu_terrain_counters->candidate_payload_readback_requests.fetch_add(
+                        1U,std::memory_order_relaxed);
                     id<MTLBlitCommandEncoder> read=[command_buffer blitCommandEncoder];
                     [read copyFromBuffer:slot.vertices sourceOffset:0U toBuffer:slot.readback destinationOffset:0U size:slot.readback.length];[read endEncoding];
+                  }
+                  if(slot.control_audit!=nil){
+                    // P7e4a may observe only P8's two-word private commit
+                    // control. No terrain vertex/owner payload crosses to
+                    // host memory on this route.
+                    id<MTLBlitCommandEncoder> audit=[command_buffer blitCommandEncoder];
+                    [audit copyFromBuffer:slot.commit_control sourceOffset:0U
+                        toBuffer:slot.control_audit destinationOffset:0U
+                        size:slot.control_audit.length];
+                    [audit endEncoding];
                   }
                   if(owner_direct){
                     encode_timestamp_marker(command_buffer,gpu_timestamp_samples,
                                             gpu_timestamp_scratch,26U);
                     owner_direct_generation_encoded_this_frame=true;
+                    if(metal_gpu_terrain_device_front)
+                      gpu_terrain_counters->device_owner_submitted.fetch_add(1U,
+                          std::memory_order_relaxed);
                   }
                   const auto complete=slot.completed,success=slot.succeeded;
                   const auto counters=gpu_terrain_counters;id<MTLBuffer> readback=slot.readback;
+                  id<MTLBuffer> control_audit=slot.control_audit;
                   const auto capacity=slot.vertex_capacity;
+                  const auto expected_rejection=slot.expected_rejection;
                   const auto completed_vertex_count=slot.completed_vertex_count;
                   counters->dispatched.fetch_add(1U,std::memory_order_relaxed);
                   [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> command){
@@ -8557,8 +12728,23 @@ int main(int argc,char** argv) {
                         (header!=nullptr&&header[1U]==0U&&header[0U]!=0U&&
                          header[0U]<=capacity&&header[0U]%3U==0U&&
                          header[2U]*12U==header[0U]);
-                    const bool passed=command.status==MTLCommandBufferStatusCompleted&&qualified;
+                    const auto* control=control_audit==nil?nullptr:
+                        static_cast<const std::uint32_t*>(control_audit.contents);
+                    const bool rejected=control!=nullptr&&control[0U]==0U&&
+                        control[1U]==0U;
+                    const bool private_committed=control!=nullptr&&
+                        control[1U]==1U&&control[0U]!=0U&&
+                        control[0U]<=capacity&&control[0U]%3U==0U;
+                    const bool passed=command.status==MTLCommandBufferStatusCompleted&&
+                        (expected_rejection?rejected:
+                         (control_audit!=nil?private_committed:qualified));
                     if(!passed)counters->failed.fetch_add(1U,std::memory_order_relaxed);
+                    if(passed&&expected_rejection)
+                      counters->device_front_rejections.fetch_add(
+                          1U,std::memory_order_relaxed);
+                    if(passed&&!expected_rejection&&control_audit!=nil)
+                      counters->device_front_private_commits.fetch_add(
+                          1U,std::memory_order_relaxed);
                     if(passed&&header!=nullptr)completed_vertex_count->store(header[0U],std::memory_order_release);
                     counters->completed.fetch_add(1U,std::memory_order_relaxed);
                     success->store(passed,std::memory_order_release);
@@ -8853,6 +13039,41 @@ int main(int argc,char** argv) {
         const auto draw_terrain=[&](id<MTLRenderCommandEncoder> encoder,
                                     NSUInteger vertex_buffer_index){
           if(!terrain_display_front.ready())return;
+          if(metal_gpu_terrain_device_front){
+            const bool private_front_expected=
+                gpu_hierarchy_live_selection.compact_p8_private_commits!=0U;
+            const bool private_front_bound=private_front_expected&&
+                gpu_terrain_active_front.promoted&&
+                terrain_display_front.exact_vertices==
+                    gpu_terrain_active_front.vertices&&
+                terrain_display_front.exact_indirect_arguments==
+                    gpu_terrain_active_front.indirect_arguments&&
+                !terrain_display_front.indexed_exact_selection&&
+                terrain_display_front.exact_vertex_count!=0U;
+            const bool fallback_expected=!private_front_expected&&
+                gpu_hierarchy_live_selection.compact_p8_rejected!=0U;
+            const bool bootstrap_front_bound=fallback_expected&&
+                terrain_display_front.exact_vertices==
+                    device_front_bootstrap_vertices&&
+                terrain_display_front.exact_indirect_arguments==
+                    device_front_bootstrap_indirect_arguments&&
+                !terrain_display_front.indexed_exact_selection;
+            if(private_front_expected){
+              if(private_front_bound)
+                gpu_terrain_counters->device_front_display_frames.fetch_add(
+                    1U,std::memory_order_relaxed);
+              else
+                gpu_terrain_counters->device_front_display_binding_violations.fetch_add(
+                    1U,std::memory_order_relaxed);
+            }else if(fallback_expected){
+              if(bootstrap_front_bound)
+                gpu_terrain_counters->device_front_bootstrap_fallback_frames.fetch_add(
+                    1U,std::memory_order_relaxed);
+              else
+                gpu_terrain_counters->device_front_display_binding_violations.fetch_add(
+                    1U,std::memory_order_relaxed);
+            }
+          }
           [encoder setVertexBuffer:terrain_display_front.exact_vertices
                             offset:0 atIndex:vertex_buffer_index];
           if(terrain_display_front.indexed_exact_selection){
@@ -9863,7 +14084,7 @@ int main(int argc,char** argv) {
             std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-submission_started).count(),
             std::memory_order_relaxed);
-        if(serial_timestamp_profile)[command_buffer waitUntilCompleted];
+        if(serial_timestamp_collection)[command_buffer waitUntilCompleted];
         if((motion_test||gpu_terrain_performance_smoke_test)&&
            scene_vertex_count!=0U)++motion_rendered_frames;
         if(render_test&&scene_vertex_count!=0U)++render_test_frames;
@@ -9902,7 +14123,60 @@ int main(int argc,char** argv) {
               gpu_hierarchy_live_selection.completed!=0U&&
               gpu_hierarchy_live_selection.accepted!=0U&&
               gpu_hierarchy_live_selection.failed==0U&&
-              gpu_hierarchy_live_selection.cpu_generation_violations==0U))&&
+              gpu_hierarchy_live_selection.cpu_generation_violations==0U&&
+              // The motion test's final contract requires two completed,
+              // accepted selections.  Do not tear down the asynchronous
+              // live-selection harness after the first completion and then
+              // reject that very same otherwise healthy run below.
+              (!motion_test||
+               (gpu_hierarchy_live_selection.submitted>=2U&&
+                gpu_hierarchy_live_selection.completed>=2U&&
+                gpu_hierarchy_live_selection.accepted>=2U))) )&&
+            (!metal_gpu_terrain_device_front||
+             (gpu_terrain_counters->device_closure_submitted.load(
+                  std::memory_order_acquire)>=2U&&
+              gpu_hierarchy_live_selection.compact_closure_encoded>=2U&&
+              (metal_gpu_terrain_device_front_inject_green_budget_failure?
+               gpu_hierarchy_live_selection.compact_red_encoded==0U:
+               gpu_hierarchy_live_selection.compact_red_encoded>=2U)&&
+              (metal_gpu_terrain_device_front_inject_green_budget_failure?
+               gpu_hierarchy_live_selection.compact_closure_rejected>=2U:
+               gpu_hierarchy_live_selection.compact_closure_completed>=2U)&&
+              (metal_gpu_terrain_device_front_inject_green_budget_failure?
+               gpu_hierarchy_live_selection.compact_closure_rejected>=1U:
+               gpu_hierarchy_live_selection.compact_quiescent>=1U)&&
+              gpu_hierarchy_live_selection.compact_owner_materialization_encoded>=2U&&
+              gpu_hierarchy_live_selection.compact_p8_encoded>=2U&&
+              gpu_hierarchy_live_selection.compact_p8_completed>=2U&&
+              gpu_terrain_counters->p6_requests.load(
+                  std::memory_order_acquire)==0U&&
+              gpu_terrain_counters->cpu_surface_build_requests.load(
+                  std::memory_order_acquire)==0U&&
+              gpu_terrain_counters->immutable_snapshot_builds.load(
+                  std::memory_order_acquire)==1U&&
+              gpu_terrain_counters->candidate_payload_readback_requests.load(
+                  std::memory_order_acquire)==0U&&
+              gpu_terrain_counters->post_bootstrap_seed_attempts.load(
+                  std::memory_order_acquire)==0U&&
+              gpu_terrain_counters->failed.load(
+                  std::memory_order_acquire)==0U&&
+              (metal_gpu_terrain_device_front_inject_green_budget_failure?
+               (gpu_hierarchy_live_selection.compact_closure_rejected>=1U&&
+                gpu_hierarchy_live_selection.compact_p8_private_commits==0U&&
+                gpu_hierarchy_live_selection.compact_p8_rejected>=1U&&
+                gpu_terrain_counters->device_front_bootstrap_fallback_frames.load(
+                    std::memory_order_acquire)!=0U&&
+                gpu_terrain_counters->device_front_display_binding_violations.load(
+                    std::memory_order_acquire)==0U):
+               (gpu_hierarchy_live_selection.compact_closure_rejected==0U&&
+                gpu_hierarchy_live_selection.compact_p8_private_commits>=1U&&
+                gpu_hierarchy_live_selection.compact_p8_rejected==0U&&
+                gpu_terrain_counters->device_front_display_promotions.load(
+                    std::memory_order_acquire)!=0U&&
+                gpu_terrain_counters->device_front_display_frames.load(
+                    std::memory_order_acquire)!=0U&&
+                gpu_terrain_counters->device_front_display_binding_violations.load(
+                    std::memory_order_acquire)==0U))))&&
             (!gpu_terrain_renderer_selected||
              (gpu_terrain_renderer_available&&gpu_terrain_active_front.promoted&&
               terrain_display_front.exact_indirect_arguments==
@@ -10856,6 +15130,74 @@ int main(int argc,char** argv) {
               const auto cpu_front_violations=
                   gpu_terrain_counters->cpu_front_violations.load(
                       std::memory_order_acquire);
+              const auto device_closures=
+                  gpu_terrain_counters->device_closure_submitted.load(
+                      std::memory_order_acquire);
+              const auto p6_requests=
+                  gpu_terrain_counters->p6_requests.load(std::memory_order_acquire);
+              const auto cpu_surface_build_requests=
+                  gpu_terrain_counters->cpu_surface_build_requests.load(
+                      std::memory_order_acquire);
+              const auto immutable_snapshot_builds=
+                  gpu_terrain_counters->immutable_snapshot_builds.load(
+                      std::memory_order_acquire);
+              const auto candidate_payload_readbacks=
+                  gpu_terrain_counters->candidate_payload_readback_requests.load(
+                      std::memory_order_acquire);
+              const auto post_bootstrap_seeds=
+                  gpu_terrain_counters->post_bootstrap_seed_attempts.load(
+                      std::memory_order_acquire);
+              const auto device_front_display_promotions=
+                  gpu_terrain_counters->device_front_display_promotions.load(
+                      std::memory_order_acquire);
+              const auto device_front_display_frames=
+                  gpu_terrain_counters->device_front_display_frames.load(
+                      std::memory_order_acquire);
+              const auto device_front_display_binding_violations=
+                  gpu_terrain_counters->device_front_display_binding_violations.load(
+                      std::memory_order_acquire);
+              const auto device_front_bootstrap_fallback_frames=
+                  gpu_terrain_counters->device_front_bootstrap_fallback_frames.load(
+                      std::memory_order_acquire);
+              const auto compact_p8_encoded=
+                  gpu_hierarchy_live_selection.compact_p8_encoded;
+              const auto compact_p8_completed=
+                  gpu_hierarchy_live_selection.compact_p8_completed;
+              const auto compact_p8_commits=
+                  gpu_hierarchy_live_selection.compact_p8_private_commits;
+              const auto compact_p8_rejected=
+                  gpu_hierarchy_live_selection.compact_p8_rejected;
+              const auto device_front_phase=
+                  metal_gpu_hierarchy_device_front_phase(
+                      gpu_hierarchy_live_selection);
+              const auto stage_milliseconds=[](
+                  std::chrono::steady_clock::time_point begin,
+                  std::chrono::steady_clock::time_point end){
+                if(begin.time_since_epoch().count()==0||
+                   end.time_since_epoch().count()==0)return -1.0;
+                return std::chrono::duration<double,std::milli>(end-begin).count();
+              };
+              const auto bootstrap_to_selector_ms=stage_milliseconds(
+                  gpu_hierarchy_live_selection.device_front_bootstrap_at,
+                  gpu_hierarchy_live_selection.device_front_selector_at);
+              const auto selector_to_closure_ms=stage_milliseconds(
+                  gpu_hierarchy_live_selection.device_front_selector_at,
+                  gpu_hierarchy_live_selection.device_front_closure_at);
+              const auto closure_to_materializer_ms=stage_milliseconds(
+                  gpu_hierarchy_live_selection.device_front_closure_at,
+                  gpu_hierarchy_live_selection.device_front_materializer_at);
+              const auto materializer_to_p8_ms=stage_milliseconds(
+                  gpu_hierarchy_live_selection.device_front_materializer_at,
+                  gpu_hierarchy_live_selection.device_front_p8_at);
+              const auto p8_completion_ms=
+                  gpu_hierarchy_live_selection.device_front_last_p8_completion_milliseconds;
+              const auto cpu_bootstrap_vertices=
+                  device_front_bootstrap_display.exact_vertex_count;
+              const auto gpu_p8_vertices=
+                  gpu_hierarchy_live_selection.compact_p8_last_audit[2U];
+              const bool complete_front_vertex_parity=
+                  !metal_gpu_terrain_device_front||
+                  (cpu_bootstrap_vertices!=0U&&gpu_p8_vertices==cpu_bootstrap_vertices);
               const bool gpu_slots_passed=!(metal_gpu_terrain_diagnostic||
                   metal_gpu_terrain_native_diagnostic)||
                   (dispatched!=0U&&completed!=0U&&accepted!=0U&&
@@ -10868,11 +15210,40 @@ int main(int argc,char** argv) {
                    gpu_hierarchy_live_selection.accepted>=2U&&
                    gpu_hierarchy_live_selection.failed==0U&&
                    gpu_hierarchy_live_selection.cpu_generation_violations==0U);
+              const bool gpu_compact_closure_passed=!metal_gpu_terrain_device_front||
+                  (device_closures>=2U&&
+                  gpu_hierarchy_live_selection.compact_closure_encoded>=2U&&
+                  (metal_gpu_terrain_device_front_inject_green_budget_failure?
+                   gpu_hierarchy_live_selection.compact_red_encoded==0U:
+                   gpu_hierarchy_live_selection.compact_red_encoded>=2U)&&
+                  (metal_gpu_terrain_device_front_inject_green_budget_failure?
+                   gpu_hierarchy_live_selection.compact_closure_rejected>=2U:
+                   gpu_hierarchy_live_selection.compact_closure_completed>=2U)&&
+                  (metal_gpu_terrain_device_front_inject_green_budget_failure?
+                   gpu_hierarchy_live_selection.compact_closure_rejected>=1U:
+                   gpu_hierarchy_live_selection.compact_quiescent>=1U)&&
+                  compact_p8_encoded>=2U&&compact_p8_completed>=2U&&
+                  p6_requests==0U&&cpu_surface_build_requests==0U&&
+                  immutable_snapshot_builds==1U&&
+                  candidate_payload_readbacks==0U&&post_bootstrap_seeds==0U&&
+                   (metal_gpu_terrain_device_front_inject_green_budget_failure?
+                    (gpu_hierarchy_live_selection.compact_closure_rejected>=1U&&
+                     compact_p8_commits==0U&&compact_p8_rejected>=1U):
+                    (gpu_hierarchy_live_selection.compact_closure_rejected==0U&&
+                     compact_p8_commits>=1U&&compact_p8_rejected==0U))&&
+                  (metal_gpu_terrain_device_front_inject_green_budget_failure?
+                   (device_front_bootstrap_fallback_frames!=0U&&
+                    device_front_display_binding_violations==0U):
+                   (device_front_display_promotions!=0U&&
+                    device_front_display_frames!=0U&&
+                    device_front_display_binding_violations==0U))&&
+                   complete_front_vertex_parity&&
+                   failed==0U&&overflow==0U&&cpu_front_violations==0U);
               const bool passed=distance>0.001&&
                   (metal_gpu_terrain_live_selection||published_distance<1.0e-8)&&
                   diagnostics.converged&&!diagnostics.busy&&
                   !runtime_camera_interactive&&gpu_slots_passed&&
-                  gpu_live_selection_passed&&
+                  gpu_live_selection_passed&&gpu_compact_closure_passed&&
                   (!metal_gpu_terrain_private_front_qualification||
                    (gpu_terrain_renderer_available&&
                     gpu_terrain_active_front.promoted&&
@@ -10892,6 +15263,37 @@ int main(int argc,char** argv) {
                           "\"submitted\":%llu,\"completed\":%llu,"
                           "\"accepted\":%llu,\"failed\":%llu,"
                           "\"cpu_generation_violations\":%llu},"
+                          "\"gpu_compact_closure\":{\"enabled\":%s,\"closures\":%llu,"
+                          "\"compact_encoded\":%llu,\"compact_completed\":%llu,"
+                          "\"direct_red_closure\":%llu,\"compact_quiescent\":%llu,"
+                          "\"compact_rejected\":%llu,"
+                          "\"p8_owner_materialization\":%s,\"p8_encoded\":%llu,"
+                          "\"p8_completed\":%llu,\"p8_rejected\":%llu,"
+                          "\"p8_private_commit\":%s,"
+                          "\"device_front_default_selected\":%s,"
+                          "\"complete_front_vertices\":{\"cpu_bootstrap\":%zu,"
+                          "\"gpu_p8\":%u,\"exact\":%s},"
+                          "\"display_front\":{\"promotions\":%llu,"
+                          "\"private_frames\":%llu,"
+                          "\"bootstrap_fallback_frames\":%llu,"
+                          "\"binding_violations\":%llu,"
+                          "\"private_vertices_bound\":%s,"
+                          "\"private_indirect_bound\":%s,"
+                          "\"indexed_exact_selection\":%s,"
+                          "\"bootstrap_vertices_retained\":%s,"
+                          "\"bootstrap_indirect_retained\":%s},"
+                          "\"device_front_progress\":{\"phase\":\"%s\","
+                          "\"bootstrap_to_selector_ms\":%.3f,"
+                          "\"selector_to_closure_ms\":%.3f,"
+                          "\"closure_to_materializer_ms\":%.3f,"
+                          "\"materializer_to_p8_ms\":%.3f,"
+                          "\"p8_completion_ms\":%.3f},"
+                          "\"p6_requests\":%llu,"
+                          "\"cpu_surface_build_requests\":%llu,"
+                          "\"immutable_snapshot_builds\":%llu,"
+                          "\"candidate_payload_readbacks\":%llu,"
+                          "\"post_bootstrap_seed_attempts\":%llu,"
+                          "\"indirect_zero_grids\":%llu},"
                           "\"passed\":%s}\n",
                           motion_rendered_frames,distance,
                           published_distance,scene_vertex_count/3U,
@@ -10914,6 +15316,54 @@ int main(int argc,char** argv) {
                               gpu_hierarchy_live_selection.failed),
                           static_cast<unsigned long long>(
                               gpu_hierarchy_live_selection.cpu_generation_violations),
+                          metal_gpu_terrain_device_front?"true":"false",
+                          static_cast<unsigned long long>(device_closures),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.compact_closure_encoded),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.compact_closure_completed),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.compact_red_encoded),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.compact_quiescent),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.compact_closure_rejected),
+                          compact_p8_encoded!=0U?"true":"false",
+                          static_cast<unsigned long long>(compact_p8_encoded),
+                          static_cast<unsigned long long>(compact_p8_completed),
+                          static_cast<unsigned long long>(compact_p8_rejected),
+                          compact_p8_commits!=0U?"true":"false",
+                          (!metal_gpu_terrain_device_front_explicit&&
+                           device_front_default_test)?"true":"false",
+                          cpu_bootstrap_vertices,gpu_p8_vertices,
+                          complete_front_vertex_parity?"true":"false",
+                          static_cast<unsigned long long>(
+                              device_front_display_promotions),
+                          static_cast<unsigned long long>(
+                              device_front_display_frames),
+                          static_cast<unsigned long long>(
+                              device_front_bootstrap_fallback_frames),
+                          static_cast<unsigned long long>(
+                              device_front_display_binding_violations),
+                          terrain_display_front.exact_vertices==
+                              gpu_terrain_active_front.vertices?"true":"false",
+                          terrain_display_front.exact_indirect_arguments==
+                              gpu_terrain_active_front.indirect_arguments?"true":"false",
+                          terrain_display_front.indexed_exact_selection?"true":"false",
+                          terrain_display_front.exact_vertices==
+                              device_front_bootstrap_vertices?"true":"false",
+                          terrain_display_front.exact_indirect_arguments==
+                              device_front_bootstrap_indirect_arguments?"true":"false",
+                          device_front_phase,bootstrap_to_selector_ms,
+                          selector_to_closure_ms,closure_to_materializer_ms,
+                          materializer_to_p8_ms,p8_completion_ms,
+                          static_cast<unsigned long long>(p6_requests),
+                          static_cast<unsigned long long>(cpu_surface_build_requests),
+                          static_cast<unsigned long long>(immutable_snapshot_builds),
+                          static_cast<unsigned long long>(candidate_payload_readbacks),
+                          static_cast<unsigned long long>(post_bootstrap_seeds),
+                          static_cast<unsigned long long>(
+                              gpu_hierarchy_live_selection.indirect_zero_grid_observations),
                           passed?"true":"false");
               if(!passed)result=1;
             }else{
@@ -10972,6 +15422,9 @@ int main(int argc,char** argv) {
           }
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }else if(automated_test&&now>=smoke_deadline){
+          const auto p8_started=gpu_hierarchy_live_selection.device_front_p8_at;
+          const auto p8_age_milliseconds=p8_started.time_since_epoch().count()==0?
+              -1.0:std::chrono::duration<double,std::milli>(now-p8_started).count();
           std::fprintf(stderr,
               "Metal automated test timed out waiting for terrain "
               "(scene=%llu requested_view=%llu published_view=%llu "
@@ -10981,7 +15434,15 @@ int main(int argc,char** argv) {
               "busy=%s converged=%s interactive=%s motion_frames=%zu "
               "gpu_dispatched=%llu gpu_completed=%llu gpu_accepted=%llu "
               "gpu_stale=%llu gpu_failed=%llu gpu_overflow=%llu "
-              "gpu_cpu_front_violations=%llu gpu_available=%s).\n",
+              "gpu_cpu_front_violations=%llu gpu_available=%s "
+              "device_front_phase=%s bootstrap=%s selector=%s closure=%s "
+              "materializer=%s p8_encoded=%llu p8_completed=%llu "
+              "p8_commits=%llu p8_rejected=%llu p8_audit=%u/%u/%u/%u/%u/%u "
+              "owner_header=%u/%u/%u/%u "
+              "selected_header=%u/%u/%u/%u final_active_header=%u/%u/%u/%u "
+              "final_masks_header=%u/%u/%u/%u "
+              "closure_audit=%u/%u/%u/%u/%u red_status=%u/%u/%u/%u "
+              "p8_age_ms=%.3f).\n",
               static_cast<unsigned long long>(diagnostics.scene_generation),
               static_cast<unsigned long long>(
                   diagnostics.exact_requested_view_epoch),
@@ -11012,7 +15473,52 @@ int main(int argc,char** argv) {
                   std::memory_order_acquire)),
               static_cast<unsigned long long>(gpu_terrain_counters->cpu_front_violations.load(
                   std::memory_order_acquire)),
-              gpu_terrain_renderer_available?"true":"false");
+              gpu_terrain_renderer_available?"true":"false",
+              metal_gpu_hierarchy_device_front_phase(gpu_hierarchy_live_selection),
+              gpu_hierarchy_live_selection.device_front_bootstrap_at.time_since_epoch().count()!=0?
+                  "ready":"pending",
+              gpu_hierarchy_live_selection.device_front_selector_at.time_since_epoch().count()!=0?
+                  "encoded":"pending",
+              gpu_hierarchy_live_selection.device_front_closure_at.time_since_epoch().count()!=0?
+                  "encoded":"pending",
+              gpu_hierarchy_live_selection.device_front_materializer_at.time_since_epoch().count()!=0?
+                  "encoded":"pending",
+              static_cast<unsigned long long>(gpu_hierarchy_live_selection.compact_p8_encoded),
+              static_cast<unsigned long long>(gpu_hierarchy_live_selection.compact_p8_completed),
+              static_cast<unsigned long long>(gpu_hierarchy_live_selection.compact_p8_private_commits),
+              static_cast<unsigned long long>(gpu_hierarchy_live_selection.compact_p8_rejected),
+              gpu_hierarchy_live_selection.compact_p8_last_audit[0U],
+              gpu_hierarchy_live_selection.compact_p8_last_audit[1U],
+              gpu_hierarchy_live_selection.compact_p8_last_audit[2U],
+              gpu_hierarchy_live_selection.compact_p8_last_audit[3U],
+              gpu_hierarchy_live_selection.compact_p8_last_audit[4U],
+              gpu_hierarchy_live_selection.compact_p8_last_audit[5U],
+              gpu_hierarchy_live_selection.compact_p8_last_owner_header[0U],
+              gpu_hierarchy_live_selection.compact_p8_last_owner_header[1U],
+              gpu_hierarchy_live_selection.compact_p8_last_owner_header[2U],
+              gpu_hierarchy_live_selection.compact_p8_last_owner_header[3U],
+              gpu_hierarchy_live_selection.compact_last_selected_header[0U],
+              gpu_hierarchy_live_selection.compact_last_selected_header[1U],
+              gpu_hierarchy_live_selection.compact_last_selected_header[2U],
+              gpu_hierarchy_live_selection.compact_last_selected_header[3U],
+              gpu_hierarchy_live_selection.compact_last_final_active_header[0U],
+              gpu_hierarchy_live_selection.compact_last_final_active_header[1U],
+              gpu_hierarchy_live_selection.compact_last_final_active_header[2U],
+              gpu_hierarchy_live_selection.compact_last_final_active_header[3U],
+              gpu_hierarchy_live_selection.compact_last_final_masks_header[0U],
+              gpu_hierarchy_live_selection.compact_last_final_masks_header[1U],
+              gpu_hierarchy_live_selection.compact_last_final_masks_header[2U],
+              gpu_hierarchy_live_selection.compact_last_final_masks_header[3U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[0U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[1U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[2U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[3U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[4U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[5U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[6U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[7U],
+              gpu_hierarchy_live_selection.compact_last_closure_audit[8U],
+              p8_age_milliseconds);
           result=1;
           glfwSetWindowShouldClose(window,GLFW_TRUE);
         }

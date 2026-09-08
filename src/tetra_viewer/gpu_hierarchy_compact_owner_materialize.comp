@@ -1,0 +1,92 @@
+#version 450
+
+// P7e4a1 turns the stable compact closure pair into the 12-word owner ABI.
+// It intentionally has no P8 consumer: this is the narrow device boundary
+// between closure and the eventual owner-count/emit pipeline.
+layout(std430,binding=0) readonly buffer FinalActive { uint words[]; } final_active;
+layout(std430,binding=1) readonly buffer FinalMasks { uint words[]; } masks;
+layout(std430,binding=2) readonly buffer Hierarchy { uint words[]; } hierarchy;
+layout(std430,binding=3) readonly buffer EdgeTopology { uint words[]; } edges;
+layout(std430,binding=4) readonly buffer Orientations { uint values[]; } orientations;
+layout(std430,binding=5) buffer Owners { uint words[]; } owners;
+// Compact-compatible result header: count, capacity, failure bits, valid.
+layout(std430,binding=6) buffer OwnerHeader { uint words[]; } owner_header;
+// One MTLDispatchThreadgroupsIndirectArguments record, written only from the
+// device-final compact header.  No host record-count dispatch is permitted.
+layout(std430,binding=7) buffer DispatchArgs { uint words[]; } dispatch_args;
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint owner_capacity;
+  // 0 controller, 1 validate, 2 materialize, 3 publish gate.
+  uint phase;
+  uint reserved;
+} P;
+layout(local_size_x=256) in;
+
+const uint failure_header=1u;
+const uint failure_record=2u;
+const uint failure_capacity=4u;
+const uint failure_mask=8u;
+
+void zero_grid() {
+  dispatch_args.words[0u]=0u;
+  dispatch_args.words[1u]=1u;
+  dispatch_args.words[2u]=1u;
+  dispatch_args.words[3u]=0u;
+}
+void fail(uint reason) {
+  atomicOr(owner_header.words[2u],reason);
+}
+
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  if(P.phase==0u) {
+    if(index!=0u)return;
+    owner_header.words[0u]=0u;
+    owner_header.words[1u]=P.owner_capacity;
+    owner_header.words[2u]=0u;
+    owner_header.words[3u]=0u;
+    zero_grid();
+    const uint count=final_active.words[0u];
+    if(final_active.words[2u]!=0u||masks.words[2u]!=0u||
+       final_active.words[3u]!=1u||masks.words[3u]!=1u||
+       final_active.words[1u]!=masks.words[1u]||count!=masks.words[0u]||
+       count>final_active.words[1u]||final_active.words[1u]>P.record_count||
+       count>P.owner_capacity) {
+      fail(count>P.owner_capacity?failure_capacity:failure_header);
+      return;
+    }
+    owner_header.words[0u]=count;
+    dispatch_args.words[0u]=(count+255u)/256u;
+    return;
+  }
+  if(P.phase==3u) {
+    if(index==0u) {
+      if(owner_header.words[2u]==0u)owner_header.words[3u]=1u;
+      else { owner_header.words[0u]=0u; owner_header.words[3u]=0u; }
+      zero_grid();
+    }
+    return;
+  }
+  if((P.phase!=1u&&P.phase!=2u)||index>=owner_header.words[0u]||
+     owner_header.words[2u]!=0u)
+    return;
+  const uint record=final_active.words[4u+index];
+  const uint mask=masks.words[4u+index];
+  if(record>=P.record_count) { fail(failure_record); return; }
+  if(mask>=64u) { fail(failure_mask); return; }
+  const uint orientation=orientations.values[record];
+  if(orientation>1u) { fail(failure_record); return; }
+  // Validation gets a complete indirect pass before any staged owner word is
+  // touched.  Thus malformed records/masks retain the last staged stream.
+  if(P.phase==1u)return;
+  const uint output_base=index*12u;
+  const uint hierarchy_base=record*8u;
+  const uint edge_base=record*8u;
+  for(uint lane=0u;lane<4u;++lane)
+    owners.words[output_base+lane]=hierarchy.words[hierarchy_base+lane];
+  for(uint edge=0u;edge<6u;++edge)
+    owners.words[output_base+4u+edge]=edges.words[edge_base+edge];
+  owners.words[output_base+10u]=mask;
+  owners.words[output_base+11u]=orientation;
+}

@@ -1,0 +1,47 @@
+#version 450
+// P7e4e: retain parallel count/emission. This bounded workgroup performs only
+// deterministic prefixing and candidate-header admission for <=1024 owners.
+layout(std430,binding=0) readonly buffer Counts {uint values[];} counts;
+layout(std430,binding=1) readonly buffer OwnerHeader {uint words[];} owner_header;
+layout(std430,binding=2) buffer Status {uint words[];} status;
+layout(std430,binding=3) buffer Candidate {uint words[];} candidate;
+layout(std430,binding=4) buffer Offsets {uint values[];} offsets;
+// A device-produced indirect grid for P7e4k's one-triangle-per-invocation
+// emitter. It remains zero until this same header gate accepts the candidate.
+layout(std430,binding=5) buffer TriangleDispatch {uint words[];} triangle_dispatch;
+layout(push_constant) uniform Parameters {uint vertex_capacity;} P;
+layout(local_size_x=1024) in;
+shared uint prefix[1024];
+shared uint owner_count;
+shared uint failed;
+void main(){
+  const uint lane=gl_LocalInvocationID.x;
+  if(lane==0u){
+    owner_count=owner_header.words[0u];failed=0u;
+    status.words[0u]=0u;status.words[1u]=0u;
+    candidate.words[0u]=0u;candidate.words[1u]=0u;
+    candidate.words[2u]=0u;candidate.words[3u]=0u;
+    triangle_dispatch.words[0u]=0u;triangle_dispatch.words[1u]=1u;
+    triangle_dispatch.words[2u]=1u;
+    if(P.vertex_capacity==0u||owner_count==0u||owner_count>1024u||
+       owner_count>owner_header.words[1u]||owner_header.words[2u]!=0u||
+       owner_header.words[3u]!=1u)failed=1u;
+  }
+  barrier();
+  const uint value=lane<owner_count?counts.values[lane]:0u;
+  if(value==0xffffffffu)atomicOr(failed,1u);
+  prefix[lane]=value==0xffffffffu?0u:value;
+  barrier();
+  for(uint step=1u;step<1024u;step<<=1u){
+    const uint add=lane>=step?prefix[lane-step]:0u;
+    barrier();prefix[lane]+=add;barrier();
+  }
+  if(lane<owner_count)offsets.values[lane]=lane==0u?0u:prefix[lane-1u];
+  if(lane==0u){
+    const uint triangles=owner_count==0u?0u:prefix[owner_count-1u];
+    if(failed!=0u||triangles==0u||triangles>P.vertex_capacity/12u){
+      status.words[1u]=1u;candidate.words[1u]=1u;
+    }else{candidate.words[0u]=triangles*12u;candidate.words[2u]=triangles;
+      triangle_dispatch.words[0u]=(triangles+63u)/64u;}
+  }
+}

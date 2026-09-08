@@ -1,0 +1,212 @@
+#version 450
+
+// P7e4a1 compact red repair. It consumes a canonical compact list and the
+// preceding green masks, derives 1-or-8 output counts, scans on device, then
+// scatters parents or their ordered eight children into pong. Canonicalization
+// of pong is a following compact-list stage, never a CPU sort.
+layout(std430,binding=0) readonly buffer ActiveList { uint words[]; } active_list;
+layout(std430,binding=1) readonly buffer GreenMasks { uint words[]; } green_masks;
+layout(std430,binding=2) readonly buffer CanonicalRanks { uint values[]; } ranks;
+layout(std430,binding=3) readonly buffer Parents { uint values[]; } parents;
+layout(std430,binding=4) readonly buffer Hierarchy { uint words[]; } hierarchy;
+layout(std430,binding=5) readonly buffer Children { uint values[]; } children;
+layout(std430,binding=6) readonly buffer VertexTopology { uint values[]; } vertex_topology;
+layout(std430,binding=7) readonly buffer VertexRanges { uint words[]; } vertex_ranges;
+layout(std430,binding=8) readonly buffer VertexIncidence { uint words[]; } vertex_incidence;
+// [0] failure, [1] red count, [2] repair rounds, [3] reserved.
+layout(std430,binding=9) buffer Status { uint words[]; } status;
+layout(std430,binding=10) buffer ExpandCounts { uint values[]; } counts;
+layout(std430,binding=11) buffer ExpandOffsets { uint values[]; } offsets;
+layout(std430,binding=12) readonly buffer ScanTotal { uint values[]; } scan_total;
+layout(std430,binding=13) buffer OutputList { uint words[]; } output_list;
+// two padded MTLDispatchThreadgroupsIndirectArguments records: input, output.
+layout(std430,binding=14) buffer DispatchArgs { uint words[]; } dispatch_args;
+// Device-latched stable result for P8.  The live host never needs to know
+// which ping/pong list became quiescent.
+layout(std430,binding=15) buffer FinalActive { uint words[]; } final_active;
+layout(std430,binding=16) buffer FinalMasks { uint words[]; } final_masks;
+
+layout(push_constant) uniform Parameters {
+  uint record_count;
+  uint child_count;
+  uint vertex_range_count;
+  uint vertex_incidence_count;
+  uint repair_budget;
+  // 0 round-bootstrap, 1 predicate, 2 scan-finalize, 3 scatter,
+  // 4 advance repair round, 5 terminal budget latch, 6 finalize/arm copy,
+  // 7 indirect final compact-list/mask copy, 8 close final-copy grid.
+  uint phase;
+} P;
+layout(local_size_x=256) in;
+const uint invalid_index=0xffffffffu;
+const uint failure_header=1u;
+const uint failure_record=2u;
+const uint failure_topology=4u;
+const uint failure_capacity=8u;
+const uint failure_order=16u;
+const uint failure_budget=32u;
+
+void fail(uint reason) { atomicOr(status.words[0u],reason); }
+void zero_output_grid() {
+  dispatch_args.words[4u]=0u; dispatch_args.words[5u]=1u;
+  dispatch_args.words[6u]=1u; dispatch_args.words[7u]=0u;
+}
+bool contains(uint record,uint count) {
+  if(record>=P.record_count) { fail(failure_record); return false; }
+  uint lo=0u,hi=count; const uint rank=ranks.values[record];
+  while(lo<hi) {
+    const uint mid=lo+(hi-lo)/2u,other=active_list.words[4u+mid];
+    if(other>=P.record_count) { fail(failure_record); return false; }
+    if(ranks.values[other]<rank)lo=mid+1u;else hi=mid;
+  }
+  return lo<count&&active_list.words[4u+lo]==record;
+}
+bool valid_record(uint index,out uint record) {
+  record=active_list.words[4u+index];
+  if(record>=P.record_count) { fail(failure_record); return false; }
+  if(index>0u) {
+    const uint previous=active_list.words[4u+index-1u];
+    if(previous>=P.record_count||ranks.values[previous]>=ranks.values[record]) {
+      fail(failure_order); return false;
+    }
+  }
+  // A cut cannot contain both an owner and an ancestor. This catches an
+  // invalid ping/pong result before an ordered child scatter could duplicate.
+  uint parent=parents.values[record];
+  for(uint steps=0u;parent!=invalid_index&&steps<40u;++steps) {
+    if(parent>=P.record_count) { fail(failure_topology); return false; }
+    if(contains(parent,active_list.words[0u])) { fail(failure_order); return false; }
+    parent=parents.values[parent];
+  }
+  if(parent!=invalid_index) { fail(failure_topology); return false; }
+  return true;
+}
+bool vertex_requires_red(uint record) {
+  const uint depth=(hierarchy.words[record*8u+1u]>>20u)&63u;
+  for(uint corner=0u;corner<4u;++corner) {
+    const uint range=vertex_topology.values[record*4u+corner];
+    if(range>=P.vertex_range_count) { fail(failure_topology); return false; }
+    const uint first=vertex_ranges.words[range*2u];
+    const uint count=vertex_ranges.words[range*2u+1u];
+    if(first>P.vertex_incidence_count||count>P.vertex_incidence_count-first) {
+      fail(failure_topology); return false;
+    }
+    for(uint item=0u;item<count;++item) {
+      const uint at=(first+item)*2u,other=vertex_incidence.words[at];
+      if(other>=P.record_count||vertex_incidence.words[at+1u]>=4u) {
+        fail(failure_topology); return false;
+      }
+      if(contains(other,active_list.words[0u])&&
+          ((hierarchy.words[other*8u+1u]>>20u)&63u)>depth+1u)return true;
+    }
+  }
+  return false;
+}
+void main() {
+  const uint index=gl_GlobalInvocationID.x;
+  // A previous red round was quiescent.  Leave its status and compact output
+  // intact and make all later scheduled data-parallel rounds empty.  Phase 5
+  // remains live so the final post-budget probe can still fail closed.
+  if(P.phase!=5u&&P.phase!=7u&&P.phase!=8u&&dispatch_args.words[3u]!=0u)return;
+  if(P.phase==0u) {
+    if(index!=0u)return;
+    // One fixed command buffer may make several red repairs.  Preserve the
+    // failure latch and accumulated repair-round count across those rounds;
+    // only a freshly cleared status sidecar is initialized here.  Resetting
+    // status[2] used to make the declared repair budget observational only.
+    if(status.words[3u]==0u) {
+      status.words[0u]=0u; status.words[1u]=0u;
+      status.words[2u]=0u; status.words[3u]=1u;
+    } else status.words[1u]=0u;
+    output_list.words[0u]=0u; output_list.words[1u]=active_list.words[1u];
+    output_list.words[2u]=0u; output_list.words[3u]=0u;
+    if(status.words[0u]!=0u) { zero_output_grid(); return; }
+    const uint count=active_list.words[0u];
+    if(active_list.words[2u]!=0u||green_masks.words[2u]!=0u||
+        green_masks.words[0u]!=count||count==0u||count>active_list.words[1u]) {
+      fail(failure_header); dispatch_args.words[0u]=0u; dispatch_args.words[1u]=1u;
+      dispatch_args.words[2u]=1u; dispatch_args.words[3u]=0u; zero_output_grid(); return;
+    }
+    dispatch_args.words[0u]=(count+255u)/256u; dispatch_args.words[1u]=1u;
+    dispatch_args.words[2u]=1u; dispatch_args.words[3u]=0u; zero_output_grid(); return;
+  }
+  if(P.phase==2u) {
+    if(index!=0u||status.words[0u]!=0u)return;
+    // The preceding compact scan writes this total from the device header's
+    // indirect grid. This controller only validates/finalizes; it never
+    // serially walks the active count stream.
+    const uint total=scan_total.values[0u];
+    if(total==0u||total>active_list.words[1u]) {
+      fail(failure_capacity); zero_output_grid(); return;
+    }
+    if(status.words[1u]!=0u&&status.words[2u]>=P.repair_budget) {
+      fail(failure_budget); zero_output_grid(); return;
+    }
+    output_list.words[0u]=total; output_list.words[1u]=active_list.words[1u];
+    output_list.words[2u]=0u; output_list.words[3u]=0u;
+    dispatch_args.words[4u]=(total+255u)/256u; dispatch_args.words[5u]=1u;
+    dispatch_args.words[6u]=1u; dispatch_args.words[7u]=0u;
+    return;
+  }
+  if(P.phase==4u) {
+    if(index==0u&&status.words[0u]==0u&&status.words[1u]!=0u)
+      status.words[2u]+=1u;
+    return;
+  }
+  if(P.phase==5u) {
+    if(index==0u&&status.words[0u]==0u&&status.words[1u]!=0u) {
+      fail(failure_budget); zero_output_grid();
+    }
+    return;
+  }
+  if(P.phase==6u) {
+    if(index==0u&&status.words[0u]==0u&&status.words[1u]==0u) {
+      const uint count=active_list.words[0u];
+      final_active.words[0u]=count; final_active.words[1u]=active_list.words[1u];
+      final_active.words[2u]=0u; final_active.words[3u]=1u;
+      final_masks.words[0u]=count; final_masks.words[1u]=active_list.words[1u];
+      final_masks.words[2u]=0u; final_masks.words[3u]=1u;
+      dispatch_args.words[4u]=(count+255u)/256u; dispatch_args.words[5u]=1u;
+      dispatch_args.words[6u]=1u; dispatch_args.words[7u]=0u;
+      dispatch_args.words[0u]=0u; dispatch_args.words[1u]=1u;
+      dispatch_args.words[2u]=1u; dispatch_args.words[3u]=1u;
+    }
+    return;
+  }
+  if(P.phase==8u) {
+    if(index==0u) {
+      dispatch_args.words[4u]=0u; dispatch_args.words[5u]=1u;
+      dispatch_args.words[6u]=1u; dispatch_args.words[7u]=0u;
+    }
+    return;
+  }
+  const uint count=active_list.words[0u];
+  if(index>=count||status.words[0u]!=0u)return;
+  if(P.phase==7u) {
+    final_active.words[4u+index]=active_list.words[4u+index];
+    final_masks.words[4u+index]=green_masks.words[4u+index];
+    return;
+  }
+  uint record; if(!valid_record(index,record))return;
+  if(P.phase==1u) {
+    const uint mask=green_masks.words[4u+index];
+    const bool red=mask==63u||vertex_requires_red(record);
+    counts.values[index]=red?8u:1u;
+    if(red)atomicAdd(status.words[1u],1u); // diagnostics; phase 2 overwrites.
+    return;
+  }
+  if(P.phase!=3u)return;
+  const uint destination=offsets.values[index],amount=counts.values[index];
+  if(amount==1u) { output_list.words[4u+destination]=record; return; }
+  if(amount!=8u||destination>active_list.words[1u]||8u>active_list.words[1u]-destination) {
+    fail(failure_capacity); return;
+  }
+  const uint base=record*8u,child_base=hierarchy.words[base+4u];
+  if((hierarchy.words[base+5u]&0xffu)!=0xffu||child_base==invalid_index||
+      child_base>P.child_count||8u>P.child_count-child_base) { fail(failure_topology); return; }
+  for(uint child=0u;child<8u;++child) {
+    const uint next=children.values[child_base+child];
+    if(next>=P.record_count) { fail(failure_record); return; }
+    output_list.words[4u+destination+child]=next;
+  }
+}

@@ -1,33 +1,18 @@
 #version 450
-// P8c: count surface triangles per P6 owner, rather than materialising the
-// 24 fixed root records per owner.  The exclusive scan of this compact array
-// retains deterministic owner-major output ordering.
+// P7e4a1 P8: compact-owner surface count. The indirect dispatch is armed
+// solely from the materializer's device-written owner header.
 layout(std430,binding=0) readonly buffer Owners { uint words[]; } owners;
 layout(std430,binding=1) readonly buffer Templates { uint words[]; } templates;
 layout(std430,binding=2) readonly buffer Field { uvec4 lanes[]; } field;
 layout(std430,binding=3) buffer Counts { uint values[]; } counts;
 layout(std430,binding=4) buffer Status { uint words[]; } status;
 layout(std430,binding=5) buffer Signs { uint values[]; } signs;
-// P7e4a binds the P7e3c device closure header.  A fixed-capacity dispatch
-// treats lanes at or past its compact count as explicitly inactive, avoiding
-// a CPU count readback or a CPU-produced P6 owner stream.
+ // Owner header ABI: count, capacity, failure, valid.
 layout(std430,binding=6) readonly buffer OwnerHeader { uint words[]; } owner_header;
-layout(push_constant) uniform Parameters { uint owner_count; uint source_low; uint source_high; uint reserved; } parameters;
+layout(push_constant) uniform Parameters {
+  uint source_low; uint source_high; uint reserved0; uint reserved1;
+} parameters;
 layout(local_size_x=64) in;
-uvec3 native_owner_invocation_id(){return gl_GlobalInvocationID;}
-uvec3 gated_owner_invocation_id(){
-  const uvec3 id=native_owner_invocation_id();
-  if(owner_header.words[0u]!=0u){
-    // Propagate a rejected P7e3c closure into P8's own preflight status.
-    // Otherwise all inactive zero counts could be mistaken for an empty but
-    // publishable candidate by owner-finalize.
-    atomicOr(status.words[1u],1u);
-    return uvec3(parameters.owner_count,id.y,id.z);
-  }
-  return uvec3(id.x>=owner_header.words[3u]?parameters.owner_count:id.x,
-      id.y,id.z);
-}
-#define gl_GlobalInvocationID gated_owner_invocation_id()
 const ivec2 edges[6]=ivec2[6](ivec2(0,1),ivec2(0,2),ivec2(0,3),ivec2(1,2),ivec2(1,3),ivec2(2,3));
 float lane(uint i,uint c){return uintBitsToFloat(field.lanes[i][c]);}
 bool finite(float x){return !isnan(x)&&!isinf(x);}
@@ -37,4 +22,7 @@ uint bit(uvec2 p,uint i){return i<64u?(p.x>>i)&1u:(p.y>>(i-64u))&1u;}
 uint digit(uvec2 p,uint d,uint i){uint b=3u*(d-i-1u);return bit(p,b)|(bit(p,b+1u)<<1u)|(bit(p,b+2u)<<2u);}
 vec3 root_vertex(uint r,uint c){const uint t[48]=uint[48](0,2,3,8,0,3,1,8,4,5,7,8,4,7,6,8,0,1,5,8,0,5,4,8,2,6,7,8,2,7,3,8,0,4,6,8,0,6,2,8,1,3,7,8,1,7,5,8);const vec3 v[9]=vec3[9](vec3(0),vec3(2,0,0),vec3(0,2,0),vec3(2,2,0),vec3(0,0,2),vec3(2,0,2),vec3(0,2,2),vec3(2,2,2),vec3(1));return v[t[r*4u+c]]*.5;}
 bool reconstruct(uint owner,out vec3 g[4]){uint b=owner*12u,h=owners.words[b+1u],r=(h>>26u)&63u,d=(h>>20u)&63u;if(r>=12u||d>38u)return false;for(uint i=0u;i<4u;++i)g[i]=root_vertex(r,i);uvec2 p=uvec2(owners.words[b+2u],owners.words[b+3u]);for(uint l=0u;l<d;++l){vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[edges[e].x]+g[edges[e].y]);vec3 o[4];for(uint i=0u;i<4u;++i)o[i]=g[i];uint x=digit(p,d,l);if(x==0u){g[0]=o[0];g[1]=m[0];g[2]=m[1];g[3]=m[2];}else if(x==1u){g[0]=o[1];g[1]=m[0];g[2]=m[3];g[3]=m[4];}else if(x==2u){g[0]=o[2];g[1]=m[1];g[2]=m[3];g[3]=m[5];}else if(x==3u){g[0]=o[3];g[1]=m[2];g[2]=m[4];g[3]=m[5];}else {uint q=x-4u;const uint p0[3]=uint[3](0,1,2),p1[3]=uint[3](5,4,3),ring[12]=uint[12](1,2,4,3,0,2,5,3,0,1,5,4);uint diag=0u;float a=dot(m[5]-m[0],m[5]-m[0]),z=dot(m[4]-m[1],m[4]-m[1]),y=dot(m[3]-m[2],m[3]-m[2]);if(z<a)diag=1u;if(y<(diag==0u?a:z))diag=2u;g[0]=m[p0[diag]];g[1]=m[ring[diag*4u+q]];g[2]=m[ring[diag*4u+((q+1u)&3u)]];g[3]=m[p1[diag]];}}return true;}
-void main(){uint owner=gl_GlobalInvocationID.x;if(owner>=parameters.owner_count)return;if(!valid_field()){atomicOr(status.words[1u],1u);return;}vec3 g[4];if(!reconstruct(owner,g)){atomicOr(status.words[1u],1u);return;}signs.values[owner*3u]=0u;signs.values[owner*3u+1u]=0u;signs.values[owner*3u+2u]=0u;uint mask=owners.words[owner*12u+10u];if(mask>=64u||templates.words[mask*28u+25u]!=mask){atomicOr(status.words[1u],1u);return;}vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[edges[e].x]+g[edges[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);uint total=0u,n=templates.words[mask*28u+24u];if(n>24u){atomicOr(status.words[1u],1u);return;}for(uint c=0u;c<n;++c){uint x=templates.words[mask*28u+c],s=0u;for(uint k=0u;k<4u;++k){uint i=(x>>(k*8u))&255u;if(i>=10u){atomicOr(status.words[1u],1u);return;}if(terrain_field_signed_distance(p[i],lane(1u,3u))<0.0)s|=1u<<k;}signs.values[owner*3u+c/8u]|=s<<((c&7u)*4u);uint q=0u;for(uint e=0u;e<6u;++e)q+=((s>>edges[e].x)&1u)!=((s>>edges[e].y)&1u)?1u:0u;total+=q==3u?1u:q==4u?2u:0u;}counts.values[owner]=total;}
+// The hybrid route records failure per owner and folds it in its one bounded
+// prefix workgroup. The original route keeps the existing global status ABI.
+void fail(uint owner){if(parameters.reserved0!=0u)counts.values[owner]=0xffffffffu;else atomicOr(status.words[1u],1u);}
+void main(){uint owner=gl_GlobalInvocationID.x;if(parameters.reserved0!=0u&&owner_header.words[0u]>1024u){if(owner==0u)counts.values[0u]=0xffffffffu;return;}if(owner>=owner_header.words[0u]||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u)return;if(!valid_field()){fail(owner);return;}vec3 g[4];if(!reconstruct(owner,g)){fail(owner);return;}signs.values[owner*3u]=0u;signs.values[owner*3u+1u]=0u;signs.values[owner*3u+2u]=0u;uint mask=owners.words[owner*12u+10u];if(mask>=64u||templates.words[mask*28u+25u]!=mask){fail(owner);return;}vec3 m[6];for(uint e=0u;e<6u;++e)m[e]=.5*(g[edges[e].x]+g[edges[e].y]);vec3 p[10]=vec3[10](m[2],m[1],m[0],g[0],m[4],m[3],g[1],m[5],g[2],g[3]);uint total=0u,n=templates.words[mask*28u+24u];if(n>24u){fail(owner);return;}for(uint c=0u;c<n;++c){uint x=templates.words[mask*28u+c],s=0u;for(uint k=0u;k<4u;++k){uint i=(x>>(k*8u))&255u;if(i>=10u){fail(owner);return;}if(terrain_field_signed_distance(p[i],lane(1u,3u))<0.0)s|=1u<<k;}signs.values[owner*3u+c/8u]|=s<<((c&7u)*4u);uint q=0u;for(uint e=0u;e<6u;++e)q+=((s>>edges[e].x)&1u)!=((s>>edges[e].y)&1u)?1u:0u;total+=q==3u?1u:q==4u?2u:0u;}counts.values[owner]=total;}

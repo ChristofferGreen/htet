@@ -1,0 +1,55 @@
+#version 450
+
+// Device-count compact exclusive scan for P7e4a1 red repair. Phase 0 scans
+// 256-entry blocks on the active-list indirect grid, phase 1 scans the small
+// block-total stream, and phase 2 adds each block prefix on that same grid.
+layout(std430,binding=0) readonly buffer ActiveList { uint words[]; } active_list;
+layout(std430,binding=1) readonly buffer Counts { uint values[]; } counts;
+layout(std430,binding=2) buffer Offsets { uint values[]; } offsets;
+layout(std430,binding=3) buffer BlockTotals { uint values[]; } block_totals;
+layout(std430,binding=4) buffer BlockOffsets { uint values[]; } block_offsets;
+layout(std430,binding=5) buffer ScanTotal { uint values[]; } scan_total;
+layout(std430,binding=6) buffer LevelTotals { uint values[]; } level_totals;
+layout(std430,binding=7) buffer LevelOffsets { uint values[]; } level_offsets;
+layout(push_constant) uniform Parameters { uint phase; } P;
+layout(local_size_x=256) in;
+shared uint scratch[256]; shared uint next_scratch[256]; shared uint total;
+void main() {
+  const uint lane=gl_LocalInvocationID.x,index=gl_GlobalInvocationID.x;
+  const uint count=active_list.words[0u];
+  if(P.phase==0u) {
+    scratch[lane]=index<count?counts.values[index]:0u; barrier();
+    for(uint step=1u;step<256u;step<<=1u) {
+      next_scratch[lane]=scratch[lane]+(lane>=step?scratch[lane-step]:0u);
+      barrier(); scratch[lane]=next_scratch[lane]; barrier();
+    }
+    if(index<count)offsets.values[index]=lane==0u?0u:scratch[lane-1u];
+    if(lane==255u)block_totals.values[gl_WorkGroupID.x]=scratch[255u];
+    return;
+  }
+  const uint blocks=(count+255u)/256u;
+  if(P.phase==1u) {
+    // Second parallel level: each workgroup scans 256 first-level totals.
+    // The enclosing live schedule deliberately reuses the input-list grid
+    // here, which may contain many more workgroups than this level needs.
+    // Those surplus workgroups must not write past the device-sized level
+    // sidecar (one entry per 256 block totals).
+    const uint levels=(blocks+255u)/256u;
+    if(gl_WorkGroupID.x>=levels)return;
+    scratch[lane]=index<blocks?block_totals.values[index]:0u; barrier();
+    for(uint step=1u;step<256u;step<<=1u){next_scratch[lane]=scratch[lane]+(lane>=step?scratch[lane-step]:0u);barrier();scratch[lane]=next_scratch[lane];barrier();}
+    if(index<blocks)block_offsets.values[index]=lane==0u?0u:scratch[lane-1u];
+    if(lane==255u)level_totals.values[gl_WorkGroupID.x]=scratch[255u]; return;
+  }
+  if(P.phase==2u) {
+    // At most ceil(1,048,576 / 256^2) == 16 superblocks: scan them in one
+    // device workgroup, still with the same parallel prefix primitive.
+    const uint levels=(blocks+255u)/256u;
+    scratch[lane]=lane<levels?level_totals.values[lane]:0u;barrier();
+    for(uint step=1u;step<256u;step<<=1u){next_scratch[lane]=scratch[lane]+(lane>=step?scratch[lane-step]:0u);barrier();scratch[lane]=next_scratch[lane];barrier();}
+    if(lane<levels)level_offsets.values[lane]=lane==0u?0u:scratch[lane-1u];
+    if(lane==levels-1u)scan_total.values[0u]=scratch[lane];return;
+  }
+  if(P.phase==3u&&index<count)
+    offsets.values[index]+=block_offsets.values[gl_WorkGroupID.x]+level_offsets.values[gl_WorkGroupID.x/256u];
+}

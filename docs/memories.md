@@ -64,6 +64,178 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: P7c2a expands a complete P7c1b projected record into twelve exact 18-float `SceneVertex` values with smooth normals evaluated at camera-relative position plus its captured render origin, while remaining non-drawable.
 - Evidence: The hidden Metal fixture matched fixed/moved field and rebase CPU oracles and rejected stale, malformed, non-finite, capacity, and empty cases; the paired P7c1b fixture also passed an intersecting non-default domain.
 
+### gpu-terrain-device-front
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, bcc, closure, provenance, private-memory, fallback
+- Fact: Ordinary interactive Metal launch selects the compact GPU-resident
+  front, but it is not qualified: a full-front triangle-count discrepancy has
+  been found and must be fixed before this route can be accepted.
+- Evidence: The normal-launch fixture observed direct private P8 vertex
+  and indirect-buffer bindings with non-indexed draws, zero binding violations,
+  zero P6/CPU-surface requests, and no payload readback; injected rejection
+  retained the bootstrap front, the explicit override test passed, and the
+  fresh 536-test Release gate passed.
+
+### gpu-terrain-hybrid-p8
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, bcc, p8, prefix, private-memory
+- Fact: P7e4e replaces P7e4d's serial count/prefix/emission microbatch with a
+  bounded hybrid: existing parallel count/sign and emission kernels use fixed
+  1,024-thread grids, while one 1,024-lane group computes only deterministic
+  offsets/candidate header. A scalar finalizer validates emission, arms the
+  device-produced copy grid, and publishes draw arguments before indirect
+  retained-front copy.
+- Evidence: Exact dedicated and strict live parity cover owner/local-vertex,
+  seams, mixed depth, camera/field changes, image, stale/failure, malformed,
+  zero-capacity, and over-1,024 retention. Matched 2x30 p95 measured CPU
+  14.2770/14.6947 ms, GPU 34.4648/34.0537 ms, and P8 device
+  27.5559/27.8892 ms for 775 owners/254 triangles: it removes the serial
+  regression but misses the 90% gate, so CPU stays default.
+
+### gpu-terrain-hybrid-p8-isolation
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, timing, bisection
+- Fact: Dependency-valid command-buffer timestamps identify parallel emission,
+  not hybrid prefix/control, as P8's dominant work. This evidence deliberately
+  uses `GPUStartTime`/`GPUEndTime`, not the unsupported counter API.
+- Evidence: At 775 owners/254 triangles, 40-step p95 phase spans were
+  count/sign 0.3260/0.3241 ms, scan/header 0.0107/0.0055, emission
+  27.6280/27.3959, and finalize/copy 0.0145/0.0108. Reducing bisection to 20
+  preserves the unchanged parity suites and lowers emission to
+  23.0776/23.1424 ms, but total GPU p95 is still 29.9524/30.0128 versus CPU
+  14.3707/14.6039; CPU remains default.
+
+### gpu-terrain-hybrid-p8-bisection-sweep
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, image-parity, bisection
+- Fact: The compact fixture's unit world scale and maximum root segment
+  `sqrt(.5)` make nine bisections sufficient for the 0.002 positional bound,
+  but not for its stricter independent image oracle; the safe implementation
+  remains 20 bisections.
+- Evidence: Both 16- and 12-step variants passed owner/local-vertex, stale,
+  failure-retention, and over-capacity checks but changed one of 9,216 image
+  pixels in both strict legacy and hybrid runs. The restored 20-step baseline
+  passed all three focused parity tests, with no tolerance change or failed
+  candidate benchmark.
+
+### gpu-terrain-packed-sign-emission
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, field, parity
+- Fact: Compact owner emission now consumes the count stage's private packed
+  four-bit template-cell signs instead of recalculating corner SDF signs; the
+  same field tuple therefore establishes both count and emission signs.
+- Evidence: Dedicated owner/local-vertex and strict legacy/hybrid parity pass
+  with unchanged 20-step root bisection and tolerances. The matched 2x30 run
+  measured GPU 29.9427/29.7991 ms versus CPU 14.4445/14.6332, with P8 device
+  23.0218/23.0092 and emit 22.6733/22.6704 ms; it misses promotion, so CPU is
+  still default.
+
+### gpu-terrain-emit-local-projection
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, projection, parity
+- Fact: Emission uses an eight-step local bound for midpoint projection only;
+  it preserves the shared field tuple, the 1e-10 early-convergence threshold,
+  packed count signs, and 20-step root bisection.
+- Evidence: Strict legacy and hybrid parity, including image/stale/failure and
+  capacity retention, passes unchanged. Matched 2x30 p95 fell to GPU
+  24.9351/25.2480 ms (P8 18.4881/18.3410; emit 18.1469/18.0052) versus CPU
+  14.3073/14.4981, still rejecting promotion and retaining CPU default.
+
+### gpu-terrain-projection-normal-reuse
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, projection, normals, parity
+- Fact: Compact emission reuses the final emit-local Newton-step normal for
+  projected midpoint vertices; only the unprojected roots need separate
+  final-point normal evaluations. The shared field function, 1e-10 early
+  exit, eight-step projection bound, and 20-step root solver remain intact.
+- Evidence: Dedicated owner/local-vertex and strict legacy/hybrid parity,
+  including image/stale/failure and capacity retention, pass unchanged. The
+  matched 2x30 p95 measured GPU 24.7814/24.4104 ms (P8 18.3175/18.0777; emit
+  17.9797/17.7389) versus CPU 14.4601/15.3918 ms, so it remains below the
+  promotion gate and CPU stays default.
+
+### gpu-terrain-triangle-parallel-emission
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, emission, indirect, parity
+- Fact: P7e4k replaces fixed owner-lane emission with one invocation per
+  device-scheduled output triangle. A private prefix-produced indirect grid
+  launches it only after admission; each invocation finds its canonical owner
+  through offsets, then its template cell/local cut from packed signs.
+- Evidence: The write index remains `global_triangle*12 + face*3`, preserving
+  exact owner-to-cell-to-cut order and the existing failure/capacity gate.
+  Dedicated owner/local-vertex and strict legacy/hybrid image, stale,
+  failure, and capacity parity pass without payload readback. Matched 2x30
+  p95 measured GPU 15.0363/14.7743 ms (P8 8.0902/8.1398; emit
+  7.7504/7.7997) versus CPU 14.5183/14.5790 ms. It materially reduces P8 but
+  still misses the 90% gate, so CPU remains default.
+
+### gpu-terrain-triangle-projection-sweep
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, projection, image-parity
+- Fact: P7e4k's eight midpoint-projection iterations are the minimum safe
+  bound for triangle-parallel emission under the complete payload contract.
+- Evidence: Six and seven iterations both passed strict legacy/hybrid live
+  image suites but failed the dedicated owner/P8 payload equality at the first
+  smooth-normal component (word 6), because the legacy emitter remained at
+  eight steps. This establishes only cross-emitter divergence, not a
+  CPU-reference failure; P7e4p tested the matched six-step policy separately.
+
+### gpu-terrain-matched-six-step-projection
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, projection, parity, benchmark
+- Fact: Reducing midpoint projection to six steps is parity-safe when the
+  legacy owner and triangle-parallel emitters use the identical policy, but
+  it does not meet the complete-frame 90% promotion gate.
+- Evidence: The matched policy passed dedicated owner/local-vertex plus
+  strict legacy and hybrid CPU-reference parity. Its matched 2x30 p95 was
+  GPU 14.2777/13.9989 ms versus CPU 14.7992/14.6397 ms (0.9648x/0.9562x),
+  although P8 device time improved to 7.1313/7.2144 ms. The literal
+  eight-step P7e4k source was restored and all three strict suites pass.
+
+### gpu-terrain-matched-four-step-projection
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, projection, parity, benchmark, promotion
+- Fact: A matched four-step midpoint policy is CPU-reference parity-safe and
+  clears the measured complete-frame 90% gate, unlike five steps.
+- Evidence: Five steps passed strict parity but measured GPU/CPU p95
+  0.9134x/0.9414x. Four steps passed dedicated owner plus strict legacy and
+  hybrid CPU-reference parity; independent matched 2x30 runs measured
+  0.8485x/0.8313x and 0.8476x/0.8487x. It remains conditional on the full
+  release gate and source audit that normal runtime actually selects P7e4.
+
+### gpu-terrain-tetrahedral-normal-rejection
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, normals, parity
+- Fact: Four equal-radius tetrahedral finite-difference samples cannot
+  replace the six axial samples in the triangle emitter while its payload
+  contract requires byte-exact smooth normals.
+- Evidence: Applying the helper to all eight-step midpoint projections and
+  endpoint normals kept both strict live suites passing but diverged from the
+  unchanged legacy emitter at payload word 6 (`3200185190 != 3200164191`).
+  That one-sided comparison is not CPU-reference parity evidence. It was not
+  benchmarked; the literal P7e4k shared-normal implementation was restored,
+  then all three strict parity suites passed.
+
+### gpu-terrain-closure-timestamp-attribution
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, closure, timing, diagnostics
+- Fact: Compact-closure substage attribution must remain unavailable when
+  matched cumulative command-buffer prefix replays are not monotonic within
+  timestamp noise; aggregate command timings remain valid evidence.
+- Evidence: P7e4m used only `GPUStartTime`/`GPUEndTime` with per-sample
+  adjacent cumulative differences for clear, canonical, green, red, and
+  follow-up canonical work. The 0.01 ms guard rejected the substage values,
+  emitting JSON null rather than synthetic p95s. Valid aggregates were
+  closure 5.3192/5.5565 ms and materializer 0.0180/0.0132 ms, with no counter
+  sampling or terrain payload/count readback.
+
+### gpu-terrain-root-cache-rejection
+- Updated: 2026-09-08
+- Tags: metal, gpu, terrain, p8, roots, cache, benchmark
+- Fact: A private canonical owner/cell root cache preserved P7e4k parity but
+  regressed P8 p95 from 8.0902/8.1398 ms to 9.0518/9.1735 ms, so direct roots
+  remain the active route.
+
 ### gpu-terrain-owner-direct-publication
 - Updated: 2026-09-07
 - Tags: metal, gpu, terrain, bcc, private-memory

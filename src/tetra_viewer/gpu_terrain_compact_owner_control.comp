@@ -1,0 +1,21 @@
+#version 450
+// Compact P8 controller. owner header=[count,capacity,failure,valid].
+ // Nine padded MTLDispatchThreadgroupsIndirectArguments records drive count,
+ // three ascending scan levels, two descending adds, finalization, emit/copy.
+layout(std430,binding=0) readonly buffer OwnerHeader {uint words[];} owner_header;
+layout(std430,binding=1) buffer Status {uint words[];} status;
+layout(std430,binding=2) buffer Vertices {uint words[];} vertices;
+layout(std430,binding=3) buffer Dispatches {uint words[];} dispatches;
+layout(push_constant) uniform Parameters {uint vertex_capacity;} P;
+layout(local_size_x=1) in;
+void grid(uint slot,uint groups){uint b=slot*4u;dispatches.words[b]=groups;
+ dispatches.words[b+1u]=1u;dispatches.words[b+2u]=1u;dispatches.words[b+3u]=0u;}
+void main(){if(gl_GlobalInvocationID.x!=0u)return;
+ status.words[0u]=0u;status.words[1u]=0u;vertices.words[0u]=0u;vertices.words[1u]=0u;vertices.words[2u]=0u;
+ if(P.vertex_capacity==0u||owner_header.words[2u]!=0u||owner_header.words[3u]!=1u||owner_header.words[0u]==0u||owner_header.words[0u]>owner_header.words[1u]){
+   status.words[1u]=1u;vertices.words[1u]=1u;for(uint i=0u;i<9u;++i)grid(i,0u);return;
+ }
+ uint n=owner_header.words[0u],blocks=(n+255u)/256u,supers=(blocks+255u)/256u;
+ grid(0u,(n+63u)/64u);grid(1u,blocks);grid(2u,supers);grid(3u,1u);
+ grid(4u,blocks);grid(5u,blocks);grid(6u,1u);grid(7u,(n+63u)/64u);grid(8u,0u);
+}

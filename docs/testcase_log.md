@@ -2,10 +2,400 @@
 
 ## Current Known Failures
 
-- none
+- 2026-09-08 CEST | New production CPU-vs-GPU device-front parity fixture
+  fails before selector dispatch: the actual `BlockedTerrainRuntime` static
+  publication produces a 1,679,044-record immutable hierarchy snapshot,
+  while `configure_metal_gpu_hierarchy_live_selection()` rejected every
+  snapshot over 1,048,576 records. Command: fresh
+  `cmake --build build/release --target tetra_world_metal -j 4`, then
+  `ctest --test-dir build/release --output-on-failure -R '^metal GPU
+  production device-front parity$'`. Signature:
+  `production parity static: GPU snapshot configuration failed
+  (records=1679044)`. This proves the claimed device path cannot run for a
+  normal production front. The artificial cap has been removed; rerun to
+  capture selected/closed/owner/P8 metrics and the first mesh mismatch.
+
+- 2026-09-08 CEST | GPU-resident compact terrain is incomplete in the ordinary
+  interactive display path. The private P8 result reports 25,684 triangles
+  where the matching complete CPU front reports 183,432. Do not accept the
+  GPU path until a strict complete-front topology/count and full-frame
+  image-parity gate passes.
 
 ## Recent Test Runs
 
+- 2026-09-08 CEST | pass, regression containment |
+  command: fresh `cmake -S . -B build/release`,
+  `cmake --build build/release --target tetra_world_metal -j 4`, then
+  `ctest --test-dir build/release --output-on-failure -R '^metal GPU
+  device-front ordinary launch retains CPU terrain$'` | failures: none |
+  notes: superseded: restoring a CPU default was not an authorized resolution.
+
+- 2026-09-08 CEST | pass, final Release GPU-resident default and fallback |
+  command: `./scripts/compile.sh --release` | failures: none | notes: all
+  536 tests passed. The suite includes the normal-launch-equivalent P7e4
+  device-front test (private P8 vertex and indirect buffers bound directly,
+  non-indexed draw, zero P6/CPU-surface work and binding violations), the
+  injected-rejection retained-bootstrap test, and the explicit
+  `TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=0` CPU-override test.
+
+- 2026-09-08 CEST | pass, focused compact device-front suite |
+  command: fresh `ctest --test-dir build/release --output-on-failure -R
+  '^metal GPU (device-front (is ordinary-launch default|CPU override selects
+  fallback|motion commits private P8 front|motion rejects failed P8 input)|compact
+  (green closure parity|red scan large-list parity|live closure encoder|live
+  private-front exact parity|P8 hybrid exact parity|owner materializer parity|
+  owner P8 private-front parity))$'` | failures: none | notes: 11/11 passed
+  after adding the interactive GPU-resident terrain toggle and restoring the
+  complete bootstrap display front on CPU fallback.
+
+- 2026-09-08 CEST | pass, post-default compact 2x30 observations |
+  command: fresh `tetra_world_metal` build followed by two direct
+  `--metal-gpu-compact-live-performance-smoke-test` runs | failures: none |
+  notes: run one CPU p95 14.5992/14.5518 ms and GPU 13.1744/13.0563 ms
+  (0.9024x/0.8972x); run two CPU 14.6210/14.6031 ms and GPU
+  12.7266/13.1861 ms (0.8704x/0.9030x). Both parity harnesses passed without
+  payload readback; each run had one profile narrowly over the 0.90 gate, so
+  these do not replace the two prior qualifying observations or change the
+  threshold.
+
+- 2026-09-08 CEST | pass, source-exact promotion-status regression |
+  command: fresh `cmake --build build/release --target tetra_world_metal -j 4`,
+  then focused compact-performance/default/CPU-override CTest and a direct
+  compact performance smoke | failures: none | notes: 3/3 focused tests passed.
+  The direct run measured 0.8888x/0.8743x GPU/CPU p95 and reports
+  `outcome:"promoted_gpu_default"`; the changed branch formats this diagnostic
+  label only, with unchanged routing, shaders, and pass/fail predicates.
+
+- 2026-09-08 CEST | pass, full Release device-front display-binding baseline |
+  command: `./scripts/compile.sh --release` | failures: none | notes: all
+  534 tests passed. CTest #520 passed with 5 submitted and 2 completed/accepted
+  selections after its deterministic completion wait. CTest #529 observed the
+  P8 private vertex and indirect buffers at draw time; #530 retained the CPU
+  bootstrap buffers after injected rejection. This run began before the
+  subsequent compact-red clear-work reduction, so it is a display-binding
+  baseline rather than validation of that later optimization.
+
+- 2026-09-08 CEST | pass, focused device-front display binding |
+  command: fresh `tetra_world_metal` build, then direct normal and injected
+  green-budget `--metal-motion-smoke-test` runs | failures: none | notes: the
+  valid P8 route made 2 display promotions and 40 private-buffer draw bindings,
+  with zero binding violations; no P6 request, post-bootstrap CPU surface build,
+  or candidate-payload readback occurred. The injected rejection made 0
+  promotions and 17 bootstrap-buffer draw bindings, also with zero violations.
+
+- 2026-09-08 CEST | pass, CTest #520 isolated repetitions |
+  command: freshly built `ctest --test-dir build/release --output-on-failure -R
+  '^metal GPU live hierarchy selection follows camera without CPU terrain$'` |
+  failures: none | notes: two post-fix repetitions passed in 19.58 and 19.23
+  seconds with the existing requirement of at least two completed/accepted
+  selections. The earlier full-Release failure was the harness exiting at 30
+  frames before that same required state was reached; production scheduling was
+  not changed.
+
+- 2026-09-08 CEST | fail, full Release after P8c3 timestamp-flight repair |
+  command: `./scripts/compile.sh --release` | failures: CTest #520 only |
+  notes: 533/534 passed in 986.06 seconds. #527 compact hybrid parity, #528
+  compact 2x30 benchmark, #529/#530 device-front commit/rejection, and #532
+  owner-direct performance qualification all passed. #520 submitted 4 but
+  completed/accepted 1 selection with no GPU failure or CPU-generation
+  violation; its existing >=2 completion requirement was not met.
+
+- 2026-09-08 CEST | pass, isolated P8c3 owner-direct performance qualification
+  (two repetitions) | command: fresh `tetra_world_metal` build followed by
+  `ctest --test-dir build/release --output-on-failure -R '^metal GPU terrain
+  owner-direct performance qualification$'` | failures: none | notes: the
+  test-only serial timestamp-flight collection produced its asserted 30 valid
+  generation samples and passed unchanged 60.0000 ms generation and 33.3333
+  ms frame limits in 58.11 and 57.85 seconds. The same qualification also
+  passed in the subsequent full Release run; normal renderer scheduling and
+  selection were not changed.
+
+- 2026-09-08 CEST | fail, isolated legacy P8c2 owner-direct qualification |
+  command: fresh `tetra_world_metal` build followed by `ctest --test-dir
+  build/release --output-on-failure -R '^metal GPU terrain owner-direct
+  performance qualification$'` | failures: 242.1687 ms generation p95 above
+  the unchanged 60 ms limit | notes: it completed in 99.01 s rather than
+  timing out and reported clean selection (`selected:true`), 215 dispatched,
+  209 accepted, zero failed/overflow/CPU-front violations, and frame p95
+  5.2847 ms. This legacy CPU-P6 route is not P7e4 performance evidence.
+
+- 2026-09-08 CEST | conditional promotion, P7e4q matched projection sweep |
+  command: fresh release Metal builds; dedicated owner/private-front plus
+  strict legacy and hybrid parity for each candidate; two independent matched
+  2-profile, 4-warmup + 30-sample p95 runs for four steps | failures: none |
+  notes: matched five-step projection was parity-clean but missed the 0.90
+  gate at GPU/CPU 0.9134x/0.9414x. The matched four-step policy passed strict
+  CPU-reference parity and measured 0.8485x/0.8313x, then 0.8476x/0.8487x.
+  It is eligible only after the release gate and normal-runtime source audit;
+  this entry does not claim the default changed.
+
+- 2026-09-08 CEST | rejected, P7e4p matched six-step projection |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: applying the same six-step midpoint
+  projection and final-normal reuse to both emitters passes independent
+  CPU-reference parity. It improved P8 device p95 to 7.1313/7.2144 ms, but
+  complete GPU p95 was 14.2777/13.9989 ms versus CPU 14.7992/14.6397 ms
+  (0.9648x/0.9562x), above the 0.90 gate. The literal eight-step P7e4k
+  baseline was restored and all three strict suites pass.
+
+- 2026-09-08 CEST | rejected, P7e4o tetrahedral emitter normals |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 &&
+  ctest --test-dir build/release --output-on-failure -R 'metal GPU compact
+  live private-front exact parity|metal GPU compact P8 hybrid exact parity|
+  metal GPU compact owner P8 private-front parity'` | failures: metal GPU
+  compact owner P8 private-front parity | notes: four equal-radius
+  tetrahedral finite-difference samples were used for both eight-step
+  midpoint projection and endpoint smooth normals. The strict legacy and
+  hybrid suites passed, but the changed triangle emitter differed from the
+  still-baseline legacy emitter at owner payload word 6 (`3200185190 !=
+  3200164191`); this is not a CPU-reference parity rejection. The candidate
+  was not benchmarked; the literal P7e4k shared-normal path was restored and
+  all three strict parity suites pass.
+
+- 2026-09-08 CEST | rejected, P7e4n private root-cache prepass |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: a private 1024×24×6 aligned root
+  cache preserved exact parity but raised P8 p95 from 8.0902/8.1398 ms to
+  9.0518/9.1735 ms; direct-root P7e4k was restored and strict suites pass.
+
+- 2026-09-08 CEST | attribution unavailable, P7e4m compact-closure replay |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: dependency-valid command-buffer
+  prefix replays for clear, canonicalization, green, red clear, red work, and
+  follow-up canonicalization were compared per sample with a 0.01 ms
+  monotonicity allowance. One or more replay differences exceeded that noise
+  bound, so all substage p95 fields are JSON null rather than synthetic. Only
+  valid aggregate timings remain: closure 5.3192/5.5565 ms and materializer
+  0.0180/0.0132 ms. No counter or candidate-payload/count readback occurred.
+
+- 2026-09-08 CEST | pass, P7e4l restored eight-step triangle emitter |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 &&
+  ctest --test-dir build/release --output-on-failure -R 'metal GPU compact
+  live private-front exact parity|metal GPU compact P8 hybrid exact parity|
+  metal GPU compact owner P8 private-front parity'` | failures: none | notes:
+  the precise verified P7e4k eight-iteration midpoint projection baseline was
+  restored after the rejected six/seven-step candidates; dedicated owner and
+  strict legacy/hybrid live parity all pass.
+
+- 2026-09-08 CEST | fail, P7e4l six/seven-step triangle projection sweep |
+  command: fresh `tetra_world_metal` builds followed by `ctest --test-dir
+  build/release --output-on-failure -R 'metal GPU compact live private-front
+  exact parity|metal GPU compact P8 hybrid exact parity|metal GPU compact
+  owner P8 private-front parity'` | failures: metal GPU compact owner P8
+  private-front parity | notes: six iterations first differed from the full
+  P8 payload at word 6 (`3200185190 != 3200185082`); seven first differed at
+  word 6 (`3200185190 != 3200185047`). Both live legacy/hybrid image suites
+  passed, but byte-level owner parity did not, so neither candidate was
+  benchmarked and eight steps was restored.
+
+- 2026-09-08 CEST | rejected, P7e4k triangle-parallel emission promotion |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: hybrid prefix/header creates a
+  device-only indirect triangle grid after candidate admission. Each triangle
+  invocation binary-searches canonical owner offsets and selects its exact
+  owner/template-cell/local-CUT-triangle slot using count-stage packed signs.
+  There is no CPU count or payload readback; root/projection semantics and
+  retained-front gates are unchanged. Exact owner/local-vertex, image, stale,
+  failure-retention, and over-capacity checks pass. The matched run measured
+  CPU p95 14.5183/14.5790 ms versus GPU 15.0363/14.7743 ms
+  (1.0357x/1.0134x); P8 device p95 was 8.0902/8.1398 ms and emit was
+  7.7504/7.7997 ms for 775 owners/254 triangles. CPU fallback/default remains
+  mandatory.
+
+- 2026-09-08 CEST | rejected, P7e4j final projection-normal reuse |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: three projected midpoint vertices
+  reuse their final emit-local Newton-step normals, while the three roots
+  retain independent field-normal evaluations. Shared field semantics,
+  1e-10 early exit, packed signs, and 20 root bisections are unchanged. Exact
+  owner/local-vertex, image, stale, failure-retention, and over-capacity
+  checks pass. The matched run measured CPU p95 14.4601/15.3918 ms versus GPU
+  24.7814/24.4104 ms (1.7138x/1.5859x); P8 device p95 was
+  18.3175/18.0777 ms and emit 17.9797/17.7389 ms for 775 owners/254
+  triangles. CPU fallback/default remains mandatory.
+
+- 2026-09-08 CEST | rejected, P7e4i emit-local projection promotion |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: an emit-local eight-iteration
+  midpoint projection preserves the shared field grammar, 1e-10 early exit,
+  count signs, and 20 root bisections. Exact owner/local-vertex, image, stale,
+  failure-retention, and over-capacity checks pass. The matched run measured
+  CPU p95 14.3073/14.4981 ms versus GPU 24.9351/25.2480 ms
+  (1.7428x/1.7415x); P8 device p95 was 18.4881/18.3410 and emit was
+  18.1469/18.0052 ms for 775 owners/254 triangles. CPU fallback/default
+  remains mandatory.
+
+- 2026-09-08 CEST | rejected, P7e4h packed-sign emission promotion |
+  command: fresh release Metal build; dedicated owner/private-front plus
+  strict legacy and hybrid parity; matched 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none | notes: emission consumes count's private
+  packed 4-bit cell signs, eliminating duplicate corner SDF evaluation while
+  retaining 20 root bisections and all tolerances. The matched run measured
+  CPU p95 14.4445/14.6332 ms versus GPU 29.9427/29.7991 ms
+  (2.0729x/2.0364x); P8 device p95 was 23.0218/23.0092 and emit was
+  22.6733/22.6704 for 775 owners/254 triangles. CPU fallback/default remains
+  mandatory.
+
+- 2026-09-08 CEST | pass, P7e4g restored 20-step compact P8 baseline |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 &&
+  ctest --test-dir build/release --output-on-failure -R 'metal GPU compact
+  live private-front exact parity|metal GPU compact P8 hybrid exact parity|
+  metal GPU compact owner P8 private-front parity'` | failures: none | notes:
+  the resolving 20-step build passed dedicated owner/local-vertex plus strict
+  legacy and hybrid root-seam, mixed-depth, moving-camera, field/image,
+  stale, failure-retention, and over-capacity checks. The 16- and 12-step
+  experimental candidates each failed only image parity by 1/9216 pixels;
+  no tolerance changed and no candidate p95 was run.
+
+- 2026-09-08 CEST | fail, P7e4g 16/12-step compact P8 bisection sweep |
+  command: fresh `tetra_world_metal` builds followed by `ctest --test-dir
+  build/release --output-on-failure -R 'metal GPU compact live private-front
+  exact parity|metal GPU compact P8 hybrid exact parity|metal GPU compact
+  owner P8 private-front parity'` | failures: metal GPU compact live
+  private-front exact parity; metal GPU compact P8 hybrid exact parity | notes:
+  both 16 and 12 iterations retained owner/local-vertex, stale, and
+  retained-front evidence but independently changed image parity by 1/9216
+  pixels. The last verified 20-step baseline was restored and passed above.
+
+- 2026-09-08 CEST | rejected, P7e4f hybrid P8 arithmetic promotion |
+  command: fresh release Metal build; exact dedicated owner/private-front and
+  strict live hybrid parity; matched 2-profile, 4-warmup + 30-sample p95
+  harness | failures: none in correctness fixtures; performance gate rejected
+  | notes: dependency-valid command-buffer timestamps (not counter samples)
+  isolated 40-step count/sign 0.3260/0.3241 ms, scan/header 0.0107/0.0055,
+  emit 27.6280/27.3959, and finalize/copy 0.0145/0.0108 for 775 owners/254
+  triangles. The parity-qualified 20-step bisection variant measured CPU p95
+  14.3707/14.6039 ms, GPU 29.9524/30.0128 (2.0843x/2.0551x), P8 device
+  23.4156/23.4818, and emit 23.0776/23.1424. CPU fallback/default remains
+  mandatory.
+
+- 2026-09-08 CEST | rejected, P7e4e compact P8 hybrid promotion |
+  command: fresh release Metal build; exact dedicated owner/private-front and
+  strict live full/hybrid parity; identical 2-profile, 4-warmup + 30-sample
+  p95 harness | failures: none in correctness fixtures; performance gate
+  rejected | notes: parallel 1,024-thread count/sign and emission surround a
+  single deterministic 1,024-lane prefix/header workgroup; scalar finalize
+  validates emission, arms the actual private copy grid, and publishes args.
+  Exact owner/local-vertex, root-seam, mixed-depth, moving-field, image,
+  stale, malformed, zero-capacity, and over-1,024 retained-front checks pass.
+  The matched run measured CPU p95 14.2770/14.6947 ms versus GPU p95
+  34.4648/34.0537 ms (2.4140x/2.3174x); P8 device p95 was
+  27.5559/27.8892 ms for 775 owners and 254 triangles. CPU fallback/default
+  remains mandatory.
+
+- 2026-09-08 CEST | rejected, P7e4d compact P8 microbatch promotion |
+  command: fresh release Metal build; compact full-P8/microbatch fixture;
+  strict full and microbatch live private-front parity; identical 2-profile,
+  4-warmup + 30-sample p95 harness | failures: none in correctness fixtures;
+  performance gate rejected | notes: one 1,024-lane workgroup deterministically
+  reproduces count/prefix/emission and writes a private indirect copy grid;
+  validation zeros that grid on malformed, stale, zero-capacity, or oversized
+  input, preserving the retained front. Full/microbatch payload and arguments
+  match, and strict root-seam/mixed-depth/moving/field/stale/failure parity
+  passes. The matched run measured CPU p95 14.926/14.508 ms versus GPU p95
+  46.387/46.938 ms (3.11x/3.24x); P8 device p95 was 40.193/39.601 ms.
+  CPU fallback/default remains mandatory.
+
+- 2026-09-08 01:31 CEST | fail, diagnostic-only native Metal counter probe |
+  command: `ctest --test-dir build/release --output-on-failure -R '^metal GPU
+  compact camera-to-private-front p95 benchmark$'` | failures: benchmark
+  process crashed in `AGXMetalG15X-M1` while resolving dispatch-boundary
+  timestamp samples, although the device advertised that capability | notes:
+  the unsupported probe has since been removed from the qualification binary.
+  The safe next method is a bounded, deterministic P8 microbatch emitter with
+  an explicit 1,024-owner admission limit, fail-closed overflow, strict parity,
+  and retained prior front; do not claim per-kernel timing from this API.
+
+- 2026-09-08 01:27 CEST | pass, qualification measurement (GPU promotion
+  rejected) | command: `cmake --build build/release --target tetra_world_metal
+  -j 4 && ctest --test-dir build/release --output-on-failure -R 'metal GPU
+  compact live private-front exact parity|metal GPU compact
+  camera-to-private-front p95 benchmark'` | failures: none | notes: strict
+  live private-front owner/geometry/image parity passed. This timing entry is
+  superseded: its dispatch-boundary counter experiment later faulted on the
+  native M1, so its 464--569 ms closure attribution is not valid evidence and
+  must not guide implementation. The current coarse command-timing benchmark
+  remains rejected under the required GPU <=90% CPU gate and attributes the
+  majority of the observed device time to P8. No measured candidate/retained
+  payload readback and zero CPU-generation violations.
+
+- 2026-09-08 00:08 CEST | pass, focused Release Metal compact live encoder |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 &&
+  ctest --test-dir build/release --output-on-failure -R '^(metal GPU hierarchy
+  selector parity|metal GPU compact green closure parity|metal GPU compact live
+  closure encoder)$'` | failures: none | notes: the isolated production
+  selector/worklist/canonical/green/red command completed in under a second
+  on a 7,020-record immutable snapshot, made eight bounded red rounds, used
+  the device quiescence gate, and latched a stable final list/mask. P8 owner
+  materialization remains false; no whole-app timing claim is implied.
+- 2026-09-07 23:58 CEST | timeout/nonviable, Release Metal compact-closure
+  motion smoke after device early-quiescence | command:
+  `timeout 180 env TETWORLD_METAL_BACKGROUND=1
+  TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=1
+  build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal
+  --metal-motion-smoke-test` | failures: exit 124, no completion JSON | notes:
+  device early-quiescence and stable final active/mask copy were present.
+  Historical P7e2 bootstrap itself took roughly 300 seconds, so this proves
+  only that the whole-app bound is insufficient, not that compact closure is
+  slow. Do not rerun this identical smoke; instrument selection encode,
+  compact closure encode, and command completion before another live attempt.
+- 2026-09-07 23:43 CEST | canceled/nonviable, Release Metal compact-closure
+  motion smoke | command:
+  `TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=1
+  build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal
+  --metal-motion-smoke-test` (one run bounded with `timeout 180`; one duplicate
+  CTest aborted after the same non-completing behavior) | failures: unknown,
+  no completion JSON | notes: neither normal run completed within 180 seconds.
+  This is timing evidence against the present fixed-round compact live encoder,
+  not a successful device-front/private-commit qualification. No additional
+  duplicate smokes should be started before device-resident early quiescence is
+  implemented.
+- 2026-09-07 23:29 CEST | pass, focused P7e4a1 compact green closure |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest
+  --test-dir build/release --output-on-failure -R '^metal GPU hierarchy selector
+  parity$|^metal GPU hierarchy frontier is canonical and bounded$|^metal GPU
+  compact green closure parity$'` | failures: none | notes: the isolated Metal
+  compact-list fixture matched CPU-oracle green masks for fixed, root-seam,
+  mixed, and post-red-repair worklists. Its active-list indirect grid was
+  device-count-derived; malformed worklist and device-latched budget failures
+  retained the previous fixture front. This is not P7e4a1 completion: sparse
+  red repair and device-count-sized P8 are still absent.
+- 2026-09-07 23:16 CEST | pass, focused P7e4a1 compact-list canonicalization |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest
+  --test-dir build/release --output-on-failure -R '^metal GPU hierarchy selector
+  parity$|^metal GPU hierarchy frontier is canonical and bounded$'` | failures:
+  none | notes: a device-only five-pass stable radix sorter reordered the P7e2
+  append list by immutable canonical record rank; the hardware fixture matched
+  exact CPU canonical order after count-derived indirect histogram/scatter
+  grids. This is selection/worklist evidence only: sparse closure and P8 remain
+  unimplemented and the P7e4a prototype is still nonviable.
+- 2026-09-07 23:03 CEST | pass, focused P7e4a1 compact-list ABI | command:
+  `cmake --build build/release --target tetra_world_metal -j 4 && ctest
+  --test-dir build/release --output-on-failure -R '^metal GPU hierarchy
+  selector parity$|^metal GPU hierarchy frontier is canonical and bounded$'` |
+  failures: none | notes: P7e2 now dispatches its immutable <=12 root-index
+  list rather than a record-count grid. The Metal fixture proved a private
+  selected-count-derived indirect compact-list copy and fail-closed
+  empty/overflow/malformed append headers; it does not connect sparse closure
+  or P8 and is not P7e4a1 completion evidence.
+- 2026-09-07 22:35 CEST | canceled, nonviable, Release Metal direct smoke |
+  command: `cmake --build build/release --target tetra_world_metal -j 4 &&
+  TETWORLD_METAL_BACKGROUND=1 TETWORLD_METAL_GPU_TERRAIN_DEVICE_FRONT=1
+  build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal
+  --metal-motion-smoke-test` | result: canceled (exit 143) | notes: the normal
+  1x1 repair/green schedule ran for more than 103 seconds without JSON output
+  or a private commit; the earlier 4x4 schedule likewise did not complete.
+  The P7e3c canonical closure fixture still passed. Next action is P7e4a1's
+  compact device-worklist/indirect-P8 architecture, not another scalar-budget
+  rerun.
+- 2026-09-07 22:16 CEST | fail then resolved, Release Metal fixture | command: `./scripts/compile.sh --release`; focused rerun: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU hierarchy frontier is canonical and bounded$'` | failures: `metal GPU hierarchy frontier is canonical and bounded` | notes: the initial 527-test gate exposed an SPIRV-Cross buffer-order change after the residual-red read; Metal had bound red promotions/counts/orientations/ancestors in the old order, producing closure preflight bit 512. Binding the generated Metal ABI order fixed the fixture; focused rerun passed in 0.77 s. A final fresh full gate is required.
+- 2026-09-07 21:58 CEST | pass, focused native Metal | command: `cmake --build build/release --target tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU device front (follows camera without CPU P6|capacity retains prior front|closure rejection retains prior front)$'` | failures: none | notes: P7e4a's three freshly built moving-camera tests passed. Normal route: 8 closure/22 owner submissions, exactly one immutable snapshot construction, and zero P6 requests, post-bootstrap CPU display builds, candidate-payload readbacks, and post-bootstrap seeds. Forced capacity and poisoned closure header each produced 22 private commit rejections with zero failures or overflow.
 - 2026-09-07 21:19 CEST | pass | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: fresh P7e3c full gate rebuilt the closure shader and passed all 524 tests in 1335.62 s, including live GPU selection (303.85 s), the canonical bounded device-closure fixture, retained-front failure cases, and the existing CPU-default route checks.
 - 2026-09-07 20:35 CEST | fail | mode: Release | command: `./scripts/compile.sh --release` | failures: `metal GPU live hierarchy selection follows camera without CPU terrain` | notes: 523/524 tests passed; the unrelated native live-selection motion test timed out after 323.37 s before GPU work began (`gpu_dispatched=0`, `gpu_available=false`). P7e3c's root-seam/mixed-depth closure fixture passed; resolved by the rebuilt isolated rerun below after P7e2 stopped allocating P7e3c-only closure sidecars.
 - 2026-09-07 21:00 CEST | pass, isolated rerun | mode: Release, native Metal | command: `cmake --build build/release --target tetra_tests tetra_world_metal -j 4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU live hierarchy selection follows camera without CPU terrain$'` | failures: none | notes: P7e2 live selection now builds its snapshot without the P7e3c-only vertex/orientation closure sidecars; the camera motion test passed in 318.60 s with the GPU available.
@@ -338,6 +728,14 @@
 
 ## Resolved Failures
 
+- [x] metal GPU compact green closure parity | resolved: 2026-09-07 23:29 CEST |
+  validating command: `cmake --build build/release --target tetra_world_metal -j
+  4 && ctest --test-dir build/release --output-on-failure -R '^metal GPU compact
+  green closure parity$'` | notes: the initial fixture used a cut requiring red
+  repair, then incorrectly required post-red green propagation. It now uses
+  green-only cuts for exact parity and treats the post-red worklist as an
+  explicit boundary; malformed and device-latched budget rejection retain the
+  prior result.
 - [x] planetary sliced frontier cold-recovers a sector-union transition | resolved: 2026-09-06 09:03 CEST | validating command: `cmake --build build/release --target tetra_tests -j 4 && ctest --test-dir build/release --output-on-failure -R '^planetary sliced frontier cold-recovers a sector-union transition$'` | notes: fresh focused Release rerun passed in 151.04 seconds; the prior full-run timeout was transient.
 
 - [x] metal GPU terrain parallel compaction parity | resolved: 2026-09-06 08:27 CEST | validating command: `cmake --build build/release --target tetra_world_metal -j 4 && TETWORLD_METAL_BACKGROUND=1 build/release/src/tetra_viewer/TetWorldMetal.app/Contents/MacOS/TetWorldMetal --metal-gpu-terrain-parallel-triangle-smoke-test` | notes: the scan bindings were reversed: the output slot overwrote counts. Corrected output/input buffer binding makes the staged scan deterministic.
@@ -763,3 +1161,38 @@
 - 2026-09-05 local | pass, full release validation after GPU terrain P3 | mode: Release | command: `./scripts/compile.sh --release` | failures: none | notes: all 486 CTest entries completed successfully, including the Metal shader compiler check. This validates the qualified GPU-indirect path and its CPU fallback alongside the complete release suite.
 - 2026-09-05 local | partial pass, GPU projected-midpoint transport | mode: Release executable | command: focused root/sparse-world tests, then `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none; expected optimizer rejection | notes: the 320-byte diagnostic packet supplied CPU-wound roots and CPU field-projected one-to-four subdivision midpoints. GPU emitted all 226,848 expected vertices without overflow, but bounds still disagreed with the optimized CPU surface. The remaining known positional difference is the CPU five-pass optimizer; fallback remains mandatory.
 - 2026-09-05 local | partial pass, GPU final-front membership gate | mode: Release executable | command: focused sparse-world regression, then `tetra_world --gpu-lod-diagnostic --gpu-atmosphere-benchmark --window-size=320x240 --window-position=-3000,-3000` | failures: none; expected topology rejection | notes: GPU admitted only cell triangles whose canonical keys occur in published snapshots and reduced bounds error from 12,768.4 m to 249.158 m. It emitted 164,460 vertices versus 226,848 vertices in the retained CPU draw front, proving a snapshot-directory versus visible-front ownership mismatch. CPU fallback remains mandatory.
+- 2026-09-08 CEST | pass, focused P7e4b compact live private-front exact
+  parity | command: `ctest --test-dir build/release -R 'metal GPU compact
+  (live private-front exact parity|owner P8)' --output-on-failure` | failures:
+  none | notes: the real mixed-depth/root-seam compact path now compares its
+  completed private P8 front owner-by-owner against the independently closed
+  CPU geometry, including strict device count/prefix ranges, retained versus
+  candidate payload identity, moving camera, changed field revision, stale
+  source rejection, and failed-update retention. The first-owner diagnostic
+  independently confirms address reconstruction, Grande cell/sign/cut edges,
+  field roots, emitter rebase, and generated MSL constant layout; it is
+  test-only and does not add a normal-route payload readback. A deterministic
+  96x96 capture uses a fixed 1/64-pixel coverage grid to remove sub-display
+  CPU-double/device-float noise and matched byte-for-byte. CPU fallback/default
+  remains mandatory pending the requested matched p95 benchmark.
+- 2026-09-08 CEST | rejected, compact device-front promotion | command:
+  fresh release Metal build, then the strict compact private-front parity
+  CTest and the compact live performance smoke | failures: none in the parity
+  or measurement harness; performance gate rejected | notes: strict
+  root-seam/mixed-depth parity remains green. The matched 2-profile,
+  4-warmup + 30-sample run measured CPU p95 14.2844/14.6687 ms versus GPU p95
+  34.1018/34.1592 ms (2.3873x/2.3287x), well outside the required 0.90 ratio.
+  CPU fallback/default remains in force. The retained coarse device timings
+  were closure 5.4073/5.4801 ms and P8 27.6066/28.3136 ms for 775 owners and
+  254 emitted triangles; they identify P8 dispatch overhead as the next
+  bounded optimization target, not a promotion basis.
+- 2026-09-08 CEST | rejected, unsupported compact ICB/counter experiments |
+  command: the former compact ICB range probe | failures: first range-only
+  ICB probe returned passed:false when relying on inherited command state; the
+  explicit pipeline-and-buffer binding revision then terminated with SIGSEGV
+  11 on AGXMetalG15X-M1. A separate dispatch-boundary timestamp sample
+  resolved through MTLCounterSampleBuffer also faulted despite advertised
+  support | notes: the ICB command-line entry and both unsupported probe paths
+  are disabled from the qualification executable, and the no-red-only
+  fast-green shader was removed from build and pipeline registration. No
+  timing or correctness claim relies on these experiments.

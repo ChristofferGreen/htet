@@ -14,6 +14,9 @@ layout(std430,binding=3) readonly buffer SelectionTuple { vec4 values[]; } selec
 // Immutable child indirection keeps a global streamed hierarchy connected
 // even when direct children occupy different record blocks.
 layout(std430,binding=4) readonly buffer ChildIndices { uint values[]; } child_indices;
+// Immutable active roots are prepared with the snapshot. P7e2 dispatches one
+// traversal per listed root instead of scanning every stored record each frame.
+layout(std430,binding=5) readonly buffer RootIndices { uint values[]; } roots;
 
 layout(push_constant) uniform SelectorParameters {
   uint record_count;
@@ -22,9 +25,14 @@ layout(push_constant) uniform SelectorParameters {
   // the live P7e2 contract: one deterministic selection bit per immutable
   // hierarchy record, consumed by later device-only closure work.
   uint mark_word_count;
+  uint root_count;
+  // Device display-front mode traverses the complete immutable source cut.
+  // Diagnostic LOD mode keeps its view-local selection semantics.
+  uint require_complete_front;
 } parameters;
 
 const uint child_mask=0xffu;
+const uint logical_owner_bit=0x400u;
 const uint active_root_bit=0x800u;
 const uint stack_limit=64u;
 const float selector_minimum_band=0.00000095367431640625;
@@ -81,9 +89,13 @@ bool intersects_frustum(uint record_index,vec3 camera,vec3 forward,vec3 up,
 
 layout(local_size_x=1) in;
 void main() {
-  const uint root=gl_GlobalInvocationID.x;
-  if(root>=parameters.record_count)return;
-  if((hierarchy.words[root*8u+5u]&active_root_bit)==0u)return;
+  const uint root_order=gl_GlobalInvocationID.x;
+  if(root_order>=parameters.root_count)return;
+  const uint root=roots.values[root_order];
+  if(root>=parameters.record_count||
+     (hierarchy.words[root*8u+5u]&active_root_bit)==0u) {
+    atomicOr(output_buffer.words[3u],1u);return;
+  }
 
   const vec3 camera=selection_tuple.values[0].xyz;
   const vec3 forward=normalize(selection_tuple.values[1].xyz);
@@ -103,7 +115,8 @@ void main() {
     const uint mask=flags&child_mask;
     if(next_child[depth]==0u) {
       atomicAdd(output_buffer.words[1],1u);
-      if(!intersects_frustum(record_index,camera,forward,up,tangent,selection_tuple.values[2].w)) {
+      if(parameters.require_complete_front==0u&&
+         !intersects_frustum(record_index,camera,forward,up,tangent,selection_tuple.values[2].w)) {
         atomicAdd(output_buffer.words[2],1u);
         if(depth==0u)break; --depth; ++next_child[depth]; continue;
       }
@@ -112,20 +125,37 @@ void main() {
       const float field_error=sphere.w*field_lipschitz*focal/distance;
       const float sagitta=planet_radius>0.0?
           (sphere.w*sphere.w/(2.0*max(planet_radius,sphere.w)))*focal/distance:0.0;
-      const bool split=mask!=0u&&(selector_refines(
-          projected_diameter(record_index,camera,focal),edge_threshold)||
-          selector_refines(field_error,field_threshold)||
-          selector_refines(sagitta,limb_threshold));
-      if(!split) {
+      // The CPU front is defined by logical-owner records, which can retain
+      // child links as immutable ancestry metadata. In complete-front mode
+      // emit each such record and continue through its links.
+      if(parameters.require_complete_front!=0u&&
+         (flags&logical_owner_bit)!=0u) {
         const uint output_index=atomicAdd(output_buffer.words[0],1u);
         if(output_index<parameters.output_capacity)
           output_buffer.words[4u+output_index]=record_index;
-        else atomicOr(output_buffer.words[3],1u);
+        else atomicOr(output_buffer.words[3u],1u);
         const uint mark_word=record_index>>5u;
         if(mark_word<parameters.mark_word_count)
           atomicOr(output_buffer.words[4u+parameters.output_capacity+mark_word],
                    1u<<(record_index&31u));
-        else atomicOr(output_buffer.words[3],1u);
+        else atomicOr(output_buffer.words[3u],1u);
+      }
+      const bool split=mask!=0u&&(parameters.require_complete_front!=0u||
+          selector_refines(projected_diameter(record_index,camera,focal),edge_threshold)||
+          selector_refines(field_error,field_threshold)||
+          selector_refines(sagitta,limb_threshold));
+      if(!split) {
+        if(parameters.require_complete_front==0u) {
+          const uint output_index=atomicAdd(output_buffer.words[0],1u);
+          if(output_index<parameters.output_capacity)
+            output_buffer.words[4u+output_index]=record_index;
+          else atomicOr(output_buffer.words[3],1u);
+          const uint mark_word=record_index>>5u;
+          if(mark_word<parameters.mark_word_count)
+            atomicOr(output_buffer.words[4u+parameters.output_capacity+mark_word],
+                     1u<<(record_index&31u));
+          else atomicOr(output_buffer.words[3],1u);
+        }
         if(depth==0u)break; --depth; ++next_child[depth]; continue;
       }
     }

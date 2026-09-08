@@ -358,17 +358,244 @@ called GPU terrain generation.
 ### P7e tracker — production GPU-derived render front
 
 P7a--P8c provide reusable shader, private-front, parity, and fail-closed
-infrastructure. They do not close P7 because CPU still performs selection,
-closure, source-packet construction, and the initial mesh seed. CPU terrain
-generation remains the normal launch default until every P7e leaf is complete.
+infrastructure. P7e4's compact device route now owns interactive selection,
+closure, owner-stream construction, surface construction, and render-front
+publication from one immutable CPU bootstrap. CPU remains the explicit
+fallback and remains authoritative for persistence, editing, collision, and
+export; that is not a second render-front authority.
 
-- [ ] **P7e4 — Promote a provenance-proven GPU render front.** Feed P7e3
-      directly into owner-direct mesh emission and P8 private publication. A
-      moving-camera integration test must prove no post-bootstrap CPU surface
-      build, P6-packet construction, or CPU mesh seed on the selected route,
-      while preserving topology/image parity and an end-to-end camera-to-front
-      p95 improvement against the CPU baseline. Only then may GPU generation
-      become the default.
+- [x] **P7e4a — Retire the full-snapshot live-device-front prototype.** The
+      prototype preserves the intended provenance boundary, but its fixed
+      whole-snapshot closure and P8 owner schedule is not viable for a live
+      camera: a normal direct smoke did not complete or privately commit within
+      its bound even at one repair and one green round. It remains opt-in,
+      unaccepted comparison code only; P7e4a1's compact replacement is the
+      sole qualification route. It is intentionally retired, not a remaining
+      implementation path. Stop rule: do not tune scalar round limits or
+      claim a device front from this prototype.
+- [ ] **P7e4a1 — Replace full-snapshot closure/P8 dispatch with a compact
+      device worklist.** Append selected records while P7e2 traverses its 12
+      roots, retain canonical active-owner ping/pong lists and headers in
+      private memory, and drive sparse closure and P8 count/scan/emit from
+      produced device work counts through indirect dispatch. No normal
+      candidate may launch a `record_count`-sized P8 grid or read an owner
+      count/payload back to CPU. Acceptance: a normal moving-camera direct
+      smoke makes a real private commit within its bound; retained-front and
+      provenance counters remain clean; scalar stage timings or counters
+      distinguish closure from P8 work. Current status: the compact selector,
+      canonicalizer, bounded green/red closure, owner materializer, and
+      device-count P8 count/scan/emit/private publish are connected in the
+      direct qualification route. It makes a real private commit and the
+      scalar audit stays payload-readback-free. Dispatch-boundary counter
+      samples are unsupported on the native M1 and are excluded from this
+      route; only coarse command timings are retained. The earlier direct
+      private-buffer fixture proved provenance only, not complete display
+      coverage: its active GPU front is visibly incomplete and is not a
+      qualification result.
+
+- [ ] **P7e4b — Qualify the live device front against the CPU reference.**
+      Exercise the gated P7e4a1 route on root seams, mixed depth, field change,
+      and render-origin change; prove canonical owner/topology parity and
+      image parity against the CPU reference, while failure, stale revision,
+      capacity, and unavailable-device paths retain the prior complete front.
+      Acceptance: hardware fixtures and moving-camera captures verify the
+      selected private front without normal candidate readback. Stop rule: no
+      performance/default decision is inferred from correctness parity.
+      Prior evidence was insufficient: the direct fixture passed root-seam,
+      moving-camera, changed-field, render-origin, failed-update-retention,
+      stale-revision, owner/topology, projected-geometry, and 96x96 coverage
+      checks, yet its GPU front has only 25,684 triangles versus the CPU
+      front's 183,432. Add a complete-front count/topology oracle and
+      full-frame image comparison before treating any private P8 front as
+      qualified.
+- [ ] **P7e4c — Measure and promote the qualifying route.** Compare isolated
+      end-to-end camera-to-private-front p95 with the CPU baseline at matched
+      camera paths and resource identities. Only if P7e4a/b remain green and
+      the device route has a reproducible p95 improvement may its UI/default
+      wording and selection be changed; otherwise retain it as an explicit
+      opt-in comparison and record the rejection. Acceptance: repeated native
+      profiles plus the full Release gate pass. Stop rule: never promote on a
+      one-off timing win or without the provenance/correctness gates above.
+      Prior timing evidence: matched four-step projection passed the incomplete
+      strict parity checks and two independent 2-profile, 4-warmup + 30-sample runs at
+      0.8846x/0.8672x and 0.8903x/0.8994x GPU/CPU p95. This promotion was
+      reverted on 2026-09-08: the private device result reported 25,684
+      triangles where the complete CPU display front reported 183,432 for the
+      same scenario.  Buffer provenance and a partial image oracle are not
+      sufficient evidence of full-front parity. Re-open this item until an
+      exact complete-front topology/count and full-frame image parity gate
+      prevents this truncation from being promoted.
+- [x] **P7e4d — Retired bounded P8 microbatch emitter.** The separate
+      comparison-only route that admits no more than 1,024 selected owners:
+      the selector capacity must be 1,024 for this tier, so a larger produced
+      selection latches overflow and retains the prior complete front rather
+      than truncating. For an admitted compact owner stream, one workgroup
+      must deterministically reproduce P8 count, prefix, and emitter output
+      in canonical owner order, then use the existing validation/copy/publish
+      gates. Acceptance: exact owner-key/local-vertex, root-seam,
+      mixed-depth, stale-source, failure-retention, and over-capacity parity
+      fixtures pass; the same matched p95 benchmark is rerun. Stop rule: it
+      remains an unpromoted comparison route and CPU remains default unless
+      both GPU p95 values are at most 90% of CPU.
+      Retired result: the device enforces the owner limit, writes canonical
+      owner count/offset evidence, and drives copy from a private indirect
+      grid which validation clears on rejection. Full-P8 payload/argument
+      equivalence, malformed/stale/zero-capacity/over-limit retention, and
+      strict live root-seam/mixed-depth parity pass. The matched 2-profile,
+      4-warmup + 30-sample run regressed to CPU p95 14.926/14.508 ms and
+      GPU p95 46.387/46.938 ms (3.11x/3.24x); coarse P8 was
+      40.193/39.601 ms. It is rejected and CPU remains default.
+- [x] **P7e4e — Re-qualify P8 with a bounded hybrid prefix.** Preserve the
+      parallel owner count/sign and owner-emission kernels, but replace scalar
+      control plus six scan dispatches with one 1,024-lane deterministic
+      prefix/header kernel and one final validation/copy-grid/publish kernel.
+      Use fixed 1,024-thread count and emission grids, reject malformed,
+      stale, zero-capacity, and over-1,024 owner headers before retained-front
+      copy, and retain exact full-P8 owner/local-vertex parity. Current result:
+      exact dedicated and strict live root-seam, mixed-depth, moving-camera,
+      changed-field, image, stale, and failure-retention parity pass. The
+      matched 2-profile, 4-warmup + 30-sample run measured CPU p95
+      14.2770/14.6947 ms and GPU p95 34.4648/34.0537 ms
+      (2.4140x/2.3174x); P8 device p95 was 27.5559/27.8892 ms for 775 owners
+      and 254 triangles. It removes the serial emitter regression but misses
+      the 90% promotion gate, so this route is rejected and CPU remains
+      default/fallback.
+- [x] **P7e4f — Isolate hybrid P8 device work before changing arithmetic.**
+      Use dependency-valid command-buffer `GPUStartTime`/`GPUEndTime` spans,
+      never per-dispatch counter sampling, for fixed-grid count/sign, hybrid
+      prefix/header, parallel emission, and finalize/indirect-copy. For 775
+      owners and 254 triangles, the 40-bisection baseline measured p95
+      0.3260/0.3241 ms, 0.0107/0.0055 ms, 27.6280/27.3959 ms, and
+      0.0145/0.0108 ms respectively, proving emission dominates. A 20-step
+      bisection variant retained the unchanged exact owner/local-vertex,
+      seam, image, stale, and failure parity contracts; its matched p95 was
+      CPU 14.3707/14.6039 ms, GPU 29.9524/30.0128 ms (2.0843x/2.0551x),
+      and P8 device 23.4156/23.4818 ms. The emit span remained
+      23.0776/23.1424 ms, so it is still rejected by the 90% gate and CPU
+      remains default/fallback.
+- [x] **P7e4g — Sweep the bounded root-bisection count without weakening
+      parity.** The qualified fixture has unit world extent and a maximum root
+      segment of `sqrt(.5)`, giving a conservative continuous-position lower
+      bound of nine bisections for the unchanged 0.002 geometry tolerance.
+      That bound is insufficient for the independent image oracle: both the
+      requested 16- and 12-step variants changed exactly 1/9,216 image pixels
+      in both legacy and hybrid strict parity checks, despite passing the
+      owner/local-vertex, stale, failure-retention, and over-capacity checks.
+      The proven 20-step implementation was restored and all three focused
+      parity tests pass. No failing candidate was benchmarked, no tolerance
+      changed, and CPU remains the default/fallback.
+- [x] **P7e4h — Reuse count-stage signs during emission.** The parallel count
+      kernel already packs four field-sign bits per template cell into the
+      private `signs` sidecar; normal and hybrid emission now unpack those
+      bits rather than evaluating the field again for every cell corner. The
+      same 20-step root bisection and all parity tolerances remain unchanged.
+      Dedicated owner/local-vertex plus strict legacy and hybrid root-seam,
+      mixed-depth, field/image, stale, failure-retention, and over-capacity
+      tests pass. The matched p95 was CPU 14.4445/14.6332 ms, GPU
+      29.9427/29.7991 ms (2.0729x/2.0364x), and P8 device 23.0218/23.0092 ms;
+      the emitted span was 22.6733/22.6704 ms at 775 owners/254 triangles.
+      This is below measurement noise and misses the 90% gate, so CPU remains
+      the default/fallback.
+- [x] **P7e4i — Bound only emit-local midpoint projection.** Keep the shared
+      field grammar, its 1e-10 early-convergence criterion, count signs, and
+      20-step root bisection unchanged; qualify an eight-iteration bound only
+      for the three midpoint projections made per emitted triangle. Dedicated
+      owner/local-vertex plus strict legacy and hybrid root-seam, mixed-depth,
+      moving-camera, changed-field, image, stale, failure-retention, and
+      over-capacity parity pass without tolerance changes. The matched p95 was
+      CPU 14.3073/14.4981 ms, GPU 24.9351/25.2480 ms (1.7428x/1.7415x), P8
+      device 18.4881/18.3410 ms, and emit 18.1469/18.0052 ms at 775 owners/
+      254 triangles. The measured improvement still misses the 90% promotion
+      gate, so CPU remains default/fallback.
+- [x] **P7e4j — Reuse the final midpoint-projection normal.** Preserve the
+      shared field grammar, 1e-10 convergence criterion, packed count signs,
+      eight-step emit-local projection, and 20-step root bisection. The three
+      projected midpoint vertices retain their final Newton-step normals;
+      unprojected roots retain their own final field-normal evaluations.
+      Dedicated owner/local-vertex plus strict legacy and hybrid root-seam,
+      mixed-depth, moving-camera, changed-field, image, stale,
+      failure-retention, and over-capacity parity all pass without tolerance
+      changes. The matched p95 was CPU 14.4601/15.3918 ms, GPU
+      24.7814/24.4104 ms (1.7138x/1.5859x), P8 device 18.3175/18.0777 ms,
+      and emit 17.9797/17.7389 ms at 775 owners/254 triangles. The measured
+      improvement still misses the 90% promotion gate, so CPU remains
+      default/fallback.
+- [x] **P7e4k — Emit one device-scheduled triangle per invocation.** Keep
+      count-stage packed signs, canonical owner offsets, shared field
+      semantics, eight-step emit-local projection, and 20 root bisections.
+      The hybrid prefix emits a private indirect grid only after candidate
+      admission; each 64-lane triangle emitter binary-searches canonical
+      owner offsets and walks only that owner's signed template cells to
+      reproduce owner, cell, and local-cut-triangle output order. There is no
+      CPU count or payload readback, and the existing failure/capacity gate
+      remains ahead of retained-front copy. Dedicated owner/local-vertex plus
+      strict legacy and hybrid root-seam, mixed-depth, moving-camera,
+      changed-field, image, stale, failure-retention, and over-capacity parity
+      all pass without tolerance changes. The matched p95 was CPU
+      14.5183/14.5790 ms, GPU 15.0363/14.7743 ms (1.0357x/1.0134x), P8 device
+      8.0902/8.1398 ms, and emit 7.7504/7.7997 ms at 775 owners/254
+      triangles. The material reduction still misses the 90% promotion gate,
+      so CPU remains default/fallback.
+- [x] **P7e4l — Sweep only triangle-emitter midpoint projection.** The
+      triangle-parallel route retained packed signs, final Newton-step normal
+      reuse, shared field semantics, and 20-step roots while testing six and,
+      after that byte-level failure, seven local projection iterations. Each
+      candidate diverged from the still-eight-step legacy emitter at its first
+      smooth-normal word, despite both strict live image suites passing. This
+      was a cross-emitter consistency failure, not a CPU-reference rejection:
+      P7e4p later applied the six-step policy to both emitters and passed all
+      three strict suites. CPU remains default/fallback.
+- [x] **P7e4m — Attribute compact-closure device work only with valid
+      command timestamps.** Diagnostic replay used dependency-valid command
+      buffer `GPUStartTime`/`GPUEndTime` prefixes for clear, initial radix,
+      green, red clear, red predicate/scan/scatter, and follow-up radix, with
+      per-sample adjacent differences rather than differences of p95 values.
+      The complete closure and owner-materializer timestamps remain valid
+      (5.3192/5.5565 ms and 0.0180/0.0132 ms), but the replayed prefix spans
+      were non-monotonic beyond the 0.01 ms timestamp-noise allowance. The
+      diagnostic therefore emits unavailable/null substage values rather than
+      fabricated attribution. No counter sampling, CPU payload/count
+      readback, behavior/default change, or performance conclusion followed;
+      CPU remains default/fallback.
+- [x] **P7e4n — Test a private canonical owner/cell root cache.** A 2.25 MiB
+      aligned private cache computed each crossing cell's unchanged 20-step
+      roots once, letting its one/two CUT triangles reuse them without CPU
+      counts/readback or ordering changes. All three strict parity suites
+      passed, but matched p95 regressed from P7e4k's P8 8.0902/8.1398 ms to
+      9.0518/9.1735 ms. The cache route was removed and the direct-root
+      P7e4k path rebuilt with all three strict suites passing. CPU remains
+      default/fallback.
+- [x] **P7e4o — Test tetrahedral four-sample emitter normals.** Replacing
+      the six axial field samples with four equal-radius tetrahedral samples
+      for eight-step midpoint projection and endpoint smooth normals changed
+      the exact private P8 payload at word 6 (`3200185190 != 3200164191`).
+      The legacy and hybrid live suites passed, but the unchanged legacy
+      emitter and changed triangle emitter disagreed; that one-sided result
+      is not a CPU-reference parity rejection. No benchmark was run; the
+      literal P7e4k shared-normal path was restored and all three strict
+      parity suites pass. CPU remains default/fallback.
+- [x] **P7e4p — Correct and qualify matched six-step midpoint projection.**
+      Apply exactly the same six-iteration midpoint projection and existing
+      final-normal reuse policy to both legacy owner and triangle-parallel
+      emitters, retaining the shared field grammar, 20 root bisections,
+      output schedule, failure/capacity retention, and no CPU payload/count
+      readback. Dedicated owner/local-vertex plus strict legacy and hybrid
+      CPU-reference parity pass. The matched 2-profile, 4-warmup + 30-sample
+      p95 improved P8 device time to 7.1313/7.2144 ms, but complete GPU time
+      was 14.2777/13.9989 ms versus CPU 14.7992/14.6397 ms
+      (0.9648x/0.9562x), missing the 90% gate. The literal eight-step P7e4k
+      source was rebuilt with all three strict suites passing; CPU remains
+      default/fallback.
+- [x] **P7e4q — Sweep matched five- and four-step midpoint projection.**
+      Both emitters retained identical final-normal reuse, shared field
+      semantics, 20 root bisections, output schedule, and fail-closed
+      retention. Five steps passed strict parity but missed the matched p95
+      gate at GPU/CPU 0.9134x/0.9414x. Four steps passed dedicated owner and
+      strict legacy/hybrid CPU-reference parity, then qualified in two
+      independent 2-profile, 4-warmup + 30-sample runs: 0.8485x/0.8313x and
+      0.8476x/0.8487x. The four-step result is promotion-eligible pending the
+      complete release gate and an audit that ordinary runtime selection uses
+      P7e4 device-front work rather than the legacy CPU-P6 owner renderer.
 ### P8 tracker — readback-free GPU terrain publication
 
 P8 is complete only for private GPU mesh emission from a CPU-produced P6

@@ -1,0 +1,43 @@
+#version 450
+// Device-only scheduler control for P7e4a.  Each 16-byte record starts with
+// Metal's three uint `MTLDispatchThreadgroupsIndirectArguments` lanes; the
+// padding lane makes every indirect argument naturally aligned.
+layout(std430,binding=0) buffer Status { uint words[]; } status;
+layout(std430,binding=1) buffer DispatchArgs { uint values[]; } dispatch_args;
+layout(push_constant) uniform Parameters {
+  uint record_groups;
+  uint action;
+} P;
+layout(local_size_x=1) in;
+
+const uint repair_offset=0u;
+const uint green_offset=4u;
+
+void set_grid(uint offset,uint groups) {
+  dispatch_args.values[offset]=groups;
+  dispatch_args.values[offset+1u]=1u;
+  dispatch_args.values[offset+2u]=1u;
+  dispatch_args.values[offset+3u]=0u;
+}
+
+void main() {
+  // 0: start one repair; 1: arm green work from repair work; 2: latch green
+  // quiescence and retire later green grids; 3: schedule the next red repair
+  // only when this repair promoted something; 6: fail after the live repair
+  // budget when the last active repair still promoted work.
+  if(P.action==0u) { set_grid(repair_offset,P.record_groups); return; }
+  if(P.action==1u) { set_grid(green_offset,dispatch_args.values[repair_offset]); return; }
+  if(P.action==2u) {
+    if(status.words[0u]!=0u||status.words[4u]!=0u||status.words[1u]==0u) {
+      status.words[4u]=1u;
+      set_grid(green_offset,0u);
+    }
+    return;
+  }
+  if(P.action==3u) {
+    set_grid(repair_offset,(status.words[0u]==0u&&status.words[2u]!=0u)?
+        P.record_groups:0u);
+    return;
+  }
+  if(P.action==6u&&status.words[2u]!=0u)status.words[0u]|=8u;
+}

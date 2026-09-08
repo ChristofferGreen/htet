@@ -1,0 +1,10 @@
+#version 450
+layout(std430,binding=0) readonly buffer Source {uint words[];} source;
+layout(std430,binding=1) buffer Status {uint words[];} status;
+layout(push_constant) uniform Parameters {uint vertex_capacity;} P;
+layout(local_size_x=1) in;
+void main(){if(gl_GlobalInvocationID.x!=0u)return;status.words[0u]=0u;
+ if(status.words[1u]!=0u||source.words[1u]!=0u||source.words[0u]==0u||
+ source.words[0u]>P.vertex_capacity||source.words[0u]%3u!=0u||
+ source.words[2u]>P.vertex_capacity/12u||source.words[2u]*12u!=source.words[0u]){status.words[1u]=1u;return;}
+ status.words[0u]=1u;}
