@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Advancing-front terrain volume</title>
+<style>
+html,body,canvas{margin:0;width:100%;height:100%;overflow:hidden;background:#0d141b}
+#panel{position:fixed;z-index:2;top:14px;left:14px;width:min(355px,calc(100% - 60px));padding:14px 16px;color:#edf4f8;background:rgba(13,20,27,.94);border:1px solid #40515f;border-radius:7px;font:14px/1.42 system-ui,sans-serif;user-select:none}
+#panel strong{display:block;font-size:16px;margin-bottom:7px}label{display:block;margin:3px 0;cursor:pointer}select,input[type=range]{max-width:100%;vertical-align:middle}button{margin-top:7px}#audit{margin-top:10px;padding-top:8px;border-top:1px solid #344551;color:#b8cad5;font-size:12px;white-space:pre-line}.pass{color:#77e3b0}.fail{color:#ff8b8b}#help{position:fixed;right:14px;bottom:12px;padding:6px 9px;border-radius:4px;color:#aec1cc;background:rgba(13,20,27,.72);font:12px system-ui,sans-serif}
+</style>
+<div id="panel">
+  <strong>Four-hexahedron terrain cavity</strong>
+  <label>View <select id="focus">
+    <option value="all">all frozen inputs</option>
+    <option value="surface">DC surface only</option>
+    <option value="core">global core only</option>
+    <option value="transition">first transition tet</option>
+    <option value="domain">root and hexahedra</option>
+  </select></label>
+  <label><input id="surface" type="checkbox" checked> opaque DC surface</label>
+  <label><input id="quadEdges" type="checkbox" checked> DC topology edges</label>
+  <label><input id="singular" type="checkbox" checked> extraordinary DC faces</label>
+  <label><input id="boundary" type="checkbox" checked> fixed fixture boundary</label>
+  <label><input id="transition" type="checkbox" checked> first advancing-front tet</label>
+  <label><input id="core" type="checkbox" checked> global hierarchical core</label>
+  <label><input id="coreBoundary" type="checkbox"> core boundary fill</label>
+  <label><input id="hexes" type="checkbox" checked> four hexahedra</label>
+  <label><input id="root" type="checkbox"> root tetrahedron</label>
+  <label><input id="grid" type="checkbox"> structured sampling grid</label>
+  <label><input id="cutaway" type="checkbox"> half cutaway</label>
+  <label>surface opacity <input id="opacity" type="range" min="10" max="100" value="100"> <output id="opacityValue">100%</output></label>
+  <button id="reset">reset view</button>
+  <div id="audit"></div>
+</div>
+<div id="help">Drag to orbit · wheel to zoom · R reset</div>
+<script src="data.js?revision=af1-four-hex-terrain-v2"></script>
+<script src="step.js?revision=af2-one-step-v1"></script>
+<script>
+(()=>{
+const data=window.ADVANCING_FRONT_FIXTURE;
+if(!data||data.revision!=="af1-four-hex-terrain-v2")throw new Error("Missing AF-1 fixture data");
+const step=window.ADVANCING_FRONT_STEP;
+if(!step||step.revision!=="af2-one-step-v1")throw new Error("Missing AF-2 step data");
+const $=id=>document.getElementById(id),canvas=document.createElement("canvas"),ctx=canvas.getContext("2d");document.body.append(canvas);
+const cubeEdges=[[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]],tetEdges=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
+const edgeKey=(a,b)=>a<b?`${a}:${b}`:`${b}:${a}`;
+function indexedEdges(points,cells,pattern){const seen=new Set(),out=[];for(const cell of cells)for(const edge of pattern){const a=cell[edge[0]],b=cell[edge[1]],key=edgeKey(a,b);if(seen.has(key))continue;seen.add(key);out.push(points[a],points[b])}return out}
+function faceEdges(points,faces){const seen=new Set(),out=[];for(const face of faces)for(let i=0;i<face.length;i++){const a=face[i],b=face[(i+1)%face.length],key=edgeKey(a,b);if(seen.has(key))continue;seen.add(key);out.push(points[a],points[b])}return out}
+const rootEdges=indexedEdges(data.root,[data.root],tetEdges),hexEdges=data.hexahedra.flatMap(hex=>indexedEdges(hex,[hex],cubeEdges));
+const gridEdges=data.gridEdges.flatMap(edge=>[data.gridVertices[edge[0]],data.gridVertices[edge[1]]]);
+const quadEdges=faceEdges(data.surfaceVertices,data.surfaceQuads),singularEdges=faceEdges(data.surfaceVertices,data.surfaceExtraordinaryTriangles);
+const coreEdges=indexedEdges(data.coreVertices,data.coreTetrahedra,tetEdges);
+const transitionEdges=indexedEdges(step.vertices,[step.tetrahedron],tetEdges),transitionFaces=[[step.tetrahedron[0],step.tetrahedron[1],step.tetrahedron[2]],[step.tetrahedron[0],step.tetrahedron[3],step.tetrahedron[1]],[step.tetrahedron[1],step.tetrahedron[3],step.tetrahedron[2]],[step.tetrahedron[2],step.tetrahedron[3],step.tetrahedron[0]]];
+let yaw=.72,pitch=-.35,zoom=2.8,drag=false,lastX=0,lastY=0;
+const centre=data.root.reduce((a,p)=>[a[0]+p[0]/4,a[1]+p[1]/4,a[2]+p[2]/4],[0,0,0]);let radius=0;for(const p of data.root)radius=Math.max(radius,Math.hypot(p[0]-centre[0],p[1]-centre[1],p[2]-centre[2]));
+function project(p){let x=p[0]-centre[0],y=p[1]-centre[1],z=p[2]-centre[2];const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),rx=cy*x+sy*z,rz=-sy*x+cy*z,ry=cp*y-sp*rz,depth=sp*y+cp*rz,s=(Math.min(canvas.width,canvas.height)*.62*zoom)/(radius*3-depth);return[canvas.width*.54+rx*s,canvas.height*.52-ry*s,depth]}
+const cut=p=>$("cutaway").checked&&p[0]>centre[0]+.01;
+function lines(edges,color,width){ctx.beginPath();for(let i=0;i<edges.length;i+=2){const a=edges[i],b=edges[i+1];if(cut(a)&&cut(b))continue;const pa=project(a),pb=project(b);ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1])}ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke()}
+function triangles(points,faces,color,alpha){const draw=[];for(const face of faces){const source=face.map(i=>points[i]);if(source.every(cut))continue;const p=source.map(project);draw.push({p,depth:(p[0][2]+p[1][2]+p[2][2])/3})}draw.sort((a,b)=>a.depth-b.depth);for(const item of draw){ctx.beginPath();ctx.moveTo(item.p[0][0],item.p[0][1]);ctx.lineTo(item.p[1][0],item.p[1][1]);ctx.lineTo(item.p[2][0],item.p[2][1]);ctx.closePath();ctx.fillStyle=color.replace("A",alpha);ctx.fill()}}
+function visible(layer){const focus=$("focus").value;if(focus==="all")return $(layer).checked;if(focus==="surface")return ["surface","quadEdges","singular","boundary"].includes(layer)&&$(layer).checked;if(focus==="core")return ["core","coreBoundary"].includes(layer)&&$(layer).checked;if(focus==="transition")return layer==="transition"&&$(layer).checked;return ["hexes","root","grid"].includes(layer)&&$(layer).checked}
+function details(){const a=data.audit,s=step.audit,status=a.accepted&&s.accepted?"PASS":"FAIL";$("audit").className=status==="PASS"?"pass":"fail";$("audit").textContent=`AF-2 ONE-STEP AUDIT: ${status}\nTerrain DC: ${data.surfaceQuads.length} quads, ${data.surfaceExtraordinaryTriangles.length} junction triangles; open rim=${a.dcBoundaryEdges} edges\nClosed cavity boundary: ${a.outerClosed}; unmatched edges=${a.outerBoundaryEdges}\nCore: ${data.coreTetrahedra.length} address-derived tets; exact=${a.coreAddressExact}\nActive faces: ${s.initialFaces} → ${s.remainingFaces}\nEmitted transition tets: 1\nRemaining volume: ${s.remainingVolume.toFixed(6)}`;$("opacityValue").textContent=`${$("opacity").value}%`}
+function render(){canvas.width=innerWidth;canvas.height=innerHeight;ctx.fillStyle="#0d141b";ctx.fillRect(0,0,canvas.width,canvas.height);if(visible("grid"))lines(gridEdges,"rgba(93,125,145,.20)",.45);if(visible("boundary"))triangles(data.outerVertices,data.finiteBoundaryTriangles,"rgba(104,116,132,A)",.32);if(visible("coreBoundary"))triangles(data.coreVertices,data.coreBoundaryTriangles,"rgba(80,210,190,A)",.22);if(visible("core"))lines(coreEdges,"rgba(89,213,191,.78)",.62);if(visible("transition")){triangles(step.vertices,transitionFaces,"rgba(39,225,198,A)",.92);lines(transitionEdges,"rgba(215,255,248,.98)",2)}if(visible("surface"))triangles(data.surfaceVertices,data.surfaceTriangles,"rgba(224,148,74,A)",Number($("opacity").value)/100);if(visible("quadEdges"))lines(quadEdges,"rgba(255,232,181,.92)",1);if(visible("singular"))lines(singularEdges,"rgba(255,83,128,.98)",2);if(visible("hexes"))lines(hexEdges,"rgba(99,157,220,.82)",1.1);if(visible("root"))lines(rootEdges,"rgba(255,255,255,.9)",1.5);details()}
+function refresh(){render()}for(const id of["focus","surface","quadEdges","singular","boundary","transition","core","coreBoundary","hexes","root","grid","cutaway","opacity"])$(id).oninput=refresh;
+$("reset").onclick=()=>{yaw=.72;pitch=-.35;zoom=2.8;render()};canvas.onpointerdown=e=>{drag=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)};canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-lastX)*.012;pitch=Math.max(-1.48,Math.min(1.48,pitch+(e.clientY-lastY)*.012));lastX=e.clientX;lastY=e.clientY;render()};canvas.onpointerup=()=>drag=false;canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.4,Math.min(5,zoom*Math.exp(-e.deltaY*.001)));render()};addEventListener("resize",render);addEventListener("keydown",e=>{if(e.key.toLowerCase()==="r")$("reset").click()});render();
+})();
+</script>
+</html>

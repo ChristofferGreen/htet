@@ -1,5 +1,153 @@
 # Testcase Log
 
+- 2026-09-11 CEST | pass, in-process quality transaction and noisy-N6 seed
+  diagnosis | command: `cmake --build build/release --target
+  nonmatching_plc_manifest_tests canonical_delaunay_seed_tests
+  terrain_volume_request_tests surface_core_contract_tests
+  exact_binary_predicates_tests -j 4`, then focused CTest | failures: none |
+  notes: a count-preserving 4-to-4 selection could previously be counted and
+  discarded, while replacement tets could be ordered after the retained core.
+  The selected transaction is now installed as shell-before-core and only an
+  installed selection is counted. The nonmatching regression observes its
+  installed 2-to-3 change (64 to 65 shell tets, 3.94519°--167.435°), then
+  correctly refuses publication under S4. The actual heightfield N6 request
+  remains an independent no-publication refusal at canonical seed creation:
+  `seed_failed / invalid_output / nonconvex_hull`; its final boundary contains
+  input points on both sides, so this is a global incremental-seed topology
+  defect, not a quality-stage or tolerance failure.
+
+- 2026-09-11 CEST | pass, nonconvex constrained-region classification | command:
+  fresh `cmake --build build/release --target surface_core_contract_tests
+  nonmatching_plc_manifest_tests canonical_delaunay_seed_tests -j 4`, then
+  focused CTest | failures: none | notes: `classify_canonical_plc_regions`
+  replaces the generated-control constructor's all-outer-face halfspace test
+  with flood classification across unconstrained faces. The new 3D L-solid
+  regression retains 18 material cells and classifies six cells in its concave
+  void as exterior; the existing nonmatching control still produces its
+  accepted generated result. This is a prerequisite for noisy terrain, not
+  general constrained-facet recovery or noisy-volume completion.
+
+- 2026-09-11 CEST | pass, final bounded N6 joint reconstruction | command:
+  fresh `cmake --build build/release --target n6_final_three_regions_probe_tests -j 4`,
+  then focused authoritative CTest | failures: none | notes: the deterministic
+  20-region constrained shell reconstruction retains all prescribed visible,
+  fixture, and exact core interfaces. The assembled 670-shell/96-core-tet
+  domain has zero geometry defects and 1.7763568394002505e-15 volume error.
+  Exhaustive S4 passes with 5.1386162304771483 degrees minimum, zero below 5,
+  and zero above 175. Missing-face, overlap, and moved-interface controls
+  reject. This qualifies N6 and advances the chain to N8/chunk seams.
+
+- 2026-09-11 CEST | expected quality rejection, local frozen-PLC N6 oracle |
+  mode: Release | command: `bash
+  scripts/run_dc_n6_local_plc_quality_oracle.sh /absolute/path/to/tetgen` using
+  TetGen 1.6.0 commit `e05aca7df74e3f531bc35733ed87d36d437266c5` | failures:
+  none | notes: the actual 96-tet one-ring selection partitions into 20
+  face-connected closed cavities. Each PLC retains every cavity boundary
+  facet exactly; six finite frozen-surface runs (`-pYq1.1`, `q1.2`, `q1.3`,
+  `q1.4`, `q1.6`, `q2.0`) produce the same result: 86 imported tetrahedra,
+  zero generated vertices, exact retained core, zero missing facets or strict
+  overlaps, and 3.5527136788005009e-15 volume error. Full-domain S4 improves
+  from the imported baseline but remains unqualified at
+  1.4073886576271764 degrees with 51 dihedrals below five degrees. Per-run
+  SHA-256 manifests are retained by the runner. This is an external
+  feasibility reference and TetGen behavior under frozen facets, not an
+  in-process solution or an immutable-interface impossibility proof.
+
+- 2026-09-11 CEST | expected geometry rejection, batched N6 cavity cones |
+  mode: Release | command: fresh `cmake --build build/release --target
+  n6_batched_cavity_remesh_probe_tests -j 4`, then `ctest --test-dir
+  build/release -R '^n6_batched_cavity_remesh_probe_tests$'
+  --output-on-failure` | failures: none | notes: all 30 shell tets below the
+  five-degree screen and their face one-rings form 96 shell tets in 20 actual
+  face-connected regions; this disproves the unverified 29-region assumption,
+  and the presumed 384/404 seven-tet closure is absent under retained N6
+  indices. One canonical point per full region preserves every declared
+  visible/fixture/core face and the exact core, and improves raw S4 to
+  2.4256863945586646° (zero below 1°, three below 5°), but non-star-shaped
+  regions produce eight same-sided faces, 16 strict overlaps, and
+  0.0047812182581927765 volume error. Missing-face, duplicate-overlap,
+  moved-interface, and determinism controls pass; this is a narrow cone-family
+  rejection, not a global obstruction.
+
+- 2026-09-11 CEST | expected quality rejection, bounded N6 worst-tet
+  three-cell star | mode: Release | command: fresh `cmake --build
+  build/release --target n6_quality_star_optimization_probe_tests -j 4`, then
+  `ctest --test-dir build/release -R
+  '^n6_quality_star_optimization_probe_tests$' --output-on-failure` |
+  failures: none | notes: the three-tet artificial-face star consisting of
+  shell tet 237 `[16,30,28,18]` and its two neighbours is evaluated with
+  seven canonical three-cell stellar placements plus a conforming
+  shared-artificial-face 2-to-6 retriangulation. The selected two-cell
+  2-to-6 placement introduces one shared-face vertex and retains the two
+  visible faces and every fixture/core interface exactly. It passes the full
+  complete-domain audit (zero missing, nonpositive, duplicate,
+  nonmanifold, same-sided, overlap, or open-boundary findings; zero volume
+  error) and all missing-face, duplicate, moved-interface, and determinism
+  controls. It nevertheless worsens exhaustive S4 to 0.042880370258534181°
+  (22 below 1°, 95 below 5°), so this rejects this finite local-star
+  family only, not the immutable-interface problem generally.
+
+- 2026-09-11 CEST | expected quality rejection, exact N6 worst-tet cavity |
+  mode: Release | command: fresh `cmake --build build/release --target
+  n6_worst_quality_cavity_probe_tests -j 4`, then direct focused runner |
+  failures: none | notes: exhaustive localization identifies shell tet 237
+  `[16,30,28,18]` (two visible prescribed faces; no fixture/core-interface
+  face) at 0.085688274474482642°. Its smallest connected one-tet cavity is
+  deterministically rebuilt as four positive barycentric children and passes
+  the complete-domain geometry contract, determinism, and missing-face,
+  duplicate, and moved-interface controls. S4 worsens to
+  0.042840602681684034° (22 dihedrals below 1°, 95 below 5°), making this a
+  narrow one-tet-family rejection rather than a global obstruction.
+
+- 2026-09-11 CEST | expected quality rejection, bounded N6 multi-tet
+  boundary-edge-star cavity | mode: Release | command: fresh `cmake --build
+  build/release --target n6_boundary_edge_star_cavity_probe_tests -j 4`, then
+  direct focused runner | failures: none | notes: the one-apex fan is retired.
+  The same shell-only four-tet star at visible edge `(126,128)` is rebuilt
+  deterministically as four barycentric local splits (4 generated vertices,
+  16 output tetrahedra). The complete-domain oracle passes: no missing,
+  nonpositive, nonmanifold, same-sided, overlapping, or open-boundary faces;
+  volume error 2.6645352591003757e-15. The exact core and all declared faces
+  remain unchanged; missing-face and duplicate/overlap controls reject. Full
+  S4 remains unqualified at 0.085688274474482642°, so this is a valid bounded
+  topology baseline, not a quality solution.
+
+- 2026-09-11 CEST | expected rejection, bounded N6 boundary-edge-star cavity |
+  mode: Release | command: fresh `cmake --build build/release --target
+  n6_boundary_edge_star_cavity_probe_tests -j 4`, then `ctest --test-dir
+  build/release -R '^n6_boundary_edge_star_cavity_probe_tests$'
+  --output-on-failure` | failures: none | notes: the first actual local
+  candidate selects shell-only visible edge `(126,128)`, removes its four-tet
+  star and deterministically cones its ten boundary facets to one internal
+  centroid, leaving the exact core untouched. It preserves every prescribed
+  face and has zero missing/nonpositive/nonmanifold/open-edge findings, but
+  the non-star-shaped cavity yields eight same-sided faces, 16 strict
+  overlaps, and 0.0020318163493806551 boundary/tet-volume error. S4 remains
+  rejected at 0.085688274474482642°. The unchanged authoritative reference is
+  the positive control; a removed prescribed face is the negative control.
+
+- 2026-09-11 CEST | pass, boundary-edge fan control | mode: Release | command:
+  `cmake --build build/release --target n6_boundary_edge_fan_control_tests -j 4`,
+  then `ctest --test-dir build/release -R '^n6_boundary_edge_fan_control_tests$'
+  --output-on-failure` | failures: none | notes: a closed two-tet control
+  preserves two unsplit prescribed boundary facets with a 179.8-degree shared
+  wedge, while one internal shared face through their edge partitions it into
+  two 89.9-degree tet wedges. It passes the same geometry audit (closed
+  boundary, zero open edges/overlaps) and invalidates the former claim that an
+  N6 frozen visible-boundary wedge alone proves exhaustive S4 impossible.
+
+- 2026-09-11 CEST | expected rejection | mode: Release | command: fresh
+  `cmake --build build/release --target bounded_n6_authoritative_joint_probe_tests -j 4`,
+  then `ctest --test-dir build/release -R '^bounded_n6_authoritative_joint_probe_tests$' --output-on-failure`
+  | failures: none | notes: the canonical imported complete N6 shell/buffer
+  baseline passes the authoritative geometry contract and reversal determinism
+  (609 shell + 96 core tets, one closed boundary, zero strict overlaps,
+  1.7763568394002505e-15 volume error), then exhaustively rejects S4 at
+  0.085688274474482642 degrees (18 dihedrals below 1 degree; 91 below 5).
+  The result is an honest reference-baseline rejection, not a transition pass.
+
+- 2026-09-10 local | expected rejection | mode: Release | command: `ctest --test-dir build/release -R '^bounded_n6_joint_transition_probe_tests$' --output-on-failure` | failures: none | notes: finite in-process N6 assembly preserved the accepted visible-DC collar and unchanged 96-tet conservative core, but the smallest direct bridge to shared regular-grid columns collapsed four triangles into six nonpositive tets. Forward/reversed traversal agreed; cost was 552 work items, 33,792 retained bytes, and 27,696 temporary bytes. This is a rejection witness, not a complete-volume or S4 success.
+
 ## Current Known Failures
 
 - 2026-09-08 CEST | New production CPU-vs-GPU device-front parity fixture
@@ -22,6 +170,259 @@
   image-parity gate passes.
 
 ## Recent Test Runs
+
+- 2026-09-11 CEST | pass, constrained recovery provenance | mode: Release |
+  command: fresh `cmake --build build/release --target
+  canonical_delaunay_seed_tests nonmatching_plc_manifest_tests -j 4`, then
+  focused CTest | failures: none | notes: recovery-created constraint-edge
+  midpoints now have endpoint-derived stable IDs plus exact `(edge, 1/2)`
+  provenance. Reversed input produces the same record; an ID collision
+  refuses transactionally.
+
+- 2026-09-11 CEST | pass, refined-core arbitrary-face materialization |
+  mode: Release | command: fresh `cmake --build build/release --target
+  bounded_front_buffer_tests regular_core_refinement_geometry_tests
+  regular_core_arbitrary_refinement_tests canonical_delaunay_seed_tests
+  sandwich_probe_tests tetra_sandwich_probe arbitrary_buffer_viewer_control -j 4`,
+  then focused CTest | failures: none | notes: the new face-contract core
+  materializer constructs a deterministic interior-cone refinement for each
+  supplied parent face triangle, checks matching parent interfaces and strict
+  overlap, and passes the adjacent-parent reordered-input control. The direct
+  sandwich probe runner also completed cleanly.
+
+- 2026-09-11 CEST | pass after stabilization, buffer/core trust primitives |
+  mode: Release | command: fresh `cmake --build build/release --target
+  bounded_front_buffer_tests regular_core_arbitrary_refinement_tests
+  arbitrary_buffer_viewer_control tetra_sandwich_probe -j 4`, then
+  `ctest --test-dir build/release -R
+  '^(bounded_front_buffer_tests|regular_core_arbitrary_refinement_tests)$'
+  --output-on-failure` | failures: none | notes: the first focused run exposed
+  an incorrect expected-side-face derivation in the strengthened buffer audit;
+  it was corrected before this rerun. The final tests verify rejection of two
+  coincident, separately indexed prism volumes and that arbitrary split IDs
+  remain stable after unrelated requests while fractions use numerical order.
+
+- 2026-09-11 CEST | pass, authoritative complete-N6 domain harness |
+  command: fresh `cmake --build build/release --target
+  complete_n6_domain_harness_tests -j 4`, then `ctest --test-dir
+  build/release -R '^complete_n6_domain_harness_tests$' --output-on-failure` |
+  failures: none | notes: retained external `shell-n6` joins 609 TetGen shell
+  tets with 96 exact core tets; it has one closed boundary component, zero
+  strict overlaps, and 1.7763568394002505e-15 boundary/tet-volume error. It
+  passes geometry and deliberately fails S4 (minimum dihedral
+  0.085688274474482642 degrees). Missing-face, interior-overlap,
+  reversed-winding, and moved-interface controls all reject.
+
+- 2026-09-10 CEST | audit, N6 loop-search and volume interpretations
+  superseded | commands: independent scratch topology traversal, bounded-search
+  instrumentation, and outward-oriented boundary-volume recomputation |
+  failures: the loop connector incorrectly required equal source edge counts;
+  the 250,000-state search reached at most 10 faces although a 34-edge disk
+  needs at least 32 triangles; `edge_cycles()` accepted incomplete walks; and
+  the connecting-prism validator discarded boundary orientation | notes: the
+  47-face patch has 25 boundary edges, three bad boundary vertex degrees, and
+  Euler characteristic -2, so its reported ten cycles are not trustworthy. A
+  direct 32-triangle top-core patch has one valid 20-edge loop and Euler
+  characteristic 1. The prism's corrected outward-oriented boundary-volume
+  error is 1.6653345369377348e-16, while its 3.7870401387-degree quality
+  rejection remains. Separate shell/core boundary components are valid when
+  the retained core fills the hole. The matching-loop search direction is
+  retired in favour of an authoritative complete-N6 domain and independent
+  validation harness with positive and deliberately corrupted controls.
+
+- 2026-09-10 CEST | pass, bounded N6 exhaustive-prefix disk search diagnostic
+  (interpretation superseded) |
+  command: fresh build of `n6_bounded_disk_patch_search_probe_tests`, focused
+  CTest, then direct runner | failures: none | notes: all 104 immutable
+  retained-core faces seed a deterministic canonical-set search. With at most
+  40 faces/patch and the first 250,000 unique states, 245,668 one-loop disk
+  candidates were reported; the prefix reached only 10-face patches and could
+  not test a 34-edge disk, which needs at least 32 triangles. The best visited
+  patch is 10 faces/12 edges. Interfaces remain exact and no fill was emitted.
+
+- 2026-09-10 CEST | pass, bounded N6 disk-core diagnostic (interpretation
+  superseded) |
+  command: fresh focused build of `n6_disk_core_patch_refinement_probe_tests`,
+  focused CTest with the preceding full-rim control, then direct runner |
+  failures: none | notes: the immutable contract remains 114 visible DC faces,
+  68 curtain faces, and 104 retained-core faces. The deterministic bounded
+  nearest-connected policy chooses 47 core faces. Its 25-edge boundary has
+  three bad boundary vertex degrees and Euler characteristic -2; the reported
+  ten cycles are incomplete walks from a faulty extractor. It emits no side
+  faces or tets and agrees under reversal, but does not establish a matching
+  loop requirement.
+
+- 2026-09-10 CEST | pass, N6 complete-rim diagnostic (interpretation
+  superseded) |
+  command: fresh focused build of `n6_full_rim_cycle_cavity_probe_tests`, then
+  direct runner | failures: none | notes: the only open-front rim is one
+  34-edge cycle. The smallest collar neighbourhood incident to every rim edge
+  has 140 tets and 59 rebuildable inner faces. A deterministic connected
+  nearest exact-core patch selects 47 of 104 faces and emits no side faces or
+  tets. Its old ten-cycle and equal-loop conclusions are invalid; this remains
+  only a no-fill result for that selection policy.
+
+- 2026-09-10 CEST | pass, N6 smallest real rim-to-core rejection | command:
+  fresh `cmake --build /tmp/tetra-rim-core-build --target
+  n6_rim_to_core_cavity_probe_tests -j4`, focused CTest, then direct runner |
+  failures: none | notes: a deterministic positive three-tet triangular prism
+  consumed one actual open-rim edge and one exact terraced-core face while
+  retaining 114 visible DC faces, 68 curtain faces, and 96 core tets. The
+  prescribed-boundary audit has 34 invalid-use edges, so an independent local
+  bridge cannot close the transition. Next: jointly replace a connected collar
+  neighbourhood and its full rim cycle.
+
+- 2026-09-10 CEST | pass, N6 open rebuildable-inner-front contract | command:
+  fresh `cmake --build /tmp/tetra-open-front-build --target
+  n6_open_rebuildable_inner_front_probe_tests -j4`, focused CTest, then direct
+  runner | failures: none | notes: removing all 114 artificial collar-underfront
+  faces retains the exact 114 visible DC and 68 fixture-curtain faces as one
+  182-face manifold open front with a 34-edge rim. The exact 96-tet core / 104
+  exposed core faces shares zero literal faces and has zero strict collar/core
+  overlaps. Reversal agrees; cost: 33,522 work items, 20,544 retained bytes,
+  and 10,448 temporary bytes. This prepares a joint cavity input only.
+
+- 2026-09-10 CEST | pass, N6 whole-front eligibility rejection | command:
+  fresh `cmake --build /tmp/tetra-n6-build --target
+  n6_disjoint_buffer_core_probe_tests -j4`, then focused test and direct
+  runner | failures: none | notes: all 1,344 retained-core/shared-buffer tet
+  pairs were audited. The exact 96-tet core and 14-tet shared fan are each
+  positive, share zero boundary faces, and have zero strict cross-component
+  overlaps under reversal-deterministic construction. The fan is a disjoint
+  closed bubble rather than an annular core bridge; this rejects that buffer
+  representation, not joint buffering generally. Cost: 1,462 work items,
+  12,384 retained bytes, and 2,832 temporary bytes.
+
+- 2026-09-10 CEST | pass, N6 explicit connecting-side rejection | command:
+  fresh `cmake --build /tmp/tetra-side-build --target
+  n6_connecting_side_complex_probe_tests -j4`, then focused CTest and direct
+  runner | failures: none | notes: the closest canonical core/buffer face
+  pair was consumed and joined by one shared triangular-prism side complex.
+  The 113-tet result has a closed connected 122-face boundary, no nonpositive,
+  duplicate, non-manifold, same-sided, or strict-overlap tets, and reversal
+  agrees. The historical 0.2875335661 volume error used unoriented faces; the
+  corrected error is 1.6653345369377348e-16. It remains quality-rejected at a
+  3.7870401387-degree minimum dihedral. Cost: 583 work items,
+  12,480 retained bytes, 18,168 temporary bytes.
+
+- 2026-09-10 CEST | pass, N6 terraced-core shared-buffer diagnostic
+  (interpretation corrected) | command:
+  fresh `cmake --build /tmp/tetra-terraced-buffer-build --target
+  terraced_core_shared_buffer_probe_tests -j4`, then focused CTest and direct
+  runner | failures: none | notes: a single finite request retained the
+  accepted 114 visible DC faces, 96 exact core tets / 104 exposed core faces,
+  and the previous 14-tet shared buffer. Its two prescribed boundaries are
+  individually closed and manifold but form two disconnected components with
+  zero exact shared interface faces. It emitted zero join tets rather than
+  inventing a proxy attachment. Reversal agrees; cost is 580 work items,
+  13,488 retained bytes, and 6,264 temporary bytes. Separate shell/core
+  boundaries may be legitimate; complete-domain validation must decide their
+  nesting, so the old direct-connection requirement is withdrawn.
+
+- 2026-09-10 CEST | pass, shared N6 multi-prism cavity rejection | command:
+  fresh `cmake --build /tmp/tetra-n6-build --target
+  shared_n6_multiprism_cavity_probe_tests -j4`, then direct focused test
+  `shared_n6_multiprism_cavity_probe_tests -s` | failures: none | notes: the
+  four quotient cells cancel to one closed 14-face boundary and a positive,
+  unique, manifold, non-overlapping 14-tet shared-centre fan. It rejects as a
+  complete transition: exhaustive local quality reaches only 3.7870401387
+  degrees and 104 retained-core faces remain unmatched. Forward/reversed
+  inputs agree; cost is 189 work items, 7,584 retained bytes, and 2,128
+  temporary bytes.
+
+- 2026-09-10 CEST | pass, bounded N6 quotient-prism joint-retriangulation
+  rejection | command: fresh `cmake --build build/release --target
+  bounded_n6_joint_transition_probe_tests bounded_n6_joint_retriangulator_probe_tests -j 4`, then
+  focused CTest `^(bounded_n6_joint_transition_probe_tests|bounded_n6_joint_retriangulator_probe_tests)$`
+  | failures: none | notes: each of the four collapsed direct prisms was
+  replaced by a positive five-vertex quotient fan. All zero-volume tets
+  disappeared, but the joint output deterministically has two duplicate tets,
+  ten non-manifold faces, one same-sided face, and 330 strict overlaps. This is
+  a narrow rejected shared-cavity witness, not a closed-volume or S4 success.
+
+- 2026-09-10 CEST | pass, transition-evidence contract repair |
+  command: focused CTest `closed_boundary_controls_tests`,
+  `local_buffer_cleaving_witness_tests`, `owner_neighbor_star_template_tests`,
+  and `transitive_patch_star_probe_tests`; direct N6 local-cleavage probe |
+  notes: positive single-tet and negative open-boundary controls now make the
+  closure meaning executable. Atlas/star arrays use `n8-nearzero` and their
+  regression total is 384. The local-cleavage probe now evaluates every
+  eligible section: N6 covers 55 sections / 220 emitted tets and rejects the
+  quality screen with one below-five-degree tet at 4.7567647001 degrees. This
+  repairs the evidence only; it is not a complete joint transition.
+
+- 2026-09-10 CEST | audit, recent DC transition evidence superseded |
+  commands: source inspection plus exhaustive scratch evaluation of every
+  eligible local cleavage section; focused
+  `two_front_transition_probe_tests` rerun | failures: the atlas/star fixture
+  arrays use `n8-near-zero` instead of accepted `n8-nearzero`; atlas/star
+  contacts are against the artificial collar underside; transitive closure
+  incorrectly requires zero exposed source faces; local cleavage quality uses
+  only `full.front()` | notes: corrected leading-signature count is 384 and
+  near-zero closure reaches 730 tets. Exhaustive section results are N6 1/55
+  below five degrees (worst 4.7568); N8 default 57/145 (0.2779); near-zero
+  61/153 (0.0473); phase 2 48/141 (0.0097); phase 3 64/146 (0.1604). The
+  probes remain runnable diagnostics but do not reject joint reconstruction or
+  qualify cleavage quality. The strongest complete reference remains the
+  geometry-valid external N6 fill at 0.085688274474482642 degrees minimum
+  dihedral and 91 dihedrals below five degrees.
+
+- 2026-09-10 CEST | pass, transitive frozen-patch-star diagnostic (interpretation superseded) |
+  command: `scripts/run_dc_transitive_patch_star_probe.sh build/release`;
+  focused CTest `^(transitive_patch_star_probe_tests|owner_neighbor_star_template_tests|finite_patch_template_atlas_tests|arrangement_aware_cleaving_probe_tests)$` |
+  failures: none | notes: least-fixed-point strict contact closure is
+  traversal-independent and checks all 385 dominant-signature records. The
+  N6 witness grows to 114 frozen triangles / 388 tets in 12 rounds; N8 peaks
+  at 222 / 728 and 15 lattice steps. The frozen sheet has no non-manifold
+  edges but remains open; 330 source boundary faces remain in N6. No cap or
+  tetrahedralization was emitted. This historical interpretation is withdrawn:
+  the sheet is artificial and the closure predicate is invalid.
+
+- 2026-09-10 CEST | pass, dominant finite-patch owner-neighbour-star diagnostic (interpretation superseded) |
+  command: `scripts/run_dc_owner_neighbor_star_template.sh build/release`;
+  focused CTest `^(owner_neighbor_star_template_tests|finite_patch_template_atlas_tests|arrangement_aware_cleaving_probe_tests)$` |
+  failures: none | notes: N6 witness `[51,58,59,108]` / DC triangle
+  `[7,79,91]` has two canonical finite-boundary cuts, four canonical finite
+  lattice-face cut entities, and a positive non-overlapping four-tet immediate
+  star. Its immutable triangle has eleven strict contacts, seven outside the
+  ring. The historical run reported 385 rejections before tet emission. The
+  fixture count and frozen-facet interpretation are withdrawn; no
+  transition/GPU claim follows.
+
+- 2026-09-10 CEST | pass, finite clipped-patch atlas diagnostic (fixture coverage superseded) |
+  command: `scripts/run_dc_finite_patch_template_atlas.sh build/release`;
+  focused CTest `^(finite_patch_template_atlas_tests|arrangement_aware_cleaving_probe_tests|local_buffer_cleaving_witness_tests|conforming_scaffold_cleaving_probe_tests)$` |
+  failures: none | notes: canonical face/edge signatures cover the full
+  five-fixture contact corpus. The most frequent exact case is
+  `P4-V0-B4-L2-E4-T3-BF11-FE10-PE30` (historically 385; corrected to 384). Its real N6 witness has four
+  plane cuts and only two finite-triangle cuts, so the old one-tet grammar is
+  rejected before it can create a coplanar extension. No transition volume or
+  GPU path is claimed.
+
+- 2026-09-10 CEST | pass, finite-triangle cross-face arrangement primitive |
+  command: `scripts/run_dc_arrangement_aware_cleaving_probe.sh build/release`;
+  focused CTest `^(arrangement_aware_cleaving_probe_tests|local_buffer_cleaving_witness_tests|conforming_scaffold_cleaving_probe_tests)$` |
+  failures: none | notes: one frozen finite triangle crossing two adjacent
+  source tets produced a canonical triangle-boundary cut on their shared grid
+  face. Reversed owner order and local edge order were bit-identical; the
+  canonical owner emitted a 2-to-3 cavity with positive, manifold,
+  overlap-free, closed-boundary, exactly volume-conserving tets. It retained
+  exactly the frozen triangle with zero coplanar plane-extension facets and
+  measured 25.1094 degrees minimum dihedral (zero below five). This is only a
+  finite-edge seam template; clipped-in-tet and multi-triangle corpus cases
+  remain unimplemented.
+
+- 2026-09-10 CEST | pass, bounded local DC-buffer cleavage topology primitive (quality interpretation superseded) |
+  command: `scripts/run_dc_local_buffer_cleaving_witness.sh build/release`;
+  focused transition CTest suite | failures: none in the local template |
+  notes: deterministic 1:3/3:1/2:2 cleavage of one non-core Freudenthal tet
+  passed positive-volume, manifold/opposite-side, exhaustive-overlap,
+  cut-facet pairing, volume-conservation, and reverse-traversal checks on all
+  five fixtures. The N6/default-N8/near-zero/phase2/phase3 selected witnesses
+  measured 10.9035/8.8805/18.4254/11.0139/6.0775 degrees minimum dihedral.
+  This is not a complete buffer: 994/1884/1841/1838/1874 strict contacts are
+  clipped triangle patches, which reject plane extension beyond a frozen DC
+  triangle and define the next face-arrangement stitching regression.
 
 - 2026-09-08 CEST | pass, regression containment |
   command: fresh `cmake -S . -B build/release`,
@@ -1175,6 +1576,9 @@
   96x96 capture uses a fixed 1/64-pixel coverage grid to remove sub-display
   CPU-double/device-float noise and matched byte-for-byte. CPU fallback/default
   remains mandatory pending the requested matched p95 benchmark.
+- 2026-09-12 local | pass, structured two-hexahedra complete-volume gate | command: `./build-probes/structured_two_hex_dc_tests --no-skip` | failures: none | notes: 3 cases / 136 assertions pass. Planar/noisy N8 retain the frozen ordinary-DC quad sheet and unchanged address-reconstructible Freudenthal core; the two-slab structured column zipper reports zero nonpositive tets, unpaired internal faces, missing DC boundary triangles, or strict overlaps, with exact boundary/tet volume. Minimum mean ratios are 0.142/0.237 and dihedral ranges are 5.06--158.24 / 5.46--153.09 degrees. Reversed parent construction reproduces canonical surface, transition, and core geometry. Viewer revision v4 was inspected with enabled opaque surface, transition-only, and core-only modes.
+- 2026-09-11 local | pass, frozen noisy DC surface/core-export gate | command: `ctest --test-dir build/release -R '^sandwich_probe_tests$' --output-on-failure` | failures: none | notes: 16 sandwich probe cases / 616 assertions pass in 63.21 seconds. The dual-contouring producer exports its exact stable-ID noisy surface independently from historical prism-volume diagnostics, including directed boundary-loop edges. Repeated calls produce identical surface and wholly-material Freudenthal near-core vertex IDs, positions, and connectivity; every boundary vertex has exactly one incoming and outgoing directed edge. This is input to the forthcoming terrain-volume adapter, not a volume success claim.
+- 2026-09-11 local | pass, focused canonical PLC generated-control gate | command: `ctest --test-dir build/release -R '^(canonical_delaunay_seed_tests|nonmatching_plc_manifest_tests)$' --output-on-failure` | failures: none for the two-parent nonmatching control | notes: arbitrary core-edge split ordering, stable midpoint identity, canonical shared-face triangulation, non-collinear internal-face ear clipping, PLC-facet nondegeneracy, and adapter reconstruction-position equality pass. The input-driven constructor reaches the complete geometry audit and S4 with 78 shell plus 90 refined-core tets, 6.02159°/167.435° extrema. Six bounded local candidates around the worst shell tet produce one accepted free 3-to-2 edge-star move; reversed input produces identical result metrics. This is a generated control, not the noisy DC terrain fixture or a general terrain-volume result.
 - 2026-09-08 CEST | rejected, compact device-front promotion | command:
   fresh release Metal build, then the strict compact private-front parity
   CTest and the compact live performance smoke | failures: none in the parity

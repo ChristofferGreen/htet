@@ -1,5 +1,33 @@
 # Finished TODO Items
 
+## 2026-09-11
+
+- [x] **Bounded N6 authoritative candidate integration**
+  - Bind a canonical imported finite shell/buffer baseline to the complete-N6
+    geometry contract and exhaustive S4 scan. It preserves the declared
+    exterior and exact retained core, passes geometry and reversal
+    determinism, and deliberately exposes the reference's quality failure
+    rather than promoting it: 0.085688274474482642° minimum dihedral, 18
+    dihedrals below 1°, and 91 below 5°.
+  - `bounded_n6_authoritative_joint_probe_tests` reports 1,105 work items,
+    29,088 retained bytes, and 22,560 temporary bytes. This is a validated
+    rejection baseline, not a reconstruction or quality qualification.
+
+- [x] **Complete-N6 authoritative domain harness**
+  - Bound the existing external `shell-n6` TetGen witness and its exact
+    retained core to one complete contract: visible DC surface, finite fixture
+    sides/bottom, and core interface are each declared once.
+  - The independent audit verifies outward boundary orientation, closed
+    component/edge topology, prescribed faces, core coordinate identity,
+    strict tet overlap, and boundary/tet-volume agreement. The witness passes
+    geometry (609 shell + 96 core tets; 1.7763568394002505e-15 volume error)
+    but correctly fails the five-degree quality gate at
+    0.085688274474482642 degrees.
+  - In-memory negative controls reject a missing face, a genuinely interior
+    overlapping tet, a reversed exterior winding, and a moved core-interface
+    coordinate. This is validation evidence only; it does not construct a
+    bounded collar/buffer transition.
+
 ## 2026-09-06
 
 - [x] **P8b — Qualify readback-free moving-camera consumers.** The hidden

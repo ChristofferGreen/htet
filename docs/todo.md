@@ -1,5 +1,1077 @@
 # Implementation TODO
 
+## Active prototype goal: four hexahedra, DC, implicit core, Wang transition
+
+The authoritative prototype starts from one tetrahedron, applies the exact
+four-hexahedra construction, extracts one frozen dual-contouring sheet over
+the four matching structured grids, retains an independently addressed
+regular tetrahedral core, and uses the owned Wang constrained-
+tetrahedralization path for the explicit gap. A result is publishable only
+when the shared `TerrainVolumeRequest` geometry, output, and quality gates all
+accept it.
+
+The two-hexahedra structured fixture, BCC-owner-local cut-cell experiments,
+advancing-front fills, and imported/offline meshes remain supporting controls.
+They may supply tests and diagnostics, but they are not substitutes for this
+end-to-end transaction and must not be described as the active prototype.
+
+- [x] Preserve the exact all-four-hexahedra fixture as a validated
+      `TerrainVolumeRequest`, including frozen DC facets, separately labelled
+      finite closure, unchanged addressed core tetrahedra, and literal core
+      interface facets.
+- [x] Provide one `construct_four_hexahedra_wang_prototype` entry point whose
+      nested result identifies fixture, request, Wang, output-validation, and
+      quality refusal without publishing a partial mesh.
+- [ ] Pass the complete geometry and quality contract on the planar N5 gate.
+- [ ] Pass the same contract on the noisy N5 gate and retain order invariance.
+- [ ] Drive the sandwich viewer from the exact accepted transaction, with the
+      four hexahedra, DC surface, transition, explicit core interface, and
+      implicit far core independently visible.
+- [ ] Extend qualification to phase, transform, adjacent-chunk, mixed-depth,
+      and bounded-work cases before considering a GPU implementation.
+
+## Active chain: structured two-hexahedra DC sandwich
+
+**Correction (13 September 2026):** the v4 “implicit core” was not global.
+Its vertex positions were trilinearly interpolated inside each selected
+hexahedron and its reconstruction test replayed those same parent-local cells.
+It proved deterministic stitching, not independence from hexahedron geometry.
+The v4 transition and core are therefore rejected as a terrain volume even
+though their local geometric audit passed.
+
+The minimal viability fixture begins with one tetrahedron, uses the exact
+`make_four_hexahedra` construction, and selects its two face-sharing children
+0 and 1. Each selected hexahedron carries an ordinary structured logical grid.
+Their shared face is one canonical rational lattice, not two float-welded
+copies. Dual contouring operates on these small structured cells; the
+authoritative topology is quads around four-cell primal-edge rings. Triangle
+diagonals exist only for rendering and volume boundary input.
+
+- [x] Implement the two-parent structured grid with exact shared-face sample
+      identity. At N8 both parents independently produce the same 81 shared
+      nodes.
+- [x] Extract planar and noisy DC surfaces with one vertex per active small
+      cell and one four-vertex quad per interior crossed primal edge. Focused
+      tests prove deterministic vertices/quads, a nonempty parent-seam strip,
+      manifold oriented render triangles, and no strict self-intersection.
+- [x] Replace the misleading BCC-wide pseudo-DC viewer export. Revision
+      `structured-two-hex-dc-volume-v4` exposes the parent tetrahedron, two selected
+      hexahedra, their structured grids, authoritative quad edges, and
+      separately toggleable render diagonals.
+      Revision v3 exports and depth-sorts the authoritative quad faces
+      directly; opaque nearer quads now occlude farther quad edges instead of
+      drawing a misleading all-depth wire web over triangulated fill.
+- [x] Reject the former allegedly address-reconstructible tetrahedral volume beneath the
+      **frozen** DC sheet. The earlier reported success is rejected: it moved
+      every DC vertex halfway toward its structured-cell centre to rescue the
+      volume, making the visible surface depend on the tetrahedra.
+      The former replacement mapped immutable DC vertices by logical column
+      to a fixed deeper cell-centre front, emits a two-slab canonical zipper,
+      collapses horizontal DC steps combinatorially, and retains ordinary
+      Freudenthal tetrahedra below it. Planar/noisy N8 produce 1,571/1,497
+      transition and 1,890 parent-warped core tetrahedra with exact boundary
+      volume, zero overlap, and 5.06/5.46 degree minimum dihedrals. Those
+      measurements remain a local zipper control, not evidence for the
+      required global hierarchy volume.
+- [x] Freeze and validate the surface before volume work. Hermite-centroid DC
+      gives valid planar and noisy N8 quad sheets with zero strict triangle
+      intersections and maximum field residuals about `2.5e-9` and `0.00472`.
+      Render diagonals are chosen by surface geometry alone and are no longer
+      reconstructed from tetrahedral boundary faces.
+- [x] Retain the failed fixed-template transitions as negative evidence. The
+      six-tet warped-prism split overlaps; the follow-up boundary-cone split
+      also folds because the cell-centre front is not guaranteed to remain
+      wholly beneath the frozen DC front. Neither is an accepted volume.
+- [x] Test the simplest addressable nested-front correction: translate the
+      DC sign complex one logical `k` layer into material and use the actual
+      exposed Freudenthal faces as the inner interface. The unchanged core is
+      clean (zero core/core overlaps), but the direct quad cones still produce
+      2,196 transition/transition overlaps at planar N8. Replacing each cone
+      with two core-diagonal-driven triangular prisms reduces that to 1,034,
+      plus 523 transition/core overlaps, but remains invalid. A two-layer
+      offset does not improve the result and creates worse slivers. This
+      isolates the obstruction to the geometric homotopy between fronts, not
+      the implicit grid itself or merely the choice of quad diagonal.
+      The reason is now measured: even the planar N8 world-space height field
+      occupies 194 active hex cells across only 128 logical `(x,y)` columns
+      (66 duplicate-column entries), and its interior DC quads are generated
+      by crossings on all three hexahedral-local axes. Therefore local `k` is
+      not a terrain-depth coordinate and must not define the production moat.
+- [x] Build a genuinely nested inner grid front or tetrahedralize the complete
+      closed region globally while preserving every frozen DC triangle and
+      unchanged deep-core face. Require exact incidence, zero overlap, volume
+      agreement, and the quality screen before publishing volume edges.
+      The active core selection must instead erode in SDF/world-space material
+      distance, retain only complete unchanged tetrahedra, expose their exact
+      nonmatching boundary, and hand that boundary plus the frozen DC sheet to
+      the dependency-free closed-PLC recovery path.
+  - [x] Repair and qualify the dependency-free stellar background seed on the
+        exact planar/noisy N8 PLCs. Replacing the first-ID near-flat initial
+        simplex with a deterministic well-spread simplex produces audited
+        convex background meshes of 10,040 and 9,742 tetrahedra respectively;
+        the previous `nonconvex_hull`/empty-hull refusal was a seed defect, not
+        evidence against the frozen surface or nested core.
+  - [x] Run real constrained recovery on those accepted seeds and reject it as
+        the production constructor for this structured fixture. The first
+        immutable core edge crosses 35 planar / 20 noisy seed tetrahedra, while
+        the exhaustive edge kernel is capped at eight. No edge cavity is
+        recovered; planar consumes 512 exact edge splits and grows to 2,504
+        missing edges, while noisy reaches a core-refinement refusal after five
+        splits. Outer-first scheduling fails in the same way. Raising budgets
+        would subdivide the two frozen fronts rather than construct the desired
+        bounded band.
+  - [x] Reject the parent-local structured transition
+        transaction derived from the shared DC/primal-grid incidence. Partition
+        the band into bounded closed pieces, retain the frozen DC quad
+        triangulation as each piece's outer boundary, use exact unchanged
+        eroded-core faces as its inner boundary, and accept a piece only after
+        positive-volume, paired-face, overlap, volume, and quality gates pass.
+        The bounded column zipper passes its local gates for planar and noisy
+        N8, but its alleged core coordinates are derived from the selected
+        hexahedra. It cannot satisfy the global hierarchy contract.
+- [x] Rebuild both parents in reverse order and compare canonical geometry,
+      DC quads/triangles, transition tetrahedra, and core tetrahedra. The
+      surface and accepted replacement volume reproduce canonically.
+      The independently evaluated
+      rational shared-face keys are identical at all 81 nodes.
+- [x] Record why the former compact logical address is insufficient. It consists of an
+      interior primal-node coordinate and one of six Freudenthal permutations.
+      Its tests reconstruct every transition/core tet from those addresses
+      only by looking up the same mapped parent-local cells.
+- [x] Restore the genuine pre-atmosphere hierarchy beneath the two structured
+      hexahedra. The authoritative core now uses `WorldTetAddress`,
+      `world_tetrahedron_geometry`, exact `WorldVertexKey` identities, and
+      only the parent/world root-tetrahedron affine transform. Hexahedra do
+      not participate in position calculation. Exact DC/tet clipping removes
+      six nonlinear surface-crossing candidates missed by corner signs; at
+      noisy N8 the current selected material core has 148 whole tets,
+      including 14 that cross the shared hexahedron border.
+- [x] Add canonical whole-tet ownership at hexahedron boundaries. The largest
+      root-barycentric region containing the tet centroid owns emission, with
+      the lowest region index breaking an exact tie. Parent processing order
+      produces byte-identical vertices, addresses, connectivity, and owners;
+      no tet is clipped at the shared border.
+- [x] Add decisive core invariance tests. Every emitted corner is independently
+      reconstructed from its `WorldTetAddress` plus root transform, stable
+      keys agree, addresses are unique, reverse parent order is byte-identical,
+      and common hierarchy vertices remain byte-identical when the SDF changes.
+- [x] Make the generic transition request consume this global core rather than
+      the parent-local eroded Freudenthal substitute. The closed input and PLC
+      manifest validate for planar/noisy N8. The current generic constructor
+      then refuses at constrained-edge recovery (rather than publishing a
+      substitute), confirming that the transition remains unfinished.
+- [x] Clip every frozen DC triangle against the addressed global hierarchy
+      tetrahedra. Planar/noisy N8 cover all 288/282 source triangles with
+      1,288/1,335 canonical fragments over 79/92 cut tets; area errors are
+      `8.88e-16`/`1.11e-16`, with zero duplicate fragments and canonical
+      shared-owner edge identities. This
+      defines the bounded cut-tet work list and catches nonlinear crossings
+      even when all four tet-corner SDF samples have the same sign.
+- [x] Classify the material portion of each cut tet from the exact clipped DC
+      fragments. The planar fixture is locally convex in all 79 cut tets and
+      therefore has a direct per-cell coning path. At noisy N8 only 13/92 are
+      convex at depth three; refining the transition cells once raises the
+      convex fraction to 66/346. Refinement helps but is not itself completion:
+      the noisy constructor needs adaptive subdivision of only nonconvex cut
+      cells plus a conforming buffer/green hand-off to the untouched core.
+- [x] Factor the audited convex cut-cell constructor so the structured route
+      consumes root-transformed `WorldVertexKey` positions and inherits every
+      transition tet's canonical `WorldTetAddress` owner. The first invocation
+      exposed and fixed a coordinate-frame defect: stable hierarchy keys were
+      reconstructed in the old probe's `[-1,1]` frame and passed to a parent
+      transform expecting native `[0,1]` coordinates. Correct native-key
+      reconstruction reduced the planar N8 diagnostic from 1,220 to 267 open
+      local edges and from 8,683 to 73 strict overlaps. All remaining
+      cross-owner overlap disappears after removing the direct source-boundary
+      face ring. This confirms that ownership/shared-hexahedron geometry is
+      consistent, while the finite outer window still prevents completion.
+- [x] Classify every exact DC source-boundary owner and retain a central
+      control after removing its direct hierarchy-face ring. The remaining
+      control emits 159 transition candidates with zero same-owner and
+      cross-owner overlaps. One owner touching the artificial boundary only
+      through the next hierarchy ring retains 16 open edges and one refused
+      closure; it is evidence for a real halo, not permission to discard that
+      owner in production.
+- [ ] Give the two-hexahedron fixture a canonical DC halo that covers every
+      whole global tet selected by either chunk, then crop/close only on faces
+      of a global hierarchy domain. Do not clip tets at the hexahedron display
+      boundary. The frozen DC triangles inside the original two hexahedra must
+      remain byte-identical. This supplies the missing outer facets needed to
+      make each cut-owner material cell well defined.
+- [ ] Construct the explicit boundary band between the exact frozen DC sheet
+      and exposed faces of the unchanged global hierarchy core. Boundary work
+      may refine or add transition tetrahedra, but it must not move global-core
+      vertices or split a whole tet merely because it crosses a hexahedron
+      border.
+- [ ] Prove exact DC boundary preservation, positive orientation, paired
+      incidence, zero overlaps, exact volume, S4 quality, deterministic
+      ownership, and independent two-chunk versus monolithic equality.
+- [ ] Once those gates pass, publish the transition in viewer revision v5 and
+      assess a GPU count/scan/emit formulation with no stored global-core
+      connectivity.
+
+## Rejected historical chain: BCC-wide four-hexahedra pseudo-DC transition
+
+This route incorrectly ran the surface construction directly over the
+four-hexahedra complex of every BCC tetrahedron. Its primal-edge rings have
+valence 3, 4, and 6, so it emitted triangles and polygon fans rather than the
+intended structured-grid quad topology. Its old viewer export and its invalid
+transition candidate are retained only as negative evidence below.
+
+The background volume is the exact hierarchy from the prototype immediately
+before atmosphere work (`f1582c4`, the parent of `a142c17`), not a Cartesian
+Freudenthal grid.  Its seed is the twelve-tetrahedron cube-centre BCC complex.
+Each red generation deterministically produces eight children using the
+shortest interior octahedron diagonal.  A logical cell is identified by
+`WorldTetAddress` `(root, red depth, base-8 path)` and its geometry and exact
+dyadic vertex keys are reconstructed from that address.  Ordinary core
+coordinates and four-index tetrahedra are therefore not production storage.
+BCC green cells remain the conforming mixed-LOD interface mechanism.
+
+The terrain side remains a dual-contouring sheet generated from hexahedral
+sampling cells.  Four matching hexahedra may be derived locally from each
+active hierarchy tet using `make_four_hexahedra`; the hierarchy itself must
+not be warped to resemble those cells.  The only explicit unstructured volume
+is the bounded band between the frozen DC sheet and the exposed faces of
+wholly-material hierarchy tetrahedra.
+
+- [x] Identify the authoritative historical hierarchy and defaults: twelve
+      BCC roots, deterministic red 1-to-8 subdivision, address-based geometry,
+      and green mixed-LOD closure.
+- [x] Add `FrozenBccHierarchyCore`, selecting a wholly-material uniform BCC cut
+      while retaining only logical owner addresses and exact transition faces.
+      Planar and noisy tests verify deterministic addresses, reconstruction,
+      nondegenerate cells, and input-dependent selection.
+- [x] Change the existing web viewer to require the BCC hierarchy revision and
+      display reconstructed core edges and its exact exposed boundary.  The old
+      Cartesian zipper is deliberately not displayed as a valid transition.
+- [x] Generate the DC/hexahedral sampling complex from uniform active BCC
+      owners. Four hexahedra per owner share reduced exact-rational points;
+      planar/noisy N4, noisy N6, and noisy N8 surfaces pass finiteness,
+      nondegeneracy, uniqueness, manifoldness, orientation, and strict
+      intersection checks. A bounded safe-placement fallback moves only
+      intersecting DC vertices toward their own convex hex centres.
+- [ ] Partition that BCC/four-hexahedra construction by hierarchy owner and
+      prove canonical owner/face identities across adjacent chunks.
+  - [x] Assign every final DC triangle a canonical `WorldTetAddress` from its
+        incident four-hexahedra cell owners after diagonal and orientation
+        repair.  Repeated planar/noisy extraction produces identical owner
+        ledgers; this is now the key for a hierarchy-local recovery schedule.
+  - [x] Measure the smallest shared scheduling unit.  At noisy N4 no DC
+        triangle and eroded-core interface face has the same leaf owner, but
+        sixteen red-parent stars contain both fronts.  Each such parent owns
+        at most 46 DC triangles and four hierarchy interface faces, so a
+        bounded parent-star collar is a materially better next constructor
+        than the global 1,500-edge recovery queue.
+  - [x] Materialize deterministic parent-star patch records with disjoint
+        triangle/interface ownership and canonical boundary ledgers.  The N4
+        corpus partitions every face exactly once and finds byte-identical
+        stable surface and exact `WorldVertexKey` seams shared by two stars.
+        Eight of the sixteen noisy two-front parent stars have one closed loop
+        on each front; the other eight have multi-component local cuts.  The
+        loop zipper is therefore directly reusable for half the stars, while
+        the rest must be deterministically merged with neighbors before fill.
+  - [ ] Issue independent adjacent owner-block requests and compare their
+        shared triangle/face ledgers with a monolithic extraction.
+- [ ] Construct the bounded explicit DC-to-BCC transition tetrahedra without
+      moving either the frozen DC surface or retained hierarchy faces.
+  - [x] Make the retained hierarchy a strict interior cut: zero-level
+        vertices stay in the free transition band and one complete BCC face
+        star is eroded from the material candidate set.  This removes the
+        former planar contact between the DC sheet and the alleged core.
+  - [x] Add `BccSurfaceCoreTransitionRequest`, with stable IDs derived from
+        `BccHexCellAddress` and exact `WorldVertexKey`, a closed finite
+        DC/collar/cap PLC, and only interface-adjacent non-domain-boundary BCC
+        owners materialized.  The generic input contract accepts both planar
+        N4 and noisy N4; the remaining 260 of 290 planar owners remain
+        address-only.
+  - [x] Add a direct generic-contract-to-canonical-PLC adapter and allow the
+        in-house recovery transaction to consume those constraints without
+        pretending they are Cartesian regular-core parents.  The planar N4
+        background seed has 1,449 tetrahedra and initially recovers 354/1,030
+        literal facets and 359/1,530 constrained edges.  A bounded recovery
+        makes seventeen legal edge flips and sixty-four exact edge splits
+        before its configured split budget is exhausted, while reducing the
+        missing-facet count only from 992 to 989.  Simply raising this global
+        budget is therefore not a credible completion strategy.
+  - [ ] Replace the current one-edge-at-a-time global recovery schedule with
+        a hierarchy-local collar schedule (or prove a larger bounded split
+        budget converges), then classify the recovered shell and join the
+        unchanged materialized BCC interface halo.
+    - Parent-star fast path: the unequal-loop zipper closes all eight simple
+      N4 parent patches.  All eight planar boundaries are star-shaped and can
+      be coned directly; three of eight noisy boundaries are star-shaped.
+    - Coarsening the remaining patches to root ownership produces eight clean
+      single-loop closed PLCs, but none is star-shaped.  Their independent
+      background seeds recover 614/1,120 planar and 934/1,152 noisy facets,
+      far better than the global seed.  The old recovery schedule still
+      degrades them by splitting constraints (the first root reaches only
+      17/156 planar or 31/166 noisy facets after 64 splits).  Direct two-sided
+      facet recovery also refuses the first actual planar cavity as
+      unretriangulable and the first noisy cavity as plane-crossing.  The next
+      algorithm must therefore be a bounded non-star root-cavity advancing
+      front, not another budget increase in the old global CDT repair.
+- [ ] Add mixed-depth cuts and prove BCC green closure, adjacent-chunk
+      watertightness, positivity, non-overlap, exact volume, and generic-field
+      behavior.
+- [ ] Publish surface, transition, hierarchy interface, and implicit core as
+      independently inspectable layers in the existing viewer; only then
+      evaluate GPU count/scan/emit translation.
+
+**Current visible checkpoint (12 September):** the viewer reports revision
+`bcc-four-hexahedra-v2`.  At noisy N8 it shows 2,712 strictly interior logical
+owners at red depth 3 and a 363-triangle exact hierarchy hand-off boundary;
+the tetrahedral geometry is reconstructed from addresses. Its valid
+3,106-triangle DC surface comes from 24,576 four-hexahedra cells derived from
+6,144 hierarchy tetrahedra. The transition
+toggle is intentionally disabled because no BCC-to-DC fill exists yet.  This
+is an honest intermediate state, not completion of the terrain volume.
+
+## Superseded chain: shared-lattice DC-to-Cartesian-Freudenthal zipper
+
+The production route is now a dependency-free, deterministic CPU zipper
+between two authoritative fronts that share logical ownership addresses but
+not world-space geometry: the exact dual-contouring terrain triangles come
+from trilinearly deformed hexahedral cells, while the selected boundary faces
+belong to a genuinely undeformed Cartesian Freudenthal core.  A shallow
+explicit transition band owns the gap.  Canonical, stable-keyed coplanar
+subdivision is allowed where the two fronts have different connectivity;
+neither front may be moved, approximated, deleted, or silently replaced.
+
+This supersedes the general constrained-Delaunay recovery route below as the
+active implementation plan.  CDT, TetGen, imported witnesses, collars, and
+fixture repairs remain historical research oracles only.  They are preserved
+in this file because their failures and validation machinery remain useful.
+
+Completion means one input-driven transaction succeeds for planar,
+mismatched-connectivity, noisy N6/N8, transformed, reordered, phase-varied,
+and adjacent-chunk fixtures.  Every successful result must have exact outer
+and core-front boundary agreement, positive non-overlapping tetrahedra,
+manifold and consistently oriented incidence, exact volume agreement, full S4
+reporting, deterministic output, and bounded work/memory.  Required noisy
+fixtures must produce volumes; refusing them is not completion.  The existing
+web viewer must display the transaction result and separately isolate the
+exact DC surface, transition tetrahedra, refined interface, and retained core.
+
+- [x] Define a bounded `SharedLatticeZipperRequest` and transactional result.
+      It carries two authoritative triangulated disk patches, the declared
+      side wall, stable lattice keys/ownership, and explicit work/memory
+      limits.  No field resampling or imported connectivity is permitted.
+- [x] Implement deterministic two-front seed/advance/N/M operations with a
+      canonical priority order and transactional failure reporting.
+- [x] Add canonical shared-lattice subdivision for mismatched opposing
+      connectivity while preserving both geometric fronts exactly.
+- [x] Partition and assemble planar and noisy terrain into owned disk patches;
+      adjacent patches and chunks must derive byte-identical shared seams.
+- [x] Validate exact boundaries, positive orientation, strict non-overlap,
+      manifold incidence, exact volume, reorder/transform determinism, chunk
+      seams, bounded work/refusals, and complete S4 metrics.
+- [x] Integrate the exact successful transaction into
+      `tools/tetra_sandwich_viewer` with independent surface, transition,
+      interface, and core visibility controls.
+- [ ] Only after the CPU corpus passes, evaluate a bounded GPU translation.
+
+**Implementation checkpoint (12 September):** `SharedLatticeZipperRequest`
+and its transactional result now assemble a complete finite volume for a
+matching-footprint control whose DC and Freudenthal fronts use opposite quad
+diagonals.  The constructor keeps stable input identities, builds the canonical
+front overlay, replaces only the core tetrahedra incident to split interface
+faces, retains deeper core tetrahedra, derives the side wall, and reports full
+geometry, volume, overlap, determinism, resource-limit, and S4 evidence.  The
+focused control passes all gates, including reorder determinism.
+
+This does **not** close the noisy terrain requirement.  Applying the same
+overlay to the existing independent core revealed two separate blockers that
+must not be hidden by another control: the finite regular interface covers a
+larger footprint than the frozen DC sheet, and the direct overlay-prism fill
+creates sub-degree elements where nearly coincident front edges intersect.
+A rejected attempt to snap a cell-centred core boundary to the DC boundary
+also proved that a valid height-field DC perimeter can contain several active
+cells in one horizontal column.  Therefore the next implementation must be
+the bounded two-front patch/side-wall zipper itself (including unequal boundary
+sampling), followed by N/M concavity handling and quality-driven canonical
+patch subdivision.  One-to-one boundary snapping and accepting the overlay
+quality refusal are not valid completion paths.
+
+The first unequal-boundary primitive is now implemented: a bounded dynamic
+two-loop side-wall zipper advances either front in cyclic order, minimizes a
+triangle-shape cost, and emits exactly `surface_edges + interface_edges`
+triangles.  It validates boundary/internal edge incidence and passes unequal
+4-versus-8 sampling, cyclic reorder, rigid-transform, and resource-limit
+controls.  It is not yet the volume fill: the next leaf is to use this declared
+wall with the two authoritative patch triangulations in the seed/advance/N/M
+tetrahedral front, then replace the common-overlay path for noisy terrain.
+
+**Whole-gap partition evidence (12 September):** the exact DC sheet, exact
+independent Freudenthal interface, and unequal-loop wall now form a validated
+closed shell without common-overlay subdivision.  The former O(F^4)
+four-plane kernel oracle has been replaced by a deterministic in-project
+two-phase linear program, making the Chebyshev-centre test practical at N8.
+The original shared-warp result made planar and noisy N6 globally star-shaped,
+but that evidence depended on incorrectly warping the background core.  With
+the corrected Cartesian core, planar N6 remains a valid star control while
+both noisy N6 and noisy N8 correctly reject as non-star gaps.  Therefore one
+global centre remains a diagnostic only, not production topology.
+
+The next leaf is canonical shared-lattice patch partitioning.  Each patch must
+carry exact clipped portions of both fronts, use the unequal-loop wall, and
+share its artificial cut wall byte-for-byte with its neighbour.  Local
+seed/advance/N/M filling then has bounded work and useful element scale.  The
+partition corpus must make noisy N6 pass S4 and turn noisy N8 from a non-star
+global shell into accepted local volumes before viewer promotion.
+
+**Direction correction (12 September):** arbitrary floating-point clipping
+and one-centre tile coning are now retained as a negative diagnostic, not the
+production partitioner.  Two-axis measurements keep the shells closed but do
+not make any noisy N6/N8 corpus case geometry- and S4-valid; fine cuts can also
+lose byte-identical seams.  Continuing to tune clip axes, tile counts, or cone
+centres is therefore explicitly outside the active route.
+
+The frozen inputs now retain their original shared-lattice provenance.  Each
+DC triangle carries the exact primal edge whose quad emitted it, and each
+Freudenthal interface triangle carries its owning lattice square.  The first
+ownership corpus passes and gives the important decomposition:
+
+- planar N6: 55 vertical DC quads pair with 55 core squares; no step quads;
+- noisy N6: the same 55 direct pairs plus only 2 horizontal step quads;
+- noisy N8: 105 direct pairs plus only 6 horizontal step quads;
+- the unpaired core squares are exactly the finite perimeter ring (17 at N6,
+  23 at N8), and every recorded quad/square consists of exactly two triangles.
+
+The next production leaf is consequently a lattice-owned local complex, not
+a projected rectangle: emit the ordinary paired-square transition cells,
+join the sparse horizontal step quads with deterministic seed/advance/N/M
+operations in their immediate cell neighbourhood, and close the separately
+owned perimeter ring.  Shared faces and any subdivision sites must be derived
+from the primal-edge/square keys so adjacent blocks and chunks reproduce them
+byte-for-byte.
+
+**Lattice-owned completion checkpoint (12 September):** the logical-lattice
+route now constructs the required complete volumes without arbitrary clipping,
+one-centre coning, CDT, or an external mesher.  Exact primal-edge and square
+provenance maps ordinary vertical DC quads to compatible prism advances;
+sparse horizontal step quads use canonical collapsed prism/N-M advances.  A
+matched `(2N-1) x (N-1)` Freudenthal footprint attaches the transition directly
+to the unchanged deep core.
+
+**Physical-space correction (12 September):** the first viewer accidentally
+applied the terrain hexahedra's trilinear warp to the background core as well.
+That was only a topological grid and did not satisfy the architecture.  The
+terrain/DC producer and core now use separate coordinate maps: the former
+remains visibly deformed while every retained background vertex is exactly on
+the Cartesian lattice.  Only the explicit collar spans between them.  Noisy
+N6 produces 336 transition plus 660 retained core tetrahedra
+(12.173--128.454 degree dihedrals, 0.330 minimum mean ratio, 4.378 maximum edge
+ratio).  Noisy N8 produces 648 plus 1,890 tetrahedra (9.386--151.055 degrees,
+0.205 minimum mean ratio, 6.281 edge ratio).  Both pass
+exact front preservation, positive/opposing manifold incidence, strict
+non-overlap, exact boundary-volume agreement, and S4.
+
+The corpus also covers planar N6, three noisy phases at N6/N8, record reorder,
+rigid transforms, and transactional resource refusal.  Adjacent planar N6 and
+noisy N6/N8 transactions are now generated independently by canonical
+primal-edge, interface-square, and Freudenthal-cell ownership.  Their shared
+boundary faces are byte-identical stable-ID triples and their assembled
+tetrahedra exactly reproduce the monolithic topology.  The existing web viewer
+now exports this transaction—not the historical extruded/coned diagnostic—and
+separately controls the deformed terrain hexahedra, exact DC surface, local
+transition tetrahedra, undeformed Cartesian interface, and unchanged Cartesian
+core.  The only downstream item in this chain is the deliberately separate
+bounded GPU translation evaluation.
+
+## Historical chain: generic DC surface-to-implicit-core tetrahedralizer
+
+The objective is a **generic CPU construction**, not a repair of one imported
+tetrahedral mesh: from a valid, manifold dual-contouring (DC) boundary and an
+implicit regular tetrahedral core, produce a watertight, non-overlapping,
+quality-qualified terrain volume, or return a specific bounded failure.  It
+must derive its topology from those inputs; TetGen files and fixture-specific
+repair structure are research oracles only.  The DC boundary and selected
+core interface are exact constraints.  All intermediate fronts, vertices, and
+tetrahedra are derived and rebuildable.
+
+The N6 result below is an existence/regression witness.  It must not be
+described as, displayed as, or connected to the viewer as a generic terrain
+volume solution.  Do not start GPU work until an input-driven CPU constructor
+passes the validation corpus, including a real noisy DC volume.
+
+**Decision (11 September):** the production contract is `geometric_facets`.
+A constructor may split a DC or core-interface triangle into canonically
+owned coplanar subfaces, but may not move, approximate, delete, or overlap its
+geometric area. `literal_faces` remains a stricter regression/control mode.
+This is required for generic constrained-facet recovery and is not permission
+to alter the rendered or collision surface.
+
+**Research correction (11 September):** stuffing/cleaving is not the selected
+construction because it normally creates its own approximation of the
+implicit surface. The target remains the existing DC surface, an explicit
+mutable transition band, and the retained implicit regular core. Recent local
+cavity-search failures do not disprove that route: the current bounded search
+cannot select fully internal tetrahedra, retains zero-use face-map entries
+across backtracking, and conflates budget exhaustion with incompatibility.
+
+**Current goal (architecture checkpoint, 11 September):** produce one complete
+noisy DC terrain volume through one input-driven CPU transaction. The same
+transaction owns the canonical closed PLC, robust constrained recovery, the
+adjustable local regular-core cut, complete geometry and full S4 validation,
+deterministic publication, and the data displayed by the web viewer. The small
+generated nonmatching control, imported repaired N6 witness, and external
+N6/N8/N10 results are useful but distinct evidence; none is this transaction.
+
+The compact constructor is not a foundation to scale unchanged. Its former
+convex halfspace classifier has been replaced by a constrained-face region
+flood, including a concave-solid regression, but only after all constraints
+are already recovered. It still has no general facet-recovery algorithm and
+its Bowyer--Watson kernel needs complete robust constructed-point and
+constraint-recovery handling. The seed now has an in-project filtered exact
+binary orientation/in-sphere fallback plus the published stable-rank,
+parity/orientation co-spherical rule; the remaining recovery/cavity operations
+still need the same robustness discipline. The noisy core exporter also materializes every
+selected all-corners-inside lattice tet and does not yet represent a bounded
+explicit buffer against an unchanged implicit far core.
+
+Use a self-contained Diazzi-style robust constrained-recovery implementation
+as the geometry baseline behind the project contract. Do not add a meshing
+dependency. Keep quality improvement as a separate bounded stage: robust CDT
+establishes conformity, not S4. The core interface is selected per request and
+may move inward or refine affected parent stars before it is frozen. A thin
+feature may contain only explicit unstructured tets and no local regular core.
+No current mesher is a runtime dependency, and GPU work remains downstream of
+qualification of this CPU transaction.
+
+**Recovery ordering correction (11 September):** inspection of the TetGen,
+MarcoAttene/CDT, and OpenMeshCraft implementations confirmed that constrained
+segments are a precondition of face recovery. The transaction now enforces
+that gate and splits a blocked segment at its first mesh-face intersection,
+inserting the same vertex into the retained mesh. The rotated two-parent
+control completes without invoking advancing-ridge recovery, and the bounded
+N6 control refuses before facet work when segment splitting is disabled. Next,
+scale the newly installed per-face two-sided cavity kernel beyond its bounded
+exhaustive fill: add deterministic cavity expansion, local Delaunay half-cavity
+tetrahedralization, and disturbed-face rechecking. Its triangular-bipyramid
+control already proves boundary preservation, positive volume, facet and cell
+reorder determinism, and rigid-transform invariance.
+
+**Implementation started (11 September):** `regular_core_arbitrary_refinement`
+now provides a bounded, transactional, rational arbitrary-edge-split ledger
+and validates canonical explicit split-face triangulations.  It also selects
+the deterministic one-ring local parent halo and materializes the first
+single-edge, non-midpoint refined-core control into positive tetrahedra. The
+complete parent-face materializer cones every validated arbitrary split-face
+triangle to a deterministic parent interior point, requires identical
+triangulations at shared parent faces, and rejects overlap or nonmanifold
+output. It is still a tested provenance/front/core primitive only: it neither
+derives those faces from the DC-to-core construction nor emits the DC-to-core
+buffer, and is not yet a terrain-volume constructor.
+
+`bounded_front_buffer` now also provides the first actual no-field-evaluation
+buffer primitive: corresponding explicit triangles on a frozen outer front
+and a refined-core inner front become a deterministically tetrahedralized
+prism layer.  It checks the complete expected outer/inner/side boundary,
+opposite-sided shared faces, strict tetrahedron overlap, and its separate
+true-internal-angle S4 diagnostic.  It still requires the caller to supply
+the front correspondence and therefore is not the generic transition
+constructor.
+
+**Manifest correction (11 September):** a geometric outer PLC facet may have
+its own exact midpoint coordinates. The manifest no longer assumes those
+coordinates were produced by red refinement of the core; it separately audits
+the core's generated midpoint set and materializes independent outer-facet
+points. The direct request-to-manifest handoff exposed that the old manifest
+refined only one connected component while claiming the
+boundary of the entire selected core. It now derives regular-parent adjacency
+from the request and materializes every disconnected selected component in
+one deterministic ID domain. The real noisy N6 request therefore reaches the
+same generic PLC manifest used by recovery. The unselected far regular core
+is still implicit outside that finite selected patch; recovery, shell
+extraction, and the eventual local-refinement policy remain unfinished.
+The handoff test also materializes the resulting constraint set, proving every
+geometric DC/core subface resolves to a unique stable PLC point before recovery
+is allowed to seed tetrahedra. Its bounded N6 recovery attempt still refuses
+without publishable cells. The seed is now protected by an in-project filtered
+exact-binary orientation/in-sphere fallback and deterministic co-spherical
+tie rule; that refusal is evidence that general constraint recovery remains
+unfinished, not evidence that the request is a terrain volume.
+
+The web inspector has an `arbitrary split buffer control` mode generated from
+the non-midpoint refined-core and buffer primitives.  It shows actual emitted
+buffer/core tetrahedron edges and an outer skin; its UI description explicitly
+labels it as a control, not a qualified noisy-DC terrain volume.
+
+The real noisy DC fixture now also exports an explicit frozen-surface collar
+to the inspector.  It derives its inner points from the frozen sheet only and
+currently reports geometry acceptance and S4 separately.  This collar is a
+useful real-input diagnostic, but not a terrain volume: it has no regular-core
+attachment and its first measured elements fail the 175-degree S4 bound.
+
+**N8 collar update (11 September):** the normal-resolution noisy DC control
+now emits 666 collar tetrahedra with geometry acceptance and a passing
+dihedral screen (32.4673°–174.8331°). Full S4 is not measured yet. The earlier failing N2 control remains a warning that
+front/offset choice needs a declared contract.  Neither collar is joined to
+the regular implicit core, so neither closes the active constructor goal.
+
+The candidate audits, noisy PLC exports, Diazzi geometry baselines,
+marked-midpoint core handshake, arbitrary-edge refinement control, and
+geometric TetGen quality experiment are completed research inputs. They remain
+documented in `generic-constrained-plc-route.md`; they are not open milestones.
+
+- [ ] Define the authoritative `TerrainVolumeRequest`/`TerrainVolumeResult`
+      transaction. It namespaces stable DC/core IDs; carries the frozen DC roof
+      and separately labelled finite closure; selects a conservative bounded
+      regular-core cut plus mutable parent halo; permits an empty local core;
+      and declares coordinate, quality, work, memory and failure limits.
+      **Started:** the fixture adapter now constructs a deterministic validated
+      request from the real frozen noisy DC sheet and a conservative local
+      regular core. It namespaces independent ID domains, records per-face
+      `frozen_dc` versus `artificial_closure` provenance, rejects an invalid
+      closure floor, records every retained-core boundary facet explicitly,
+      and propagates input limits. This is deliberately only
+      the request half: it has no recovered transition tetrahedra, no generic
+      arbitrary-PLC closure input, no empty-local-core case, and no published
+      `TerrainVolumeResult` yet.
+- [ ] Replace convex halfspace classification with constrained-face region
+      flood classification, including an outside seed, nested core cavity,
+      multiple boundary components and nonconvex controls. Extend the validator
+      to require positive orientation, boundary/cell volume agreement, exact
+      parent-facet coverage, strict non-overlap, and full S4 (mean ratio,
+      dihedrals and edge ratio).
+- [ ] Integrate one robust segment/facet recovery foundation behind that
+      transaction. Implement the published recovery/predicate model in-project
+      rather than extending fixture-specific flip families or importing a
+      meshing dependency. Derive topology only from the request. **First
+      kernel gate:** extend the now-published zero-in-sphere policy across
+      every recovery/intersection/cavity predicate; make reordered
+      co-spherical inputs byte-identical, and reject a non-convex final hull
+      before it can be used for N6 recovery. The quality stage must be
+      topology-independent: the symbolic seed legitimately chooses different
+      regular-grid diagonals than the prior fixture-specific flip sequence.
+      **Started:** all constrained segments are now processed before facets;
+      the small nonmatching control proves the gate, while full N6 segment
+      recovery, scalable half-cavity filling, and cavity expansion remain open.
+- [ ] Integrate deterministic local-core refinement for every recovery-created
+      core-edge split, including arbitrary exact parameters and internal core
+      edges. Materialize only affected parent stars and the transition; leave
+      unchanged parents implicit. Publish only when both skins agree exactly.
+- [ ] Add a bounded iterative quality stage which may change free transition
+      connectivity, add or move interior vertices, and geometrically subdivide
+      frozen parent facets without moving their realization. Score the full
+      bad-element distribution and accept only a complete full-S4 result.
+      **Started:** the owned terrain publication transaction now tries one
+      deterministic 2-to-3 face flip or 3-to-2 transition-only edge-star
+      flip, rebuilding incidence after each accepted move for at most two
+      mutations, validates each candidate against the complete frozen-surface/core
+      contract, and
+      rejects rather than publishes every result that still misses the full
+      quality contract. The result retains pre- and post-repair per-region
+      measurements, and an accepted mutation is regression-checked to reduce
+      the recorded violation count; ties must improve the worst mean ratio,
+      normalized volume, scaled Jacobian, dihedral extrema, or edge ratio.
+      The current planar/noisy controls remain correctly
+      refused, so additional legal operations and corpus qualification remain
+      open.
+- [ ] Drive the web viewer from that exact transaction result. The first visible
+      milestone is the normal noisy fixture with separately isolatable frozen
+      surface, transition tets, refined-core tets and implicit core boundary,
+      plus an on-screen geometry/S4/refusal report.
+- [ ] Qualify unchanged logic on planar, noisy N6/N8/N10 and phase variants,
+      transformed, adversarial and seeded unseen inputs. Then prove explicit
+      storage scales with the active surface/buffer rather than filled volume,
+      and independently described adjacent chunks publish the same interface.
+      **Current corpus evidence:** structured planar N6 and noisy N8 complete
+      owned recovery and immutable-interface validation, then correctly refuse
+      publication at the quality gate. The seed location walk now treats an
+      explicitly provenance-known coplanar query/face as a zero face even if
+      the separately rounded binary64 orientation is tiny and nonzero. This
+      restores the N6 face/edge path: before the correction, query 127 was
+      misclassified as interior, `adjustBWCavity` removed all nine working
+      cells, and the next insertion had no live carrier. Structured noisy N10
+      now has valid PLC
+      intake after exact 3-D clearance pruning of core candidates that cross
+      the concave frozen sheet. Its former non-ball seed rejection was
+      sensitive to an origin-dependent Hilbert guard band: multiplying AABB
+      endpoints by `1.01` selected different partitions as coordinates moved
+      from the origin. The owned scheduler now expands the AABB by 0.5% of
+      each extent instead. N10 consequently completes seed and recovery, but
+      is stopped by the mandatory immutable-interface output validator before
+      quality evaluation: the current recovered transaction has two
+      below-volume-threshold transition tetrahedra and eight unexpected
+      boundary faces. The latter are not an independent seam defect: the
+      validator correctly excludes non-positive cells from its face ledger,
+      leaving their otherwise paired faces exposed. The repair target is thus
+      the two constrained low-volume cavities. The first residual sliver has
+      two frozen faces and two non-frozen faces, so it is not an all-boundary
+      cell that mandates geometric facet splitting; its repair must preserve
+      those two faces while expanding through the non-frozen side of its
+      non-ball neighbourhood. Its existing bounded publication repair reduces 19
+      initial degenerate candidates to 4 after 15 accepted mutations, but
+      does not complete a valid constrained repair. A bounded exploratory
+      extension over the four non-planar residual slivers must not be read as
+      proof of an incompatible cavity boundary. Its old diagnostic conflated
+      a bounded-search exhaustion with incompatibility. The corrected N10
+      accounting records 8,184 attempts: 3,168 trial-limit refusals, 4,510
+      non-improving candidates, 506 invalid candidates, and zero proven
+      incompatible cavity stars. Removing the segment-recovery edge-retention
+      condition therefore does not establish a topology blocker; a stronger,
+      bounded cavity search and quality objective remain required.
+      N10 therefore remains unqualified output. The earlier query-358
+      cavity-hole trace remains bounded, opt-in diagnostic evidence rather
+      than a production fallback path.
+      Phase coverage now records three non-default cases: noisy N6 at
+      `(0.0001,0.0001)` / `(0.5,0.0001)` and noisy N8 at `(0.23,0.41)` recover
+      and validate their frozen interfaces but remain quality-refused; noisy
+      N8 at `(0.5,0.0001)` recovers but is output-refused for a recorded
+      near-degenerate transition tetrahedron. No phase variant bypasses either
+      validation or the quality gate.
+      The N8 `(0.23,0.41)` recovery is now invariant under a full reversal of
+      input vertex storage: canonicalizing constrained facets by stable face
+      identity and provenance before seed scheduling restores identical
+      stable-ID transition tetrahedra (the pre-fix runs produced 774 versus
+      768 transition cells despite both locally validating).
+      N10 is therefore still not quality evidence or qualified output.
+      The focused terrain corpus (15 cases / 660 assertions) passes in
+      207.88 seconds after this change. This is a bounded regression baseline,
+      not the required N-versus-memory scaling proof.
+      A release-owned `terrain_wang_probe` measurement with the standard
+      bounded options records N6 noisy `(0.0001,0.0001)` at 4.70 s / 39.6 MB
+      peak RSS / 1,170 cells, N8 noisy `(0.23,0.41)` at 6.70 s / 48.3 MB /
+      1,676 cells, and the N10 refusal at 42.77 s / 158.2 MB / 3,718 cells.
+      These are reproducible cost baselines, not evidence that explicit
+      storage is proportional to only the active surface/buffer.
+      Build wiring no longer adds `tetra_core` both directly and through its
+      public `tetra_probe_support` dependency to retained artifact probes.
+      Reconfiguring `build-owned` (author oracle off) and building the
+      representative retained quality probe succeeds without the duplicate
+      static-library linker warning; its focused test passes. The separate
+      external-shell witness remains a known geometry-negative test
+      (`bad_core_coordinates=192`), unrelated to that link change.
+      The independently generated N8 noisy DC/core chunk precondition also
+      passes: joined frozen-surface and retained-core hashes equal their
+      monolithic hashes (`0xc205071bc5e15429` and `0xe2cc314c0120a463`), with
+      64 paired core-interface faces. The probe explicitly reports
+      `independent_shell_meshing_completed=false`; this is valid frozen-input
+      seam evidence only, not the still-required Wang transition seam proof.
+      An exact binary64 rigid translation of planar N6 now independently
+      reaches owned recovery, geometry validation, and the mandatory quality
+      refusal after world-axis exact-plane provenance is translated with the
+      geometry.  The Hilbert scheduler's guard band is now derived from the
+      AABB extent instead of scaling absolute coordinates, removing one
+      origin-dependent scheduling decision.  The transformed transaction can
+      still yield a different valid transition topology because later
+      source-style floating-point location decisions are translation
+      sensitive; topology invariance remains an explicit open qualification
+      requirement, not a claim inferred from both runs passing their gates.
+      Only after these gates may a GPU construction chain begin.
+
+- [x] Establish the exact geometric-facet refinement primitive.  A frozen
+      parent triangle now has a winding-independent stable identity, exact
+      rational barycentric subface vertices, deterministic literal or
+      four-way geometric subdivision, and canonical seam ownership.  The
+      validator proves exact parent coverage with no positive-area overlaps or
+      gaps; transformed and reversed-winding chunk controls prove that both
+      chunks derive identical positions while only the elected owner emits.
+      This is deliberately only a facet contract: it is not yet connected to
+      a tetrahedral construction.
+- [x] Connect geometric outer facets to the real output validator.  Inputs and
+      output vertices now carry stable IDs and parent/subface provenance; a
+      geometric subface must both reconstruct exactly on its parent plane and
+      appear exactly once as an actual output boundary face.  Missing,
+      off-plane, non-owner, mismatched-parent, and same-sided shared-face
+      cases reject.  The explicit retained-core API explicitly rejects a
+      geometric core facet, because accepting its metadata while leaving the
+      parent core tet in place would be nonconforming.
+- [x] Prove the smallest transactional geometric-core control.  One regular
+      core parent can be atomically replaced by its deterministic eight-child
+      red cut; its 16 interface subfaces are joined to identically split outer
+      facets by 48 shell tetrahedra.  The control proves the old parent faces
+      absent, every child interface face has two opposite uses, the exact
+      red-split outer boundary is the only boundary, all tetrahedra are
+      positive/non-overlapping, and S4 passes (22.0017° minimum; none below
+      five).  Shell-only/core-only/incompatible/moved-point/depth-overrun
+      controls reject. This validates an atomic interface handshake only—not
+      generic core refinement, arbitrary DC transition topology, or noisy
+      terrain.
+- [x] Establish the reusable, bounded regular-core cut ledger.  Versioned
+      parent/leaf/face addresses, reciprocal local-face permutations, and
+      stable physical face vertex IDs now identify a red 1:4 split without
+      floating-point seam authority. A two-parent rotated-face control derives
+      the same four internal subfaces regardless of traversal/request side,
+      distinguishes 24 external boundary subfaces, and rejects malformed
+      adjacency, ambiguous provenance, bad grammar/pattern, missing halo, or
+      depth/storage overruns transactionally. It is topology/provenance only:
+      it does not yet materialize core geometry or transition tetrahedra.
+- [x] Materialize that red core cut for a supported adjacent regular-tet
+      descriptor. The materializer deduplicates stable edge-midpoint IDs
+      across a rotated two-parent seam, emits the eight actual red children
+      per refined parent, proves parent-volume partition and common child
+      faces, rejects non-finite/mismatched geometry, and enforces full S4.
+      It is still not a general overlap oracle or a DC-to-core constructor;
+      the supported two-parent control checks the specific shared-face
+      opposite-side condition.
+- [x] Extract the one-parent transactional surface-to-refined-core control
+      into a reusable descriptor API. It builds eight red core tetrahedra and
+      48 matching shell tetrahedra, binds four original outer parent facets to
+      their 16 exact geometric subfaces by stable root/edge addresses, and
+      verifies the complete outer boundary, two-sided core/shell interface,
+      orientability, non-overlap, and 5°--175° S4. It clears all publishable
+      output on refusal. This API intentionally refuses multi-parent inputs:
+      it is a truthful controlled transaction, not an arbitrary DC-to-core
+      constructor.
+- [x] Extend that transactional control across a rotated two-parent core
+      seam. Its six external parent faces become 24 exact exposed child
+      facets and 72 shell tetrahedra; the four child faces of the shared
+      parent face remain core-internal. Reordered parent/vertex/outer input
+      and requesting from the opposite side produce byte-identical output.
+      This establishes a two-parent chunk-seam control, but its matching
+      regular outer descriptor still does not test DC/core topology mismatch.
+- [x] Establish a deterministic nonmatching PLC manifest for the first real
+      mismatch control: an independent 16-subface outer tetra boundary around
+      the two-parent core's 24 external red subfaces (with its shared core
+      face internal). The public, versioned serializer is byte-identical after
+      input reordering and serializes no result on refusal. It validates only
+      PLC/provenance/ownership; it deliberately emits neither a bridge nor
+      tetrahedra. The next gate is an *offline* constrained-Delaunay evaluation
+      imported through the same geometry and S4 audits.
+- [x] Run that complete nonmatching PLC through a fresh, caller-supplied
+      offline TetGen oracle and audit the returned shell plus exact materialized
+      core. All 40 frozen facets and the intended final outer boundary are
+      exact; the 76-tet combined volume has no reported incidence, positivity,
+      duplicate, or overlap defect. It is correctly **quality-refused**:
+      minimum dihedral 12.927307748457787°, but maximum
+      176.82016988013584° exceeds S4's 175° ceiling. This is topology
+      feasibility evidence only, never a runtime dependency or success claim.
+- [x] Run one **generic, offline quality-feasibility experiment** before
+      attempting another constructor: select the worst *free-interior* shell
+      tet from the imported oracle result; grow only deterministic, bounded
+      face/edge-connected cavities that contain it; and evaluate
+      interface-preserving cavity retriangulations with deterministic interior
+      Steiner candidates. Every trial must retain the 40 PLC facets and the
+      materialized core and pass the complete boundary/incidence/overlap/S4
+      audit. Record either an audited improvement or a precise bounded
+      refusal. This is a diagnostic for whether a later constructor needs
+      quality-aware insertion; it is not a TetGen-output repair mechanism and
+      cannot become the runtime algorithm by retaining imported connectivity.
+- [ ] Build one trustworthy, connected, input-driven construction path after
+      the published-baseline experiment selects its foundation. If continuing
+      the in-house route, first repair the canonical Delaunay kernel so scale changes, duplicate points,
+      degeneracy, volume coverage, orientation, and reordered stable-ID input
+      are independently validated. Then connect it directly to the serialized
+      PLC boundary/core contract and implement bounded constrained-facet
+      recovery with deterministic Steiner insertion. It must derive every cell
+      from manifest vertices/facets, expose deterministic resource/refusal
+      reasons, and publish output only after the complete boundary,
+      incidence, positivity, volume, overlap, provenance, determinism, and S4
+      audit passes. Initially it may support only the documented closed,
+      nested PLC subset, but it may not read `.node`/`.ele` data or retain any
+      oracle tetrahedron identity. Expand the supported subset only after a
+      genuinely generated result passes the nonmatching control and S4.
+      Current checkpoint: the seed now normalizes its predicates to input
+      scale, rejects duplicate IDs/positions and lower-dimensional input,
+      emits consistently oriented cells, checks opposite-side incidence,
+      convex-boundary containment, and cell-versus-boundary volume, and is
+      topology-invariant under stable-ID input reordering. Recovery-created
+      midpoint IDs are likewise derived from their canonical edge endpoints,
+      with an exact `(edge, 1/2)` provenance record rather than request order.
+      The real
+      nonmatching manifest now materializes its nine exact red-edge midpoint
+      vertices (24 total PLC points), feeds them to this seed, resolves every
+      requested facet corner, and initially finds 53/60 edges and 26/40
+      facets. The bounded first recovery stage splits only missing outer-sheet
+      edges across their exact parent subfaces and rebuilds the seed. After two
+      such splits, the next missing edge belongs to the core interface. A
+      free four-cell, eight-boundary-face cavity admits a positive 4-to-4 flip
+      which preserves all frozen faces, and the persistent mutable recovery
+      mesh retains that move rather than rebuilding it away. The control rises
+      to 62 recovered edges with four still absent, then correctly returns
+      `core_refinement_required` and clears its private cells because the next
+      edge has no move found by the current restricted search. That is not a
+      proof that no safe cavity exists: the search grows only from uncovered
+      original boundary faces, cannot choose fully internal filling tets,
+      retains zero-count face entries during backtracking, and rejects any
+      cavity touching a frozen boundary facet. A one-split cap separately
+      refuses with `resource_limit`. If the in-house route is selected after
+      the published-baseline comparison, its next incomplete stage is general
+      interior facet recovery that preserves the existing core face, with a
+      matching deeper implicit-core refinement transaction only if recovery
+      cannot retain it; then come shell extraction and complete-domain/S4
+      qualification. The current adapter from recovered core-edge provenance
+      into arbitrary refined-core faces now compiles, preserves a canonical
+      shared-face diagonal, and uses non-collinear ear clipping rather than a
+      degenerate edge-split fan. It proves reconstructed position equality
+      before aliasing and rejects degenerate PLC facets transactionally. The
+      nonmatching control now has a complete geometry-valid **and S4-valid**
+      generated result: 78 shell and 90 refined-core tets, with 6.02159° /
+      167.435° extrema. The original worst was shell tet 35 (not a
+      refined-core tet), so further core-template work alone could not satisfy
+      S4. The final-assembly repair searches only bounded free faces/edge
+      stars incident to that worst tet, protects every frozen outer/core face,
+      and accepts only a strictly improved full geometry audit. Its six legal
+      candidates yield one accepted 3-to-2 edge-star move. Candidate and
+      acceptance counters are part of the result and reordered input repeats
+      the same audit/counts/extrema. This is a generated control, not the
+      noisy DC terrain fixture or a generic constructor claim.
+
+      **Noisy-fixture integration checkpoint (11 September):** the real
+      bounded noisy DC producer now exports its exact stable-ID frozen triangle
+      sheet, and the existing wholly-material Freudenthal selector exports the
+      explicit near-core while retaining the rest of the lattice implicitly.
+      These exports are deterministic, but they cannot be fed directly into
+      the closed-PLC constructor: the finite DC sheet has boundary loops. The
+      next adapter must generate (and separately label) only vertical side
+      curtains plus a bottom cap outside the chosen core, validate their
+      orientable closure and strict nesting, then retain the DC triangles
+      byte-for-byte as the top boundary. Reusing the old extruded-prism
+      diagnostic for this closure is prohibited. The manifest's default parent
+      bound is now 4,096 rather than the old control-only eight; a request may
+      still set a lower transactional cap and receives the existing explicit
+      resource-limit refusal.
+
+- [x] Replace the research triangle/tetrahedron contact predicate with an
+      independently checked implementation; add the face-through-face analytic
+      regression and regenerate contact, cut-entity, and arrangement evidence.
+- [x] Replace or coordinate the quality-ranked collar offset so independent
+      left/right chunk requests produce bit-identical shared inner vertices and
+      faces across the five-fixture corpus.
+- [x] Use the external CPU oracle to construct and verify the complete
+      collar-to-core volume, measuring whether the qualified collar removes the
+      sub-degree shell elements or only relocates them.
+- [x] Repair the recent transition evidence before selecting another topology:
+      use `n8-nearzero` consistently (the hyphenated spelling silently selected
+      the default fixture), classify the collar underside as artificial, add
+      positive and negative closed-volume controls, and evaluate every emitted
+      tet rather than the first eligible cleavage witness. Corrected diagnostics
+      find 384 occurrences of the leading atlas signature. The existing local
+      plane grammar fails the five-degree screen in 1/55 N6 sections and
+      48--64 sections in each correctly selected N8 fixture, with minima down
+      to 0.0097 degrees. The transitive-contact size measurements remain useful
+      workload data, but they do not prove a locality obstruction because they
+      froze an artificial front and used an invalid closed-cavity predicate.
+      The executable repair accepts `n8-nearzero`, checks positive single-tet
+      and negative-open boundary controls, and screens all eligible local
+      cleavage tets (N6: 220 emitted tets from 55 sections, one below five
+      degrees).
+- [x] Build and reject the first complete in-process N6 assembly with only the visible DC surface,
+      finite fixture boundary, and exact retained-core interface fixed. Rebuild
+      the collar underside and adjoining buffer together; allow canonical
+      movement, insertion, splitting, and retriangulation of internal entities.
+      The first finite assembly retains the collar plus exact 96-tet N6 core
+      and tries the smallest direct bridge to canonical grid columns. Four DC
+      triangles collapse (six nonpositive bridge tets), so the deterministic
+      candidate rejects before a closed-volume or S4 claim. It reports 552
+      work items, 33,792 retained bytes, and 27,696 temporary bytes.
+- [x] Retain the bounded N6 bridge, shared-fan, rim, and disk-search probes as
+      diagnostic history only. Their useful measurements remain reproducible,
+      but the latest audit supersedes the proposed 34-edge matching-loop path:
+      unequal triangulated loops can be joined through a common refinement;
+      the 250,000-state search reached patches of only 10 faces although a
+      34-edge disk needs at least 32 triangles; and `edge_cycles()` reported
+      incomplete walks as cycles. A direct 32-triangle top-core patch is a
+      valid disk with one 20-edge loop. The smallest connecting prism remains
+      quality-rejected at 3.7870401387 degrees, but its previously reported
+      0.2875335661 boundary-volume error was an unoriented-validator defect:
+      the corrected oriented error is 1.6653345369377348e-16. Separate outer
+      and core boundary components are valid for a shell containing the
+      retained-core hole; the retained core closes that hole after assembly.
+- [x] Bind the first bounded N6 collar/buffer candidate to the authoritative
+      complete-domain gate. The canonical imported finite shell/buffer
+      baseline is geometry-valid and reversal deterministic (609 shell plus
+      96 exact-core tets; one closed boundary; zero overlaps; volume error
+      1.7763568394002505e-15; 1,105 work items; 29,088 retained and 22,560
+      temporary bytes), but exhaustive S4 rejects it: 0.085688274474482642°
+      minimum dihedral, 18 below 1°, and 91 below 5°. This is a narrow,
+      honest reference-baseline rejection, not an in-process reconstruction
+      success.
+- [x] Find and retain a quality-passing N6 joint collar/buffer witness that
+      improves on the authoritative baseline while preserving the declared
+      exterior and retained-core interface. Use this search to identify useful
+      repair primitives and the remaining requirements for a genuine bounded
+      constructor; the collar underside, internal vertices, and internal
+      tetrahedra may change.
+      Boundary-edge dihedrals are diagnostic only: a conforming interior fan
+      may preserve two unsplit exterior triangles while partitioning their
+      shared wedge, so they are not a standalone S4 impossibility gate.
+      The single-centroid cone over the same connected ten-face cavity is a
+      retired topology rejection (eight same-sided faces, 16 overlaps, and
+      0.0020318163493806551 volume error). Its deterministic four-centroid,
+      sixteen-tet replacement now passes the complete geometry contract with
+      zero overlaps and 2.6645352591003757e-15 volume error while preserving
+      the declared exterior and exact core. Exhaustive S4 still rejects it at
+      0.085688274474482642°; the next candidate must improve quality rather
+      than mistake this valid local refinement for a qualified transition.
+      The actual current minimum is now reproducibly localized to shell tet
+      237 (`[16,30,28,18]`), which owns two visible faces and no fixture or
+      retained-core-interface face. The smallest connected cavity containing
+      it (one tet) was rebuilt with one canonical barycentre and four positive
+      children. It preserves the complete-domain geometry contract and all
+      negative controls reject, but worsens S4 to 0.042840602681684034° (22
+      dihedrals below 1°, 95 below 5°), so this is a narrow one-tet-family
+      rejection, not an immutable-interface obstruction.
+      The next bounded expansion evaluates the three shell-tet artificial-face
+      star containing 237 with seven canonical interior stellar placements,
+      plus a conforming two-cell shared-artificial-face 2-to-6
+      retriangulation. Every placement preserves the two visible faces
+      exactly; the selected deterministic 2-to-6 candidate is geometry-valid
+      with zero audit defects, but worsens S4 to 0.042880370258534181° (22
+      below 1°, 95 below 5°). This rejects that finite local-star family only.
+      In particular,
+      it does not establish an immutable-interface obstruction or qualify the
+      N6 transition.
+      A complete deterministic batched one-point cavity-cone pass was then
+      applied to all 30 shell S4 seed tets and their 96-tet face one-rings.
+      The actual face-connected union has 20 regions (not the assumed 29), and
+      the purported 384/404 seven-tet closure is absent under the retained
+      N6 indexing.  The cone preserves every declared face and exact core and
+      improves the raw minimum to 2.4256863945586646° (zero below 1°, three
+      below 5°), but eight same-sided faces, 16 strict overlaps, and
+      0.0047812182581927765 volume error reject its non-star-shaped cavities.
+      This narrowly rejects the generic per-region one-point cone family. It
+      shows that any continuation of this fixture-specific repair branch needs
+      a conforming multi-layer/divider tetrahedralizer for the measured
+      20-region topology, rather than assuming 29 isolated cavities or treating
+      the numeric improvement as a valid result; it is not the current next
+      goal.
+      The final stored N6 witness is geometry- and S4-qualified, but the
+      construction algorithm is not. It starts from the imported TetGen shell,
+      retains 513 of its tetrahedra unchanged, and finishes the repair using
+      fixture-specific region numbers, original-cell indices `{106,155}`, and
+      three hard-coded world-space apex positions. The resulting finite domain
+      has 670 shell plus 96 core tets, zero reported audit defects,
+      1.7763568394002505e-15 volume error, and a 5.1386162304771483-degree
+      minimum dihedral, with zero dihedrals below five or above 175 degrees.
+      This is an important existence and regression witness, not yet a bounded
+      input-driven reconstruction. The current repeated-input check also does
+      not establish input-order independence, and reported repair-resource
+      maxima are not yet complete measured bounds.
+- [x] Reproduce the qualified N6 witness with a data-driven bounded CPU repair.
+      Accept an explicit domain input and derive every cavity, connectivity
+      change, and apex from geometry: no fixture region numbers, original-cell
+      indices, or stored world-space repair coordinates. Invoke deterministic
+      bounded search rather than leaving the search helpers disconnected from
+      construction. Measure work and temporary/retained storage, enforce caps
+      with an explicit failure result, and validate reordered/renumbered input,
+      rigid transforms, small perturbations, exact frozen exterior vertices,
+      and exact retained-core identity. Preserve the current mesh as the
+      positive regression witness. Passing this milestone qualifies a bounded
+      N6 repair algorithm; it does not yet remove the imported initial-shell
+      dependency. The active constructor now passes all of those checks. Its
+      N6 output has 671 shell plus 96 retained-core tetrahedra, 5.1386162304771483°
+      minimum dihedral, no values below 5° or above 175°, and zero reported
+      geometric defects. It evaluates 26,345 kernel points and 10 connected
+      subcavities, using 31,680 packed retained bytes and a 32,776-byte packed
+      temporary peak, all under enforced caps. The legacy 670-shell
+      hard-coded mesh remains a separately named regression witness.
+- [ ] Replace or justify the imported initial TetGen shell. Demonstrate how the
+      transition repair receives a shell generated from the immutable DC
+      surface and implicit regular core under the same bounded contract. Keep
+      the imported shell only as a research oracle if this generation stage is
+      not yet available.
+- [ ] Extend the resulting input-driven N6 construction to the four correctly configured N8
+      fixtures and independently generated left/right chunks. Establish exact
+      seam identity, remote-domain locality, and bounded runtime/storage before
+      deriving a GPU form.
+- [ ] Begin GPU parity, collision, and interactive prototype work only after a
+      complete bounded CPU construction passes geometry, quality, locality, and
+      independent-chunk gates.
+
 ## Completed chain: orbital Mie-limb stability
 
 - [x] Reproduce the yellow atmospheric band fading under sub-tenth-degree
@@ -1197,3 +2269,137 @@ not the active queue.
       hierarchy-demand records, deterministic expiry and teleport handling,
       independent hierarchy admission, cold eviction, diagnostics, scripted
       benchmarks, exact-oracle tests, and release visual qualification.
+
+- [x] Classify finite DC clipped-patch contacts with canonical face/edge
+      signatures and retain the leading plane-extension witness.
+- [x] Measure the one-ring and transitive contact stars for the leading
+      `P4-V0-B4-L2-E4-T3-BF11-FE10-PE30` arrangement. Retain them as diagnostic
+      workload controls only: they incorrectly froze the artificial collar
+      underside, duplicated the default fixture through a spelling error, and
+      cannot establish that the permitted joint transition needs global work.
+# Supporting research chain: BCC-scaffolded DC terrain volume
+
+The independent-front/global-CDT route below remains useful historical
+evidence, but it is no longer the production architecture. The active
+constructor uses the uniform addressed BCC tetrahedra themselves as the
+spatial partition:
+
+`exact DC sheet -> explicit adapted/cut BCC tetrahedra -> exposed faces of
+fully-inside BCC tetrahedra -> address-only far core`.
+
+Only cut cells and any explicitly justified eroded inner ring may be rebuilt.
+No global cavity filler may replace this hierarchy-local ownership contract.
+
+- [x] Clip every exact DC triangle against the addressed N4 BCC scaffold and
+      retain immutable source barycentrics and owning hierarchy addresses.
+      Planar/noisy fixtures cover 714/714 and 742/742 source triangles with
+      3,002/3,150 fragments, 182 cut owners each, zero duplicate fragments,
+      and area error `2.58e-14`/`1.78e-15`; cut owners are disjoint from the
+      retained implicit core.
+- [x] Replace rounded-coordinate fragment identity with canonical input-feature
+      identities: original DC vertex, DC feature x BCC feature. Rank these
+      keys into traversal-independent indices and audit the induced triangle
+      arrangement. Planar/noisy N4 produce 1,549/1,623 canonical vertices,
+      4,550/4,772 edges, and 1,302/1,362 edges shared across BCC owners. Every
+      edge has incidence at most two, every exposed arrangement edge belongs
+      to the original DC boundary, positions agree for repeated keys, and a
+      repeated construction is identical.
+- [ ] Build the complete material polyhedron in each affected BCC owner. Its
+      outer facets are the canonical clipped DC fragments; its BCC-face
+      subdivisions must be derived once from canonical feature keys and match
+      independently generated neighbours exactly. Determine the retained
+      side from the SDF and erode inward only until an unchanged fully-inside
+      core interface is reached.
+  - [x] Audit the cheapest single-convex-piece case. All 182 planar N4 cut
+        owners have an inside hierarchy vertex and every one of their 3,002
+        surface fragments is a supporting facet (at most 31 material
+        vertices), so deterministic boundary coning is applicable. For noisy
+        N4, all 182 owners have an inside vertex but only 3 are convex: just
+        313/3,150 fragments support the owner-wide point set (at most 33
+        vertices). Therefore the production local constructor must decompose
+        noisy owners along the DC triangle arrangement; one cone per BCC owner
+        is an explicit rejected shortcut.
+  - [ ] Close the finite footprint before accepting even the planar cone. The
+        first complete-cell assembly preserves all 3,002 exact DC fragments
+        and emits positive candidates, but the DC sheet ends inset from the
+        BCC root wall. Its local ledgers expose 544 open edges: 342 on the
+        clipped surface side and 202 on BCC-face polygons, producing exactly
+        544 non-domain unpaired tet faces. Construct a canonical, explicitly
+        labelled closure between those loops; do not count the current open
+        assembly as a volume.
+    - [x] Decompose the 136 exposed per-owner graphs into bounded cycles. A
+          centre fan closes all 544 edges but independently reports 1,093
+          strict overlaps, so incidence and volume arithmetic alone are not
+          acceptance. Requiring every closure triangle to support the complete
+          owner point set accepts 113 cycle patches (217 triangles) and
+          refuses 26. The resulting diagnostic has 101 unpaired faces, 235
+          same-sided shared faces, 648 strict overlaps (all within owners, none
+          across the BCC scaffold), zero-degree dihedral slivers, and 329,284
+          retained bytes. Exact DC fragments remain preserved and signed
+          volume error is only `2.47e-10`, demonstrating why those weaker
+          metrics cannot hide the invalid local partition.
+    - [ ] Replace boundary-face coning with an actual per-owner convex-cell
+          decomposition. Each accepted piece must have a closed consistently
+          oriented hull and its own interior kernel before emitting tets; then
+          rerun the independent overlap audit. The present supporting-triangle
+          closure is evidence for this requirement, not a usable volume.
+    - [x] Publish the rejected planar N4 tetrahedra as a separately labelled,
+          opt-in wire layer in the existing interactive viewer. The UI reports
+          the 648 overlaps, 101 unpaired faces, 235 same-sided faces, and
+          0--180 degree range; `completeVolumeValid` remains false.
+- [ ] Convex-decompose and tetrahedralize each local material piece without a
+      dependency. Prefer deterministic coning only for proven star-shaped
+      convex pieces; otherwise split locally. Reject nonpositive tets,
+      duplicate/unpaired faces, strict overlap, gaps, or signed-volume error.
+- [ ] Assemble planar and noisy N4 into the exact three-region volume, prove
+      deterministic chunk seams, record work/memory/quality, and expose the
+      real surface/transition/core edges and tetrahedra in the existing web
+      viewer. The viewer transition toggle remains disabled until the full
+      volume validator accepts.
+
+# Historical: honest DC-to-independent-grid sandwich
+
+- [x] Materialize a full-footprint Freudenthal core independently of the DC
+  field, with an explicit top-interface face list.
+- [x] Prove the N8 DC footprint is covered above that interface with positive
+  clearance, deterministically and after a rigid transform.
+- [x] Build and measure the canonical DC/grid 2-D overlay without
+  position-based identity inference.  It is a geometry control only: its
+  direct 5,016-tet prism layer is quality-refused at about
+  0.0157--179.96 degrees, so projected common refinement is not the production
+  topology.
+- [ ] Construct the transition directly in 3-D between the independent fronts,
+  without inserting projected DC/grid edge crossings.  Preserve DC parent
+  geometry and selected whole grid-interface facets; retain deeper grid
+  parents unchanged.
+  - [x] Validate a canonical convex stellar background fallback on the real
+    593-vertex N6 PLC and preserve stable reorder behavior.
+  - [x] Retain one mutable recovery mesh; add exact-boundary endpoint cones,
+    rational constraint splits, local stellar insertion, bounded diagnostics,
+    and a truthful non-star refusal.
+  - [x] Retain deterministic advancing-ridge recovery as a legacy diagnostic,
+    not the production scheduler. The first generic
+    pass installs 456 facets with no Steiner vertices and stalls at 327
+    missing facets (225 outer, 102 core) across three already seeded
+    components. Its refusal ledger is 258 protected-face, 171 hull, 94
+    nonpositive-replacement, and 41 exact-volume refusals; 171 stalled facets
+    have no live neighboring ridge. Implement the paper's post-stall
+    mesh/constraint-intersection Steiner insertion and restart the ridge pass.
+    The complete first intersection set covers constraint-edge/mesh-face,
+    mesh-edge/constraint-facet-interior, and coplanar edge-edge cases. A
+    transactional 128-candidate campaign accepts five (1/3/1 by class) and
+    reduces N6 to 245 facets / 235 edges without retaining regressions. Online
+    implementation inspection showed this mixed edge/face ordering is not the
+    robust CDT architecture, so no further front-scheduling heuristic is
+    planned.
+  - [ ] Complete all constrained segments first, then recover every constrained
+    facet by two-sided cavity remeshing with deterministic cavity expansion and
+    disturbed-face rechecking. Afterwards classify exterior, shell, and
+    independent core by flood across unconstrained faces. **Started:** the
+    bounded two-sided kernel is the primary face attempt and passes the
+    piercing triangular-bipyramid control; scalable half-cavity Delaunay fill
+    and expansion remain open.
+- [ ] Emit and independently validate the combined three-region volume,
+  including complete signed-volume agreement and S4.
+- [ ] Pass phase, input-order, rigid-transform and two-chunk seam gates, then
+  publish that exact accepted result to the existing web viewer.

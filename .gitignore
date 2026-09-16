@@ -49,3 +49,15 @@ imgui.ini
 output/
 tmp/
 papers/
+
+# Local upstream references used for Wang/FHCCT behavioral comparison.
+# They have no explicit license, so keep the pinned checkouts out of commits.
+third_party/FHCCT-FHC_CT/
+third_party/FHCCT-WYFDT_TEST/
+
+# Generated experiment renders and captures are local evidence.  Keep the
+# compact source/mesh corpus used directly by retained tests versioned.
+artifacts/*
+!artifacts/dc-viability-2026-09-09/
+!artifacts/dc-viability-2026-09-09/**
+scripts/__pycache__/

@@ -1,12 +1,67 @@
 # Dygd — Design Rationale and Evolution
 
-_Last updated: 12 August 2026_
+_Last updated: 12 September 2026_
 
 ## Purpose of this document
 
 This document records the **design thinking behind Dygd**: what kind of world we are trying to build, why the project uses tetrahedral matter, why hierarchy and level of detail are central rather than optional optimizations, how the architecture has changed as problems were discovered, and which ideas remain hypotheses rather than decisions.
 
 Older terminology and superseded ideas are retained when they explain the current direction or help prevent an abandoned approach from being rediscovered without its known drawbacks.
+
+## Current minimal meshing result: frozen structured DC surface
+
+The smallest useful viability fixture now starts with one tetrahedron, applies
+the four-hexahedra construction, and selects two children sharing a face. Each
+child receives an ordinary structured logical grid, while the shared face is
+derived from exact reduced rational barycentric coordinates. Ordinary dual
+contouring then produces one vertex per crossed small hexahedral cell and one
+genuine quad per complete four-cell primal-edge ring. Triangle diagonals are
+only a render and tetrahedral-boundary representation; they are not presented
+as the authoritative surface topology.
+
+The visible surface is now an immutable input to volume construction. The
+previously reported complete volume violated that rule by pulling every DC
+vertex halfway toward its structured-cell centre. That made validation pass
+by degrading the surface and is rejected.
+
+Focused planar and Perlin N8 tests currently prove the surface portion only:
+exact 81-node shared-face identity, quad-only interior DC topology, a nonempty
+seam strip, manifold consistently oriented render triangles, and zero strict
+surface intersections. Hermite-centroid placement gives maximum field
+residuals of approximately `2.5e-9` and `0.00472`. Surface triangulation is
+chosen and validated before tetrahedralization and never reconstructed from
+the volume.
+
+Two honest transition attempts are negative. Treating each quad-to-grid cell
+as a regular six-tet cube overlaps, and coning each explicitly triangulated
+quad prism also folds: the cell-centre front is not necessarily nested below
+the frozen DC front. Consequently the viewer withholds transition/core edges.
+Shifting the same sign complex one logical layer into material improves but
+does not cure this: the unchanged Freudenthal core has zero self-overlaps,
+while core-diagonal-driven triangular transition prisms still overlap one
+another and the core. The remaining issue is therefore the global embedding
+of the front-to-front homotopy; another local diagonal template cannot prove
+it away.
+This is structural rather than a poor choice of offset: local hexahedral `k`
+is not aligned with world-space terrain depth. The planar N8 fixture itself
+has 66 repeated logical `(x,y)` active-cell columns, and DC quads arise from
+crossings on every local grid axis. A production core moat must therefore be
+selected by world-space/SDF containment of complete tetrahedra, not by a fixed
+logical layer.
+The next accepted construction must either select a genuinely nested grid
+front or fill the complete closed PLC globally, while preserving all frozen
+surface triangles and unchanged deep-core faces. The web viewer exposes the
+surface, quad edges, render diagonals, transition tetrahedra, and core as
+separate layers and withholds volume layers whenever these gates fail.
+The viewer paints depth-sorted authoritative quads directly. Render triangles
+remain data for the volume boundary and an optional diagonal overlay, but are
+not the default visual representation of the DC topology.
+
+This is evidence that the central local construction is viable, not yet a
+planet-scale GPU architecture. The next boundary is a proper chunk request and
+ownership contract: canonical owner addresses, bounded halo inputs, independent
+count/scan/emit work, and shared-face output identity without retaining global
+connectivity.
 
 ---
 
@@ -104,6 +159,95 @@ The strongest demonstration format is not a technology list but a visible causal
 ---
 
 # 2. The core idea: persistent matter plus purpose-built representations
+
+The implementation architecture for the next minimal terrain prototype is
+tracked separately in
+[`prototype-engine-architecture.md`](prototype-engine-architecture.md). It
+defines a small Metal renderer, the procedural terrain, a movable capsule,
+and local tetrahedral collision with a shared visible/physical boundary.
+
+The 11 September architecture checkpoint makes the missing boundary explicit:
+the next deliverable is one authoritative input-driven CPU terrain-volume
+transaction, not another disconnected meshing control. It consumes the exact
+DC surface and labelled finite closure, chooses an adjustable bounded
+regular-core cut, performs robust constrained recovery and a separate full-S4
+quality stage, validates the complete volume, and supplies the web viewer.
+Unchanged deep regular parents remain implicit; thin features may have no local
+regular core. Chunk and GPU work follow qualification of this same transaction.
+
+The graphics-free
+[`meshing-lab-experiment.md`](meshing-lab-experiment.md) now has a reproducible
+monolithic CPU witness for the central geometry: one frozen noisy
+dual-contouring surface, a constrained tetrahedral shell, and unchanged
+retained regular-grid tetrahedra. Five small fixtures pass the strengthened
+boundary, orientation, overlap, cavity, identity, and volume checks. The
+surface and core are selected independently; no one-to-one mapping between
+their vertices is required. The detailed evidence, limitations, and external
+TetGen reproduction route are recorded in
+[`dc-viability-review-2026-09-09.md`](dc-viability-review-2026-09-09.md).
+
+This establishes monolithic geometric viability for the current corpus, not
+the runtime design. The testbench now also has an external independent-chunk
+topology oracle: canonical whole-triangle ownership, exact halo/seam-edge
+identities, and a prescribed edge curtain allow two separately invoked TetGen
+shells to join without repair on N=4/N=6/N=8 and three N=8 phases. Its local
+core is deliberately eroded by a one-cell moat at the request boundary, and
+the DC source request has since been made bounded and shown independent of
+remote-domain growth. This does not settle the final core or transition
+construction. S4 has
+made quality rejection executable: the retained default N=8 mass-point
+surface has a 0.32845-degree triangle, and every retained external shell
+witness has sub-degree tet dihedrals. A follow-up diagnosis replaces linearized
+nonlinear edge crossings with bracketed roots and raises the same 222-triangle
+surface to 11.756 degrees; all twelve tested surface cases clear the current
+screen. The rerun shells remain sub-degree. This
+is a deliberately conservative engineering screen rather than a physics claim;
+it blocks promotion until a bounded, interface-preserving repair passes the
+same corpus. The retained worst-element diagnosis found both a frozen N=8
+surface needle and an independent N=6 frozen-face shell sliver; global TetGen
+refinement and a seam-locked one-pass surface smoothing control are rejected.
+The earlier 22-cell selection measures only a subset of a uniform fine-grid
+surface; it neither constructs adaptive leaves nor transition triangles and is
+not the next implementation. Canonical bracketed Hermite crossings are
+qualified. Fixed-budget bistellar, one-tet Steiner, and two-tet cavity repairs
+preserve the required interfaces but cannot repair the worst shell caps. A
+separate normal-offset two-front collar gives good local tet shapes across the
+five fixtures, showing that the frozen visible surface alone does not force
+the poor quality. It is only a partial volume: it has no core connection. The
+original best-of-four offset chooser selected different thicknesses when
+default N8 and phase 3 were processed as independent chunks; the later fixed
+global `.90/N` policy resolves that shared-interface defect.
+
+Several subsequent bridge probes are negative controls rather than bridge
+implementations. The contact predicate was repaired after its first version
+missed face-through-face crossings; the more recent atlas/star interpretation
+was then superseded for freezing the wrong boundary. The architecture requires
+the visible DC surface and retained grid-core interface to remain exact.
+Artificial internal collar faces may be changed canonically as part of a
+jointly qualified transition; freezing them is not a world-model rule.
+
+Those evidence steps are now complete: the contact oracle is repaired, a fixed
+global `.90/N` collar policy gives independent chunks identical shared data,
+and the complete external N6 collar-to-core reference is geometrically valid
+but quality-rejected at 0.085688274474482642 degrees minimum dihedral with 91
+dihedrals below five degrees. Later atlas/star work accidentally froze the
+artificial collar underside, duplicated a fixture through a spelling error,
+and used an invalid closure test; it does not prove the transition is global.
+The authoritative complete-N6 domain and independent validator are now
+implemented, including missing-face, overlap, winding, and moved-interface
+controls. A deterministic bounded repair of its imported shell connectivity
+preserves the visible DC surface, finite fixture sides/bottom, and exact
+retained-core interface, and passes geometry plus its dihedral screen at
+5.1386162304771483 degrees minimum. This is an existence/regression witness,
+not an input-driven terrain constructor.
+The matching-loop direction remains retired: unequal loops may use common
+refinement, the old search reached only 10-face patches, its cycle extractor
+accepted incomplete walks, and the connecting prism's old volume mismatch was
+an orientation bug. The next gate is the authoritative input-driven CPU
+transaction described above; corpus, independent-chunk, storage, and locality
+qualification apply to that same path. GPU execution remains later. The
+existing viewer and collision path do not yet use this research construction;
+atmospheric rendering and broader engine systems remain deferred.
 
 One of the most important architectural lessons so far is that **metaphysical unity does not require data-structure unity**.
 
@@ -2487,6 +2631,21 @@ The most useful future sections will probably come from actual prototypes: measu
 
 # 30. Surface construction and volume promotion
 
+## 30.0 Frozen prototype transaction
+
+The current prototype authority is one complete transaction:
+
+`one tetrahedron -> four exact matching hexahedra -> frozen structured-grid
+dual contour -> Wang transition -> independently addressed regular-tet core`.
+
+`construct_four_hexahedra_wang_prototype()` is the composition root for that
+experiment. It preserves the existing all-four fixture geometry when adapting
+it to `TerrainVolumeRequest`, invokes the same owned Wang and validation path
+as other terrain requests, and returns no publishable tetrahedra when the
+geometry or volume-quality contract refuses the result. The smaller
+two-hexahedra fixture and the BCC-local cut-cell constructor remain research
+controls rather than competing definitions of prototype completion.
+
 The rendered terrain boundary is now derived directly from the authoritative
 logical BCC cut. A retained owner certificate stores its exact address, green
 mask, conservative field classification, and Grande-point signs. Only owners
@@ -2499,6 +2658,143 @@ demand reconstructs optional conforming cells from the same owner/mask state.
 Promotion and demotion therefore cannot change the surface hash. The complete
 volume reconstruction remains available as a correctness oracle, not as a
 hidden production prerequisite.
+
+## 30.1 BCC-scaffolded dual-contouring volume experiment
+
+**Correction (12 September 2026):** the BCC-wide surface used by the first
+scaffold attempt was not the intended structured-grid dual contour. Splitting
+each hierarchy tetrahedron into four hexahedra creates primal edges with
+valence 3, 4, and 6; dualizing that complex therefore produces triangles and
+polygon fans. Calling its output ordinary quad-based dual contouring was
+misleading.
+
+The corrected minimal experiment starts with one tetrahedron, selects two of
+its four face-sharing hexahedra, and puts a separate structured logical grid
+inside each. Exact rational barycentric sampling makes the grids identical on
+their shared face. Ordinary DC then produces one dual vertex per active small
+cell and one genuine quad per interior crossed grid edge. The BCC/hierarchical
+tetrahedral representation enters only below the frozen surface, across an
+explicit transition band; it no longer defines the surface sampling-cell
+adjacency.
+
+The corrected two-hexahedra PLC now also passes the in-house background-seed
+stage. A deterministic well-spread initial simplex avoids the former collapse
+of the incremental stellar hull and yields 10,040 planar / 9,742 noisy N8
+background tetrahedra without changing either front. This does **not** make the
+global CDT route viable: its first immutable core segment intersects 35 / 20
+background cells, beyond the eight-cell exhaustive kernel, and the fallback
+responds by recursively splitting constraints. A 512-split planar run recovers
+no segment and increases the missing-edge count to 2,504; the noisy run asks to
+refine the core after five splits. The same failure occurs when outer DC edges
+are scheduled first. The production experiment therefore returns to a bounded
+structured collar decomposition keyed by DC/primal-grid incidence. The global
+PLC machinery remains a validation oracle and negative control, not the
+runtime or GPU algorithm.
+
+The bounded parent-local construction was initially accepted for the
+two-hexahedra fixture, but that conclusion was wrong. A
+well-shaped parent tetrahedron avoids manufacturing poor elements in the test
+geometry. The DC sheet is generated and frozen first. Each frozen DC vertex is
+then paired by its logical `(x,y)` cell address with a deeper cell-centre
+front; two canonical prism slabs form the explicit collar, while horizontal
+DC steps collapse combinatorially rather than emitting zero-volume cells. The
+front uses the canonical Freudenthal square diagonal from the outset, so its
+local collar and parent-warped core meet without a nonplanar
+opposite-diagonal intersection. At N8 the planar/noisy fixtures contain
+1,571/1,497 transition and 1,890 such core tetrahedra. Their local audit has
+exact frozen-boundary coverage, paired faces, positive volumes, zero strict
+overlaps, exact boundary/tet volume, parent-order-independent geometry, and
+minimum dihedrals of 5.06/5.46 degrees. However, their positions are computed
+by trilinear interpolation inside each selected hexahedron. The old
+“implicit-address reconstruction” merely looked up those same local cells.
+This is not the required world hierarchy and v4 is rejected as a complete
+terrain volume.
+
+Viewer revision `structured-two-hex-global-core-v5` restores the actual
+pre-atmosphere `WorldTetAddress` hierarchy. Descendant positions are computed
+from the packed address and the root/world tetrahedron affine transform only.
+Each complete tet is assigned to one hexahedron by a canonical centroid
+barycentric-region rule; ownership does not clip or deform border-crossing
+tets. Frozen DC triangles are then clipped against addressed hierarchy cells;
+this removes six nonlinear surface-crossing candidates that an all-negative
+corner-sign test missed. At noisy N8 the displayed material core has 148 whole
+tets, including 14 crossing the shared hexahedron border. Focused tests independently replay
+all address-to-position calculations, compare reverse parent order exactly,
+and prove that common hierarchy vertex coordinates are byte-identical after
+changing the SDF. The old transition is deliberately hidden: the current
+volume is incomplete until a new explicit band connects the frozen DC sheet
+to exposed global-core faces without changing either front.
+
+The new band is a cut-cell construction, not another two-front global CDT.
+Each immutable DC triangle is intersected with addressed hierarchy tets; the
+resulting canonical fragments define the exact material polyhedron inside
+each cut tet. Planar N8 produces 79 cut cells and all are convex, so those
+cells can be filled independently by deterministic boundary coning. Noisy N8
+produces 92 cut cells, of which 13 are convex at hierarchy depth three. One
+additional transition-only red level produces 346 cut cells and improves the
+convex fraction to 66, showing convergence in the intended direction but not
+yet a complete noisy algorithm. Production must recursively refine only
+nonconvex cut cells, carry canonical shared-face refinement across their
+neighbors, and use the existing green/hierarchy closure at the untouched-core
+interface. Hexahedron ownership remains an emission partition and never a
+geometric clipping plane.
+
+The first root-transformed invocation of the factored cut-cell constructor
+also made the finite test-domain contract precise. The visible two-hexahedron
+DC sheet is an open patch: it stops on the outer faces of the selected display
+chunks. Global hierarchy tetrahedra are intentionally not clipped there, so a
+tet can cross that display perimeter and see only part of the surface needed
+to bound its material region. A local filler cannot infer the missing facets;
+doing so would silently turn the hexahedron border back into a geometric cut.
+The structured fixture must therefore generate a deterministic DC halo over
+all global tets that the two chunks can select, while preserving the original
+two-hexahedron DC sheet exactly, and close the finite diagnostic only on a
+global hierarchy boundary. Shared-hexahedron ownership remains centroid plus
+canonical tie-break, and every transition piece inherits its cut tet's owner.
+The structured constructor also receives an empty far-root sweep: it may emit
+the two chunks' retained address list and their exact cut owners, but it must
+not opportunistically pull fully-material tetrahedra from hexahedra two and
+three merely because they share root zero. Halo surface sampling and volume
+ownership are separate concerns.
+
+That invocation also found a separate implementation error before halo work:
+the structured wrapper reconstructed `WorldVertexKey` coordinates with the
+legacy probe's `[-1,1]` normalization even though its parent affine transform
+uses native hierarchy coordinates in `[0,1]`. The resulting transition cells
+were displaced from their correctly clipped DC fragments. Reconstructing
+`key / 2^depth` directly fixes the frame mismatch. In planar N8, the complete
+open-patch diagnostic falls from 1,220 to 267 open local edges and from 8,683
+to 73 overlaps. Removing only the source-boundary hierarchy-face ring leaves
+159 candidate tets with no within-owner or cross-owner overlaps; exactly one
+next-ring owner remains open. Thus the shared-chunk construction is no longer
+showing a global ownership conflict, but a finite-window termination that the
+DC halo must explicitly supply.
+
+The meshing-lab volume experiment uses the same ownership principle in a
+smaller N4 domain. Its intended partition is the exact dual-contouring sheet,
+explicit replacements of only cut or deliberately eroded BCC tetrahedra, the
+exposed faces of unchanged fully-inside tetrahedra, and an address-only far
+core. DC/BCC arrangement vertices are identified by their input features, not
+rounded positions, so neighbouring owners derive identical seam identities.
+
+This experiment has not yet produced an acceptable volume. Exact surface
+partition and cross-owner seams pass, but the current finite-closure and
+one-kernel-per-owner construction fails independently checked within-owner
+topology: 101 unpaired faces, 235 same-sided shared faces, 648 strict overlaps,
+and 0--180 degree dihedrals on planar N4. There are zero cross-owner overlaps,
+which isolates the defect to local convex decomposition rather than the BCC
+address scaffold. No renderer, collision system, or volume promotion path may
+consume this diagnostic candidate as valid terrain.
+
+The existing web inspector may display that planar candidate only as a
+`rejected transition candidate` wire layer. Its validation summary is visible
+beside the toggle and the exported `completeVolumeValid` flag remains false.
+
+The acceptance order is therefore fixed: construct closed consistently
+oriented convex pieces inside each affected owner; prove positive nondegenerate
+tetrahedra, exact frozen-surface coverage, paired shared faces, no strict
+overlap, exact volume, and deterministic reconstruction; only then publish the
+surface/transition/core result to the interactive viewer or a runtime tier.
 
 Retained state must be certified by identity, never by cardinality. Two cuts
 can have the same number of owners while containing different addresses, and

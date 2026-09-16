@@ -1,5 +1,28 @@
 # Planet-Scale Terrain World Visualizer
 
+> Next-prototype direction (8 September 2026):
+> [prototype-engine-architecture.md](prototype-engine-architecture.md) defines
+> the replacement terrain/actor experiment. Its controller collides with
+> generated solid tetrahedra and their boundary features; runtime field
+> collision is excluded. The field-collision design in sections 9-10 below
+> describes the existing application and is not the next prototype's contract.
+> Before that application is built,
+> [meshing-lab-experiment.md](meshing-lab-experiment.md) first uses four small
+> graphics-free counterexample programs to test locality, strict-dual
+> embedding, bounded PLC closure, and exact-boundary tet fill. The integrated
+> LOD/hexahedral surface/volume lab is built only if those tests justify it.
+> Current evidence rejects cell-owned hexahedron-aligned volume chunks for a
+> connected terrain sheet; a bounded surface-edge-aligned planar PLC control
+> passes, pending validation against actual strict-dual terrain triangles. The
+> existing strict-dual embedding reports are provisional because their fixture
+> scale, field crossings, constrained optimizer, intersection predicate, and
+> boundary treatment have not passed qualification controls. The newer R1Q
+> probe fixes the scale, affine field, QEF, and basic predicate controls and
+> finds reproducible two-tet/six-tet zero-area witnesses, but it still needs
+> complete multi-tet fixture checks, topological boundary classification, and
+> a non-affine field control. It then tests bounded local refinement before
+> placement and quality validation on a corrected corpus.
+
 ## 1. User experience
 
 The first world-scale application should feel like placing a Minecraft-style

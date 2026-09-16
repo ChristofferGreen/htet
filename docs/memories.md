@@ -10,6 +10,108 @@ This file stores durable session-derived facts that are useful in later work. Ke
 - Fact: `world_tetrahedron_descendant_bounds` is the normalized AABB of a red address's tetrahedron and conservatively encloses every red descendant because child vertices are parent vertices or midpoints.
 - Evidence: The Release regression exhaustively checked 1,812,144 descendant-vertex containments across all BCC roots through depth five and deterministic paths through the maximum depth.
 
+### complete-n6-domain-harness
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, validation, tetgen
+- Fact: The retained N6 external shell/core reference is geometrically valid under one complete-domain contract but intentionally fails the current S4 quality screen.
+- Evidence: `complete_n6_domain_harness_tests` joins 609 shell and 96 exact-core tets, verifies one closed boundary component, exact 114/182/104 visible/fixture/core faces, zero strict overlaps, and 1.7763568394002505e-15 volume error; missing-face, interior-overlap, reversed-winding, and moved-interface controls reject, while the minimum dihedral is 0.085688274474482642 degrees.
+
+### dc-constructor-architecture-limit
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedralization, architecture, correctness
+- Fact: The compact generated PLC constructor now classifies nonconvex regions by constrained-face flood, but cannot be promoted directly to noisy terrain because facet recovery is incomplete and the noisy core export materializes all selected all-corners-inside tets rather than a bounded explicit buffer against an implicit far core.
+- Evidence: `classify_canonical_plc_regions` has a 3D concave L-solid regression; `recover_canonical_plc_edges` can return `facet_recovery_required`; and `extract_selected_regular_core` enumerates the full two-hexahedron lattice through `select_retained_regular_core`.
+
+### dc-joint-transition-evidence-contract
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, validation, quality
+- Fact: Only the visible DC surface, finite fixture boundary, and exact retained-core interface are immutable in the joint transition; collar-inner faces may be rebuilt, and the recent atlas/star locality and local-cleavage quality claims are not qualification evidence.
+- Evidence: Atlas/star code uses the artificial `expected_inner` front, misspells `n8-nearzero` and changes the corrected signature count to 384, the transitive zero-exposed-face predicate rejects a valid single-tet boundary, and exhaustive cleavage sampling finds 1/55 N6 plus 48--64 N8 sections below five degrees with a 0.0097-degree minimum.
+
+### dc-n6-authoritative-joint-baseline
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, validation, quality
+- Fact: The first bounded N6 candidate is now evaluated through the authoritative complete-domain contract; it is geometry-valid and deterministic but is only a quality-rejected baseline, not a reconstruction success.
+- Evidence: `bounded_n6_authoritative_joint_probe_tests` canonicalizes the 609-shell/96-core finite candidate and verifies one closed boundary, zero strict overlaps, and 1.7763568394002505e-15 volume error under reversed import order. The exhaustive S4 scan reports a 0.085688274474482642-degree minimum dihedral, 18 dihedrals below 1 degree, and 91 below 5 degrees (1,105 work items, 29,088 retained bytes, 22,560 temporary bytes).
+
+### dc-n6-batched-cavity-cone-rejection
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, cavity, quality
+- Fact: The full N6 five-degree failure one-ring set is 30 seeds spanning 96 shell tets in 20 face-connected regions, and a deterministic one-point cone per region improves raw quality but is geometrically invalid for non-star-shaped cavities.
+- Evidence: `n6_batched_cavity_remesh_probe_tests` measures 2.4256863945586646° minimum (zero below 1°, three below 5°) but eight same-sided faces, 16 strict overlaps, and 0.0047812182581927765 volume error; it also shows the assumed 29-region/384-404 seven-tet closure does not hold for retained N6 indexing.
+
+### dc-n6-boundary-edge-star-multitet-baseline
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, cavity, validation
+- Fact: The connected ten-face N6 visible-edge-star cavity admits a deterministic bounded multi-tet reconstruction that preserves every declared face and the exact core, but this first local refinement does not improve global S4 quality.
+- Evidence: `n6_boundary_edge_star_cavity_probe_tests` replaces the four shell tets around edge `(126,128)` with four local barycentric splits (four vertices, 16 tets), passes the complete-domain geometry audit with zero overlaps/same-sided faces and 2.6645352591003757e-15 volume error, and remains S4-rejected at 0.085688274474482642 degrees; missing-face and duplicate-overlap controls reject.
+
+### dc-n6-direct-joint-bridge-rejection
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, validation
+- Fact: The first finite in-process N6 assembly preserves the accepted visible-DC collar and exact 96-tet conservative core but rejects a direct collar-inner-to-shared-grid-column bridge: four triangles collapse, creating six nonpositive tets.
+- Evidence: `bounded_n6_joint_transition_probe_tests` checks reversal determinism and reports 552 work items, 33,792 retained bytes, and 27,696 temporary bytes. A joint buffer retriangulator—not duplicated grid nodes—is the next construction.
+
+### dc-n6-final-bounded-reconstruction
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, validation, quality
+- Fact: N6 has a deterministic bounded repair witness that preserves every declared interface and passes its geometry and dihedral gates, but it starts from imported shell connectivity and is not an input-driven terrain constructor.
+- Evidence: `n6_final_three_regions_probe_tests` reads `shell-n6.1.ele`, then assembles 670 shell plus 96 exact-core tets with zero audit defects and a 5.1386162304771483-degree minimum; missing-face, overlap, and moved-interface controls reject.
+
+### dc-n6-open-rebuildable-inner-front
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, boundary, retained-core
+- Fact: Removing the artificial N6 collar underside leaves the exact visible DC sheet and finite fixture curtain as one manifold open front with a 34-edge rim; this is descriptive input geometry, not a required matching-loop topology.
+- Evidence: `n6_open_rebuildable_inner_front_probe_tests` retains 114 visible and 68 curtain faces in one 182-face component with 34 rim edges; the unchanged 96-tet/104-face core has zero literal shared faces and zero strict collar/core overlaps under reversal-deterministic construction.
+
+### dc-n6-quotient-prism-joint-rejection
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, cavity, validation
+- Fact: Replacing N6's four collapsed direct prisms independently with positive five-vertex quotient fans removes zero-volume elements but deterministically fails as a group, so the repair cavity must span adjacent quotient prisms.
+- Evidence: `bounded_n6_joint_retriangulator_probe_tests` finds two duplicate tetrahedra, ten non-manifold faces, one same-sided face, and 330 strict overlaps while retaining the accepted DC collar and exact 96-tet core.
+
+### dc-n6-rim-to-core-local-bridge-rejection
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, cavity, boundary
+- Fact: An independent local rim-to-core bridge cannot complete the N6 transition: consuming one real open-rim edge and one exact terraced-core face with a positive triangular prism leaves the prescribed exterior open.
+- Evidence: `n6_rim_to_core_cavity_probe_tests` preserves 114 visible DC faces, 68 curtain faces, and 96 core tetrahedra under reversal-deterministic construction, but its boundary audit reports 34 invalid-use edges. The next cavity must replace a connected collar neighbourhood and its full rim cycle.
+
+### dc-n6-shared-buffer-whole-front-rejection
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, topology, retained-core
+- Fact: The 14-tet shared quotient fan is a disjoint closed bubble, not an annular transition front around the exact retained core; enlarging a connecting side complex from it cannot produce the intended collar-to-core gap.
+- Evidence: `n6_disjoint_buffer_core_probe_tests` exhaustively checks all 96-by-14 cross-component tet pairs: both complexes are positive, have zero literal shared boundary faces, and have zero strict overlaps under reversed input. The next construction must derive an open front from the rebuildable collar underside.
+
+### dc-n6-shared-multiprism-core-mismatch
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, cavity, retained-core
+- Fact: The four collapsed N6 quotient cells form a closed 14-face shared cavity with a positive, unique, manifold, non-overlapping 14-tet fan, but that regular-column-front fan neither passes the five-degree quality screen nor conforms to the terraced retained-core interface.
+- Evidence: `shared_n6_multiprism_cavity_probe_tests` measured a 3.7870401387-degree minimum dihedral and 104 unmatched retained-core faces under reversal-deterministic construction.
+
+### dc-n6-terraced-core-shared-buffer-diagnostic
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, transition, cavity, retained-core
+- Fact: The N6 shared-buffer and retained-core boundaries are closed, disjoint components with zero literal shared faces, but that alone does not require a connecting tunnel because a retained core may legitimately fill a shell hole.
+- Evidence: `terraced_core_shared_buffer_probe_tests` retains 114 visible DC faces and 96 exact core tets under reversal; the complete-domain validator must establish component nesting and ownership rather than infer invalidity from disconnected boundaries.
+
+### dc-n6-validation-audit
+- Updated: 2026-09-10
+- Tags: dual-contouring, tetrahedra, topology, validation, search
+- Fact: The N6 matching-loop search is not a valid gate: unequal loop counts permit common refinement, the search reached only 10-face patches, its cycle extractor accepts incomplete walks, and the connecting prism is volume-consistent but still quality-rejected.
+- Evidence: A 34-edge disk needs at least 32 triangles; a direct 32-face top-core control has one valid 20-edge loop, while the 47-face selected patch has three bad boundary vertex degrees and Euler characteristic -2; outward face orientation changes the prism volume error from the historical 0.2875335661 to 1.6653345369377348e-16 while retaining its 3.7870401387-degree minimum dihedral.
+
+### dc-n6-worst-quality-local-star-rejection
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, cavity, quality
+- Fact: A bounded local star around N6 shell tet 237 can be rebuilt deterministically without violating the complete-domain contract, but its finite canonical stellar and shared-face 2-to-6 candidates do not improve exhaustive S4.
+- Evidence: `n6_quality_star_optimization_probe_tests` retains both prescribed visible faces plus all fixture/core faces while checking seven three-cell stellar placements and one conforming two-cell shared-artificial-face retriangulation; the selected legal 2-to-6 candidate has zero geometry-audit defects and controls reject, but changes the S4 minimum from 0.085688274474482642° to 0.042880370258534181° (22 below 1°, 95 below 5°).
+
+### dc-n6-worst-quality-one-tet-cavity-rejection
+- Updated: 2026-09-11
+- Tags: dual-contouring, tetrahedra, transition, cavity, quality
+- Fact: N6's actual current S4 minimum belongs to shell tet 237 (`[16,30,28,18]`) adjacent to two visible faces, and the smallest one-tet barycentric cavity preserves every declared interface but worsens quality, so it is not an immutable-interface obstruction.
+- Evidence: `n6_worst_quality_cavity_probe_tests` deterministically replaces that tet with four positive children, passes complete-domain geometry and missing-face/duplicate/moved-interface controls, and changes the exhaustive minimum from 0.085688274474482642° (18 below 1°, 91 below 5°) to 0.042840602681684034° (22 below 1°, 95 below 5°).
+
 ### gpu-green-mask-packet
 - Updated: 2026-09-06
 - Tags: gpu, bcc, conformity, revisioning

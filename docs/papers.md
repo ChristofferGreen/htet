@@ -1,6 +1,6 @@
 # Dygd Research Paper Catalogue
 
-_Last updated: 28 August 2026_
+_Last updated: 12 September 2026_
 
 ## Purpose
 
@@ -51,6 +51,96 @@ Suggested interpretation:
 13. **Contact with Coupled Adhesion and Friction** — persistent mortar-like interfaces.
 14. **Incremental Potential Contact** — exact local contact guarantees.
 15. **Embedded IPC**, then **AGIPC**, then **StiffGIPC** — increasingly advanced reduced and adaptive dynamics.
+
+## Immediate literature set: shared-lattice surface-to-core stitching
+
+The current terrain-volume question is narrower than general constrained
+tetrahedralization.  The dual-contouring surface and the regular Freudenthal
+core are generated from the same-resolution lattice.  Both fronts remain
+authoritative; only their shallow gap is filled.  The useful literature is
+therefore the work that either constructs that exact architecture or gives a
+constructive two-front zipper.
+
+### Skeleton based tetrahedralization of surface meshes
+
+- **Authors:** Aleksander Płocharski, Joanna Porter-Sobieraj, Andrzej Lamecki,
+  Tomasz Herman, Andrzej Uszakow
+- **Year:** 2024
+- **DOI:** [10.1016/j.cagd.2024.102317](https://doi.org/10.1016/j.cagd.2024.102317)
+- **PDF:** [PDF](../papers/subdivision/2024-Skeleton%20Based%20Tetrahedralization%20of%20Surface%20Meshes.pdf)
+- **Status:** RELEVANT SECTIONS READ
+- **Project relevance:** 95/100
+- **Reading priority:** 100/100
+
+This is the closest constructive source found.  Section 3.4 explicitly joins
+two triangulated surfaces with tetrahedra.  It selects one edge from each
+front to make a seed tetrahedron, expands a priority-ordered exposed triangle
+front, and restores convexity with two local concavity operations called the
+N-case and M-case.  The paper claims a self-intersection-free result under its
+input contract and reports millisecond-scale CPU construction in its
+skeleton/stamp application.
+
+The limitations matter.  Its stitching boundaries are planar patches with
+convex boundary loops produced by a specialised cylindrical-stamp pipeline;
+it does not demonstrate arbitrary noisy DC terrain, chunk borders, a fixed
+work bound, GPU execution, or useful lower bounds on tetrahedral quality.
+The project should therefore implement its zipper as a controlled per-patch
+baseline, not cite the paper as a solution to the whole terrain problem.
+
+### Fully anisotropic split-tree adaptive refinement mesh generation using tetrahedral mesh stitching
+
+- **Author:** Vincent Charles Betro
+- **Year:** 2010 (expanded dissertation underlying the 2011 AIAA FASTAR paper)
+- **AIAA DOI:** [10.2514/6.2011-895](https://doi.org/10.2514/6.2011-895)
+- **PDF:** [PDF](../papers/subdivision/2010-Fully%20Anisotropic%20Split-Tree%20Adaptive%20Refinement%20Mesh%20Generation%20Using%20Tetrahedral%20Mesh%20Stitching.pdf)
+- **Status:** RELEVANT SECTIONS READ
+- **Project relevance:** 93/100
+- **Reading priority:** 98/100
+
+FASTAR constructs almost exactly the desired macro-architecture: retain an
+adaptive Cartesian tree, delete cells intersecting the geometry, triangulate
+the exposed voxel front, and tetrahedralize only the narrow region between
+that front and the geometry or an extruded layer.  Its figures show both
+triangulated fronts bounding the transition volume, and it retains the tree
+for deterministic neighbour lookup.
+
+It is architectural evidence, not the missing algorithm.  The implementation
+delegated the gap to Pointwise or TetGen.  The dissertation records boundary
+recovery failures on difficult and narrow regions, resorted to a much larger
+box cut, and lists a boundary-preserving Lawson-style generator as future
+work.  It also observes that similarly sized opposing boundary triangles are
+important.  That last observation supports using the common DC/grid lattice,
+but the FASTAR mesher itself cannot be copied as our dependency-free zipper.
+
+### Papers already in the repository that remain required
+
+- *Isosurface Stuffing* (Labelle and Shewchuk, 2007): regular-core stencils,
+  element quality, and implicit-surface placement.
+- *Lattice Cleaving* (Bronson et al., 2014), *Adaptive and Unstructured Mesh
+  Cleaving* (2014), and *Tetrahedral Mesh Cleaving of Level Set Surfaces*
+  (2023): finite local interface operations and parallel layout.
+- *Constrained Delaunay Tetrahedrization* (Diazzi et al., 2023) and the 2026
+  boundary-recovery papers: robustness oracles and adversarial comparisons,
+  not the selected runtime architecture.
+
+### Adjacent sources checked but not required as implementation foundations
+
+- Radovitzky and Ortiz (2000), FCC lattice insertion plus
+  advancing-front-Delaunay tetrahedralization, is a useful historical
+  architecture comparison but still solves a more general Delaunay problem.
+- Schöberl (1997), NETGEN abstract advancing-front rules, supplies general
+  rule-system background but no shared-lattice two-front construction.
+- Lo (2013), automatic merging of arbitrary tetrahedral meshes, solves a more
+  general overlap/merging problem than the shallow corresponding fronts here.
+- Barequet and Sharir (1995), gap filling on polyhedral boundaries, supplies
+  the surface-ring inspiration used by Płocharski et al.; the 2024 paper
+  contains the tetrahedral adaptation needed by this project.
+
+These citations remain in the transition review, but importing additional
+paywalled copies would not add a missing local operation to the immediate
+prototype.  The expanded FASTAR dissertation is retained instead of the
+shorter 2011 conference version because it includes the failure analysis and
+future-work details.
 
 ---
 
@@ -1628,6 +1718,7 @@ Bisection/diamond still has the strongest addressability and neighbour-finding e
 | C24 | 2026 | H. Baktash, M. Gillespie, K. Crane | **Subgrid Marching Tetrahedra** | A | 98 | 100 | 99 | 100 | TetWeave forward citation audit | Generalizes marching tetrahedra to arbitrary integer intersection counts on grid edges, allowing several surface patches, thin sheets, and features below the grid spacing inside one tetrahedron. Reconstruction remains local per cell, manifold, intersection-free, and conforming across tetrahedral faces. It is the clearest next surface-extraction experiment, though its multi-patch cells require a richer volume-cleaving grammar than the current one-crossing-per-edge stencils. | [PDF](../papers/subdivision/2026-Subgrid%20Marching%20Tetrahedra.pdf) | [source](https://doi.org/10.1145/3811358) |
 | C25 | 2026 | X. Carrera, N. Wang, C. Batty, O. Stein, S. Sellán | **Dual Contouring of Signed Distance Data** | A | 96 | 87 | 98 | 95 | TetWeave forward citation audit | Reconstructs sharp-feature surfaces from discrete signed-distance samples by solving a quadratic vertex-placement problem without continuous field queries or gradients. Its regular-grid connectivity is not directly transferable, but its placement objective is a strong basis for replacing the viewer's provisional tetrahedral dual-contour vertex positioning. | [PDF](../papers/subdivision/2026-Dual%20Contouring%20of%20Signed%20Distance%20Data.pdf) | [source](https://arxiv.org/abs/2604.00157) |
 | C26 | 2024 | A. Valverde | **MeshCone: Second-Order Cone Programming for Geometrically-Constrained Mesh Enhancement** | B | 84 | 66 | 88 | 72 | TetWeave forward citation audit | Optimizes a surface toward reference geometry while regularizing edge lengths through a convex second-order cone program. The method does not preserve tetrahedral validity, but its target-alignment and smoothness terms are useful candidates for boundary optimization when combined with explicit positive-volume and tetrahedral-quality constraints. | [PDF](../papers/supporting/2024-MeshCone%20-%20Geometrically-Constrained%20Mesh%20Enhancement.pdf) | [source](https://arxiv.org/abs/2412.08484) |
+| C35 | 2026 | P. Caplan | **An Advancing-Ridge Approach for Recovering Boundary (d-1)-Simplices in d-Dimensional Meshes** | B | 88 | 91 | 86 | 92 | Google Scholar citation audit | Recovers constraints with a front over codimension-two ridges (edges in 3-D) and a constrained-cavity operator inside an existing mesh, adding Steiner vertices only when the front stalls. This is the closest procedural match to preserving a DC boundary while rebuilding a local background band. The preliminary implementation can still stall on complex 3-D inputs and does not remove slivers, so it is an incremental-constructor candidate after a robust published baseline, not a proven fixed-band or GPU solution. | [PDF](../papers/subdivision/2026-An%20Advancing-Ridge%20Approach%20for%20Recovering%20Boundary%20Simplices.pdf) | [source](https://arxiv.org/abs/2608.15176) |
 | C27 | 2026 | X. Zhao, Y. Yang, J. Wang, E. Shen | **Surface Offsetting: A Survey From Geometric Construction to Neural Implicit Representations** | A | 94 | 76 | 76 | 80 | TetWeave forward citation audit | Organizes offset algorithms into constructive, spatial-discretization, optimization, field-based, and learning-based families, emphasizing self-intersections, topology, thin features, and open boundaries. It is a useful route into methods for building and validating an offset surface layer before grading tetrahedra toward the interior hierarchy. | [PDF](../papers/supporting/2026-Surface%20Offsetting%20-%20A%20Survey.pdf) | [source](https://doi.org/10.1109/TVCG.2026.3676903) |
 | C28 | 2023 | T. Shen et al. | **Flexible Isosurface Extraction for Gradient-Based Mesh Optimization** | A | 97 | 88 | 96 | 95 | TetWeave keyword audit | Introduces FlexiCubes, which adds local geometric and connectivity degrees of freedom to dual marching cubes and can optionally emit tetrahedral and hierarchically adaptive meshes. It is a strong comparison for improving surface quality without treating fixed lookup-table vertices and connectivity as immutable. | [PDF](../papers/subdivision/2023-Flexible%20Isosurface%20Extraction%20for%20Gradient-Based%20Mesh%20Optimization.pdf) | [source](https://doi.org/10.1145/3592430) |
 | C29 | 2025 | A. Binninger | **Shape Representations for Intuitive Modeling and Generation** | B | 90 | 84 | 95 | 91 | TetWeave keyword audit | Doctoral thesis collecting a fuller account of TetWeave alongside related shape-representation work. Its extended derivation, design context, and evaluation make it a useful implementation companion to the shorter TetWeave article, while the article remains the primary citation for the method itself. | [PDF](../papers/supporting/2025-Shape%20Representations%20for%20Intuitive%20Modeling%20and%20Generation.pdf) | [source](https://www.research-collection.ethz.ch/items/90a6c1e9-a114-4286-b0c1-35b649aedea6) |

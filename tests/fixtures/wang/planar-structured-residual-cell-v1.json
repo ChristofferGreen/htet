@@ -1,0 +1,31 @@
+{
+  "name": "planar structured terrain post-recovery residual",
+  "reproduce": "build-owned/terrain_wang_probe 6 structured 0 1 0 0 128",
+  "source_plane": {
+    "semantic_rule": "zero-amplitude structured field: z = 0.071",
+    "membership": "the four stable IDs below are declared exact-affine-plane members",
+    "stored_coordinate_note": "The binary64 z coordinates differ because Hermite bisection/centroid evaluation is finite; topology must use a coherent provenance-aware geometry model."
+  },
+  "residual_tetrahedron": {
+    "stable_ids": [1902061660873785564, 1902073755501695885, 1902082551594721573, 1902090248176119050],
+    "vertices": [
+      {"id": 1902061660873785564, "position": [-0.33061059241263585, 0.026312711826305971, 0.070999999462592389]},
+      {"id": 1902073755501695885, "position": [-0.2859389847075498, 0.11854258499269696, 0.070999999842709965]},
+      {"id": 1902082551594721573, "position": [-0.42409889514983429, 0.049870467034391394, 0.071000000118657397]},
+      {"id": 1902090248176119050, "position": [-0.36173719578181152, 0.14985885929672679, 0.071000000428408386]}
+    ],
+    "published_six_volume": 2.71878e-13,
+    "failure": "all four IDs have exact plane membership, so publication must reject it even though the stored coordinates are only nearly coplanar"
+  },
+  "trusted_local_repair_audit": {
+    "initial_bad_cells": 50,
+    "remaining_bad_cells": 2,
+    "accepted_mutations": 48,
+    "bounded_cavity_attempts": 246,
+    "bounded_cavity_incompatible": 0,
+    "bounded_cavity_inspection_rejections": 0,
+    "bounded_cavity_non_improving_rejections": 246,
+    "mesh_mutation_rejections": 0,
+    "interpretation": "The stable-ID cavity route now executes and produces constraint-valid candidates, but none strictly reduces the current global bad-cell count. This fixture is the concrete starting point for seed/recovery provenance work, not proof that the paper algorithm is impossible."
+  }
+}

@@ -3011,7 +3011,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
     return found==fallback_edge_proofs.end()?no_proof:found->second;
   };
   const auto insert_midpoint=[&](const WorldEdgeKey& edge,
-                                 std::uint32_t proof=no_proof){
+                                 std::uint32_t proof){
     if(use_edge_table){
       if(proof==no_proof)
         throw std::logic_error("world midpoint has no proof");
@@ -3077,7 +3077,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
             const auto added=add_proof(WorldClosureProofKind::split_ancestor_edge,
                 ordered_ancestors[ancestor],{},key);
             insert_midpoint(key,added);proof=added;
-          }else insert_midpoint(key);
+          }else insert_midpoint(key,no_proof);
         }
         if(cache!=nullptr){
           if(proof==no_proof)
@@ -3340,7 +3340,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
                 std::span(inputs.data(),candidate.input_count+1U),
                 candidate.edge);
             insert_midpoint(candidate.edge,proof);
-          }else insert_midpoint(candidate.edge);
+          }else insert_midpoint(candidate.edge,no_proof);
         }
       if(sparse_warm_start&&changed){
         auto addresses=query_closure_dependency_owners(
@@ -3715,7 +3715,7 @@ std::vector<WorldTetAddress> close_world_conforming_cut(
           const auto proof=add_proof(
               WorldClosureProofKind::promotion_edge,owner,input,key);
           insert_midpoint(key,proof);
-        }else if(cache==nullptr)insert_midpoint(key);
+        }else if(cache==nullptr)insert_midpoint(key,no_proof);
       }
       for(std::uint8_t child=0;child<8U;++child){
         const auto address=owner.child(child);

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Structured Dual Contouring Inspector</title>
+<style>
+html,body,canvas{margin:0;width:100%;height:100%;overflow:hidden;background:#101820}#controls{position:fixed;z-index:2;top:16px;left:16px;width:min(350px,calc(100% - 64px));padding:14px 16px;color:#eaf2f7;background:rgba(15,23,30,.93);border:1px solid #405466;border-radius:6px;font:14px/1.45 system-ui,sans-serif;user-select:none}#controls strong{display:block;margin-bottom:6px;font-size:16px}#controls label{display:block;cursor:pointer;margin:2px 0}#controls select,#controls input[type=range]{max-width:100%;vertical-align:middle}#opacityLabel{display:flex;gap:6px;align-items:center}#details{margin-top:9px;color:#b7c8d4;font-size:12px;white-space:pre-line}#help{position:fixed;right:16px;bottom:14px;color:#b7c8d4;font:12px system-ui,sans-serif;background:rgba(15,23,30,.72);padding:7px 10px;border-radius:4px}
+</style>
+<div id="controls">
+  <strong id="title">Two-hexahedra structured DC inspector</strong>
+  <label>Inspection focus <select id="focus">
+    <option value="all" selected>surface, grid, and parents</option>
+    <option value="opaque">opaque DC surface</option>
+    <option value="parents">parent tetrahedron and hexahedra</option>
+    <option value="grid">structured grid only</option>
+    <option value="surface">DC surface only</option>
+    <option value="transition">transition tetrahedra only</option>
+    <option value="core">implicit tet core only</option>
+  </select></label>
+  <label><input id="parentTet" type="checkbox"> original tetrahedron</label>
+  <label><input id="parents" type="checkbox" checked> two face-sharing hexahedra</label>
+  <label><input id="grid" type="checkbox" checked> matching structured grids</label>
+  <label><input id="surface" type="checkbox" checked> DC surface fill</label>
+  <label><input id="quadEdges" type="checkbox" checked> genuine DC quad edges</label>
+  <label><input id="diagonals" type="checkbox"> render-only triangle diagonals</label>
+  <label><input id="transition" type="checkbox"> transition tetrahedra (pending rebuild)</label>
+  <label><input id="core" type="checkbox" checked> global implicit tet core</label>
+  <label id="opacityLabel">surface opacity <input id="opacity" type="range" min="0" max="100" value="82"> <output id="opacityValue">82%</output></label>
+  <button id="reset" type="button">reset view</button>
+  <div id="details" aria-live="polite"></div>
+</div>
+<div id="help">Drag to orbit · wheel to zoom · R reset</div>
+<script src="data.js?revision=structured-two-hex-global-core-v5"></script>
+<script>
+(()=>{
+const data=window.TETRA_SANDWICH_DATA;
+if(!data||data.buildRevision!=="structured-two-hex-global-core-v5"||data.dualSource?.algorithm!=="structured-two-parent-hexahedra-dual-contouring")throw new Error("This inspector requires the structured two-hexahedra frozen DC result with a global hierarchy core.");
+const byId=id=>document.getElementById(id),canvas=document.createElement("canvas"),ctx=canvas.getContext("2d");document.body.append(canvas);
+let yaw=.72,pitch=-.42,zoom=2.65,dragging=false,lastX=0,lastY=0;
+const layers={parentTet:data.parentTetrahedronEdges||[],parents:(data.parentHexahedronEdges||[]).flat(),grid:data.structuredGridEdges||[],surface:data.dualSurface||[],quads:data.dualQuads||[],quadEdges:data.dualQuadEdges||[],diagonals:data.renderDiagonalEdges||[],transition:data.transitionEdges||[],core:data.implicitCoreEdges||[]};
+const all=[...layers.parentTet,...layers.parents,...layers.grid,...layers.surface],centre=[0,0,0];
+for(let i=0;i<all.length;i+=3){centre[0]+=all[i];centre[1]+=all[i+1];centre[2]+=all[i+2]}for(let i=0;i<3;i++)centre[i]/=all.length/3;
+let radius=0;for(let i=0;i<all.length;i+=3)radius=Math.max(radius,Math.hypot(all[i]-centre[0],all[i+1]-centre[1],all[i+2]-centre[2]));radius=Math.max(radius,1e-6);
+function project(x,y,z){x-=centre[0];y-=centre[1];z-=centre[2];const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),rx=cy*x+sy*z,rz=-sy*x+cy*z,ry=cp*y-sp*rz,depth=sp*y+cp*rz,p=(Math.min(canvas.width,canvas.height)*.54*zoom)/(radius*2.5-depth);return[canvas.width*.5+rx*p,canvas.height*.5-ry*p,depth]}
+function lines(v,c,w){if(!v.length)return;ctx.beginPath();for(let i=0;i<v.length;i+=6){const a=project(v[i],v[i+1],v[i+2]),b=project(v[i+3],v[i+4],v[i+5]);ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1])}ctx.strokeStyle=c;ctx.lineWidth=w;ctx.stroke()}
+function triangles(v){const p=[];for(let i=0;i<v.length;i+=9){const a=project(v[i],v[i+1],v[i+2]),b=project(v[i+3],v[i+4],v[i+5]),c=project(v[i+6],v[i+7],v[i+8]);p.push([a,b,c,(a[2]+b[2]+c[2])/3])}p.sort((a,b)=>a[3]-b[3]);const opaque=byId("focus").value==="opaque";ctx.fillStyle=`rgba(244,162,97,${opaque?1:Number(byId("opacity").value)/100})`;for(const t of p){ctx.beginPath();ctx.moveTo(t[0][0],t[0][1]);ctx.lineTo(t[1][0],t[1][1]);ctx.lineTo(t[2][0],t[2][1]);ctx.closePath();ctx.fill()}}
+function quadFaces(v,fill,stroke){const faces=[];for(let i=0;i<v.length;i+=12){const q=[];let depth=0;for(let j=0;j<4;j++){const p=project(v[i+j*3],v[i+j*3+1],v[i+j*3+2]);q.push(p);depth+=p[2]}faces.push([q,depth/4])}faces.sort((a,b)=>a[1]-b[1]);const opaque=byId("focus").value==="opaque",alpha=opaque?1:Number(byId("opacity").value)/100;for(const [q] of faces){ctx.beginPath();ctx.moveTo(q[0][0],q[0][1]);for(let j=1;j<4;j++)ctx.lineTo(q[j][0],q[j][1]);ctx.closePath();if(fill){ctx.fillStyle=`rgba(244,162,97,${alpha})`;ctx.fill()}if(stroke){ctx.strokeStyle="rgba(255,236,172,.98)";ctx.lineWidth=1.25;ctx.stroke()}}}
+function wanted(n){const f=byId("focus").value;if(f==="opaque")return n==="surface"||n==="quadEdges";if(f==="surface")return (n==="surface"||n==="quadEdges"||n==="diagonals")&&byId(n).checked;if(f==="parents")return (n==="parentTet"||n==="parents")&&byId(n).checked;return byId(n).checked&&(f==="all"||f===n)}
+function details(){const d=data.dualSource,v=data.validation,opaque=byId("focus").value==="opaque";byId("transition").disabled=!v.transitionConstructed;byId("core").disabled=!layers.core.length;byId("opacity").disabled=opaque;byId("opacityValue").textContent=opaque?"100% (opaque view)":`${byId("opacity").value}%`;byId("title").textContent=`Structured two-hex DC — ${data.field}, N=${data.resolution}`;const terrain=v.transitionConstructed?"ACCEPTED — rendering the exact accepted transition transaction.":"WITHHELD — no accepted DC-to-grid transition is available; the geometry-valid Wang result still fails the strict volume-quality gate.";byId("details").textContent=`Two hexahedra from one tetrahedron; ${d.structuredCells} structured DC cells.\nDC topology: ${d.quadCount} quads (${data.dualTriangleCount} render triangles), ${d.seamQuads} crossing the hexahedron seam.\nSurface: ${v.surfaceValid?"VALID":"INVALID"}; max dual-vertex SDF residual ${d.maximumFieldResidual.toExponential(2)}.\nGlobal core: ${d.coreTetrahedra} whole address-reconstructed tets at hierarchy depth ${d.globalCoreRedDepth}; ${d.globalCoreSharedBorderCrossers} cross the shared hexahedron border.\nGlobal invariants: address reconstruction ${v.implicitAddressReconstructionExact?"exact":"INVALID"}; unique ownership ${v.globalCoreUniqueOwnership?"exact":"INVALID"}.\nTerrain volume: ${terrain}`}
+function render(){canvas.width=innerWidth;canvas.height=innerHeight;ctx.fillStyle="#101820";ctx.fillRect(0,0,canvas.width,canvas.height);if(wanted("grid"))lines(layers.grid,"rgba(116,151,174,.34)",.55);if(wanted("transition"))lines(layers.transition,"rgba(69,212,192,.96)",1);if(wanted("core"))lines(layers.core,"rgba(130,180,220,.82)",.7);const showSurface=wanted("surface"),showQuadEdges=wanted("quadEdges");if(showSurface||showQuadEdges){if(layers.quads.length)quadFaces(layers.quads,showSurface,showQuadEdges);else{if(showSurface)triangles(layers.surface);if(showQuadEdges)lines(layers.quadEdges,"rgba(255,236,172,.98)",1.25)}}if(wanted("parentTet"))lines(layers.parentTet,"rgba(255,255,255,.72)",1.2);if(wanted("parents"))lines(layers.parents,"rgba(255,205,86,.96)",1.65);if(wanted("diagonals"))lines(layers.diagonals,"rgba(255,80,120,.9)",.8)}
+function refresh(){details();render()}for(const id of["focus","parentTet","parents","grid","surface","quadEdges","diagonals","transition","core","opacity"])byId(id).oninput=refresh;
+byId("reset").onclick=()=>{yaw=.72;pitch=-.42;zoom=2.65;render()};canvas.onpointerdown=e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)};canvas.onpointermove=e=>{if(!dragging)return;yaw+=(e.clientX-lastX)*.012;pitch=Math.max(-1.48,Math.min(1.48,pitch+(e.clientY-lastY)*.012));lastX=e.clientX;lastY=e.clientY;render()};canvas.onpointerup=()=>dragging=false;canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.3,Math.min(4,zoom*Math.exp(-e.deltaY*.001)));render()};addEventListener("keydown",e=>{if(e.key.toLowerCase()==="r")byId("reset").click()});addEventListener("resize",render);refresh();
+})();
+</script>
+</html>
