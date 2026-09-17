@@ -15,6 +15,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <memory_resource>
 #include <limits>
 #include <numeric>
 #include <cfloat>
@@ -2570,15 +2571,26 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
     std::map<FrozenFacetIdentity,std::array<std::uint64_t,3>>* missing_targets=nullptr) {
   using StableEdge=std::array<std::uint64_t,2>;
   using StableFace=std::array<std::uint64_t,3>;
+  // Every node below dies together when this audit returns. One sized
+  // monotonic arena preserves std::map/std::set ordering while avoiding a
+  // malloc/free pair for each tiny tree node. The upstream resource remains
+  // an exact, unbounded fallback if an unusual PLC exceeds the estimate.
+  const auto arena_bytes=std::max<std::size_t>(64U*1024U,
+      constraints.facets.size()*512U+mesh_faces.size()*96U);
+  std::unique_ptr<std::byte[]> arena_storage(new std::byte[arena_bytes]);
+  std::pmr::monotonic_buffer_resource arena(
+      arena_storage.get(),arena_bytes,std::pmr::new_delete_resource());
   struct ParentData {
-    std::map<std::uint64_t,FacetBarycentricPoint> points;
-    std::map<StableEdge,unsigned> child_edge_uses;
-    std::vector<StableFace> literal_faces;
+    std::pmr::map<std::uint64_t,FacetBarycentricPoint> points;
+    std::pmr::map<StableEdge,unsigned> child_edge_uses;
+    std::pmr::vector<StableFace> literal_faces;
     bool consistent{true};
+    explicit ParentData(std::pmr::memory_resource* resource)
+        : points(resource),child_edge_uses(resource),literal_faces(resource) {}
   };
   std::map<FrozenFacetIdentity,ParentData> parents;
   for(const auto& facet:constraints.facets) {
-    auto& parent=parents[facet.parent];
+    auto& parent=parents.try_emplace(facet.parent,&arena).first->second;
     auto literal=facet.vertices;std::sort(literal.begin(),literal.end());parent.literal_faces.push_back(literal);
     for(unsigned i=0U;i<3U;++i) {
       const auto [found,inserted]=parent.points.emplace(facet.vertices[i],facet.corners[i]);
@@ -2589,19 +2601,20 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
       std::sort(edge.begin(),edge.end());++parent.child_edge_uses[edge];
     }
   }
-  std::map<std::uint64_t,std::vector<FrozenFacetIdentity>> parents_by_point;
+  std::map<std::uint64_t,std::pmr::vector<FrozenFacetIdentity>> parents_by_point;
   for(const auto& [identity,parent]:parents)
     for(const auto& [point,barycentric]:parent.points) {
-      (void)barycentric;parents_by_point[point].push_back(identity);
+      (void)barycentric;
+      parents_by_point.try_emplace(point,&arena).first->second.push_back(identity);
     }
-  std::map<FrozenFacetIdentity,std::vector<StableFace>> triangles_by_parent;
+  std::map<FrozenFacetIdentity,std::pmr::vector<StableFace>> triangles_by_parent;
   for(const auto& face:mesh_faces) {
     const auto memberships=parents_by_point.find(face[0]);
     if(memberships==parents_by_point.end())continue;
     for(const auto& identity:memberships->second) {
       const auto& points=parents.at(identity).points;
       if(points.contains(face[1])&&points.contains(face[2]))
-        triangles_by_parent[identity].push_back(face);
+        triangles_by_parent.try_emplace(identity,&arena).first->second.push_back(face);
     }
   }
   std::map<FrozenFacetIdentity,bool> recovered;
@@ -2614,12 +2627,14 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
           identity.vertex_ids:*missing;
     };
     if(!parent.consistent){recovered.emplace(identity,false);record_missing();continue;}
-    std::set<StableEdge> expected_boundary;
+    std::pmr::set<StableEdge> expected_boundary{&arena};
     for(const auto& [edge,count]:parent.child_edge_uses)if(count==1U)expected_boundary.insert(edge);
-    auto triangles=triangles_by_parent[identity];
+    std::pmr::vector<StableFace> triangles{&arena};
+    const auto triangle_record=triangles_by_parent.find(identity);
+    if(triangle_record!=triangles_by_parent.end())triangles=triangle_record->second;
     if(triangles.empty()){recovered.emplace(identity,false);record_missing();continue;}
-    std::map<StableEdge,unsigned> uses;
-    std::set<std::uint64_t> used_vertices;
+    std::pmr::map<StableEdge,unsigned> uses{&arena};
+    std::pmr::set<std::uint64_t> used_vertices{&arena};
     long double doubled_area{};bool positive=true;
     for(const auto& face:triangles) {
       std::array<std::array<long double,2>,3> p{};
@@ -2639,7 +2654,7 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
       }
     }
     if(!positive){recovered.emplace(identity,false);record_missing();continue;}
-    std::set<StableEdge> actual_boundary;bool manifold=true;
+    std::pmr::set<StableEdge> actual_boundary{&arena};bool manifold=true;
     for(const auto& [edge,count]:uses) {
       if(count==1U)actual_boundary.insert(edge);
       else if(count!=2U){manifold=false;break;}
@@ -2647,11 +2662,16 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
     // For a connected planar simplicial disk V-E+F=1.  Together with the
     // exact boundary chain and unit parent area this rejects holes, doubled
     // sheets, disconnected islands and incomplete coverage.
-    std::map<std::uint64_t,std::set<std::uint64_t>> adjacency;
-    for(const auto& [edge,count]:uses){(void)count;adjacency[edge[0]].insert(edge[1]);adjacency[edge[1]].insert(edge[0]);}
-    std::set<std::uint64_t> visited;
+    std::map<std::uint64_t,std::pmr::set<std::uint64_t>> adjacency;
+    for(const auto& [edge,count]:uses) {
+      (void)count;
+      adjacency.try_emplace(edge[0],&arena).first->second.insert(edge[1]);
+      adjacency.try_emplace(edge[1],&arena).first->second.insert(edge[0]);
+    }
+    std::pmr::set<std::uint64_t> visited{&arena};
     if(!used_vertices.empty()) {
-      std::vector<std::uint64_t> stack{*used_vertices.begin()};
+      std::pmr::vector<std::uint64_t> stack{&arena};
+      stack.push_back(*used_vertices.begin());
       while(!stack.empty()){const auto vertex=stack.back();stack.pop_back();if(!visited.insert(vertex).second)continue;for(const auto next:adjacency[vertex])stack.push_back(next);}
     }
     const auto euler=static_cast<std::int64_t>(used_vertices.size())-
@@ -2661,7 +2681,8 @@ std::map<FrozenFacetIdentity,bool> recovered_parent_patches(
     const bool accepted=manifold&&actual_boundary==expected_boundary&&
         visited.size()==used_vertices.size()&&euler==1&&area_error<=256.0L*LDBL_EPSILON;
     recovered.emplace(identity,accepted);
-    if(accepted&&recovered_faces)(*recovered_faces)[identity]=std::move(triangles);
+    if(accepted&&recovered_faces)
+      (*recovered_faces)[identity].assign(triangles.begin(),triangles.end());
     if(!accepted)record_missing();
   }
   return recovered;
