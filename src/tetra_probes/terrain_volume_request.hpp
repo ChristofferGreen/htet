@@ -244,6 +244,8 @@ struct TerrainVolumeResult {
   SurfaceCoreTransitionValidation validation;
   TerrainVolumeQuality quality_before_repair;
   TerrainVolumeQuality quality;
+  double wang_recovery_milliseconds{};
+  double quality_measurement_milliseconds{};
   // The first Wang-specific post-recovery quality operation is deliberately
   // bounded.  These counters distinguish "no legal improvement exists" from
   // a pass that was never attempted.
@@ -288,6 +290,13 @@ struct FourHexahedraWangPrototypeResult {
   FourHexahedraWangPrototypeFailure failure{
       FourHexahedraWangPrototypeFailure::invalid_fixture};
   AdvancingFrontCavityAudit fixture_validation;
+  AdvancingFrontFixture fixture;
+  // Wall-clock timings identify the work actually performed by the
+  // authoritative transaction.  They deliberately exclude artifact writing.
+  double fixture_milliseconds{};
+  double request_milliseconds{};
+  double wang_transaction_milliseconds{};
+  double total_milliseconds{};
   TerrainVolumeRequestResult request;
   TerrainVolumeResult volume;
   [[nodiscard]] bool accepted() const noexcept {

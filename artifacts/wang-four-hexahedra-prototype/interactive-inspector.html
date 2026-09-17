@@ -48,6 +48,12 @@
           <input id="tet-opacity" type="range" min="0" max="1" step="0.05" value="1"></label>
         <label>Mesh resolution: <output id="resolution-value">5</output>
           <input id="resolution" type="range" min="4" max="12" step="1" value="5"></label>
+        <label>Volume LOD
+          <select id="core-mode"><option value="uniform">uniform baseline</option><option value="adaptive">surface-distance adaptive</option></select></label>
+        <label>Minimum interior level: <output id="minimum-level-value">2</output>
+          <input id="minimum-level" type="range" min="0" max="6" step="1" value="2"></label>
+        <label>Surface band: <output id="surface-band-value">0.50</output>
+          <input id="surface-band" type="range" min="0.1" max="2" step="0.1" value="0.5"></label>
         <label>Clip plane: <output id="clip-value">0.00</output>
           <input id="clip" type="range" min="-0.30" max="0.30" step="0.01" value="0"></label>
         <label><input id="clip-enabled" type="checkbox" checked> enable clipping</label>
@@ -296,20 +302,33 @@
     const sizing = Number.isFinite(summary.coreTetEdge)
       ? `Core L${summary.coreRedDepth}: edge ${number(summary.coreTetEdge)}, clearance ${number(summary.coreClearance)} · core volume ${number(summary.coreVolume)} · transition volume ${number(summary.transitionVolume)}`
       : '';
-    document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}`;
+    const timing = Number.isFinite(summary.totalMilliseconds) ? `\nTiming: fixture ${summary.fixtureMilliseconds.toFixed(1)} ms · request ${summary.requestMilliseconds.toFixed(1)} ms · Wang ${summary.wangMilliseconds.toFixed(1)} ms (recovery ${summary.wangRecoveryMilliseconds.toFixed(1)} ms) · total ${(summary.totalMilliseconds / 1000).toFixed(2)} s` : '';
+    const workload = Number.isFinite(summary.coreHierarchyNodesVisited) ? `\n${summary.coreMode || 'uniform'}: ${summary.coreHierarchyNodesVisited} hierarchy nodes · ${summary.coreRedLeavesSelected} red leaves · ${summary.coreGreenTransitionCells} green cells · retained L${summary.minimumRetainedCoreRedDepth}–L${summary.maximumRetainedCoreRedDepth}` : '';
+    document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}${workload}${timing}`;
     const resolution = document.getElementById('resolution');
     const resolutionValue = document.getElementById('resolution-value');
     const rebuildStatus = document.getElementById('rebuild-status');
     resolution.value = summary.gridResolution || 5;
+    const coreMode = document.getElementById('core-mode');
+    coreMode.value = summary.coreMode || 'uniform';
+    const minimumLevel = document.getElementById('minimum-level');
+    const surfaceBand = document.getElementById('surface-band');
+    minimumLevel.value = summary.coreMinRedDepth ?? 2;
+    surfaceBand.value = summary.coreSurfaceBand ?? .5;
+    const updateLodLabels = () => {
+      document.getElementById('minimum-level-value').textContent = minimumLevel.value;
+      document.getElementById('surface-band-value').textContent = Number(surfaceBand.value).toFixed(2);
+    };
+    updateLodLabels();
     resolutionValue.textContent = resolution.value;
     resolution.addEventListener('input', () => resolutionValue.textContent = resolution.value);
-    resolution.addEventListener('change', async () => {
+    async function rebuildVolume() {
       const next = Number(resolution.value);
-      if (next === (summary.gridResolution || 5)) return;
-      resolution.disabled = true;
-      rebuildStatus.textContent = `Rebuilding DC, core, and Wang transition at N${next}…`;
+      const mode = coreMode.value;
+      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true;
+      rebuildStatus.textContent = `Rebuilding DC, ${mode} core, and Wang transition at N${next}…`;
       try {
-        const response = await fetch(`http://127.0.0.1:8767/rebuild?resolution=${next}`);
+        const response = await fetch(`http://127.0.0.1:8767/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
@@ -317,9 +336,15 @@
         window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false;
       }
-    });
+    }
+    resolution.addEventListener('change', rebuildVolume);
+    coreMode.addEventListener('change', rebuildVolume);
+    minimumLevel.addEventListener('input', updateLodLabels);
+    surfaceBand.addEventListener('input', updateLodLabels);
+    minimumLevel.addEventListener('change', rebuildVolume);
+    surfaceBand.addEventListener('change', rebuildVolume);
     camera.position.set(.78, -.92, .72);
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.copy(target);

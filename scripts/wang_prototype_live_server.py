@@ -47,12 +47,26 @@ class Handler(BaseHTTPRequestHandler):
         if resolution not in range(4, 13):
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "resolution must be 4 through 12"})
             return
+        mode = parse_qs(request.query).get("mode", ["uniform"])[0]
+        if mode not in {"uniform", "adaptive"}:
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": "mode must be uniform or adaptive"})
+            return
+        try:
+            minimum_level = int(parse_qs(request.query).get("minimum_level", ["2"])[0])
+            surface_band = float(parse_qs(request.query).get("surface_band", ["0.5"])[0])
+        except ValueError:
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": "invalid adaptive LOD setting"})
+            return
+        if minimum_level not in range(0, 7) or not 0.01 <= surface_band <= 4.0:
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": "adaptive LOD settings are out of range"})
+            return
         if not EXPORTER.is_file():
             self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "build the Wang exporter first"})
             return
         with REBUILD_LOCK:
             completed = subprocess.run(
-                [str(EXPORTER), str(ARTIFACTS), str(resolution)],
+                [str(EXPORTER), str(ARTIFACTS), str(resolution), mode,
+                 str(minimum_level), str(surface_band)],
                 # A geometrically scaled depth-six core is intentionally much
                 # denser than the former fixed-cavity demo.  Keep the browser
                 # request alive while the bounded CPU oracle completes rather
@@ -64,7 +78,9 @@ class Handler(BaseHTTPRequestHandler):
                 "error": completed.stderr.strip() or "Wang prototype rebuild failed",
             })
             return
-        self.reply(HTTPStatus.OK, {"resolution": resolution, "reloaded": True})
+        self.reply(HTTPStatus.OK, {"resolution": resolution, "mode": mode,
+                                   "minimum_level": minimum_level,
+                                   "surface_band": surface_band, "reloaded": True})
 
 
 def main() -> None:

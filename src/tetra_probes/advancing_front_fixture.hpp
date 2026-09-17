@@ -15,10 +15,22 @@ enum class AdvancingFrontFieldKind : std::uint8_t {
   contained_noisy_sphere,
 };
 
+// The uniform mode remains the comparison baseline.  Adaptive mode creates a
+// complete hierarchy cut, closes it with restricted-green templates, then
+// keeps only cells safely inside the implicit solid.  Thus it never publishes
+// hanging faces to the Wang PLC.
+enum class AdvancingFrontCoreMode : std::uint8_t {
+  uniform,
+  surface_distance_adaptive,
+};
+
 struct AdvancingFrontFixtureConfig {
   AdvancingFrontFieldKind field_kind{AdvancingFrontFieldKind::heightfield};
   unsigned int grid_resolution{10U};
   unsigned int core_red_depth{4U};
+  AdvancingFrontCoreMode core_mode{AdvancingFrontCoreMode::uniform};
+  unsigned int core_min_red_depth{2U};
+  double core_surface_band_multiplier{0.5};
   double surface_height{0.14};
   // Used by contained_noisy_sphere.  The builder rejects an envelope which
   // could reach the root tetrahedron boundary.
@@ -68,6 +80,11 @@ struct AdvancingFrontCavityAudit {
   double cavity_volume{};
   double minimum_core_tetrahedron_edge_length{};
   double maximum_core_tetrahedron_edge_length{};
+  std::size_t core_hierarchy_nodes_visited{};
+  std::size_t core_red_leaves_selected{};
+  std::size_t core_green_transition_cells{};
+  unsigned int minimum_retained_core_red_depth{};
+  unsigned int maximum_retained_core_red_depth{};
 };
 
 struct AdvancingFrontFixture {
@@ -89,6 +106,9 @@ struct AdvancingFrontFixture {
   std::vector<std::array<std::uint32_t,4>> core_tetrahedra;
   std::vector<WorldTetAddress> core_tet_addresses;
   std::vector<std::array<std::uint32_t,3>> core_boundary_triangles;
+  std::size_t core_hierarchy_nodes_visited{};
+  std::size_t core_red_leaves_selected{};
+  std::size_t core_green_transition_cells{};
   AdvancingFrontCavityAudit audit;
 };
 

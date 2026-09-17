@@ -1,6 +1,7 @@
 #include "tetra_probes/advancing_front_fixture.hpp"
 
 #include "tetra_core/four_hexahedra.hpp"
+#include "tetra_core/world_cut_directory.hpp"
 #include "tetra_probes/surface_core_contract.hpp"
 
 #include <algorithm>
@@ -261,7 +262,10 @@ AdvancingFrontFixture build_advancing_front_fixture(
   if(config.grid_resolution<3U||config.grid_resolution>24U||
      config.core_red_depth>6U||!std::isfinite(config.surface_height)||
      !std::isfinite(config.sphere_radius)||config.sphere_radius<=0.0||
-     config.noise_amplitude<0.0||config.core_clearance<0.0)
+     config.noise_amplitude<0.0||config.core_clearance<0.0||
+     config.core_min_red_depth>config.core_red_depth||
+     config.core_surface_band_multiplier<=0.0||
+     !std::isfinite(config.core_surface_band_multiplier))
     throw std::invalid_argument("invalid advancing-front fixture config");
   AdvancingFrontFixture result;result.config=config;
   result.root_tetrahedron={{{-1.0,-0.5773502691896258,-0.239},
@@ -502,12 +506,94 @@ AdvancingFrontFixture build_advancing_front_fixture(
 
   const auto hierarchy_root=WorldTetAddress::root(0U);
   const auto reference_root=world_tetrahedron_geometry(hierarchy_root);
-  std::vector<WorldTetAddress> frontier{hierarchy_root};
-  for(unsigned int depth=0;depth<config.core_red_depth;++depth) {
-    std::vector<WorldTetAddress> children;children.reserve(frontier.size()*8U);
-    for(const auto parent:frontier)for(std::uint8_t child=0;child<8U;++child)
-      children.push_back(parent.child(child));
-    frontier.swap(children);
+  std::vector<WorldTetAddress> frontier;
+  if(config.core_mode==AdvancingFrontCoreMode::uniform) {
+    frontier={hierarchy_root};
+    for(unsigned int depth=0;depth<config.core_red_depth;++depth) {
+      std::vector<WorldTetAddress> children;children.reserve(frontier.size()*8U);
+      for(const auto parent:frontier)for(std::uint8_t child=0;child<8U;++child)
+        children.push_back(parent.child(child));
+      frontier.swap(children);
+    }
+    result.core_hierarchy_nodes_visited=frontier.size();
+    result.core_red_leaves_selected=frontier.size();
+  } else {
+    // The scalar field is a radial distance perturbed by gradient Perlin
+    // noise.  This deliberately conservative Lipschitz bound turns a cell
+    // centre sample into a lower bound on its distance from the zero set.
+    // It drives refinement from the surface, never from the camera.
+    std::vector<WorldTetAddress> pending{hierarchy_root};
+    while(!pending.empty()) {
+      const auto address=pending.back();pending.pop_back();
+      ++result.core_hierarchy_nodes_visited;
+      const auto geometry=world_tetrahedron_geometry(address);
+      Vec3 cell_centre{};double radius{};
+      std::array<Vec3,4> points{};
+      for(std::size_t i=0;i<4U;++i) {
+        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
+            geometry[i]);
+        cell_centre=cell_centre+points[i]/4.0;
+      }
+      for(const auto point:points)
+        radius=std::max(radius,length(point-cell_centre));
+      double edge{};
+      for(std::size_t a=0;a<4U;++a)for(std::size_t b=a+1U;b<4U;++b)
+        edge=std::max(edge,length(points[a]-points[b]));
+      // For this contained-sphere fixture, the radial field gives a tighter
+      // certified bound than a generic field-gradient estimate: the noise can
+      // move the zero surface by at most its amplitude bound, while every
+      // point in the cell is at most `radius` away from its centre.
+      const double lower_distance=config.field_kind==
+              AdvancingFrontFieldKind::contained_noisy_sphere
+          ?std::max(0.0,std::abs(length(cell_centre-centre)-config.sphere_radius)-
+              config.noise_amplitude*perlin_absolute_bound-radius)
+          :std::max(0.0,std::abs(field_value(config,centre,cell_centre))-
+              (1.0+6.0*config.noise_amplitude*config.noise_frequency)*radius);
+      const bool refine=address.red_depth()<config.core_min_red_depth||
+          (address.red_depth()<config.core_red_depth&&lower_distance<
+              config.core_surface_band_multiplier*edge);
+      if(refine)for(std::uint8_t child=0;child<8U;++child)
+        pending.push_back(address.child(child));
+      else frontier.push_back(address);
+    }
+    // The cut must cover all BCC roots for the reusable directory API.  The
+    // other roots are irrelevant to this fixture and stay coarse.
+    for(std::uint8_t root=1U;root<bcc_root_tetrahedron_count;++root)
+      frontier.push_back(WorldTetAddress::root(root));
+    std::ranges::sort(frontier);
+    frontier=close_world_conforming_cut(frontier);
+    const WorldCutDirectory directory(make_complete_world_cut_checkpoint(
+        frontier,3U,1U));
+    const auto conforming=reconstruct_world_conforming_volume(directory);
+    result.core_red_leaves_selected=conforming.logical_owners;
+    result.core_green_transition_cells=conforming.transition_cells;
+    frontier.clear();
+    std::map<WorldVertexKey,std::uint32_t> core_indexes;
+    for(const auto& cell:conforming.cells) {
+      if(cell.logical_owner.root_id()!=0U)continue;
+      std::array<Vec3,4> points{};bool retain=true;
+      for(std::size_t i=0;i<4U;++i) {
+        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
+            cell.positions[i]);
+        const auto root_weights=reference_barycentric(result.root_tetrahedron,points[i]);
+        const auto boundary_distance=*std::min_element(root_weights.begin(),root_weights.end());
+        retain=retain&&field_value(config,centre,points[i])<-config.core_clearance&&
+            boundary_distance>0.045;
+      }
+      if(!retain)continue;
+      std::array<std::uint32_t,4> tet{};
+      for(std::size_t i=0;i<4U;++i) {
+        const auto [entry,inserted]=core_indexes.emplace(cell.vertices[i],
+            static_cast<std::uint32_t>(result.core_vertices.size()));
+        if(inserted) { result.core_vertex_keys.push_back(cell.vertices[i]);
+          result.core_vertices.push_back(points[i]); }
+        tet[i]=entry->second;
+      }
+      if(six_volume(result.core_vertices[tet[0]],result.core_vertices[tet[1]],
+                    result.core_vertices[tet[2]],result.core_vertices[tet[3]])<0.0)
+        std::swap(tet[1],tet[2]);
+      result.core_tetrahedra.push_back(tet);result.core_tet_addresses.push_back(cell.logical_owner);
+    }
   }
   std::map<WorldVertexKey,std::uint32_t> core_indexes;
   for(const auto address:frontier) {
@@ -606,7 +692,13 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
       audit.core_nonmanifold_edges==0U&&!fixture.core_tetrahedra.empty();
   audit.core_address_reconstruction_exact=
       fixture.core_tetrahedra.size()==fixture.core_tet_addresses.size();
-  if(audit.core_address_reconstruction_exact) {
+  // Green transition cells are derived from a red owner and legitimately
+  // contain midpoint keys absent from that owner's four red corners.  Their
+  // exact conformity was established by reconstruct_world_conforming_volume;
+  // the surface/core contract below remains the authority for the published
+  // physical cells.
+  if(audit.core_address_reconstruction_exact&&
+     fixture.config.core_mode==AdvancingFrontCoreMode::uniform) {
     const auto reference_root=world_tetrahedron_geometry(WorldTetAddress::root(0U));
     for(std::size_t t=0;t<fixture.core_tetrahedra.size();++t) {
       const auto geometry=world_tetrahedron_geometry(fixture.core_tet_addresses[t]);
@@ -676,6 +768,19 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
       audit.cavity_volume>0.0;
   audit.extraordinary_dc_polygons=fixture.dc_extraordinary_triangles.size();
   audit.artificial_closure_faces=fixture.finite_boundary_triangles.size();
+  audit.core_hierarchy_nodes_visited=fixture.core_hierarchy_nodes_visited;
+  audit.core_red_leaves_selected=fixture.core_red_leaves_selected;
+  audit.core_green_transition_cells=fixture.core_green_transition_cells;
+  if(!fixture.core_tet_addresses.empty()) {
+    audit.minimum_retained_core_red_depth=fixture.core_tet_addresses.front().red_depth();
+    audit.maximum_retained_core_red_depth=audit.minimum_retained_core_red_depth;
+    for(const auto address:fixture.core_tet_addresses) {
+      audit.minimum_retained_core_red_depth=std::min(
+          audit.minimum_retained_core_red_depth,address.red_depth());
+      audit.maximum_retained_core_red_depth=std::max(
+          audit.maximum_retained_core_red_depth,address.red_depth());
+    }
+  }
   audit.accepted=audit.finite_vertices&&audit.outer_closed_two_manifold&&
       audit.outer_consistently_oriented&&audit.outer_no_self_intersections&&
       audit.core_closed_two_manifold&&audit.core_address_reconstruction_exact&&

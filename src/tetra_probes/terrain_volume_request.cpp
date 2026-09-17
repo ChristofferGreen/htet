@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -1970,7 +1971,10 @@ TerrainVolumeResult construct_terrain_volume(
     const TerrainVolumeRequest& request,
     const WangConstrainedTetrahedralizationOptions& options) {
   TerrainVolumeResult result;
+  const auto recovery_started=std::chrono::steady_clock::now();
   result.viability=run_terrain_wang_viability_experiment(request,options);
+  result.wang_recovery_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-recovery_started).count();
   result.validation=result.viability.output_validation;
   if(!result.viability.initial_plc_valid) {
     result.failure=TerrainVolumeBuildFailure::rejected_plc;
@@ -1989,8 +1993,11 @@ TerrainVolumeResult construct_terrain_volume(
   // select a different tetrahedralizer or reject valid geometry.
   result.output=result.viability.output;
   result.cell_regions=result.viability.output_cell_regions;
+  const auto quality_started=std::chrono::steady_clock::now();
   result.quality_before_repair=evaluate_terrain_volume_quality(
       request.contract,result.output,result.cell_regions);
+  result.quality_measurement_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-quality_started).count();
   result.quality=result.quality_before_repair;
   result.failure=TerrainVolumeBuildFailure::none;
   return result;
@@ -1999,13 +2006,22 @@ TerrainVolumeResult construct_terrain_volume(
 FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
     const AdvancingFrontFixtureConfig& config,
     const WangConstrainedTetrahedralizationOptions& requested_options) {
+  const auto started=std::chrono::steady_clock::now();
   FourHexahedraWangPrototypeResult result;
-  const auto fixture=build_advancing_front_fixture(config);
-  result.fixture_validation=fixture.audit;
-  if(!fixture.audit.accepted)return result;
-  result.request=make_four_hexahedra_terrain_volume_request(fixture);
+  result.fixture=build_advancing_front_fixture(config);
+  result.fixture_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
+  result.fixture_validation=result.fixture.audit;
+  if(!result.fixture.audit.accepted) { result.total_milliseconds=
+      std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(); return result; }
+  const auto request_started=std::chrono::steady_clock::now();
+  result.request=make_four_hexahedra_terrain_volume_request(result.fixture);
+  result.request_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-request_started).count();
   if(!result.request.accepted()) {
     result.failure=FourHexahedraWangPrototypeFailure::request_rejected;
+    result.total_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-started).count();
     return result;
   }
   // The retained fixture core is one closed connected component.  Region
@@ -2015,12 +2031,19 @@ FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
   // Wang entry point below deterministically derives the single witness from
   // the first retained core tetrahedron when none is supplied.
   auto options=requested_options;
+  const auto wang_started=std::chrono::steady_clock::now();
   result.volume=construct_terrain_volume(result.request.request,options);
+  result.wang_transaction_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-wang_started).count();
   if(!result.volume.accepted()) {
     result.failure=FourHexahedraWangPrototypeFailure::terrain_volume_rejected;
+    result.total_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-started).count();
     return result;
   }
   result.failure=FourHexahedraWangPrototypeFailure::none;
+  result.total_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-started).count();
   return result;
 }
 

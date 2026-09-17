@@ -981,3 +981,35 @@ TEST_CASE("heightfield request preserves its closed PLC contract over supported 
     CHECK(request.request.contract.core_parent_facets.size()==request.validation.core_boundary_faces);
   }
 }
+
+TEST_CASE("surface-distance adaptive contained core keeps a coarse interior") {
+  using namespace tetra::probes;
+  const auto sizing=advancing_front_core_sizing(9U);
+  AdvancingFrontFixtureConfig uniform;
+  uniform.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  uniform.grid_resolution=9U;
+  uniform.core_red_depth=sizing.red_depth;
+  uniform.sphere_radius=0.23;
+  uniform.noise_amplitude=0.02;
+  uniform.noise_frequency=4.0;
+  uniform.core_clearance=sizing.clearance;
+  const auto baseline=build_advancing_front_fixture(uniform);
+  REQUIRE(baseline.audit.accepted);
+
+  auto adaptive=uniform;
+  adaptive.core_mode=AdvancingFrontCoreMode::surface_distance_adaptive;
+  adaptive.core_min_red_depth=2U;
+  adaptive.core_surface_band_multiplier=0.5;
+  const auto fixture=build_advancing_front_fixture(adaptive);
+  REQUIRE(fixture.audit.accepted);
+  CHECK(fixture.audit.dc_closed_two_manifold);
+  CHECK(fixture.audit.core_closed_two_manifold);
+  CHECK(fixture.audit.core_strictly_nested);
+  CHECK(fixture.audit.surface_core_disjoint);
+  CHECK(fixture.audit.minimum_retained_core_red_depth<
+        fixture.audit.maximum_retained_core_red_depth);
+  CHECK(fixture.audit.maximum_retained_core_red_depth==sizing.red_depth);
+  CHECK(fixture.core_tetrahedra.size()<baseline.core_tetrahedra.size());
+  CHECK(fixture.audit.core_hierarchy_nodes_visited>0U);
+  CHECK(fixture.audit.core_green_transition_cells>0U);
+}

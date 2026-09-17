@@ -1,6 +1,7 @@
 #include "tetra_probes/advancing_front_fixture.hpp"
 #include "tetra_probes/terrain_volume_request.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -102,12 +103,12 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc!=2&&argc!=3) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION]\n";
+  if(argc<2||argc>6) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
-  if(argc==3) try {
+  if(argc>=3) try {
     grid_resolution=static_cast<unsigned>(std::stoul(argv[2]));
   } catch(...) {
     std::cerr<<"grid resolution must be an integer\n";
@@ -115,6 +116,11 @@ int main(int argc,char** argv) {
   }
   if(grid_resolution<4U||grid_resolution>12U) {
     std::cerr<<"grid resolution must be in [4,12]\n";
+    return 2;
+  }
+  const std::string core_mode=argc>=4?argv[3]:"uniform";
+  if(core_mode!="uniform"&&core_mode!="adaptive") {
+    std::cerr<<"core mode must be uniform or adaptive\n";
     return 2;
   }
   const std::filesystem::path directory=argv[1];
@@ -127,11 +133,20 @@ int main(int argc,char** argv) {
   config.grid_resolution=grid_resolution;
   const auto core_sizing=tetra::probes::advancing_front_core_sizing(grid_resolution);
   config.core_red_depth=core_sizing.red_depth;
+  config.core_mode=core_mode=="adaptive"
+      ?tetra::probes::AdvancingFrontCoreMode::surface_distance_adaptive
+      :tetra::probes::AdvancingFrontCoreMode::uniform;
+  if(argc>=5) try {
+    config.core_min_red_depth=static_cast<unsigned>(std::stoul(argv[4]));
+  } catch(...) { std::cerr<<"minimum core level must be an integer\n"; return 2; }
+  if(argc>=6) try {
+    config.core_surface_band_multiplier=std::stod(argv[5]);
+  } catch(...) { std::cerr<<"surface band must be a number\n"; return 2; }
+  config.core_min_red_depth=std::min(config.core_min_red_depth,config.core_red_depth);
   config.sphere_radius=0.23;
   config.noise_amplitude=0.02;
   config.noise_frequency=4.0;
   config.core_clearance=core_sizing.clearance;
-  const auto fixture=tetra::probes::build_advancing_front_fixture(config);
 
   tetra::probes::WangConstrainedTetrahedralizationOptions options;
   options.recovery.maximum_vertices=16384U;
@@ -143,6 +158,7 @@ int main(int argc,char** argv) {
   options.recovery.maximum_facet_splits=128U;
   const auto prototype=tetra::probes::construct_four_hexahedra_wang_prototype(
       config,options);
+  const auto& fixture=prototype.fixture;
   if(!fixture.audit.accepted||!prototype.accepted()) {
     std::cerr<<"prototype rejected: fixture="<<fixture.audit.accepted
              <<" dc_boundary_edges="<<fixture.audit.dc_boundary_edges
@@ -246,7 +262,10 @@ int main(int argc,char** argv) {
     data<<"},transition:{points:";write_javascript_points(data,output_points);
     data<<",tetrahedra:";write_javascript_cells(data,transition);
     data<<"},summary:{gridResolution:"<<grid_resolution
+        <<",coreMode:'"<<core_mode<<"'"
         <<",coreRedDepth:"<<config.core_red_depth
+        <<",coreMinRedDepth:"<<config.core_min_red_depth
+        <<",coreSurfaceBand:"<<config.core_surface_band_multiplier
         <<",coreTetEdge:"<<fixture.audit.maximum_core_tetrahedron_edge_length
         <<",coreClearance:"<<config.core_clearance
         <<",dcTriangles:"<<fixture.dc_triangles.size()
@@ -257,6 +276,17 @@ int main(int argc,char** argv) {
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
         <<",dcNonmanifoldEdges:"<<fixture.audit.dc_nonmanifold_edges
         <<",artificialClosureFaces:"<<fixture.audit.artificial_closure_faces
+        <<",coreHierarchyNodesVisited:"<<fixture.audit.core_hierarchy_nodes_visited
+        <<",coreRedLeavesSelected:"<<fixture.audit.core_red_leaves_selected
+        <<",coreGreenTransitionCells:"<<fixture.audit.core_green_transition_cells
+        <<",minimumRetainedCoreRedDepth:"<<fixture.audit.minimum_retained_core_red_depth
+        <<",maximumRetainedCoreRedDepth:"<<fixture.audit.maximum_retained_core_red_depth
+        <<",fixtureMilliseconds:"<<prototype.fixture_milliseconds
+        <<",requestMilliseconds:"<<prototype.request_milliseconds
+        <<",wangMilliseconds:"<<prototype.wang_transaction_milliseconds
+        <<",wangRecoveryMilliseconds:"<<prototype.volume.wang_recovery_milliseconds
+        <<",qualityMilliseconds:"<<prototype.volume.quality_measurement_milliseconds
+        <<",totalMilliseconds:"<<prototype.total_milliseconds
         <<"}};\n";
     if(!data)return 12;
   }
@@ -266,7 +296,10 @@ int main(int argc,char** argv) {
   summary<<"{\n"
          <<"  \"field\": \"contained-noisy-sphere\",\n"
          <<"  \"grid_resolution\": "<<grid_resolution<<",\n"
+         <<"  \"core_mode\": \""<<core_mode<<"\",\n"
          <<"  \"core_red_depth\": "<<config.core_red_depth<<",\n"
+         <<"  \"core_min_red_depth\": "<<config.core_min_red_depth<<",\n"
+         <<"  \"core_surface_band\": "<<config.core_surface_band_multiplier<<",\n"
          <<"  \"core_tetrahedron_edge_length\": "
          <<fixture.audit.maximum_core_tetrahedron_edge_length<<",\n"
          <<"  \"core_clearance\": "<<config.core_clearance<<",\n"
@@ -282,6 +315,17 @@ int main(int argc,char** argv) {
          <<fixture.audit.artificial_closure_faces<<",\n"
          <<"  \"core_tetrahedra\": "<<fixture.core_tetrahedra.size()<<",\n"
          <<"  \"transition_tetrahedra\": "<<prototype.volume.quality.transition.tetrahedra<<",\n"
+         <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
+         <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"
+         <<"  \"core_green_transition_cells\": "<<fixture.audit.core_green_transition_cells<<",\n"
+         <<"  \"minimum_retained_core_red_depth\": "<<fixture.audit.minimum_retained_core_red_depth<<",\n"
+         <<"  \"maximum_retained_core_red_depth\": "<<fixture.audit.maximum_retained_core_red_depth<<",\n"
+         <<"  \"fixture_milliseconds\": "<<prototype.fixture_milliseconds<<",\n"
+         <<"  \"request_milliseconds\": "<<prototype.request_milliseconds<<",\n"
+         <<"  \"wang_transaction_milliseconds\": "<<prototype.wang_transaction_milliseconds<<",\n"
+         <<"  \"wang_recovery_milliseconds\": "<<prototype.volume.wang_recovery_milliseconds<<",\n"
+         <<"  \"quality_measurement_milliseconds\": "<<prototype.volume.quality_measurement_milliseconds<<",\n"
+         <<"  \"total_milliseconds\": "<<prototype.total_milliseconds<<",\n"
          <<"  \"core_volume\": "<<published_core_volume<<",\n"
          <<"  \"transition_volume\": "<<transition_volume<<",\n"
          <<"  \"published_tetrahedra\": "<<prototype.volume.output.tetrahedra.size()<<",\n"
