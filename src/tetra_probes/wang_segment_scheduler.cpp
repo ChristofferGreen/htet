@@ -88,6 +88,7 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
     bool stop_before_full_search,
     const WangOwnedSegmentSchedulerState* resume=nullptr) {
   WangOwnedSegmentSchedulerResult result;
+  const WangLocalSegmentRecoveryWorkspace local_workspace(constraints);
   std::unordered_map<std::uint64_t,std::uint32_t> index_for_id;
   for(std::size_t index=0;index<constraints.vertices.size();++index)
     index_for_id.emplace(constraints.vertices[index].id,
@@ -170,7 +171,7 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
       std::vector<std::vector<std::vector<WangOrderedTetMesh::Tet>>> local_p2t;
       if(!recovered) {
         const auto forward=recover_wang_segment_by_local_flips(
-            constraints,edge.vertices,false,depth,mesh);
+            constraints,edge.vertices,false,depth,mesh,local_workspace);
         trace_finite_embedding(constraints,mesh,edge.vertices,"forward");
         recovered=forward.recovered;
         if(forward.failure==WangOwnedLocalRecoveryFailure::vertex_obstruction) {
@@ -187,7 +188,7 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
       }
       if(!recovered) {
         const auto reverse=recover_wang_segment_by_local_flips(
-            constraints,edge.vertices,true,depth,mesh);
+            constraints,edge.vertices,true,depth,mesh,local_workspace);
         trace_finite_embedding(constraints,mesh,edge.vertices,"reverse");
         recovered=reverse.recovered;
         if(reverse.failure==WangOwnedLocalRecoveryFailure::vertex_obstruction) {

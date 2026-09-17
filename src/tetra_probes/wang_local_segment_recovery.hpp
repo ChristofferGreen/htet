@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace tetra::probes {
@@ -195,6 +196,31 @@ struct WangOwnedLockedFhcInsertionResult {
   std::vector<WangOrderedTetMesh::Tet> tetrahedra;
 };
 
+// Immutable lookup data shared by all directed segment attempts against one
+// constraint set. Building it once avoids reconstructing the same point,
+// stable-ID and boundary tables for every edge in the Wang scheduler.
+class WangLocalSegmentRecoveryWorkspace {
+ public:
+  explicit WangLocalSegmentRecoveryWorkspace(
+      const CanonicalPlcConstraintSet& constraints);
+  ~WangLocalSegmentRecoveryWorkspace();
+  WangLocalSegmentRecoveryWorkspace(WangLocalSegmentRecoveryWorkspace&&) noexcept;
+  WangLocalSegmentRecoveryWorkspace& operator=(
+      WangLocalSegmentRecoveryWorkspace&&) noexcept;
+  WangLocalSegmentRecoveryWorkspace(
+      const WangLocalSegmentRecoveryWorkspace&)=delete;
+  WangLocalSegmentRecoveryWorkspace& operator=(
+      const WangLocalSegmentRecoveryWorkspace&)=delete;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+  friend WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
+      const CanonicalPlcConstraintSet&,std::array<std::uint64_t,2>,bool,
+      std::size_t,WangOrderedTetMesh&,
+      const WangLocalSegmentRecoveryWorkspace&);
+};
+
 // Paper Section 3.1 local segment recovery. This is the prototype-owned
 // finddirection/removeface/removeEdge/flipnm path; boundary insertion and FHC
 // fallbacks belong to later stages.
@@ -204,6 +230,14 @@ struct WangOwnedLockedFhcInsertionResult {
     bool reverse_direction,
     std::size_t search_depth,
     WangOrderedTetMesh& mesh);
+
+[[nodiscard]] WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
+    const CanonicalPlcConstraintSet& constraints,
+    std::array<std::uint64_t,2> segment,
+    bool reverse_direction,
+    std::size_t search_depth,
+    WangOrderedTetMesh& mesh,
+    const WangLocalSegmentRecoveryWorkspace& workspace);
 
 // The full-search branch of recoverEdgebyFlip. It first repeats the directed
 // local path, then walks every intersected mesh feature in segment order,

@@ -44,6 +44,37 @@ Face face_key(Face face) {
   return face;
 }
 
+struct ContextLookup {
+  std::vector<Vec3> points;
+  std::unordered_map<std::uint64_t,std::uint32_t> index_for_id;
+  std::unordered_set<Edge,IndexArrayHash<2>> boundary_edges;
+  std::unordered_set<Face,IndexArrayHash<3>> boundary_faces;
+
+  explicit ContextLookup(const CanonicalPlcConstraintSet& input) {
+    points.reserve(input.vertices.size());
+    index_for_id.reserve(input.vertices.size());
+    boundary_faces.reserve(input.facets.size());
+    boundary_edges.reserve(input.facets.size()*3U);
+    for(std::size_t i=0;i<input.vertices.size();++i) {
+      points.push_back(input.vertices[i].position);
+      index_for_id.emplace(input.vertices[i].id,static_cast<std::uint32_t>(i));
+    }
+    for(const auto& facet:input.facets) {
+      Face face{};
+      bool valid=true;
+      for(unsigned i=0;i<3U;++i) {
+        const auto found=index_for_id.find(facet.vertices[i]);
+        if(found==index_for_id.end()) {valid=false;break;}
+        face[i]=found->second;
+      }
+      if(!valid)continue;
+      boundary_faces.insert(face_key(face));
+      for(unsigned i=0;i<3U;++i)
+        boundary_edges.insert(edge_key({{face[i],face[(i+1U)%3U]}}));
+    }
+  }
+};
+
 std::array<unsigned,2> oriented_edge_complement(unsigned first,
                                                  unsigned second) {
   std::array<unsigned,2> result{};
@@ -378,10 +409,11 @@ struct Context {
   };
   const CanonicalPlcConstraintSet& constraints;
   WangOrderedTetMesh& mesh;
-  std::vector<Vec3> points;
-  std::unordered_map<std::uint64_t,std::uint32_t> index_for_id;
-  std::unordered_set<Edge,IndexArrayHash<2>> boundary_edges;
-  std::unordered_set<Face,IndexArrayHash<3>> boundary_faces;
+  std::unique_ptr<ContextLookup> owned_lookup;
+  const std::vector<Vec3>& points;
+  const std::unordered_map<std::uint64_t,std::uint32_t>& index_for_id;
+  const std::unordered_set<Edge,IndexArrayHash<2>>& boundary_edges;
+  const std::unordered_set<Face,IndexArrayHash<3>>& boundary_faces;
   Edge target_segment{};
   std::optional<Face> target_facet;
   std::vector<WangOwnedLocalMutation> mutations;
@@ -394,30 +426,19 @@ struct Context {
   explicit Context(const CanonicalPlcConstraintSet& input,
                    WangOrderedTetMesh& state,Edge target,
                    std::optional<Face> facet=std::nullopt)
-      : constraints(input),mesh(state),target_segment(target),
-        target_facet(facet) {
-    points.reserve(input.vertices.size());
-    index_for_id.reserve(input.vertices.size());
-    boundary_faces.reserve(input.facets.size());
-    boundary_edges.reserve(input.facets.size()*3U);
-    for(std::size_t i=0;i<input.vertices.size();++i) {
-      points.push_back(input.vertices[i].position);
-      index_for_id.emplace(input.vertices[i].id,static_cast<std::uint32_t>(i));
-    }
-    for(const auto& facet:input.facets) {
-      Face face{};
-      bool valid=true;
-      for(unsigned i=0;i<3U;++i) {
-        const auto found=index_for_id.find(facet.vertices[i]);
-        if(found==index_for_id.end()) {valid=false;break;}
-        face[i]=found->second;
-      }
-      if(!valid)continue;
-      boundary_faces.insert(face_key(face));
-      for(unsigned i=0;i<3U;++i)
-        boundary_edges.insert(edge_key({{face[i],face[(i+1U)%3U]}}));
-    }
-  }
+      : constraints(input),mesh(state),owned_lookup(std::make_unique<ContextLookup>(input)),
+        points(owned_lookup->points),index_for_id(owned_lookup->index_for_id),
+        boundary_edges(owned_lookup->boundary_edges),
+        boundary_faces(owned_lookup->boundary_faces),target_segment(target),
+        target_facet(facet) {}
+
+  Context(const CanonicalPlcConstraintSet& input,WangOrderedTetMesh& state,
+          Edge target,const ContextLookup& lookup,
+          std::optional<Face> facet=std::nullopt)
+      : constraints(input),mesh(state),points(lookup.points),
+        index_for_id(lookup.index_for_id),boundary_edges(lookup.boundary_edges),
+        boundary_faces(lookup.boundary_faces),target_segment(target),
+        target_facet(facet) {}
 
   int topology_orientation_sign(std::uint32_t a,std::uint32_t b,
                                 std::uint32_t c,std::uint32_t d) const {
@@ -1700,6 +1721,22 @@ FullSearchWalk walk_intersected_features(
 
 } // namespace
 
+struct WangLocalSegmentRecoveryWorkspace::Impl {
+  const CanonicalPlcConstraintSet* constraints{};
+  ContextLookup lookup;
+  explicit Impl(const CanonicalPlcConstraintSet& input)
+      : constraints(&input),lookup(input) {}
+};
+
+WangLocalSegmentRecoveryWorkspace::WangLocalSegmentRecoveryWorkspace(
+    const CanonicalPlcConstraintSet& constraints)
+    : impl_(std::make_unique<Impl>(constraints)) {}
+WangLocalSegmentRecoveryWorkspace::~WangLocalSegmentRecoveryWorkspace()=default;
+WangLocalSegmentRecoveryWorkspace::WangLocalSegmentRecoveryWorkspace(
+    WangLocalSegmentRecoveryWorkspace&&) noexcept=default;
+WangLocalSegmentRecoveryWorkspace& WangLocalSegmentRecoveryWorkspace::operator=(
+    WangLocalSegmentRecoveryWorkspace&&) noexcept=default;
+
 WangOwnedCascadeFhcInsertionResult insert_wang_owned_cascade_fhc_point(
     const CanonicalPlcConstraintSet& constraints,
     std::array<std::uint64_t,2> directed_segment,
@@ -1768,17 +1805,29 @@ WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
     const CanonicalPlcConstraintSet& constraints,
     std::array<std::uint64_t,2> segment,bool reverse_direction,
     std::size_t search_depth,WangOrderedTetMesh& mesh) {
+  const WangLocalSegmentRecoveryWorkspace workspace(constraints);
+  return recover_wang_segment_by_local_flips(
+      constraints,segment,reverse_direction,search_depth,mesh,workspace);
+}
+
+WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
+    const CanonicalPlcConstraintSet& constraints,
+    std::array<std::uint64_t,2> segment,bool reverse_direction,
+    std::size_t search_depth,WangOrderedTetMesh& mesh,
+    const WangLocalSegmentRecoveryWorkspace& workspace) {
   WangOwnedLocalRecoveryResult result;
-  std::map<std::uint64_t,std::uint32_t> index_for_id;
-  for(std::size_t i=0;i<constraints.vertices.size();++i)
-    index_for_id.emplace(constraints.vertices[i].id,static_cast<std::uint32_t>(i));
+  if(!workspace.impl_||workspace.impl_->constraints!=&constraints) {
+    result.failure=WangOwnedLocalRecoveryFailure::missing_endpoint;return result;
+  }
+  const auto& index_for_id=workspace.impl_->lookup.index_for_id;
   const auto first=index_for_id.find(segment[0]);
   const auto second=index_for_id.find(segment[1]);
   if(first==index_for_id.end()||second==index_for_id.end()) {
     result.failure=WangOwnedLocalRecoveryFailure::missing_endpoint;return result;
   }
   const auto original_mesh=mesh;
-  Context context(constraints,mesh,{{first->second,second->second}});
+  Context context(constraints,mesh,{{first->second,second->second}},
+                  workspace.impl_->lookup);
   const auto start=reverse_direction?second->second:first->second;
   const auto end=reverse_direction?first->second:second->second;
   for(std::size_t attempt=0;attempt<=1000U;++attempt) {
