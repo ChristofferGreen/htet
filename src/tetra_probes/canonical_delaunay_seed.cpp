@@ -21,6 +21,7 @@
 #include <set>
 #include <source_location>
 #include <tuple>
+#include <unordered_map>
 
 namespace tetra::probes {
 namespace {
@@ -33,6 +34,16 @@ Point cross(Point a,Point b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y
 long double orient(Point a,Point b,Point c,Point d){return dot(b-a,cross(c-a,d-a));}
 using Tet=std::array<std::uint32_t,4>; using Face=std::array<std::uint32_t,3>;
 Face face_key(Face f){std::sort(f.begin(),f.end());return f;}
+struct FaceHash {
+  [[nodiscard]] std::size_t operator()(const Face& face) const noexcept {
+    std::size_t result=0xcbf29ce484222325ULL;
+    for(const auto vertex:face) {
+      result^=std::hash<std::uint32_t>{}(vertex);
+      result*=0x100000001b3ULL;
+    }
+    return result;
+  }
+};
 Face wang_bw_boundary_face(const Tet& cell,unsigned opposite) {
   static constexpr std::array<std::array<unsigned,3>,4> positions{{
       {{1U,2U,3U}},{{3U,2U,0U}},{{0U,1U,3U}},{{2U,1U,0U}}}};
@@ -855,7 +866,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       seed_trace->eighth_location_path.clear();
       seed_trace->eighth_location_result=0;
     }
-    std::map<Face,std::vector<std::pair<std::size_t,unsigned>>> ledger;
+    std::unordered_map<Face,std::vector<std::pair<std::size_t,unsigned>>,
+                       FaceHash> ledger;
+    ledger.reserve(cells.size()*4U);
     for(std::size_t cell=0U;cell<cells.size();++cell)
       for(unsigned omitted=0U;omitted<4U;++omitted) {
         Face face{};unsigned cursor{};
@@ -889,41 +902,26 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       }
       seed_trace->original_hull_predicates.push_back(std::move(predicates));
     }
-    std::vector<bool> conflict(cells.size());
-    for(std::size_t cell=0U;cell<cells.size();++cell) {
-      const auto& tet=cells[cell];
-      if(tet[3]!=ghost) {
-        conflict[cell]=wang_sphere_contains(points,tet,query,rank);
-        if(seed_trace&&eighth_box_insertion)
-          seed_trace->eighth_predicates.push_back({
-              tet,robust_orient(points,tet),
-              sign(exact_in_sphere(as_vec3(points[tet[0]]),
-                                   as_vec3(points[tet[1]]),
-                                   as_vec3(points[tet[2]]),
-                                   as_vec3(points[tet[3]]),
-                                   as_vec3(points[query]))),
-              wang_source_in_sphere_sign(points,tet,query),conflict[cell]});
-        if(seed_trace&&third_box_insertion)
-          seed_trace->third_box_predicates.push_back({
-              tet,robust_orient(points,tet),
-              sign(exact_in_sphere(as_vec3(points[tet[0]]),
-                                   as_vec3(points[tet[1]]),
-                                   as_vec3(points[tet[2]]),
-                                   as_vec3(points[tet[3]]),
-                                   as_vec3(points[query]))),
-              wang_source_in_sphere_sign(points,tet,query),conflict[cell]});
-        continue;
+    // The detailed reference trace intentionally records the full predicate
+    // sweep for its two pinned AddBox insertions.  Recovery does not consume
+    // that sweep: its source-shaped cavity walk classifies only reached
+    // neighbours below.
+    if(seed_trace&&(eighth_box_insertion||third_box_insertion))
+      for(const auto& tet:cells) {
+        if(tet[3]==ghost)continue;
+        const auto selected=wang_sphere_contains(points,tet,query,rank);
+        const WangReferenceSeedTrace::Predicate predicate{
+            tet,robust_orient(points,tet),
+            sign(exact_in_sphere(as_vec3(points[tet[0]]),
+                                 as_vec3(points[tet[1]]),
+                                 as_vec3(points[tet[2]]),
+                                 as_vec3(points[tet[3]]),
+                                 as_vec3(points[query]))),
+            wang_source_in_sphere_sign(points,tet,query),selected};
+        if(eighth_box_insertion)seed_trace->eighth_predicates.push_back(predicate);
+        if(third_box_insertion)seed_trace->third_box_predicates.push_back(predicate);
       }
-      const auto side=robust_orient(
-          points[tet[0]],points[tet[1]],points[tet[2]],points[query]);
-      if(side>0)conflict[cell]=true;
-      else if(side==0) {
-        const auto uses=ledger.at(canonical_face({tet[0],tet[1],tet[2]}));
-        const auto other=uses[0].first==cell?uses[1].first:uses[0].first;
-        if(cells[other][3]!=ghost)
-          conflict[cell]=wang_sphere_contains(points,cells[other],query,rank);
-      }
-    }
+    std::vector<bool> conflict;
     {
       // AddBox initializes `searchtet` by scanning to the first live finite
       // tetrahedron after the ordinary Delaunay insertions.  Our compact
@@ -1092,13 +1090,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         if(tested[candidate])return eligible[candidate];
         tested[candidate]=true;
         const auto& candidate_tet=cells[candidate];
-        // The complete seed conflict pass immediately above has already
-        // evaluated this exact same in-sphere predicate for every finite
-        // live cell and this insertion's query vertex.  Reuse that answer
-        // during the cavity walk: it retains the source predicate result
-        // while avoiding a second arbitrary-precision determinant.
         if(candidate_tet[3]!=ghost)
-          return eligible[candidate]=conflict[candidate];
+          return eligible[candidate]=wang_sphere_contains(
+              points,candidate_tet,query,rank);
         // `GEOM_FUNC::orient3d` is used directly by the source hull branch.
         // Its rounded return (rather than our exact combinatorial predicate)
         // controls this branch and consequently the FIFO cavity order.
@@ -1111,7 +1105,7 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
             {{candidate_tet[0],candidate_tet[1],candidate_tet[2]}}));
         const auto inner=uses[0].first==candidate?uses[1].first:uses[0].first;
         return eligible[candidate]=cells[inner][3]!=ghost&&
-            conflict[inner];
+            wang_sphere_contains(points,cells[inner],query,rank);
       };
       if(zero_count==1U) {
         const auto adjacent=neighbour(located,zero_faces[0]);
@@ -1228,7 +1222,8 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
     // vertex alone does not rule out a pinched/handled cavity; such a cavity
     // can emit the same face more than twice and poison a later insertion.
     const auto preserves_ball_boundary=[&](std::size_t added) {
-      std::map<Face,unsigned> face_uses;
+      std::unordered_map<Face,unsigned,FaceHash> face_uses;
+      face_uses.reserve(cells.size()*4U);
       for(std::size_t cell=0U;cell<cells.size();++cell) {
         if(!conflict[cell]&&cell!=added)continue;
         for(unsigned omitted=0U;omitted<4U;++omitted)
@@ -1544,7 +1539,8 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       if(seed_trace&&eighth_box_insertion)
         seed_trace->eighth_fill_cells.push_back(next.back());
     }
-    std::map<Face,unsigned> next_ledger;
+    std::unordered_map<Face,unsigned,FaceHash> next_ledger;
+    next_ledger.reserve(next.size()*4U);
     for(const auto& cell:next)
       for(unsigned omitted=0U;omitted<4U;++omitted)
         ++next_ledger[canonical_face(wang_boundary_face(cell,omitted))];

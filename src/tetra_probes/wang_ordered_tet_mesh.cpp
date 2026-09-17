@@ -528,10 +528,64 @@ WangOrderedTetMesh::Flip23Result WangOrderedTetMesh::flip23(
     if(!cells_[slot].deleted&&slot!=cell&&slot!=other&&
        replacement_keys.contains(cell_key(cells_[slot].vertices)))return reject("duplicate-live");
 
+  // A 2-to-3 flip only changes the six exterior faces of its two old cells
+  // and the three new faces around the inserted edge.  Preserve every other
+  // face bond rather than rebuilding the complete mesh after this local
+  // source-defined operation.
+  std::map<Face,std::int32_t> exterior_neighbours;
+  const auto remember_exterior=[&](std::uint32_t source,unsigned shared) {
+    for(unsigned face=0U;face<4U;++face) {
+      if(face==shared)continue;
+      exterior_neighbours.emplace(
+          face_key(face_opposite(cells_[source].vertices,face)),
+          cells_[source].neighbours[face]);
+    }
+  };
+  remember_exterior(cell,opposite);
+  remember_exterior(other,other_opposite);
+
   for(unsigned i=0;i<3U;++i)result.created_cells[i]=add_cell(replacements[i]);
   result.erased_cells={cell,other};
   if(!erase_cell(cell)||!erase_cell(other))return reject("erase");
-  if(rebuild_topology()!=TopologyFailure::none)return reject("topology");
+  using Use=std::pair<std::uint32_t,std::uint8_t>;
+  std::map<Face,std::vector<Use>> interior_faces;
+  for(const auto created:result.created_cells) {
+    auto& created_cell=cells_[created];
+    created_cell.neighbours.fill(no_neighbour);
+    for(unsigned face=0U;face<4U;++face) {
+      const auto ordered_face=face_opposite(created_cell.vertices,face);
+      const auto key=face_key(ordered_face);
+      if(const auto exterior=exterior_neighbours.find(key);
+         exterior!=exterior_neighbours.end()) {
+        created_cell.neighbours[face]=exterior->second;
+        if(exterior->second<0) {
+          hull_faces_.push_back({ordered_face,created,static_cast<std::uint8_t>(face)});
+          continue;
+        }
+        auto& adjacent=cells_[static_cast<std::size_t>(exterior->second)];
+        const auto old_neighbour=std::find_if(adjacent.neighbours.begin(),
+            adjacent.neighbours.end(),[&](const auto neighbour) {
+              return neighbour==static_cast<std::int32_t>(cell)||
+                     neighbour==static_cast<std::int32_t>(other);
+            });
+        if(old_neighbour==adjacent.neighbours.end())return reject("boundary-link");
+        *old_neighbour=static_cast<std::int32_t>(created);
+        continue;
+      }
+      interior_faces[key].push_back({created,static_cast<std::uint8_t>(face)});
+    }
+  }
+  std::erase_if(hull_faces_,[&](const HullFace& face) {
+    return face.cell==cell||face.cell==other;
+  });
+  for(const auto& [face,uses]:interior_faces) {
+    static_cast<void>(face);
+    if(uses.size()!=2U)return reject("interior-link");
+    cells_[uses[0].first].neighbours[uses[0].second]=
+        static_cast<std::int32_t>(uses[1].first);
+    cells_[uses[1].first].neighbours[uses[1].second]=
+        static_cast<std::int32_t>(uses[0].first);
+  }
   point_to_cell_[first_apex]=static_cast<std::int32_t>(result.created_cells[2]);
   point_to_cell_[second_apex]=static_cast<std::int32_t>(result.created_cells[2]);
   point_to_cell_[third]=static_cast<std::int32_t>(result.created_cells[2]);
