@@ -36,21 +36,14 @@ rsvg-convert -w 1500 -h 420 artifacts/wang-four-hexahedra-prototype/prototype-st
   -o artifacts/wang-four-hexahedra-prototype/prototype-stages.png
 ```
 
-To inspect interactively, serve the package directory and open
+To inspect interactively, start the local inspector service and open
 `interactive-inspector.html` in a browser:
 
 ```sh
-python3 -m http.server 8766 --directory artifacts/wang-four-hexahedra-prototype
+python3 scripts/wang_prototype_live_server.py --port 8766
 ```
 
-For the inspector's mesh-resolution slider, keep the local rebuild service
-running in a second terminal. It executes the same contained-sphere/DC/Wang
-exporter and then reloads the inspector with the rebuilt data:
-
-```sh
-python3 scripts/wang_prototype_live_server.py --port 8767
-```
-
+The same local service supplies the page and the slider's rebuild endpoint.
 The slider supports N4 through N12 and rebuilds the DC surface, Wang
 transition, and implicit core from one sizing policy. The core uses red depth
 four at N4, depth five at N5--N8, and depth six at N9--N12. Its retained

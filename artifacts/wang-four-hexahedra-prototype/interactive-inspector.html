@@ -329,7 +329,7 @@
       resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true;
       rebuildStatus.textContent = `Rebuilding DC, ${mode} core, and Wang transition at N${next}…`;
       try {
-        const response = await fetch(`http://127.0.0.1:8767/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from

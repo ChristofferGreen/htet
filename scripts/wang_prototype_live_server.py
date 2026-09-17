@@ -38,7 +38,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(HTTPStatus.OK, {"ready": EXPORTER.is_file()})
             return
         if request.path != "/rebuild":
-            self.reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            self.serve_artifact(request.path)
             return
         try:
             resolution = int(parse_qs(request.query).get("resolution", [""])[0])
@@ -82,10 +82,37 @@ class Handler(BaseHTTPRequestHandler):
                                    "minimum_level": minimum_level,
                                    "surface_band": surface_band, "reloaded": True})
 
+    def serve_artifact(self, request_path: str) -> None:
+        """Serve the inspector alongside its rebuild endpoint.
+
+        Keeping both on one local origin means opening the inspector is enough
+        for its resolution control to work; no second, easy-to-miss server is
+        needed.
+        """
+        relative = "interactive-inspector.html" if request_path in {"", "/"} else request_path.lstrip("/")
+        candidate = (ARTIFACTS / relative).resolve()
+        if ARTIFACTS not in candidate.parents or not candidate.is_file():
+            self.reply(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        content_types = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+        }
+        body = candidate.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_types.get(candidate.suffix, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
