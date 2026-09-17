@@ -1092,9 +1092,13 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         if(tested[candidate])return eligible[candidate];
         tested[candidate]=true;
         const auto& candidate_tet=cells[candidate];
+        // The complete seed conflict pass immediately above has already
+        // evaluated this exact same in-sphere predicate for every finite
+        // live cell and this insertion's query vertex.  Reuse that answer
+        // during the cavity walk: it retains the source predicate result
+        // while avoiding a second arbitrary-precision determinant.
         if(candidate_tet[3]!=ghost)
-          return eligible[candidate]=wang_sphere_contains(
-              points,candidate_tet,query,rank);
+          return eligible[candidate]=conflict[candidate];
         // `GEOM_FUNC::orient3d` is used directly by the source hull branch.
         // Its rounded return (rather than our exact combinatorial predicate)
         // controls this branch and consequently the FIFO cavity order.
@@ -1107,7 +1111,7 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
             {{candidate_tet[0],candidate_tet[1],candidate_tet[2]}}));
         const auto inner=uses[0].first==candidate?uses[1].first:uses[0].first;
         return eligible[candidate]=cells[inner][3]!=ghost&&
-            wang_sphere_contains(points,cells[inner],query,rank);
+            conflict[inner];
       };
       if(zero_count==1U) {
         const auto adjacent=neighbour(located,zero_faces[0]);
