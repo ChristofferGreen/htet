@@ -20,14 +20,7 @@ EdgeKey edge_key(std::uint64_t first,std::uint64_t second) {
 
 bool is_mesh_edge(const WangOrderedTetMesh& mesh,
                   std::uint32_t first,std::uint32_t second) {
-  return std::any_of(mesh.cells().begin(),mesh.cells().end(),
-      [&](const auto& cell) {
-        return !cell.deleted&&
-            std::find(cell.vertices.begin(),cell.vertices.end(),first)!=
-                cell.vertices.end()&&
-            std::find(cell.vertices.begin(),cell.vertices.end(),second)!=
-                cell.vertices.end();
-      });
+  return mesh.find_edge_cell(first,second).has_value();
 }
 
 // The ordered-topology audit deliberately does not prove that a finite star

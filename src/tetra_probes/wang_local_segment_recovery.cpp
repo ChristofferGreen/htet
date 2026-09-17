@@ -491,19 +491,12 @@ struct Context {
   }
 
   bool mesh_edge(std::uint32_t first,std::uint32_t second) const {
-    return std::any_of(mesh.cells().begin(),mesh.cells().end(),[&](const auto& cell) {
-      return !cell.deleted&&contains(cell.vertices,first)&&contains(cell.vertices,second);
-    });
+    return mesh.find_edge_cell(first,second).has_value();
   }
 
   std::optional<std::uint32_t> edge_cell(std::uint32_t first,
                                          std::uint32_t second) const {
-    for(std::size_t slot=0;slot<mesh.cells().size();++slot) {
-      const auto& cell=mesh.cells()[slot];
-      if(!cell.deleted&&contains(cell.vertices,first)&&contains(cell.vertices,second))
-        return static_cast<std::uint32_t>(slot);
-    }
-    return std::nullopt;
+    return mesh.find_edge_cell(first,second);
   }
 
   bool apply_flip32(std::uint32_t first,std::uint32_t second,
@@ -551,32 +544,20 @@ struct Context {
           points[triangle[2]]);
       if(contact==SegmentTriangleContact::face)return false;
     }
-    WangOrderedTetMesh trial=mesh;
     const auto mutation=source_shell?
-        trial.flip32(*source_shell,first,second):trial.flip32(first,second,anchor);
+        mesh.flip32(*source_shell,first,second):mesh.flip32(first,second,anchor);
     if(!mutation.accepted)return false;
     // DT::flipnm's hull branch calls matchtet on each new child to move the
     // ghost to the final corner.  It is part of the mutation, rather than a
     // presentation convention, because all following DNC/face traversals
     // consume these local corner ordinals.
-    if(trial.ghost_vertex()>=0)
+    if(mesh.ghost_vertex()>=0)
       for(const auto child:mutation.created_cells)
-        if(!trial.rotate_hull_child_ghost_last(child))return false;
-    if(mutation.created_cells.size()==2U) {
-      Face new_face{};
-      unsigned count{};
-      const auto& left=trial.cells()[mutation.created_cells[0]].vertices;
-      const auto& right=trial.cells()[mutation.created_cells[1]].vertices;
-      for(const auto vertex:left)
-        if(contains(right,vertex)&&count<3U)new_face[count++]=vertex;
-      if(count!=3U)return false;
-      (void)new_face; // The source check above is pre-mutation and exact.
-    }
+        if(!mesh.rotate_hull_child_ghost_last(child))return false;
     // DT::flipnm admits its explicitly selected coplanar n==4 route
     // (`ori == 0`) and uses the ensuing recursive/backtracking transaction
     // to resolve it.  A post-mutation nonzero-volume veto is not present in
     // the reference and incorrectly rejects that source-authorized path.
-    mesh=std::move(trial);
     if(std::getenv("WANG_OWNED_PRIMITIVE_DIAGNOSTICS")!=nullptr) {
       std::cerr<<"owned_primitive_begin 32 "<<target_segment[0]<<' '
                <<target_segment[1]<<' '<<first<<' '<<second<<'\n';
@@ -610,24 +591,25 @@ struct Context {
                     WangOrderedTetMesh::Flip23Result* applied=nullptr,
                     bool check_constraint_intersection=true) {
     const auto before=capture_oracle_trace?active_count(mesh):0U;
+    if(cell>=mesh.cells().size()||mesh.cells()[cell].deleted||opposite>=4U)
+      return false;
     const auto apex=mesh.cells()[cell].vertices[opposite];
-    WangOrderedTetMesh trial=mesh;
-    const auto mutation=trial.flip23(cell,opposite);
-    if(!mutation.accepted)return false;
+    const auto neighbour=mesh.cells()[cell].neighbours[opposite];
+    if(neighbour<0||static_cast<std::size_t>(neighbour)>=mesh.cells().size()||
+       mesh.cells()[static_cast<std::size_t>(neighbour)].deleted)return false;
+    const auto& adjacent=mesh.cells()[static_cast<std::size_t>(neighbour)];
+    const auto reciprocal=std::find(adjacent.neighbours.begin(),
+                                    adjacent.neighbours.end(),
+                                    static_cast<std::int32_t>(cell));
+    if(reciprocal==adjacent.neighbours.end())return false;
+    const auto other_opposite=static_cast<unsigned>(
+        reciprocal-adjacent.neighbours.begin());
+    const Edge new_edge{{apex,adjacent.vertices[other_opposite]}};
     // DT::removeface commits its direct 2-to-3 branch immediately.  The
     // constrained-segment intersection test belongs to DT::flipnm's
     // candidate branch only (flipintersectcheck(1,...)); applying it here
     // unconditionally changes which legal direct face removals are taken.
-    if(check_constraint_intersection&&mutation.created_cells.size()==3U) {
-      Edge new_edge{};
-      unsigned edge_count{};
-      const auto& first_created=trial.cells()[mutation.created_cells[0]].vertices;
-      const auto& second_created=trial.cells()[mutation.created_cells[1]].vertices;
-      const auto& third_created=trial.cells()[mutation.created_cells[2]].vertices;
-      for(const auto vertex:first_created)
-        if(contains(second_created,vertex)&&contains(third_created,vertex)&&
-           edge_count<2U)new_edge[edge_count++]=vertex;
-      if(edge_count!=2U)return false;
+    if(check_constraint_intersection) {
       if(target_facet) {
         const auto contact=segment_triangle_contact(
             points[new_edge[0]],points[new_edge[1]],
@@ -650,9 +632,10 @@ struct Context {
         }
       }
     }
+    const auto mutation=mesh.flip23(cell,opposite);
+    if(!mutation.accepted)return false;
     // As in DT::flip23, coplanar children can be an intentional intermediate
     // in flipnm's n==4 branch; do not impose a generic post-mutation veto.
-    mesh=std::move(trial);
     if(std::getenv("WANG_OWNED_PRIMITIVE_DIAGNOSTICS")!=nullptr) {
       std::cerr<<"owned_primitive_begin 23 "<<target_segment[0]<<' '
                <<target_segment[1]<<' '<<cell<<' '

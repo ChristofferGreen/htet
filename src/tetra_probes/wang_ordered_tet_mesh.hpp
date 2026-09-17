@@ -139,6 +139,12 @@ class WangOrderedTetMesh {
   [[nodiscard]] EdgeShell find_shell(std::uint32_t start_cell,
                                      std::uint32_t first,
                                      std::uint32_t second) const;
+  // Locate an edge through the first endpoint's connected cell star.  The
+  // retained P2T carrier makes this proportional to local valence instead of
+  // the complete mesh size, which matters in the recovery scheduler's hot
+  // edge-existence checks.
+  [[nodiscard]] std::optional<std::uint32_t> find_edge_cell(
+      std::uint32_t first,std::uint32_t second) const;
   // Ordered point star matching DT::findSphere: start at the retained P2T
   // carrier (falling back to the first containing cell), then breadth-first
   // cross every face incident to the point in local-face order.

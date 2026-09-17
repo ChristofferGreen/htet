@@ -21,12 +21,18 @@ Face face_opposite(const WangOrderedTetMesh::Tet& tet,unsigned opposite) {
 }
 
 Face face_key(Face face) {
-  std::sort(face.begin(),face.end());
+  if(face[1]<face[0])std::swap(face[0],face[1]);
+  if(face[2]<face[1])std::swap(face[1],face[2]);
+  if(face[1]<face[0])std::swap(face[0],face[1]);
   return face;
 }
 
 std::array<std::uint32_t,4> cell_key(WangOrderedTetMesh::Tet cell) {
-  std::sort(cell.begin(),cell.end());
+  if(cell[1]<cell[0])std::swap(cell[0],cell[1]);
+  if(cell[3]<cell[2])std::swap(cell[2],cell[3]);
+  if(cell[2]<cell[0])std::swap(cell[0],cell[2]);
+  if(cell[3]<cell[1])std::swap(cell[1],cell[3]);
+  if(cell[2]<cell[1])std::swap(cell[1],cell[2]);
   return cell;
 }
 
@@ -238,9 +244,18 @@ bool WangOrderedTetMesh::rotate_hull_child_ghost_last(std::uint32_t cell) {
   // only for i in [0, 2].  A child whose ghost is already last is unchanged.
   if(position==3U)return true;
   const Tet original=vertices;
+  const auto original_neighbours=cells_[cell].neighbours;
   for(unsigned corner=0U;corner<4U;++corner)
     vertices[corner]=original[(position+corner+1U)%4U];
-  return rebuild_topology()==TopologyFailure::none;
+  for(unsigned corner=0U;corner<4U;++corner)
+    cells_[cell].neighbours[corner]=
+        original_neighbours[(position+corner+1U)%4U];
+  for(auto& hull:hull_faces_)if(hull.cell==cell) {
+    hull.opposite=static_cast<std::uint8_t>(
+        (static_cast<unsigned>(hull.opposite)+3U-position)%4U);
+    hull.vertices=face_opposite(vertices,hull.opposite);
+  }
+  return true;
 }
 
 WangOrderedTetMesh::CavityReplacementResult
@@ -737,6 +752,46 @@ WangOrderedTetMesh::EdgeShell WangOrderedTetMesh::find_shell(
     ring_end=new_ring;
   }
   return result;
+}
+
+std::optional<std::uint32_t> WangOrderedTetMesh::find_edge_cell(
+    std::uint32_t first,std::uint32_t second) const {
+  if(first==second||first>=point_to_cell_.size()||
+     second>=point_to_cell_.size()||deleted_vertices_[first]||
+     deleted_vertices_[second])return std::nullopt;
+  std::int32_t carrier=point_to_cell_[first];
+  if(carrier<0||static_cast<std::size_t>(carrier)>=cells_.size()||
+     cells_[static_cast<std::size_t>(carrier)].deleted||
+     !contains(cells_[static_cast<std::size_t>(carrier)].vertices,first)) {
+    carrier=no_neighbour;
+    for(std::size_t cell=0;cell<cells_.size();++cell)
+      if(!cells_[cell].deleted&&contains(cells_[cell].vertices,first)) {
+        carrier=static_cast<std::int32_t>(cell);break;
+      }
+  }
+  if(carrier<0)return std::nullopt;
+
+  std::vector<std::uint32_t> star;
+  star.reserve(32U);
+  star.push_back(static_cast<std::uint32_t>(carrier));
+  for(std::size_t cursor=0;cursor<star.size();++cursor) {
+    const auto cell=star[cursor];
+    const auto& vertices=cells_[cell].vertices;
+    if(contains(vertices,second))return cell;
+    const auto position=std::find(vertices.begin(),vertices.end(),first);
+    if(position==vertices.end())continue;
+    const auto opposite=static_cast<unsigned>(position-vertices.begin());
+    for(unsigned face=0;face<4U;++face) {
+      if(face==opposite)continue;
+      const auto neighbour=cells_[cell].neighbours[face];
+      if(neighbour<0||static_cast<std::size_t>(neighbour)>=cells_.size())continue;
+      const auto next=static_cast<std::uint32_t>(neighbour);
+      if(cells_[next].deleted||!contains(cells_[next].vertices,first)||
+         std::find(star.begin(),star.end(),next)!=star.end())continue;
+      star.push_back(next);
+    }
+  }
+  return std::nullopt;
 }
 
 std::vector<std::uint32_t> WangOrderedTetMesh::find_sphere(

@@ -518,20 +518,36 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
   }
   if (result.outer_boundary_edges != 0U || result.outer_nonmanifold_edges != 0U)
     return fail(SurfaceCoreInputFailure::outer_not_closed_two_manifold, 0U);
+  std::vector<std::array<Vec3,3>> outer_triangle_points;
+  std::vector<TetrahedronBounds> outer_triangle_bounds;
+  outer_triangle_points.reserve(input.outer_faces.size());
+  outer_triangle_bounds.reserve(input.outer_faces.size());
+  for(const auto& triangle:input.outer_faces) {
+    outer_triangle_points.push_back({{input.vertices[triangle[0]],
+                                      input.vertices[triangle[1]],
+                                      input.vertices[triangle[2]]}});
+    outer_triangle_bounds.push_back(triangle_bounds(outer_triangle_points.back()));
+  }
   for (std::size_t left=0; left<input.outer_faces.size(); ++left)
     for (std::size_t right=left+1U; right<input.outer_faces.size(); ++right) {
       std::size_t shared{};
       for (const auto a:input.outer_faces[left]) for (const auto b:input.outer_faces[right])
         shared += a==b ? 1U : 0U;
       if (shared>=2U) continue;
-      const auto points=[&](const auto& triangle) {
-        return std::array<Vec3,3>{{input.vertices[triangle[0]],input.vertices[triangle[1]],input.vertices[triangle[2]]}};
-      };
-      if (strict_triangles_intersect(points(input.outer_faces[left]),points(input.outer_faces[right])))
+      // Disjoint AABBs prove disjoint triangles and reject almost every pair
+      // in a regular terrain sheet before the exact intersection predicate.
+      if(bounds_distance_squared(outer_triangle_bounds[left],
+                                 outer_triangle_bounds[right])>0.0)continue;
+      if (strict_triangles_intersect(outer_triangle_points[left],
+                                     outer_triangle_points[right]))
         { result.related_element=right; return fail(SurfaceCoreInputFailure::outer_self_intersection, left); }
     }
 
-  struct CoreFaceUse { std::uint32_t opposite{}; int sign{}; };
+  struct CoreFaceUse {
+    std::uint32_t opposite{};
+    int sign{};
+    std::size_t tetrahedron{};
+  };
   std::unordered_set<Tet,IndexArrayHash<4>> unique_core;
   std::unordered_map<Face,InlinePair<CoreFaceUse>,IndexArrayHash<3>> core_faces;
   unique_core.reserve(input.retained_core_tetrahedra.size());
@@ -557,7 +573,7 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
       // Shared faces must have one tetrahedron on each geometric side.  This
       // deliberately does not trust the caller's local vertex ordering.
       const int sign=side > 0.0 ? 1 : -1;
-      core_faces[canonical].push_back({cell[opposite], sign});
+      core_faces[canonical].push_back({cell[opposite],sign,i});
     }
   }
   for (const auto& [unused, uses]:core_faces) {
@@ -592,43 +608,32 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
   // exceeds the output validator's volume tolerance for the tested terrain
   // family and rejects touching interfaces before recovery can create slivers.
   const double required_clearance=input.coordinate_scale*1.0e-10;
-  std::vector<TetrahedronBounds> outer_bounds;
-  outer_bounds.reserve(input.outer_faces.size());
-  for(const auto outer:input.outer_faces)
-    outer_bounds.push_back(triangle_bounds({{input.vertices[outer[0]],
-                                             input.vertices[outer[1]],
-                                             input.vertices[outer[2]]}}));
+  const auto& outer_bounds=outer_triangle_bounds;
   result.minimum_core_outer_clearance=std::numeric_limits<double>::infinity();
-  for(std::size_t core_index=0U;core_index<input.retained_core_tetrahedra.size();++core_index) {
-    const auto& cell=input.retained_core_tetrahedra[core_index];
-    for(unsigned omitted=0U;omitted<4U;++omitted) {
-      std::array<Vec3,3> core_face{};unsigned cursor{};
-      for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)
-        core_face[cursor++]=input.vertices[cell[corner]];
-      for(std::size_t outer_index=0U;outer_index<input.outer_faces.size();++outer_index) {
-        const auto& outer=input.outer_faces[outer_index];
-        const std::array<Vec3,3> outer_face{{input.vertices[outer[0]],
-                                              input.vertices[outer[1]],
-                                              input.vertices[outer[2]]}};
-        const auto outer_bounds_index=outer_index;
-        const auto lower_bound_squared=bounds_distance_squared(
-            triangle_bounds(core_face),outer_bounds[outer_bounds_index]);
-        // The clearance contract only rejects touching or intersecting
-        // surfaces.  Axis-aligned separation beyond that tolerance proves an
-        // exact triangle-distance calculation cannot change acceptance.
-        if(lower_bound_squared>required_clearance*required_clearance) {
-          result.minimum_core_outer_clearance=std::min(
-              result.minimum_core_outer_clearance,std::sqrt(lower_bound_squared));
-          continue;
-        }
-        const auto clearance=std::sqrt(triangle_distance_squared(core_face,outer_face));
-        result.minimum_core_outer_clearance=
-            std::min(result.minimum_core_outer_clearance,clearance);
-        if(clearance<=required_clearance) {
-          result.related_element=core_index;
-          return fail(SurfaceCoreInputFailure::core_touches_or_intersects_outer,
-                      outer_index);
-        }
+  for(const auto& [face,uses]:core_faces)if(uses.size()==1U) {
+    const std::array<Vec3,3> core_face{{input.vertices[face[0]],
+                                        input.vertices[face[1]],
+                                        input.vertices[face[2]]}};
+    const auto core_bounds=triangle_bounds(core_face);
+    for(std::size_t outer_index=0U;outer_index<input.outer_faces.size();++outer_index) {
+      const auto& outer_face=outer_triangle_points[outer_index];
+      const auto lower_bound_squared=bounds_distance_squared(
+          core_bounds,outer_bounds[outer_index]);
+      // The clearance contract only rejects touching or intersecting
+      // surfaces.  Axis-aligned separation beyond that tolerance proves an
+      // exact triangle-distance calculation cannot change acceptance.
+      if(lower_bound_squared>required_clearance*required_clearance) {
+        result.minimum_core_outer_clearance=std::min(
+            result.minimum_core_outer_clearance,std::sqrt(lower_bound_squared));
+        continue;
+      }
+      const auto clearance=std::sqrt(triangle_distance_squared(core_face,outer_face));
+      result.minimum_core_outer_clearance=
+          std::min(result.minimum_core_outer_clearance,clearance);
+      if(clearance<=required_clearance) {
+        result.related_element=uses[0].tetrahedron;
+        return fail(SurfaceCoreInputFailure::core_touches_or_intersects_outer,
+                    outer_index);
       }
     }
   }

@@ -192,6 +192,25 @@ TEST_CASE("owned flip32 local topology matches a complete rebuild") {
   CHECK(hull_uses(mesh)==hull_uses(rebuilt));
 }
 
+TEST_CASE("hull child rotation updates local topology without a full rebuild") {
+  WangOrderedTetMesh mesh(4U,{{{0U,1U,2U,3U}}},0);
+  REQUIRE(mesh.audit().accepted());
+  REQUIRE(mesh.rotate_hull_child_ghost_last(0U));
+  CHECK(mesh.cells()[0].vertices[3]==0U);
+  REQUIRE(mesh.audit().accepted());
+
+  auto rebuilt=mesh;
+  REQUIRE(rebuilt.rebuild_topology()==WangOrderedTetMesh::TopologyFailure::none);
+  REQUIRE(rebuilt.audit().accepted());
+  CHECK(mesh.cells()[0].neighbours==rebuilt.cells()[0].neighbours);
+  CHECK(mesh.hull_faces().size()==rebuilt.hull_faces().size());
+  for(std::size_t face=0;face<mesh.hull_faces().size();++face) {
+    CHECK(mesh.hull_faces()[face].vertices==rebuilt.hull_faces()[face].vertices);
+    CHECK(mesh.hull_faces()[face].cell==rebuilt.hull_faces()[face].cell);
+    CHECK(mesh.hull_faces()[face].opposite==rebuilt.hull_faces()[face].opposite);
+  }
+}
+
 TEST_CASE("owned scheduler retains an interior-vertex split hand-off") {
   CanonicalPlcConstraintSet constraints;
   constraints.vertices={
