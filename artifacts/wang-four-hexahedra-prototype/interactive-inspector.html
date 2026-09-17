@@ -349,8 +349,9 @@
     camera.position.set(.78, -.92, .72);
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.copy(target);
-    controls.enableDamping = true;
-    controls.dampingFactor = .08;
+    // Keep orbit manipulation literal: the camera moves only while the user
+    // drags and stops on pointer release, with no inertial settle animation.
+    controls.enableDamping = false;
     controls.screenSpacePanning = false;
     controls.minDistance = .28;
     controls.maxDistance = 4;
