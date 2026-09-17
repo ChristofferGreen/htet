@@ -1,4 +1,6 @@
 #include "tetra_probes/canonical_delaunay_seed.hpp"
+
+#include <chrono>
 #include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 #include "tetra_probes/wang_ordered_tet_mesh.hpp"
 #include "tetra_probes/wang_local_segment_recovery.hpp"
@@ -644,7 +646,14 @@ namespace {
 CanonicalDelaunaySeedResult build_wang_reference_seed(
     const CanonicalDelaunaySeedInput& in,std::size_t original_count,
     std::vector<std::vector<Tet>>* stage_trace=nullptr,
-    WangReferenceSeedTrace* seed_trace=nullptr) {
+    WangReferenceSeedTrace* seed_trace=nullptr,
+    bool capture_diagnostics=true) {
+  // Recovery needs only the final physical allocator state.  The extensive
+  // per-insertion trace below is retained for source-conformance tests, but
+  // copying every cavity, carrier, and slot snapshot into a production run
+  // is diagnostic work and cannot affect the reference algorithm.
+  auto* final_state_trace=seed_trace;
+  if(!capture_diagnostics)seed_trace=nullptr;
   const bool predicate_trace=std::getenv("WANG_PLANE_PREDICATE_TRACE")!=nullptr;
   // Predicate tracing is failure evidence, not a second execution mode. Keep
   // it opt-in and bounded even for a pathological input with many cavities.
@@ -737,7 +746,7 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
     return evaluate_plane_aware_orientation(
         positions,stable,in.exact_affine_planes);
   };
-  if(seed_trace)seed_trace->ghost_vertex=ghost;
+  if(final_state_trace)final_state_trace->ghost_vertex=ghost;
   std::vector<Tet> cells{{order[0],order[1],order[2],order[3]},
       {order[1],order[2],order[3],ghost},
       {order[2],order[0],order[3],ghost},
@@ -1627,7 +1636,7 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
   });
   CanonicalDelaunaySeedResult result;
   result.failure=CanonicalDelaunaySeedFailure::none;
-  if(seed_trace) {
+  if(final_state_trace) {
     // DT::buildBndInfo calls setAllP2T after BndPntInst.  This is a physical
     // element-slot scan, not a geometry choice: each finite live slot wins
     // for every one of its vertices as the scan advances.  Recovery's
@@ -1641,16 +1650,16 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         has_point_carrier[vertex]=true;
       }
     }
-    seed_trace->point_to_tetrahedron.resize(points.size());
+    final_state_trace->point_to_tetrahedron.resize(points.size());
     for(std::size_t vertex=0;vertex<points.size();++vertex)
       if(has_point_carrier[vertex] &&
          point_carrier_slot[vertex]<element_slots.size() &&
          live_slots[point_carrier_slot[vertex]])
-        seed_trace->point_to_tetrahedron[vertex]=
+        final_state_trace->point_to_tetrahedron[vertex]=
             element_slots[point_carrier_slot[vertex]];
-    seed_trace->final_live_slots=live_slot_snapshot();
-    seed_trace->final_slot_count=element_slots.size();
-    seed_trace->final_vacancy_slots.assign(
+    final_state_trace->final_live_slots=live_slot_snapshot();
+    final_state_trace->final_slot_count=element_slots.size();
+    final_state_trace->final_vacancy_slots.assign(
         vacant_slots.begin()+static_cast<std::ptrdiff_t>(next_vacant_slot),
         vacant_slots.end());
   }
@@ -1685,6 +1694,15 @@ WangReferenceSeedTrace trace_wang_reference_seed(
   trace.insertion_order=wang_hilbert_order(input.vertices,original_vertex_count);
   trace.result=build_wang_reference_seed(
       input,original_vertex_count,&trace.stages,&trace);
+  return trace;
+}
+
+WangReferenceSeedTrace build_wang_reference_seed_for_recovery(
+    const CanonicalDelaunaySeedInput& input,std::size_t original_vertex_count) {
+  WangReferenceSeedTrace trace;
+  trace.insertion_order=wang_hilbert_order(input.vertices,original_vertex_count);
+  trace.result=build_wang_reference_seed(
+      input,original_vertex_count,&trace.stages,&trace,false);
   return trace;
 }
 
@@ -9640,7 +9658,11 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
     input.vertices.push_back(vertex.position);
     input.stable_vertex_ids.push_back(vertex.id);
   }
-  const auto seed=trace_wang_reference_seed(input,original_vertex_count);
+  const auto seed_started=std::chrono::steady_clock::now();
+  const auto seed=build_wang_reference_seed_for_recovery(
+      input,original_vertex_count);
+  result.seed_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-seed_started).count();
   result.seed_failure=seed.result.failure;
   result.seed_invalid_reason=seed.result.invalid_reason;
   if(!seed.result.accepted()||seed.stages.empty()) {
@@ -9649,6 +9671,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
     return result;
   }
   WangOrderedTetMesh mesh(result.constraints.vertices.size(),seed.stages.back());
+  const auto segment_started=std::chrono::steady_clock::now();
   if(!mesh.set_point_incidence(seed.point_to_tetrahedron)||!mesh.audit().accepted()) {
     result.constraints={};
     result.failure=CanonicalPlcRecoveryFailure::seed_failed;
@@ -10439,10 +10462,13 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
     }
     result.segment_stage_constraints=std::move(constraints);
     result.segment_stage_tetrahedra=std::move(cells);
+    result.segment_recovery_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-segment_started).count();
   };
   // DT::recoverFacesPass begins while the enclosing hull is still present.
   // Keep this ordered state intact for the source-shaped flip-only facet arm;
   // stripping the ghost first would change the edge-ring traversal.
+  const auto facet_started=std::chrono::steady_clock::now();
   if(!owned_fhc_terminal_failure&&scheduler.stop==WangOwnedSegmentSchedulerStop::complete) {
     snapshot_segment_stage();
     const auto finite_before_facet=[&]() {
@@ -10830,6 +10856,9 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         break;
     }
   }
+  result.facet_recovery_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-facet_started).count();
+  const auto finalization_started=std::chrono::steady_clock::now();
   // Ghost connectivity is an owned scheduler implementation detail. Remove
   // its constraint record only after all scheduler/FHC operations finish;
   // emitted finite cells are remapped below.
@@ -10845,6 +10874,8 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
       result.tetrahedra.push_back(finite);
     }
   if(!constraint_mesh_is_valid(result.constraints,result.tetrahedra)) {
+    result.finalization_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-finalization_started).count();
     result.failure=CanonicalPlcRecoveryFailure::owned_segment_scheduler_failed;
     return result;
   }
@@ -10877,6 +10908,8 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
       result.failure=CanonicalPlcRecoveryFailure::owned_segment_scheduler_failed;
       break;
   }
+  result.finalization_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-finalization_started).count();
   return result;
 
 #if 0 // Retired prototype Wang scheduler; retained temporarily for migration archaeology.

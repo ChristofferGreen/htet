@@ -1392,6 +1392,12 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
   result.recovery_failure=wang.recovery.failure;
   result.seed_failure=wang.recovery.seed_failure;
   result.seed_invalid_reason=wang.recovery.seed_invalid_reason;
+  result.seed_milliseconds=wang.recovery.seed_milliseconds;
+  result.segment_recovery_milliseconds=wang.recovery.segment_recovery_milliseconds;
+  result.facet_recovery_milliseconds=wang.recovery.facet_recovery_milliseconds;
+  result.recovery_finalization_milliseconds=wang.recovery.finalization_milliseconds;
+  result.cleanup_milliseconds=wang.cleanup_milliseconds;
+  result.region_classification_milliseconds=wang.region_classification_milliseconds;
   result.recovery_resource_limit=wang.recovery.resource_limit;
   result.recovery_resource_limit_observed=wang.recovery.resource_limit_observed;
   result.recovery_resource_limit_configured=wang.recovery.resource_limit_configured;
@@ -1574,8 +1580,12 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
               TerrainVolumeCellRegion::retained_core;
           result.output_degenerate_tetrahedra.push_back(diagnostic);
         }
+        const auto validation_started=std::chrono::steady_clock::now();
         result.output_validation=validate_surface_core_transition_output(
             request.contract,output);
+        result.output_validation_milliseconds=
+            std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-validation_started).count();
         result.output_validation_invoked=true;
         result.assembled_tetrahedra=output.tetrahedra.size();
         if(result.output_validation.valid) {

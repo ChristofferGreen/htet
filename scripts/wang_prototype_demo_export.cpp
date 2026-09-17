@@ -285,6 +285,13 @@ int main(int argc,char** argv) {
         <<",requestMilliseconds:"<<prototype.request_milliseconds
         <<",wangMilliseconds:"<<prototype.wang_transaction_milliseconds
         <<",wangRecoveryMilliseconds:"<<prototype.volume.wang_recovery_milliseconds
+        <<",seedMilliseconds:"<<prototype.volume.viability.seed_milliseconds
+        <<",segmentRecoveryMilliseconds:"<<prototype.volume.viability.segment_recovery_milliseconds
+        <<",facetRecoveryMilliseconds:"<<prototype.volume.viability.facet_recovery_milliseconds
+        <<",recoveryFinalizationMilliseconds:"<<prototype.volume.viability.recovery_finalization_milliseconds
+        <<",cleanupMilliseconds:"<<prototype.volume.viability.cleanup_milliseconds
+        <<",regionClassificationMilliseconds:"<<prototype.volume.viability.region_classification_milliseconds
+        <<",outputValidationMilliseconds:"<<prototype.volume.viability.output_validation_milliseconds
         <<",qualityMilliseconds:"<<prototype.volume.quality_measurement_milliseconds
         <<",totalMilliseconds:"<<prototype.total_milliseconds
         <<"}};\n";
@@ -324,6 +331,13 @@ int main(int argc,char** argv) {
          <<"  \"request_milliseconds\": "<<prototype.request_milliseconds<<",\n"
          <<"  \"wang_transaction_milliseconds\": "<<prototype.wang_transaction_milliseconds<<",\n"
          <<"  \"wang_recovery_milliseconds\": "<<prototype.volume.wang_recovery_milliseconds<<",\n"
+         <<"  \"seed_milliseconds\": "<<prototype.volume.viability.seed_milliseconds<<",\n"
+         <<"  \"segment_recovery_milliseconds\": "<<prototype.volume.viability.segment_recovery_milliseconds<<",\n"
+         <<"  \"facet_recovery_milliseconds\": "<<prototype.volume.viability.facet_recovery_milliseconds<<",\n"
+         <<"  \"recovery_finalization_milliseconds\": "<<prototype.volume.viability.recovery_finalization_milliseconds<<",\n"
+         <<"  \"cleanup_milliseconds\": "<<prototype.volume.viability.cleanup_milliseconds<<",\n"
+         <<"  \"region_classification_milliseconds\": "<<prototype.volume.viability.region_classification_milliseconds<<",\n"
+         <<"  \"output_validation_milliseconds\": "<<prototype.volume.viability.output_validation_milliseconds<<",\n"
          <<"  \"quality_measurement_milliseconds\": "<<prototype.volume.quality_measurement_milliseconds<<",\n"
          <<"  \"total_milliseconds\": "<<prototype.total_milliseconds<<",\n"
          <<"  \"core_volume\": "<<published_core_volume<<",\n"

@@ -1,5 +1,6 @@
 #include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 
+#include <chrono>
 #if defined(TETRA_ENABLE_WANG_AUTHOR_ORACLE)
 #include "dt.h"
 #endif
@@ -609,6 +610,7 @@ WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
   // DT::removeStPass order here: reverse boundary insertions (with only its
   // local repair retries), followed by disposable interior-point removal.
   // This must precede both the boundary audit and region extraction.
+  const auto cleanup_started=std::chrono::steady_clock::now();
   auto removal=run_wang_reverse_boundary_removal(result.recovery.constraints,
                                                   result.recovery.tetrahedra);
   const bool all_boundary_points_restored=removal.all_boundary_points_restored();
@@ -639,6 +641,8 @@ WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
     result.failure=WangConstrainedTetrahedralizationFailure::final_audit_failed;
     return result;
   }
+  result.cleanup_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-cleanup_started).count();
   result.vertices=result.recovery.constraints.vertices;
   CanonicalPlcRegionInput region_input;
   for(const auto& vertex:result.vertices)region_input.vertices.push_back(vertex.position);
@@ -652,7 +656,11 @@ WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
     for(unsigned i=0U;i<3U;++i)face[i]=index.at(facet.vertices[i]);
     (facet.core_interface?region_input.core_faces:region_input.outer_faces).push_back(face);
   }
+  const auto classification_started=std::chrono::steady_clock::now();
   const auto regions=classify_canonical_plc_regions(region_input);
+  result.region_classification_milliseconds=
+      std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-classification_started).count();
   result.region_failure=regions.failure;
   if(!regions.accepted()) {
     result.failure=WangConstrainedTetrahedralizationFailure::final_audit_failed;

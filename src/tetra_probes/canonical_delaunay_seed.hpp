@@ -933,6 +933,12 @@ struct CanonicalPlcRecoveryResult {
   CanonicalDelaunaySeedFailure seed_failure{CanonicalDelaunaySeedFailure::none};
   CanonicalDelaunaySeedInvalidReason seed_invalid_reason{
       CanonicalDelaunaySeedInvalidReason::none};
+  // Measured at the source-shaped phase boundaries.  These are diagnostic
+  // only and never participate in recovery ordering or acceptance.
+  double seed_milliseconds{};
+  double segment_recovery_milliseconds{};
+  double facet_recovery_milliseconds{};
+  double finalization_milliseconds{};
   CanonicalPlcConstraintSet constraints;
   CanonicalPlcSeedInspection inspection;
   // Finite cells immediately after the Wang-specific BndPntInst/AddBox seed,

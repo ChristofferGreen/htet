@@ -147,6 +147,13 @@ struct TerrainWangViabilityResult {
       CanonicalDelaunaySeedFailure::insufficient_dimension};
   CanonicalDelaunaySeedInvalidReason seed_invalid_reason{
       CanonicalDelaunaySeedInvalidReason::none};
+  double seed_milliseconds{};
+  double segment_recovery_milliseconds{};
+  double facet_recovery_milliseconds{};
+  double recovery_finalization_milliseconds{};
+  double cleanup_milliseconds{};
+  double region_classification_milliseconds{};
+  double output_validation_milliseconds{};
   WangRecoveryResourceLimit recovery_resource_limit{WangRecoveryResourceLimit::none};
   std::size_t recovery_resource_limit_observed{};
   std::size_t recovery_resource_limit_configured{};

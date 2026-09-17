@@ -120,6 +120,8 @@ struct WangConstrainedTetrahedralizationResult {
   WangConstrainedTetrahedralizationFailure failure{
       WangConstrainedTetrahedralizationFailure::invalid_plc};
   CanonicalPlcRecoveryResult recovery;
+  double cleanup_milliseconds{};
+  double region_classification_milliseconds{};
   WangBoundaryAudit boundary_audit;
   WangUnsupportedBranch unsupported_branch{WangUnsupportedBranch::none};
   CanonicalPlcRegionFailure region_failure{CanonicalPlcRegionFailure::none};
