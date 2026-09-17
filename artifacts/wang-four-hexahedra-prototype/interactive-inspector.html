@@ -54,6 +54,7 @@
           <input id="minimum-level" type="range" min="0" max="6" step="1" value="0"></label>
         <label>Surface band: <output id="surface-band-value">0.01</output>
           <input id="surface-band" type="range" min="0.01" max="2" step="0.01" value="0.01"></label>
+        <label><input id="reuse-parent" type="checkbox" checked> reuse unchanged parent-tet result</label>
         <label>Clip plane: <output id="clip-value">0.00</output>
           <input id="clip" type="range" min="-0.30" max="0.30" step="0.01" value="0"></label>
         <label><input id="clip-enabled" type="checkbox" checked> enable clipping</label>
@@ -319,6 +320,7 @@
     coreMode.value = summary.coreMode || 'uniform';
     const minimumLevel = document.getElementById('minimum-level');
     const surfaceBand = document.getElementById('surface-band');
+    const reuseParent = document.getElementById('reuse-parent');
     minimumLevel.value = summary.coreMinRedDepth ?? 2;
     surfaceBand.value = summary.coreSurfaceBand ?? .5;
     const updateLodLabels = () => {
@@ -327,22 +329,29 @@
     };
     updateLodLabels();
     resolutionValue.textContent = resolution.value;
+    const rebuildMilliseconds = Number(new URLSearchParams(location.search).get('rebuild_ms'));
+    const previousCacheHit = new URLSearchParams(location.search).get('cache_hit');
+    if (Number.isFinite(rebuildMilliseconds)) {
+      rebuildStatus.textContent = previousCacheHit === '1'
+        ? `Reused unchanged parent-tet result in ${rebuildMilliseconds.toFixed(1)} ms.`
+        : `Completed full Wang rebuild in ${(rebuildMilliseconds / 1000).toFixed(2)} s.`;
+    }
     resolution.addEventListener('input', () => resolutionValue.textContent = resolution.value);
     async function rebuildVolume() {
       const next = Number(resolution.value);
       const mode = coreMode.value;
-      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true;
+      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; reuseParent.disabled = true;
       rebuildStatus.textContent = `Rebuilding DC, ${mode} core, and Wang transition at N${next}…`;
       try {
-        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&reuse=${reuseParent.checked ? 1 : 0}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
         // the browser cache, leaving the geometry apparently unchanged.
-        window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}`);
+        window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}&cache_hit=${result.cache_hit ? 1 : 0}&rebuild_ms=${result.elapsed_milliseconds}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; reuseParent.disabled = false;
       }
     }
     resolution.addEventListener('change', rebuildVolume);

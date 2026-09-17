@@ -53,6 +53,12 @@ The inspector reports the realised maximum core-tet edge, clearance, and core
 and transition volumes; these values, rather than cell counts, show whether
 the transition has physically narrowed.
 
+The experimental parent-tet reuse control keeps up to four complete validated
+results in memory. Returning to an unchanged resolution and LOD state restores
+its exact artifacts without rerunning Wang recovery. Disabling the control
+forces a cold rebuild. This is parent-level invalidation evidence, not yet a
+local repair of changed geometry inside one parent tetrahedron.
+
 The DC surface has zero boundary edges, zero non-manifold edges, and no
 artificial closure triangles. Mesh-quality thresholds are diagnostics only.
 Publication is based on the geometric/topological contract: frozen outer faces
