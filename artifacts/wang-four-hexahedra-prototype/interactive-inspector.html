@@ -80,6 +80,7 @@
   </script>
   <script>
   (() => {
+    const viewerBuildStarted = performance.now();
     const data = window.WANG_PROTOTYPE_DATA;
     if (!data || !window.THREE) { document.body.textContent = 'Prototype data or 3D library failed to load.'; return; }
     const stage = document.getElementById('stage');
@@ -138,28 +139,67 @@
       const m = new THREE.LineBasicMaterial({color, transparent: true, opacity: 1, depthWrite: false, depthTest: true});
       clippingMaterials.push(m); edgeMaterials.push(m); return m;
     }
-    function cellGeometry(points, cell, faces) {
-      const pos = [], ind = [];
-      for (const i of cell) { const p = points[i]; pos.push(p[0], p[1], p[2]); }
-      for (const f of faces) for (let i = 1; i < f.length - 1; i++) ind.push(f[0], f[i], f[i + 1]);
-      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(ind); g.computeVertexNormals(); return g;
+    function localEdges(faces) {
+      const unique = new Map();
+      for (const face of faces) for (let i = 0; i < face.length; i++) {
+        const a = face[i], b = face[(i + 1) % face.length];
+        unique.set(a < b ? `${a}|${b}` : `${b}|${a}`, [a, b]);
+      }
+      return [...unique.values()];
+    }
+    function combinedCellGeometry(points, orderedCells, faces) {
+      const positions = [], indices = [], linePositions = [], triangleCellIds = [];
+      const edges = localEdges(faces);
+      let trianglesPerCell = 0;
+      for (const face of faces) trianglesPerCell += face.length - 2;
+      for (const {cell, index} of orderedCells) {
+        const base = positions.length / 3;
+        for (const pointIndex of cell) positions.push(...points[pointIndex]);
+        for (const face of faces) for (let i = 1; i < face.length - 1; i++) {
+          indices.push(base + face[0], base + face[i], base + face[i + 1]);
+          triangleCellIds.push(index);
+        }
+        for (const [a, b] of edges)
+          linePositions.push(...points[cell[a]], ...points[cell[b]]);
+      }
+      const solid = new THREE.BufferGeometry();
+      solid.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      solid.setIndex(indices); solid.computeVertexNormals();
+      const wire = new THREE.BufferGeometry();
+      wire.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+      return {
+        solid, wire, triangleCellIds,
+        solidIndicesPerCell: trianglesPerCell * 3,
+        wireVerticesPerCell: edges.length * 2
+      };
     }
     function addCells(name, points, cells, faces, opacity) {
       const group = new THREE.Group(), solid = new THREE.Group(), wire = new THREE.Group();
       group.add(solid, wire); group.userData = {solid, wire}; scene.add(group); layerGroups[name] = group;
-      cells.forEach((cell, index) => {
+      const orderedCells = cells.map((cell, index) => {
         const centroid = cell.reduce((sum, pointIndex) => sum.map((value, axis) => value + points[pointIndex][axis]), [0,0,0]).map(value => value / cell.length);
         if (name === 'transition' || name === 'core') tetVolumes.push({points, cell, centroid});
-        const g = cellGeometry(points, cell, faces);
-        const mesh = new THREE.Mesh(g, material(colors[name], opacity));
-        if (name !== 'hex') tetMaterials.push(mesh.material);
-        mesh.userData = {layer: name, cell: index}; solid.add(mesh); pickables.push(mesh);
-        const lineMaterial = edgeMaterial(0x000000);
-        if (name !== 'hex') tetEdgeMaterials.push(lineMaterial);
-        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(g), lineMaterial);
-        lines.renderOrder = 2;
-        wire.add(lines);
-        if (name === 'transition' || name === 'core') tetRenderables.push({name, mesh, lines, centroid});
+        return {cell, index, centroid};
+      });
+      // Whole-cell clipping is a prefix draw after sorting by centroid X.
+      // This replaces one Mesh, material, EdgesGeometry and LineSegments per
+      // cell with two drawables per layer while preserving cell identities.
+      orderedCells.sort((a, b) => a.centroid[0] - b.centroid[0] || a.index - b.index);
+      const combined = combinedCellGeometry(points, orderedCells, faces);
+      const faceMaterial = material(colors[name], opacity);
+      const mesh = new THREE.Mesh(combined.solid, faceMaterial);
+      if (name !== 'hex') tetMaterials.push(faceMaterial);
+      mesh.userData = {layer: name, triangleCellIds: combined.triangleCellIds};
+      solid.add(mesh); pickables.push(mesh);
+      const lineMaterial = edgeMaterial(0x000000);
+      if (name !== 'hex') tetEdgeMaterials.push(lineMaterial);
+      const lines = new THREE.LineSegments(combined.wire, lineMaterial);
+      lines.renderOrder = 2; wire.add(lines);
+      if (name === 'transition' || name === 'core') tetRenderables.push({
+        name, mesh, lines,
+        sortedCentroidX: orderedCells.map(entry => entry.centroid[0]),
+        solidIndicesPerCell: combined.solidIndicesPerCell,
+        wireVerticesPerCell: combined.wireVerticesPerCell
       });
     }
     addCells('hex', data.hexahedra.points, data.hexahedra.cells, facesOfHex, .075);
@@ -282,8 +322,19 @@
       const cut = Number(document.getElementById('clip').value);
       const opacity = Number(document.getElementById('tet-opacity').value);
       for (const item of tetRenderables) {
-        const enabled = document.getElementById(item.name).checked && opacity > 0 &&
-          (!clipping || item.centroid[0] <= cut);
+        let visibleCells = item.sortedCentroidX.length;
+        if (clipping) {
+          let low = 0, high = visibleCells;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (item.sortedCentroidX[middle] <= cut) low = middle + 1;
+            else high = middle;
+          }
+          visibleCells = low;
+        }
+        item.mesh.geometry.setDrawRange(0, visibleCells * item.solidIndicesPerCell);
+        item.lines.geometry.setDrawRange(0, visibleCells * item.wireVerticesPerCell);
+        const enabled = document.getElementById(item.name).checked && opacity > 0 && visibleCells > 0;
         item.mesh.visible = enabled;
         item.lines.visible = enabled;
       }
@@ -420,7 +471,15 @@
     clip.addEventListener('input', updateClip); clipEnabled.addEventListener('change', updateClip); updateClip();
     const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(), readout = document.getElementById('readout'); let down;
     renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
-    renderer.domElement.addEventListener('pointerup', e => { if (!down || Math.hypot(e.clientX-down[0],e.clientY-down[1])>4) return; const r=renderer.domElement.getBoundingClientRect(); pointer.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1); raycaster.setFromCamera(pointer,camera); const visible = object => { for (let node=object; node; node=node.parent) if (!node.visible) return false; return true; }; const hit=raycaster.intersectObjects(pickables.filter(visible),false)[0]; if (!hit) { readout.textContent='No visible cell selected.'; return; } const d=hit.object.userData; const id=d.layer==='dc surface' ? `triangle ${hit.faceIndex}` : `${d.layer==='hex' ? 'hexahedron' : 'tetrahedron'} ${d.cell}`; readout.textContent=`Selected ${d.layer}: ${id}.`; });
+    renderer.domElement.addEventListener('pointerup', e => { if (!down || Math.hypot(e.clientX-down[0],e.clientY-down[1])>4) return; const r=renderer.domElement.getBoundingClientRect(); pointer.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1); raycaster.setFromCamera(pointer,camera); const visible = object => { for (let node=object; node; node=node.parent) if (!node.visible) return false; return true; }; const hit=raycaster.intersectObjects(pickables.filter(visible),false)[0]; if (!hit) { readout.textContent='No visible cell selected.'; return; } const d=hit.object.userData; const cell = d.triangleCellIds ? d.triangleCellIds[hit.faceIndex] : hit.faceIndex; const id=d.layer==='dc surface' ? `triangle ${cell}` : `${d.layer==='hex' ? 'hexahedron' : 'tetrahedron'} ${cell}`; readout.textContent=`Selected ${d.layer}: ${id}.`; });
+    const viewerBuildMilliseconds = performance.now() - viewerBuildStarted;
+    window.WANG_VIEWER_METRICS = {
+      buildMilliseconds: viewerBuildMilliseconds,
+      cellDrawables: tetRenderables.length * 2 + 2,
+      volumeCells: tetVolumes.length
+    };
+    document.documentElement.dataset.viewerBuildMilliseconds = viewerBuildMilliseconds.toFixed(2);
+    document.getElementById('stats').textContent += `\nViewer mesh: ${viewerBuildMilliseconds.toFixed(1)} ms · ${window.WANG_VIEWER_METRICS.cellDrawables} merged cell drawables`;
     function render() {
       requestAnimationFrame(render);
       controls.update();
