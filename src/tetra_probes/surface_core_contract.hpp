@@ -257,6 +257,12 @@ struct SurfaceCoreConstructionResult {
     const SurfaceCoreTransitionInput& input);
 [[nodiscard]] SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     const SurfaceCoreTransitionInput& input, const SurfaceCoreTransitionOutput& output);
+// Use only when the identical input contract has already passed
+// validate_surface_core_transition_input in the current transaction.
+[[nodiscard]] SurfaceCoreTransitionValidation
+validate_surface_core_transition_output_assuming_valid_input(
+    const SurfaceCoreTransitionInput& input,
+    const SurfaceCoreTransitionOutput& output);
 [[nodiscard]] bool strict_tetrahedra_overlap(
     const std::array<Vec3,4>& first,const std::array<Vec3,4>& second);
 [[nodiscard]] SurfaceCoreConstructionResult construct_homologous_surface_core_transition(

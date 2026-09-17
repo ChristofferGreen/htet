@@ -732,19 +732,26 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
   audit.outer_no_self_intersections=
       contract.failure!=SurfaceCoreInputFailure::outer_self_intersection;
   audit.core_strictly_nested=contract.failure!=SurfaceCoreInputFailure::core_not_strictly_nested;
-  audit.surface_core_disjoint=true;
-  for(const auto outer:fixture.outer_triangles) {
-    const std::array<Vec3,3> outer_points{{fixture.outer_vertices[outer[0]],
-        fixture.outer_vertices[outer[1]],fixture.outer_vertices[outer[2]]}};
-    for(const auto inner:fixture.core_boundary_triangles) {
-      const std::array<Vec3,3> inner_points{{fixture.core_vertices[inner[0]],
-          fixture.core_vertices[inner[1]],fixture.core_vertices[inner[2]]}};
-      if(strict_triangles_intersect(outer_points,inner_points)) {
-        audit.surface_core_disjoint=false;
-        break;
+  // An accepted contract has already checked every core face against every
+  // outer face with the stronger touching/intersection clearance test. Keep
+  // the explicit triangle diagnostic for rejected fixtures, but do not repeat
+  // the same quadratic comparison on the production success path.
+  audit.surface_core_disjoint=contract.accepted;
+  if(!contract.accepted) {
+    audit.surface_core_disjoint=true;
+    for(const auto outer:fixture.outer_triangles) {
+      const std::array<Vec3,3> outer_points{{fixture.outer_vertices[outer[0]],
+          fixture.outer_vertices[outer[1]],fixture.outer_vertices[outer[2]]}};
+      for(const auto inner:fixture.core_boundary_triangles) {
+        const std::array<Vec3,3> inner_points{{fixture.core_vertices[inner[0]],
+            fixture.core_vertices[inner[1]],fixture.core_vertices[inner[2]]}};
+        if(strict_triangles_intersect(outer_points,inner_points)) {
+          audit.surface_core_disjoint=false;
+          break;
+        }
       }
+      if(!audit.surface_core_disjoint)break;
     }
-    if(!audit.surface_core_disjoint)break;
   }
   audit.outer_volume=std::abs(signed_surface_volume(
       fixture.outer_vertices,fixture.outer_triangles));

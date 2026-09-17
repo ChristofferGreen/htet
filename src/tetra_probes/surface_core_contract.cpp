@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <numeric>
 #include <numbers>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace tetra::probes {
 
@@ -26,6 +29,33 @@ using Edge = std::array<std::uint32_t, 2>;
 using Face = std::array<std::uint32_t, 3>;
 using Tet = std::array<std::uint32_t, 4>;
 
+template<std::size_t Size>
+struct IndexArrayHash {
+  [[nodiscard]] std::size_t operator()(
+      const std::array<std::uint32_t,Size>& values) const noexcept {
+    std::size_t result=0xcbf29ce484222325ULL;
+    for(const auto value:values) {
+      result^=std::hash<std::uint32_t>{}(value);
+      result*=0x100000001b3ULL;
+    }
+    return result;
+  }
+};
+
+template<class Value>
+struct InlinePair {
+  std::array<Value,2> values{};
+  std::size_t count{};
+  void push_back(Value value) noexcept {
+    if(count<values.size())values[count]=value;
+    ++count;
+  }
+  [[nodiscard]] std::size_t size() const noexcept {return count;}
+  [[nodiscard]] const Value& operator[](std::size_t index) const noexcept {
+    return values[index];
+  }
+};
+
 [[nodiscard]] Edge edge(std::uint32_t a, std::uint32_t b) {
   if (b < a) std::swap(a, b);
   return {a, b};
@@ -39,6 +69,31 @@ using Tet = std::array<std::uint32_t, 4>;
 [[nodiscard]] double length(Vec3 a) { return std::sqrt(dot(a,a)); }
 [[nodiscard]] bool finite(Vec3 p) {
   return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+}
+[[nodiscard]] ExactPredicateSign filtered_exact_orientation(
+    Vec3 a,Vec3 b,Vec3 c,Vec3 d) {
+  const double adx=a.x-d.x,bdx=b.x-d.x,cdx=c.x-d.x;
+  const double ady=a.y-d.y,bdy=b.y-d.y,cdy=c.y-d.y;
+  const double adz=a.z-d.z,bdz=b.z-d.z,cdz=c.z-d.z;
+  const double bdxcdy=bdx*cdy,cdxbdy=cdx*bdy;
+  const double cdxady=cdx*ady,adxcdy=adx*cdy;
+  const double adxbdy=adx*bdy,bdxady=bdx*ady;
+  const double determinant=adz*(bdxcdy-cdxbdy)+
+      bdz*(cdxady-adxcdy)+cdz*(adxbdy-bdxady);
+  const double permanent=(std::abs(bdxcdy)+std::abs(cdxbdy))*std::abs(adz)+
+      (std::abs(cdxady)+std::abs(adxcdy))*std::abs(bdz)+
+      (std::abs(adxbdy)+std::abs(bdxady))*std::abs(cdz);
+  const double error_bound=
+      (7.0+56.0*std::numeric_limits<double>::epsilon())*
+      std::numeric_limits<double>::epsilon()*permanent;
+  // The d-relative expansion above has the opposite sign from the public
+  // (b-a,c-a,d-a) predicate convention.
+  if(determinant>error_bound)return ExactPredicateSign::negative;
+  if(-determinant>error_bound)return ExactPredicateSign::positive;
+  return exact_orientation_3d(a,b,c,d);
+}
+[[nodiscard]] bool exact_orientation_is_zero(Vec3 a,Vec3 b,Vec3 c,Vec3 d) {
+  return filtered_exact_orientation(a,b,c,d)==ExactPredicateSign::zero;
 }
 [[nodiscard]] bool strictly_inside_closed_surface(
     const std::vector<Vec3>& vertices, const std::vector<std::array<std::uint32_t, 3>>& faces, Vec3 point) {
@@ -415,8 +470,10 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
   for (std::size_t i=0; i<input.vertices.size(); ++i)
     if (!finite(input.vertices[i])) return fail(SurfaceCoreInputFailure::non_finite_vertex, i);
 
-  std::set<Face> unique_outer;
-  std::map<Edge, std::vector<int>> outer_edges;
+  std::unordered_set<Face,IndexArrayHash<3>> unique_outer;
+  std::unordered_map<Edge,InlinePair<int>,IndexArrayHash<2>> outer_edges;
+  unique_outer.reserve(input.outer_faces.size());
+  outer_edges.reserve(input.outer_faces.size()*3U);
   for (std::size_t i=0; i<input.outer_faces.size(); ++i) {
     const auto triangle=input.outer_faces[i];
     for (const auto id:triangle) if (id >= input.vertices.size()) return fail(SurfaceCoreInputFailure::invalid_index, i);
@@ -475,16 +532,19 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
     }
 
   struct CoreFaceUse { std::uint32_t opposite{}; int sign{}; };
-  std::set<Tet> unique_core;
-  std::map<Face, std::vector<CoreFaceUse>> core_faces;
+  std::unordered_set<Tet,IndexArrayHash<4>> unique_core;
+  std::unordered_map<Face,InlinePair<CoreFaceUse>,IndexArrayHash<3>> core_faces;
+  unique_core.reserve(input.retained_core_tetrahedra.size());
+  core_faces.reserve(input.retained_core_tetrahedra.size()*4U);
   for (std::size_t i=0; i<input.retained_core_tetrahedra.size(); ++i) {
     const auto cell=input.retained_core_tetrahedra[i];
     for (const auto id:cell) if (id >= input.vertices.size()) return fail(SurfaceCoreInputFailure::invalid_index, i);
     const auto key=tet(cell);
     if (key[0]==key[1] || key[1]==key[2] || key[2]==key[3]) return fail(SurfaceCoreInputFailure::repeated_vertex, i);
-    if (exact_orientation_3d(input.vertices[cell[0]],input.vertices[cell[1]],
-                             input.vertices[cell[2]],input.vertices[cell[3]])==
-        ExactPredicateSign::zero)
+    if (exact_orientation_is_zero(input.vertices[cell[0]],
+                                  input.vertices[cell[1]],
+                                  input.vertices[cell[2]],
+                                  input.vertices[cell[3]]))
       return fail(SurfaceCoreInputFailure::degenerate_core_tetrahedron, i);
     if (!unique_core.insert(key).second) return fail(SurfaceCoreInputFailure::duplicate_core_tetrahedron, i);
     for (std::size_t opposite=0; opposite<4U; ++opposite) {
@@ -576,8 +636,9 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
   return result;
 }
 
-SurfaceCoreTransitionValidation validate_surface_core_transition_output(
-    const SurfaceCoreTransitionInput& input, const SurfaceCoreTransitionOutput& output) {
+static SurfaceCoreTransitionValidation validate_surface_core_transition_output_impl(
+    const SurfaceCoreTransitionInput& input,
+    const SurfaceCoreTransitionOutput& output,bool input_prevalidated) {
   SurfaceCoreTransitionValidation result;
   result.positive_tetrahedra=true;
   result.unique_tetrahedra=true;
@@ -586,20 +647,32 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
   result.consistently_oriented_shared_faces=true;
   result.frozen_outer_faces_preserved=true;
   result.retained_core_preserved=true;
-  if (!validate_surface_core_transition_input(input).accepted) { result.failure=SurfaceCoreOutputFailure::rejected_input_contract; return result; }
+  if (!input_prevalidated&&!validate_surface_core_transition_input(input).accepted) {
+    result.failure=SurfaceCoreOutputFailure::rejected_input_contract;return result;
+  }
   if ((!output.owned_vertex_ids.empty()&&output.owned_vertex_ids.size()!=output.owned_vertices.size()) ||
       output.owned_vertices.size()>input.maximum_vertices-input.vertices.size()) { result.failure=SurfaceCoreOutputFailure::invalid_owned_vertex_id; return result; }
   std::vector<Vec3> vertices=input.vertices; vertices.insert(vertices.end(),output.owned_vertices.begin(),output.owned_vertices.end());
-  std::set<std::uint64_t> ids;
+  std::unordered_set<std::uint64_t> ids;
+  ids.reserve(input.vertices.size()+output.owned_vertices.size());
   for(std::size_t i=0;i<input.vertices.size();++i) ids.insert(input.stable_vertex_ids.empty()?static_cast<std::uint64_t>(i):input.stable_vertex_ids[i]);
   for(std::size_t i=0;i<output.owned_vertices.size();++i) {
     if(!finite(output.owned_vertices[i])) {result.failure=SurfaceCoreOutputFailure::invalid_owned_vertex;return result;}
     const auto id=output.owned_vertex_ids.empty()?static_cast<std::uint64_t>(input.vertices.size()+i):output.owned_vertex_ids[i];
     if(!ids.insert(id).second) {result.failure=SurfaceCoreOutputFailure::invalid_owned_vertex_id;return result;}
   }
-  std::set<Tet> unique_tets;
-  std::map<Face,std::size_t> face_uses;
-  std::map<Face,std::vector<int>> face_sides;
+  struct OutputFaceUses {
+    std::array<int,2> sides{};
+    std::size_t count{};
+    void push_back(int side) noexcept {
+      if(count<sides.size())sides[count]=side;
+      ++count;
+    }
+  };
+  std::unordered_set<Tet,IndexArrayHash<4>> unique_tets;
+  std::unordered_map<Face,OutputFaceUses,IndexArrayHash<3>> face_uses;
+  unique_tets.reserve(output.tetrahedra.size());
+  face_uses.reserve(output.tetrahedra.size()*4U);
   for (const auto cell:output.tetrahedra) {
     bool valid_indices=true;
     for (const auto id:cell) valid_indices=valid_indices && id<vertices.size();
@@ -619,10 +692,8 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
       // emitted binary64 positions. Exact-plane provenance describes source
       // construction; it must not turn a positive Wang tetrahedron into an
       // invalid cell through an additional, non-Wang acceptance rule.
-      geometrically_degenerate=
-          exact_orientation_3d(vertices[cell[0]],vertices[cell[1]],
-                               vertices[cell[2]],vertices[cell[3]])==
-              ExactPredicateSign::zero;
+      geometrically_degenerate=exact_orientation_is_zero(
+          vertices[cell[0]],vertices[cell[1]],vertices[cell[2]],vertices[cell[3]]);
     }
     if (!valid_indices || key[0]==key[1] || key[1]==key[2] || key[2]==key[3] ||
         geometrically_degenerate) {
@@ -632,11 +703,11 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     for (std::size_t opposite=0; opposite<4U; ++opposite) {
       Face local{}; std::size_t cursor{};
       for (std::size_t vertex=0; vertex<4U; ++vertex) if (vertex!=opposite) local[cursor++]=cell[vertex];
-      const auto canonical=face(local); ++face_uses[canonical];
-      const auto side=exact_orientation_3d(
+      const auto canonical=face(local);
+      const auto side=filtered_exact_orientation(
           vertices[canonical[0]],vertices[canonical[1]],vertices[canonical[2]],
           vertices[cell[opposite]]);
-      face_sides[canonical].push_back(static_cast<int>(side));
+      face_uses[canonical].push_back(static_cast<int>(side));
     }
   }
   // A retained explicit tetrahedral core cannot conform to a refined core
@@ -645,7 +716,8 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
   for(const auto& parent:input.core_parent_facets) if(parent.mode==FacetPreservationMode::geometric) {
     result.failure=SurfaceCoreOutputFailure::unsupported_geometric_core; return result;
   }
-  std::map<std::uint64_t,std::uint32_t> input_index_by_stable_id;
+  std::unordered_map<std::uint64_t,std::uint32_t> input_index_by_stable_id;
+  input_index_by_stable_id.reserve(input.vertices.size());
   for(std::size_t i=0;i<input.vertices.size();++i)
     input_index_by_stable_id.emplace(input.stable_vertex_ids.empty()?static_cast<std::uint64_t>(i):input.stable_vertex_ids[i],static_cast<std::uint32_t>(i));
   const auto parent_vertices=[&](FrozenFacetIdentity id) {
@@ -653,7 +725,8 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     for(std::size_t i=0;i<3U;++i) { const auto found=input_index_by_stable_id.find(id.vertex_ids[i]); if(found==input_index_by_stable_id.end()) return std::array<FrozenFacetVertex,3>{}; r[i]={id.vertex_ids[i],input.vertices[found->second]}; }
     return r;
   };
-  std::set<Face> outer;
+  std::unordered_set<Face,IndexArrayHash<3>> outer;
+  outer.reserve(input.outer_faces.size());
   for(std::size_t i=0;i<input.outer_faces.size();++i) {
     const auto triangle=input.outer_faces[i];
     FrozenFacetIdentity parent{{
@@ -665,7 +738,7 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     if(mode==FacetPreservationMode::literal) {
       const auto fixed=face(triangle); outer.insert(fixed);
       const auto use=face_uses.find(fixed);
-      if(use==face_uses.end()||use->second!=1U) { result.frozen_outer_faces_preserved=false;++result.missing_outer_faces;result.failure=SurfaceCoreOutputFailure::literal_facet_changed; }
+      if(use==face_uses.end()||use->second.count!=1U) { result.frozen_outer_faces_preserved=false;++result.missing_outer_faces;result.failure=SurfaceCoreOutputFailure::literal_facet_changed; }
       continue;
     }
     FrozenFacetSplit split; split.parent=parent; split.mode=mode; bool found{};
@@ -682,15 +755,15 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
       }
       const auto actual=face(reported.vertices); outer.insert(actual);
       const auto use=face_uses.find(actual);
-      if(use==face_uses.end()||use->second!=1U) {result.failure=SurfaceCoreOutputFailure::geometric_facet_not_emitted;return result;}
+      if(use==face_uses.end()||use->second.count!=1U) {result.failure=SurfaceCoreOutputFailure::geometric_facet_not_emitted;return result;}
     }
     if(!found) {result.failure=SurfaceCoreOutputFailure::missing_facet_preservation;++result.missing_outer_parent_facets;return result;}
     if(!validate_frozen_facet_split(split)) {result.failure=SurfaceCoreOutputFailure::invalid_facet_preservation;++result.invalid_preserved_subfaces;return result;}
   }
-  for (const auto& [boundary,count]:face_uses) {
-    if (count>2U) { result.closed_two_manifold=false; ++result.nonmanifold_faces; }
-    if(count==2U&&face_sides[boundary][0]==face_sides[boundary][1]) {result.consistently_oriented_shared_faces=false;++result.same_sided_shared_faces;}
-    if (count==1U && !outer.contains(boundary)) {
+  for (const auto& [boundary,uses]:face_uses) {
+    if (uses.count>2U) { result.closed_two_manifold=false; ++result.nonmanifold_faces; }
+    if(uses.count==2U&&uses.sides[0]==uses.sides[1]) {result.consistently_oriented_shared_faces=false;++result.same_sided_shared_faces;}
+    if (uses.count==1U && !outer.contains(boundary)) {
       result.closed_two_manifold=false; ++result.unexpected_boundary_faces;
     }
   }
@@ -758,6 +831,19 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
   result.valid=result.positive_tetrahedra && result.unique_tetrahedra && result.no_strict_tetrahedron_overlap && result.closed_two_manifold && result.consistently_oriented_shared_faces &&
       result.frozen_outer_faces_preserved && result.retained_core_preserved && result.failure==SurfaceCoreOutputFailure::none;
   return result;
+}
+
+SurfaceCoreTransitionValidation validate_surface_core_transition_output(
+    const SurfaceCoreTransitionInput& input,
+    const SurfaceCoreTransitionOutput& output) {
+  return validate_surface_core_transition_output_impl(input,output,false);
+}
+
+SurfaceCoreTransitionValidation
+validate_surface_core_transition_output_assuming_valid_input(
+    const SurfaceCoreTransitionInput& input,
+    const SurfaceCoreTransitionOutput& output) {
+  return validate_surface_core_transition_output_impl(input,output,true);
 }
 
 bool strict_tetrahedra_overlap(

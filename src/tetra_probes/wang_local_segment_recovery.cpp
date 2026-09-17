@@ -11,6 +11,8 @@
 #include <random>
 #include <optional>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace tetra::probes {
 namespace {
@@ -18,6 +20,19 @@ namespace {
 using Tet=WangOrderedTetMesh::Tet;
 using Face=std::array<std::uint32_t,3>;
 using Edge=std::array<std::uint32_t,2>;
+
+template<std::size_t Size>
+struct IndexArrayHash {
+  [[nodiscard]] std::size_t operator()(
+      const std::array<std::uint32_t,Size>& values) const noexcept {
+    std::size_t result=0xcbf29ce484222325ULL;
+    for(const auto value:values) {
+      result^=std::hash<std::uint32_t>{}(value);
+      result*=0x100000001b3ULL;
+    }
+    return result;
+  }
+};
 
 Edge edge_key(Edge edge) {
   if(edge[1]<edge[0])std::swap(edge[0],edge[1]);
@@ -364,9 +379,9 @@ struct Context {
   const CanonicalPlcConstraintSet& constraints;
   WangOrderedTetMesh& mesh;
   std::vector<Vec3> points;
-  std::map<std::uint64_t,std::uint32_t> index_for_id;
-  std::set<Edge> boundary_edges;
-  std::set<Face> boundary_faces;
+  std::unordered_map<std::uint64_t,std::uint32_t> index_for_id;
+  std::unordered_set<Edge,IndexArrayHash<2>> boundary_edges;
+  std::unordered_set<Face,IndexArrayHash<3>> boundary_faces;
   Edge target_segment{};
   std::optional<Face> target_facet;
   std::vector<WangOwnedLocalMutation> mutations;
@@ -382,6 +397,9 @@ struct Context {
       : constraints(input),mesh(state),target_segment(target),
         target_facet(facet) {
     points.reserve(input.vertices.size());
+    index_for_id.reserve(input.vertices.size());
+    boundary_faces.reserve(input.facets.size());
+    boundary_edges.reserve(input.facets.size()*3U);
     for(std::size_t i=0;i<input.vertices.size();++i) {
       points.push_back(input.vertices[i].position);
       index_for_id.emplace(input.vertices[i].id,static_cast<std::uint32_t>(i));

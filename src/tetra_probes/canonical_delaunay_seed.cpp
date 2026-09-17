@@ -856,6 +856,26 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       return values[index];
     }
   };
+  using FaceUse=FaceUses::Use;
+  constexpr auto invalid_cell=std::numeric_limits<std::size_t>::max();
+  const FaceUse invalid_use{invalid_cell,4U};
+  std::vector<std::array<FaceUse,4>> neighbours(cells.size());
+  for(auto& adjacent:neighbours)adjacent.fill(invalid_use);
+  {
+    std::unordered_map<Face,FaceUses,FaceHash> initial_ledger;
+    initial_ledger.reserve(cells.size()*4U);
+    for(std::size_t cell=0U;cell<cells.size();++cell)
+      for(unsigned omitted=0U;omitted<4U;++omitted)
+        initial_ledger[canonical_face(wang_boundary_face(cells[cell],omitted))]
+            .push_back({cell,omitted});
+    for(const auto& [face,uses]:initial_ledger) {
+      static_cast<void>(face);
+      if(uses.size()!=2U)
+        return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
+      neighbours[uses[0].first][uses[0].second]=uses[1];
+      neighbours[uses[1].first][uses[1].second]=uses[0];
+    }
+  }
   // `insertDelaunayPoints` updates its anchor to the node just inserted;
   // liveHint(anchor) then reads that node's last commitBW p2t assignment.
   // This is distinct from AddBox's physical-element carrier.
@@ -880,41 +900,17 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       seed_trace->eighth_location_path.clear();
       seed_trace->eighth_location_result=0;
     }
-    // A valid tetrahedral face has exactly two incident cells. Keep those two
-    // uses inline: allocating a separate vector for every face dominated the
-    // cold seed build while carrying no additional topology information.
-    // `count` may still exceed two so the existing incidence audit rejects a
-    // malformed complex without writing outside the fixed storage.
-    std::unordered_map<Face,FaceUses,FaceHash> ledger;
-    ledger.reserve(cells.size()*4U);
-    for(std::size_t cell=0U;cell<cells.size();++cell)
-      for(unsigned omitted=0U;omitted<4U;++omitted) {
-        Face face{};unsigned cursor{};
-        for(unsigned i=0U;i<4U;++i)if(i!=omitted)face[cursor++]=cells[cell][i];
-        ledger[canonical_face(face)].push_back({cell,omitted});
-      }
-    const auto invalid_incidence=std::find_if(
-        ledger.begin(),ledger.end(),[](const auto& entry) {
-          return entry.second.size()!=2U;
-        });
-    if(invalid_incidence!=ledger.end()) {
-      if(std::getenv("WANG_PLANE_PREDICATE_TRACE")!=nullptr)
-        std::cerr<<"plane_seed_incidence query="<<query
-                 <<" cells="<<cells.size()<<" face="
-                 <<invalid_incidence->first[0]<<','<<invalid_incidence->first[1]
-                 <<','<<invalid_incidence->first[2]<<" uses="
-                 <<invalid_incidence->second.size()<<'\n';
+    if(neighbours.size()!=cells.size())
       return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
-    }
     if(seed_trace&&query<original_count) {
       std::vector<WangReferenceSeedTrace::HullPredicate> predicates;
       for(std::size_t cell=0U;cell<cells.size();++cell)if(cells[cell][3]==ghost) {
         const auto value=wang_orient3d_value(as_vec3(points[cells[cell][0]]),
             as_vec3(points[cells[cell][1]]),as_vec3(points[cells[cell][2]]),
             as_vec3(points[query]),true);
-        const auto& uses=ledger.at(canonical_face(
-            {{cells[cell][0],cells[cell][1],cells[cell][2]}}));
-        const auto inner=uses[0].first==cell?uses[1].first:uses[0].first;
+        const auto inner=neighbours[cell][3U].first;
+        if(inner>=cells.size())
+          return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
         predicates.push_back({cells[cell],value,cells[inner][3]==ghost?0:
             wang_source_in_sphere_sign(points,cells[inner],query)});
       }
@@ -983,11 +979,12 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       // positive local value crosses the face (source: ori < 0).
       const auto neighbour=[&](std::size_t cell,unsigned face)
           ->std::optional<std::size_t> {
-        Face key{};unsigned cursor{};
-        for(unsigned i=0U;i<4U;++i)if(i!=face)key[cursor++]=cells[cell][i];
-        const auto& uses=ledger.at(canonical_face(key));
-        if(uses.size()!=2U)return std::nullopt;
-        return uses[0].first==cell?uses[1].first:uses[0].first;
+        if(cell>=neighbours.size()||face>=4U)return std::nullopt;
+        const auto adjacent=neighbours[cell][face];
+        if(adjacent.first>=cells.size()||adjacent.second>=4U||
+           neighbours[adjacent.first][adjacent.second]!=FaceUse{cell,face})
+          return std::nullopt;
+        return adjacent.first;
       };
       auto located=carrier_index;
       // locateRequest remembers the supplied element before stepping a hull
@@ -1119,9 +1116,8 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
             as_vec3(points[candidate_tet[2]]),as_vec3(points[query]),true);
         if(source_side<0.0)return eligible[candidate]=true;
         if(source_side>0.0)return eligible[candidate]=false;
-        const auto uses=ledger.at(canonical_face(
-            {{candidate_tet[0],candidate_tet[1],candidate_tet[2]}}));
-        const auto inner=uses[0].first==candidate?uses[1].first:uses[0].first;
+        const auto inner=neighbours[candidate][3U].first;
+        if(inner>=cells.size())return eligible[candidate]=false;
         return eligible[candidate]=cells[inner][3]!=ghost&&
             wang_sphere_contains(points,cells[inner],query,rank);
       };
@@ -1193,11 +1189,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       for(std::size_t head=0U;head<pending.size();++head) {
         const auto cell=pending[head];
         for(unsigned omitted=0U;omitted<4U;++omitted) {
-          Face face{};unsigned cursor{};
-          for(unsigned i=0U;i<4U;++i)if(i!=omitted)
-            face[cursor++]=cells[cell][i];
-          const auto& uses=ledger.at(canonical_face(face));
-          const auto other=uses[0].first==cell?uses[1].first:uses[0].first;
+          const auto other=neighbours[cell][omitted].first;
+          if(other>=cells.size())
+            return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
           const auto included=!connected[other]&&include_neighbour(other);
           if(seed_trace&&eighth_box_insertion&&!connected[other])
             seed_trace->eighth_traversal.push_back(
@@ -1290,8 +1284,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       for(std::size_t cell=0U;cell<cells.size()&&!expanded;++cell)if(conflict[cell])
         for(unsigned omitted=0U;omitted<4U&&!expanded;++omitted) {
           const auto face=wang_boundary_face(cells[cell],omitted);
-          const auto& uses=ledger.at(canonical_face(face));
-          const auto other=uses[0].first==cell?uses[1].first:uses[0].first;
+          const auto other=neighbours[cell][omitted].first;
+          if(other>=cells.size())
+            return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
           if(conflict[other])continue;
           const Tet child{{query,face[0],face[1],face[2]}};
           const auto semantic_plane=plane_aware(child).semantically_coplanar;
@@ -1352,9 +1347,15 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         if(std::find(face.begin(),face.end(),bad_edge->first[0])==face.end()||
            std::find(face.begin(),face.end(),bad_edge->first[1])==face.end())
           continue;
-        const auto& uses=ledger.at(canonical_face(face));
-        const auto inside=conflict[uses[0].first]?uses[0].first:uses[1].first;
-        const auto outside=inside==uses[0].first?uses[1].first:uses[0].first;
+        auto inside=invalid_cell;
+        unsigned inside_face=4U;
+        for(std::size_t cell=0U;cell<cells.size()&&inside==invalid_cell;++cell)
+          if(conflict[cell])for(unsigned omitted=0U;omitted<4U;++omitted)
+            if(canonical_face(wang_boundary_face(cells[cell],omitted))==
+               canonical_face(face)) {inside=cell;inside_face=omitted;break;}
+        if(inside==invalid_cell)continue;
+        const auto outside=neighbours[inside][inside_face].first;
+        if(outside>=cells.size())continue;
         std::cerr<<"plane_seed_raw_boundary_face query="<<query<<" face="
                  <<face[0]<<','<<face[1]<<','<<face[2]<<" inside="<<inside
                  <<" outside="<<outside<<" outside_tet="
@@ -1365,19 +1366,18 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
     }
     const auto opposite_face=[&](std::size_t cell,unsigned omitted)
         ->std::optional<unsigned> {
-      const auto face=wang_boundary_face(cells[cell],omitted);
-      const auto& uses=ledger.at(canonical_face(face));
-      // The ledger was constructed from the unpermuted cell faces, so its
-      // stored omitted index is exactly DT::getNeigOrd's result.  Do not
+      if(cell>=neighbours.size()||omitted>=4U||
+         neighbours[cell][omitted].first>=cells.size())return std::nullopt;
+      // The stored opposite index is exactly DT::getNeigOrd's result. Do not
       // reconstruct it by comparing the prepareBWFill orientation: ghost
       // normalization intentionally changes that orientation.
-      return uses[0].first==cell?uses[1].second:uses[0].second;
+      return neighbours[cell][omitted].second;
     };
     for(std::size_t i=0U;i<working.size();++i)
       for(unsigned omitted=0U;omitted<4U;++omitted) {
-        const auto face=wang_boundary_face(cells[working[i]],omitted);
-        const auto& uses=ledger.at(canonical_face(face));
-        const auto other=uses[0].first==working[i]?uses[1].first:uses[0].first;
+        const auto other=neighbours[working[i]][omitted].first;
+        if(other>=cells.size())
+          return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
         if(!conflict[other])boundary_masks[i]|=static_cast<std::uint8_t>(1U<<omitted);
       }
     std::vector<bool> adjust_queued(working.size());
@@ -1396,8 +1396,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       for(unsigned omitted=0U;omitted<4U;++omitted) {
         if((boundary_masks[index]&(1U<<omitted))==0U)continue;
         const auto face=wang_boundary_face(cells[cell],omitted);
-        const auto& uses=ledger.at(canonical_face(face));
-        const auto other=uses[0].first==cell?uses[1].first:uses[0].first;
+        const auto other=neighbours[cell][omitted].first;
+        if(other>=cells.size())
+          return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
         const auto other_index=working_index[other];
         // This is the source's `tetInfo[outtet]` cavity branch. `info==0`
         // has no protected boundary triangle, so both internal mask bits are
@@ -1423,10 +1424,9 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         for(unsigned neighbour_face=0U;neighbour_face<4U;++neighbour_face) {
           const auto neighbour=opposite_face(cell,neighbour_face);
           if(!neighbour)return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
-          const auto shared=wang_boundary_face(cells[cell],neighbour_face);
-          const auto& neighbour_uses=ledger.at(canonical_face(shared));
-          const auto outside=neighbour_uses[0].first==cell?
-              neighbour_uses[1].first:neighbour_uses[0].first;
+          const auto outside=neighbours[cell][neighbour_face].first;
+          if(outside>=cells.size())
+            return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
           const auto outside_index=working_index[outside];
           if(outside_index<working.size()&&working_live[outside_index]) {
             boundary_masks[outside_index]|=static_cast<std::uint8_t>(1U<<*neighbour);
@@ -1527,12 +1527,15 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       seed_trace->original_boundary_faces.push_back(boundary);
     std::vector<Tet> next;
     std::vector<std::size_t> next_slots;
+    std::vector<std::size_t> old_to_next(cells.size(),invalid_cell);
     for(std::size_t cell=0U;cell<cells.size();++cell)
       if(!conflict[cell]||
          (working_index[cell]<working.size()&&!working_live[working_index[cell]])) {
+        old_to_next[cell]=next.size();
         next.push_back(cells[cell]);
         next_slots.push_back(cell_slots[cell]);
       }
+    const auto retained_count=next.size();
     for(const auto face:boundary) {
       Tet child{{query,face[0],face[1],face[2]}};
       if(child[3]!=ghost&&(plane_aware(child).semantically_coplanar||
@@ -1557,19 +1560,39 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       if(seed_trace&&eighth_box_insertion)
         seed_trace->eighth_fill_cells.push_back(next.back());
     }
-    std::unordered_map<Face,unsigned,FaceHash> next_ledger;
-    next_ledger.reserve(next.size()*4U);
-    for(const auto& cell:next)
+    // Untouched retained-retained bonds remain valid by induction. Remap
+    // those indices and rebuild only the open cavity shell plus the new cone,
+    // rather than hashing every face in the complete mesh a second time.
+    std::vector<std::array<FaceUse,4>> next_neighbours(next.size());
+    for(auto& adjacent:next_neighbours)adjacent.fill(invalid_use);
+    for(std::size_t old=0U;old<cells.size();++old) {
+      const auto mapped=old_to_next[old];
+      if(mapped==invalid_cell)continue;
+      for(unsigned omitted=0U;omitted<4U;++omitted) {
+        const auto old_other=neighbours[old][omitted];
+        if(old_other.first>=old_to_next.size()||old_other.second>=4U)
+          return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
+        const auto mapped_other=old_to_next[old_other.first];
+        if(mapped_other!=invalid_cell)
+          next_neighbours[mapped][omitted]={mapped_other,old_other.second};
+      }
+    }
+    std::unordered_map<Face,FaceUses,FaceHash> changed_faces;
+    changed_faces.reserve((next.size()-retained_count)*4U+boundary.size());
+    for(std::size_t cell=0U;cell<next.size();++cell)
       for(unsigned omitted=0U;omitted<4U;++omitted)
-        ++next_ledger[canonical_face(wang_boundary_face(cell,omitted))];
-    const auto invalid_next=std::find_if(next_ledger.begin(),next_ledger.end(),
-        [](const auto& entry) { return entry.second!=2U; });
-    if(invalid_next!=next_ledger.end()) {
+        if(cell>=retained_count||
+           next_neighbours[cell][omitted].first==invalid_cell)
+          changed_faces[canonical_face(wang_boundary_face(next[cell],omitted))]
+              .push_back({cell,omitted});
+    const auto invalid_next=std::find_if(changed_faces.begin(),changed_faces.end(),
+        [](const auto& entry) { return entry.second.size()!=2U; });
+    if(invalid_next!=changed_faces.end()) {
       if(std::getenv("WANG_PLANE_PREDICATE_TRACE")!=nullptr) {
         std::cerr<<"plane_seed_commit_incidence query="<<query
                  <<" cells="<<next.size()<<" face="
                  <<invalid_next->first[0]<<','<<invalid_next->first[1]<<','
-                 <<invalid_next->first[2]<<" uses="<<invalid_next->second
+                 <<invalid_next->first[2]<<" uses="<<invalid_next->second.size()
                  <<" boundary="<<boundary.size()<<'\n';
         const auto same_face=invalid_next->first;
         for(std::size_t index=0U;index<next.size();++index)
@@ -1584,6 +1607,11 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       }
       return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
     }
+    for(const auto& [face,uses]:changed_faces) {
+      static_cast<void>(face);
+      next_neighbours[uses[0].first][uses[0].second]=uses[1];
+      next_neighbours[uses[1].first][uses[1].second]=uses[0];
+    }
     // `finishBW` deletes cavity elements after every replacement slot has
     // been allocated. Keep the same temporal ordering for later carrier
     // lookup and allocator reuse.
@@ -1594,7 +1622,8 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
         return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
       live_slots[index]=false;vacant_slots.push_back(index);
     }
-    cells=std::move(next);cell_slots=std::move(next_slots);inserted.insert(query);
+    cells=std::move(next);cell_slots=std::move(next_slots);
+    neighbours=std::move(next_neighbours);inserted.insert(query);
     if(query<original_count) insertion_anchor=query;
     if(seed_trace&&query<original_count)
       seed_trace->original_slot_stages.push_back(live_slot_snapshot());

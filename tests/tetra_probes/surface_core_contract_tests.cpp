@@ -186,6 +186,29 @@ TEST_CASE("transition-output gate requires frozen outer facets and the exact ret
   }
 }
 
+TEST_CASE("prevalidated output audit matches the complete public audit") {
+  using namespace tetra::probes;
+  const auto input=nested_tetrahedra();
+  REQUIRE(validate_surface_core_transition_input(input).accepted);
+  const auto complete=validate_surface_core_transition_output(
+      input,matching_tetrahedral_shell());
+  const auto prevalidated=
+      validate_surface_core_transition_output_assuming_valid_input(
+          input,matching_tetrahedral_shell());
+  CHECK(prevalidated.valid==complete.valid);
+  CHECK(prevalidated.failure==complete.failure);
+  CHECK(prevalidated.positive_tetrahedra==complete.positive_tetrahedra);
+  CHECK(prevalidated.unique_tetrahedra==complete.unique_tetrahedra);
+  CHECK(prevalidated.no_strict_tetrahedron_overlap==
+        complete.no_strict_tetrahedron_overlap);
+  CHECK(prevalidated.closed_two_manifold==complete.closed_two_manifold);
+  CHECK(prevalidated.consistently_oriented_shared_faces==
+        complete.consistently_oriented_shared_faces);
+  CHECK(prevalidated.frozen_outer_faces_preserved==
+        complete.frozen_outer_faces_preserved);
+  CHECK(prevalidated.retained_core_preserved==complete.retained_core_preserved);
+}
+
 TEST_CASE("surface/core output contract rejects unproven geometric parent facets") {
   using namespace tetra::probes;
   auto input=nested_tetrahedra();

@@ -1581,8 +1581,12 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
           result.output_degenerate_tetrahedra.push_back(diagnostic);
         }
         const auto validation_started=std::chrono::steady_clock::now();
-        result.output_validation=validate_surface_core_transition_output(
-            request.contract,output);
+        // materialize_canonical_plc_constraints accepted this exact contract
+        // at the start of the same transaction. Preserve the complete output
+        // audit without repeating the expensive immutable input audit.
+        result.output_validation=
+            validate_surface_core_transition_output_assuming_valid_input(
+                request.contract,output);
         result.output_validation_milliseconds=
             std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-validation_started).count();
