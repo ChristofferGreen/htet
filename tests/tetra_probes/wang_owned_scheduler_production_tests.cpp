@@ -216,6 +216,29 @@ TEST_CASE("owned scheduler retains an interior-vertex split hand-off") {
   REQUIRE(scheduler.continuation.has_value());
   CHECK(scheduler.continuation->remaining_round.empty());
 
+  WangOrderedTetMesh production_mesh(constraints.vertices.size(),{
+      {{0U,2U,3U,4U}},{{1U,3U,2U,4U}}});
+  REQUIRE(production_mesh.audit().accepted());
+  const auto production=run_wang_segment_scheduler_local_prefix(
+      constraints,production_mesh,false);
+  CHECK(production.stop==scheduler.stop);
+  CHECK(production.obstructing_vertex==scheduler.obstructing_vertex);
+  CHECK(production.lost_edges==scheduler.lost_edges);
+  CHECK(production.attempts.size()==scheduler.attempts.size());
+  CHECK(production.cells_after_attempt.empty());
+  CHECK(production.cells_after_local_pass.empty());
+  CHECK(production.mutations_after_local_pass.empty());
+  CHECK(production.features_after_local_pass.empty());
+  CHECK(production.p2t_after_local_mutation.empty());
+  CHECK(production.p2t_after_attempt.empty());
+  REQUIRE(production_mesh.cells().size()==mesh.cells().size());
+  for(std::size_t i=0;i<mesh.cells().size();++i) {
+    CHECK(production_mesh.cells()[i].deleted==mesh.cells()[i].deleted);
+    CHECK(production_mesh.cells()[i].vertices==mesh.cells()[i].vertices);
+    CHECK(production_mesh.cells()[i].neighbours==mesh.cells()[i].neighbours);
+  }
+  CHECK(production_mesh.point_to_cell()==mesh.point_to_cell());
+
   const auto promoted=promote_canonical_interior_steiner_point_to_segment(
       constraints,{{10U,20U}},50U);
   REQUIRE(promoted.accepted());

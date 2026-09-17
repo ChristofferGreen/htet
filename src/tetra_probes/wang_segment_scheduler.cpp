@@ -86,7 +86,8 @@ void trace_finite_embedding(const CanonicalPlcConstraintSet& constraints,
 WangOwnedSegmentSchedulerResult run_scheduler_prefix(
     const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh,
     bool stop_before_full_search,
-    const WangOwnedSegmentSchedulerState* resume=nullptr) {
+    const WangOwnedSegmentSchedulerState* resume=nullptr,
+    bool capture_oracle_trace=true) {
   WangOwnedSegmentSchedulerResult result;
   const WangLocalSegmentRecoveryWorkspace local_workspace(constraints);
   std::unordered_map<std::uint64_t,std::uint32_t> index_for_id;
@@ -171,37 +172,43 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
       std::vector<std::vector<std::vector<WangOrderedTetMesh::Tet>>> local_p2t;
       if(!recovered) {
         const auto forward=recover_wang_segment_by_local_flips(
-            constraints,edge.vertices,false,depth,mesh,local_workspace);
+            constraints,edge.vertices,false,depth,mesh,local_workspace,
+            capture_oracle_trace);
         trace_finite_embedding(constraints,mesh,edge.vertices,"forward");
         recovered=forward.recovered;
         if(forward.failure==WangOwnedLocalRecoveryFailure::vertex_obstruction) {
           obstructing_vertex=forward.obstructing_vertex;
           saw_vertex_obstruction=true;
         }
-        std::vector<WangOrderedTetMesh::Tet> cells_after_forward;
-        for(const auto& cell:mesh.cells())
-          if(!cell.deleted)cells_after_forward.push_back(cell.vertices);
-        local_passes.push_back(std::move(cells_after_forward));
-        local_mutations.push_back(forward.mutations);
-        local_features.push_back(forward.selected_features);
-        local_p2t.push_back(forward.p2t_after_mutations);
+        if(capture_oracle_trace) {
+          std::vector<WangOrderedTetMesh::Tet> cells_after_forward;
+          for(const auto& cell:mesh.cells())
+            if(!cell.deleted)cells_after_forward.push_back(cell.vertices);
+          local_passes.push_back(std::move(cells_after_forward));
+          local_mutations.push_back(forward.mutations);
+          local_features.push_back(forward.selected_features);
+          local_p2t.push_back(forward.p2t_after_mutations);
+        }
       }
       if(!recovered) {
         const auto reverse=recover_wang_segment_by_local_flips(
-            constraints,edge.vertices,true,depth,mesh,local_workspace);
+            constraints,edge.vertices,true,depth,mesh,local_workspace,
+            capture_oracle_trace);
         trace_finite_embedding(constraints,mesh,edge.vertices,"reverse");
         recovered=reverse.recovered;
         if(reverse.failure==WangOwnedLocalRecoveryFailure::vertex_obstruction) {
           obstructing_vertex=reverse.obstructing_vertex;
           saw_vertex_obstruction=true;
         }
-        std::vector<WangOrderedTetMesh::Tet> cells_after_reverse;
-        for(const auto& cell:mesh.cells())
-          if(!cell.deleted)cells_after_reverse.push_back(cell.vertices);
-        local_passes.push_back(std::move(cells_after_reverse));
-        local_mutations.push_back(reverse.mutations);
-        local_features.push_back(reverse.selected_features);
-        local_p2t.push_back(reverse.p2t_after_mutations);
+        if(capture_oracle_trace) {
+          std::vector<WangOrderedTetMesh::Tet> cells_after_reverse;
+          for(const auto& cell:mesh.cells())
+            if(!cell.deleted)cells_after_reverse.push_back(cell.vertices);
+          local_passes.push_back(std::move(cells_after_reverse));
+          local_mutations.push_back(reverse.mutations);
+          local_features.push_back(reverse.selected_features);
+          local_p2t.push_back(reverse.p2t_after_mutations);
+        }
       }
       if(!recovered&&full_search) {
         const auto full=recover_wang_segment_by_full_search(
@@ -219,22 +226,24 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
            static_cast<std::uint8_t>(recovered?0U:steiner_mode),
            recovered?WangOwnedSchedulerAttemptOutcome::recovered:
                      WangOwnedSchedulerAttemptOutcome::failed});
-      std::vector<WangOrderedTetMesh::Tet> cells_after;
-      for(const auto& cell:mesh.cells())
-        if(!cell.deleted)cells_after.push_back(cell.vertices);
-      result.cells_after_attempt.push_back(std::move(cells_after));
-      result.cells_after_local_pass.push_back(std::move(local_passes));
-      result.mutations_after_local_pass.push_back(std::move(local_mutations));
-      result.features_after_local_pass.push_back(std::move(local_features));
-      result.p2t_after_local_mutation.push_back(std::move(local_p2t));
-      std::vector<WangOrderedTetMesh::Tet> p2t;
-      p2t.reserve(mesh.vertex_count());
-      for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
-        const auto carrier=mesh.point_to_cell()[vertex];
-        p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
-                                  WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+      if(capture_oracle_trace) {
+        std::vector<WangOrderedTetMesh::Tet> cells_after;
+        for(const auto& cell:mesh.cells())
+          if(!cell.deleted)cells_after.push_back(cell.vertices);
+        result.cells_after_attempt.push_back(std::move(cells_after));
+        result.cells_after_local_pass.push_back(std::move(local_passes));
+        result.mutations_after_local_pass.push_back(std::move(local_mutations));
+        result.features_after_local_pass.push_back(std::move(local_features));
+        result.p2t_after_local_mutation.push_back(std::move(local_p2t));
+        std::vector<WangOrderedTetMesh::Tet> p2t;
+        p2t.reserve(mesh.vertex_count());
+        for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
+          const auto carrier=mesh.point_to_cell()[vertex];
+          p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
+                                    WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+        }
+        result.p2t_after_attempt.push_back(std::move(p2t));
       }
-      result.p2t_after_attempt.push_back(std::move(p2t));
       if(recovered)edge.info=1;
       // DT::recoverEdgebyFlip handles a free point hit before its FHC mode.
       // Preserve the exact live queue boundary here; the driver owns the PLC
@@ -324,19 +333,23 @@ WangOwnedSegmentSchedulerResult run_scheduler_prefix(
 }
 
 WangOwnedSegmentSchedulerResult run_wang_segment_scheduler_local_prefix(
-    const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh) {
-  return run_scheduler_prefix(constraints,mesh,true);
+    const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh,
+    bool capture_oracle_trace) {
+  return run_scheduler_prefix(constraints,mesh,true,nullptr,capture_oracle_trace);
 }
 
 WangOwnedSegmentSchedulerResult run_wang_segment_scheduler_pre_steiner(
-    const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh) {
-  return run_scheduler_prefix(constraints,mesh,false);
+    const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh,
+    bool capture_oracle_trace) {
+  return run_scheduler_prefix(constraints,mesh,false,nullptr,capture_oracle_trace);
 }
 
 WangOwnedSegmentSchedulerResult resume_wang_segment_scheduler_after_fhc(
     const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh,
-    const WangOwnedSegmentSchedulerState& continuation) {
-  return run_scheduler_prefix(constraints,mesh,false,&continuation);
+    const WangOwnedSegmentSchedulerState& continuation,
+    bool capture_oracle_trace) {
+  return run_scheduler_prefix(constraints,mesh,false,&continuation,
+                              capture_oracle_trace);
 }
 
 } // namespace tetra::probes

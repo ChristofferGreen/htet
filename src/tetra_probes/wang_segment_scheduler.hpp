@@ -102,14 +102,17 @@ struct WangOwnedSegmentSchedulerResult {
 [[nodiscard]] WangOwnedSegmentSchedulerResult
 run_wang_segment_scheduler_local_prefix(
     const CanonicalPlcConstraintSet& constraints,
-    WangOrderedTetMesh& mesh);
+    WangOrderedTetMesh& mesh,
+    bool capture_oracle_trace=true);
 
 // Continue the same scheduler through the owned full-search branch and stop
-// before the first FHC/Steiner operation.
+// before the first FHC/Steiner operation. Production callers may disable the
+// large oracle-only snapshots while retaining attempts and live queue state.
 [[nodiscard]] WangOwnedSegmentSchedulerResult
 run_wang_segment_scheduler_pre_steiner(
     const CanonicalPlcConstraintSet& constraints,
-    WangOrderedTetMesh& mesh);
+    WangOrderedTetMesh& mesh,
+    bool capture_oracle_trace=true);
 
 // Continue exactly after a successful mode-one FHC transaction.  The FHC
 // edge itself has recovered and is therefore not requeued; this consumes the
@@ -118,6 +121,7 @@ run_wang_segment_scheduler_pre_steiner(
 [[nodiscard]] WangOwnedSegmentSchedulerResult
 resume_wang_segment_scheduler_after_fhc(
     const CanonicalPlcConstraintSet& constraints,WangOrderedTetMesh& mesh,
-    const WangOwnedSegmentSchedulerState& continuation);
+    const WangOwnedSegmentSchedulerState& continuation,
+    bool capture_oracle_trace=true);
 
 } // namespace tetra::probes

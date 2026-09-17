@@ -218,7 +218,7 @@ class WangLocalSegmentRecoveryWorkspace {
   friend WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
       const CanonicalPlcConstraintSet&,std::array<std::uint64_t,2>,bool,
       std::size_t,WangOrderedTetMesh&,
-      const WangLocalSegmentRecoveryWorkspace&);
+      const WangLocalSegmentRecoveryWorkspace&,bool);
 };
 
 // Paper Section 3.1 local segment recovery. This is the prototype-owned
@@ -237,7 +237,8 @@ class WangLocalSegmentRecoveryWorkspace {
     bool reverse_direction,
     std::size_t search_depth,
     WangOrderedTetMesh& mesh,
-    const WangLocalSegmentRecoveryWorkspace& workspace);
+    const WangLocalSegmentRecoveryWorkspace& workspace,
+    bool capture_oracle_trace=true);
 
 // The full-search branch of recoverEdgebyFlip. It first repeats the directed
 // local path, then walks every intersected mesh feature in segment order,

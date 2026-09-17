@@ -416,6 +416,7 @@ struct Context {
   const std::unordered_set<Face,IndexArrayHash<3>>& boundary_faces;
   Edge target_segment{};
   std::optional<Face> target_facet;
+  bool capture_oracle_trace{true};
   std::vector<WangOwnedLocalMutation> mutations;
   std::vector<std::vector<WangOrderedTetMesh::Tet>> p2t_after_mutations;
   // DT::Elems.info is transient membership of the ordered stars currently
@@ -434,11 +435,12 @@ struct Context {
 
   Context(const CanonicalPlcConstraintSet& input,WangOrderedTetMesh& state,
           Edge target,const ContextLookup& lookup,
-          std::optional<Face> facet=std::nullopt)
+          std::optional<Face> facet=std::nullopt,
+          bool capture_trace=true)
       : constraints(input),mesh(state),points(lookup.points),
         index_for_id(lookup.index_for_id),boundary_edges(lookup.boundary_edges),
         boundary_faces(lookup.boundary_faces),target_segment(target),
-        target_facet(facet) {}
+        target_facet(facet),capture_oracle_trace(capture_trace) {}
 
   int topology_orientation_sign(std::uint32_t a,std::uint32_t b,
                                 std::uint32_t c,std::uint32_t d) const {
@@ -507,7 +509,7 @@ struct Context {
   bool apply_flip32(std::uint32_t first,std::uint32_t second,
                     std::size_t depth,std::uint32_t anchor,
                     const std::vector<std::uint32_t>* source_shell=nullptr) {
-    const auto before=active_count(mesh);
+    const auto before=capture_oracle_trace?active_count(mesh):0U;
     // Literal DT::flipintersectcheck(2, pc, pd, pe, pb, pa), evaluated
     // before flip32 mutates the shell.  In the author implementation, a
     // recovered triangle containing both constrained-segment endpoints is
@@ -589,15 +591,17 @@ struct Context {
         std::cerr<<'\n';
       }
     }
-    mutations.push_back({WangOwnedLocalMutation::Kind::flip32,
-                         {{first,second,0U}},0U,before,active_count(mesh),depth});
-    std::vector<WangOrderedTetMesh::Tet> p2t;
-    for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
-      const auto carrier=mesh.point_to_cell()[vertex];
-      p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
-                    WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+    if(capture_oracle_trace) {
+      mutations.push_back({WangOwnedLocalMutation::Kind::flip32,
+                           {{first,second,0U}},0U,before,active_count(mesh),depth});
+      std::vector<WangOrderedTetMesh::Tet> p2t;
+      for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
+        const auto carrier=mesh.point_to_cell()[vertex];
+        p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
+                      WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+      }
+      p2t_after_mutations.push_back(std::move(p2t));
     }
-    p2t_after_mutations.push_back(std::move(p2t));
     return true;
   }
 
@@ -605,7 +609,7 @@ struct Context {
                     std::size_t depth,Face feature,
                     WangOrderedTetMesh::Flip23Result* applied=nullptr,
                     bool check_constraint_intersection=true) {
-    const auto before=active_count(mesh);
+    const auto before=capture_oracle_trace?active_count(mesh):0U;
     const auto apex=mesh.cells()[cell].vertices[opposite];
     WangOrderedTetMesh trial=mesh;
     const auto mutation=trial.flip23(cell,opposite);
@@ -662,15 +666,17 @@ struct Context {
         std::cerr<<'\n';
       }
     }
-    mutations.push_back({WangOwnedLocalMutation::Kind::flip23,feature,apex,
-                         before,active_count(mesh),depth});
-    std::vector<WangOrderedTetMesh::Tet> p2t;
-    for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
-      const auto carrier=mesh.point_to_cell()[vertex];
-      p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
-                    WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+    if(capture_oracle_trace) {
+      mutations.push_back({WangOwnedLocalMutation::Kind::flip23,feature,apex,
+                           before,active_count(mesh),depth});
+      std::vector<WangOrderedTetMesh::Tet> p2t;
+      for(std::size_t vertex=0;vertex<mesh.vertex_count();++vertex) {
+        const auto carrier=mesh.point_to_cell()[vertex];
+        p2t.push_back(carrier>=0?mesh.cells()[static_cast<std::size_t>(carrier)].vertices:
+                      WangOrderedTetMesh::Tet{{0U,0U,0U,0U}});
+      }
+      p2t_after_mutations.push_back(std::move(p2t));
     }
-    p2t_after_mutations.push_back(std::move(p2t));
     if(applied!=nullptr)*applied=mutation;
     return true;
   }
@@ -1814,7 +1820,8 @@ WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
     const CanonicalPlcConstraintSet& constraints,
     std::array<std::uint64_t,2> segment,bool reverse_direction,
     std::size_t search_depth,WangOrderedTetMesh& mesh,
-    const WangLocalSegmentRecoveryWorkspace& workspace) {
+    const WangLocalSegmentRecoveryWorkspace& workspace,
+    bool capture_oracle_trace) {
   WangOwnedLocalRecoveryResult result;
   if(!workspace.impl_||workspace.impl_->constraints!=&constraints) {
     result.failure=WangOwnedLocalRecoveryFailure::missing_endpoint;return result;
@@ -1827,7 +1834,7 @@ WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
   }
   const auto original_mesh=mesh;
   Context context(constraints,mesh,{{first->second,second->second}},
-                  workspace.impl_->lookup);
+                  workspace.impl_->lookup,std::nullopt,capture_oracle_trace);
   const auto start=reverse_direction?second->second:first->second;
   const auto end=reverse_direction?first->second:second->second;
   for(std::size_t attempt=0;attempt<=1000U;++attempt) {
@@ -1873,7 +1880,7 @@ WangOwnedLocalRecoveryResult recover_wang_segment_by_local_flips(
     const auto selected=source_selected?source_selected:inspect_directed_feature(
         constraints,segment,active_cells(mesh),reverse_direction);
     if(!selected) {result.failure=WangOwnedLocalRecoveryFailure::walk_failed;break;}
-    result.selected_features.push_back(*selected);
+    if(capture_oracle_trace)result.selected_features.push_back(*selected);
     if(selected->kind==WangEndpointStarFeatureKind::vertex) {
       result.obstructing_vertex=selected->feature[0];
       result.failure=WangOwnedLocalRecoveryFailure::vertex_obstruction;break;

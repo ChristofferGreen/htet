@@ -9948,7 +9948,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         continuation.remaining_round.insert(continuation.remaining_round.begin(),
                                              scheduler.lost_edges.front());
         scheduler=resume_wang_segment_scheduler_after_fhc(
-            result.constraints,mesh,continuation);
+            result.constraints,mesh,continuation,false);
         scheduler_trace_begin=append_scheduler_attempts(scheduler);
       };
       result.owned_segment_obstructing_vertex=scheduler.obstructing_vertex;
@@ -10126,7 +10126,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         result.segment_scheduler_attempt_trace[scheduler_trace_begin].outcome=
             CanonicalPlcRecoveryResult::SegmentSchedulerOutcome::split;
       scheduler=resume_wang_segment_scheduler_after_fhc(
-          result.constraints,mesh,continuation);
+          result.constraints,mesh,continuation,false);
       scheduler_trace_begin=append_scheduler_attempts(scheduler);
       continue;
     }
@@ -10225,7 +10225,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
       continuation.failed_earlier_this_round.push_back(
           scheduler.lost_edges.front());
       scheduler=resume_wang_segment_scheduler_after_fhc(
-          result.constraints,mesh,continuation);
+          result.constraints,mesh,continuation,false);
       if(std::getenv("WANG_OWNED_GEOMETRY_TRACE")!=nullptr&&
          !scheduler.attempts.empty()) {
         const auto& attempt=scheduler.attempts.back();
@@ -10376,7 +10376,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         result.segment_scheduler_attempt_trace[scheduler_trace_begin].outcome=
             CanonicalPlcRecoveryResult::SegmentSchedulerOutcome::split;
       scheduler=resume_wang_segment_scheduler_after_fhc(
-          result.constraints,mesh,continuation);
+          result.constraints,mesh,continuation,false);
       scheduler_trace_begin=append_scheduler_attempts(scheduler);
       continue;
     }
@@ -10391,7 +10391,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
       // queue at its next entry, retaining failed earlier entries until the
       // current round finishes and updateFliptype can run.
       scheduler=resume_wang_segment_scheduler_after_fhc(
-          result.constraints,mesh,*scheduler.continuation);
+          result.constraints,mesh,*scheduler.continuation,false);
       if(std::getenv("WANG_OWNED_GEOMETRY_TRACE")!=nullptr&&
          !scheduler.attempts.empty()) {
         const auto& attempt=scheduler.attempts.back();
@@ -10410,7 +10410,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
   return std::pair{std::move(scheduler),owned_fhc_terminal_failure};
   };
   auto scheduler=run_wang_segment_scheduler_pre_steiner(
-      result.constraints,mesh);
+      result.constraints,mesh,false);
   trace_finite_embedding("pre-steiner");
   result.owned_segment_scheduler_invoked=true;
   auto driven_scheduler=drive_segment_scheduler(std::move(scheduler),true);
@@ -10504,7 +10504,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
           {operation.surface_edges[edge_index].vertices[1],1}};
       operation.round=1U;
       auto edge_scheduler=resume_wang_segment_scheduler_after_fhc(
-          result.constraints,mesh,operation);
+          result.constraints,mesh,operation,false);
       auto driven=drive_segment_scheduler(std::move(edge_scheduler),false);
       scheduler=std::move(driven.first);
       if(driven.second) {
