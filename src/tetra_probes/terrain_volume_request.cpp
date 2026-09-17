@@ -1303,12 +1303,15 @@ NonmatchingPlcManifestResult build_terrain_volume_plc_manifest(const TerrainVolu
   return build_nonmatching_plc_manifest(input);
 }
 
-TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
+static TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold_impl(
     const TerrainVolumeRequest& request,
     const WangConstrainedTetrahedralizationOptions& requested_options,
-    std::span<const FrozenFacetVertex> scaffold_vertices) {
+    std::span<const FrozenFacetVertex> scaffold_vertices,
+    bool input_prevalidated) {
   TerrainWangViabilityResult result;
-  auto adapted=materialize_canonical_plc_constraints(request.contract);
+  auto adapted=input_prevalidated?
+      materialize_canonical_plc_constraints_assuming_valid_input(request.contract):
+      materialize_canonical_plc_constraints(request.contract);
   result.plc_adapter_failure=adapted.failure;
   result.plc_input_failure=adapted.surface_core_failure;
   result.failing_element=adapted.failing_element;
@@ -1683,7 +1686,15 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
 TerrainWangViabilityResult run_terrain_wang_viability_experiment(
     const TerrainVolumeRequest& request,
     const WangConstrainedTetrahedralizationOptions& options) {
-  return run_terrain_wang_viability_with_scaffold(request,options,{});
+  return run_terrain_wang_viability_with_scaffold_impl(request,options,{},false);
+}
+
+TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
+    const TerrainVolumeRequest& request,
+    const WangConstrainedTetrahedralizationOptions& options,
+    std::span<const FrozenFacetVertex> scaffold_vertices) {
+  return run_terrain_wang_viability_with_scaffold_impl(
+      request,options,scaffold_vertices,false);
 }
 
 struct QualityScaffoldSelection {
@@ -1981,12 +1992,14 @@ QualityScaffoldSelection select_quality_scaffold(
   return result;
 }
 
-TerrainVolumeResult construct_terrain_volume(
+static TerrainVolumeResult construct_terrain_volume_impl(
     const TerrainVolumeRequest& request,
-    const WangConstrainedTetrahedralizationOptions& options) {
+    const WangConstrainedTetrahedralizationOptions& options,
+    bool input_prevalidated) {
   TerrainVolumeResult result;
   const auto recovery_started=std::chrono::steady_clock::now();
-  result.viability=run_terrain_wang_viability_experiment(request,options);
+  result.viability=run_terrain_wang_viability_with_scaffold_impl(
+      request,options,{},input_prevalidated);
   result.wang_recovery_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-recovery_started).count();
   result.validation=result.viability.output_validation;
@@ -2015,6 +2028,12 @@ TerrainVolumeResult construct_terrain_volume(
   result.quality=result.quality_before_repair;
   result.failure=TerrainVolumeBuildFailure::none;
   return result;
+}
+
+TerrainVolumeResult construct_terrain_volume(
+    const TerrainVolumeRequest& request,
+    const WangConstrainedTetrahedralizationOptions& options) {
+  return construct_terrain_volume_impl(request,options,false);
 }
 
 FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
@@ -2046,7 +2065,11 @@ FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
   // the first retained core tetrahedron when none is supplied.
   auto options=requested_options;
   const auto wang_started=std::chrono::steady_clock::now();
-  result.volume=construct_terrain_volume(result.request.request,options);
+  // make_four_hexahedra_terrain_volume_request accepted this exact immutable
+  // contract immediately above. Avoid repeating its expensive strict input
+  // audit while retaining every downstream Wang and output validation.
+  result.volume=construct_terrain_volume_impl(
+      result.request.request,options,true);
   result.wang_transaction_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-wang_started).count();
   if(!result.volume.accepted()) {

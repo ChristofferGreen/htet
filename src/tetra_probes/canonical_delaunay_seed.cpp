@@ -2040,14 +2040,21 @@ CanonicalPlcConstraintResult materialize_canonical_plc_constraints(const Nonmatc
 
 CanonicalPlcConstraintResult materialize_canonical_plc_constraints(
     const SurfaceCoreTransitionInput& input) {
-  CanonicalPlcConstraintResult result;
   const auto validation=validate_surface_core_transition_input(input);
   if(!validation.accepted) {
+    CanonicalPlcConstraintResult result;
     result.surface_core_failure=validation.failure;
     result.failing_element=validation.failing_element;
     result.related_element=validation.related_element;
     return result;
   }
+  return materialize_canonical_plc_constraints_assuming_valid_input(input);
+}
+
+CanonicalPlcConstraintResult
+materialize_canonical_plc_constraints_assuming_valid_input(
+    const SurfaceCoreTransitionInput& input) {
+  CanonicalPlcConstraintResult result;
   const auto id=[&](std::uint32_t index) {
     return input.stable_vertex_ids.empty()?static_cast<std::uint64_t>(index):
         input.stable_vertex_ids[index];

@@ -324,6 +324,12 @@ struct CanonicalPlcConstraintResult {
 // assume Cartesian regular-core parent records.
 [[nodiscard]] CanonicalPlcConstraintResult materialize_canonical_plc_constraints(
     const SurfaceCoreTransitionInput& input);
+// Skips only the immutable input audit. The caller must have accepted this
+// exact input with validate_surface_core_transition_input earlier in the same
+// transaction; all materialization and degeneracy checks still run.
+[[nodiscard]] CanonicalPlcConstraintResult
+materialize_canonical_plc_constraints_assuming_valid_input(
+    const SurfaceCoreTransitionInput& input);
 [[nodiscard]] CanonicalPlcConstraintResult materialize_canonical_plc_constraints(
     std::span<const FrozenFacetVertex> vertices,
     std::span<const std::array<std::uint64_t,3>> literal_faces,

@@ -422,3 +422,31 @@ TEST_CASE("surface/core PLC adapter preserves explicit rejection reasons") {
     CHECK(result.related_element>result.failing_element);
   }
 }
+
+TEST_CASE("prevalidated surface/core PLC materialization is byte-for-byte equivalent") {
+  using namespace tetra::probes;
+  const auto input=nested_tetrahedra();
+  REQUIRE(validate_surface_core_transition_input(input).accepted);
+  const auto checked=materialize_canonical_plc_constraints(input);
+  const auto prevalidated=
+      materialize_canonical_plc_constraints_assuming_valid_input(input);
+  REQUIRE(checked.accepted());
+  REQUIRE(prevalidated.accepted());
+  REQUIRE(prevalidated.constraints.vertices.size()==
+          checked.constraints.vertices.size());
+  for(std::size_t index=0U;index<checked.constraints.vertices.size();++index) {
+    const auto& left=prevalidated.constraints.vertices[index];
+    const auto& right=checked.constraints.vertices[index];
+    CHECK(left.id==right.id);
+    CHECK(left.position.x==right.position.x);
+    CHECK(left.position.y==right.position.y);
+    CHECK(left.position.z==right.position.z);
+  }
+  CHECK(prevalidated.constraints.facets==checked.constraints.facets);
+  CHECK(prevalidated.constraints.exact_affine_planes.empty());
+  CHECK(checked.constraints.exact_affine_planes.empty());
+  CHECK(prevalidated.constraints.split_vertices.empty());
+  CHECK(checked.constraints.split_vertices.empty());
+  CHECK(prevalidated.constraints.recovery_journal.empty());
+  CHECK(checked.constraints.recovery_journal.empty());
+}
