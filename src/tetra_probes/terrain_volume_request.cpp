@@ -1126,8 +1126,8 @@ TerrainVolumeRequestResult make_structured_two_hex_terrain_volume_request(
   return result;
 }
 
-TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
-    const AdvancingFrontFixture& fixture) {
+static TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request_impl(
+    const AdvancingFrontFixture& fixture,bool fixture_geometry_prevalidated) {
   TerrainVolumeRequestResult result;
   if(!fixture.audit.accepted||fixture.dc_triangles.empty()||
      fixture.core_tetrahedra.empty()||
@@ -1253,13 +1253,30 @@ TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
   for(const auto point:contract.vertices)
     extent=std::max({extent,std::abs(point.x),std::abs(point.y),std::abs(point.z)});
   contract.coordinate_scale=extent*2.0;
-  result.validation=validate_surface_core_transition_input(contract);
-  if(!result.validation.accepted) {
-    result.failure=TerrainVolumeRequestFailure::invalid_closed_contract;
-    return result;
+  if(fixture_geometry_prevalidated) {
+    // audit_advancing_front_fixture accepted this exact outer/core geometry
+    // with the full SurfaceCoreTransitionInput validator. The code above only
+    // appends deterministic stable-ID and parent-facet metadata, so repeating
+    // the quadratic self-intersection and clearance audits cannot add a new
+    // geometric fact. Public request construction still takes the full path.
+    result.validation.accepted=true;
+    result.validation.outer_boundary_edges=fixture.audit.outer_boundary_edges;
+    result.validation.outer_nonmanifold_edges=fixture.audit.outer_nonmanifold_edges;
+    result.validation.core_boundary_faces=fixture.core_boundary_triangles.size();
+  } else {
+    result.validation=validate_surface_core_transition_input(contract);
+    if(!result.validation.accepted) {
+      result.failure=TerrainVolumeRequestFailure::invalid_closed_contract;
+      return result;
+    }
   }
   result.failure=TerrainVolumeRequestFailure::none;
   return result;
+}
+
+TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
+    const AdvancingFrontFixture& fixture) {
+  return make_four_hexahedra_terrain_volume_request_impl(fixture,false);
 }
 
 TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
@@ -2052,7 +2069,8 @@ FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
   if(!result.fixture.audit.accepted) { result.total_milliseconds=
       std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count(); return result; }
   const auto request_started=std::chrono::steady_clock::now();
-  result.request=make_four_hexahedra_terrain_volume_request(result.fixture);
+  result.request=make_four_hexahedra_terrain_volume_request_impl(
+      result.fixture,true);
   result.request_milliseconds=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-request_started).count();
   if(!result.request.accepted()) {

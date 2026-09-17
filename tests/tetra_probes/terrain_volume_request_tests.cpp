@@ -308,6 +308,32 @@ TEST_CASE("contained noisy-sphere N5 prototype publishes without artificial clos
   }
 }
 
+TEST_CASE("trusted fixture request path matches full contract validation") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=5U;
+  config.core_red_depth=4U;
+  config.sphere_radius=0.20;
+  config.noise_amplitude=0.02;
+  config.noise_frequency=4.0;
+  config.core_clearance=0.03;
+
+  const auto result=construct_four_hexahedra_wang_prototype(
+      config,valid_well_restoration_options());
+  REQUIRE(result.accepted());
+  REQUIRE(result.request.validation.accepted);
+  const auto independent=validate_surface_core_transition_input(
+      result.request.request.contract);
+  CHECK(independent.accepted);
+  CHECK(independent.outer_boundary_edges==
+        result.request.validation.outer_boundary_edges);
+  CHECK(independent.outer_nonmanifold_edges==
+        result.request.validation.outer_nonmanifold_edges);
+  CHECK(independent.core_boundary_faces==
+        result.request.validation.core_boundary_faces);
+}
+
 TEST_CASE("contained noisy-sphere N8 ambiguity publishes a complete Wang volume") {
   using namespace tetra::probes;
   AdvancingFrontFixtureConfig config;
