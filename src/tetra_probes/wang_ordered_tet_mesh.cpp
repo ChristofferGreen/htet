@@ -451,12 +451,94 @@ WangOrderedTetMesh::Flip32Result WangOrderedTetMesh::flip32(
       if(key==first_key||key==second_key)return result;
     }
 
+  // A 3-to-2 flip changes only the exterior faces of its three-cell edge
+  // shell and the one new shared face.  Record those exterior bonds before
+  // retiring the shell so they can be transferred directly, matching the
+  // local update already used by flip23 rather than rebuilding every face in
+  // the complete mesh after each segment-recovery mutation.
+  using Use=std::pair<std::uint32_t,std::uint8_t>;
+  struct ExteriorUse {
+    std::int32_t neighbour{no_neighbour};
+    std::uint32_t source{};
+  };
+  std::map<Face,std::vector<Use>> old_faces;
+  for(const auto source:removed)
+    for(unsigned face=0U;face<4U;++face)
+      old_faces[face_key(face_opposite(cells_[source].vertices,face))].push_back(
+          {source,static_cast<std::uint8_t>(face)});
+  std::map<Face,ExteriorUse> exterior_neighbours;
+  for(const auto& [face,uses]:old_faces) {
+    if(uses.size()==2U)continue;
+    if(uses.size()!=1U)return result;
+    const auto [source,opposite]=uses.front();
+    const auto neighbour=cells_[source].neighbours[opposite];
+    if(neighbour>=0) {
+      if(static_cast<std::size_t>(neighbour)>=cells_.size()||
+         cells_[static_cast<std::size_t>(neighbour)].deleted||
+         removed.contains(static_cast<std::uint32_t>(neighbour))||
+         std::count(cells_[static_cast<std::size_t>(neighbour)].neighbours.begin(),
+                    cells_[static_cast<std::size_t>(neighbour)].neighbours.end(),
+                    static_cast<std::int32_t>(source))!=1)
+        return result;
+    }
+    exterior_neighbours.emplace(face,ExteriorUse{neighbour,source});
+  }
+  std::map<Face,unsigned> replacement_face_uses;
+  for(const auto& replacement:{first_replacement,second_replacement})
+    for(unsigned face=0U;face<4U;++face)
+      ++replacement_face_uses[face_key(face_opposite(replacement,face))];
+  for(const auto& [face,count]:replacement_face_uses) {
+    const auto exterior=exterior_neighbours.contains(face);
+    if((exterior&&count!=1U)||(!exterior&&count!=2U))return result;
+  }
+  if(std::ranges::any_of(exterior_neighbours,[&](const auto& exterior) {
+       return !replacement_face_uses.contains(exterior.first);
+     }))return result;
+
   result.created_cells[0]=add_cell(first_replacement);
   result.created_cells[1]=add_cell(second_replacement);
   result.erased_cells={shell[0],across_third,across_fourth};
   for(const auto slot:result.erased_cells)
     if(!erase_cell(slot))return result;
-  if(rebuild_topology()!=TopologyFailure::none)return result;
+  std::erase_if(hull_faces_,[&](const HullFace& face) {
+    return removed.contains(face.cell);
+  });
+  std::map<Face,std::vector<Use>> interior_faces;
+  for(const auto created:result.created_cells) {
+    auto& created_cell=cells_[created];
+    created_cell.neighbours.fill(no_neighbour);
+    for(unsigned face=0U;face<4U;++face) {
+      const auto ordered_face=face_opposite(created_cell.vertices,face);
+      const auto key=face_key(ordered_face);
+      if(const auto exterior=exterior_neighbours.find(key);
+         exterior!=exterior_neighbours.end()) {
+        created_cell.neighbours[face]=exterior->second.neighbour;
+        if(exterior->second.neighbour<0) {
+          hull_faces_.push_back(
+              {ordered_face,created,static_cast<std::uint8_t>(face)});
+          continue;
+        }
+        auto& adjacent=cells_[static_cast<std::size_t>(
+            exterior->second.neighbour)];
+        const auto old_neighbour=std::find(
+            adjacent.neighbours.begin(),adjacent.neighbours.end(),
+            static_cast<std::int32_t>(exterior->second.source));
+        if(old_neighbour==adjacent.neighbours.end())return result;
+        *old_neighbour=static_cast<std::int32_t>(created);
+        continue;
+      }
+      interior_faces[key].push_back(
+          {created,static_cast<std::uint8_t>(face)});
+    }
+  }
+  for(const auto& [face,uses]:interior_faces) {
+    static_cast<void>(face);
+    if(uses.size()!=2U)return result;
+    cells_[uses[0].first].neighbours[uses[0].second]=
+        static_cast<std::int32_t>(uses[1].first);
+    cells_[uses[1].first].neighbours[uses[1].second]=
+        static_cast<std::int32_t>(uses[0].first);
+  }
   point_to_cell_[first]=static_cast<std::int32_t>(result.created_cells[0]);
   point_to_cell_[second]=static_cast<std::int32_t>(result.created_cells[1]);
   point_to_cell_[third]=static_cast<std::int32_t>(result.created_cells[1]);

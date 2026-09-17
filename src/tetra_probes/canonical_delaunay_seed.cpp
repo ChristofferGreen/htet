@@ -842,6 +842,20 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
     return snapshot;
   };
   std::size_t inserted_originals=4U;
+  struct FaceUses {
+    using Use=std::pair<std::size_t,unsigned>;
+    std::array<Use,2> values{};
+    std::size_t count{};
+
+    void push_back(Use use) noexcept {
+      if(count<values.size())values[count]=use;
+      ++count;
+    }
+    [[nodiscard]] std::size_t size() const noexcept {return count;}
+    [[nodiscard]] const Use& operator[](std::size_t index) const noexcept {
+      return values[index];
+    }
+  };
   // `insertDelaunayPoints` updates its anchor to the node just inserted;
   // liveHint(anchor) then reads that node's last commitBW p2t assignment.
   // This is distinct from AddBox's physical-element carrier.
@@ -866,8 +880,12 @@ CanonicalDelaunaySeedResult build_wang_reference_seed(
       seed_trace->eighth_location_path.clear();
       seed_trace->eighth_location_result=0;
     }
-    std::unordered_map<Face,std::vector<std::pair<std::size_t,unsigned>>,
-                       FaceHash> ledger;
+    // A valid tetrahedral face has exactly two incident cells. Keep those two
+    // uses inline: allocating a separate vector for every face dominated the
+    // cold seed build while carrying no additional topology information.
+    // `count` may still exceed two so the existing incidence audit rejects a
+    // malformed complex without writing outside the fixed storage.
+    std::unordered_map<Face,FaceUses,FaceHash> ledger;
     ledger.reserve(cells.size()*4U);
     for(std::size_t cell=0U;cell<cells.size();++cell)
       for(unsigned omitted=0U;omitted<4U;++omitted) {

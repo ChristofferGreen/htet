@@ -165,6 +165,33 @@ TEST_CASE("owned ordered mesh retains the closed Cascade-FHC edge shell") {
         std::vector<std::uint32_t>{{2U,3U,4U,5U,6U,7U}});
 }
 
+TEST_CASE("owned flip32 local topology matches a complete rebuild") {
+  WangOrderedTetMesh mesh(5U,{
+      {{0U,1U,2U,3U}},{{0U,1U,3U,4U}},{{0U,1U,4U,2U}}});
+  REQUIRE(mesh.audit().accepted());
+  const auto flip=mesh.flip32(0U,1U);
+  REQUIRE(flip.accepted);
+  REQUIRE(mesh.audit().accepted());
+
+  auto rebuilt=mesh;
+  REQUIRE(rebuilt.rebuild_topology()==WangOrderedTetMesh::TopologyFailure::none);
+  REQUIRE(rebuilt.audit().accepted());
+  REQUIRE(mesh.cells().size()==rebuilt.cells().size());
+  for(std::size_t cell=0;cell<mesh.cells().size();++cell) {
+    CHECK(mesh.cells()[cell].deleted==rebuilt.cells()[cell].deleted);
+    CHECK(mesh.cells()[cell].vertices==rebuilt.cells()[cell].vertices);
+    CHECK(mesh.cells()[cell].neighbours==rebuilt.cells()[cell].neighbours);
+  }
+  CHECK(mesh.point_to_cell()==rebuilt.point_to_cell());
+  const auto hull_uses=[](const WangOrderedTetMesh& candidate) {
+    std::set<std::pair<std::uint32_t,std::uint8_t>> uses;
+    for(const auto& face:candidate.hull_faces())
+      uses.insert({face.cell,face.opposite});
+    return uses;
+  };
+  CHECK(hull_uses(mesh)==hull_uses(rebuilt));
+}
+
 TEST_CASE("owned scheduler retains an interior-vertex split hand-off") {
   CanonicalPlcConstraintSet constraints;
   constraints.vertices={
