@@ -202,6 +202,13 @@ run_wang_reverse_boundary_removal(
 tetrahedralize_wang_constrained_plc(
     const CanonicalPlcConstraintSet& plc,
     const WangConstrainedTetrahedralizationOptions& options={});
+// Skips only the embedded-PLC contact audit. The caller must have validated
+// the exact immutable source contract before materializing this PLC; all Wang
+// recovery, cleanup, boundary, region, and output audits remain unchanged.
+[[nodiscard]] WangConstrainedTetrahedralizationResult
+tetrahedralize_wang_constrained_plc_assuming_embedded_input(
+    const CanonicalPlcConstraintSet& plc,
+    const WangConstrainedTetrahedralizationOptions& options={});
 
 [[nodiscard]] CanonicalPlcConstraintResult
 materialize_wang_planar_fixture_plc(const AdvancingFrontFixture& fixture);

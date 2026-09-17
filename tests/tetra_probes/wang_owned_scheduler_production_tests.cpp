@@ -557,6 +557,16 @@ TEST_CASE("closed well recovers without stale info-two escalation") {
   CHECK(completed.reverse_boundary_restoration_complete);
   CHECK(completed.boundary_audit.accepted());
 
+  const auto embedded=
+      tetrahedralize_wang_constrained_plc_assuming_embedded_input(fixture,{});
+  REQUIRE(embedded.accepted());
+  CHECK(embedded.tetrahedra==completed.tetrahedra);
+  CHECK(embedded.recovery.tetrahedra==completed.recovery.tetrahedra);
+  CHECK(embedded.outside_tetrahedra==completed.outside_tetrahedra);
+  CHECK(embedded.transition_tetrahedra==completed.transition_tetrahedra);
+  CHECK(embedded.core_tetrahedra==completed.core_tetrahedra);
+  CHECK(embedded.boundary_audit.accepted());
+
   // Disabling the unused split fallback must not perturb this flip-only path.
   WangConstrainedTetrahedralizationOptions restricted;
   restricted.restricted_viability_experiment=true;

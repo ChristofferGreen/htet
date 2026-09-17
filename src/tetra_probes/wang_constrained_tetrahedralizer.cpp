@@ -529,13 +529,17 @@ WangReverseBoundaryRemovalResult run_wang_reverse_boundary_removal(
   return result;
 }
 
-WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
+static WangConstrainedTetrahedralizationResult
+tetrahedralize_wang_constrained_plc_impl(
     const CanonicalPlcConstraintSet& plc,
-    const WangConstrainedTetrahedralizationOptions& options) {
+    const WangConstrainedTetrahedralizationOptions& options,
+    bool embedded_input_prevalidated) {
   WangConstrainedTetrahedralizationResult result;
-  if(plc.vertices.size()<4U||plc.facets.size()<4U||literal_faces(plc).size()!=plc.facets.size())
+  if(plc.vertices.size()<4U||plc.facets.size()<4U||
+     literal_faces(plc).size()!=plc.facets.size())
     return result;
-  if(has_open_boundary_vertex_on_literal_edge(plc))return result;
+  if(!embedded_input_prevalidated&&has_open_boundary_vertex_on_literal_edge(plc))
+    return result;
   // Wang et al. (2026), Algorithm 2 lines 1-22. This dedicated entry point
   // deliberately refuses incomplete paper stages rather than falling through
   // to the repository's experimental constrained-recovery algorithms.
@@ -678,6 +682,19 @@ WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
   }
   result.failure=WangConstrainedTetrahedralizationFailure::none;
   return result;
+}
+
+WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
+    const CanonicalPlcConstraintSet& plc,
+    const WangConstrainedTetrahedralizationOptions& options) {
+  return tetrahedralize_wang_constrained_plc_impl(plc,options,false);
+}
+
+WangConstrainedTetrahedralizationResult
+tetrahedralize_wang_constrained_plc_assuming_embedded_input(
+    const CanonicalPlcConstraintSet& plc,
+    const WangConstrainedTetrahedralizationOptions& options) {
+  return tetrahedralize_wang_constrained_plc_impl(plc,options,true);
 }
 
 CanonicalPlcConstraintResult materialize_wang_planar_fixture_plc(

@@ -1355,7 +1355,11 @@ static TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold_impl(
   // request for final validation, but pass the source-equivalent PLC here.
   auto wang_constraints=adapted.constraints;
   wang_constraints.exact_affine_planes.clear();
-  const auto wang=tetrahedralize_wang_constrained_plc(wang_constraints,options);
+  // The exact immutable surface/core contract was accepted immediately above
+  // (or by this transaction's explicitly prevalidated prototype entry). Its
+  // embeddedness proof subsumes Wang's generic O(vertices*edges) contact guard.
+  const auto wang=tetrahedralize_wang_constrained_plc_assuming_embedded_input(
+      wang_constraints,options);
   const double publication_volume_epsilon=request.contract.coordinate_scale*
       request.contract.coordinate_scale*request.contract.coordinate_scale*1.0e-13;
   const auto stage_volume_diagnostics=[&](
