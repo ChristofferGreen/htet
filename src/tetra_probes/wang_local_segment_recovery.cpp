@@ -368,6 +368,7 @@ struct Context {
   std::set<Edge> boundary_edges;
   std::set<Face> boundary_faces;
   Edge target_segment{};
+  std::optional<Face> target_facet;
   std::vector<WangOwnedLocalMutation> mutations;
   std::vector<std::vector<WangOrderedTetMesh::Tet>> p2t_after_mutations;
   // DT::Elems.info is transient membership of the ordered stars currently
@@ -376,8 +377,10 @@ struct Context {
   std::map<std::uint32_t,unsigned> star_membership;
 
   explicit Context(const CanonicalPlcConstraintSet& input,
-                   WangOrderedTetMesh& state,Edge target)
-      : constraints(input),mesh(state),target_segment(target) {
+                   WangOrderedTetMesh& state,Edge target,
+                   std::optional<Face> facet=std::nullopt)
+      : constraints(input),mesh(state),target_segment(target),
+        target_facet(facet) {
     points.reserve(input.vertices.size());
     for(std::size_t i=0;i<input.vertices.size();++i) {
       points.push_back(input.vertices[i].position);
@@ -497,7 +500,10 @@ struct Context {
         if(vertex!=first&&vertex!=second&&vertex!=restored[1]) {pe=vertex;break;}
     }
     const auto ghost=mesh.ghost_vertex();
-    if(ghost<0||pe!=static_cast<std::uint32_t>(ghost)) {
+    // During face recovery DT leaves `seg` unset. Its fliptype-2 guard has no
+    // facet branch, so a 3-to-2 candidate is not tested against an arbitrary
+    // anchor edge of the target triangle.
+    if(!target_facet&&(ghost<0||pe!=static_cast<std::uint32_t>(ghost))) {
       const Face triangle{{restored[0],restored[1],pe}};
       const auto contact=segment_triangle_contact(points[target_segment[0]],
           points[target_segment[1]],points[triangle[0]],points[triangle[1]],
@@ -579,7 +585,18 @@ struct Context {
         if(contains(second_created,vertex)&&contains(third_created,vertex)&&
            edge_count<2U)new_edge[edge_count++]=vertex;
       if(edge_count!=2U)return false;
-      if(edge_key(new_edge)!=edge_key(target_segment)) {
+      if(target_facet) {
+        const auto contact=segment_triangle_contact(
+            points[new_edge[0]],points[new_edge[1]],
+            points[(*target_facet)[0]],points[(*target_facet)[1]],
+            points[(*target_facet)[2]]);
+        // Literal flipintersectcheck(fliptype=1) with `fac` active: node-only
+        // contact is allowed, while an edge/interior/face crossing rejects.
+        if(contact==SegmentTriangleContact::face||
+           contact==SegmentTriangleContact::edge01||
+           contact==SegmentTriangleContact::edge12||
+           contact==SegmentTriangleContact::edge20)return false;
+      } else if(edge_key(new_edge)!=edge_key(target_segment)) {
         for(const auto vertex:feature) {
           const auto contact=segment_triangle_contact(
               points[target_segment[0]],points[target_segment[1]],
@@ -1891,7 +1908,7 @@ WangOwnedFacetFlipRecoveryResult recover_wang_facet_by_flip_split(
     });
   };
   if(is_face()) {result.recovered=true;return result;}
-  Context context(constraints,mesh,{{target[0],target[1]}});
+  Context context(constraints,mesh,{{target[0],target[1]}},target);
   // Literal DT::recoverFacebyFlip_Split(..., 0): retry the three directed
   // facet edges after each successful removeEdge transaction.
   for(unsigned restart=0U;restart<=1000U;++restart) {
@@ -1985,7 +2002,7 @@ WangOwnedFacetFlipRecoveryResult recover_wang_facet_by_local_flips(
     });
   };
   if(is_face()) {result.recovered=true;return result;}
-  Context context(constraints,mesh,{{target[0],target[1]}});
+  Context context(constraints,mesh,{{target[0],target[1]}},target);
   const auto intersects_target=[&](Edge edge) {
     const auto contact=segment_triangle_contact(
         context.points[edge[0]],context.points[edge[1]],

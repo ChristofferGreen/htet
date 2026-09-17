@@ -280,10 +280,32 @@ int perturbed_in_sphere_sign(const std::vector<Point>& points, const Tet& tet,
 
 int wang_source_in_sphere_sign(
     const std::vector<Point>& points,const Tet& tet,std::uint32_t query) {
-  const auto exact=sign(exact_in_sphere(
-      as_vec3(points[tet[0]]),as_vec3(points[tet[1]]),
-      as_vec3(points[tet[2]]),as_vec3(points[tet[3]]),
-      as_vec3(points[query])));
+  // The source-compatible seed used to enter arbitrary-precision arithmetic
+  // for every Bowyer--Watson conflict predicate.  That makes the depth-six
+  // prototype spend minutes rebuilding a well-conditioned seed.  Use the
+  // same deliberately conservative long-double filter as sphere_contains:
+  // it decides only determinants that are many rounding-error bounds from
+  // zero.  Near a cospherical case we retain the exact determinant and,
+  // below, the literal DT node-index tie break, so this cannot change the
+  // source-defined ambiguous-case behavior.
+  const auto& a=points[tet[0]];
+  const auto& b=points[tet[1]];
+  const auto& c=points[tet[2]];
+  const auto& d=points[tet[3]];
+  const auto& q=points[query];
+  const auto filtered=in_sphere_filter(a,b,c,d,q);
+  long double magnitude=1.0L;
+  for(const auto vertex:tet) {
+    const auto& point=points[vertex];
+    magnitude=std::max({magnitude,std::abs(point.x),std::abs(point.y),
+                        std::abs(point.z)});
+  }
+  magnitude=std::max({magnitude,std::abs(q.x),std::abs(q.y),std::abs(q.z)});
+  const auto exact=std::abs(filtered)>
+          4096.0L*LDBL_EPSILON*magnitude*magnitude*magnitude*magnitude
+      ? (filtered<0.0L?-1:1)
+      : sign(exact_in_sphere(as_vec3(a),as_vec3(b),as_vec3(c),as_vec3(d),
+                             as_vec3(q)));
   if(exact!=0)return exact;
 
   // Literal source tie break from DT::insphere_s: sort by node index (the
@@ -442,16 +464,13 @@ std::vector<std::uint32_t> wang_hilbert_order(
     std::size_t middle{};
     if(size>=64U) {++depth;middle=static_cast<std::size_t>(size*.125);
       multiscale(middle,depth);}
-    // Grow the guard band from the input extents, rather than multiplying
-    // absolute coordinates.  The latter changes Hilbert partition planes on
-    // a pure translation and leaks the arbitrary world origin into the
-    // deterministic insertion schedule.
+    // Keep the pinned author's guard-box construction exactly.  Although
+    // multiplying absolute bounds makes this ordering translation-sensitive,
+    // it is observable control state for the source insertion schedule.
     const auto lower=std::array<double,3>{{
-        lo.x-(hi.x-lo.x)*0.005,lo.y-(hi.y-lo.y)*0.005,
-        lo.z-(hi.z-lo.z)*0.005}};
+        lo.x*1.01,lo.y*1.01,lo.z*1.01}};
     const auto upper=std::array<double,3>{{
-        hi.x+(hi.x-lo.x)*0.005,hi.y+(hi.y-lo.y)*0.005,
-        hi.z+(hi.z-lo.z)*0.005}};
+        hi.x*1.01,hi.y*1.01,hi.z*1.01}};
     hilbert(middle,size-middle,0,0,lower,upper,0U);
   };
   unsigned multiscale_depth{};multiscale(count,multiscale_depth);
@@ -583,8 +602,35 @@ CanonicalDelaunaySeedResult build_canonical_delaunay_seed(
       if(std::any_of(boundary_edges.begin(),boundary_edges.end(),[](const auto& entry){return entry.second!=2U;}))
         return invalid(CanonicalDelaunaySeedInvalidReason::nonmanifold_cavity);
     }
-    for(const auto& [key,value]:faces)if(value.second==1U){(void)key;Tet child{{value.first[0],value.first[1],value.first[2],point}};if(semantically_coplanar(child))return invalid(CanonicalDelaunaySeedInvalidReason::degenerate_final_cell);retained.push_back(child);}if(retained.size()>in.maximum_tetrahedra)return refuse(CanonicalDelaunaySeedFailure::resource_limit);cells=std::move(retained);}
-  std::vector<Tet> result;for(auto cell:cells)if(std::all_of(cell.begin(),cell.end(),[&](auto i){return i<input.size();})){const auto v=robust_orient(points,cell);if(v==0||semantically_coplanar(cell))return invalid(CanonicalDelaunaySeedInvalidReason::degenerate_final_cell);if(v<0)std::swap(cell[0],cell[1]);result.push_back(cell);}if(result.empty())return invalid(CanonicalDelaunaySeedInvalidReason::no_final_cells);
+    for(const auto& [key,value]:faces)if(value.second==1U) {
+      (void)key;
+      Tet child{{value.first[0],value.first[1],value.first[2],point}};
+      // An unexpanded semantic-zero cone can only lie on the current mesh
+      // boundary: every interior face has an adjacent cell and was absorbed
+      // above.  Omitting this zero-volume cone is the standard insertion-on-
+      // face operation; cones over the other cavity faces expose the
+      // subdivided boundary triangles without changing the occupied volume.
+      if(!semantically_coplanar(child))retained.push_back(child);
+    }
+    if(retained.size()>in.maximum_tetrahedra)
+      return refuse(CanonicalDelaunaySeedFailure::resource_limit);
+    cells=std::move(retained);
+  }
+  std::vector<Tet> result;
+  for(auto cell:cells)
+    if(std::all_of(cell.begin(),cell.end(),[&](auto i){return i<input.size();})) {
+      const auto v=robust_orient(points,cell);
+      if(v==0)return invalid(
+          CanonicalDelaunaySeedInvalidReason::degenerate_final_cell);
+      // Source-coplanar cells are symbolic boundary bookkeeping, not volume
+      // cells. Drop them and let the incidence, convex-hull and volume audits
+      // below prove that the remaining complex is a complete 3D seed.
+      if(semantically_coplanar(cell))continue;
+      if(v<0)std::swap(cell[0],cell[1]);
+      result.push_back(cell);
+    }
+  if(result.empty())return invalid(
+      CanonicalDelaunaySeedInvalidReason::no_final_cells);
   std::set<std::uint32_t> used;std::map<Face,std::vector<std::pair<std::size_t,std::uint32_t>>> ledger;long double cell_volume=0;
   for(std::size_t ti=0;ti<result.size();++ti){const auto& t=result[ti];for(auto v:t)used.insert(v);cell_volume+=orient(points[t[0]],points[t[1]],points[t[2]],points[t[3]])/6;for(unsigned omit=0;omit<4U;++omit){Face f{};unsigned n=0;for(unsigned j=0;j<4U;++j)if(j!=omit)f[n++]=t[j];ledger[face_key(f)].push_back({ti,t[omit]});}}
   if(used.size()!=input.size()||std::any_of(ledger.begin(),ledger.end(),[](const auto& e){return e.second.empty()||e.second.size()>2U;}))return invalid(CanonicalDelaunaySeedInvalidReason::incidence_or_coverage);
@@ -2657,6 +2703,41 @@ bool constraint_mesh_is_valid(const CanonicalPlcConstraintSet& constraints,
   return true;
 }
 
+// Publication repair is specifically entered with zero-volume or declared-
+// plane cells, so its intake gate must distinguish those repair targets from
+// unrelated topology corruption.  Shared faces between two ordinary cells
+// still require opposite orientations; a zero orientation is tolerated only
+// long enough for the bounded repair to remove its incident bad cell.
+bool constraint_mesh_is_repairable(const CanonicalPlcConstraintSet& constraints,
+                                   const std::vector<Tet>& mesh) {
+  std::vector<Point> points;points.reserve(constraints.vertices.size());
+  for(const auto& vertex:constraints.vertices)
+    points.push_back({vertex.position.x,vertex.position.y,vertex.position.z});
+  std::set<Tet> unique;
+  std::map<Face,std::vector<std::uint32_t>> opposites;
+  for(const auto& cell:mesh) {
+    for(const auto vertex:cell)if(vertex>=points.size())return false;
+    auto key=cell;std::sort(key.begin(),key.end());
+    if(!unique.insert(key).second)return false;
+    for(unsigned omitted=0U;omitted<4U;++omitted) {
+      Face face{};unsigned cursor{};
+      for(unsigned corner=0U;corner<4U;++corner)
+        if(corner!=omitted)face[cursor++]=cell[corner];
+      opposites[face_key(face)].push_back(cell[omitted]);
+    }
+  }
+  for(const auto& [face,uses]:opposites) {
+    if(uses.empty()||uses.size()>2U)return false;
+    if(uses.size()!=2U)continue;
+    const auto first=robust_orient(points[face[0]],points[face[1]],
+                                   points[face[2]],points[uses[0]]);
+    const auto second=robust_orient(points[face[0]],points[face[1]],
+                                    points[face[2]],points[uses[1]]);
+    if(first!=0&&second!=0&&first==second)return false;
+  }
+  return true;
+}
+
 // Validate only the geometry touched by a local transaction.  A complete
 // pairwise overlap audit is quadratic in the several-thousand-cell private
 // seed and is needlessly repeated for every recovery attempt.  Any overlap
@@ -2665,13 +2746,69 @@ bool constraint_mesh_is_valid(const CanonicalPlcConstraintSet& constraints,
 bool constraint_mesh_mutation_is_valid(
     const CanonicalPlcConstraintSet& constraints,
     const std::vector<Tet>& original,const std::vector<Tet>& candidate) {
-  if(!constraint_mesh_is_valid(constraints,candidate))return false;
   const auto canonical=[](Tet cell){std::sort(cell.begin(),cell.end());return cell;};
-  std::set<Tet> original_cells;
-  for(const auto& cell:original)original_cells.insert(canonical(cell));
+  std::map<Tet,Tet> original_cells;
+  for(const auto& cell:original)original_cells.emplace(canonical(cell),cell);
+  std::set<Tet> candidate_cells;
   std::vector<std::size_t> added;
-  for(std::size_t i=0U;i<candidate.size();++i)
-    if(!original_cells.contains(canonical(candidate[i])))added.push_back(i);
+  for(std::size_t i=0U;i<candidate.size();++i) {
+    for(const auto vertex:candidate[i])
+      if(vertex>=constraints.vertices.size())return false;
+    const auto key=canonical(candidate[i]);
+    if(!candidate_cells.insert(key).second)return false;
+    if(!original_cells.contains(key))added.push_back(i);
+  }
+  // The caller supplies a valid original mesh.  Rechecking every unchanged
+  // cell with exact predicates for every local trial dominated the N5 Wang
+  // transaction.  Only added cells can introduce a new zero-volume or
+  // semantically coplanar tetrahedron.
+  for(const auto index:added) {
+    std::array<Vec3,4> positions{};
+    std::array<std::uint64_t,4> stable{};
+    for(unsigned corner=0U;corner<4U;++corner) {
+      positions[corner]=constraints.vertices[candidate[index][corner]].position;
+      stable[corner]=constraints.vertices[candidate[index][corner]].id;
+    }
+    const auto orientation=evaluate_plane_aware_orientation(
+        positions,stable,constraints.exact_affine_planes);
+    if(orientation.geometric_sign==0||orientation.semantically_coplanar)
+      return false;
+  }
+  std::set<Face> touched_faces;
+  const auto touch=[&](const Tet& cell) {
+    for(unsigned omitted=0U;omitted<4U;++omitted) {
+      Face face{};unsigned cursor{};
+      for(unsigned corner=0U;corner<4U;++corner)
+        if(corner!=omitted)face[cursor++]=cell[corner];
+      touched_faces.insert(face_key(face));
+    }
+  };
+  for(const auto index:added)touch(candidate[index]);
+  std::vector<Point> robust_points;robust_points.reserve(constraints.vertices.size());
+  for(const auto& vertex:constraints.vertices)
+    robust_points.push_back({vertex.position.x,vertex.position.y,vertex.position.z});
+  std::map<Face,std::vector<std::uint32_t>> opposites;
+  for(const auto& cell:candidate)
+    for(unsigned omitted=0U;omitted<4U;++omitted) {
+      Face face{};unsigned cursor{};
+      for(unsigned corner=0U;corner<4U;++corner)
+        if(corner!=omitted)face[cursor++]=cell[corner];
+      const auto key=face_key(face);
+      if(touched_faces.contains(key))opposites[key].push_back(cell[omitted]);
+    }
+  for(const auto& face:touched_faces) {
+    const auto found=opposites.find(face);
+    const std::vector<std::uint32_t> empty;
+    const auto& uses=found==opposites.end()?empty:found->second;
+    if(uses.empty()||uses.size()>2U)return false;
+    if(uses.size()==2U) {
+      const auto first=robust_orient(robust_points[face[0]],robust_points[face[1]],
+                                     robust_points[face[2]],robust_points[uses[0]]);
+      const auto second=robust_orient(robust_points[face[0]],robust_points[face[1]],
+                                      robust_points[face[2]],robust_points[uses[1]]);
+      if(first==0||second==0||first==second)return false;
+    }
+  }
   const auto points=[&](const Tet& cell) {
     return std::array<Vec3,4>{{constraints.vertices[cell[0]].position,
                               constraints.vertices[cell[1]].position,
@@ -9464,18 +9601,10 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
     return result;
   std::sort(result.constraints.vertices.begin(),result.constraints.vertices.end(),
             [](const auto& left,const auto& right){return left.id<right.id;});
-  // Constraint recovery is queue ordered. Canonicalize that queue by stable
-  // facet identity before the seed is built, so equivalent vertex-storage
-  // permutations cannot change subsequent edge/facet recovery decisions.
-  std::sort(result.constraints.facets.begin(),result.constraints.facets.end(),
-            [](const auto& left,const auto& right) {
-              auto left_key=left.vertices,right_key=right.vertices;
-              std::sort(left_key.begin(),left_key.end());
-              std::sort(right_key.begin(),right_key.end());
-              if(left_key!=right_key)return left_key<right_key;
-              if(left.parent!=right.parent)return left.parent<right.parent;
-              return left.source_vertices<right.source_vertices;
-            });
+  // The author scheduler discovers boundary edges in the supplied facet
+  // order.  This ordering is mutable control state (not merely presentation),
+  // so retain the materialized PLC order rather than replacing it with a
+  // project-specific stable-ID sort.
   const auto original_vertex_count=result.constraints.vertices.size();
   if(options.use_enclosing_cage&&!result.constraints.vertices.empty()) {
     auto low=result.constraints.vertices.front().position;
@@ -10324,9 +10453,83 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
           cells.push_back(cell.vertices);
       return cells;
     };
-    auto facet_state=inspect_canonical_plc_tetrahedra(
-        result.constraints,finite_before_facet());
-    std::vector<std::array<std::uint64_t,3>> pending=facet_state.missing_facets;
+    const auto missing_facets_in_surface_order=[&]() {
+      using GeometryPoint=std::array<double,3>;
+      using GeometryFace=std::array<GeometryPoint,3>;
+      using StableFace=std::array<std::uint64_t,3>;
+      const auto geometry_point=[](const Vec3& point) {
+        return GeometryPoint{{point.x,point.y,point.z}};
+      };
+      const auto finite=finite_before_facet();
+      const auto inspection=inspect_canonical_plc_tetrahedra(
+          result.constraints,finite);
+      std::map<std::uint64_t,GeometryPoint> current_geometry;
+      for(const auto& vertex:result.constraints.vertices)
+        current_geometry.emplace(vertex.id,geometry_point(vertex.position));
+      const auto face_geometry=[&](const StableFace& face,
+                                   const auto& positions)
+          -> std::optional<GeometryFace> {
+        GeometryFace geometry{};
+        for(unsigned corner=0U;corner<3U;++corner) {
+          const auto found=positions.find(face[corner]);
+          if(found==positions.end())return std::nullopt;
+          geometry[corner]=found->second;
+        }
+        std::sort(geometry.begin(),geometry.end());
+        return geometry;
+      };
+      // Validation identifies the actual unrecovered parent patches.  It is
+      // deliberately keyed canonically, whereas recoverFacesPass consumes
+      // SurTris in the input surface order.  Join those two views by literal
+      // geometry: stable identities can differ after coincident-node remap,
+      // but the author's observable queue still follows mesh.F order.
+      std::multimap<GeometryFace,StableFace> missing_by_geometry;
+      for(const auto& face:inspection.missing_facets) {
+        const auto geometry=face_geometry(face,current_geometry);
+        if(geometry)missing_by_geometry.emplace(*geometry,face);
+      }
+      std::map<std::uint64_t,GeometryPoint> initial_geometry;
+      for(const auto& vertex:initial.vertices)
+        initial_geometry.emplace(vertex.id,geometry_point(vertex.position));
+      std::vector<StableFace> missing;
+      missing.reserve(inspection.missing_facets.size());
+      for(const auto& facet:initial.facets) {
+        const auto geometry=face_geometry(facet.vertices,initial_geometry);
+        if(!geometry)continue;
+        const auto found=missing_by_geometry.find(*geometry);
+        if(found==missing_by_geometry.end())continue;
+        missing.push_back(found->second);
+        missing_by_geometry.erase(found);
+      }
+      // A split facet may have no literal counterpart in the initial stream.
+      // Preserve it rather than silently weakening the recovery obligation.
+      for(const auto& [geometry,face]:missing_by_geometry) {
+        (void)geometry;
+        missing.push_back(face);
+      }
+      return missing;
+    };
+    // recoverFacesPass scans SurTris in its stored surface order.  The PLC
+    // inspection report groups parents in a map and is deliberately
+    // canonical for validation, so using its missing_facets list here changes
+    // the author's mutation schedule even when the segment mesh is identical.
+    std::vector<std::array<std::uint64_t,3>> pending=
+        missing_facets_in_surface_order();
+    const auto snapshot_facet_cells=[&]() {
+      std::vector<std::array<std::uint64_t,4>> cells;
+      for(const auto& cell:mesh.cells()) {
+        if(cell.deleted||std::find(cell.vertices.begin(),cell.vertices.end(),
+            static_cast<std::uint32_t>(mesh.ghost_vertex()))!=cell.vertices.end())
+          continue;
+        std::array<std::uint64_t,4> ids{};
+        for(unsigned corner=0U;corner<4U;++corner)
+          ids[corner]=result.constraints.vertices[cell.vertices[corner]].id;
+        std::sort(ids.begin(),ids.end());
+        cells.push_back(ids);
+      }
+      std::sort(cells.begin(),cells.end());
+      return cells;
+    };
     for(std::size_t round=0U;!pending.empty()&&round<=100U;++round) {
       const auto count=pending.size();
       std::size_t successes{};
@@ -10342,15 +10545,16 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         result.facet_recovery_attempt_trace.push_back({key,0U});
         const auto recovered=recover_wang_facet_by_flip_split(
             result.constraints,facet->vertices,0U,mesh);
+        result.initial_facet_cells_after_attempt.push_back(
+            snapshot_facet_cells());
         result.facet_local_edge_removal_attempts+=recovered.edge_removal_attempts;
         result.facet_local_edge_removals+=recovered.edge_removals;
         if(recovered.recovered)++successes;
         else pending.push_back(key);
       }
       if(successes==0U)break;
-      facet_state=inspect_canonical_plc_tetrahedra(
-          result.constraints,finite_before_facet());
-      pending=facet_state.missing_facets;
+      // recoverFaces retains the failed entries in the same FIFO.  It does
+      // not rebuild or canonically sort the queue after a successful round.
     }
     // recoverFacesPass makes one final level-1000 pass after a zero-success
     // flip-only round. recoverFace first retries recoverFacebyFlip_Split and
@@ -11694,7 +11898,7 @@ repair_canonical_plc_publication_degeneracies(
   result.constraints=constraints;
   result.tetrahedra=tetrahedra;
   if(!std::isfinite(coordinate_scale)||coordinate_scale<=0.0||
-     !constraint_mesh_is_valid(constraints,tetrahedra)) return result;
+     !constraint_mesh_is_repairable(constraints,tetrahedra)) return result;
   const double floor=coordinate_scale*coordinate_scale*coordinate_scale*1.0e-13;
   const auto semantically_coplanar=[&](const CanonicalPlcConstraintSet& current,
                                        const Tet& tet) {
@@ -11799,14 +12003,14 @@ repair_canonical_plc_publication_degeneracies(
         ++result.invalid_candidate_mesh_rejections;
         return;
       }
+      if(count_bad(result.constraints,candidate.tetrahedra)>=original) {
+        if(bounded_cavity) ++result.bounded_cavity_non_improving_rejections;
+        return;
+      }
       const auto inspection=inspect_canonical_plc_tetrahedra(
           result.constraints,candidate.tetrahedra);
       if(!inspection.accepted()) {
         if(bounded_cavity) ++result.bounded_cavity_inspection_rejections;
-        return;
-      }
-      if(count_bad(result.constraints,candidate.tetrahedra)>=original) {
-        if(bounded_cavity) ++result.bounded_cavity_non_improving_rejections;
         return;
       }
       improved=candidate.tetrahedra;

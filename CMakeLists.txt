@@ -167,6 +167,12 @@ target_link_libraries(wang_fixture_surface_export PRIVATE tetra_probe_support)
 target_compile_options(wang_fixture_surface_export PRIVATE
   $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
 
+# Reproducible layer-by-layer VTK package for the contained-sphere N5 demo.
+add_executable(wang_prototype_demo_export scripts/wang_prototype_demo_export.cpp)
+target_link_libraries(wang_prototype_demo_export PRIVATE tetra_probe_support)
+target_compile_options(wang_prototype_demo_export PRIVATE
+  $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic -Wconversion>)
+
 add_executable(wang_prototype_reference_probe
   scripts/wang_prototype_reference_probe.cpp)
 target_link_libraries(wang_prototype_reference_probe PRIVATE tetra_probe_support)

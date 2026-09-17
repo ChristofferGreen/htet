@@ -1037,6 +1037,10 @@ struct CanonicalPlcRecoveryResult {
     std::uint8_t info{};
   };
   std::vector<FacetRecoveryAttempt> facet_recovery_attempt_trace;
+  // Canonical stable-ID cells after each initial info==0 facet attempt.
+  // Retained for source differential diagnosis; not used by recovery.
+  std::vector<std::vector<std::array<std::uint64_t,4>>>
+      initial_facet_cells_after_attempt;
   std::size_t attempted_facet_recoveries{};
   std::size_t facet_local_intersecting_edges{};
   std::size_t facet_local_edge_removal_attempts{};

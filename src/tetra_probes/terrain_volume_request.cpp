@@ -178,6 +178,58 @@ double minimum_tetrahedron_dihedral(
   return minimum;
 }
 
+// Optimize an owned point strictly inside one already validated transition
+// tetrahedron.  Barycentric coordinate transfers make this a continuous,
+// bounded pattern search while preserving the tetrahedron as its convex
+// kernel.  The objective is the complete quality tuple of the four local
+// tetrahedra induced by the point, so coordinate sampling itself requires no
+// additional Wang recovery.
+Vec3 optimize_transition_kernel_point(
+    const std::vector<Vec3>& points,const std::array<std::uint32_t,4>& tet) {
+  std::array<Vec3,4> corners{};
+  for(std::size_t corner=0U;corner<4U;++corner) corners[corner]=points[tet[corner]];
+  const auto position=[&](const std::array<double,4>& weights) {
+    Vec3 point{};
+    for(std::size_t corner=0U;corner<4U;++corner)
+      point=point+corners[corner]*weights[corner];
+    return point;
+  };
+  const auto local_quality=[&](const std::array<double,4>& weights) {
+    SurfaceCoreTransitionInput input;
+    input.vertices.assign(corners.begin(),corners.end());
+    input.vertices.push_back(position(weights));
+    SurfaceCoreTransitionOutput output;
+    output.tetrahedra={{{4U,1U,2U,3U}},{{0U,4U,2U,3U}},
+                       {{0U,1U,4U,3U}},{{0U,1U,2U,4U}}};
+    const std::array<TerrainVolumeCellRegion,4> regions{{
+        TerrainVolumeCellRegion::transition,TerrainVolumeCellRegion::transition,
+        TerrainVolumeCellRegion::transition,TerrainVolumeCellRegion::transition}};
+    return evaluate_terrain_volume_quality(input,output,regions);
+  };
+  std::array<double,4> best{{0.25,0.25,0.25,0.25}};
+  auto best_quality=local_quality(best);
+  double step=0.125;
+  constexpr double minimum_weight=0.025;
+  for(std::size_t refinement=0U;refinement<6U;++refinement) {
+    bool improved{};
+    for(std::size_t destination=0U;destination<4U;++destination)
+      for(std::size_t source=0U;source<4U;++source) {
+        if(destination==source||best[source]-step<minimum_weight) continue;
+        auto candidate=best;
+        candidate[destination]+=step;
+        candidate[source]-=step;
+        const auto candidate_quality=local_quality(candidate);
+        if(quality_score(candidate_quality)<quality_score(best_quality)) {
+          best=candidate;
+          best_quality=candidate_quality;
+          improved=true;
+        }
+      }
+    if(!improved) step*=0.5;
+  }
+  return position(best);
+}
+
 struct CavityFillDiagnostics {
   std::size_t& search_nodes;
   std::size_t& completed_fills;
@@ -1077,7 +1129,9 @@ TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
     const AdvancingFrontFixture& fixture) {
   TerrainVolumeRequestResult result;
   if(!fixture.audit.accepted||fixture.dc_triangles.empty()||
-     fixture.finite_boundary_triangles.empty()||fixture.core_tetrahedra.empty()) {
+     fixture.core_tetrahedra.empty()||
+     (!fixture.audit.dc_closed_two_manifold&&
+      fixture.finite_boundary_triangles.empty())) {
     result.failure=TerrainVolumeRequestFailure::invalid_surface;
     return result;
   }
@@ -1091,29 +1145,14 @@ TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
   contract.vertices=fixture.outer_vertices;
   contract.stable_vertex_ids.reserve(fixture.outer_vertices.size()+
                                      fixture.core_vertices.size());
-  std::set<std::uint64_t> stable_ids;
-  const auto append_stable_id=[&](std::uint64_t source,std::uint64_t domain) {
-    const auto id=namespaced_id(source,domain);
-    if(!stable_ids.insert(id).second)return false;
-    contract.stable_vertex_ids.push_back(id);
-    return true;
-  };
   for(std::size_t vertex=0U;vertex<fixture.outer_vertices.size();++vertex)
-    if(!append_stable_id(vertex+1U,1U)) {
-      result.failure=TerrainVolumeRequestFailure::stable_id_collision;
-      return result;
-    }
+    contract.stable_vertex_ids.push_back(vertex+1U);
   const auto core_offset=static_cast<std::uint32_t>(contract.vertices.size());
   contract.vertices.insert(contract.vertices.end(),fixture.core_vertices.begin(),
                            fixture.core_vertices.end());
-  for(std::size_t vertex=0U;vertex<fixture.core_vertices.size();++vertex) {
-    const auto source=vertex<fixture.core_vertex_keys.size()
-        ?world_vertex_stable_id(fixture.core_vertex_keys[vertex]):vertex+1U;
-    if(!append_stable_id(source,3U)) {
-      result.failure=TerrainVolumeRequestFailure::stable_id_collision;
-      return result;
-    }
-  }
+  for(std::size_t vertex=0U;vertex<fixture.core_vertices.size();++vertex)
+    contract.stable_vertex_ids.push_back(
+        static_cast<std::uint64_t>(core_offset)+vertex+1U);
 
   const auto facet_identity=[&](const Face& face) {
     FrozenFacetIdentity identity{{contract.stable_vertex_ids[face[0]],
@@ -1135,6 +1174,7 @@ TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
   }
   request.frozen_dc_faces=fixture.dc_triangles.size();
   request.artificial_closure_faces=fixture.finite_boundary_triangles.size();
+  request.wang_uses_boundary_core_only=true;
 
   contract.retained_core_tetrahedra.reserve(fixture.core_tetrahedra.size());
   for(auto tet:fixture.core_tetrahedra) {
@@ -1148,6 +1188,65 @@ TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
         {facet_identity(face),FacetPreservationMode::literal});
   }
   request.explicit_local_core_tetrahedra=fixture.core_tetrahedra.size();
+
+  const auto append_plane=[&](ExactAffinePlaneConstruction construction,
+                              std::vector<std::uint64_t> ids) {
+    std::sort(ids.begin(),ids.end());
+    ids.erase(std::unique(ids.begin(),ids.end()),ids.end());
+    if(ids.size()>=4U)
+      contract.exact_affine_planes.push_back({construction,std::move(ids)});
+  };
+  // Zero-noise dual contouring is an exact source plane.  The QEF/crossing
+  // evaluation leaves a few last-bit z differences, but those must not turn
+  // four frozen surface vertices into a fictitious three-dimensional cell.
+  if(fixture.config.noise_amplitude==0.0) {
+    int exponent{};
+    const double fraction=std::frexp(fixture.config.surface_height,&exponent);
+    constexpr int mantissa_bits=53;
+    auto numerator=static_cast<std::int64_t>(
+        std::ldexp(fraction,mantissa_bits));
+    int denominator_exponent=mantissa_bits-exponent;
+    while(denominator_exponent>0&&(numerator%2)==0) {
+      numerator/=2;
+      --denominator_exponent;
+    }
+    if(denominator_exponent>=0&&denominator_exponent<64) {
+      std::vector<std::uint64_t> ids;
+      ids.reserve(fixture.dc_vertices.size());
+      for(std::size_t vertex=0U;vertex<fixture.dc_vertices.size();++vertex)
+        ids.push_back(contract.stable_vertex_ids[vertex]);
+      append_plane({ExactAffinePlaneConstructionKind::world_axis_rational,
+                    2U,numerator,std::uint64_t{1U}<<denominator_exponent},
+                   std::move(ids));
+    }
+  }
+  // The retained core comes from dyadic coordinates in one affine reference
+  // tetrahedron.  Preserve those source planes explicitly; otherwise binary
+  // evaluation can create zero-thickness Delaunay cells from a planar lattice
+  // quad before the immutable core is reattached.
+  struct Dyadic {
+    std::int64_t numerator{};
+    std::uint8_t exponent{};
+    auto operator<=>(const Dyadic&) const = default;
+  };
+  const auto reduced=[](std::int64_t numerator,std::uint8_t exponent) {
+    while(exponent>0U&&(numerator%2)==0) { numerator/=2;--exponent; }
+    return Dyadic{numerator,exponent};
+  };
+  std::map<std::pair<unsigned,Dyadic>,std::vector<std::uint64_t>> core_planes;
+  for(std::size_t vertex=0U;vertex<fixture.core_vertex_keys.size();++vertex) {
+    const auto& key=fixture.core_vertex_keys[vertex];
+    const std::array<std::int64_t,3> coordinate{{key.x,key.y,key.z}};
+    for(unsigned axis=0U;axis<3U;++axis)
+      core_planes[{axis,reduced(coordinate[axis],key.denominator_exponent)}]
+          .push_back(contract.stable_vertex_ids[core_offset+vertex]);
+  }
+  for(auto& [key,ids]:core_planes) {
+    const auto [axis,coordinate]=key;
+    append_plane({ExactAffinePlaneConstructionKind::structured_reference_axis,
+                  static_cast<std::uint8_t>(axis),coordinate.numerator,
+                  std::uint64_t{1U}<<coordinate.exponent},std::move(ids));
+  }
 
   double extent=1.0;
   for(const auto point:contract.vertices)
@@ -1214,6 +1313,17 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
   result.failing_element=adapted.failing_element;
   result.related_element=adapted.related_element;
   if(!adapted.accepted())return result;
+  if(request.wang_uses_boundary_core_only) {
+    // The complete addressed core is reattached byte-for-byte after shell
+    // recovery.  Its interior vertices cannot constrain a shell bounded only
+    // by the exposed core faces, so keep them out of Wang's seed.
+    std::set<std::uint64_t> boundary_vertex_ids;
+    for(const auto& facet:adapted.constraints.facets)
+      boundary_vertex_ids.insert(facet.vertices.begin(),facet.vertices.end());
+    std::erase_if(adapted.constraints.vertices,[&](const auto& vertex) {
+      return !boundary_vertex_ids.contains(vertex.id);
+    });
+  }
   std::set<std::uint64_t> ids;
   for(const auto& vertex:adapted.constraints.vertices) ids.insert(vertex.id);
   for(const auto& vertex:scaffold_vertices) {
@@ -1234,7 +1344,14 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
     for(const auto vertex:tet)witness=witness+request.contract.vertices[vertex];
     options.core_witnesses.push_back(witness/4.0);
   }
-  const auto wang=tetrahedralize_wang_constrained_plc(adapted.constraints,options);
+  // Exact-plane provenance is an application-level assertion about frozen
+  // geometry.  Wang and the pinned implementation receive only point
+  // coordinates and PLC facets, so it must not alter their seed predicates,
+  // cavity selection, or flip decisions.  Keep the declaration on the
+  // request for final validation, but pass the source-equivalent PLC here.
+  auto wang_constraints=adapted.constraints;
+  wang_constraints.exact_affine_planes.clear();
+  const auto wang=tetrahedralize_wang_constrained_plc(wang_constraints,options);
   const double publication_volume_epsilon=request.contract.coordinate_scale*
       request.contract.coordinate_scale*request.contract.coordinate_scale*1.0e-13;
   const auto stage_volume_diagnostics=[&](
@@ -1270,6 +1387,7 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
       wang.recovery.segment_stage_constraints,
       wang.recovery.segment_stage_tetrahedra);
   result.wang_failure=wang.failure;
+  result.region_failure=wang.region_failure;
   result.recovery_failure=wang.recovery.failure;
   result.seed_failure=wang.recovery.seed_failure;
   result.seed_invalid_reason=wang.recovery.seed_invalid_reason;
@@ -1399,6 +1517,7 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
       output.tetrahedra.push_back(cell);
     }
     if(assembled) {
+      const auto assembled_transition_tetrahedra=output.tetrahedra.size();
       output.tetrahedra.insert(output.tetrahedra.end(),
           request.contract.retained_core_tetrahedra.begin(),
           request.contract.retained_core_tetrahedra.end());
@@ -1449,7 +1568,7 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
             diagnostic.positions[corner]=output_positions[tet[corner]];
           }
           diagnostic.absolute_six_volume=six;
-          diagnostic.region=cell<wang.tetrahedra.size()?
+          diagnostic.region=cell<assembled_transition_tetrahedra?
               TerrainVolumeCellRegion::transition:
               TerrainVolumeCellRegion::retained_core;
           result.output_degenerate_tetrahedra.push_back(diagnostic);
@@ -1460,7 +1579,7 @@ TerrainWangViabilityResult run_terrain_wang_viability_with_scaffold(
         result.assembled_tetrahedra=output.tetrahedra.size();
         if(result.output_validation.valid) {
           result.output=std::move(output);
-          result.output_cell_regions.assign(wang.tetrahedra.size(),
+          result.output_cell_regions.assign(assembled_transition_tetrahedra,
               TerrainVolumeCellRegion::transition);
           result.output_cell_regions.insert(result.output_cell_regions.end(),
               request.contract.retained_core_tetrahedra.size(),
@@ -1554,12 +1673,24 @@ TerrainWangViabilityResult run_terrain_wang_viability_experiment(
 
 struct QualityScaffoldSelection {
   TerrainWangViabilityResult viability;
+  TerrainVolumeQuality quality_before_repair;
   TerrainVolumeQuality quality;
   std::size_t candidates{};
   std::size_t recovery_valid{};
   bool selected{};
+  bool continuous_trial_valid{};
+  TerrainVolumeQuality continuous_trial_quality;
   std::vector<Vec3> selected_positions;
   std::vector<std::uint64_t> selected_ids;
+  std::size_t repair_candidates{};
+  std::size_t repair_accepted{};
+  std::size_t cavity_search_nodes{};
+  std::size_t cavity_completed_fills{};
+  std::size_t cavity_changed_fills{};
+  std::size_t cavity_steiner_fills{};
+  std::size_t cavity_geometry_valid_fills{};
+  std::size_t cavity_quality_improving_fills{};
+  std::size_t cavity_trial_limit_rejections{};
 };
 
 QualityScaffoldSelection select_quality_scaffold(
@@ -1583,7 +1714,12 @@ QualityScaffoldSelection select_quality_scaffold(
   for(std::size_t cell=0U;cell<baseline.output.tetrahedra.size();++cell) {
     if(cell>=baseline.output_cell_regions.size()||
        baseline.output_cell_regions[cell]!=TerrainVolumeCellRegion::transition) continue;
-    worst.push_back({minimum_tetrahedron_dihedral(points,baseline.output.tetrahedra[cell]),cell});
+    const auto minimum=minimum_tetrahedron_dihedral(
+        points,baseline.output.tetrahedra[cell]);
+    // A zero-volume publication tie has no three-dimensional convex kernel;
+    // derive continuous candidates from the worst genuine transition stars.
+    if(!std::isfinite(minimum)||minimum<=1.0e-8)continue;
+    worst.push_back({minimum,cell});
   }
   std::sort(worst.begin(),worst.end());
   std::vector<Bridge> bridges;
@@ -1622,6 +1758,92 @@ QualityScaffoldSelection select_quality_scaffold(
     }
     return std::nullopt;
   };
+  // Optimize several independent bad-cell kernels locally, then submit the
+  // resulting fan in one expensive recovery.  Every kernel comes from the
+  // already whole-volume-validated baseline, every optimized point remains
+  // strictly inside that kernel, and the fan can only be selected after a
+  // second complete recovery and output validation.
+  std::vector<FrozenFacetVertex> optimized_kernel_fan;
+  for(std::size_t index=0U;
+      index<std::min<std::size_t>(16U,worst.size());++index) {
+    const auto id=next_scaffold_id();
+    if(!id) return result;
+    const auto point=optimize_transition_kernel_point(
+        points,baseline.output.tetrahedra[worst[index].second]);
+    const auto duplicate=std::any_of(
+        optimized_kernel_fan.begin(),optimized_kernel_fan.end(),
+        [&](const auto& candidate) {
+          const auto delta=candidate.position-point;
+          return delta.x*delta.x+delta.y*delta.y+delta.z*delta.z<=1.0e-24;
+        });
+    if(!duplicate) optimized_kernel_fan.push_back({*id,point});
+  }
+  constexpr std::array<std::size_t,5> fan_sizes{{1U,2U,4U,8U,16U}};
+  for(const auto requested_size:fan_sizes) {
+    const auto fan_size=std::min(requested_size,optimized_kernel_fan.size());
+    if(fan_size==0U||(requested_size>optimized_kernel_fan.size()&&
+       requested_size!=fan_sizes.back()))continue;
+    ++result.candidates;
+    const auto fan=std::span<const FrozenFacetVertex>(optimized_kernel_fan)
+        .first(fan_size);
+    auto trial=run_terrain_wang_viability_with_scaffold(
+        request,options,fan);
+    if(trial.output_validation.valid&&!trial.output.tetrahedra.empty()) {
+      ++result.recovery_valid;
+      auto trial_output=trial.output;
+      auto trial_regions=trial.output_cell_regions;
+      auto quality=evaluate_terrain_volume_quality(
+          request.contract,trial.output,trial.output_cell_regions);
+      const auto quality_before_repair=quality;
+      std::size_t repair_candidates{},repair_accepted{};
+      std::size_t search_nodes{},completed_fills{},changed_fills{},steiner_fills{},
+          geometry_valid_fills{},quality_improving_fills{},trial_limit_rejections{};
+      CavityFillDiagnostics diagnostics{search_nodes,completed_fills,changed_fills,
+          steiner_fills,geometry_valid_fills,quality_improving_fills,
+          trial_limit_rejections};
+      constexpr std::size_t maximum_quality_mutations=12U;
+      for(std::size_t mutation=0U;
+          mutation<maximum_quality_mutations&&!quality.diagnostic_thresholds_met;
+          ++mutation) {
+        const auto accepted_before=repair_accepted;
+        repair_transition_quality_once(request.contract,trial_output,trial_regions,
+            quality,repair_candidates,repair_accepted,diagnostics);
+        if(repair_accepted==accepted_before)break;
+      }
+      if(!result.continuous_trial_valid||
+         quality_score(quality)<quality_score(result.continuous_trial_quality)) {
+        result.continuous_trial_valid=true;
+        result.continuous_trial_quality=quality;
+      }
+      if(!baseline.output_validation.valid||
+         quality_score(quality)<quality_score(result.quality)) {
+        trial.output=std::move(trial_output);
+        trial.output_cell_regions=std::move(trial_regions);
+        trial.output_validation=validate_surface_core_transition_output(
+            request.contract,trial.output);
+        result.viability=std::move(trial);
+        result.quality_before_repair=quality_before_repair;
+        result.quality=quality;
+        result.selected=true;
+        result.repair_candidates=repair_candidates;
+        result.repair_accepted=repair_accepted;
+        result.cavity_search_nodes=search_nodes;
+        result.cavity_completed_fills=completed_fills;
+        result.cavity_changed_fills=changed_fills;
+        result.cavity_steiner_fills=steiner_fills;
+        result.cavity_geometry_valid_fills=geometry_valid_fills;
+        result.cavity_quality_improving_fills=quality_improving_fills;
+        result.cavity_trial_limit_rejections=trial_limit_rejections;
+        result.selected_positions.clear();
+        result.selected_ids.clear();
+        for(const auto& vertex:fan) {
+          result.selected_positions.push_back(vertex.position);
+          result.selected_ids.push_back(vertex.id);
+        }
+      }
+    }
+  }
+  if(!baseline.output_validation.valid)return result;
   for(std::size_t pair=0U;pair<pairs;++pair) for(const auto weight:weights) {
     const auto id=next_scaffold_id();
     if(!id) return result;
@@ -1762,67 +1984,14 @@ TerrainVolumeResult construct_terrain_volume(
     result.failure=TerrainVolumeBuildFailure::output_validation_failed;
     return result;
   }
-  // Keep the validated recovery artifact available while the pre-recovery
-  // scaffold selector derives bridges from its actual worst transition stars.
+  // The publishable artifact is precisely the validated Wang output plus the
+  // immutable explicit core. Quality is measured below, but it does not
+  // select a different tetrahedralizer or reject valid geometry.
   result.output=result.viability.output;
   result.cell_regions=result.viability.output_cell_regions;
   result.quality_before_repair=evaluate_terrain_volume_quality(
       request.contract,result.output,result.cell_regions);
-  const auto scaffold=select_quality_scaffold(
-      request,options,result.viability,result.quality_before_repair);
-  result.quality_scaffold_candidates=scaffold.candidates;
-  result.quality_scaffold_recovery_valid=scaffold.recovery_valid;
-  result.quality_scaffold_selected=scaffold.selected;
-  result.quality_scaffold_selected_positions=scaffold.selected_positions;
-  result.quality_scaffold_selected_ids=scaffold.selected_ids;
-  if(scaffold.selected) {
-    result.viability=scaffold.viability;
-    result.output=result.viability.output;
-    result.cell_regions=result.viability.output_cell_regions;
-    result.validation=result.viability.output_validation;
-    result.quality_before_repair=scaffold.quality;
-  }
   result.quality=result.quality_before_repair;
-  // Rebuild the local incidence after every accepted transaction.  The bound
-  // is deliberately small and deterministic: it prevents quality repair from
-  // becoming an unbounded alternative tetrahedralizer while permitting a
-  // short sequence of independently validated improvements.
-  constexpr std::size_t maximum_quality_mutations=12U;
-  CavityFillDiagnostics cavity_diagnostics{
-      result.quality_cavity_fill_search_nodes,
-      result.quality_cavity_fill_completed_fills,
-      result.quality_cavity_fill_changed_fills,
-      result.quality_cavity_fill_steiner_fills,
-      result.quality_cavity_fill_geometry_valid_fills,
-      result.quality_cavity_fill_quality_improving_fills,
-      result.quality_cavity_fill_trial_limit_rejections};
-  for(std::size_t mutation=0U;
-      mutation<maximum_quality_mutations&&!result.quality.diagnostic_thresholds_met;
-      ++mutation) {
-    const auto accepted_before=result.quality_repair_accepted;
-    repair_transition_quality_once(request.contract,result.output,result.cell_regions,
-                                   result.quality,result.quality_repair_candidates,
-                                   result.quality_repair_accepted,
-                                   cavity_diagnostics);
-    if(result.quality_repair_accepted==accepted_before) break;
-  }
-  result.validation=validate_surface_core_transition_output(
-      request.contract,result.output);
-  if(!result.validation.valid) {
-    result.output={};
-    result.cell_regions.clear();
-    result.failure=TerrainVolumeBuildFailure::output_validation_failed;
-    return result;
-  }
-  // Geometry validation alone is not publication approval.  Once the bounded
-  // quality stage has run, retain its measurements but refuse an output that
-  // still violates the complete volume-quality contract.
-  if(!result.quality.diagnostic_thresholds_met) {
-    result.output={};
-    result.cell_regions.clear();
-    result.failure=TerrainVolumeBuildFailure::quality_gate_rejected;
-    return result;
-  }
   result.failure=TerrainVolumeBuildFailure::none;
   return result;
 }
@@ -1839,14 +2008,13 @@ FourHexahedraWangPrototypeResult construct_four_hexahedra_wang_prototype(
     result.failure=FourHexahedraWangPrototypeFailure::request_rejected;
     return result;
   }
+  // The retained fixture core is one closed connected component.  Region
+  // classification therefore needs one interior witness, not one witness per
+  // retained tetrahedron.  Supplying every centroid makes classification
+  // quadratic in the recovered mesh without adding any information; the
+  // Wang entry point below deterministically derives the single witness from
+  // the first retained core tetrahedron when none is supplied.
   auto options=requested_options;
-  if(options.core_witnesses.empty()) {
-    options.core_witnesses.reserve(fixture.core_tetrahedra.size());
-    for(const auto tet:fixture.core_tetrahedra)
-      options.core_witnesses.push_back((fixture.core_vertices[tet[0]]+
-          fixture.core_vertices[tet[1]]+fixture.core_vertices[tet[2]]+
-          fixture.core_vertices[tet[3]])/4.0);
-  }
   result.volume=construct_terrain_volume(result.request.request,options);
   if(!result.volume.accepted()) {
     result.failure=FourHexahedraWangPrototypeFailure::terrain_volume_rejected;

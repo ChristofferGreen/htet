@@ -10,17 +10,42 @@
 
 namespace tetra::probes {
 
+enum class AdvancingFrontFieldKind : std::uint8_t {
+  heightfield,
+  contained_noisy_sphere,
+};
+
 struct AdvancingFrontFixtureConfig {
+  AdvancingFrontFieldKind field_kind{AdvancingFrontFieldKind::heightfield};
   unsigned int grid_resolution{10U};
   unsigned int core_red_depth{4U};
   double surface_height{0.14};
+  // Used by contained_noisy_sphere.  The builder rejects an envelope which
+  // could reach the root tetrahedron boundary.
+  double sphere_radius{0.20};
   double noise_amplitude{0.075};
   double noise_frequency{3.5};
   double core_clearance{0.055};
 };
 
+// A red split halves the regular hierarchy tetrahedron edge.  The contained
+// sphere prototype uses this policy to keep the implicit core no coarser than
+// the requested DC grid and to reserve a half-cell material-side transition
+// band.  It is intentionally separate from the generic fixture config so
+// other probes can choose their own controlled core.
+struct AdvancingFrontCoreSizing {
+  unsigned int red_depth{};
+  double tetrahedron_edge_length{};
+  double clearance{};
+};
+
+[[nodiscard]] AdvancingFrontCoreSizing advancing_front_core_sizing(
+    unsigned int grid_resolution);
+
 struct AdvancingFrontCavityAudit {
   bool finite_vertices{};
+  bool dc_closed_two_manifold{};
+  bool dc_consistently_oriented{};
   bool outer_closed_two_manifold{};
   bool outer_consistently_oriented{};
   bool outer_no_self_intersections{};
@@ -32,6 +57,7 @@ struct AdvancingFrontCavityAudit {
   bool accepted{};
   std::size_t dc_boundary_edges{};
   std::size_t dc_nonmanifold_edges{};
+  std::size_t artificial_closure_faces{};
   std::size_t outer_boundary_edges{};
   std::size_t outer_nonmanifold_edges{};
   std::size_t core_boundary_edges{};
@@ -40,6 +66,8 @@ struct AdvancingFrontCavityAudit {
   double outer_volume{};
   double core_volume{};
   double cavity_volume{};
+  double minimum_core_tetrahedron_edge_length{};
+  double maximum_core_tetrahedron_edge_length{};
 };
 
 struct AdvancingFrontFixture {

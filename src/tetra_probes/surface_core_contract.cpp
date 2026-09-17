@@ -1,4 +1,5 @@
 #include "tetra_probes/surface_core_contract.hpp"
+#include "tetra_probes/exact_binary_predicates.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,9 +37,6 @@ using Tet = std::array<std::uint32_t, 4>;
 }
 [[nodiscard]] double dot(Vec3 a, Vec3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
 [[nodiscard]] double length(Vec3 a) { return std::sqrt(dot(a,a)); }
-[[nodiscard]] double six_volume(Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
-  return dot(b-a, cross(c-a, d-a));
-}
 [[nodiscard]] bool finite(Vec3 p) {
   return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
@@ -173,7 +171,7 @@ using Tet = std::array<std::uint32_t, 4>;
   return result;
 }
 [[nodiscard]] bool strict_tetrahedra_overlap_impl(const std::array<Vec3,4>& a,
-                                                    const std::array<Vec3,4>& b) {
+                                                   const std::array<Vec3,4>& b) {
   for (std::size_t axis=0; axis<3U; ++axis) {
     const auto coordinate=[axis](Vec3 p) { return axis==0U?p.x:(axis==1U?p.y:p.z); };
     double amin=coordinate(a[0]), amax=amin, bmin=coordinate(b[0]), bmax=bmin;
@@ -193,6 +191,65 @@ using Tet = std::array<std::uint32_t, 4>;
     if (amax<=bmin+tolerance || bmax<=amin+tolerance) return false;
   }
   return true;
+}
+
+struct TetrahedronBounds {
+  Vec3 minimum{};
+  Vec3 maximum{};
+};
+
+[[nodiscard]] TetrahedronBounds tetrahedron_bounds(
+    const std::array<Vec3,4>& tetrahedron) {
+  TetrahedronBounds bounds{tetrahedron[0],tetrahedron[0]};
+  for(std::size_t corner=1U;corner<tetrahedron.size();++corner) {
+    const auto point=tetrahedron[corner];
+    bounds.minimum.x=std::min(bounds.minimum.x,point.x);
+    bounds.minimum.y=std::min(bounds.minimum.y,point.y);
+    bounds.minimum.z=std::min(bounds.minimum.z,point.z);
+    bounds.maximum.x=std::max(bounds.maximum.x,point.x);
+    bounds.maximum.y=std::max(bounds.maximum.y,point.y);
+    bounds.maximum.z=std::max(bounds.maximum.z,point.z);
+  }
+  return bounds;
+}
+
+[[nodiscard]] bool bounds_overlap(const TetrahedronBounds& first,
+                                  const TetrahedronBounds& second) {
+  return first.maximum.x>second.minimum.x&&second.maximum.x>first.minimum.x&&
+      first.maximum.y>second.minimum.y&&second.maximum.y>first.minimum.y&&
+      first.maximum.z>second.minimum.z&&second.maximum.z>first.minimum.z;
+}
+
+[[nodiscard]] TetrahedronBounds triangle_bounds(
+    const std::array<Vec3,3>& triangle) {
+  TetrahedronBounds bounds{triangle[0],triangle[0]};
+  for(std::size_t corner=1U;corner<triangle.size();++corner) {
+    const auto point=triangle[corner];
+    bounds.minimum.x=std::min(bounds.minimum.x,point.x);
+    bounds.minimum.y=std::min(bounds.minimum.y,point.y);
+    bounds.minimum.z=std::min(bounds.minimum.z,point.z);
+    bounds.maximum.x=std::max(bounds.maximum.x,point.x);
+    bounds.maximum.y=std::max(bounds.maximum.y,point.y);
+    bounds.maximum.z=std::max(bounds.maximum.z,point.z);
+  }
+  return bounds;
+}
+
+[[nodiscard]] double bounds_distance_squared(const TetrahedronBounds& first,
+                                              const TetrahedronBounds& second) {
+  const auto axis_distance=[](double first_minimum,double first_maximum,
+                              double second_minimum,double second_maximum) {
+    if(first_maximum<second_minimum)return second_minimum-first_maximum;
+    if(second_maximum<first_minimum)return first_minimum-second_maximum;
+    return 0.0;
+  };
+  const double x=axis_distance(first.minimum.x,first.maximum.x,
+                               second.minimum.x,second.maximum.x);
+  const double y=axis_distance(first.minimum.y,first.maximum.y,
+                               second.minimum.y,second.maximum.y);
+  const double z=axis_distance(first.minimum.z,first.maximum.z,
+                               second.minimum.z,second.maximum.z);
+  return x*x+y*y+z*z;
 }
 
 }  // namespace
@@ -360,7 +417,6 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
 
   std::set<Face> unique_outer;
   std::map<Edge, std::vector<int>> outer_edges;
-  const double area_epsilon = input.coordinate_scale * input.coordinate_scale * 1.0e-14;
   for (std::size_t i=0; i<input.outer_faces.size(); ++i) {
     const auto triangle=input.outer_faces[i];
     for (const auto id:triangle) if (id >= input.vertices.size()) return fail(SurfaceCoreInputFailure::invalid_index, i);
@@ -377,7 +433,10 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
     if (key[0] == key[1] || key[1] == key[2]) return fail(SurfaceCoreInputFailure::repeated_vertex, i);
     const auto normal=cross(input.vertices[triangle[1]]-input.vertices[triangle[0]],
                             input.vertices[triangle[2]]-input.vertices[triangle[0]]);
-    if (dot(normal,normal) <= area_epsilon*area_epsilon) return fail(SurfaceCoreInputFailure::degenerate_outer_face, i);
+    // Nonzero area is a validity condition.  A scale-relative area floor is
+    // a mesh-quality policy and must not decide whether Wang output may be
+    // published.
+    if (dot(normal,normal) == 0.0) return fail(SurfaceCoreInputFailure::degenerate_outer_face, i);
     for (std::size_t corner=0; corner<3U; ++corner) {
       const Vec3 first=input.vertices[triangle[(corner+1U)%3U]]-input.vertices[triangle[corner]];
       const Vec3 second=input.vertices[triangle[(corner+2U)%3U]]-input.vertices[triangle[corner]];
@@ -386,8 +445,6 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
       if (i==0U&&corner==0U) result.minimum_outer_triangle_angle_degrees=degrees;
       else result.minimum_outer_triangle_angle_degrees=std::min(result.minimum_outer_triangle_angle_degrees,degrees);
     }
-    if (result.minimum_outer_triangle_angle_degrees<input.minimum_outer_triangle_angle_degrees)
-      return fail(SurfaceCoreInputFailure::outer_quality_below_contract, i);
     if (!unique_outer.insert(key).second) return fail(SurfaceCoreInputFailure::duplicate_outer_face, i);
     const auto add_edge=[&](std::uint32_t first,std::uint32_t second) {
       outer_edges[edge(first,second)].push_back(first<second ? 1 : -1);
@@ -420,14 +477,15 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
   struct CoreFaceUse { std::uint32_t opposite{}; int sign{}; };
   std::set<Tet> unique_core;
   std::map<Face, std::vector<CoreFaceUse>> core_faces;
-  const double volume_epsilon = input.coordinate_scale*input.coordinate_scale*input.coordinate_scale*1.0e-13;
   for (std::size_t i=0; i<input.retained_core_tetrahedra.size(); ++i) {
     const auto cell=input.retained_core_tetrahedra[i];
     for (const auto id:cell) if (id >= input.vertices.size()) return fail(SurfaceCoreInputFailure::invalid_index, i);
     const auto key=tet(cell);
     if (key[0]==key[1] || key[1]==key[2] || key[2]==key[3]) return fail(SurfaceCoreInputFailure::repeated_vertex, i);
-    const double volume=six_volume(input.vertices[cell[0]],input.vertices[cell[1]],input.vertices[cell[2]],input.vertices[cell[3]]);
-    if (std::abs(volume) <= volume_epsilon) return fail(SurfaceCoreInputFailure::degenerate_core_tetrahedron, i);
+    if (exact_orientation_3d(input.vertices[cell[0]],input.vertices[cell[1]],
+                             input.vertices[cell[2]],input.vertices[cell[3]])==
+        ExactPredicateSign::zero)
+      return fail(SurfaceCoreInputFailure::degenerate_core_tetrahedron, i);
     if (!unique_core.insert(key).second) return fail(SurfaceCoreInputFailure::duplicate_core_tetrahedron, i);
     for (std::size_t opposite=0; opposite<4U; ++opposite) {
       Face oriented{}; std::size_t cursor{};
@@ -461,16 +519,25 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
     for(const auto& parent:input.core_parent_facets) { auto id=parent.identity;std::sort(id.vertex_ids.begin(),id.vertex_ids.end());given.insert(id); }
     if(expected!=given||given.size()!=input.core_parent_facets.size()) return fail(SurfaceCoreInputFailure::invalid_facet_contract,0U);
   }
-  for (const auto cell:input.retained_core_tetrahedra)
-    for (const auto vertex:cell)
-      if (!strictly_inside_closed_surface(input.vertices,input.outer_faces,input.vertices[vertex]))
-        return fail(SurfaceCoreInputFailure::core_not_strictly_nested, vertex);
+  std::set<std::uint32_t> unique_core_vertices;
+  for(const auto cell:input.retained_core_tetrahedra)
+    unique_core_vertices.insert(cell.begin(),cell.end());
+  for(const auto vertex:unique_core_vertices)
+    if(!strictly_inside_closed_surface(input.vertices,input.outer_faces,
+                                       input.vertices[vertex]))
+      return fail(SurfaceCoreInputFailure::core_not_strictly_nested,vertex);
   // A vertex-only nesting test is unsound for a concave outer PLC: a core
   // tetrahedron can exit and re-enter the enclosed volume between vertices.
   // Keep a clearance proportional to the declared coordinate scale.  This
   // exceeds the output validator's volume tolerance for the tested terrain
   // family and rejects touching interfaces before recovery can create slivers.
   const double required_clearance=input.coordinate_scale*1.0e-10;
+  std::vector<TetrahedronBounds> outer_bounds;
+  outer_bounds.reserve(input.outer_faces.size());
+  for(const auto outer:input.outer_faces)
+    outer_bounds.push_back(triangle_bounds({{input.vertices[outer[0]],
+                                             input.vertices[outer[1]],
+                                             input.vertices[outer[2]]}}));
   result.minimum_core_outer_clearance=std::numeric_limits<double>::infinity();
   for(std::size_t core_index=0U;core_index<input.retained_core_tetrahedra.size();++core_index) {
     const auto& cell=input.retained_core_tetrahedra[core_index];
@@ -483,6 +550,17 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
         const std::array<Vec3,3> outer_face{{input.vertices[outer[0]],
                                               input.vertices[outer[1]],
                                               input.vertices[outer[2]]}};
+        const auto outer_bounds_index=outer_index;
+        const auto lower_bound_squared=bounds_distance_squared(
+            triangle_bounds(core_face),outer_bounds[outer_bounds_index]);
+        // The clearance contract only rejects touching or intersecting
+        // surfaces.  Axis-aligned separation beyond that tolerance proves an
+        // exact triangle-distance calculation cannot change acceptance.
+        if(lower_bound_squared>required_clearance*required_clearance) {
+          result.minimum_core_outer_clearance=std::min(
+              result.minimum_core_outer_clearance,std::sqrt(lower_bound_squared));
+          continue;
+        }
         const auto clearance=std::sqrt(triangle_distance_squared(core_face,outer_face));
         result.minimum_core_outer_clearance=
             std::min(result.minimum_core_outer_clearance,clearance);
@@ -519,7 +597,6 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     const auto id=output.owned_vertex_ids.empty()?static_cast<std::uint64_t>(input.vertices.size()+i):output.owned_vertex_ids[i];
     if(!ids.insert(id).second) {result.failure=SurfaceCoreOutputFailure::invalid_owned_vertex_id;return result;}
   }
-  const double volume_epsilon=input.coordinate_scale*input.coordinate_scale*input.coordinate_scale*1.0e-13;
   std::set<Tet> unique_tets;
   std::map<Face,std::size_t> face_uses;
   std::map<Face,std::vector<int>> face_sides;
@@ -527,8 +604,28 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     bool valid_indices=true;
     for (const auto id:cell) valid_indices=valid_indices && id<vertices.size();
     const auto key=tet(cell);
+    bool geometrically_degenerate=!valid_indices;
+    if(valid_indices) {
+      std::array<std::uint64_t,4> stable{};
+      for(std::size_t corner=0U;corner<4U;++corner) {
+        const auto vertex=cell[corner];
+        stable[corner]=vertex<input.vertices.size()
+            ?(input.stable_vertex_ids.empty()?static_cast<std::uint64_t>(vertex):
+              input.stable_vertex_ids[vertex])
+            :(output.owned_vertex_ids.empty()?static_cast<std::uint64_t>(vertex):
+              output.owned_vertex_ids[vertex-input.vertices.size()]);
+      }
+      // Geometric validity is determined by the exact orientation of the
+      // emitted binary64 positions. Exact-plane provenance describes source
+      // construction; it must not turn a positive Wang tetrahedron into an
+      // invalid cell through an additional, non-Wang acceptance rule.
+      geometrically_degenerate=
+          exact_orientation_3d(vertices[cell[0]],vertices[cell[1]],
+                               vertices[cell[2]],vertices[cell[3]])==
+              ExactPredicateSign::zero;
+    }
     if (!valid_indices || key[0]==key[1] || key[1]==key[2] || key[2]==key[3] ||
-        std::abs(six_volume(vertices[cell[0]],vertices[cell[1]],vertices[cell[2]],vertices[cell[3]]))<=volume_epsilon) {
+        geometrically_degenerate) {
       result.positive_tetrahedra=false; ++result.degenerate_tetrahedra; continue;
     }
     if (!unique_tets.insert(key).second) { result.unique_tetrahedra=false; ++result.duplicate_tetrahedra; }
@@ -536,9 +633,10 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
       Face local{}; std::size_t cursor{};
       for (std::size_t vertex=0; vertex<4U; ++vertex) if (vertex!=opposite) local[cursor++]=cell[vertex];
       const auto canonical=face(local); ++face_uses[canonical];
-      const auto normal=cross(vertices[canonical[1]]-vertices[canonical[0]],vertices[canonical[2]]-vertices[canonical[0]]);
-      const auto side=dot(normal,vertices[cell[opposite]]-vertices[canonical[0]]);
-      face_sides[canonical].push_back(side>0.0?1:-1);
+      const auto side=exact_orientation_3d(
+          vertices[canonical[0]],vertices[canonical[1]],vertices[canonical[2]],
+          vertices[cell[opposite]]);
+      face_sides[canonical].push_back(static_cast<int>(side));
     }
   }
   // A retained explicit tetrahedral core cannot conform to a refined core
@@ -600,14 +698,43 @@ SurfaceCoreTransitionValidation validate_surface_core_transition_output(
     if (!unique_tets.contains(tet(core))) {
       result.retained_core_preserved=false; ++result.missing_core_tetrahedra;
     }
-  for (std::size_t left=0; left<output.tetrahedra.size(); ++left) for (std::size_t right=left+1U; right<output.tetrahedra.size(); ++right) {
-    std::array<Vec3,4> a{},b{};
+  struct OverlapCandidate {
+    std::size_t tetrahedron{};
+    std::array<Vec3,4> points{};
+    TetrahedronBounds bounds{};
+  };
+  std::vector<OverlapCandidate> overlap_candidates;
+  overlap_candidates.reserve(output.tetrahedra.size());
+  for(std::size_t index=0U;index<output.tetrahedra.size();++index) {
+    OverlapCandidate candidate;candidate.tetrahedron=index;
     bool valid_indices=true;
-    for (std::size_t i=0; i<4U; ++i) {
-      valid_indices=valid_indices && output.tetrahedra[left][i]<vertices.size() && output.tetrahedra[right][i]<vertices.size();
-      if (valid_indices) { a[i]=vertices[output.tetrahedra[left][i]]; b[i]=vertices[output.tetrahedra[right][i]]; }
+    for(std::size_t corner=0U;corner<4U;++corner) {
+      const auto vertex=output.tetrahedra[index][corner];
+      valid_indices=valid_indices&&vertex<vertices.size();
+      if(valid_indices)candidate.points[corner]=vertices[vertex];
     }
-    if (valid_indices && strict_tetrahedra_overlap_impl(a,b)) { result.no_strict_tetrahedron_overlap=false; ++result.tetrahedron_overlap_pairs; }
+    if(!valid_indices)continue;
+    candidate.bounds=tetrahedron_bounds(candidate.points);
+    overlap_candidates.push_back(candidate);
+  }
+  std::sort(overlap_candidates.begin(),overlap_candidates.end(),
+            [](const auto& first,const auto& second) {
+              return first.bounds.minimum.x<second.bounds.minimum.x;
+            });
+  // This is only a broad phase.  A strict overlap requires overlapping
+  // axis-aligned bounds, so no possible pair is discarded; every survivor is
+  // still tested by the established separating-axis predicate above.
+  for(std::size_t left=0U;left<overlap_candidates.size();++left) {
+    const auto& first=overlap_candidates[left];
+    for(std::size_t right=left+1U;right<overlap_candidates.size()&&
+        overlap_candidates[right].bounds.minimum.x<first.bounds.maximum.x;++right) {
+      const auto& second=overlap_candidates[right];
+      if(!bounds_overlap(first.bounds,second.bounds))continue;
+      if(strict_tetrahedra_overlap_impl(first.points,second.points)) {
+        result.no_strict_tetrahedron_overlap=false;
+        ++result.tetrahedron_overlap_pairs;
+      }
+    }
   }
   // Preservation failures are reported at their point of discovery.  The
   // aggregate geometry checks deliberately continue to collect all counters,

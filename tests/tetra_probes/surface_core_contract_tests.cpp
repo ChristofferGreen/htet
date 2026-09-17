@@ -328,11 +328,11 @@ TEST_CASE("generic surface/core contract rejects invalid input before transition
     CHECK_FALSE(report.accepted);
     CHECK(report.failure==tetra::probes::SurfaceCoreInputFailure::resource_limit);
   }
-  SUBCASE("frozen facet below the declared quality envelope") {
+  SUBCASE("frozen-facet quality is diagnostic, not an input gate") {
     auto input=nested_tetrahedra(); input.minimum_outer_triangle_angle_degrees=50.0;
     const auto report=tetra::probes::validate_surface_core_transition_input(input);
-    CHECK_FALSE(report.accepted);
-    CHECK(report.failure==tetra::probes::SurfaceCoreInputFailure::outer_quality_below_contract);
+    CHECK(report.accepted);
+    CHECK(report.failure==tetra::probes::SurfaceCoreInputFailure::none);
     CHECK(report.minimum_outer_triangle_angle_degrees<50.0);
   }
   SUBCASE("core outside the frozen outer boundary") {

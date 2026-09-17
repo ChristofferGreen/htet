@@ -253,5 +253,62 @@ examples alone cannot close the implementation goal.
 
 ## Next checkpoint
 
-Start with **R1**. In particular, do not assume that finishing the interrupted
-attachment helper resolves the newly verified scheduling and energy gaps.
+## N5 differential update — 2026-09-16
+
+The materialized planar four-hexahedra N5 PLC was exported and passed,
+unchanged, to both `wang_author_reference_probe full_file` and
+`wang_prototype_reference_probe full_file`.  The input has 428 vertices and
+786 facets.  The first observed divergence was the Hilbert insertion order:
+the prototype padded extents by their width while the pinned author code uses
+`minW * 1.01` and `maxW * 1.01`.  That translation-invariant substitution was
+removed.  The complete 428-entry insertion order now matches exactly.
+
+Both implementations then have the same 2,423 finite seed cells. The initial
+segment-recovery difference was native queue order: the prototype sorted PLC
+facets by stable ID before discovering edges while `AutorecoverEdges` retains
+its native discovery order. Removing that canonicalization yields identical
+183-event scheduler traces and identical 2,639-cell segment-stage topology.
+Facet recovery was subsequently isolated against that identical 2,639-cell
+state. Both implementations report the same 21 missing facets, but the
+prototype had ordered them by canonical parent/stable identity rather than
+the native `SurTris` order consumed by `recoverFacesPass`. Joining the
+validated missing obligations back to the input surface by literal geometry
+reproduces the complete author queue, beginning `(23,27,111)`,
+`(52,113,114)` and ending `(399,411,428)`.
+
+The first mutation divergence was a context error in
+`flipintersectcheck`: facet recovery treated one target-triangle anchor edge
+as though it were the active constrained segment. It therefore rejected the
+author's legal 2-to-3 flip at node-only contact and later performed two 3-to-2
+removals. Facet recovery now tests a candidate edge against the complete target
+triangle, permits node-only contact, and does not apply the segment-only
+3-to-2 guard. This is the pinned author behavior; it is not a publication
+repair or an additional quality rule.
+
+With that correction, all 21 per-step cell counts match. Steps 0-3 have exact
+cell sets; steps 4-20 have different transient cell sets but equal counts and
+converge. The completed facet-stage topology is exactly equal at 2,612 cells,
+and the extracted final topology is exactly equal at 2,127 cells. Extraction
+is therefore exonerated for this fixture.
+
+Focused evidence rerun on 2026-09-16:
+
+- the planar N5 publication case, including reversed storage: 1 case, 27
+  assertions passed;
+- `canonical_delaunay_seed_tests` and `surface_core_contract_tests`: passed;
+- `wang_owned_scheduler_production_tests`: 13 cases, 1,112 assertions passed.
+
+The closed-well regression was also reconciled with the current pinned author:
+its obsolete expectation of three interior attempts, six insertions and one
+facet split was removed. The author now recovers its three missing literal
+faces by flips with no info-2 escalation. The prototype also completes by its
+flip-only path, but begins from a different 112-cell segment mesh (author:
+107), attempts two validator-visible facet obligations, and finishes with
+106/36 facet/final cells rather than the author's 97/37. This non-N5
+differential remains explicit; it is not evidence against the exact N5 result.
+
+Reversed storage is checked for valid publication rather than identical
+topology because the declared author scheduler is input-order-sensitive. The
+full `terrain_volume_request_tests` suite still contains unrelated historical
+N8/noisy exact-count and canonical-topology failures; the focused N5 and
+contract results above must not be described as a green full suite.

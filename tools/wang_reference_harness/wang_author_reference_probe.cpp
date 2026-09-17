@@ -2125,11 +2125,46 @@ int main(int argc,char** argv) {
   }
   const auto initial_missing_edges=missing_edges(reference);
   const auto initial_missing_facets=missing_facets(reference);
+  // Retain the native scheduler trace from an identical seed state.  The
+  // production oracle run below remains untouched; this copy makes the first
+  // segment-recovery divergence observable rather than inferred from cells.
+  auto scheduler_trace_reference=reference;
+  const auto scheduler_events=run_scheduler_trace(scheduler_trace_reference);
   if(reference.AutorecoverEdges(args)!=0)return 5;
   const auto segment=current_cells(reference);
   const auto segment_missing_edges=missing_edges(reference);
   const auto segment_missing_facets=missing_facets(reference);
+  struct FacetStep {
+    std::array<std::string,3> facet{};
+    int result{};
+    std::vector<GeometryCell> cells;
+  };
+  std::vector<FacetStep> facet_steps;
+  auto facet_trace_reference=reference;
+  // recoverFacesPass first marks every constraint already present in the
+  // segment mesh. Reproduce that preamble before constructing its lost queue.
+  for(auto& surface_facet:facet_trace_reference.SurTris)
+    if(facet_trace_reference.isMeshFace(surface_facet.form[0],
+                                       surface_facet.form[1],
+                                       surface_facet.form[2]))
+      surface_facet.info=1;
+  for(int facet_index=0;
+      facet_index<static_cast<int>(facet_trace_reference.SurTris.size());
+      ++facet_index) {
+    if(facet_trace_reference.isDelSurTri(facet_index)||
+       facet_trace_reference.isRecBndTri(facet_index))continue;
+    FacetStep step;
+    for(unsigned corner=0;corner<3U;++corner)
+      step.facet[corner]=node_key(
+          facet_trace_reference,
+          facet_trace_reference.SurTris[facet_index].form[corner]);
+    std::sort(step.facet.begin(),step.facet.end());
+    step.result=facet_trace_reference.recoverFace(facet_index,0);
+    step.cells=current_cells(facet_trace_reference);
+    facet_steps.push_back(std::move(step));
+  }
   if(reference.recoverFacesPass(args)!=0)return 6;
+  const auto facet=current_cells(reference);
   const auto facet_missing=missing_facets(reference);
   if(reference.removeStPass(args)!=0)return 7;
   const auto interior_insertions=reference.addst;
@@ -2151,8 +2186,18 @@ int main(int argc,char** argv) {
   out<<"interior_insertions "<<interior_insertions<<'\n';
   out<<"boundary_insertions "<<boundary_insertions<<'\n';
   out<<"segment_topology_changed "<<(segment!=seed?1:0)<<'\n';
+  write_scheduler(out,scheduler_events);
+  out<<"facet_step_count "<<facet_steps.size()<<'\n';
+  for(std::size_t step=0;step<facet_steps.size();++step) {
+    out<<"facet_step_target "<<step;
+    for(const auto& point:facet_steps[step].facet)out<<' '<<point;
+    out<<" result "<<facet_steps[step].result<<'\n';
+    const auto label="facet_step_"+std::to_string(step);
+    write_cells(out,label.c_str(),facet_steps[step].cells);
+  }
   write_cells(out,"seed",seed);
   write_cells(out,"segment",segment);
+  write_cells(out,"facet",facet);
   write_cells(out,"final",final_cells);
   return out?0:12;
 }

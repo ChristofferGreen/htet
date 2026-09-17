@@ -60,4 +60,6 @@ third_party/FHCCT-WYFDT_TEST/
 artifacts/*
 !artifacts/dc-viability-2026-09-09/
 !artifacts/dc-viability-2026-09-09/**
+!artifacts/wang-four-hexahedra-prototype/
+!artifacts/wang-four-hexahedra-prototype/**
 scripts/__pycache__/

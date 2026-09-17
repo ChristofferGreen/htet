@@ -77,6 +77,11 @@ double perlin(Vec3 point) {
   return lerp(planes[0],planes[1],w)*0.7071067811865475;
 }
 
+// A displacement from a lattice corner can have component sum two along one
+// of the unnormalised diagonal gradients. Interpolation is convex and the
+// final 1/sqrt(2) factor therefore bounds this implementation by sqrt(2).
+constexpr double perlin_absolute_bound=1.4142135623730951;
+
 Vec3 fixture_centre(const AdvancingFrontFixture& fixture) {
   Vec3 result{};for(const auto point:fixture.root_tetrahedron)result=result+point;
   return result/4.0;
@@ -84,9 +89,27 @@ Vec3 fixture_centre(const AdvancingFrontFixture& fixture) {
 double field_value(const AdvancingFrontFixtureConfig& config,Vec3 centre,Vec3 p) {
   const auto sample=Vec3{p.x*config.noise_frequency+3.17,
                          p.y*config.noise_frequency+5.31,7.13};
+  if(config.field_kind==AdvancingFrontFieldKind::contained_noisy_sphere)
+    return length(p-centre)-
+        (config.sphere_radius+config.noise_amplitude*perlin(sample));
   const double height=config.surface_height+config.noise_amplitude*perlin(sample);
-  static_cast<void>(centre);
   return p.z-height;
+}
+
+double point_face_distance(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
+  const auto normal=cross(b-a,c-a);
+  return std::abs(dot(point-a,normal))/length(normal);
+}
+
+double minimum_root_face_distance(const std::array<Vec3,4>& root,Vec3 point) {
+  double result=std::numeric_limits<double>::infinity();
+  for(std::size_t opposite=0;opposite<root.size();++opposite) {
+    std::array<Vec3,3> face{};std::size_t output{};
+    for(std::size_t index=0;index<root.size();++index)
+      if(index!=opposite)face[output++]=root[index];
+    result=std::min(result,point_face_distance(point,face[0],face[1],face[2]));
+  }
+  return result;
 }
 Vec3 field_normal(const AdvancingFrontFixtureConfig& config,Vec3 centre,Vec3 p) {
   constexpr double step=1.0e-5;
@@ -198,10 +221,46 @@ void write_indices(std::ostringstream& output,
 
 } // namespace
 
+AdvancingFrontCoreSizing advancing_front_core_sizing(unsigned int grid_resolution) {
+  if(grid_resolution<4U||grid_resolution>12U)
+    throw std::invalid_argument("invalid advancing-front grid resolution");
+  unsigned int red_depth=2U;
+  unsigned int covered_resolution=1U;
+  while(covered_resolution<grid_resolution) {
+    ++red_depth;
+    covered_resolution*=2U;
+  }
+  // The regular red hierarchy contains a central child whose longest edge is
+  // slightly longer than the nominal half-edge.  Measure that level-one
+  // maximum in the fixture's affine root, then use self-similarity for later
+  // levels.  The clearance is therefore tied to the actual largest retained
+  // tetrahedron rather than an optimistic nominal cell size.
+  const std::array<Vec3,4> fixture_root{{
+      {-1.0,-0.5773502691896258,-0.239},
+      {1.0,-0.5773502691896258,-0.239},
+      {0.0,1.1547005383792517,-0.239},
+      {0.0,0.0,0.961}}};
+  const auto reference_root=world_tetrahedron_geometry(WorldTetAddress::root(0U));
+  double first_level_maximum{};
+  for(std::uint8_t child=0U;child<8U;++child) {
+    const auto geometry=world_tetrahedron_geometry(
+        WorldTetAddress::root(0U).child(child));
+    for(std::size_t first=0U;first<geometry.size();++first)
+      for(std::size_t second=first+1U;second<geometry.size();++second)
+        first_level_maximum=std::max(first_level_maximum,length(
+            map_hierarchy_point(reference_root,fixture_root,geometry[first])-
+            map_hierarchy_point(reference_root,fixture_root,geometry[second])));
+  }
+  const double edge_length=first_level_maximum/
+      static_cast<double>(1U<<(red_depth-1U));
+  return {red_depth,edge_length,edge_length*0.5};
+}
+
 AdvancingFrontFixture build_advancing_front_fixture(
     const AdvancingFrontFixtureConfig& config) {
   if(config.grid_resolution<3U||config.grid_resolution>24U||
      config.core_red_depth>6U||!std::isfinite(config.surface_height)||
+     !std::isfinite(config.sphere_radius)||config.sphere_radius<=0.0||
      config.noise_amplitude<0.0||config.core_clearance<0.0)
     throw std::invalid_argument("invalid advancing-front fixture config");
   AdvancingFrontFixture result;result.config=config;
@@ -210,6 +269,10 @@ AdvancingFrontFixture build_advancing_front_fixture(
                             {0.0,1.1547005383792517,-0.239},
                             {0.0,0.0,0.961}}};
   const auto centre=fixture_centre(result);
+  if(config.field_kind==AdvancingFrontFieldKind::contained_noisy_sphere&&
+     config.sphere_radius+config.noise_amplitude*perlin_absolute_bound>=
+         minimum_root_face_distance(result.root_tetrahedron,centre))
+    throw std::invalid_argument("contained sphere can reach the root tetrahedron boundary");
   const auto construction=make_four_hexahedra();
   for(unsigned int parent=0;parent<4U;++parent)
     for(unsigned int corner=0;corner<8U;++corner) {
@@ -222,7 +285,7 @@ AdvancingFrontFixture build_advancing_front_fixture(
   struct Cell {
     std::array<std::uint32_t,8> corners{};
     std::uint8_t parent{};
-    std::uint32_t dual{std::numeric_limits<std::uint32_t>::max()};
+    std::map<Edge,std::uint32_t> edge_duals;
   };
   const auto n=config.grid_resolution;
   const auto side=static_cast<std::size_t>(n)+1U;
@@ -274,24 +337,80 @@ AdvancingFrontFixture build_advancing_front_fixture(
     for(const auto corner:cell.corners)
       if(inside(corner))has_inside=true;else has_outside=true;
     if(!(has_inside&&has_outside))continue;
-    Vec3 mass{};std::size_t count{};
+    std::map<Edge,Vec3> edge_crossings;
     for(const auto edge:cube_edges) {
       const auto a=cell.corners[edge[0]],b=cell.corners[edge[1]];
       if(inside(a)==inside(b))continue;
-      mass=mass+crossing(a,b);++count;
+      edge_crossings[canonical_edge(a,b)]=crossing(a,b);
     }
-    if(count==0U)continue;
-    cell.dual=static_cast<std::uint32_t>(result.dc_vertices.size());
-    result.dc_vertices.push_back(mass/static_cast<double>(count));
-    result.dc_vertex_hexahedra.push_back(cell.parent);
+    if(edge_crossings.empty())continue;
+
+    // Manifold dual contouring needs one dual vertex per connected surface
+    // patch, not unconditionally one per cell. Connect edge crossings through
+    // each cell face. On an alternating-sign face, the field value at the
+    // shared face centre is a deterministic asymptotic-decider analogue; both
+    // incident cells therefore choose the same pairing.
+    constexpr std::array<std::array<unsigned int,4>,6> cube_faces{{
+        {{0U,1U,3U,2U}},{{4U,5U,7U,6U}},
+        {{0U,1U,5U,4U}},{{2U,3U,7U,6U}},
+        {{0U,2U,6U,4U}},{{1U,3U,7U,5U}}}};
+    std::map<Edge,std::vector<Edge>> connections;
+    const auto connect=[&](Edge first,Edge second) {
+      connections[first].push_back(second);
+      connections[second].push_back(first);
+    };
+    for(const auto face:cube_faces) {
+      std::array<Edge,4> face_edges{};
+      std::vector<Edge> face_crossings;
+      for(unsigned int side_index=0;side_index<4U;++side_index) {
+        face_edges[side_index]=canonical_edge(
+            cell.corners[face[side_index]],
+            cell.corners[face[(side_index+1U)%4U]]);
+        if(edge_crossings.contains(face_edges[side_index]))
+          face_crossings.push_back(face_edges[side_index]);
+      }
+      if(face_crossings.size()==2U) {
+        connect(face_crossings[0],face_crossings[1]);
+      } else if(face_crossings.size()==4U) {
+        Vec3 face_centre{};
+        for(const auto corner:face)
+          face_centre=face_centre+result.grid_vertices[cell.corners[corner]];
+        face_centre=face_centre/4.0;
+        const bool centre_inside=field_value(config,centre,face_centre)<0.0;
+        for(unsigned int corner=0;corner<4U;++corner)
+          if(inside(cell.corners[face[corner]])!=centre_inside)
+            connect(face_edges[(corner+3U)%4U],face_edges[corner]);
+      }
+    }
+
+    std::set<Edge> visited_crossings;
+    for(const auto& [start,unused]:edge_crossings) {
+      static_cast<void>(unused);
+      if(!visited_crossings.insert(start).second)continue;
+      std::vector<Edge> frontier{start},patch;
+      while(!frontier.empty()) {
+        const auto current=frontier.back();frontier.pop_back();
+        patch.push_back(current);
+        for(const auto adjacent:connections[current])
+          if(visited_crossings.insert(adjacent).second)
+            frontier.push_back(adjacent);
+      }
+      Vec3 mass{};
+      for(const auto patch_edge:patch)mass=mass+edge_crossings.at(patch_edge);
+      const auto dual=static_cast<std::uint32_t>(result.dc_vertices.size());
+      for(const auto patch_edge:patch)cell.edge_duals.emplace(patch_edge,dual);
+      result.dc_vertices.push_back(mass/static_cast<double>(patch.size()));
+      result.dc_vertex_hexahedra.push_back(cell.parent);
+    }
   }
   const auto dual_position=[&](std::uint32_t index){return result.dc_vertices[index];};
   for(const auto& [edge,incident]:edge_cells) {
     if(inside(edge[0])==inside(edge[1]))continue;
     std::vector<std::uint32_t> ring;ring.reserve(incident.size());
-    for(const auto cell:incident)
-      if(cells[cell].dual!=std::numeric_limits<std::uint32_t>::max())
-        ring.push_back(cells[cell].dual);
+    for(const auto cell:incident) {
+      const auto dual=cells[cell].edge_duals.find(edge);
+      if(dual!=cells[cell].edge_duals.end())ring.push_back(dual->second);
+    }
     std::ranges::sort(ring);ring.erase(std::unique(ring.begin(),ring.end()),ring.end());
     if(ring.size()<3U)continue;
     const auto edge_crossing=crossing(edge[0],edge[1]);
@@ -454,6 +573,9 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
     else if(uses.size()!=2U)++audit.dc_nonmanifold_edges;
     else if(uses[0]==uses[1])dc_consistently_oriented=false;
   }
+  audit.dc_consistently_oriented=dc_consistently_oriented;
+  audit.dc_closed_two_manifold=audit.dc_boundary_edges==0U&&
+      audit.dc_nonmanifold_edges==0U&&dc_consistently_oriented;
   std::map<Edge,std::vector<int>> outer_edges;
   audit.outer_consistently_oriented=dc_consistently_oriented;
   for(const auto triangle:fixture.outer_triangles)
@@ -534,6 +656,17 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
   }
   audit.outer_volume=std::abs(signed_surface_volume(
       fixture.outer_vertices,fixture.outer_triangles));
+  audit.minimum_core_tetrahedron_edge_length=std::numeric_limits<double>::infinity();
+  for(const auto tet:fixture.core_tetrahedra)
+    for(std::size_t first=0U;first<tet.size();++first)
+      for(std::size_t second=first+1U;second<tet.size();++second) {
+        const auto edge_length=length(fixture.core_vertices[tet[first]]-
+                                      fixture.core_vertices[tet[second]]);
+        audit.minimum_core_tetrahedron_edge_length=std::min(
+            audit.minimum_core_tetrahedron_edge_length,edge_length);
+        audit.maximum_core_tetrahedron_edge_length=std::max(
+            audit.maximum_core_tetrahedron_edge_length,edge_length);
+      }
   for(const auto tet:fixture.core_tetrahedra)
     audit.core_volume+=std::abs(six_volume(
         fixture.core_vertices[tet[0]],fixture.core_vertices[tet[1]],
@@ -542,11 +675,15 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
   audit.positive_cavity_volume=audit.outer_volume>0.0&&audit.core_volume>0.0&&
       audit.cavity_volume>0.0;
   audit.extraordinary_dc_polygons=fixture.dc_extraordinary_triangles.size();
+  audit.artificial_closure_faces=fixture.finite_boundary_triangles.size();
   audit.accepted=audit.finite_vertices&&audit.outer_closed_two_manifold&&
       audit.outer_consistently_oriented&&audit.outer_no_self_intersections&&
       audit.core_closed_two_manifold&&audit.core_address_reconstruction_exact&&
       audit.core_strictly_nested&&audit.surface_core_disjoint&&
       audit.positive_cavity_volume&&contract.accepted;
+  if(fixture.config.field_kind==AdvancingFrontFieldKind::contained_noisy_sphere)
+    audit.accepted=audit.accepted&&audit.dc_closed_two_manifold&&
+        audit.artificial_closure_faces==0U;
   return audit;
 }
 
@@ -573,6 +710,8 @@ std::string make_advancing_front_viewer_data(const AdvancingFrontFixture& fixtur
   output<<",\n\"coreBoundaryTriangles\":";write_indices(output,fixture.core_boundary_triangles);
   const auto& a=fixture.audit;
   output<<",\n\"audit\":{\"accepted\":"<<(a.accepted?"true":"false")
+        <<",\"dcClosed\":"<<(a.dc_closed_two_manifold?"true":"false")
+        <<",\"dcOriented\":"<<(a.dc_consistently_oriented?"true":"false")
         <<",\"outerClosed\":"<<(a.outer_closed_two_manifold?"true":"false")
         <<",\"outerOriented\":"<<(a.outer_consistently_oriented?"true":"false")
         <<",\"outerSelfIntersectionFree\":"<<(a.outer_no_self_intersections?"true":"false")
@@ -581,6 +720,7 @@ std::string make_advancing_front_viewer_data(const AdvancingFrontFixture& fixtur
         <<",\"coreNested\":"<<(a.core_strictly_nested?"true":"false")
         <<",\"dcBoundaryEdges\":"<<a.dc_boundary_edges
         <<",\"dcNonmanifoldEdges\":"<<a.dc_nonmanifold_edges
+        <<",\"artificialClosureFaces\":"<<a.artificial_closure_faces
         <<",\"outerBoundaryEdges\":"<<a.outer_boundary_edges
         <<",\"outerNonmanifoldEdges\":"<<a.outer_nonmanifold_edges
         <<",\"coreBoundaryEdges\":"<<a.core_boundary_edges

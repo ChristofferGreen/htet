@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Four-hexahedra Wang prototype inspector</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #101419; color: #e8edf2; }
+    #app { display: grid; grid-template-columns: 255px minmax(0, 1fr); height: 100vh; }
+    aside { padding: 18px; background: #182028; overflow: auto; }
+    h1 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
+    p { font-size: 13px; line-height: 1.4; color: #bdc8d4; }
+    fieldset { border: 1px solid #3b4854; margin: 16px 0; padding: 10px; }
+    legend { color: #dce8f4; font-size: 13px; }
+    label { display: block; font-size: 13px; margin: 9px 0; }
+    input[type=range] { width: 100%; }
+    #stage { position: relative; min-width: 0; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #readout { position: absolute; left: 16px; bottom: 16px; max-width: 330px; padding: 9px 11px;
+      background: #101419d9; border: 1px solid #51606d; font-size: 13px; line-height: 1.4; }
+    .key { display: inline-block; width: 10px; height: 10px; margin-right: 7px; }
+    .muted { color: #9baaba; }
+    @media (max-width: 680px) { #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+      aside { padding: 12px 16px; } fieldset { margin: 8px 0; } }
+  </style>
+</head>
+<body>
+  <main id="app">
+    <aside>
+      <h1>Wang prototype inspector</h1>
+      <p>Perspective camera (55°). Drag to orbit. Right-drag to pan. Scroll to zoom. Click a surface or tetrahedron for its identity.</p>
+      <fieldset>
+        <legend>Layers</legend>
+        <label><input id="hex" type="checkbox"> <span class="key" style="background:#9b7cff"></span>four hexahedra</label>
+        <label><input id="dc" type="checkbox" checked> <span class="key" style="background:#39d9d8"></span>closed DC sphere</label>
+        <label><input id="transition" type="checkbox" checked> <span class="key" style="background:#ff9b50"></span>Wang transition</label>
+        <label><input id="core" type="checkbox" checked> <span class="key" style="background:#56a8ff"></span>tetrahedral core</label>
+      </fieldset>
+      <fieldset>
+        <legend>Inspection</legend>
+        <label><input id="faces" type="checkbox" checked> transparent cell faces</label>
+        <label><input id="edges" type="checkbox" checked> cell wireframe</label>
+        <label><input id="surface-wireframe" type="checkbox" checked> exterior surface wireframe only</label>
+        <label>DC surface opacity: <output id="dc-opacity-value">1.00</output>
+          <input id="dc-opacity" type="range" min="0.05" max="1" step="0.05" value="1"></label>
+        <label>Internal-tet opacity: <output id="tet-opacity-value">1.00</output>
+          <input id="tet-opacity" type="range" min="0" max="1" step="0.05" value="1"></label>
+        <label>Mesh resolution: <output id="resolution-value">5</output>
+          <input id="resolution" type="range" min="4" max="12" step="1" value="5"></label>
+        <label>Clip plane: <output id="clip-value">0.00</output>
+          <input id="clip" type="range" min="-0.30" max="0.30" step="0.01" value="0"></label>
+        <label><input id="clip-enabled" type="checkbox" checked> enable clipping</label>
+      </fieldset>
+      <p class="muted" id="stats"></p>
+      <p class="muted" id="rebuild-status" aria-live="polite"></p>
+    </aside>
+    <section id="stage" aria-label="Interactive three-dimensional prototype view">
+      <div id="readout" aria-live="polite">Click a layer to inspect a cell.</div>
+    </section>
+  </main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    // The exporter replaces this generated file in place.  Give each rebuild
+    // a distinct URL so an already-open inspector cannot retain an old mesh.
+    const dataRevision = new URLSearchParams(location.search).get('revision') || 'initial';
+    document.write(`<script src="prototype-data.js?revision=${encodeURIComponent(dataRevision)}"><` + '/script>');
+  </script>
+  <script>
+  (() => {
+    const data = window.WANG_PROTOTYPE_DATA;
+    if (!data || !window.THREE) { document.body.textContent = 'Prototype data or 3D library failed to load.'; return; }
+    const stage = document.getElementById('stage');
+    const renderer = new THREE.WebGLRenderer({antialias: true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.localClippingEnabled = true;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    stage.append(renderer.domElement);
+    const scene = new THREE.Scene(); scene.background = new THREE.Color(0x101419);
+    const camera = new THREE.PerspectiveCamera(55, 1, .01, 20);
+    // The tetrahedron and implicit field are Z-up. Keep the camera's orbit
+    // convention aligned with that geometry rather than Three's Y-up default.
+    camera.up.set(0, 0, 1);
+    const target = new THREE.Vector3(0, 0, .06);
+    // A small three-point studio rig. The key is mounted just above-right of
+    // the camera rather than directly behind it, so a view down the clipping
+    // plane still has facet relief. A low cool fill preserves the blue core;
+    // a restrained rim separates the orange transition from the DC shell.
+    scene.add(new THREE.HemisphereLight(0x8cadde, 0x101720, .72));
+    scene.add(new THREE.AmbientLight(0x26354c, .22));
+    const cameraLamp = new THREE.DirectionalLight(0xffe2ba, 1.65);
+    const rimLamp = new THREE.DirectionalLight(0x78b4ff, .42);
+    rimLamp.position.set(-.7, .8, 1.1); rimLamp.target.position.copy(target);
+    scene.add(cameraLamp, cameraLamp.target, rimLamp, rimLamp.target);
+    // The initial camera is on +X.  Clip that near half away so the default
+    // section actually opens the DC shell and exposes the contained tets.
+    const clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
+    const clippingMaterials = [], dcClippingMaterials = [], faceMaterials = [], edgeMaterials = [], tetMaterials = [], tetEdgeMaterials = [], dcMaterials = [], pickables = [];
+    const layerGroups = {};
+    const tetVolumes = [];
+    const tetRenderables = [];
+    const colors = { hex: 0x8d6dff, dc: 0x18c8cf, transition: 0xf47b32, core: 0x347ee8 };
+    const vector = p => new THREE.Vector3(p[0], p[1], p[2]);
+    const facesOfHex = [[0,1,2,3],[4,7,6,5],[0,4,5,1],[1,5,6,2],[2,6,7,3],[4,0,3,7]];
+    const facesOfTet = [[0,2,1],[0,1,3],[1,2,3],[2,0,3]];
+    // Match the native viewer's surface policy: draw the fill first, biased
+    // slightly away from the eye, then draw opaque depth-tested edges from the
+    // exact same triangles.  In particular, do not make shell edges an
+    // always-on overlay: that shows rear edges through the surface.
+    function material(color, opacity, side = THREE.DoubleSide, surfaceShell = false) {
+      const m = new THREE.MeshStandardMaterial({
+        color, transparent: true, opacity, side,
+        depthWrite: surfaceShell,
+        polygonOffset: surfaceShell,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+        flatShading: true,
+        roughness: .9,
+        metalness: 0,
+        emissive: new THREE.Color(color).multiplyScalar(.035)
+      });
+      clippingMaterials.push(m); faceMaterials.push(m); return m;
+    }
+    function edgeMaterial(color) {
+      // Keep this in Three's transparent queue solely so it is emitted after
+      // the adjustable-alpha surface fill. Its alpha remains exactly one.
+      const m = new THREE.LineBasicMaterial({color, transparent: true, opacity: 1, depthWrite: false, depthTest: true});
+      clippingMaterials.push(m); edgeMaterials.push(m); return m;
+    }
+    function cellGeometry(points, cell, faces) {
+      const pos = [], ind = [];
+      for (const i of cell) { const p = points[i]; pos.push(p[0], p[1], p[2]); }
+      for (const f of faces) for (let i = 1; i < f.length - 1; i++) ind.push(f[0], f[i], f[i + 1]);
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(ind); g.computeVertexNormals(); return g;
+    }
+    function addCells(name, points, cells, faces, opacity) {
+      const group = new THREE.Group(), solid = new THREE.Group(), wire = new THREE.Group();
+      group.add(solid, wire); group.userData = {solid, wire}; scene.add(group); layerGroups[name] = group;
+      cells.forEach((cell, index) => {
+        const centroid = cell.reduce((sum, pointIndex) => sum.map((value, axis) => value + points[pointIndex][axis]), [0,0,0]).map(value => value / cell.length);
+        if (name === 'transition' || name === 'core') tetVolumes.push({points, cell, centroid});
+        const g = cellGeometry(points, cell, faces);
+        const mesh = new THREE.Mesh(g, material(colors[name], opacity));
+        if (name !== 'hex') tetMaterials.push(mesh.material);
+        mesh.userData = {layer: name, cell: index}; solid.add(mesh); pickables.push(mesh);
+        const lineMaterial = edgeMaterial(0x000000);
+        if (name !== 'hex') tetEdgeMaterials.push(lineMaterial);
+        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(g), lineMaterial);
+        lines.renderOrder = 2;
+        wire.add(lines);
+        if (name === 'transition' || name === 'core') tetRenderables.push({name, mesh, lines, centroid});
+      });
+    }
+    addCells('hex', data.hexahedra.points, data.hexahedra.cells, facesOfHex, .075);
+    addCells('transition', data.transition.points, data.transition.tetrahedra, facesOfTet, .055);
+    addCells('core', data.core.points, data.core.tetrahedra, facesOfTet, .14);
+    // This is a presentation default, independent of browser form-state
+    // restoration.  The four cells remain available through the checkbox.
+    layerGroups.hex.visible = false;
+    const pointKey = p => p.map(value => value.toFixed(8)).join(',');
+    const lineKey = (a, b) => a < b ? `${a}|${b}` : `${b}|${a}`;
+    function lineGeometry(segments) {
+      const positions = [];
+      for (const [a, b] of segments) positions.push(...a, ...b);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return geometry;
+    }
+    function triangleGeometry(triangles) {
+      const positions = [];
+      for (const triangle of triangles) positions.push(...triangle[0], ...triangle[1], ...triangle[2]);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return geometry;
+    }
+    // The volume-only surface is derived from face incidence, rather than from
+    // all cell edges.  A face appearing once is exterior; shared faces are not
+    // part of this inspection overlay.
+    const exposedFaces = new Map();
+    for (const {points, cell, centroid} of tetVolumes) {
+      for (const face of facesOfTet) {
+        const vertices = face.map(index => points[cell[index]]);
+        const key = vertices.map(pointKey).sort().join('|');
+        const entry = exposedFaces.get(key);
+        if (entry) { entry.count++; entry.owners.push({points, cell, centroid}); }
+        else exposedFaces.set(key, {count: 1, vertices, owners: [{points, cell, centroid}]});
+      }
+    }
+    const exteriorSegments = [], exteriorLines = new Map();
+    for (const {count, vertices} of exposedFaces.values()) if (count === 1) {
+      for (let index = 0; index < 3; index++) {
+        const a = vertices[index], b = vertices[(index + 1) % 3], key = lineKey(pointKey(a), pointKey(b));
+        if (!exteriorLines.has(key)) exteriorLines.set(key, [a, b]);
+      }
+    }
+    exteriorSegments.push(...exteriorLines.values());
+    const surfaceWireMaterial = edgeMaterial(0x000000);
+    const surfaceWire = new THREE.LineSegments(lineGeometry(exteriorSegments), surfaceWireMaterial);
+    surfaceWire.renderOrder = 2; surfaceWire.visible = false; scene.add(surfaceWire);
+    // Invisible fill writes the nearest exterior depth before the line pass.
+    // This is the same fill-then-depth-tested-edge policy as the native
+    // viewer, and prevents rear air-boundary edges showing through when the
+    // user hides coloured faces for wireframe inspection.
+    const surfaceDepthMaterial = new THREE.MeshBasicMaterial({
+      colorWrite: false, depthWrite: true, depthTest: true, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+    });
+    const surfaceDepth = new THREE.Mesh(triangleGeometry([]), surfaceDepthMaterial);
+    surfaceDepth.renderOrder = 1; surfaceDepth.visible = false; scene.add(surfaceDepth);
+    // The cut is deliberately cell-aligned: a tet is retained or removed as
+    // a whole. Its newly exposed faces form the clipping surface.
+    function updateClipWire() {
+      const clipping = document.getElementById('clip-enabled').checked;
+      const cut = Number(document.getElementById('clip').value);
+      const selected = owner => !clipping || owner.centroid[0] <= cut;
+      const segments = new Map(), triangles = [];
+      for (const {vertices, owners} of exposedFaces.values()) {
+        const visibleOwners = owners.filter(selected);
+        if (!visibleOwners.length || (owners.length > 1 && visibleOwners.length === owners.length)) continue;
+        triangles.push(vertices);
+        for (let index = 0; index < 3; index++) {
+          const a = vertices[index], b = vertices[(index + 1) % 3];
+          segments.set(lineKey(pointKey(a), pointKey(b)), [a, b]);
+        }
+      }
+      surfaceWire.geometry.dispose(); surfaceWire.geometry = lineGeometry([...segments.values()]);
+      surfaceDepth.geometry.dispose(); surfaceDepth.geometry = triangleGeometry(triangles);
+      const visible = document.getElementById('surface-wireframe').checked && edgesInput.checked && Number(document.getElementById('tet-opacity').value) > 0;
+      surfaceWire.visible = visible;
+      surfaceDepth.visible = visible;
+    }
+    function dcGeometryForCut() {
+      const clipping = document.getElementById('clip-enabled').checked;
+      const cut = Number(document.getElementById('clip').value);
+      const indices = data.dc.triangles.filter(triangle => !clipping ||
+        triangle.reduce((sum, pointIndex) => sum + data.dc.points[pointIndex][0], 0) / 3 <= cut).flat();
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.dc.points.flat(), 3));
+      geometry.setIndex(indices); geometry.computeVertexNormals();
+      return geometry;
+    }
+    let dcGeometry = dcGeometryForCut();
+    // The DC boundary is a closed outward-wound shell.  It must stay
+    // front-sided: with DoubleSide, clipping its camera-facing half leaves
+    // the back hemisphere drawing a false cyan cap over every internal tet.
+    const dcGroup = new THREE.Group(), dcMesh = new THREE.Mesh(dcGeometry, material(colors.dc, 1, THREE.FrontSide, true));
+    dcMesh.renderOrder = 1;
+    dcMaterials.push(dcMesh.material);
+    dcMesh.userData = {layer: 'dc surface', cell: 'triangle'}; dcGroup.add(dcMesh);
+    // LineSegments have no front/back-face culling, so they leaked the DC
+    // sphere's rear lattice into the cutaway. A wireframe triangle pass uses
+    // the same front-face rule as the DC fill.
+    const dcLines = new THREE.Mesh(dcGeometry, new THREE.MeshBasicMaterial({
+      color: 0x000000, wireframe: true, side: THREE.FrontSide,
+      transparent: true, opacity: 1, depthWrite: false, depthTest: true
+    }));
+    edgeMaterials.push(dcLines.material);
+    dcLines.renderOrder = 2;
+    dcGroup.add(dcLines);
+    scene.add(dcGroup); layerGroups.dc = dcGroup; pickables.push(dcMesh);
+    function updateDcSurfaceClip() {
+      const nextGeometry = dcGeometryForCut();
+      dcGeometry.dispose(); dcGeometry = nextGeometry;
+      dcMesh.geometry = nextGeometry;
+      dcLines.geometry = nextGeometry;
+    }
+    const surfaceOnly = document.getElementById('surface-wireframe');
+    const edgesInput = document.getElementById('edges');
+    function updateWholeTetClip() {
+      const clipping = document.getElementById('clip-enabled').checked;
+      const cut = Number(document.getElementById('clip').value);
+      const opacity = Number(document.getElementById('tet-opacity').value);
+      for (const item of tetRenderables) {
+        const enabled = document.getElementById(item.name).checked && opacity > 0 &&
+          (!clipping || item.centroid[0] <= cut);
+        item.mesh.visible = enabled;
+        item.lines.visible = enabled;
+      }
+      updateClipWire();
+    }
+    function updateWireframeMode() {
+      const enabled = edgesInput.checked, onlySurface = surfaceOnly.checked;
+      layerGroups.hex.userData.wire.visible = enabled && !onlySurface;
+      layerGroups.transition.userData.wire.visible = enabled && !onlySurface;
+      layerGroups.core.userData.wire.visible = enabled && !onlySurface;
+      // In exterior-only mode, every raw layer wireframe is suppressed. The
+      // derived face-incidence list is the sole authority for triangles
+      // touching air, including faces exposed by whole-tet clipping.
+      dcLines.visible = enabled && !onlySurface;
+      const haveInternalTets = Number(document.getElementById('tet-opacity').value) > 0;
+      surfaceWire.visible = enabled && onlySurface && haveInternalTets;
+      updateClipWire();
+    }
+    const summary = data.summary;
+    const number = value => Number(value).toFixed(4);
+    const sizing = Number.isFinite(summary.coreTetEdge)
+      ? `Core L${summary.coreRedDepth}: edge ${number(summary.coreTetEdge)}, clearance ${number(summary.coreClearance)} · core volume ${number(summary.coreVolume)} · transition volume ${number(summary.transitionVolume)}`
+      : '';
+    document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}`;
+    const resolution = document.getElementById('resolution');
+    const resolutionValue = document.getElementById('resolution-value');
+    const rebuildStatus = document.getElementById('rebuild-status');
+    resolution.value = summary.gridResolution || 5;
+    resolutionValue.textContent = resolution.value;
+    resolution.addEventListener('input', () => resolutionValue.textContent = resolution.value);
+    resolution.addEventListener('change', async () => {
+      const next = Number(resolution.value);
+      if (next === (summary.gridResolution || 5)) return;
+      resolution.disabled = true;
+      rebuildStatus.textContent = `Rebuilding DC, core, and Wang transition at N${next}…`;
+      try {
+        const response = await fetch(`http://127.0.0.1:8767/rebuild?resolution=${next}`);
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'rebuild failed');
+        // A normal reload may reuse the previous generated-data script from
+        // the browser cache, leaving the geometry apparently unchanged.
+        window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}`);
+      } catch (error) {
+        rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
+        resolution.disabled = false;
+      }
+    });
+    camera.position.set(.78, -.92, .72);
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.copy(target);
+    controls.enableDamping = true;
+    controls.dampingFactor = .08;
+    controls.screenSpacePanning = false;
+    controls.minDistance = .28;
+    controls.maxDistance = 4;
+    controls.maxPolarAngle = Math.PI - .04;
+    controls.update();
+    function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+    new ResizeObserver(resize).observe(stage); resize();
+    for (const name of ['hex','dc','transition','core']) {
+      const input = document.getElementById(name);
+      const update = () => {
+        layerGroups[name].visible = input.checked &&
+          (name === 'hex' || Number(document.getElementById('tet-opacity').value) > 0);
+        if (name === 'transition' || name === 'core') updateWholeTetClip();
+      };
+      input.addEventListener('change', update);
+      update();
+    }
+    document.getElementById('faces').addEventListener('change', e => faceMaterials.forEach(m => m.visible = e.target.checked));
+    edgesInput.addEventListener('change', e => { edgeMaterials.forEach(m => m.visible = e.target.checked); updateWireframeMode(); });
+    surfaceOnly.addEventListener('change', updateWireframeMode);
+    function bindOpacity(inputId, outputId, materials, opaqueDepthOnly = false) {
+      const input=document.getElementById(inputId), output=document.getElementById(outputId);
+      const update=() => {
+        const opacity=Number(input.value);
+        output.textContent=opacity.toFixed(2);
+        materials.forEach(m => {
+          m.opacity=opacity;
+          m.transparent=true;
+          // A translucent shell must not be an invisible depth wall: its
+          // purpose is to reveal the transition/core beneath it.  At 1.0 it
+          // resumes the native viewer's opaque fill-then-edge depth policy.
+          m.depthWrite=opaqueDepthOnly && opacity >= 1;
+          m.needsUpdate=true;
+        });
+      };
+      input.addEventListener('input',update); update();
+    }
+    bindOpacity('dc-opacity','dc-opacity-value',dcMaterials,true);
+    const tetOpacity = document.getElementById('tet-opacity');
+    const tetOpacityValue = document.getElementById('tet-opacity-value');
+    function updateTetOpacity() {
+      const opacity = Number(tetOpacity.value);
+      tetOpacityValue.textContent = opacity.toFixed(2);
+      for (const material of [...tetMaterials, ...tetEdgeMaterials]) {
+        material.opacity = opacity;
+        material.transparent = true;
+        material.needsUpdate = true;
+      }
+      // At zero, remove the two groups altogether so the control has a
+      // definite, inspectable effect even when a cut face is edge-on.
+      for (const name of ['transition', 'core'])
+        layerGroups[name].visible = document.getElementById(name).checked && opacity > 0;
+      updateWholeTetClip();
+      updateWireframeMode();
+    }
+    tetOpacity.addEventListener('input', updateTetOpacity);
+    tetOpacity.addEventListener('change', updateTetOpacity);
+    updateTetOpacity();
+    const clip = document.getElementById('clip'), clipEnabled = document.getElementById('clip-enabled');
+    function updateClip() { document.getElementById('clip-value').textContent = Number(clip.value).toFixed(2); updateDcSurfaceClip(); updateWholeTetClip(); }
+    clip.addEventListener('input', updateClip); clipEnabled.addEventListener('change', updateClip); updateClip();
+    const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2(), readout = document.getElementById('readout'); let down;
+    renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+    renderer.domElement.addEventListener('pointerup', e => { if (!down || Math.hypot(e.clientX-down[0],e.clientY-down[1])>4) return; const r=renderer.domElement.getBoundingClientRect(); pointer.set(((e.clientX-r.left)/r.width)*2-1,-((e.clientY-r.top)/r.height)*2+1); raycaster.setFromCamera(pointer,camera); const visible = object => { for (let node=object; node; node=node.parent) if (!node.visible) return false; return true; }; const hit=raycaster.intersectObjects(pickables.filter(visible),false)[0]; if (!hit) { readout.textContent='No visible cell selected.'; return; } const d=hit.object.userData; const id=d.layer==='dc surface' ? `triangle ${hit.faceIndex}` : `${d.layer==='hex' ? 'hexahedron' : 'tetrahedron'} ${d.cell}`; readout.textContent=`Selected ${d.layer}: ${id}.`; });
+    function render() {
+      requestAnimationFrame(render);
+      controls.update();
+      const cameraRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+      cameraLamp.position.copy(camera.position).addScaledVector(cameraRight, .32).addScaledVector(camera.up, .24);
+      cameraLamp.target.position.copy(controls.target);
+      renderer.render(scene,camera);
+    }
+    render();
+  })();
+  </script>
+</body>
+</html>

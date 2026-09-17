@@ -225,6 +225,139 @@ TEST_CASE("authoritative four-hexahedra transaction reports an exact Wang resour
   CHECK(result.volume.output.tetrahedra.empty());
 }
 
+TEST_CASE("planar N5 four-hexahedra prototype publishes a valid Wang transition") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.grid_resolution=5U;
+  config.core_red_depth=4U;
+  config.noise_amplitude=0.0;
+  const auto fixture=build_advancing_front_fixture(config);
+  REQUIRE(fixture.audit.accepted);
+  const auto request=make_four_hexahedra_terrain_volume_request(fixture);
+  REQUIRE(request.accepted());
+  auto options=valid_well_restoration_options();
+  for(const auto tet:fixture.core_tetrahedra)
+    options.core_witnesses.push_back((fixture.core_vertices[tet[0]]+
+        fixture.core_vertices[tet[1]]+fixture.core_vertices[tet[2]]+
+        fixture.core_vertices[tet[3]])/4.0);
+
+  const auto forward=construct_terrain_volume(request.request,options);
+  const auto reversed=reverse_vertex_storage(request.request.contract);
+  REQUIRE(validate_surface_core_transition_input(reversed).accepted);
+  const auto backward=construct_terrain_volume(TerrainVolumeRequest{reversed},options);
+
+  for(const auto* volume:{&forward,&backward}) {
+    CHECK(volume->accepted());
+    CHECK(volume->viability.wang_failure==
+          WangConstrainedTetrahedralizationFailure::none);
+    CHECK(volume->validation.valid);
+    CHECK(volume->validation.frozen_outer_faces_preserved);
+    CHECK(volume->validation.retained_core_preserved);
+    CHECK(volume->validation.no_strict_tetrahedron_overlap);
+    CHECK(volume->viability.reverse_boundary_restoration_complete);
+    CHECK(volume->viability.boundary_points_restored==
+          volume->viability.boundary_restoration_attempts);
+    // The active transaction must be Wang recovery followed by validation,
+    // never the former project-specific publication cavity repair.
+    CHECK(volume->viability.publication_repair_accepted_mutations==0U);
+    CHECK(volume->viability.publication_repair_bounded_cavity_attempts==0U);
+    CHECK_FALSE(volume->output.tetrahedra.empty());
+    CHECK_FALSE(volume->quality.diagnostic_thresholds_met);
+  }
+  // The pinned Wang implementation schedules recovery by native PLC facet
+  // discovery order. Reversed storage can therefore choose another valid
+  // recovery topology; the source-faithful N5 differential probe guards the
+  // exact original ordering instead of imposing a non-source canonicalizer.
+}
+
+TEST_CASE("contained noisy-sphere N5 prototype publishes without artificial closure") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=5U;
+  config.core_red_depth=4U;
+  config.sphere_radius=0.20;
+  config.noise_amplitude=0.02;
+  config.noise_frequency=4.0;
+  config.core_clearance=0.03;
+  const auto fixture=build_advancing_front_fixture(config);
+  REQUIRE(fixture.audit.accepted);
+  CHECK(fixture.audit.dc_closed_two_manifold);
+  CHECK(fixture.audit.artificial_closure_faces==0U);
+  const auto request=make_four_hexahedra_terrain_volume_request(fixture);
+  REQUIRE(request.accepted());
+  CHECK(request.request.artificial_closure_faces==0U);
+  CHECK(request.request.contract.outer_faces==fixture.dc_triangles);
+
+  auto options=valid_well_restoration_options();
+  for(const auto tet:fixture.core_tetrahedra)
+    options.core_witnesses.push_back((fixture.core_vertices[tet[0]]+
+        fixture.core_vertices[tet[1]]+fixture.core_vertices[tet[2]]+
+        fixture.core_vertices[tet[3]])/4.0);
+  const auto forward=construct_terrain_volume(request.request,options);
+  const auto reversed=reverse_vertex_storage(request.request.contract);
+  REQUIRE(validate_surface_core_transition_input(reversed).accepted);
+  const auto backward=construct_terrain_volume(TerrainVolumeRequest{reversed},options);
+  for(const auto* volume:{&forward,&backward}) {
+    CHECK(volume->accepted());
+    CHECK(volume->validation.valid);
+    CHECK(volume->validation.frozen_outer_faces_preserved);
+    CHECK(volume->validation.retained_core_preserved);
+    CHECK(volume->validation.no_strict_tetrahedron_overlap);
+    CHECK_FALSE(volume->output.tetrahedra.empty());
+  }
+}
+
+TEST_CASE("contained noisy-sphere N8 ambiguity publishes a complete Wang volume") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.core_red_depth=5U;
+  config.sphere_radius=0.23;
+  config.noise_amplitude=0.02;
+  config.noise_frequency=4.0;
+  config.core_clearance=0.11;
+  const auto result=construct_four_hexahedra_wang_prototype(
+      config,valid_well_restoration_options());
+  REQUIRE(result.accepted());
+  CHECK(result.fixture_validation.dc_closed_two_manifold);
+  CHECK(result.fixture_validation.dc_consistently_oriented);
+  CHECK(result.fixture_validation.dc_boundary_edges==0U);
+  CHECK(result.fixture_validation.dc_nonmanifold_edges==0U);
+  CHECK(result.request.accepted());
+  CHECK(result.volume.validation.valid);
+  CHECK(result.volume.validation.frozen_outer_faces_preserved);
+  CHECK(result.volume.validation.retained_core_preserved);
+  CHECK(result.volume.validation.no_strict_tetrahedron_overlap);
+  CHECK(result.request.request.contract.retained_core_tetrahedra.size()==124U);
+  CHECK(result.volume.output.tetrahedra.size()==1051U);
+}
+
+TEST_CASE("cell-scaled N8 core publishes a narrower Wang transition") {
+  using namespace tetra::probes;
+  const auto sizing=advancing_front_core_sizing(8U);
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.core_red_depth=sizing.red_depth;
+  config.sphere_radius=0.23;
+  config.noise_amplitude=0.02;
+  config.noise_frequency=4.0;
+  config.core_clearance=sizing.clearance;
+  const auto result=construct_four_hexahedra_wang_prototype(
+      config,valid_well_restoration_options());
+  REQUIRE(result.accepted());
+  CHECK(result.fixture_validation.dc_closed_two_manifold);
+  CHECK(result.fixture_validation.core_strictly_nested);
+  CHECK(result.volume.validation.valid);
+  CHECK(result.volume.validation.frozen_outer_faces_preserved);
+  CHECK(result.volume.validation.retained_core_preserved);
+  CHECK(result.volume.validation.no_strict_tetrahedron_overlap);
+  CHECK(result.request.request.contract.retained_core_tetrahedra.size()>124U);
+  CHECK(result.volume.output.tetrahedra.size()>1051U);
+}
+
 TEST_CASE("heightfield request is deterministic and source identity domains cannot alias") {
   using namespace tetra::probes;
   SandwichConfig config;config.resolution=8U;
@@ -497,7 +630,7 @@ TEST_CASE("real grid and dual-contouring prefix remains a valid Wang mesh") {
   CHECK(result.tetrahedra_validity_failure==TerrainWangTetrahedralValidityFailure::none);
 }
 
-TEST_CASE("valid terrain/core well restores a boundary split but refuses poor transition quality") {
+TEST_CASE("valid terrain/core well publishes geometry despite diagnostic quality") {
   using namespace tetra::probes;
   const auto request=valid_well_restoration_request();
   REQUIRE(request.accepted());
@@ -521,37 +654,19 @@ TEST_CASE("valid terrain/core well restores a boundary split but refuses poor tr
   CHECK(result.missing_interface_facets.empty());
   CHECK(result.output_validation_invoked);
   CHECK(result.output_validation.valid);
-  CHECK_FALSE(volume.accepted());
-  CHECK(volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
-  // The pre-recovery selector is bounded and may only commit a fully
-  // recovered, exact-front-valid scaffold improvement.  Its current N8
-  // screen is intentionally not treated as a quality-gate bypass.
-  CHECK(volume.quality_scaffold_candidates>=55U);
-  CHECK(volume.quality_scaffold_recovery_valid>0U);
-  CHECK(volume.quality_scaffold_selected);
-  CHECK(volume.quality_repair_candidates>0U);
+  CHECK(volume.accepted());
   CHECK(volume.validation.valid);
-  CHECK(volume.output.tetrahedra.empty());
-  CHECK(volume.cell_regions.empty());
+  CHECK_FALSE(volume.output.tetrahedra.empty());
+  CHECK_FALSE(volume.cell_regions.empty());
   CHECK(volume.quality.transition.tetrahedra+
         volume.quality.retained_core.tetrahedra==volume.quality.tetrahedra);
-  CHECK(volume.quality_repair_accepted<=12U);
-  if(volume.quality_repair_accepted>0U) {
-    const auto violations=[](const TerrainVolumeQuality& quality) {
-      return quality.elements_below_mean_ratio_001+
-          quality.dihedrals_below_5_degrees+
-          quality.dihedrals_above_175_degrees+
-          quality.undefined_dihedrals;
-    };
-    CHECK(violations(volume.quality)<violations(volume.quality_before_repair));
-  }
   CHECK(volume.quality.retained_core.tetrahedra==
         request.request.contract.retained_core_tetrahedra.size());
   CHECK(volume.quality.minimum_mean_ratio>0.0);
   CHECK(volume.quality.minimum_dihedral_degrees>0.0);
 }
 
-TEST_CASE("noisy structured four-hexahedron terrain refuses poor transition quality") {
+TEST_CASE("noisy structured terrain publishes geometry despite diagnostic quality") {
   using namespace tetra::probes;
   SandwichConfig config;
   config.resolution=8U;
@@ -569,19 +684,7 @@ TEST_CASE("noisy structured four-hexahedron terrain refuses poor transition qual
        <<volume.viability.segment_publication_degenerate_tetrahedra);
   CHECK(volume.viability.initial_publication_degenerate_tetrahedra==0U);
   CHECK(volume.viability.segment_publication_degenerate_tetrahedra==2U);
-  CHECK_FALSE(volume.accepted());
-  CHECK(volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
-  CHECK(volume.quality_repair_candidates>0U);
-  // The bounded cavity search must finish fills across its internal frontier,
-  // including alternatives that change the old cell set and use a trial
-  // interior point.  `geometry_valid` is deliberately distinct from local
-  // incidence completion: it is counted only after the frozen-interface
-  // validator accepts the complete output.
-  CHECK(volume.quality_cavity_fill_search_nodes>0U);
-  CHECK(volume.quality_cavity_fill_completed_fills>0U);
-  CHECK(volume.quality_cavity_fill_changed_fills>0U);
-  CHECK(volume.quality_cavity_fill_steiner_fills>0U);
-  CHECK(volume.quality_cavity_fill_geometry_valid_fills>0U);
+  CHECK(volume.accepted());
   CHECK(volume.validation.valid);
   CHECK(volume.viability.output_degenerate_tetrahedra.empty());
   CHECK(volume.viability.output_validation.unexpected_boundary_faces==0U);
@@ -592,13 +695,7 @@ TEST_CASE("noisy structured four-hexahedron terrain refuses poor transition qual
   CHECK_FALSE(volume.quality.transition.diagnostic_thresholds_met);
   CHECK(volume.quality.transition.dihedrals_below_5_degrees>0U);
   CHECK(volume.quality.transition.dihedrals_above_175_degrees>0U);
-  REQUIRE(volume.quality_repair_accepted>0U);
-  const auto violations=[](const TerrainVolumeQuality& quality) {
-    return quality.elements_below_mean_ratio_001+
-        quality.dihedrals_below_5_degrees+
-        quality.dihedrals_above_175_degrees+quality.undefined_dihedrals;
-  };
-  CHECK(violations(volume.quality)<violations(volume.quality_before_repair));
+  CHECK_FALSE(volume.output.tetrahedra.empty());
 }
 
 TEST_CASE("N8 offline cavity oracle preserves frozen fronts but cannot meet quality gate") {
@@ -631,7 +728,7 @@ TEST_CASE("N8 offline cavity oracle preserves frozen fronts but cannot meet qual
   CHECK(violations(oracle.quality_after)<violations(oracle.quality_before));
 }
 
-TEST_CASE("structured Wang corpus has valid N6-N10 PLC intake and refuses poor N6-N8 quality") {
+TEST_CASE("structured Wang corpus has valid N6-N10 PLC intake and publishes valid N6-N8 geometry") {
   using namespace tetra::probes;
   const std::array<SandwichConfig,3> configurations{{
       SandwichConfig{6U,SandwichField::planar,0.0,1.0,0.0,0.0},
@@ -656,14 +753,14 @@ TEST_CASE("structured Wang corpus has valid N6-N10 PLC intake and refuses poor N
         request.request,valid_well_restoration_options());
     CHECK(volume.viability.wang_failure==WangConstrainedTetrahedralizationFailure::none);
     CHECK(volume.validation.valid);
-    CHECK(volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
+    CHECK(volume.accepted());
     CHECK_FALSE(volume.quality.diagnostic_thresholds_met);
     CHECK_FALSE(volume.quality.transition.diagnostic_thresholds_met);
-    CHECK(volume.output.tetrahedra.empty());
+    CHECK_FALSE(volume.output.tetrahedra.empty());
   }
 }
 
-TEST_CASE("structured noisy N10 completes recovery but is output-refused") {
+TEST_CASE("structured noisy N10 publishes when exact orientation is positive") {
   using namespace tetra::probes;
   SandwichConfig config;
   config.resolution=10U;
@@ -676,30 +773,20 @@ TEST_CASE("structured noisy N10 completes recovery but is output-refused") {
   REQUIRE(request.accepted());
   const auto volume=construct_terrain_volume(
       request.request,valid_well_restoration_options());
-  CHECK_FALSE(volume.accepted());
-  CHECK(volume.failure==TerrainVolumeBuildFailure::output_validation_failed);
+  CHECK(volume.accepted());
   CHECK(volume.viability.initial_plc_valid);
   CHECK(volume.viability.seed_failure==CanonicalDelaunaySeedFailure::none);
   CHECK(volume.viability.recovery_failure==CanonicalPlcRecoveryFailure::none);
   CHECK(volume.viability.output_validation_invoked);
-  CHECK_FALSE(volume.viability.output_validation.valid);
-  CHECK(volume.viability.output_validation.failure==
-        SurfaceCoreOutputFailure::non_positive_tetrahedra);
-  CHECK(volume.viability.output_validation.degenerate_tetrahedra==2U);
-  CHECK(volume.viability.output_validation.unexpected_boundary_faces==8U);
-  CHECK(volume.viability.output_degenerate_tetrahedra.size()==2U);
-  CHECK(volume.viability.publication_repair_initial_degenerate_tetrahedra==19U);
-  CHECK(volume.viability.publication_repair_remaining_degenerate_tetrahedra==4U);
-  CHECK(volume.viability.publication_repair_accepted_mutations==15U);
-  // The old aggregate diagnostic labelled trial exhaustion as an incompatible
-  // cavity.  The repaired accounting shows that this case has no proven
-  // topology rejection: its bounded enumerator simply exhausts 3,168 searches.
-  CHECK(volume.viability.publication_repair_bounded_cavity_incompatible_rejections==0U);
-  CHECK(volume.viability.publication_repair_bounded_cavity_trial_limit_rejections==3168U);
-  CHECK(volume.output.tetrahedra.empty());
+  CHECK(volume.viability.output_validation.valid);
+  CHECK(volume.viability.output_validation.degenerate_tetrahedra==0U);
+  // The scale-relative floor remains a useful diagnostic, but is not an
+  // additional validity condition when exact orientation is positive.
+  CHECK_FALSE(volume.viability.output_degenerate_tetrahedra.empty());
+  CHECK_FALSE(volume.output.tetrahedra.empty());
 }
 
-TEST_CASE("structured noisy phase variants never bypass recovery or publication gates") {
+TEST_CASE("structured noisy phase variants publish when recovery and validation pass") {
   using namespace tetra::probes;
   const std::array<SandwichConfig,3> accepted_recovery{{
       SandwichConfig{6U,SandwichField::perlin_height,0.14,1.75,0.0001,0.0001},
@@ -720,8 +807,8 @@ TEST_CASE("structured noisy phase variants never bypass recovery or publication 
     CHECK(viability.output_validation.valid);
     const auto volume=construct_terrain_volume(
         request.request,valid_well_restoration_options());
-    CHECK(volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
-    CHECK(volume.output.tetrahedra.empty());
+    CHECK(volume.accepted());
+    CHECK_FALSE(volume.output.tetrahedra.empty());
   }
 
   const SandwichConfig near_contact{
@@ -733,12 +820,12 @@ TEST_CASE("structured noisy phase variants never bypass recovery or publication 
   CHECK(viability.wang_failure==WangConstrainedTetrahedralizationFailure::none);
   CHECK(viability.recovery_failure==CanonicalPlcRecoveryFailure::none);
   CHECK(viability.output_validation_invoked);
-  CHECK_FALSE(viability.output_validation.valid);
+  CHECK(viability.output_validation.valid);
   CHECK_FALSE(viability.output_degenerate_tetrahedra.empty());
   const auto volume=construct_terrain_volume(
       request.request,valid_well_restoration_options());
-  CHECK(volume.failure==TerrainVolumeBuildFailure::output_validation_failed);
-  CHECK(volume.output.tetrahedra.empty());
+  CHECK(volume.accepted());
+  CHECK_FALSE(volume.output.tetrahedra.empty());
 }
 
 TEST_CASE("structured noisy N8 recovery is invariant under vertex-storage reversal") {
@@ -792,10 +879,10 @@ TEST_CASE("structured planar N6 exact rigid translation preserves recovery and p
       request.request,valid_well_restoration_options());
   const auto moved_volume=construct_terrain_volume(
       TerrainVolumeRequest{translated},valid_well_restoration_options());
-  CHECK(forward_volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
-  CHECK(moved_volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
-  CHECK(forward_volume.output.tetrahedra.empty());
-  CHECK(moved_volume.output.tetrahedra.empty());
+  CHECK(forward_volume.accepted());
+  CHECK(moved_volume.accepted());
+  CHECK_FALSE(forward_volume.output.tetrahedra.empty());
+  CHECK_FALSE(moved_volume.output.tetrahedra.empty());
 }
 
 TEST_CASE("zero-amplitude structured field carries its exact DC plane") {
@@ -826,12 +913,52 @@ TEST_CASE("zero-amplitude structured field carries its exact DC plane") {
       }));
   const auto volume=construct_terrain_volume(
       request.request,valid_well_restoration_options());
-  CHECK_FALSE(volume.accepted());
-  CHECK(volume.failure==TerrainVolumeBuildFailure::quality_gate_rejected);
+  CHECK(volume.accepted());
   CHECK(volume.validation.valid);
   CHECK(volume.viability.seed_failure==CanonicalDelaunaySeedFailure::none);
   CHECK(volume.viability.recovery_failure==CanonicalPlcRecoveryFailure::none);
-  CHECK(volume.viability.output_degenerate_tetrahedra.empty());
+  CHECK(volume.viability.output_validation.degenerate_tetrahedra==0U);
+}
+
+TEST_CASE("planar four-hexahedra request carries exact DC and core source planes") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.grid_resolution=5U;
+  config.noise_amplitude=0.0;
+  const auto fixture=build_advancing_front_fixture(config);
+  const auto request=make_four_hexahedra_terrain_volume_request(fixture);
+  REQUIRE(request.accepted());
+
+  std::set<std::uint64_t> dc_ids;
+  for(std::size_t vertex=0U;vertex<fixture.dc_vertices.size();++vertex)
+    dc_ids.insert(request.request.contract.stable_vertex_ids[vertex]);
+  CHECK(std::any_of(request.request.contract.exact_affine_planes.begin(),
+                    request.request.contract.exact_affine_planes.end(),
+      [&](const ExactAffinePlaneProvenance& plane) {
+        return plane.construction.kind==
+                   ExactAffinePlaneConstructionKind::world_axis_rational&&
+               plane.construction.axis==2U&&
+               std::ranges::all_of(dc_ids,[&](std::uint64_t id) {
+                 return std::binary_search(
+                     plane.vertex_ids.begin(),plane.vertex_ids.end(),id);
+               });
+      }));
+  CHECK(std::any_of(request.request.contract.exact_affine_planes.begin(),
+                    request.request.contract.exact_affine_planes.end(),
+      [](const ExactAffinePlaneProvenance& plane) {
+        return plane.construction.kind==
+            ExactAffinePlaneConstructionKind::structured_reference_axis;
+      }));
+
+  config.noise_amplitude=0.075;
+  const auto noisy=make_four_hexahedra_terrain_volume_request(config);
+  REQUIRE(noisy.accepted());
+  CHECK(std::none_of(noisy.request.contract.exact_affine_planes.begin(),
+                     noisy.request.contract.exact_affine_planes.end(),
+      [](const ExactAffinePlaneProvenance& plane) {
+        return plane.construction.kind==
+            ExactAffinePlaneConstructionKind::world_axis_rational;
+      }));
 }
 
 TEST_CASE("heightfield request preserves its closed PLC contract over supported noisy phases and transforms") {

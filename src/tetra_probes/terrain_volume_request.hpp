@@ -42,6 +42,10 @@ struct TerrainVolumeRequest {
   // The unselected regular core stays implicit. These are only the explicit
   // local tetrahedra handed to the transition transaction.
   std::size_t explicit_local_core_tetrahedra{};
+  // The four-hexahedra fixture retains a fully addressed hierarchy core, but
+  // Wang needs only its exposed interface to construct the surrounding shell.
+  // The complete core is still appended verbatim and validated afterwards.
+  bool wang_uses_boundary_core_only{};
 };
 struct TerrainVolumeRequestResult {
   TerrainVolumeRequestFailure failure{TerrainVolumeRequestFailure::invalid_surface};
@@ -61,7 +65,8 @@ struct TerrainVolumeRequestResult {
     const SandwichConfig& config = {});
 
 // Adapts the complete four-hexahedra prototype fixture without changing its
-// DC sheet, finite tetrahedral-domain closure, or addressed regular core.
+// DC sheet, any required finite tetrahedral-domain closure, or addressed
+// regular core.  A contained closed surface requires no artificial closure.
 // This is the authoritative request path for the Wang sandwich prototype;
 // the two-hexahedra adapter above remains a smaller supporting experiment.
 [[nodiscard]] TerrainVolumeRequestResult make_four_hexahedra_terrain_volume_request(
@@ -135,6 +140,7 @@ struct TerrainWangViabilityResult {
   WangUnsupportedBranch unsupported_branch{WangUnsupportedBranch::none};
   WangConstrainedTetrahedralizationFailure wang_failure{
       WangConstrainedTetrahedralizationFailure::invalid_plc};
+  CanonicalPlcRegionFailure region_failure{CanonicalPlcRegionFailure::none};
   CanonicalPlcRecoveryFailure recovery_failure{
       CanonicalPlcRecoveryFailure::materialization_failed};
   CanonicalDelaunaySeedFailure seed_failure{
@@ -228,7 +234,6 @@ enum class TerrainVolumeBuildFailure : std::uint8_t {
   rejected_plc,
   wang_recovery_failed,
   output_validation_failed,
-  quality_gate_rejected,
 };
 
 struct TerrainVolumeResult {
@@ -249,6 +254,8 @@ struct TerrainVolumeResult {
   std::size_t quality_scaffold_candidates{};
   std::size_t quality_scaffold_recovery_valid{};
   bool quality_scaffold_selected{};
+  bool quality_scaffold_continuous_trial_valid{};
+  TerrainVolumeQuality quality_scaffold_continuous_trial;
   std::vector<Vec3> quality_scaffold_selected_positions;
   std::vector<std::uint64_t> quality_scaffold_selected_ids;
   // Diagnostics for the bounded multi-cell fill stage.  A completed fill has

@@ -1,8 +1,10 @@
 #include "tetra_probes/terrain_volume_request.hpp"
+#include "tetra_probes/canonical_delaunay_seed.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <algorithm>
@@ -175,7 +177,8 @@ void print_worst_transition_tetrahedra(
 
 int main(int argc,char** argv) {
   if(argc!=7&&argc!=8&&argc!=9) {
-    std::cerr<<"usage: terrain_wang_probe RESOLUTION FIELD AMPLITUDE FREQUENCY PHASE_X PHASE_Y [FHC_ATTEMPTS] [BOTTOM_Z]\n";
+    std::cerr<<"usage: terrain_wang_probe RESOLUTION FIELD AMPLITUDE FREQUENCY PHASE_X PHASE_Y [FHC_ATTEMPTS] [BOTTOM_Z]\n"
+             <<"       FIELD may be fourhex-planar or fourhex-noisy for the authoritative fixture\n";
     return 2;
   }
   tetra::probes::SandwichConfig config;
@@ -189,12 +192,29 @@ int main(int argc,char** argv) {
   config.phase_x=std::stod(argv[5]);
   config.phase_y=std::stod(argv[6]);
   const double bottom=argc==9?std::stod(argv[8]):-1.0;
-  auto request=field=="pit"?pit_request(bottom,config.amplitude,
-                                                config.frequency,config.phase_x):field=="structured"?
-      tetra::probes::make_structured_two_hex_terrain_volume_request(config):
-      tetra::probes::make_heightfield_terrain_volume_request(
-          tetra::probes::extract_frozen_dual_contour_surface(config),
-          tetra::probes::extract_conservative_regular_core(config),bottom);
+  tetra::probes::TerrainVolumeRequestResult request;
+  std::vector<tetra::Vec3> fourhex_core_witnesses;
+  if(field=="fourhex-planar"||field=="fourhex-noisy") {
+    tetra::probes::AdvancingFrontFixtureConfig fixture_config;
+    fixture_config.grid_resolution=config.resolution;
+    fixture_config.noise_amplitude=field=="fourhex-planar"?0.0:config.amplitude;
+    fixture_config.noise_frequency=config.frequency;
+    const auto fixture=tetra::probes::build_advancing_front_fixture(fixture_config);
+    request=tetra::probes::make_four_hexahedra_terrain_volume_request(fixture);
+    fourhex_core_witnesses.reserve(fixture.core_tetrahedra.size());
+    for(const auto tet:fixture.core_tetrahedra)
+      fourhex_core_witnesses.push_back((fixture.core_vertices[tet[0]]+
+          fixture.core_vertices[tet[1]]+fixture.core_vertices[tet[2]]+
+          fixture.core_vertices[tet[3]])/4.0);
+  } else if(field=="pit") {
+    request=pit_request(bottom,config.amplitude,config.frequency,config.phase_x);
+  } else if(field=="structured") {
+    request=tetra::probes::make_structured_two_hex_terrain_volume_request(config);
+  } else {
+    request=tetra::probes::make_heightfield_terrain_volume_request(
+        tetra::probes::extract_frozen_dual_contour_surface(config),
+        tetra::probes::extract_conservative_regular_core(config),bottom);
+  }
   if(!request.accepted()) {
     std::cout<<"request_failure="<<static_cast<unsigned>(request.failure)
              <<" contract_failure="<<static_cast<unsigned>(request.validation.failure)
@@ -208,6 +228,41 @@ int main(int argc,char** argv) {
              <<'\n';
     return 3;
   }
+  if(const char* path=std::getenv("TETRA_TERRAIN_PROBE_EXPORT_VTK")) {
+    const auto materialized=materialize_canonical_plc_constraints(
+        request.request.contract);
+    if(!materialized.accepted()) return 4;
+    std::ofstream output(path);
+    if(!output) return 5;
+    output<<"# vtk DataFile Version 3.0\n"
+          <<"Exact four-hexahedra Wang PLC\nASCII\nDATASET POLYDATA\nPOINTS "
+          <<materialized.constraints.vertices.size()<<" double\n";
+    std::map<std::uint64_t,std::size_t> index;
+    for(std::size_t vertex=0U;vertex<materialized.constraints.vertices.size();++vertex) {
+      const auto& source=materialized.constraints.vertices[vertex];
+      index.emplace(source.id,vertex);
+      output<<std::setprecision(17)<<source.position.x<<' '<<source.position.y
+            <<' '<<source.position.z<<'\n';
+    }
+    output<<"POLYGONS "<<materialized.constraints.facets.size()<<' '
+          <<materialized.constraints.facets.size()*4U<<'\n';
+    for(const auto& facet:materialized.constraints.facets)
+      output<<"3 "<<index.at(facet.vertices[0])<<' '<<index.at(facet.vertices[1])
+            <<' '<<index.at(facet.vertices[2])<<'\n';
+    if(!output) return 6;
+  }
+  if(std::getenv("TETRA_TERRAIN_PROBE_DROP_DC_PLANES")!=nullptr||
+     std::getenv("TETRA_TERRAIN_PROBE_DROP_CORE_PLANES")!=nullptr) {
+    auto& planes=request.request.contract.exact_affine_planes;
+    std::erase_if(planes,[&](const auto& plane) {
+      return (std::getenv("TETRA_TERRAIN_PROBE_DROP_DC_PLANES")!=nullptr&&
+              plane.construction.kind==tetra::probes::
+                  ExactAffinePlaneConstructionKind::world_axis_rational)||
+             (std::getenv("TETRA_TERRAIN_PROBE_DROP_CORE_PLANES")!=nullptr&&
+              plane.construction.kind==tetra::probes::
+                  ExactAffinePlaneConstructionKind::structured_reference_axis);
+    });
+  }
   tetra::probes::WangConstrainedTetrahedralizationOptions options;
   options.recovery.maximum_vertices=16384U;
   options.recovery.maximum_facets=32768U;
@@ -218,10 +273,38 @@ int main(int argc,char** argv) {
         static_cast<std::size_t>(std::stoull(argv[7]));
   options.recovery.maximum_edge_splits=128U;
   options.recovery.maximum_facet_splits=128U;
+  options.core_witnesses=std::move(fourhex_core_witnesses);
+  if(std::getenv("TETRA_TERRAIN_PROBE_CONSTRUCT_ONLY")!=nullptr) {
+    const auto volume=tetra::probes::construct_terrain_volume(request.request,options);
+    std::cout<<"construct_accepted="<<volume.accepted()
+             <<" failure="<<static_cast<unsigned>(volume.failure)
+             <<" validation="<<volume.validation.valid
+             <<" quality="<<volume.quality.minimum_mean_ratio<<'/'
+             <<volume.quality.minimum_dihedral_degrees<<'/'
+             <<volume.quality.maximum_dihedral_degrees<<'/'
+             <<volume.quality.maximum_edge_ratio
+             <<" violations="<<volume.quality.elements_below_mean_ratio_001<<'/'
+             <<volume.quality.dihedrals_below_5_degrees<<'/'
+             <<volume.quality.dihedrals_above_175_degrees
+             <<" scaffold="<<volume.quality_scaffold_selected<<'/'
+             <<volume.quality_scaffold_recovery_valid<<'/'
+             <<volume.quality_scaffold_candidates
+             <<" trial="<<volume.quality_scaffold_continuous_trial_valid<<'/'
+             <<volume.quality_scaffold_continuous_trial.minimum_mean_ratio<<'/'
+             <<volume.quality_scaffold_continuous_trial.minimum_dihedral_degrees<<'/'
+             <<volume.quality_scaffold_continuous_trial.maximum_dihedral_degrees<<'/'
+             <<volume.quality_scaffold_continuous_trial.elements_below_mean_ratio_001<<'/'
+             <<volume.quality_scaffold_continuous_trial.dihedrals_below_5_degrees<<'/'
+             <<volume.quality_scaffold_continuous_trial.dihedrals_above_175_degrees
+             <<" mutations="<<volume.quality_repair_accepted<<'/'
+             <<volume.quality_repair_candidates<<'\n';
+    return 0;
+  }
   const auto result=tetra::probes::run_terrain_wang_viability_experiment(
       request.request,options);
   std::cout<<"accepted="<<result.output_validation.valid
            <<" wang_failure="<<static_cast<unsigned>(result.wang_failure)
+           <<" region_failure="<<static_cast<unsigned>(result.region_failure)
            <<" recovery_failure="<<static_cast<unsigned>(result.recovery_failure)
            <<" seed_failure="<<static_cast<unsigned>(result.seed_failure)
            <<" seed_invalid="<<static_cast<unsigned>(result.seed_invalid_reason)
@@ -283,8 +366,23 @@ int main(int argc,char** argv) {
     std::cout<<'\n';
   }
   if(result.output_validation.valid)
+  {
+    const auto quality=tetra::probes::measure_terrain_volume_quality(
+        request.request.contract,result.output,result.output_cell_regions);
+    std::cout<<"raw_quality="<<quality.minimum_mean_ratio<<'/'
+             <<quality.minimum_dihedral_degrees<<'/'
+             <<quality.maximum_dihedral_degrees<<'/'<<quality.maximum_edge_ratio
+             <<" transition="<<quality.transition.minimum_mean_ratio<<'/'
+             <<quality.transition.minimum_dihedral_degrees<<'/'
+             <<quality.transition.maximum_dihedral_degrees<<'/'
+             <<quality.transition.maximum_edge_ratio
+             <<" core="<<quality.retained_core.minimum_mean_ratio<<'/'
+             <<quality.retained_core.minimum_dihedral_degrees<<'/'
+             <<quality.retained_core.maximum_dihedral_degrees<<'/'
+             <<quality.retained_core.maximum_edge_ratio<<'\n';
     print_worst_transition_tetrahedra(request.request.contract,result.output,
                                       result.output_cell_regions);
+  }
   if(const auto* fixed=std::getenv("TETRA_TERRAIN_PROBE_FIXED_SCAFFOLD")) {
     tetra::Vec3 position{};
     unsigned long long id=std::uint64_t{1}<<63U;

@@ -2447,3 +2447,45 @@ TEST_CASE("plane-aware orientation separates semantic zero from traversal tie") 
   CHECK(forward.combinatorial_sign==-reversed.combinatorial_sign);
   CHECK(forward.geometric_sign==-reversed.geometric_sign);
 }
+
+TEST_CASE("publication repair admits an exact coplanar target without hiding it") {
+  using namespace tetra::probes;
+  CanonicalPlcConstraintSet constraints;
+  constraints.vertices={{10U,{0.0,0.0,0.0}},{20U,{1.0,0.0,0.0}},
+                        {30U,{0.0,1.0,0.0}},{40U,{1.0,1.0,0.0}}};
+  constraints.exact_affine_planes.push_back({
+      {ExactAffinePlaneConstructionKind::world_axis_rational,2U,0,1U},
+      {10U,20U,30U,40U}});
+  const std::vector<std::array<std::uint32_t,4>> mesh{{{{0U,1U,2U,3U}}}};
+
+  const auto repair=repair_canonical_plc_publication_degeneracies(
+      constraints,mesh,2.0,1U);
+  CHECK(repair.initial_degenerate_tetrahedra==1U);
+  CHECK(repair.remaining_degenerate_tetrahedra==1U);
+  CHECK(repair.has_first_unrepaired_tetrahedron);
+  CHECK(repair.first_unrepaired_vertex_ids==
+        std::array<std::uint64_t,4>{{10U,20U,30U,40U}});
+}
+
+TEST_CASE("canonical seed inserts a declared-planar boundary point without a flat cell") {
+  using namespace tetra::probes;
+  CanonicalDelaunaySeedInput input;
+  input.vertices={{0.0,0.0,0.0},{1.0,0.0,0.0},{0.0,1.0,0.0},
+                  {0.0,0.0,1.0},{0.25,0.25,0.0}};
+  input.stable_vertex_ids={10U,20U,30U,40U,50U};
+  input.exact_affine_planes.push_back({
+      {ExactAffinePlaneConstructionKind::world_axis_rational,2U,0,1U},
+      {10U,20U,30U,50U}});
+
+  const auto seed=build_canonical_delaunay_seed(input);
+  REQUIRE(seed.accepted());
+  std::set<std::uint32_t> used;
+  for(const auto& tet:seed.tetrahedra) {
+    used.insert(tet.begin(),tet.end());
+    std::array<std::uint64_t,4> ids{};
+    for(std::size_t corner=0U;corner<4U;++corner)
+      ids[corner]=input.stable_vertex_ids[tet[corner]];
+    CHECK_FALSE(is_semantically_coplanar(ids,input.exact_affine_planes));
+  }
+  CHECK(used.size()==input.vertices.size());
+}

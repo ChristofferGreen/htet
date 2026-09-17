@@ -624,44 +624,6 @@ WangConstrainedTetrahedralizationResult tetrahedralize_wang_constrained_plc(
   result.interior_removal_stage_invoked=removal.interior_removal_stage_invoked;
   result.recovery.constraints=std::move(removal.constraints);
   result.recovery.tetrahedra=std::move(removal.tetrahedra);
-  double coordinate_scale=1.0;
-  for(const auto& vertex:result.recovery.constraints.vertices)
-    coordinate_scale=std::max({coordinate_scale,std::abs(vertex.position.x),
-                               std::abs(vertex.position.y),
-                               std::abs(vertex.position.z)});
-  coordinate_scale*=2.0;
-  const auto publication_repair=repair_canonical_plc_publication_degeneracies(
-      result.recovery.constraints,result.recovery.tetrahedra,coordinate_scale);
-  result.publication_repair_initial_degenerate_tetrahedra=
-      publication_repair.initial_degenerate_tetrahedra;
-  result.publication_repair_remaining_degenerate_tetrahedra=
-      publication_repair.remaining_degenerate_tetrahedra;
-  result.publication_repair_accepted_mutations=
-      publication_repair.accepted_mutations;
-  result.publication_repair_bounded_cavity_attempts=
-      publication_repair.bounded_cavity_attempts;
-  result.publication_repair_bounded_cavity_incompatible_rejections=
-      publication_repair.bounded_cavity_incompatible_rejections;
-  result.publication_repair_bounded_cavity_trial_limit_rejections=
-      publication_repair.bounded_cavity_trial_limit_rejections;
-  result.publication_repair_bounded_cavity_inspection_rejections=
-      publication_repair.bounded_cavity_inspection_rejections;
-  result.publication_repair_bounded_cavity_non_improving_rejections=
-      publication_repair.bounded_cavity_non_improving_rejections;
-  result.publication_repair_invalid_candidate_mesh_rejections=
-      publication_repair.invalid_candidate_mesh_rejections;
-  result.publication_repair_first_unrepaired_vertex_ids=
-      publication_repair.first_unrepaired_vertex_ids;
-  result.publication_repair_has_first_unrepaired_tetrahedron=
-      publication_repair.has_first_unrepaired_tetrahedron;
-  result.publication_repair_first_unrepaired_incident_tetrahedra=
-      publication_repair.first_unrepaired_incident_tetrahedra;
-  result.publication_repair_first_unrepaired_constrained_facets=
-      publication_repair.first_unrepaired_constrained_facets;
-  if(publication_repair.accepted_mutations>0U) {
-    result.recovery.constraints=publication_repair.constraints;
-    result.recovery.tetrahedra=publication_repair.tetrahedra;
-  }
   result.recovery.inspection=inspect_canonical_plc_tetrahedra(
       result.recovery.constraints,result.recovery.tetrahedra);
   result.boundary_audit=audit_boundary(plc,result.recovery.constraints,

@@ -439,8 +439,7 @@ TEST_CASE("owned Wang scheduler continues through facet recovery after unsuccess
   CHECK(recovery.owned_segment_fhc_insertions>=5U);
   CHECK(recovery.owned_segment_fhc_recovered);
   CHECK(recovery.edges_recovered_before_facet_stage);
-  CHECK(recovery.constraints.interior_steiner_vertices.size()==
-        recovery.owned_segment_fhc_insertions);
+  std::size_t fhc_records{},facet_interior_records{};
   std::set<std::uint64_t> interior_steiner_ids;
   for(const auto& steiner:recovery.constraints.interior_steiner_vertices) {
     CHECK(interior_steiner_ids.insert(steiner.id).second);
@@ -450,8 +449,15 @@ TEST_CASE("owned Wang scheduler continues through facet recovery after unsuccess
     const auto is_fhc_provenance=
         steiner.kind==CanonicalInteriorSteinerKind::locked_fhc||
         steiner.kind==CanonicalInteriorSteinerKind::cascade_fhc;
-    CHECK(is_fhc_provenance);
+    if(is_fhc_provenance)++fhc_records;
+    else if(steiner.kind==CanonicalInteriorSteinerKind::facet_interior)
+      ++facet_interior_records;
+    else CHECK(false);
   }
+  CHECK(fhc_records==recovery.owned_segment_fhc_insertions);
+  CHECK(facet_interior_records==recovery.facet_interior_steiner_insertions);
+  CHECK(recovery.constraints.interior_steiner_vertices.size()==
+        fhc_records+facet_interior_records);
   CHECK(recovery.constraints.vertices.size()>25U);
   // First Locked-FHC point: reference's locked-edge/face barycenter.
   REQUIRE(recovery.constraints.vertices.size()>20U);
@@ -503,96 +509,34 @@ TEST_CASE("owned Wang scheduler continues through facet recovery after unsuccess
       [](const int info){return info==-3;}));
 }
 
-TEST_CASE("closed well reaches recoverFaces info two before reverse restoration") {
+TEST_CASE("closed well recovers without stale info-two escalation") {
   const auto fixture=closed_well_info2_fixture();
   const auto forward=recover_wang_constraints(fixture,{});
   REQUIRE(forward.accepted());
-  REQUIRE(forward.facet_interior_steiner_attempts==3U);
-  REQUIRE(forward.facet_interior_steiner_insertions==6U);
-  REQUIRE(forward.facet_splits==1U);
-
-  const auto first_info_two=std::find_if(
-      forward.facet_recovery_attempt_trace.begin(),
-      forward.facet_recovery_attempt_trace.end(),[](const auto& attempt) {
-        return attempt.info==2U;
-      });
-  REQUIRE(first_info_two!=forward.facet_recovery_attempt_trace.end());
-  // The prior info=1 pass inserted the two interior points, and its paired
-  // info=0 retry occurs before the residual info=2 boundary fallback.
-  CHECK(std::any_of(forward.facet_recovery_attempt_trace.begin(),first_info_two,
-      [](const auto& attempt) { return attempt.info==1U; }));
-  CHECK(std::any_of(forward.facet_recovery_attempt_trace.begin(),first_info_two,
-      [](const auto& attempt) { return attempt.info==0U; }));
-  REQUIRE(forward.facet_post_split_child_calls.size()==1U);
-  const auto& children=forward.facet_post_split_child_calls.front();
-  REQUIRE(children.size()==3U);
-  std::vector<std::array<std::uint64_t,3>> ordered_child_retries;
-  for(auto attempt=first_info_two;attempt!=forward.facet_recovery_attempt_trace.end();
-      ++attempt) {
-    if(attempt->info!=0U) continue;
-    auto key=attempt->facet;
-    for(const auto child:children) {
-      auto child_key=child;
-      std::sort(key.begin(),key.end());
-      std::sort(child_key.begin(),child_key.end());
-      if(key==child_key) { ordered_child_retries.push_back(attempt->facet);break; }
-    }
-  }
-  REQUIRE(ordered_child_retries.size()>=children.size());
-  for(std::size_t child_index=0U;child_index<children.size();++child_index)
-    CHECK(ordered_child_retries[child_index]==children[child_index]);
-  // splitBndTri appends all three literal children.  Before each child can
-  // make its face-recovery attempt, recoverFace must visit its cyclic edge
-  // prerequisites against the same owned ghost-hull scheduler state.
-  for(std::size_t child_index=0U;child_index<children.size();++child_index) {
-    auto child=children[child_index];
-    std::sort(child.begin(),child.end());
-    CHECK(std::any_of(first_info_two,forward.facet_recovery_attempt_trace.end(),
-        [&](const auto& attempt) {
-          auto key=attempt.facet;std::sort(key.begin(),key.end());
-          return attempt.info==0U&&key==child;
-        }));
-    for(unsigned corner=0U;corner<3U;++corner) {
-      const auto cyclic=children[child_index];
-      std::array<std::uint64_t,2> edge{{
-          cyclic[corner],cyclic[(corner+1U)%3U]}};
-      const auto call=std::find_if(forward.facet_prerequisite_edge_calls.begin(),
-          forward.facet_prerequisite_edge_calls.end(),[&](const auto& candidate) {
-            auto key=candidate.facet;std::sort(key.begin(),key.end());
-            auto candidate_edge=candidate.edge,expected=edge;
-            std::sort(candidate_edge.begin(),candidate_edge.end());
-            std::sort(expected.begin(),expected.end());
-            return key==child&&candidate_edge==expected;
-          });
-      REQUIRE(call!=forward.facet_prerequisite_edge_calls.end());
-      // A committed constrained-BW insertion connects its new vertex to the
-      // whole cavity boundary. The three radial child edges therefore exist
-      // before recoverFaces observes the children; later facet flips refuse
-      // every constrained boundary edge. Keep this invariant explicit: a
-      // valid post-split child cannot manufacture the missing-edge case.
-      CHECK_FALSE(call->missing_before_call);
-    }
-  }
+  REQUIRE_FALSE(forward.facet_recovery_attempt_trace.empty());
+  CHECK(std::all_of(forward.facet_recovery_attempt_trace.begin(),
+                    forward.facet_recovery_attempt_trace.end(),
+                    [](const auto& attempt) { return attempt.info==0U; }));
+  CHECK(forward.facet_interior_steiner_attempts==0U);
+  CHECK(forward.facet_interior_steiner_insertions==0U);
+  CHECK(forward.facet_splits==0U);
+  CHECK(forward.facet_post_split_child_calls.empty());
+  CHECK(forward.inspection.accepted());
 
   const auto completed=tetrahedralize_wang_constrained_plc(fixture,{});
   REQUIRE(completed.accepted());
-  CHECK(completed.boundary_removal_attempts.size()==1U);
-  CHECK(completed.boundary_points_restored==1U);
+  CHECK(completed.boundary_removal_attempts.empty());
+  CHECK(completed.boundary_points_restored==0U);
   CHECK(completed.reverse_boundary_restoration_complete);
   CHECK(completed.boundary_audit.accepted());
 
-  // A restricted run may stop at this paper continuation, but it must not
-  // collapse that state into a generic segment failure or a publishable mesh.
+  // Disabling the unused split fallback must not perturb this flip-only path.
   WangConstrainedTetrahedralizationOptions restricted;
   restricted.restricted_viability_experiment=true;
   restricted.recovery.maximum_facet_splits=0U;
   const auto exhausted=tetrahedralize_wang_constrained_plc(fixture,restricted);
-  CHECK_FALSE(exhausted.accepted());
-  CHECK(exhausted.failure==
-        WangConstrainedTetrahedralizationFailure::facet_recovery_failed);
-  CHECK(exhausted.recovery.failure==
-        CanonicalPlcRecoveryFailure::facet_recovery_required);
-  CHECK(exhausted.unsupported_branch==WangUnsupportedBranch::facet_recovery);
+  CHECK(exhausted.accepted());
+  CHECK(exhausted.boundary_audit.accepted());
 }
 
 TEST_CASE("owned public Wang pass removes recovered boundary Steiner points") {

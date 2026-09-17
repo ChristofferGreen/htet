@@ -1028,12 +1028,30 @@ void write_scheduler(std::ofstream& out,
     }
   }
   out<<"facet_attempt_count "<<recovery.facet_recovery_attempt_trace.size()<<'\n';
+  std::size_t facet_attempt_index{};
   for(const auto& event:recovery.facet_recovery_attempt_trace) {
     auto face=event.facet;
     std::sort(face.begin(),face.end());
     out<<"facet_attempt";
     for(const auto id:face)out<<' '<<id;
     out<<' '<<static_cast<unsigned>(event.info)<<'\n';
+    std::array<std::string,3> geometry{};
+    bool complete=true;
+    for(unsigned corner=0U;corner<3U;++corner) {
+      const auto found=std::find_if(recovery.constraints.vertices.begin(),
+          recovery.constraints.vertices.end(),[&](const auto& vertex) {
+            return vertex.id==event.facet[corner];
+          });
+      if(found==recovery.constraints.vertices.end()) {complete=false;break;}
+      geometry[corner]=point_key(found->position);
+    }
+    if(complete) {
+      std::sort(geometry.begin(),geometry.end());
+      out<<"facet_attempt_target "<<facet_attempt_index;
+      for(const auto& point:geometry)out<<' '<<point;
+      out<<'\n';
+    }
+    ++facet_attempt_index;
   }
   out<<"facet_interior_attempts "<<recovery.facet_interior_steiner_attempts
      <<" insertions "<<recovery.facet_interior_steiner_insertions
@@ -1606,6 +1624,7 @@ int main(int argc,char** argv) {
                               recovery.initial_tetrahedra);
   const auto segment_cells=cells(recovery.segment_stage_constraints,
                                  recovery.segment_stage_tetrahedra);
+  const auto facet_cells=cells(recovery.constraints,recovery.tetrahedra);
   const auto final_cells=cells_by_id(full.recovery.constraints,full.tetrahedra);
 
   std::ofstream out(output);
@@ -1625,9 +1644,18 @@ int main(int argc,char** argv) {
   // mode (notably the Algorithm-2 info=2 residual-facet pass) and boundary
   // insertion/restoration event needed to qualify a candidate fixture.
   write_scheduler(out,recovery);
+  out<<"facet_step_count "
+     <<recovery.initial_facet_cells_after_attempt.size()<<'\n';
+  for(std::size_t step=0;
+      step<recovery.initial_facet_cells_after_attempt.size();++step) {
+    const auto label="facet_step_"+std::to_string(step);
+    write_cells(out,label.c_str(),cells_by_id(
+        recovery.constraints,recovery.initial_facet_cells_after_attempt[step]));
+  }
   out<<"segment_topology_changed "<<(segment_cells!=seed_cells?1:0)<<'\n';
   write_cells(out,"seed",seed_cells);
   write_cells(out,"segment",segment_cells);
+  write_cells(out,"facet",facet_cells);
   write_cells(out,"final",final_cells);
   return out?0:7;
 }
