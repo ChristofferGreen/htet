@@ -453,9 +453,12 @@ WangOrderedTetMesh::Flip32Result WangOrderedTetMesh::flip32(
   });
   if(apex==next.end()||*apex==third||
      !contains(cells_[across_fourth].vertices,*apex))return result;
+  // `add_cell` may grow `cells_`, invalidating `next` and `apex` before the
+  // incidence update at the end of the flip.
+  const auto apex_vertex=*apex;
 
-  const Tet first_replacement{{first,third,fourth,*apex}};
-  const Tet second_replacement{{second,fourth,third,*apex}};
+  const Tet first_replacement{{first,third,fourth,apex_vertex}};
+  const Tet second_replacement{{second,fourth,third,apex_vertex}};
   const std::set<std::uint32_t> removed(shell.begin(),shell.end());
   const auto first_key=cell_key(first_replacement);
   const auto second_key=cell_key(second_replacement);
@@ -558,7 +561,7 @@ WangOrderedTetMesh::Flip32Result WangOrderedTetMesh::flip32(
   point_to_cell_[second]=static_cast<std::int32_t>(result.created_cells[1]);
   point_to_cell_[third]=static_cast<std::int32_t>(result.created_cells[1]);
   point_to_cell_[fourth]=static_cast<std::int32_t>(result.created_cells[1]);
-  point_to_cell_[*apex]=static_cast<std::int32_t>(result.created_cells[1]);
+  point_to_cell_[apex_vertex]=static_cast<std::int32_t>(result.created_cells[1]);
   if(std::getenv("WANG_OWNED_PRIMITIVE_TRACE")!=nullptr)
     std::cerr<<"owned_flip32 edge "<<first<<' '<<second<<" cells "
              <<result.created_cells[0]<<' '<<result.created_cells[1]<<'\n';
@@ -618,24 +621,32 @@ WangOrderedTetMesh::Flip23Result WangOrderedTetMesh::flip23(
       {{second_apex,fourth,first_apex,fifth}},
       {{second_apex,first_apex,third,fifth}},
       {{second_apex,first_apex,fourth,third}}}};
-  std::set<std::array<std::uint32_t,4>> replacement_keys;
-  for(const auto& replacement:replacements)
-    if(!replacement_keys.insert(cell_key(replacement)).second)return reject("duplicate-new");
+  std::array<Tet,3> replacement_keys{};
+  for(std::size_t index=0U;index<replacements.size();++index) {
+    replacement_keys[index]=cell_key(replacements[index]);
+    for(std::size_t previous=0U;previous<index;++previous)
+      if(replacement_keys[previous]==replacement_keys[index])
+        return reject("duplicate-new");
+  }
   for(std::size_t slot=0;slot<cells_.size();++slot)
     if(!cells_[slot].deleted&&slot!=cell&&slot!=other&&
-       replacement_keys.contains(cell_key(cells_[slot].vertices)))return reject("duplicate-live");
+       std::find(replacement_keys.begin(),replacement_keys.end(),
+                 cell_key(cells_[slot].vertices))!=replacement_keys.end())
+      return reject("duplicate-live");
 
   // A 2-to-3 flip only changes the six exterior faces of its two old cells
   // and the three new faces around the inserted edge.  Preserve every other
   // face bond rather than rebuilding the complete mesh after this local
   // source-defined operation.
-  std::map<Face,std::int32_t> exterior_neighbours;
+  struct ExteriorFace {Face face{};std::int32_t neighbour{no_neighbour};};
+  std::array<ExteriorFace,6> exterior_neighbours{};
+  std::size_t exterior_count{};
   const auto remember_exterior=[&](std::uint32_t source,unsigned shared) {
     for(unsigned face=0U;face<4U;++face) {
       if(face==shared)continue;
-      exterior_neighbours.emplace(
+      exterior_neighbours[exterior_count++]={
           face_key(face_opposite(cells_[source].vertices,face)),
-          cells_[source].neighbours[face]);
+          cells_[source].neighbours[face]};
     }
   };
   remember_exterior(cell,opposite);
@@ -644,22 +655,32 @@ WangOrderedTetMesh::Flip23Result WangOrderedTetMesh::flip23(
   for(unsigned i=0;i<3U;++i)result.created_cells[i]=add_cell(replacements[i]);
   result.erased_cells={cell,other};
   if(!erase_cell(cell)||!erase_cell(other))return reject("erase");
-  using Use=std::pair<std::uint32_t,std::uint8_t>;
-  std::map<Face,std::vector<Use>> interior_faces;
+  struct InteriorFace {
+    Face face{};
+    std::uint32_t cell{};
+    std::uint8_t opposite{};
+    bool paired{};
+  };
+  std::array<InteriorFace,3> interior_faces{};
+  std::size_t interior_count{};
   for(const auto created:result.created_cells) {
     auto& created_cell=cells_[created];
     created_cell.neighbours.fill(no_neighbour);
     for(unsigned face=0U;face<4U;++face) {
       const auto ordered_face=face_opposite(created_cell.vertices,face);
       const auto key=face_key(ordered_face);
-      if(const auto exterior=exterior_neighbours.find(key);
-         exterior!=exterior_neighbours.end()) {
-        created_cell.neighbours[face]=exterior->second;
-        if(exterior->second<0) {
+      const auto exterior=std::find_if(
+          exterior_neighbours.begin(),
+          exterior_neighbours.begin()+static_cast<std::ptrdiff_t>(exterior_count),
+          [&](const auto& candidate) {return candidate.face==key;});
+      if(exterior!=exterior_neighbours.begin()+
+                       static_cast<std::ptrdiff_t>(exterior_count)) {
+        created_cell.neighbours[face]=exterior->neighbour;
+        if(exterior->neighbour<0) {
           hull_faces_.push_back({ordered_face,created,static_cast<std::uint8_t>(face)});
           continue;
         }
-        auto& adjacent=cells_[static_cast<std::size_t>(exterior->second)];
+        auto& adjacent=cells_[static_cast<std::size_t>(exterior->neighbour)];
         const auto old_neighbour=std::find_if(adjacent.neighbours.begin(),
             adjacent.neighbours.end(),[&](const auto neighbour) {
               return neighbour==static_cast<std::int32_t>(cell)||
@@ -669,20 +690,32 @@ WangOrderedTetMesh::Flip23Result WangOrderedTetMesh::flip23(
         *old_neighbour=static_cast<std::int32_t>(created);
         continue;
       }
-      interior_faces[key].push_back({created,static_cast<std::uint8_t>(face)});
+      const auto pending=std::find_if(
+          interior_faces.begin(),
+          interior_faces.begin()+static_cast<std::ptrdiff_t>(interior_count),
+          [&](const auto& candidate) {
+            return !candidate.paired&&candidate.face==key;
+          });
+      if(pending==interior_faces.begin()+
+                      static_cast<std::ptrdiff_t>(interior_count)) {
+        if(interior_count>=interior_faces.size())return reject("interior-count");
+        interior_faces[interior_count++]={
+            key,created,static_cast<std::uint8_t>(face),false};
+        continue;
+      }
+      created_cell.neighbours[face]=static_cast<std::int32_t>(pending->cell);
+      cells_[pending->cell].neighbours[pending->opposite]=
+          static_cast<std::int32_t>(created);
+      pending->paired=true;
     }
   }
   std::erase_if(hull_faces_,[&](const HullFace& face) {
     return face.cell==cell||face.cell==other;
   });
-  for(const auto& [face,uses]:interior_faces) {
-    static_cast<void>(face);
-    if(uses.size()!=2U)return reject("interior-link");
-    cells_[uses[0].first].neighbours[uses[0].second]=
-        static_cast<std::int32_t>(uses[1].first);
-    cells_[uses[1].first].neighbours[uses[1].second]=
-        static_cast<std::int32_t>(uses[0].first);
-  }
+  if(interior_count!=interior_faces.size()||
+     std::ranges::any_of(interior_faces,[](const auto& face) {
+       return !face.paired;
+     }))return reject("interior-link");
   point_to_cell_[first_apex]=static_cast<std::int32_t>(result.created_cells[2]);
   point_to_cell_[second_apex]=static_cast<std::int32_t>(result.created_cells[2]);
   point_to_cell_[third]=static_cast<std::int32_t>(result.created_cells[2]);

@@ -364,6 +364,19 @@ TEST_CASE("generic surface/core contract rejects invalid input before transition
     CHECK_FALSE(report.accepted);
     CHECK(report.failure==tetra::probes::SurfaceCoreInputFailure::core_not_strictly_nested);
   }
+  SUBCASE("every disconnected core component receives a nesting witness") {
+    auto input=nested_tetrahedra();
+    const auto start=static_cast<std::uint32_t>(input.vertices.size());
+    input.vertices.insert(input.vertices.end(),{
+        tetra::Vec3{3.0,0.0,0.0},tetra::Vec3{3.2,0.0,0.0},
+        tetra::Vec3{3.0,0.2,0.0},tetra::Vec3{3.0,0.0,0.2}});
+    input.retained_core_tetrahedra.push_back(
+        {{start,start+1U,start+2U,start+3U}});
+    const auto report=tetra::probes::validate_surface_core_transition_input(input);
+    CHECK_FALSE(report.accepted);
+    CHECK(report.failure==
+          tetra::probes::SurfaceCoreInputFailure::core_not_strictly_nested);
+  }
   SUBCASE("concave outer surface crossing an all-inside core is rejected") {
     const auto report=tetra::probes::validate_surface_core_transition_input(
         concave_pit_with_core(-0.3));

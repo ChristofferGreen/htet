@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -220,6 +221,150 @@ void write_indices(std::ostringstream& output,
     output<<']';});
 }
 
+AdvancingFrontFixture build_advancing_front_core(
+    const AdvancingFrontFixtureConfig& config,
+    const std::array<Vec3,4>& root_tetrahedron,Vec3 centre) {
+  AdvancingFrontFixture result;
+  result.config=config;
+  result.root_tetrahedron=root_tetrahedron;
+  const auto hierarchy_root=WorldTetAddress::root(0U);
+  const auto reference_root=world_tetrahedron_geometry(hierarchy_root);
+  std::vector<WorldTetAddress> frontier;
+  if(config.core_mode==AdvancingFrontCoreMode::uniform) {
+    frontier={hierarchy_root};
+    for(unsigned int depth=0;depth<config.core_red_depth;++depth) {
+      std::vector<WorldTetAddress> children;children.reserve(frontier.size()*8U);
+      for(const auto parent:frontier)for(std::uint8_t child=0;child<8U;++child)
+        children.push_back(parent.child(child));
+      frontier.swap(children);
+    }
+    result.core_hierarchy_nodes_visited=frontier.size();
+    result.core_red_leaves_selected=frontier.size();
+  } else {
+    std::vector<WorldTetAddress> pending{hierarchy_root};
+    while(!pending.empty()) {
+      const auto address=pending.back();pending.pop_back();
+      ++result.core_hierarchy_nodes_visited;
+      const auto geometry=world_tetrahedron_geometry(address);
+      Vec3 cell_centre{};double radius{};
+      std::array<Vec3,4> points{};
+      for(std::size_t i=0;i<4U;++i) {
+        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
+                                      geometry[i]);
+        cell_centre=cell_centre+points[i]/4.0;
+      }
+      for(const auto point:points)
+        radius=std::max(radius,length(point-cell_centre));
+      double edge{};
+      for(std::size_t a=0;a<4U;++a)for(std::size_t b=a+1U;b<4U;++b)
+        edge=std::max(edge,length(points[a]-points[b]));
+      const double lower_distance=config.field_kind==
+              AdvancingFrontFieldKind::contained_noisy_sphere
+          ?std::max(0.0,std::abs(length(cell_centre-centre)-config.sphere_radius)-
+              config.noise_amplitude*perlin_absolute_bound-radius)
+          :std::max(0.0,std::abs(field_value(config,centre,cell_centre))-
+              (1.0+6.0*config.noise_amplitude*config.noise_frequency)*radius);
+      const bool refine=address.red_depth()<config.core_min_red_depth||
+          (address.red_depth()<config.core_red_depth&&lower_distance<
+              config.core_surface_band_multiplier*edge);
+      if(refine)for(std::uint8_t child=0;child<8U;++child)
+        pending.push_back(address.child(child));
+      else frontier.push_back(address);
+    }
+    for(std::uint8_t root=1U;root<bcc_root_tetrahedron_count;++root)
+      frontier.push_back(WorldTetAddress::root(root));
+    std::ranges::sort(frontier);
+    frontier=close_world_conforming_cut(frontier);
+    const WorldCutDirectory directory(make_complete_world_cut_checkpoint(
+        frontier,3U,1U));
+    const auto conforming=reconstruct_world_conforming_volume(directory);
+    result.core_red_leaves_selected=conforming.logical_owners;
+    result.core_green_transition_cells=conforming.transition_cells;
+    frontier.clear();
+    std::map<WorldVertexKey,std::uint32_t> core_indexes;
+    for(const auto& cell:conforming.cells) {
+      if(cell.logical_owner.root_id()!=0U)continue;
+      std::array<Vec3,4> points{};bool retain=true;
+      for(std::size_t i=0;i<4U;++i) {
+        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
+                                      cell.positions[i]);
+        const auto root_weights=reference_barycentric(result.root_tetrahedron,
+                                                       points[i]);
+        const auto boundary_distance=*std::min_element(root_weights.begin(),
+                                                        root_weights.end());
+        retain=retain&&field_value(config,centre,points[i])<
+            -config.core_clearance&&boundary_distance>0.045;
+      }
+      if(!retain)continue;
+      std::array<std::uint32_t,4> tet{};
+      for(std::size_t i=0;i<4U;++i) {
+        const auto [entry,inserted]=core_indexes.emplace(cell.vertices[i],
+            static_cast<std::uint32_t>(result.core_vertices.size()));
+        if(inserted) {
+          result.core_vertex_keys.push_back(cell.vertices[i]);
+          result.core_vertices.push_back(points[i]);
+        }
+        tet[i]=entry->second;
+      }
+      if(six_volume(result.core_vertices[tet[0]],result.core_vertices[tet[1]],
+                    result.core_vertices[tet[2]],result.core_vertices[tet[3]])<0.0)
+        std::swap(tet[1],tet[2]);
+      result.core_tetrahedra.push_back(tet);
+      result.core_tet_addresses.push_back(cell.logical_owner);
+    }
+  }
+  std::map<WorldVertexKey,std::uint32_t> core_indexes;
+  for(const auto address:frontier) {
+    const auto reference=world_tetrahedron_geometry(address);
+    std::array<Vec3,4> points{};bool retain=true;
+    for(std::size_t i=0;i<4U;++i) {
+      points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
+                                    reference[i]);
+      const auto root_weights=reference_barycentric(result.root_tetrahedron,
+                                                     points[i]);
+      const auto boundary_distance=*std::min_element(root_weights.begin(),
+                                                      root_weights.end());
+      retain=retain&&field_value(config,centre,points[i])<
+          -config.core_clearance&&boundary_distance>0.045;
+    }
+    if(!retain)continue;
+    const auto keys=world_tetrahedron_vertex_keys(address);
+    std::array<std::uint32_t,4> tet{};
+    for(std::size_t i=0;i<4U;++i) {
+      const auto [entry,inserted]=core_indexes.emplace(
+          keys[i],static_cast<std::uint32_t>(result.core_vertices.size()));
+      if(inserted) {
+        result.core_vertex_keys.push_back(keys[i]);
+        result.core_vertices.push_back(points[i]);
+      }
+      tet[i]=entry->second;
+    }
+    if(six_volume(result.core_vertices[tet[0]],result.core_vertices[tet[1]],
+                  result.core_vertices[tet[2]],result.core_vertices[tet[3]])<0.0)
+      std::swap(tet[1],tet[2]);
+    result.core_tetrahedra.push_back(tet);
+    result.core_tet_addresses.push_back(address);
+  }
+  struct FaceUse {Face oriented{};};
+  std::map<Face,std::vector<FaceUse>> core_faces;
+  for(const auto& tet:result.core_tetrahedra)
+    for(std::size_t opposite=0;opposite<4U;++opposite) {
+      Face face{};std::size_t out{};
+      for(std::size_t i=0;i<4U;++i)if(i!=opposite)face[out++]=tet[i];
+      if(dot(cross(result.core_vertices[face[1]]-result.core_vertices[face[0]],
+                   result.core_vertices[face[2]]-result.core_vertices[face[0]]),
+             result.core_vertices[tet[opposite]]-result.core_vertices[face[0]])>0.0)
+        std::swap(face[1],face[2]);
+      core_faces[canonical_face(face)].push_back({face});
+    }
+  for(const auto& [unused,uses]:core_faces) {
+    static_cast<void>(unused);
+    if(uses.size()==1U)
+      result.core_boundary_triangles.push_back(uses.front().oriented);
+  }
+  return result;
+}
+
 } // namespace
 
 AdvancingFrontCoreSizing advancing_front_core_sizing(unsigned int grid_resolution) {
@@ -277,6 +422,10 @@ AdvancingFrontFixture build_advancing_front_fixture(
      config.sphere_radius+config.noise_amplitude*perlin_absolute_bound>=
          minimum_root_face_distance(result.root_tetrahedron,centre))
     throw std::invalid_argument("contained sphere can reach the root tetrahedron boundary");
+  auto core_future=std::async(std::launch::async,[&config,
+      root=result.root_tetrahedron,centre] {
+    return build_advancing_front_core(config,root,centre);
+  });
   const auto construction=make_four_hexahedra();
   for(unsigned int parent=0;parent<4U;++parent)
     for(unsigned int corner=0;corner<8U;++corner) {
@@ -504,138 +653,15 @@ AdvancingFrontFixture build_advancing_front_fixture(
     }
   }
 
-  const auto hierarchy_root=WorldTetAddress::root(0U);
-  const auto reference_root=world_tetrahedron_geometry(hierarchy_root);
-  std::vector<WorldTetAddress> frontier;
-  if(config.core_mode==AdvancingFrontCoreMode::uniform) {
-    frontier={hierarchy_root};
-    for(unsigned int depth=0;depth<config.core_red_depth;++depth) {
-      std::vector<WorldTetAddress> children;children.reserve(frontier.size()*8U);
-      for(const auto parent:frontier)for(std::uint8_t child=0;child<8U;++child)
-        children.push_back(parent.child(child));
-      frontier.swap(children);
-    }
-    result.core_hierarchy_nodes_visited=frontier.size();
-    result.core_red_leaves_selected=frontier.size();
-  } else {
-    // The scalar field is a radial distance perturbed by gradient Perlin
-    // noise.  This deliberately conservative Lipschitz bound turns a cell
-    // centre sample into a lower bound on its distance from the zero set.
-    // It drives refinement from the surface, never from the camera.
-    std::vector<WorldTetAddress> pending{hierarchy_root};
-    while(!pending.empty()) {
-      const auto address=pending.back();pending.pop_back();
-      ++result.core_hierarchy_nodes_visited;
-      const auto geometry=world_tetrahedron_geometry(address);
-      Vec3 cell_centre{};double radius{};
-      std::array<Vec3,4> points{};
-      for(std::size_t i=0;i<4U;++i) {
-        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
-            geometry[i]);
-        cell_centre=cell_centre+points[i]/4.0;
-      }
-      for(const auto point:points)
-        radius=std::max(radius,length(point-cell_centre));
-      double edge{};
-      for(std::size_t a=0;a<4U;++a)for(std::size_t b=a+1U;b<4U;++b)
-        edge=std::max(edge,length(points[a]-points[b]));
-      // For this contained-sphere fixture, the radial field gives a tighter
-      // certified bound than a generic field-gradient estimate: the noise can
-      // move the zero surface by at most its amplitude bound, while every
-      // point in the cell is at most `radius` away from its centre.
-      const double lower_distance=config.field_kind==
-              AdvancingFrontFieldKind::contained_noisy_sphere
-          ?std::max(0.0,std::abs(length(cell_centre-centre)-config.sphere_radius)-
-              config.noise_amplitude*perlin_absolute_bound-radius)
-          :std::max(0.0,std::abs(field_value(config,centre,cell_centre))-
-              (1.0+6.0*config.noise_amplitude*config.noise_frequency)*radius);
-      const bool refine=address.red_depth()<config.core_min_red_depth||
-          (address.red_depth()<config.core_red_depth&&lower_distance<
-              config.core_surface_band_multiplier*edge);
-      if(refine)for(std::uint8_t child=0;child<8U;++child)
-        pending.push_back(address.child(child));
-      else frontier.push_back(address);
-    }
-    // The cut must cover all BCC roots for the reusable directory API.  The
-    // other roots are irrelevant to this fixture and stay coarse.
-    for(std::uint8_t root=1U;root<bcc_root_tetrahedron_count;++root)
-      frontier.push_back(WorldTetAddress::root(root));
-    std::ranges::sort(frontier);
-    frontier=close_world_conforming_cut(frontier);
-    const WorldCutDirectory directory(make_complete_world_cut_checkpoint(
-        frontier,3U,1U));
-    const auto conforming=reconstruct_world_conforming_volume(directory);
-    result.core_red_leaves_selected=conforming.logical_owners;
-    result.core_green_transition_cells=conforming.transition_cells;
-    frontier.clear();
-    std::map<WorldVertexKey,std::uint32_t> core_indexes;
-    for(const auto& cell:conforming.cells) {
-      if(cell.logical_owner.root_id()!=0U)continue;
-      std::array<Vec3,4> points{};bool retain=true;
-      for(std::size_t i=0;i<4U;++i) {
-        points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,
-            cell.positions[i]);
-        const auto root_weights=reference_barycentric(result.root_tetrahedron,points[i]);
-        const auto boundary_distance=*std::min_element(root_weights.begin(),root_weights.end());
-        retain=retain&&field_value(config,centre,points[i])<-config.core_clearance&&
-            boundary_distance>0.045;
-      }
-      if(!retain)continue;
-      std::array<std::uint32_t,4> tet{};
-      for(std::size_t i=0;i<4U;++i) {
-        const auto [entry,inserted]=core_indexes.emplace(cell.vertices[i],
-            static_cast<std::uint32_t>(result.core_vertices.size()));
-        if(inserted) { result.core_vertex_keys.push_back(cell.vertices[i]);
-          result.core_vertices.push_back(points[i]); }
-        tet[i]=entry->second;
-      }
-      if(six_volume(result.core_vertices[tet[0]],result.core_vertices[tet[1]],
-                    result.core_vertices[tet[2]],result.core_vertices[tet[3]])<0.0)
-        std::swap(tet[1],tet[2]);
-      result.core_tetrahedra.push_back(tet);result.core_tet_addresses.push_back(cell.logical_owner);
-    }
-  }
-  std::map<WorldVertexKey,std::uint32_t> core_indexes;
-  for(const auto address:frontier) {
-    const auto reference=world_tetrahedron_geometry(address);
-    std::array<Vec3,4> points{};bool retain=true;
-    for(std::size_t i=0;i<4U;++i) {
-      points[i]=map_hierarchy_point(reference_root,result.root_tetrahedron,reference[i]);
-      const auto root_weights=reference_barycentric(result.root_tetrahedron,points[i]);
-      const auto boundary_distance=*std::min_element(root_weights.begin(),root_weights.end());
-      retain=retain&&field_value(config,centre,points[i])<-config.core_clearance&&
-          boundary_distance>0.045;
-    }
-    if(!retain)continue;
-    const auto keys=world_tetrahedron_vertex_keys(address);
-    std::array<std::uint32_t,4> tet{};
-    for(std::size_t i=0;i<4U;++i) {
-      const auto [entry,inserted]=core_indexes.emplace(
-          keys[i],static_cast<std::uint32_t>(result.core_vertices.size()));
-      if(inserted){result.core_vertex_keys.push_back(keys[i]);result.core_vertices.push_back(points[i]);}
-      tet[i]=entry->second;
-    }
-    if(six_volume(result.core_vertices[tet[0]],result.core_vertices[tet[1]],
-                  result.core_vertices[tet[2]],result.core_vertices[tet[3]])<0.0)
-      std::swap(tet[1],tet[2]);
-    result.core_tetrahedra.push_back(tet);result.core_tet_addresses.push_back(address);
-  }
-  struct FaceUse {Face oriented{};std::uint32_t opposite{};};
-  std::map<Face,std::vector<FaceUse>> core_faces;
-  for(const auto& tet:result.core_tetrahedra)
-    for(std::size_t opposite=0;opposite<4U;++opposite) {
-      Face face{};std::size_t out{};
-      for(std::size_t i=0;i<4U;++i)if(i!=opposite)face[out++]=tet[i];
-      if(dot(cross(result.core_vertices[face[1]]-result.core_vertices[face[0]],
-                   result.core_vertices[face[2]]-result.core_vertices[face[0]]),
-             result.core_vertices[tet[opposite]]-result.core_vertices[face[0]])>0.0)
-        std::swap(face[1],face[2]);
-      core_faces[canonical_face(face)].push_back({face,tet[opposite]});
-    }
-  for(const auto& [unused,uses]:core_faces) {
-    static_cast<void>(unused);if(uses.size()==1U)
-      result.core_boundary_triangles.push_back(uses.front().oriented);
-  }
+  auto core=core_future.get();
+  result.core_vertices=std::move(core.core_vertices);
+  result.core_vertex_keys=std::move(core.core_vertex_keys);
+  result.core_tetrahedra=std::move(core.core_tetrahedra);
+  result.core_tet_addresses=std::move(core.core_tet_addresses);
+  result.core_boundary_triangles=std::move(core.core_boundary_triangles);
+  result.core_hierarchy_nodes_visited=core.core_hierarchy_nodes_visited;
+  result.core_red_leaves_selected=core.core_red_leaves_selected;
+  result.core_green_transition_cells=core.core_green_transition_cells;
   result.audit=audit_advancing_front_fixture(result);return result;
 }
 

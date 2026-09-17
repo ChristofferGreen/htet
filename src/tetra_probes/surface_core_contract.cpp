@@ -595,13 +595,40 @@ SurfaceCoreTransitionContract validate_surface_core_transition_input(
     for(const auto& parent:input.core_parent_facets) { auto id=parent.identity;std::sort(id.vertex_ids.begin(),id.vertex_ids.end());given.insert(id); }
     if(expected!=given||given.size()!=input.core_parent_facets.size()) return fail(SurfaceCoreInputFailure::invalid_facet_contract,0U);
   }
-  std::set<std::uint32_t> unique_core_vertices;
-  for(const auto cell:input.retained_core_tetrahedra)
-    unique_core_vertices.insert(cell.begin(),cell.end());
-  for(const auto vertex:unique_core_vertices)
+  // A face-connected core component cannot move between the inside and
+  // outside of a closed outer surface unless its boundary crosses that
+  // surface.  The clearance pass below proves that no such crossing exists,
+  // so one winding-number witness per component is sufficient.  Keep the
+  // witness deterministic by selecting the component's smallest vertex.
+  std::vector<std::size_t> core_component(input.retained_core_tetrahedra.size());
+  std::iota(core_component.begin(),core_component.end(),0U);
+  const auto find_component=[&](std::size_t cell) {
+    while(core_component[cell]!=cell) {
+      core_component[cell]=core_component[core_component[cell]];
+      cell=core_component[cell];
+    }
+    return cell;
+  };
+  for(const auto& [unused,uses]:core_faces)if(uses.size()==2U) {
+    static_cast<void>(unused);
+    const auto first=find_component(uses[0].tetrahedron);
+    const auto second=find_component(uses[1].tetrahedron);
+    if(first!=second)core_component[second]=first;
+  }
+  std::map<std::size_t,std::uint32_t> component_witness;
+  for(std::size_t cell=0U;cell<input.retained_core_tetrahedra.size();++cell) {
+    const auto root=find_component(cell);
+    const auto vertex=*std::min_element(input.retained_core_tetrahedra[cell].begin(),
+                                        input.retained_core_tetrahedra[cell].end());
+    const auto [entry,inserted]=component_witness.emplace(root,vertex);
+    if(!inserted)entry->second=std::min(entry->second,vertex);
+  }
+  for(const auto& [unused,vertex]:component_witness) {
+    static_cast<void>(unused);
     if(!strictly_inside_closed_surface(input.vertices,input.outer_faces,
                                        input.vertices[vertex]))
       return fail(SurfaceCoreInputFailure::core_not_strictly_nested,vertex);
+  }
   // A vertex-only nesting test is unsound for a concave outer PLC: a core
   // tetrahedron can exit and re-enter the enclosed volume between vertices.
   // Keep a clearance proportional to the declared coordinate scale.  This
@@ -795,19 +822,48 @@ static SurfaceCoreTransitionValidation validate_surface_core_transition_output_i
     candidate.bounds=tetrahedron_bounds(candidate.points);
     overlap_candidates.push_back(candidate);
   }
+  const auto coordinate=[](Vec3 point,unsigned axis) {
+    return axis==0U?point.x:(axis==1U?point.y:point.z);
+  };
+  unsigned sweep_axis{};
+  double best_score=std::numeric_limits<double>::infinity();
+  for(unsigned axis=0U;axis<3U;++axis) {
+    double minimum=std::numeric_limits<double>::infinity();
+    double maximum=-std::numeric_limits<double>::infinity();
+    double interval_sum{};
+    for(const auto& candidate:overlap_candidates) {
+      const auto low=coordinate(candidate.bounds.minimum,axis);
+      const auto high=coordinate(candidate.bounds.maximum,axis);
+      minimum=std::min(minimum,low);maximum=std::max(maximum,high);
+      interval_sum+=high-low;
+    }
+    const auto span=maximum-minimum;
+    const auto score=span>0.0?interval_sum/span:
+        std::numeric_limits<double>::infinity();
+    if(score<best_score) {best_score=score;sweep_axis=axis;}
+  }
   std::sort(overlap_candidates.begin(),overlap_candidates.end(),
-            [](const auto& first,const auto& second) {
-              return first.bounds.minimum.x<second.bounds.minimum.x;
+            [&](const auto& first,const auto& second) {
+              return coordinate(first.bounds.minimum,sweep_axis)<
+                     coordinate(second.bounds.minimum,sweep_axis);
             });
-  // This is only a broad phase.  A strict overlap requires overlapping
-  // axis-aligned bounds, so no possible pair is discarded; every survivor is
-  // still tested by the established separating-axis predicate above.
+  // This is only a broad phase. A strict overlap requires overlapping
+  // axis-aligned bounds, so every possible pair reaches the exact predicate.
   for(std::size_t left=0U;left<overlap_candidates.size();++left) {
     const auto& first=overlap_candidates[left];
     for(std::size_t right=left+1U;right<overlap_candidates.size()&&
-        overlap_candidates[right].bounds.minimum.x<first.bounds.maximum.x;++right) {
+        coordinate(overlap_candidates[right].bounds.minimum,sweep_axis)<
+            coordinate(first.bounds.maximum,sweep_axis);++right) {
       const auto& second=overlap_candidates[right];
       if(!bounds_overlap(first.bounds,second.bounds))continue;
+      if(result.positive_tetrahedra&&result.closed_two_manifold&&
+         result.consistently_oriented_shared_faces) {
+        std::size_t shared_vertices{};
+        for(const auto a:output.tetrahedra[first.tetrahedron])
+          for(const auto b:output.tetrahedra[second.tetrahedron])
+            shared_vertices+=a==b?1U:0U;
+        if(shared_vertices==3U)continue;
+      }
       if(strict_tetrahedra_overlap_impl(first.points,second.points)) {
         result.no_strict_tetrahedron_overlap=false;
         ++result.tetrahedron_overlap_pairs;

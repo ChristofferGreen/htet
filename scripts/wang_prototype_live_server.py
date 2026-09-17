@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +20,33 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts" / "wang-four-hexahedra-prototype"
 EXPORTER = ROOT / "build-owned" / "wang_prototype_demo_export"
+CACHE_ROOT = ROOT / "build-owned" / "wang-prototype-cache"
 REBUILD_LOCK = threading.Lock()
+GENERATED_FILES = (
+    "01-four-hexahedra.vtk",
+    "02-dual-contour-surface.vtk",
+    "03-implicit-tetrahedral-core.vtk",
+    "04-wang-transition.vtk",
+    "05-complete-prototype.vtk",
+    "prototype-data.js",
+    "summary.json",
+)
+
+
+def publish_cached_result(source: Path) -> None:
+    """Atomically replace the generated files while leaving the inspector intact."""
+    for name in GENERATED_FILES:
+        temporary = ARTIFACTS / f".{name}.publishing"
+        shutil.copyfile(source / name, temporary)
+        os.replace(temporary, ARTIFACTS / name)
+
+
+def rebuild_cache_key(resolution: int, mode: str, minimum_level: int,
+                      surface_band: float) -> str:
+    exporter = EXPORTER.stat()
+    identity = (f"{exporter.st_mtime_ns}:{exporter.st_size}:{resolution}:"
+                f"{mode}:{minimum_level}:{surface_band:.17g}")
+    return hashlib.sha256(identity.encode("ascii")).hexdigest()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -64,8 +94,22 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "build the Wang exporter first"})
             return
         with REBUILD_LOCK:
+            CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+            cache_directory = CACHE_ROOT / rebuild_cache_key(
+                resolution, mode, minimum_level, surface_band)
+            if all((cache_directory / name).is_file() for name in GENERATED_FILES):
+                publish_cached_result(cache_directory)
+                self.reply(HTTPStatus.OK, {
+                    "resolution": resolution, "mode": mode,
+                    "minimum_level": minimum_level,
+                    "surface_band": surface_band, "reloaded": True,
+                    "cached": True,
+                })
+                return
+            temporary_directory = Path(tempfile.mkdtemp(
+                prefix="rebuild-", dir=CACHE_ROOT))
             completed = subprocess.run(
-                [str(EXPORTER), str(ARTIFACTS), str(resolution), mode,
+                [str(EXPORTER), str(temporary_directory), str(resolution), mode,
                  str(minimum_level), str(surface_band)],
                 # A geometrically scaled depth-six core is intentionally much
                 # denser than the former fixed-cavity demo.  Keep the browser
@@ -73,14 +117,18 @@ class Handler(BaseHTTPRequestHandler):
                 # than reporting a false rebuild failure at two minutes.
                 cwd=ROOT, text=True, capture_output=True, timeout=300, check=False,
             )
-        if completed.returncode:
-            self.reply(HTTPStatus.UNPROCESSABLE_ENTITY, {
-                "error": completed.stderr.strip() or "Wang prototype rebuild failed",
-            })
-            return
+            if completed.returncode:
+                shutil.rmtree(temporary_directory, ignore_errors=True)
+                self.reply(HTTPStatus.UNPROCESSABLE_ENTITY, {
+                    "error": completed.stderr.strip() or "Wang prototype rebuild failed",
+                })
+                return
+            temporary_directory.rename(cache_directory)
+            publish_cached_result(cache_directory)
         self.reply(HTTPStatus.OK, {"resolution": resolution, "mode": mode,
                                    "minimum_level": minimum_level,
-                                   "surface_band": surface_band, "reloaded": True})
+                                   "surface_band": surface_band, "reloaded": True,
+                                   "cached": False})
 
     def serve_artifact(self, request_path: str) -> None:
         """Serve the inspector alongside its rebuild endpoint.
