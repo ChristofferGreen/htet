@@ -51,23 +51,6 @@ double local_target(const DcSurfaceDistanceSamplingOptions& options,double dista
                     options.surface_spacing,options.maximum_spacing);
 }
 
-std::size_t surface_components(const DcFreeVolumeInput& input) {
-  std::map<std::uint64_t,std::set<std::uint64_t>> adjacent;
-  for(const auto& face:input.faces)for(unsigned i=0U;i<3U;++i) {
-    adjacent[face[i]].insert(face[(i+1U)%3U]);
-    adjacent[face[(i+1U)%3U]].insert(face[i]);
-  }
-  std::set<std::uint64_t> visited;std::size_t components{};
-  for(const auto& [start,unused]:adjacent) {
-    (void)unused;if(visited.contains(start))continue;
-    ++components;std::vector<std::uint64_t> queue{start};visited.insert(start);
-    for(std::size_t i=0U;i<queue.size();++i)
-      for(const auto next:adjacent.at(queue[i]))if(visited.insert(next).second)
-        queue.push_back(next);
-  }
-  return components;
-}
-
 bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
                            const std::vector<std::array<std::uint64_t,3>>& faces,
                            Vec3 point) {
@@ -310,13 +293,6 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling,
     const WangConstrainedTetrahedralizationOptions& options) {
   DcSurfaceConformingVolumeResult result;result.input=input;
-  // The owned constrained-recovery backend is presently qualified only for a
-  // single closed component.  In particular, a nested second component would
-  // describe a cavity and must not silently be published as filled material.
-  if(surface_components(input)!=1U) {
-    result.failure=DcSurfaceConformingVolumeFailure::multiple_surface_components_unsupported;
-    return result;
-  }
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
   result.interior_samples=sample_dc_volume_by_surface_distance(input,sampling);
@@ -330,7 +306,11 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     seeded.vertices.push_back({++next,point});return true;
   };
   for(const auto point:result.interior_samples)if(!append_site(point))return result;
-  const auto build=[&]() { return tetrahedralize_wang_constrained_plc(seeded,options); };
+  auto configured_options=options;
+  // Generic DC fill has no retained core.  Its literal facets are therefore
+  // all material boundaries, whose nesting is resolved by parity.
+  configured_options.outer_faces_are_parity_boundaries=true;
+  const auto build=[&]() { return tetrahedralize_wang_constrained_plc(seeded,configured_options); };
   result.volume=build();
   if(!result.volume.accepted()) {
     result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;

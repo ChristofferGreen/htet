@@ -1,7 +1,7 @@
 # Exact DC boundary with free interior tetrahedralization
 
 Date: 2026-09-18  
-Status: literal-boundary generic constrained-fill experiment implemented for one connected closed component; quality and multi-component/cavity support remain unproven
+Status: literal-boundary generic constrained-fill experiment implemented for closed embedded DC-shell sets; element quality remains unproven
 Baseline: `73d6c7f` on `codex/surface-driven-volume-lod`
 
 ## 1. Decision and purpose
@@ -85,11 +85,14 @@ changing the literal-DC contract.
 
 The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
 concave L prism, and a coarse closed torus pass literal-facet recovery and
-no-core extraction. This qualifies one connected closed component, including
-nonconvex, thin, and genus-one test shapes. Nested components (air cavities)
-and disconnected components are
-explicitly rejected before recovery: the current backend does not yet recover
-all components as one PLC. It must not publish a false filled cavity.
+no-core extraction. A two-box fixture and a box with an inverted nested box
+also pass. Generic no-core extraction uses an in-house parity flood: crossing
+each literal DC shell toggles air/material. Thus disconnected solids are kept
+and the nested box is correctly excluded as air; both tests verify that the
+published boundary is exactly the full input facet set. This qualifies closed,
+embedded, consistently oriented DC-shell sets with ordinary parity material
+semantics. Intersecting/touching shells and non-manifold input are still
+rejected by PLC materialization rather than guessed at.
 
 ## 2. Corrections to the initial proposal
 

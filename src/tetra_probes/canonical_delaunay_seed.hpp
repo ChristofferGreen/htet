@@ -1260,6 +1260,7 @@ enum class CanonicalPlcRegionFailure : std::uint8_t {
   none, invalid_index, degenerate_tetrahedron, nonmanifold_mesh,
   missing_constraint_face, core_witness_outside_mesh,
   core_witness_in_exterior, ambiguous_core_witness,
+  inconsistent_boundary_parity,
 };
 struct CanonicalPlcRegionInput {
   std::vector<Vec3> vertices;
@@ -1267,6 +1268,11 @@ struct CanonicalPlcRegionInput {
   std::vector<std::array<std::uint32_t,3>> outer_faces;
   std::vector<std::array<std::uint32_t,3>> core_faces;
   std::vector<Vec3> core_witnesses;
+  // Treat each outer face as an oriented-independent material boundary:
+  // crossing it flips air/material parity.  This supports a union of closed
+  // shells, including nested voids.  It is distinct from the historical
+  // outer-shell-plus-core-interface classification below.
+  bool outer_faces_are_parity_boundaries{};
   double coordinate_scale{1.0};
 };
 struct CanonicalPlcRegionResult {

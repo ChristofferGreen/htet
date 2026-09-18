@@ -12337,6 +12337,60 @@ CanonicalPlcRegionResult classify_canonical_plc_regions(const CanonicalPlcRegion
     return true;
   };
   if(!add_constraints(input.outer_faces)||!add_constraints(input.core_faces)) {result.failure=CanonicalPlcRegionFailure::missing_constraint_face;return result;}
+  if(input.outer_faces_are_parity_boundaries) {
+    // A collection of closed outer sheets describes material by parity, not
+    // by a single one-way flood. This is what distinguishes a nested air
+    // cavity (two crossings: air) from a disconnected second solid (one
+    // crossing: material). Core interfaces deliberately use the older,
+    // witness-driven model and cannot be mixed with this mode.
+    if(!input.core_faces.empty()||!input.core_witnesses.empty()) {
+      result.failure=CanonicalPlcRegionFailure::inconsistent_boundary_parity;
+      return result;
+    }
+    std::set<Face> outer_constraints;
+    for(const auto raw:input.outer_faces)outer_constraints.insert(face_key(raw));
+    std::vector<int> parity(input.tetrahedra.size(),-1);
+    std::vector<std::uint32_t> parity_queue;
+    const auto assign=[&](std::uint32_t cell,int value) {
+      if(parity[cell]<0) { parity[cell]=value;parity_queue.push_back(cell);return true; }
+      return parity[cell]==value;
+    };
+    // The missing side of any hull face is known air. A constrained hull
+    // face immediately enters material; an unconstrained one remains air.
+    for(const auto& [face,uses]:faces)if(uses.size()==1U) {
+      if(!assign(uses.front().first,outer_constraints.contains(face)?1:0)) {
+        result.failure=CanonicalPlcRegionFailure::inconsistent_boundary_parity;
+        return result;
+      }
+    }
+    for(std::size_t cursor=0U;cursor<parity_queue.size();++cursor) {
+      const auto cell=parity_queue[cursor];const auto& tet=input.tetrahedra[cell];
+      for(std::uint32_t omit=0U;omit<4U;++omit) {
+        Face face{};std::uint32_t n{};
+        for(std::uint32_t i=0U;i<4U;++i)if(i!=omit)face[n++]=tet[i];
+        const auto key=face_key(face);const auto& uses=faces.at(key);
+        if(uses.size()!=2U)continue;
+        const auto neighbour=uses[0].first==cell?uses[1].first:uses[0].first;
+        const auto next=parity[cell]^(outer_constraints.contains(key)?1:0);
+        if(!assign(neighbour,next)) {
+          result.failure=CanonicalPlcRegionFailure::inconsistent_boundary_parity;
+          return result;
+        }
+      }
+    }
+    if(std::any_of(parity.begin(),parity.end(),[](int value){return value<0;})) {
+      result.failure=CanonicalPlcRegionFailure::inconsistent_boundary_parity;
+      return result;
+    }
+    result.regions.resize(parity.size());
+    for(std::size_t cell=0U;cell<parity.size();++cell) {
+      result.regions[cell]=parity[cell]?CanonicalPlcCellRegion::shell:
+          CanonicalPlcCellRegion::outside;
+      parity[cell]?++result.shell_cells:++result.outside_cells;
+    }
+    result.failure=CanonicalPlcRegionFailure::none;
+    return result;
+  }
   result.regions.assign(input.tetrahedra.size(),CanonicalPlcCellRegion::shell);
   std::vector<std::uint32_t> queue;
   for(const auto& [face,uses]:faces)if(uses.size()==1U&&!constraints.contains(face)) {

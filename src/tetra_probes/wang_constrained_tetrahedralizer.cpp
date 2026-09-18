@@ -652,6 +652,8 @@ tetrahedralize_wang_constrained_plc_impl(
   for(const auto& vertex:result.vertices)region_input.vertices.push_back(vertex.position);
   region_input.tetrahedra=result.recovery.tetrahedra;
   region_input.core_witnesses=options.core_witnesses;
+  region_input.outer_faces_are_parity_boundaries=
+      options.outer_faces_are_parity_boundaries;
   std::map<std::uint64_t,std::uint32_t> index;
   for(std::size_t i=0U;i<result.vertices.size();++i)
     index.emplace(result.vertices[i].id,static_cast<std::uint32_t>(i));

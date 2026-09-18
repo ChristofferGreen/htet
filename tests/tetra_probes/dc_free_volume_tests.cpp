@@ -71,6 +71,27 @@ tetra::probes::DcFreeVolumeInput box_with_cavity_input() {
   return result;
 }
 
+tetra::probes::DcFreeVolumeInput two_disconnected_boxes_input() {
+  tetra::probes::DcFreeVolumeInput result;
+  append_box(result,{-2.,-1.,-1.},{-1.,1.,1.},false);
+  append_box(result,{1.,-1.,-1.},{2.,1.,1.},false);
+  return result;
+}
+
+bool published_boundary_equals(const tetra::probes::DcFreeVolumeInput& input,
+                               const tetra::probes::WangConstrainedTetrahedralizationResult& volume) {
+  std::map<std::array<std::uint64_t,3>,std::size_t> uses;
+  for(const auto& tet:volume.tetrahedra)for(unsigned omitted=0U;omitted<4U;++omitted) {
+    std::array<std::uint64_t,3> face{};unsigned cursor{};
+    for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)face[cursor++]=tet[corner];
+    std::sort(face.begin(),face.end());++uses[face];
+  }
+  std::set<std::array<std::uint64_t,3>> actual,expected;
+  for(const auto& [face,count]:uses)if(count==1U)actual.insert(face);
+  for(auto face:input.faces) { std::sort(face.begin(),face.end());expected.insert(face); }
+  return actual==expected;
+}
+
 tetra::probes::DcFreeVolumeInput torus_input() {
   using tetra::Vec3;
   using tetra::probes::DcFreeVolumeInput;
@@ -453,7 +474,7 @@ TEST_CASE("generic DC volume fill is deterministic for a frozen surface") {
   }
 }
 
-TEST_CASE("generic path explicitly declines a closed internal cavity") {
+TEST_CASE("generic path classifies a nested DC shell as an air cavity") {
   using namespace tetra::probes;
   DcSurfaceDistanceSamplingOptions sampling;
   sampling.surface_spacing=.4;
@@ -461,6 +482,39 @@ TEST_CASE("generic path explicitly declines a closed internal cavity") {
   sampling.maximum_points=8U;
   const auto input=box_with_cavity_input();
   const auto result=construct_dc_surface_conforming_volume(input,sampling);
-  CHECK_FALSE(result.accepted());
-  CHECK(result.failure==DcSurfaceConformingVolumeFailure::multiple_surface_components_unsupported);
+  REQUIRE(result.accepted());
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK(published_boundary_equals(input,result.volume));
+  std::map<std::uint64_t,tetra::Vec3> positions;
+  for(const auto& vertex:result.volume.vertices)positions.emplace(vertex.id,vertex.position);
+  for(const auto& tet:result.volume.tetrahedra) {
+    const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
+                       positions.at(tet[2])+positions.at(tet[3]))/4.;
+    const bool in_cavity=std::abs(centre.x)<.35&&std::abs(centre.y)<.35&&
+        std::abs(centre.z)<.35;
+    CHECK_FALSE(in_cavity);
+  }
+}
+
+TEST_CASE("generic path fills disconnected closed DC solids in one parity domain") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.4;
+  sampling.maximum_spacing=.8;
+  sampling.maximum_points=8U;
+  const auto input=two_disconnected_boxes_input();
+  const auto result=construct_dc_surface_conforming_volume(input,sampling);
+  REQUIRE(result.accepted());
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK(published_boundary_equals(input,result.volume));
+  std::map<std::uint64_t,tetra::Vec3> positions;
+  for(const auto& vertex:result.volume.vertices)positions.emplace(vertex.id,vertex.position);
+  bool left{},right{};
+  for(const auto& tet:result.volume.tetrahedra) {
+    const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
+                       positions.at(tet[2])+positions.at(tet[3]))/4.;
+    left|=centre.x<0.;right|=centre.x>0.;
+    CHECK(std::abs(centre.x)>1.);
+  }
+  CHECK(left);CHECK(right);
 }

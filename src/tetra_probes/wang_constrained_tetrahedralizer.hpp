@@ -51,6 +51,9 @@ struct WangBoundaryAudit {
 struct WangConstrainedTetrahedralizationOptions {
   CanonicalPlcRecoveryOptions recovery{};
   std::vector<Vec3> core_witnesses;
+  // Select parity region extraction for a no-core collection of closed
+  // material shells. Crossing a recovered literal facet toggles air/material.
+  bool outer_faces_are_parity_boundaries{};
   // Stops at paper branches which the owned prototype does not implement in
   // full. It never treats the R5 direct-promotion fallback as paper parity.
   bool restricted_viability_experiment{};
