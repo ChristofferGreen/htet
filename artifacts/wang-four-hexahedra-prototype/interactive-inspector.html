@@ -399,6 +399,10 @@
     minimumLevel.value = summary.coreMinRedDepth ?? 2;
     surfaceBand.value = summary.coreSurfaceBand ?? .5;
     freeLayers.value = summary.freeRadialLayers ?? 1;
+    // Rebuilds replace the page so retain the selected real volume method in
+    // the URL; otherwise native select defaults would silently return to Wang.
+    const requestedMethod = new URLSearchParams(location.search).get('method');
+    if (requestedMethod === 'wang' || requestedMethod === 'free') volumeMethod.value = requestedMethod;
     const updateLodLabels = () => {
       document.getElementById('minimum-level-value').textContent = minimumLevel.value;
       document.getElementById('surface-band-value').textContent = Number(surfaceBand.value).toFixed(2);
@@ -418,7 +422,7 @@
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
         // the browser cache, leaving the geometry apparently unchanged.
-        window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}`);
+        window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}&method=${encodeURIComponent(volumeMethod.value)}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
         resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false;
