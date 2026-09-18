@@ -126,7 +126,8 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
   if(input.vertices.empty()||input.faces.empty()||options.maximum_points==0U||
      !std::isfinite(options.surface_spacing)||!std::isfinite(options.maximum_spacing)||
      !std::isfinite(options.growth)||options.surface_spacing<=0.||
-     options.maximum_spacing<options.surface_spacing||options.growth<0.) return {};
+     options.maximum_spacing<options.surface_spacing||options.growth<0.||
+     options.refinement_maximum_vertex_valence==0U) return {};
   auto low=input.vertices.front().position,high=low;
   for(const auto& vertex:input.vertices) {
     low.x=std::min(low.x,vertex.position.x);low.y=std::min(low.y,vertex.position.y);low.z=std::min(low.z,vertex.position.z);
@@ -244,10 +245,18 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
     std::vector<std::pair<double,Vec3>> candidates;
     std::map<std::array<std::uint64_t,3>,std::size_t> face_uses;
+    std::map<std::uint64_t,std::size_t> vertex_valence;
     for(const auto& tet:volume.tetrahedra)for(unsigned opposite=0;opposite<4U;++opposite) {
       std::array<std::uint64_t,3> face{};unsigned out{};
       for(unsigned corner=0;corner<4U;++corner)if(corner!=opposite)face[out++]=tet[corner];
       std::sort(face.begin(),face.end());++face_uses[face];
+    }
+    for(const auto& tet:volume.tetrahedra)for(const auto id:tet)++vertex_valence[id];
+    for(const auto& [id,valence]:vertex_valence) {
+      (void)id;
+      quality.maximum_vertex_valence=std::max(quality.maximum_vertex_valence,valence);
+      if(valence>sampling.refinement_maximum_vertex_valence)
+        ++quality.high_valence_vertices;
     }
     for(const auto& tet:volume.tetrahedra) {
       const auto a=local_positions.at(tet[0]),b=local_positions.at(tet[1]),
@@ -273,9 +282,14 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       touches_boundary?++quality.boundary_tetrahedra:++quality.interior_tetrahedra;
       const auto ratio=longest/target;
       quality.maximum_edge_target_ratio=std::max(quality.maximum_edge_target_ratio,ratio);
-      if(ratio>sampling.refinement_edge_target_multiplier) {
+      std::size_t star_valence{};
+      for(const auto id:tet)star_valence=std::max(star_valence,vertex_valence.at(id));
+      const bool high_valence=star_valence>sampling.refinement_maximum_vertex_valence;
+      if(ratio>sampling.refinement_edge_target_multiplier||high_valence) {
         ++quality.oversized_tetrahedra;
-        if(collect_refinement)candidates.emplace_back(ratio,centroid);
+        const auto valence_score=static_cast<double>(star_valence)/
+            static_cast<double>(sampling.refinement_maximum_vertex_valence);
+        if(collect_refinement)candidates.emplace_back(std::max(ratio,valence_score),centroid);
       }
     }
     std::sort(candidates.begin(),candidates.end(),[](const auto& lhs,const auto& rhs) {

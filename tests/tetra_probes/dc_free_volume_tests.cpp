@@ -280,6 +280,7 @@ TEST_CASE("bounded generic refinement preserves literal DC facets") {
   CHECK(result.quality.refinement_passes<=sampling.maximum_refinement_passes);
   CHECK(result.quality.refinement_points_added<=sampling.maximum_refinement_points_per_pass);
   CHECK(result.quality.maximum_edge_target_ratio>0.);
+  CHECK(result.quality.maximum_vertex_valence>0U);
 }
 
 TEST_CASE("generic path explicitly declines a closed internal cavity") {

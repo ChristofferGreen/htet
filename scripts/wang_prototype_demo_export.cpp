@@ -389,6 +389,8 @@ int main(int argc,char** argv) {
         <<",genericInteriorTetrahedra:"<<generic_volume.quality.interior_tetrahedra
         <<",genericOversizedTetrahedra:"<<generic_volume.quality.oversized_tetrahedra
         <<",genericMaximumEdgeTargetRatio:"<<generic_volume.quality.maximum_edge_target_ratio
+        <<",genericMaximumVertexValence:"<<generic_volume.quality.maximum_vertex_valence
+        <<",genericHighValenceVertices:"<<generic_volume.quality.high_valence_vertices
         <<",genericRefinementPasses:"<<generic_volume.quality.refinement_passes
         <<",genericRefinementPointsAdded:"<<generic_volume.quality.refinement_points_added
         <<",coreVolume:"<<published_core_volume

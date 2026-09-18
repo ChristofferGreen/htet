@@ -57,6 +57,7 @@ struct DcSurfaceDistanceSamplingOptions {
   std::size_t maximum_refinement_passes{};
   std::size_t maximum_refinement_points_per_pass{32U};
   double refinement_edge_target_multiplier{1.75};
+  std::size_t refinement_maximum_vertex_valence{32U};
 };
 
 enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
@@ -78,6 +79,8 @@ struct DcVolumeQualityDiagnostics {
   std::size_t interior_tetrahedra{};
   std::size_t oversized_tetrahedra{};
   double maximum_edge_target_ratio{};
+  std::size_t maximum_vertex_valence{};
+  std::size_t high_valence_vertices{};
   std::size_t refinement_passes{};
   std::size_t refinement_points_added{};
   // Cells rejected after constrained recovery because their centroid lies in
