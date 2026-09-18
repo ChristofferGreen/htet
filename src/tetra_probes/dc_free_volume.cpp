@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <numeric>
 #include <set>
 
 namespace tetra::probes {
@@ -36,14 +37,75 @@ double point_triangle_distance(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
   return length(ap-ab*(vb*inverse)-ac*(vc*inverse));
 }
 
-double closest_surface_distance(const DcFreeVolumeInput& input,Vec3 point) {
-  std::map<std::uint64_t,Vec3> positions;
-  for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
-  auto distance=std::numeric_limits<double>::infinity();
-  for(const auto& face:input.faces)distance=std::min(distance,
-      point_triangle_distance(point,positions.at(face[0]),positions.at(face[1]),
-                              positions.at(face[2])));
-  return distance;
+struct SurfaceTriangle { Vec3 a,b,c,low,high; };
+struct SurfaceBvhNode { Vec3 low,high; std::size_t begin{},end{}; int left{-1},right{-1}; };
+
+struct SurfaceQuery {
+  std::vector<SurfaceTriangle> triangles;
+  std::vector<std::size_t> order;
+  std::vector<SurfaceBvhNode> nodes;
+  explicit SurfaceQuery(const DcFreeVolumeInput& input) {
+    std::map<std::uint64_t,Vec3> positions;
+    for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
+    triangles.reserve(input.faces.size());
+    for(const auto& face:input.faces) {
+      const auto a=positions.at(face[0]),b=positions.at(face[1]),c=positions.at(face[2]);
+      triangles.push_back({a,b,c,{std::min({a.x,b.x,c.x}),std::min({a.y,b.y,c.y}),std::min({a.z,b.z,c.z})},
+          {std::max({a.x,b.x,c.x}),std::max({a.y,b.y,c.y}),std::max({a.z,b.z,c.z})}});
+    }
+    order.resize(triangles.size());std::iota(order.begin(),order.end(),0U);
+    build(0U,order.size());
+  }
+  int build(std::size_t begin,std::size_t end) {
+    SurfaceBvhNode node;node.begin=begin;node.end=end;
+    node.low=triangles[order[begin]].low;node.high=triangles[order[begin]].high;
+    for(auto i=begin+1U;i<end;++i)for(auto axis=0U;axis<3U;++axis) {
+      const auto set=[&](Vec3& v,double value){if(axis==0U)v.x=value;else if(axis==1U)v.y=value;else v.z=value;};
+      const auto get=[&](Vec3 v){return axis==0U?v.x:axis==1U?v.y:v.z;};
+      set(node.low,std::min(get(node.low),get(triangles[order[i]].low)));
+      set(node.high,std::max(get(node.high),get(triangles[order[i]].high)));
+    }
+    const auto index=static_cast<int>(nodes.size());nodes.push_back(node);
+    if(end-begin<=8U)return index;
+    const auto span=node.high-node.low;
+    const auto axis=span.y>span.x?(span.z>span.y?2U:1U):(span.z>span.x?2U:0U);
+    const auto middle=begin+(end-begin)/2U;
+    std::nth_element(order.begin()+static_cast<std::ptrdiff_t>(begin),order.begin()+static_cast<std::ptrdiff_t>(middle),order.begin()+static_cast<std::ptrdiff_t>(end),[&](auto left,auto right) {
+      const auto centre=[&](const SurfaceTriangle& t){return axis==0U?(t.low.x+t.high.x):axis==1U?(t.low.y+t.high.y):(t.low.z+t.high.z);};
+      return centre(triangles[left])<centre(triangles[right]);
+    });
+    nodes[index].left=build(begin,middle);nodes[index].right=build(middle,end);return index;
+  }
+  static double bounds_distance_squared(Vec3 point,const SurfaceBvhNode& node) {
+    const auto axis=[](double p,double low,double high){return p<low?low-p:p>high?p-high:0.;};
+    const auto x=axis(point.x,node.low.x,node.high.x),y=axis(point.y,node.low.y,node.high.y),z=axis(point.z,node.low.z,node.high.z);
+    return x*x+y*y+z*z;
+  }
+  double closest_distance(Vec3 point) const {
+    double best=std::numeric_limits<double>::infinity();
+    const auto visit=[&](auto&& self,int index)->void {
+      const auto& node=nodes[static_cast<std::size_t>(index)];if(bounds_distance_squared(point,node)>=best*best)return;
+      if(node.left<0) { for(auto i=node.begin;i<node.end;++i) { const auto& t=triangles[order[i]];best=std::min(best,point_triangle_distance(point,t.a,t.b,t.c)); } return; }
+      const auto first=nodes[static_cast<std::size_t>(node.left)],second=nodes[static_cast<std::size_t>(node.right)];
+      if(bounds_distance_squared(point,first)<bounds_distance_squared(point,second)) { self(self,node.left);self(self,node.right); }
+      else { self(self,node.right);self(self,node.left); }
+    };visit(visit,0);return best;
+  }
+  bool contains(Vec3 point) const {
+    double winding{};
+    for(const auto& triangle:triangles) {
+      const auto a=triangle.a-point,b=triangle.b-point,c=triangle.c-point;
+      const auto la=length(a),lb=length(b),lc=length(c);
+      if(la<=1e-14||lb<=1e-14||lc<=1e-14)return false;
+      winding+=2.*std::atan2(dot(a,cross(b,c)),
+          la*lb*lc+dot(a,b)*lc+dot(b,c)*la+dot(c,a)*lb);
+    }
+    return std::llround(std::abs(winding)/(4.*std::numbers::pi))%2LL==1LL;
+  }
+};
+
+double closest_surface_distance(const SurfaceQuery& query,Vec3 point) {
+  return query.closest_distance(point);
 }
 
 double local_target(const DcSurfaceDistanceSamplingOptions& options,double distance) {
@@ -290,17 +352,15 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
   const auto nz=static_cast<std::size_t>(std::floor(extent.z/candidate_spacing));
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
+  const SurfaceQuery query(input);
   for(std::size_t ix=0U;ix<=nx;++ix)
     for(std::size_t iy=0U;iy<=ny;++iy)
       for(std::size_t iz=0U;iz<=nz;++iz) {
         const Vec3 point{low.x+(static_cast<double>(ix)+.5)*candidate_spacing,
                          low.y+(static_cast<double>(iy)+.5)*candidate_spacing,
                          low.z+(static_cast<double>(iz)+.5)*candidate_spacing};
-        if(point.x>=high.x||point.y>=high.y||point.z>=high.z||
-           !inside_closed_surface(input.vertices,input.faces,point))continue;
-        double distance=std::numeric_limits<double>::infinity();
-        for(const auto& face:input.faces)distance=std::min(distance,
-            point_triangle_distance(point,positions.at(face[0]),positions.at(face[1]),positions.at(face[2])));
+        if(point.x>=high.x||point.y>=high.y||point.z>=high.z||!query.contains(point))continue;
+        const auto distance=query.closest_distance(point);
         if(distance<options.surface_spacing*.25)continue;
         candidates.push_back({point,local_target(options,distance)});
       }
@@ -339,6 +399,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   if(!closed_consistently_oriented_surface(input))return result;
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
+  const SurfaceQuery surface_query(input);
   result.interior_samples=sample_dc_volume_by_surface_distance(input,sampling);
   if(sampling.maximum_points!=0U&&result.interior_samples.empty()) {
     result.failure=DcSurfaceConformingVolumeFailure::sampling_failed;return result;
@@ -395,7 +456,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       const auto a=local_positions.at(tet[0]),b=local_positions.at(tet[1]),
                  c=local_positions.at(tet[2]),d=local_positions.at(tet[3]);
       const auto centroid=(a+b+c+d)/4.;
-      const auto target=local_target(sampling,closest_surface_distance(input,centroid));
+      const auto target=local_target(sampling,closest_surface_distance(surface_query,centroid));
       double longest{};
       double edge_squares{};
       const auto volume_value=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
