@@ -305,6 +305,39 @@ TEST_CASE("bounded generic refinement preserves literal DC facets") {
   CHECK(result.quality.maximum_vertex_valence>0U);
 }
 
+TEST_CASE("generic DC volume fill is deterministic for a frozen surface") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.sphere_radius=.23;
+  config.noise_amplitude=.02;
+  config.noise_frequency=4.;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.maximum_points=12U;
+  sampling.maximum_refinement_passes=1U;
+  sampling.maximum_refinement_points_per_pass=8U;
+  const auto input=make_dc_free_volume_input(build_advancing_front_fixture(config));
+  const auto first=construct_dc_surface_conforming_volume(input,sampling);
+  const auto second=construct_dc_surface_conforming_volume(input,sampling);
+  REQUIRE(first.accepted());
+  REQUIRE(second.accepted());
+  REQUIRE(first.interior_samples.size()==second.interior_samples.size());
+  for(std::size_t index=0U;index<first.interior_samples.size();++index) {
+    CHECK(first.interior_samples[index].x==second.interior_samples[index].x);
+    CHECK(first.interior_samples[index].y==second.interior_samples[index].y);
+    CHECK(first.interior_samples[index].z==second.interior_samples[index].z);
+  }
+  CHECK(first.volume.vertices.size()==second.volume.vertices.size());
+  CHECK(first.volume.tetrahedra==second.volume.tetrahedra);
+  for(std::size_t index=0U;index<first.volume.vertices.size();++index) {
+    CHECK(first.volume.vertices[index].id==second.volume.vertices[index].id);
+    CHECK(first.volume.vertices[index].position.x==second.volume.vertices[index].position.x);
+    CHECK(first.volume.vertices[index].position.y==second.volume.vertices[index].position.y);
+    CHECK(first.volume.vertices[index].position.z==second.volume.vertices[index].position.z);
+  }
+}
+
 TEST_CASE("generic path explicitly declines a closed internal cavity") {
   using namespace tetra::probes;
   DcSurfaceDistanceSamplingOptions sampling;
