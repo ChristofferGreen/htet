@@ -78,6 +78,10 @@ struct DcVolumeQualityDiagnostics {
   double minimum_dihedral_degrees{};
   double maximum_dihedral_degrees{};
   double minimum_mean_ratio{};
+  double boundary_minimum_dihedral_degrees{};
+  double interior_minimum_dihedral_degrees{};
+  double boundary_minimum_mean_ratio{};
+  double interior_minimum_mean_ratio{};
   std::size_t boundary_tetrahedra{};
   std::size_t interior_tetrahedra{};
   std::size_t oversized_tetrahedra{};

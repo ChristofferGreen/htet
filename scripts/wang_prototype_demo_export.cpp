@@ -388,6 +388,10 @@ int main(int argc,char** argv) {
         <<",genericMinimumDihedral:"<<generic_volume.quality.minimum_dihedral_degrees
         <<",genericMaximumDihedral:"<<generic_volume.quality.maximum_dihedral_degrees
         <<",genericMinimumMeanRatio:"<<generic_volume.quality.minimum_mean_ratio
+        <<",genericBoundaryMinimumDihedral:"<<generic_volume.quality.boundary_minimum_dihedral_degrees
+        <<",genericInteriorMinimumDihedral:"<<generic_volume.quality.interior_minimum_dihedral_degrees
+        <<",genericBoundaryMinimumMeanRatio:"<<generic_volume.quality.boundary_minimum_mean_ratio
+        <<",genericInteriorMinimumMeanRatio:"<<generic_volume.quality.interior_minimum_mean_ratio
         <<",genericBoundaryTetrahedra:"<<generic_volume.quality.boundary_tetrahedra
         <<",genericInteriorTetrahedra:"<<generic_volume.quality.interior_tetrahedra
         <<",genericOversizedTetrahedra:"<<generic_volume.quality.oversized_tetrahedra

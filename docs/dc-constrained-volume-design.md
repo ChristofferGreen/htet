@@ -60,7 +60,11 @@ but the visible mesh is still irregular. This is diagnostic evidence and a
 controlled refinement mechanism, **not** a quality guarantee. The N12/64-site
 export currently measures `0.000278°--179.946618°` and minimum mean ratio
 `0.000283`; this is an explicit reason not to promote it as a physics-quality
-volume despite successful literal-boundary recovery.
+volume despite successful literal-boundary recovery. Provenance diagnostics
+attribute those pathological minima to boundary-adjacent cells. The same run's
+interior-only minima are `0.230762°` and `0.017565`: better, but still below
+any credible physics-quality target. Thus literal DC facets are a real part of
+the quality problem, not an excuse to ignore the remaining interior one.
 
 The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
 concave L prism, and a coarse closed torus pass literal-facet recovery and

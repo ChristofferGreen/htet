@@ -243,6 +243,10 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     quality.minimum_volume=std::numeric_limits<double>::infinity();
     quality.minimum_dihedral_degrees=std::numeric_limits<double>::infinity();
     quality.minimum_mean_ratio=std::numeric_limits<double>::infinity();
+    quality.boundary_minimum_dihedral_degrees=std::numeric_limits<double>::infinity();
+    quality.interior_minimum_dihedral_degrees=std::numeric_limits<double>::infinity();
+    quality.boundary_minimum_mean_ratio=std::numeric_limits<double>::infinity();
+    quality.interior_minimum_mean_ratio=std::numeric_limits<double>::infinity();
     std::map<std::uint64_t,Vec3> local_positions;
     for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
     std::vector<std::pair<double,Vec3>> candidates;
@@ -280,6 +284,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       }
       const auto mean_ratio=12.*std::pow(3.*volume_value,2./3.)/edge_squares;
       quality.minimum_mean_ratio=std::min(quality.minimum_mean_ratio,mean_ratio);
+      auto tetrahedron_minimum_dihedral=std::numeric_limits<double>::infinity();
       // Each edge has exactly two incident faces.  Orient both normals away
       // from the tet's opposite vertex, then the internal dihedral is pi
       // minus their angle.  This works independently of tet index winding.
@@ -303,6 +308,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
         const auto degrees=(std::numbers::pi-std::acos(cosine))*180./std::numbers::pi;
         quality.minimum_dihedral_degrees=std::min(quality.minimum_dihedral_degrees,degrees);
         quality.maximum_dihedral_degrees=std::max(quality.maximum_dihedral_degrees,degrees);
+        tetrahedron_minimum_dihedral=std::min(tetrahedron_minimum_dihedral,degrees);
       }
       for(unsigned opposite=0;opposite<4U;++opposite) {
         std::array<std::uint64_t,3> face{};unsigned out{};
@@ -310,6 +316,17 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
         std::sort(face.begin(),face.end());touches_boundary|=face_uses[face]==1U;
       }
       touches_boundary?++quality.boundary_tetrahedra:++quality.interior_tetrahedra;
+      if(touches_boundary) {
+        quality.boundary_minimum_dihedral_degrees=std::min(
+            quality.boundary_minimum_dihedral_degrees,tetrahedron_minimum_dihedral);
+        quality.boundary_minimum_mean_ratio=std::min(
+            quality.boundary_minimum_mean_ratio,mean_ratio);
+      } else {
+        quality.interior_minimum_dihedral_degrees=std::min(
+            quality.interior_minimum_dihedral_degrees,tetrahedron_minimum_dihedral);
+        quality.interior_minimum_mean_ratio=std::min(
+            quality.interior_minimum_mean_ratio,mean_ratio);
+      }
       const auto ratio=longest/target;
       quality.maximum_edge_target_ratio=std::max(quality.maximum_edge_target_ratio,ratio);
       std::size_t star_valence{};
