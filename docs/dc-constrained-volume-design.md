@@ -41,6 +41,18 @@ fixture, while preserving every outer DC facet literally. It is not
 surface-distance sizing, does not handle arbitrary non-star-shaped closed
 surfaces, and must not be presented as constrained Delaunay tetrahedralization.
 
+### Generic-backend checkpoint
+
+`construct_dc_surface_conforming_volume` is the first generic-path adapter.
+It proposes deterministic interior sites from closest-frozen-surface distance,
+inserts them as retained original vertices, and passes only the frozen outer
+facets to the owned constrained recovery backend. Its N5 noisy-sphere test
+retains five distributed interior sites, recovers the literal DC facets, and
+extracts a no-core enclosed solid. This qualifies the backend interface and
+the no-core classification route; it does **not** yet qualify arbitrary
+nonconvex, thin-feature, or multi-component surfaces, nor does it establish a
+quality/refinement result.
+
 ## 2. Corrections to the initial proposal
 
 Wang already performs constrained tetrahedralization. Removing the core does

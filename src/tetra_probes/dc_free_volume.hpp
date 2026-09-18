@@ -2,6 +2,7 @@
 
 #include "tetra_probes/advancing_front_fixture.hpp"
 #include "tetra_probes/sandwich_probe.hpp"
+#include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 
 #include <array>
 #include <cstdint>
@@ -41,5 +42,41 @@ struct DcFreeVolumeResult {
 [[nodiscard]] DcFreeVolumeResult construct_dc_free_volume(
     const AdvancingFrontFixture& fixture,
     const ClosedPlcTetrahedralizationOptions& options={});
+
+// Deterministic candidate policy for the generic path.  Candidates are laid
+// out on a fine lattice, retained only inside the frozen PLC, and decimated
+// as their closest-surface distance permits a larger target spacing.
+struct DcSurfaceDistanceSamplingOptions {
+  double surface_spacing{0.06};
+  double maximum_spacing{0.16};
+  double growth{1.0};
+  std::size_t maximum_points{256U};
+};
+
+enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
+  none,
+  invalid_input,
+  sampling_failed,
+  constraint_materialization_failed,
+  constrained_tetrahedralization_failed,
+};
+
+struct DcSurfaceConformingVolumeResult {
+  DcSurfaceConformingVolumeFailure failure{DcSurfaceConformingVolumeFailure::invalid_input};
+  DcFreeVolumeInput input;
+  std::vector<Vec3> interior_samples;
+  WangConstrainedTetrahedralizationResult volume;
+  [[nodiscard]] bool accepted() const noexcept {
+    return failure==DcSurfaceConformingVolumeFailure::none&&volume.accepted()&&
+        volume.boundary_audit.accepted();
+  }
+};
+
+[[nodiscard]] std::vector<Vec3> sample_dc_volume_by_surface_distance(
+    const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& options={});
+
+[[nodiscard]] DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
+    const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling={},
+    const WangConstrainedTetrahedralizationOptions& options={});
 
 } // namespace tetra::probes
