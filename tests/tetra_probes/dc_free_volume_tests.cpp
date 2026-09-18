@@ -8,6 +8,7 @@
 #include <cmath>
 #include <map>
 #include <numbers>
+#include <set>
 
 namespace {
 
@@ -276,6 +277,20 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
       CHECK(uses==1U);
       if(uses==1U)CHECK(outward_face_side(positions,face,opposite)<0.);
     }
+    std::map<std::array<std::uint64_t,3>,std::size_t> output_face_uses;
+    for(const auto& tet:result.volume.tetrahedra)
+      for(unsigned omitted=0U;omitted<4U;++omitted) {
+        std::array<std::uint64_t,3> face{};unsigned cursor{};
+        for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)
+          face[cursor++]=tet[corner];
+        std::sort(face.begin(),face.end());++output_face_uses[face];
+      }
+    std::set<std::array<std::uint64_t,3>> actual_boundary,expected_boundary;
+    for(const auto& [face,uses]:output_face_uses)if(uses==1U)actual_boundary.insert(face);
+    for(auto face:input.faces) {
+      std::sort(face.begin(),face.end());expected_boundary.insert(face);
+    }
+    CHECK(actual_boundary==expected_boundary);
   }
 }
 
