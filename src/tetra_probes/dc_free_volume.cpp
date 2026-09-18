@@ -241,6 +241,8 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     quality.tetrahedra=volume.tetrahedra.size();
     quality.minimum_edge_length=std::numeric_limits<double>::infinity();
     quality.minimum_volume=std::numeric_limits<double>::infinity();
+    quality.minimum_dihedral_degrees=std::numeric_limits<double>::infinity();
+    quality.minimum_mean_ratio=std::numeric_limits<double>::infinity();
     std::map<std::uint64_t,Vec3> local_positions;
     for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
     std::vector<std::pair<double,Vec3>> candidates;
@@ -264,6 +266,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       const auto centroid=(a+b+c+d)/4.;
       const auto target=local_target(sampling,closest_surface_distance(input,centroid));
       double longest{};
+      double edge_squares{};
       const auto volume_value=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
       quality.minimum_volume=std::min(quality.minimum_volume,volume_value);
       quality.maximum_volume=std::max(quality.maximum_volume,volume_value);
@@ -271,8 +274,35 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       for(const auto edge:edges) {
         const auto edge_length=length(local_positions.at(tet[edge[0]])-local_positions.at(tet[edge[1]]));
         longest=std::max(longest,edge_length);
+        edge_squares+=edge_length*edge_length;
         quality.minimum_edge_length=std::min(quality.minimum_edge_length,edge_length);
         quality.maximum_edge_length=std::max(quality.maximum_edge_length,edge_length);
+      }
+      const auto mean_ratio=12.*std::pow(3.*volume_value,2./3.)/edge_squares;
+      quality.minimum_mean_ratio=std::min(quality.minimum_mean_ratio,mean_ratio);
+      // Each edge has exactly two incident faces.  Orient both normals away
+      // from the tet's opposite vertex, then the internal dihedral is pi
+      // minus their angle.  This works independently of tet index winding.
+      for(const auto edge:edges) {
+        const auto first=edge[0],second=edge[1];
+        unsigned third{},fourth{};unsigned cursor{};
+        for(unsigned corner=0U;corner<4U;++corner)
+          if(corner!=first&&corner!=second) {
+            if(cursor++==0U)third=corner;else fourth=corner;
+          }
+        auto first_normal=cross(local_positions.at(tet[second])-local_positions.at(tet[first]),
+                                local_positions.at(tet[third])-local_positions.at(tet[first]));
+        auto second_normal=cross(local_positions.at(tet[first])-local_positions.at(tet[second]),
+                                 local_positions.at(tet[fourth])-local_positions.at(tet[second]));
+        if(dot(first_normal,local_positions.at(tet[fourth])-local_positions.at(tet[first]))>0.)
+          first_normal=first_normal*-1.;
+        if(dot(second_normal,local_positions.at(tet[third])-local_positions.at(tet[second]))>0.)
+          second_normal=second_normal*-1.;
+        const auto cosine=std::clamp(dot(first_normal,second_normal)/
+            (length(first_normal)*length(second_normal)),-1.,1.);
+        const auto degrees=(std::numbers::pi-std::acos(cosine))*180./std::numbers::pi;
+        quality.minimum_dihedral_degrees=std::min(quality.minimum_dihedral_degrees,degrees);
+        quality.maximum_dihedral_degrees=std::max(quality.maximum_dihedral_degrees,degrees);
       }
       for(unsigned opposite=0;opposite<4U;++opposite) {
         std::array<std::uint64_t,3> face{};unsigned out{};

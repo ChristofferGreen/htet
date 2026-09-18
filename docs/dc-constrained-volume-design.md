@@ -57,7 +57,10 @@ over-connected stars contribute centroid candidates for a fresh constrained
 recovery pass. The frozen PLC is never edited. On the N12 noisy-sphere
 fixture, one 64-site pass reduced the worst vertex valence from 166 to 102,
 but the visible mesh is still irregular. This is diagnostic evidence and a
-controlled refinement mechanism, **not** a quality guarantee.
+controlled refinement mechanism, **not** a quality guarantee. The N12/64-site
+export currently measures `0.000278°--179.946618°` and minimum mean ratio
+`0.000283`; this is an explicit reason not to promote it as a physics-quality
+volume despite successful literal-boundary recovery.
 
 The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
 concave L prism, and a coarse closed torus pass literal-facet recovery and

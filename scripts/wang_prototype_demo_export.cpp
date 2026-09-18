@@ -385,6 +385,9 @@ int main(int argc,char** argv) {
         <<",genericMinimumEdge:"<<generic_volume.quality.minimum_edge_length
         <<",genericMaximumEdge:"<<generic_volume.quality.maximum_edge_length
         <<",genericMinimumVolume:"<<generic_volume.quality.minimum_volume
+        <<",genericMinimumDihedral:"<<generic_volume.quality.minimum_dihedral_degrees
+        <<",genericMaximumDihedral:"<<generic_volume.quality.maximum_dihedral_degrees
+        <<",genericMinimumMeanRatio:"<<generic_volume.quality.minimum_mean_ratio
         <<",genericBoundaryTetrahedra:"<<generic_volume.quality.boundary_tetrahedra
         <<",genericInteriorTetrahedra:"<<generic_volume.quality.interior_tetrahedra
         <<",genericOversizedTetrahedra:"<<generic_volume.quality.oversized_tetrahedra

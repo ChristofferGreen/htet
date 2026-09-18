@@ -255,6 +255,10 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
     CHECK(result.quality.maximum_edge_length>=result.quality.minimum_edge_length);
     CHECK(result.quality.minimum_volume>0.);
     CHECK(result.quality.maximum_volume>=result.quality.minimum_volume);
+    CHECK(result.quality.minimum_dihedral_degrees>=0.);
+    CHECK(result.quality.maximum_dihedral_degrees<=180.);
+    CHECK(result.quality.minimum_mean_ratio>0.);
+    CHECK(result.quality.minimum_mean_ratio<=1.);
   }
 }
 
