@@ -253,6 +253,28 @@ TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
   CHECK_FALSE(result.volume.tetrahedra.empty());
 }
 
+TEST_CASE("generic no-core path accepts a thin concave closed PLC") {
+  using namespace tetra::probes;
+  auto input=l_prism_input();
+  for(auto& vertex:input.vertices)vertex.position.z*=.1;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.08;
+  sampling.maximum_spacing=.18;
+  sampling.growth=1.;
+  sampling.maximum_points=8U;
+  WangConstrainedTetrahedralizationOptions options;
+  options.recovery.maximum_vertices=4096U;
+  options.recovery.maximum_facets=8192U;
+  options.recovery.maximum_tetrahedra=65536U;
+  const auto result=construct_dc_surface_conforming_volume(input,sampling,options);
+  INFO("failure="<<static_cast<unsigned>(result.failure)
+       <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
+       <<" region="<<static_cast<unsigned>(result.volume.region_failure));
+  REQUIRE(result.accepted());
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK_FALSE(result.volume.tetrahedra.empty());
+}
+
 TEST_CASE("bounded generic refinement preserves literal DC facets") {
   using namespace tetra::probes;
   AdvancingFrontFixtureConfig config;
