@@ -28,6 +28,7 @@ GENERATED_FILES = (
     "03-implicit-tetrahedral-core.vtk",
     "04-wang-transition.vtk",
     "05-complete-prototype.vtk",
+    "06-exact-dc-volume-fill.vtk",
     "prototype-data.js",
     "summary.json",
 )
@@ -42,10 +43,10 @@ def publish_cached_result(source: Path) -> None:
 
 
 def rebuild_cache_key(resolution: int, mode: str, minimum_level: int,
-                      surface_band: float) -> str:
+                      surface_band: float, free_layers: int) -> str:
     exporter = EXPORTER.stat()
     identity = (f"{exporter.st_mtime_ns}:{exporter.st_size}:{resolution}:"
-                f"{mode}:{minimum_level}:{surface_band:.17g}")
+                f"{mode}:{minimum_level}:{surface_band:.17g}:{free_layers}")
     return hashlib.sha256(identity.encode("ascii")).hexdigest()
 
 
@@ -84,10 +85,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             minimum_level = int(parse_qs(request.query).get("minimum_level", ["2"])[0])
             surface_band = float(parse_qs(request.query).get("surface_band", ["0.5"])[0])
+            free_layers = int(parse_qs(request.query).get("free_layers", ["1"])[0])
         except ValueError:
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "invalid adaptive LOD setting"})
             return
-        if minimum_level not in range(0, 7) or not 0.01 <= surface_band <= 4.0:
+        if (minimum_level not in range(0, 7) or not 0.01 <= surface_band <= 4.0
+                or free_layers not in range(0, 4)):
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "adaptive LOD settings are out of range"})
             return
         if not EXPORTER.is_file():
@@ -96,13 +99,13 @@ class Handler(BaseHTTPRequestHandler):
         with REBUILD_LOCK:
             CACHE_ROOT.mkdir(parents=True, exist_ok=True)
             cache_directory = CACHE_ROOT / rebuild_cache_key(
-                resolution, mode, minimum_level, surface_band)
+                resolution, mode, minimum_level, surface_band, free_layers)
             if all((cache_directory / name).is_file() for name in GENERATED_FILES):
                 publish_cached_result(cache_directory)
                 self.reply(HTTPStatus.OK, {
                     "resolution": resolution, "mode": mode,
                     "minimum_level": minimum_level,
-                    "surface_band": surface_band, "reloaded": True,
+                    "surface_band": surface_band, "free_layers": free_layers, "reloaded": True,
                     "cached": True,
                 })
                 return
@@ -110,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
                 prefix="rebuild-", dir=CACHE_ROOT))
             completed = subprocess.run(
                 [str(EXPORTER), str(temporary_directory), str(resolution), mode,
-                 str(minimum_level), str(surface_band)],
+                 str(minimum_level), str(surface_band), str(free_layers)],
                 # A geometrically scaled depth-six core is intentionally much
                 # denser than the former fixed-cavity demo.  Keep the browser
                 # request alive while the bounded CPU oracle completes rather
@@ -127,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
             publish_cached_result(cache_directory)
         self.reply(HTTPStatus.OK, {"resolution": resolution, "mode": mode,
                                    "minimum_level": minimum_level,
-                                   "surface_band": surface_band, "reloaded": True,
+                                   "surface_band": surface_band, "free_layers": free_layers, "reloaded": True,
                                    "cached": False})
 
     def serve_artifact(self, request_path: str) -> None:
@@ -159,9 +162,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global ARTIFACTS
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--artifacts", type=Path, default=ARTIFACTS,
+                        help="artifact directory to serve and update")
     args = parser.parse_args()
+    ARTIFACTS = args.artifacts.resolve()
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
 

@@ -1,12 +1,15 @@
 #include "tetra_probes/advancing_front_fixture.hpp"
+#include "tetra_probes/dc_free_volume.hpp"
 #include "tetra_probes/terrain_volume_request.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -103,8 +106,8 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc<2||argc>6) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND]\n";
+  if(argc<2||argc>7) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
@@ -177,6 +180,36 @@ int main(int argc,char** argv) {
              <<'\n';
     return 4;
   }
+  tetra::probes::ClosedPlcTetrahedralizationOptions free_options;
+  if(argc>=7) try {
+    free_options.common_kernel_radial_layers=static_cast<unsigned>(std::stoul(argv[6]));
+  } catch(...) { std::cerr<<"free radial layers must be an integer\n"; return 2; }
+  const auto free_started=std::chrono::steady_clock::now();
+  const auto free_volume=tetra::probes::construct_dc_free_volume(fixture,free_options);
+  const auto free_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-free_started).count();
+  if(!free_volume.accepted()) {
+    std::cerr<<"exact DC volume fill rejected: failure="
+             <<static_cast<unsigned>(free_volume.failure)
+             <<" volume_failure="<<static_cast<unsigned>(free_volume.volume.failure)<<'\n';
+    return 15;
+  }
+  std::vector<Vec3> free_points;
+  std::map<std::uint64_t,std::uint32_t> free_point_index;
+  free_points.reserve(free_volume.volume.vertices.size());
+  for(const auto& vertex:free_volume.volume.vertices) {
+    const auto index=static_cast<std::uint32_t>(free_points.size());
+    if(!free_point_index.emplace(vertex.id,index).second)return 16;
+    free_points.push_back(vertex.position);
+  }
+  std::vector<std::array<std::uint32_t,4>> free_tetrahedra;
+  free_tetrahedra.reserve(free_volume.volume.tetrahedra.size());
+  for(const auto& tet:free_volume.volume.tetrahedra) {
+    std::array<std::uint32_t,4> compact{};
+    for(std::size_t corner=0U;corner<compact.size();++corner)
+      compact[corner]=free_point_index.at(tet[corner]);
+    free_tetrahedra.push_back(compact);
+  }
 
   {
     std::vector<Vec3> points;
@@ -231,6 +264,8 @@ int main(int argc,char** argv) {
   if(!write_tetrahedra(directory/"05-complete-prototype.vtk",output_points,
                        prototype.volume.output.tetrahedra,
                        &prototype.volume.cell_regions))return 10;
+  if(!write_tetrahedra(directory/"06-exact-dc-volume-fill.vtk",free_points,
+                       free_tetrahedra))return 17;
 
   {
     std::vector<Vec3> hexahedron_points;
@@ -261,6 +296,8 @@ int main(int argc,char** argv) {
     data<<",tetrahedra:";write_javascript_cells(data,fixture.core_tetrahedra);
     data<<"},transition:{points:";write_javascript_points(data,output_points);
     data<<",tetrahedra:";write_javascript_cells(data,transition);
+    data<<"},freeVolume:{points:";write_javascript_points(data,free_points);
+    data<<",tetrahedra:";write_javascript_cells(data,free_tetrahedra);
     data<<"},summary:{gridResolution:"<<grid_resolution
         <<",coreMode:'"<<core_mode<<"'"
         <<",coreRedDepth:"<<config.core_red_depth
@@ -271,6 +308,14 @@ int main(int argc,char** argv) {
         <<",dcTriangles:"<<fixture.dc_triangles.size()
         <<",coreTetrahedra:"<<fixture.core_tetrahedra.size()
         <<",transitionTetrahedra:"<<transition.size()
+        <<",freeVolumeTetrahedra:"<<free_tetrahedra.size()
+        <<",freeVolumeVertices:"<<free_points.size()
+        <<",freeRadialLayers:"<<free_options.common_kernel_radial_layers
+        <<",freeVolumeMilliseconds:"<<free_milliseconds
+        <<",freeExactBoundary:"<<(free_volume.volume.exact_boundary?"true":"false")
+        <<",freePositive:"<<(free_volume.volume.positive?"true":"false")
+        <<",freeNoStrictOverlap:"<<(free_volume.volume.no_strict_overlap?"true":"false")
+        <<",freeExactVolume:"<<(free_volume.volume.exact_volume?"true":"false")
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
@@ -322,6 +367,11 @@ int main(int argc,char** argv) {
          <<fixture.audit.artificial_closure_faces<<",\n"
          <<"  \"core_tetrahedra\": "<<fixture.core_tetrahedra.size()<<",\n"
          <<"  \"transition_tetrahedra\": "<<prototype.volume.quality.transition.tetrahedra<<",\n"
+         <<"  \"exact_dc_free_volume_tetrahedra\": "<<free_tetrahedra.size()<<",\n"
+         <<"  \"exact_dc_free_volume_vertices\": "<<free_points.size()<<",\n"
+         <<"  \"exact_dc_free_volume_radial_layers\": "<<free_options.common_kernel_radial_layers<<",\n"
+         <<"  \"exact_dc_free_volume_milliseconds\": "<<free_milliseconds<<",\n"
+         <<"  \"exact_dc_free_volume_accepted\": "<<(free_volume.accepted()?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
          <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"
          <<"  \"core_green_transition_cells\": "<<fixture.audit.core_green_transition_cells<<",\n"

@@ -296,12 +296,26 @@ Both modes use opaque faces, black exterior wireframe, whole-tet clipping,
 whole-triangle DC clipping, and the existing perspective camera. Offer interior
 coloring by size or distance to surface so density differences are visible.
 Display validation status and cold/cache timing separately. Cache keys include
-method, frozen surface revision/hash, interior settings, and backend/build.
+surface resolution, Wang LOD settings, free-fill shell count, and exporter
+build identity; both methods are built from the same resulting frozen surface.
 
 Actually inspect both the full surface and clipped interior at N8 and N12,
 including mode changes. Confirm that the boundary is visually unchanged and
 that interior density controls change the mesh. Preserve camera state across
 switches and leave the comparison page open for review.
+
+### Implemented comparison checkpoint
+
+The live inspector now exports both methods from one frozen fixture and exposes
+`Wang + retained core` and `Exact DC Volume Fill (experimental)` as genuinely
+different rendered interiors. The free-fill radial-shell control rebuilds both
+datasets with the requested shell count, then reports its own tet/vertex count,
+construction time, and literal-boundary/positive/nonoverlap/volume audit. The
+current comparison is qualified at N8 and N12 with whole-tet and whole-DC-
+triangle clipping. The selector is presentation-only once the two meshes have
+been built; it does not silently fall back to Wang. This remains a comparison
+of Wang with the star-shaped layered experiment, not a claim that a general
+constrained-Delaunay backend is integrated.
 
 ## 11. Implementation sequence and decision points
 

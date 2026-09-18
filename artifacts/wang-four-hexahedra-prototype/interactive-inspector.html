@@ -31,11 +31,19 @@
       <h1>Wang prototype inspector</h1>
       <p>Perspective camera (55°). Drag to orbit. Right-drag to pan. Scroll to zoom. Click a surface or tetrahedron for its identity.</p>
       <fieldset>
+        <legend>Volume method</legend>
+        <label>Method
+          <select id="volume-method"><option value="wang">Wang + retained core</option><option value="free">Exact DC Volume Fill (experimental)</option></select></label>
+        <label id="free-layer-control">Free-fill radial shells: <output id="free-layers-value">1</output>
+          <input id="free-layers" type="range" min="0" max="3" step="1" value="1"></label>
+      </fieldset>
+      <fieldset>
         <legend>Layers</legend>
         <label><input id="hex" type="checkbox"> <span class="key" style="background:#9b7cff"></span>four hexahedra</label>
         <label><input id="dc" type="checkbox" checked> <span class="key" style="background:#39d9d8"></span>closed DC sphere</label>
         <label><input id="transition" type="checkbox" checked> <span class="key" style="background:#ff9b50"></span>Wang transition</label>
         <label><input id="core" type="checkbox" checked> <span class="key" style="background:#56a8ff"></span>tetrahedral core</label>
+        <label><input id="free" type="checkbox" checked> <span class="key" style="background:#8fbf72"></span>Exact DC Volume Fill</label>
       </fieldset>
       <fieldset>
         <legend>Inspection</legend>
@@ -48,12 +56,12 @@
           <input id="tet-opacity" type="range" min="0" max="1" step="0.05" value="1"></label>
         <label>Mesh resolution: <output id="resolution-value">5</output>
           <input id="resolution" type="range" min="4" max="12" step="1" value="5"></label>
-        <label>Volume LOD
+        <span id="wang-controls"><label>Volume LOD
           <select id="core-mode"><option value="uniform">uniform baseline</option><option value="adaptive">surface-distance adaptive</option></select></label>
         <label>Minimum interior level: <output id="minimum-level-value">0</output>
           <input id="minimum-level" type="range" min="0" max="6" step="1" value="0"></label>
         <label>Surface band: <output id="surface-band-value">0.01</output>
-          <input id="surface-band" type="range" min="0.01" max="2" step="0.01" value="0.01"></label>
+          <input id="surface-band" type="range" min="0.01" max="2" step="0.01" value="0.01"></label></span>
         <label>Clip plane: <output id="clip-value">0.00</output>
           <input id="clip" type="range" min="-0.30" max="0.30" step="0.01" value="0"></label>
         <label><input id="clip-enabled" type="checkbox" checked> enable clipping</label>
@@ -111,7 +119,7 @@
     const layerGroups = {};
     const tetVolumes = [];
     const tetRenderables = [];
-    const colors = { hex: 0x8d6dff, dc: 0x18c8cf, transition: 0xf47b32, core: 0x347ee8 };
+    const colors = { hex: 0x8d6dff, dc: 0x18c8cf, transition: 0xf47b32, core: 0x347ee8, free: 0x8fbf72 };
     const vector = p => new THREE.Vector3(p[0], p[1], p[2]);
     const facesOfHex = [[0,1,2,3],[4,7,6,5],[0,4,5,1],[1,5,6,2],[2,6,7,3],[4,0,3,7]];
     const facesOfTet = [[0,2,1],[0,1,3],[1,2,3],[2,0,3]];
@@ -178,7 +186,7 @@
       group.add(solid, wire); group.userData = {solid, wire}; scene.add(group); layerGroups[name] = group;
       const orderedCells = cells.map((cell, index) => {
         const centroid = cell.reduce((sum, pointIndex) => sum.map((value, axis) => value + points[pointIndex][axis]), [0,0,0]).map(value => value / cell.length);
-        if (name === 'transition' || name === 'core') tetVolumes.push({points, cell, centroid});
+        if (name === 'transition' || name === 'core' || name === 'free') tetVolumes.push({name, points, cell, centroid});
         return {cell, index, centroid};
       });
       // Whole-cell clipping is a prefix draw after sorting by centroid X.
@@ -195,7 +203,7 @@
       if (name !== 'hex') tetEdgeMaterials.push(lineMaterial);
       const lines = new THREE.LineSegments(combined.wire, lineMaterial);
       lines.renderOrder = 2; wire.add(lines);
-      if (name === 'transition' || name === 'core') tetRenderables.push({
+      if (name === 'transition' || name === 'core' || name === 'free') tetRenderables.push({
         name, mesh, lines,
         sortedCentroidX: orderedCells.map(entry => entry.centroid[0]),
         solidIndicesPerCell: combined.solidIndicesPerCell,
@@ -205,9 +213,12 @@
     addCells('hex', data.hexahedra.points, data.hexahedra.cells, facesOfHex, .075);
     addCells('transition', data.transition.points, data.transition.tetrahedra, facesOfTet, .055);
     addCells('core', data.core.points, data.core.tetrahedra, facesOfTet, .14);
+    const freeVolume = data.freeVolume || {points: [], tetrahedra: []};
+    addCells('free', freeVolume.points, freeVolume.tetrahedra, facesOfTet, .14);
     // This is a presentation default, independent of browser form-state
     // restoration.  The four cells remain available through the checkbox.
     layerGroups.hex.visible = false;
+    layerGroups.free.visible = false;
     const pointKey = p => p.map(value => value.toFixed(8)).join(',');
     const lineKey = (a, b) => a < b ? `${a}|${b}` : `${b}|${a}`;
     function lineGeometry(segments) {
@@ -227,8 +238,11 @@
     // The volume-only surface is derived from face incidence, rather than from
     // all cell edges.  A face appearing once is exterior; shared faces are not
     // part of this inspection overlay.
-    const exposedFaces = new Map();
-    for (const {points, cell, centroid} of tetVolumes) {
+    function activeExposedFaces() {
+      const exposedFaces = new Map();
+      const method = document.getElementById('volume-method').value;
+      for (const {name, points, cell, centroid} of tetVolumes) {
+        if ((method === 'wang' && name === 'free') || (method === 'free' && name !== 'free')) continue;
       for (const face of facesOfTet) {
         const vertices = face.map(index => points[cell[index]]);
         const key = vertices.map(pointKey).sort().join('|');
@@ -236,9 +250,11 @@
         if (entry) { entry.count++; entry.owners.push({points, cell, centroid}); }
         else exposedFaces.set(key, {count: 1, vertices, owners: [{points, cell, centroid}]});
       }
+      }
+      return exposedFaces;
     }
     const exteriorSegments = [], exteriorLines = new Map();
-    for (const {count, vertices} of exposedFaces.values()) if (count === 1) {
+    for (const {count, vertices} of activeExposedFaces().values()) if (count === 1) {
       for (let index = 0; index < 3; index++) {
         const a = vertices[index], b = vertices[(index + 1) % 3], key = lineKey(pointKey(a), pointKey(b));
         if (!exteriorLines.has(key)) exteriorLines.set(key, [a, b]);
@@ -265,7 +281,7 @@
       const cut = Number(document.getElementById('clip').value);
       const selected = owner => !clipping || owner.centroid[0] <= cut;
       const segments = new Map(), triangles = [];
-      for (const {vertices, owners} of exposedFaces.values()) {
+      for (const {vertices, owners} of activeExposedFaces().values()) {
         const visibleOwners = owners.filter(selected);
         if (!visibleOwners.length || (owners.length > 1 && visibleOwners.length === owners.length)) continue;
         triangles.push(vertices);
@@ -334,7 +350,9 @@
         }
         item.mesh.geometry.setDrawRange(0, visibleCells * item.solidIndicesPerCell);
         item.lines.geometry.setDrawRange(0, visibleCells * item.wireVerticesPerCell);
-        const enabled = document.getElementById(item.name).checked && opacity > 0 && visibleCells > 0;
+        const method = document.getElementById('volume-method').value;
+        const methodEnabled = method === 'free' ? item.name === 'free' : item.name !== 'free';
+        const enabled = methodEnabled && document.getElementById(item.name).checked && opacity > 0 && visibleCells > 0;
         item.mesh.visible = enabled;
         item.lines.visible = enabled;
       }
@@ -345,6 +363,7 @@
       layerGroups.hex.userData.wire.visible = enabled && !onlySurface;
       layerGroups.transition.userData.wire.visible = enabled && !onlySurface;
       layerGroups.core.userData.wire.visible = enabled && !onlySurface;
+      layerGroups.free.userData.wire.visible = enabled && !onlySurface;
       // In exterior-only mode, every raw layer wireframe is suppressed. The
       // derived face-incidence list is the sole authority for triangles
       // touching air, including faces exposed by whole-tet clipping.
@@ -361,7 +380,9 @@
     const milliseconds = value => Number.isFinite(value) ? value.toFixed(1) : '—';
     const timing = Number.isFinite(summary.totalMilliseconds) ? `\nTiming: fixture ${milliseconds(summary.fixtureMilliseconds)} ms · request ${milliseconds(summary.requestMilliseconds)} ms · total ${(summary.totalMilliseconds / 1000).toFixed(2)} s\nWang: seed ${milliseconds(summary.seedMilliseconds)} · segments ${milliseconds(summary.segmentRecoveryMilliseconds)} · facets ${milliseconds(summary.facetRecoveryMilliseconds)} · cleanup ${milliseconds(summary.cleanupMilliseconds)} · classify ${milliseconds(summary.regionClassificationMilliseconds)} · validate ${milliseconds(summary.outputValidationMilliseconds)} ms` : '';
     const workload = Number.isFinite(summary.coreHierarchyNodesVisited) ? `\n${summary.coreMode || 'uniform'}: ${summary.coreHierarchyNodesVisited} hierarchy nodes · ${summary.coreRedLeavesSelected} red leaves · ${summary.coreGreenTransitionCells} green cells · retained L${summary.minimumRetainedCoreRedDepth}–L${summary.maximumRetainedCoreRedDepth}` : '';
-    document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}${workload}${timing}`;
+    const freeReport = Number.isFinite(summary.freeVolumeTetrahedra)
+      ? `\nExact DC Fill (experimental): ${summary.freeVolumeTetrahedra} tetrahedra · ${summary.freeVolumeVertices} vertices · ${summary.freeRadialLayers} radial shells · ${(Number(summary.freeVolumeMilliseconds) / 1000).toFixed(2)} s · boundary ${summary.freeExactBoundary && summary.freePositive && summary.freeNoStrictOverlap && summary.freeExactVolume ? 'validated' : 'FAILED'}` : '';
+    document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}${workload}${timing}${freeReport}`;
     const resolution = document.getElementById('resolution');
     const resolutionValue = document.getElementById('resolution-value');
     const rebuildStatus = document.getElementById('rebuild-status');
@@ -370,11 +391,15 @@
     coreMode.value = summary.coreMode || 'uniform';
     const minimumLevel = document.getElementById('minimum-level');
     const surfaceBand = document.getElementById('surface-band');
+    const volumeMethod = document.getElementById('volume-method');
+    const freeLayers = document.getElementById('free-layers');
     minimumLevel.value = summary.coreMinRedDepth ?? 2;
     surfaceBand.value = summary.coreSurfaceBand ?? .5;
+    freeLayers.value = summary.freeRadialLayers ?? 1;
     const updateLodLabels = () => {
       document.getElementById('minimum-level-value').textContent = minimumLevel.value;
       document.getElementById('surface-band-value').textContent = Number(surfaceBand.value).toFixed(2);
+      document.getElementById('free-layers-value').textContent = freeLayers.value;
     };
     updateLodLabels();
     resolutionValue.textContent = resolution.value;
@@ -382,10 +407,10 @@
     async function rebuildVolume() {
       const next = Number(resolution.value);
       const mode = coreMode.value;
-      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true;
-      rebuildStatus.textContent = `Rebuilding DC, ${mode} core, and Wang transition at N${next}…`;
+      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true;
+      rebuildStatus.textContent = `Rebuilding both volume methods at N${next}…`;
       try {
-        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
@@ -393,7 +418,7 @@
         window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false;
       }
     }
     resolution.addEventListener('change', rebuildVolume);
@@ -402,6 +427,8 @@
     surfaceBand.addEventListener('input', updateLodLabels);
     minimumLevel.addEventListener('change', rebuildVolume);
     surfaceBand.addEventListener('change', rebuildVolume);
+    freeLayers.addEventListener('input', updateLodLabels);
+    freeLayers.addEventListener('change', rebuildVolume);
     camera.position.set(.78, -.92, .72);
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.copy(target);
@@ -415,12 +442,23 @@
     controls.update();
     function resize() { const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
     new ResizeObserver(resize).observe(stage); resize();
-    for (const name of ['hex','dc','transition','core']) {
+    function updateVolumeMethod() {
+      const free = volumeMethod.value === 'free';
+      document.getElementById('wang-controls').style.display = free ? 'none' : 'block';
+      document.getElementById('free-layer-control').style.display = free ? 'block' : 'none';
+      layerGroups.transition.visible = !free && document.getElementById('transition').checked;
+      layerGroups.core.visible = !free && document.getElementById('core').checked;
+      layerGroups.free.visible = free && document.getElementById('free').checked;
+      updateWholeTetClip();
+      updateWireframeMode();
+    }
+    volumeMethod.addEventListener('change', updateVolumeMethod);
+    for (const name of ['hex','dc','transition','core','free']) {
       const input = document.getElementById(name);
       const update = () => {
         layerGroups[name].visible = input.checked &&
           (name === 'hex' || Number(document.getElementById('tet-opacity').value) > 0);
-        if (name === 'transition' || name === 'core') updateWholeTetClip();
+        if (name === 'transition' || name === 'core' || name === 'free') updateWholeTetClip();
       };
       input.addEventListener('change', update);
       update();
@@ -458,7 +496,7 @@
       }
       // At zero, remove the two groups altogether so the control has a
       // definite, inspectable effect even when a cut face is edge-on.
-      for (const name of ['transition', 'core'])
+      for (const name of ['transition', 'core', 'free'])
         layerGroups[name].visible = document.getElementById(name).checked && opacity > 0;
       updateWholeTetClip();
       updateWireframeMode();
@@ -466,6 +504,7 @@
     tetOpacity.addEventListener('input', updateTetOpacity);
     tetOpacity.addEventListener('change', updateTetOpacity);
     updateTetOpacity();
+    updateVolumeMethod();
     const clip = document.getElementById('clip'), clipEnabled = document.getElementById('clip-enabled');
     function updateClip() { document.getElementById('clip-value').textContent = Number(clip.value).toFixed(2); updateDcSurfaceClip(); updateWholeTetClip(); }
     clip.addEventListener('input', updateClip); clipEnabled.addEventListener('change', updateClip); updateClip();
