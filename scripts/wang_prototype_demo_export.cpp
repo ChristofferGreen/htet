@@ -332,6 +332,8 @@ int main(int argc,char** argv) {
         <<",freeVolumeVertices:"<<free_points.size()
         <<",freeRadialLayers:"<<free_options.common_kernel_radial_layers
         <<",freeVolumeMilliseconds:"<<free_milliseconds
+        <<",freeOverlapPairsTested:"<<free_volume.volume.overlap_pairs_tested
+        <<",freeExhaustivePairs:"<<free_tetrahedra.size()*(free_tetrahedra.size()-1U)/2U
         <<",freeExactBoundary:"<<(free_volume.volume.exact_boundary?"true":"false")
         <<",freePositive:"<<(free_volume.volume.positive?"true":"false")
         <<",freeNoStrictOverlap:"<<(free_volume.volume.no_strict_overlap?"true":"false")
@@ -392,6 +394,7 @@ int main(int argc,char** argv) {
          <<"  \"exact_dc_free_volume_vertices\": "<<free_points.size()<<",\n"
          <<"  \"exact_dc_free_volume_radial_layers\": "<<free_options.common_kernel_radial_layers<<",\n"
          <<"  \"exact_dc_free_volume_milliseconds\": "<<free_milliseconds<<",\n"
+         <<"  \"exact_dc_free_volume_overlap_pairs_tested\": "<<free_volume.volume.overlap_pairs_tested<<",\n"
          <<"  \"exact_dc_free_volume_accepted\": "<<(free_volume.accepted()?"true":"false")<<",\n"
          <<"  \"exact_dc_free_volume_boundary_matches_dc\": "<<(free_boundary_matches_dc?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"

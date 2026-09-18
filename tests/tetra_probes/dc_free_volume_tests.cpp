@@ -106,4 +106,6 @@ TEST_CASE("common-kernel layers increase free-volume density without changing DC
   CHECK(result.volume.positive);
   CHECK(result.volume.no_strict_overlap);
   CHECK(result.volume.exact_volume);
+  const auto exhaustive_pairs=result.volume.tetrahedra.size()*(result.volume.tetrahedra.size()-1U)/2U;
+  CHECK(result.volume.overlap_pairs_tested<exhaustive_pairs);
 }

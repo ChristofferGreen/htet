@@ -18,6 +18,7 @@ using Face=std::array<Id,3>;
 using Tet=std::array<Id,4>;
 using Edge=std::array<Id,2>;
 struct P { double x{},y{},z{}; };
+struct Aabb { P low{},high{}; };
 constexpr std::array<std::array<unsigned int,3>,4> kFaces{{
   {{1U,2U,3U}},{{0U,3U,2U}},{{0U,1U,3U}},{{0U,2U,1U}}
 }};
@@ -72,6 +73,27 @@ bool overlap(const std::map<Id,P>& points,const Tet& left,const Tet& right) {
     if(amax<=bmin+tolerance||bmax<=amin+tolerance)return false;
   }
   return true;
+}
+
+Aabb bounds(const std::map<Id,P>& points,const Tet& tet) {
+  auto result=Aabb{points.at(tet[0]),points.at(tet[0])};
+  for(std::size_t corner=1U;corner<tet.size();++corner) {
+    const auto p=points.at(tet[corner]);
+    result.low.x=std::min(result.low.x,p.x);result.low.y=std::min(result.low.y,p.y);result.low.z=std::min(result.low.z,p.z);
+    result.high.x=std::max(result.high.x,p.x);result.high.y=std::max(result.high.y,p.y);result.high.z=std::max(result.high.z,p.z);
+  }
+  return result;
+}
+
+bool boxes_may_strictly_overlap(const Aabb& left,const Aabb& right) {
+  const auto scale=std::max({1.0,std::abs(left.low.x),std::abs(left.low.y),std::abs(left.low.z),
+      std::abs(left.high.x),std::abs(left.high.y),std::abs(left.high.z),std::abs(right.low.x),
+      std::abs(right.low.y),std::abs(right.low.z),std::abs(right.high.x),std::abs(right.high.y),
+      std::abs(right.high.z)});
+  const auto tolerance=1e-12*scale;
+  return left.high.x+tolerance>=right.low.x&&right.high.x+tolerance>=left.low.x&&
+      left.high.y+tolerance>=right.low.y&&right.high.y+tolerance>=left.low.y&&
+      left.high.z+tolerance>=right.low.z&&right.high.z+tolerance>=left.low.z;
 }
 
 bool orient_boundary(const std::map<Id,P>& points,std::vector<Face>& faces) {
@@ -327,9 +349,30 @@ ClosedPlcTetrahedralizationResult tetrahedralize_closed_plc(
   result.exact_boundary=true;
   for(const auto& [face,count]:uses)result.exact_boundary=result.exact_boundary&&count==(prescribed.contains(face)?1U:2U);
   for(const auto& face:prescribed)result.exact_boundary=result.exact_boundary&&uses.contains(face)&&uses.at(face)==1U;
+  std::vector<std::pair<Aabb,std::size_t>> ordered_bounds;
+  ordered_bounds.reserve(result.tetrahedra.size());
+  for(std::size_t index=0U;index<result.tetrahedra.size();++index)
+    ordered_bounds.push_back({bounds(points,result.tetrahedra[index]),index});
+  std::sort(ordered_bounds.begin(),ordered_bounds.end(),[](const auto& left,const auto& right) {
+    return left.first.low.x<right.first.low.x||
+        (left.first.low.x==right.first.low.x&&left.second<right.second);
+  });
   result.no_strict_overlap=true;
-  for(std::size_t a=0;a<result.tetrahedra.size();++a)for(std::size_t b=a+1U;b<result.tetrahedra.size();++b)
-    result.no_strict_overlap=result.no_strict_overlap&&!overlap(points,result.tetrahedra[a],result.tetrahedra[b]);
+  std::vector<std::pair<Aabb,std::size_t>> active;
+  for(const auto& current:ordered_bounds) {
+    active.erase(std::remove_if(active.begin(),active.end(),[&](const auto& prior) {
+      return prior.first.high.x+1e-12<current.first.low.x;
+    }),active.end());
+    for(const auto& prior:active) {
+      if(!boxes_may_strictly_overlap(prior.first,current.first))continue;
+      ++result.overlap_pairs_tested;
+      if(overlap(points,result.tetrahedra[prior.second],result.tetrahedra[current.second])) {
+        result.no_strict_overlap=false;break;
+      }
+    }
+    if(!result.no_strict_overlap)break;
+    active.push_back(current);
+  }
   result.exact_volume=std::abs(result.boundary_volume-result.tetrahedron_volume)<=
       1e-10*std::max(1.0,result.boundary_volume);
   if(!result.positive||!result.exact_boundary||!result.no_strict_overlap||!result.exact_volume) {

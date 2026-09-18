@@ -972,6 +972,9 @@ struct ClosedPlcTetrahedralizationResult {
   std::size_t search_states{};
   std::size_t rejected_outside{};
   std::size_t rejected_overlap{};
+  // Exact overlap tests performed after the conservative AABB broad phase.
+  // The old exhaustive count is tetrahedra * (tetrahedra - 1) / 2.
+  std::size_t overlap_pairs_tested{};
   double boundary_volume{};
   double tetrahedron_volume{};
   bool used_common_kernel{};
