@@ -194,6 +194,26 @@ int main(int argc,char** argv) {
              <<" volume_failure="<<static_cast<unsigned>(free_volume.volume.failure)<<'\n';
     return 15;
   }
+  const auto free_boundary_matches_dc=[&] {
+    if(free_volume.input.vertices.size()!=fixture.dc_vertices.size()||
+       free_volume.input.faces.size()!=fixture.dc_triangles.size())return false;
+    for(std::size_t index=0U;index<fixture.dc_vertices.size();++index) {
+      const auto& frozen=free_volume.input.vertices[index];
+      const auto& source=fixture.dc_vertices[index];
+      if(frozen.id!=index+1U||frozen.position.x!=source.x||
+         frozen.position.y!=source.y||frozen.position.z!=source.z)return false;
+    }
+    for(std::size_t index=0U;index<fixture.dc_triangles.size();++index) {
+      const auto triangle=fixture.dc_triangles[index];
+      if(free_volume.input.faces[index]!=
+          std::array<std::uint64_t,3>{{static_cast<std::uint64_t>(triangle[0])+1U,
+                                       static_cast<std::uint64_t>(triangle[1])+1U,
+                                       static_cast<std::uint64_t>(triangle[2])+1U}})
+        return false;
+    }
+    return true;
+  }();
+  if(!free_boundary_matches_dc)return 18;
   std::vector<Vec3> free_points;
   std::map<std::uint64_t,std::uint32_t> free_point_index;
   free_points.reserve(free_volume.volume.vertices.size());
@@ -316,6 +336,7 @@ int main(int argc,char** argv) {
         <<",freePositive:"<<(free_volume.volume.positive?"true":"false")
         <<",freeNoStrictOverlap:"<<(free_volume.volume.no_strict_overlap?"true":"false")
         <<",freeExactVolume:"<<(free_volume.volume.exact_volume?"true":"false")
+        <<",freeBoundaryMatchesDc:"<<(free_boundary_matches_dc?"true":"false")
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
@@ -372,6 +393,7 @@ int main(int argc,char** argv) {
          <<"  \"exact_dc_free_volume_radial_layers\": "<<free_options.common_kernel_radial_layers<<",\n"
          <<"  \"exact_dc_free_volume_milliseconds\": "<<free_milliseconds<<",\n"
          <<"  \"exact_dc_free_volume_accepted\": "<<(free_volume.accepted()?"true":"false")<<",\n"
+         <<"  \"exact_dc_free_volume_boundary_matches_dc\": "<<(free_boundary_matches_dc?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
          <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"
          <<"  \"core_green_transition_cells\": "<<fixture.audit.core_green_transition_cells<<",\n"
