@@ -90,10 +90,6 @@ struct DcVolumeQualityDiagnostics {
   std::size_t high_valence_vertices{};
   std::size_t refinement_passes{};
   std::size_t refinement_points_added{};
-  // Cells rejected after constrained recovery because their centroid lies in
-  // the exterior under the frozen PLC's winding classification.  This makes
-  // cavities explicit rather than relying on the backend's shell/core split.
-  std::size_t exterior_tetrahedra_removed{};
 };
 
 struct DcSurfaceConformingVolumeResult {

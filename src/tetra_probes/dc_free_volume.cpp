@@ -216,23 +216,6 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
     return result;
   }
-  const auto remove_geometric_exterior=[&](WangConstrainedTetrahedralizationResult& volume) {
-    std::map<std::uint64_t,Vec3> local_positions;
-    for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
-    std::vector<std::array<std::uint64_t,4>> kept;
-    kept.reserve(volume.tetrahedra.size());
-    for(const auto& tet:volume.tetrahedra) {
-      const auto centroid=(local_positions.at(tet[0])+local_positions.at(tet[1])+
-                           local_positions.at(tet[2])+local_positions.at(tet[3]))/4.;
-      if(inside_closed_surface(input.vertices,input.faces,centroid))kept.push_back(tet);
-    }
-    const auto removed=volume.tetrahedra.size()-kept.size();
-    volume.tetrahedra=std::move(kept);
-    volume.transition_tetrahedra=volume.tetrahedra.size();
-    volume.outside_tetrahedra+=removed;
-    return removed;
-  };
-  std::size_t exterior_removed=remove_geometric_exterior(result.volume);
   constexpr std::array<std::array<unsigned int,2>,6> edges{{
       {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
   const auto evaluate=[&](const WangConstrainedTetrahedralizationResult& volume,
@@ -359,7 +342,6 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const auto refined=build();
     if(!refined.accepted())break; // Keep the last boundary-validated mesh.
     result.volume=refined;
-    exterior_removed+=remove_geometric_exterior(result.volume);
     ++result.quality.refinement_passes;
     result.quality.refinement_points_added+=added;
   }
@@ -367,7 +349,6 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   auto& final_quality=final_evaluation.first;
   final_quality.refinement_passes=result.quality.refinement_passes;
   final_quality.refinement_points_added=result.quality.refinement_points_added;
-  final_quality.exterior_tetrahedra_removed=exterior_removed;
   result.quality=final_quality;
   result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;

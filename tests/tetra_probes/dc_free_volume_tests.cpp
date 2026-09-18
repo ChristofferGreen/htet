@@ -259,6 +259,23 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
     CHECK(result.quality.maximum_dihedral_degrees<=180.);
     CHECK(result.quality.minimum_mean_ratio>0.);
     CHECK(result.quality.minimum_mean_ratio<=1.);
+    std::map<std::uint64_t,tetra::Vec3> positions;
+    for(const auto& vertex:result.volume.vertices)
+      positions.emplace(vertex.id,vertex.position);
+    for(const auto& face:input.faces) {
+      std::size_t uses{};std::uint64_t opposite{};
+      for(const auto& tet:result.volume.tetrahedra) {
+        const auto contains=[&](std::uint64_t id) {
+          return std::find(tet.begin(),tet.end(),id)!=tet.end();
+        };
+        if(!contains(face[0])||!contains(face[1])||!contains(face[2]))continue;
+        ++uses;
+        for(const auto id:tet)
+          if(id!=face[0]&&id!=face[1]&&id!=face[2])opposite=id;
+      }
+      CHECK(uses==1U);
+      if(uses==1U)CHECK(outward_face_side(positions,face,opposite)<0.);
+    }
   }
 }
 
