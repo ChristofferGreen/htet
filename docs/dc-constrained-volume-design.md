@@ -1,7 +1,7 @@
 # Exact DC boundary with free interior tetrahedralization
 
 Date: 2026-09-18  
-Status: first literal-boundary star-shaped checkpoint implemented; general constrained-Delaunay fill and performance comparison remain unproven
+Status: literal-boundary generic constrained-fill experiment implemented for one connected closed component; quality and multi-component/cavity support remain unproven
 Baseline: `73d6c7f` on `codex/surface-driven-volume-lod`
 
 ## 1. Decision and purpose
@@ -43,16 +43,28 @@ surfaces, and must not be presented as constrained Delaunay tetrahedralization.
 
 ### Generic-backend checkpoint
 
-`construct_dc_surface_conforming_volume` is the first generic-path adapter.
-It proposes deterministic interior sites from closest-frozen-surface distance,
+`construct_dc_surface_conforming_volume` is the generic-path adapter. It
+proposes deterministic interior sites from closest-frozen-surface distance,
 inserts them as retained original vertices, and passes only the frozen outer
-facets to the owned constrained recovery backend. Its N5 noisy-sphere test
-retains five distributed interior sites, recovers the literal DC facets, and
-extracts a no-core enclosed solid. This qualifies the backend interface and
-the no-core classification route. A separately triangulated concave L-shaped
-prism also passes, establishing that this route is not dependent on a sphere
-or a common kernel. It does **not** yet qualify thin-feature or multi-component
-surfaces, nor does it establish a quality/refinement result.
+facets to the owned constrained recovery backend. The proposal lattice is
+twice as fine as the near-surface target and target-normalized greedy
+farthest-point selection honours the requested sample budget; the N12 UI
+limit of 64 sites is a regression test, not merely a slider label.
+
+The builder runs bounded feedback refinement. It records edge/target ratio,
+tet volume, boundary/interior tet counts, and vertex valence; oversized or
+over-connected stars contribute centroid candidates for a fresh constrained
+recovery pass. The frozen PLC is never edited. On the N12 noisy-sphere
+fixture, one 64-site pass reduced the worst vertex valence from 166 to 102,
+but the visible mesh is still irregular. This is diagnostic evidence and a
+controlled refinement mechanism, **not** a quality guarantee.
+
+The N5/N8/N12 noisy spheres, a concave L-shaped prism, and a thin (0.1-depth)
+concave L prism pass literal-facet recovery and no-core extraction. This
+qualifies one connected closed component, including nonconvex and thin test
+shapes. Nested components (air cavities) and disconnected components are
+explicitly rejected before recovery: the current backend does not yet recover
+all components as one PLC. It must not publish a false filled cavity.
 
 ## 2. Corrections to the initial proposal
 
@@ -84,8 +96,9 @@ It is not the exact zero set of the implicit field: the two generally differ
 slightly between samples. The field guides sampling and sizing; the PLC
 (piecewise-linear complex) determines the volume to fill.
 
-For the first gate, input is one closed, consistently oriented, embedded
-two-manifold surface without cavities. Nonconvex shapes are allowed. Reject
+For the current gate, input is one closed, consistently oriented, embedded
+two-manifold surface without cavities. Nonconvex and tested thin shapes are
+allowed. Reject
 open boundaries, self-intersections, degenerate triangles, duplicate facets,
 invalid vertex links, and inconsistent IDs before meshing. A valid DC producer
 must be qualified independently; the volume builder cannot repair the surface.
@@ -106,9 +119,10 @@ triples, independently of compacted array order. A geometrically coincident
 subdivision does not satisfy literal preservation. Existing `literal` and
 `geometric` facet modes must remain distinct.
 
-Disconnected solids and air cavities are a later qualification gate. They need
-explicit component nesting and material/air labels; flood fill from the outer
-cage alone would incorrectly retain an enclosed air cavity.
+Disconnected solids and air cavities are explicitly unsupported today. They
+need component nesting plus material/air labels, and recovery of all their
+facets together; independently filling each component would incorrectly fill
+an enclosed air cavity.
 
 ## 4. Construction pipeline
 
