@@ -75,6 +75,7 @@ add_library(tetra_probe_support
   src/tetra_probes/plc_chunk_probe.cpp
   src/tetra_probes/sandwich_probe.cpp
   src/tetra_probes/closed_plc_tetrahedralizer.cpp
+  src/tetra_probes/dc_free_volume.cpp
   src/tetra_probes/bcc_transition_request.cpp
   src/tetra_probes/refined_core_transaction.cpp
   src/tetra_probes/nonmatching_plc_manifest.cpp
@@ -292,6 +293,9 @@ add_executable(closed_plc_tetrahedralizer_tests
   tests/tetra_probes/closed_plc_tetrahedralizer_tests.cpp)
 target_link_libraries(closed_plc_tetrahedralizer_tests PRIVATE tetra_probe_support doctest::doctest)
 add_test(NAME closed_plc_tetrahedralizer_tests COMMAND closed_plc_tetrahedralizer_tests)
+add_executable(dc_free_volume_tests tests/tetra_probes/dc_free_volume_tests.cpp)
+target_link_libraries(dc_free_volume_tests PRIVATE tetra_probe_support doctest::doctest)
+add_test(NAME dc_free_volume_tests COMMAND dc_free_volume_tests)
 add_executable(surface_core_contract_tests tests/tetra_probes/surface_core_contract_tests.cpp)
 target_link_libraries(surface_core_contract_tests PRIVATE tetra_probe_support doctest::doctest)
 add_test(NAME surface_core_contract_tests COMMAND surface_core_contract_tests)

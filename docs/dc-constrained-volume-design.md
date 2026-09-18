@@ -1,7 +1,7 @@
 # Exact DC boundary with free interior tetrahedralization
 
 Date: 2026-09-18  
-Status: proposed comparison experiment; implementation and performance unproven  
+Status: first literal-boundary star-shaped checkpoint implemented; general constrained-Delaunay fill and performance comparison remain unproven
 Baseline: `73d6c7f` on `codex/surface-driven-volume-lod`
 
 ## 1. Decision and purpose
@@ -20,6 +20,23 @@ not yet a commitment to a different meshing backend.
 The initial implementation is a CPU experiment. GPU DC generation remains a
 possible surface producer, but GPU tetrahedralization and a streaming world
 are outside this first experiment.
+
+### Implemented checkpoint
+
+`dc_free_volume.*` now adapts `AdvancingFrontFixture::dc_vertices` and
+`dc_triangles` directly into a no-core closed PLC and invokes the existing
+dependency-free `tetrahedralize_closed_plc` kernel. The N5/N8/N12 contained
+noisy-sphere fixtures pass the literal-boundary, positive-volume, exact-volume,
+and strict-overlap checks through its deterministic common-kernel-cone path.
+The focused test also proves that every input DC triangle has exactly one
+incident output tet and that its fourth vertex lies strictly behind the
+triangle's outward normal.
+
+This is a useful integration checkpoint, not the intended general method. It
+uses one common interior Steiner point and therefore produces one tet per DC
+triangle; it has neither controlled interior density nor a general solution for
+non-star-shaped closed surfaces. It must not be presented as constrained
+Delaunay tetrahedralization.
 
 ## 2. Corrections to the initial proposal
 
