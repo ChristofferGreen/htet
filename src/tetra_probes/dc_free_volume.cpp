@@ -246,7 +246,8 @@ bool valid_literal_volume(const DcFreeVolumeInput& input,
 
 std::size_t improve_interior_vertex_positions(
     const DcFreeVolumeInput& input,WangConstrainedTetrahedralizationResult& volume,
-    const DcSurfaceDistanceSamplingOptions& options,std::size_t& attempts) {
+    const SurfaceQuery& surface_query,const DcSurfaceDistanceSamplingOptions& options,
+    std::size_t& attempts) {
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:volume.vertices)positions.emplace(vertex.id,vertex.position);
   std::set<std::uint64_t> boundary;
@@ -266,6 +267,16 @@ std::size_t improve_interior_vertex_positions(
     ranked.emplace_back(worst,id);
   }
   std::sort(ranked.begin(),ranked.end());
+  const auto locally_valid=[&](std::uint64_t id) {
+    for(const auto cell:incident.at(id)) {
+      const auto& tet=volume.tetrahedra[cell];const auto q=tet_quality(tet,positions);
+      if(!(q.volume>1e-15)||!std::isfinite(q.volume))return false;
+      const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
+                         positions.at(tet[2])+positions.at(tet[3]))/4.;
+      if(!surface_query.contains(centre))return false;
+    }
+    return true;
+  };
   std::size_t moved{};
   for(const auto& [unused,id]:ranked) {
     (void)unused;if(attempts>=options.maximum_interior_smoothing_attempts_per_pass)break;
@@ -286,7 +297,7 @@ std::size_t improve_interior_vertex_positions(
     }
     if(after_ratio>before_ratio+1e-12&&after_angle+1e-9>=before_angle) {
       for(auto& vertex:volume.vertices)if(vertex.id==id)vertex.position=positions.at(id);
-      if(valid_literal_volume(input,volume)) { ++moved;continue; }
+      if(locally_valid(id)) { ++moved;continue; }
     }
     positions[id]=original;
   }
@@ -555,7 +566,13 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   // boundary, positive contained cells and a manifold face-use table.
   for(std::size_t pass=0U;pass<sampling.maximum_interior_smoothing_passes;++pass) {
     std::size_t attempts{};
-    const auto moved=improve_interior_vertex_positions(input,result.volume,sampling,attempts);
+    const auto before_smoothing=result.volume;
+    auto moved=improve_interior_vertex_positions(input,result.volume,surface_query,sampling,attempts);
+    // The local test is enough for a proposal, but this full audit is the
+    // publication gate for the entire pass.
+    if(moved>0U&&!valid_literal_volume(input,result.volume)) {
+      result.volume=before_smoothing;moved=0U;
+    }
     result.quality.interior_smoothing_attempts+=attempts;
     result.quality.interior_smoothing_moves+=moved;
     if(moved==0U)break;
