@@ -85,14 +85,16 @@ changing the literal-DC contract.
 
 The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
 concave L prism, and a coarse closed torus pass literal-facet recovery and
-no-core extraction. A two-box fixture and a box with an inverted nested box
-also pass. Generic no-core extraction uses an in-house parity flood: crossing
-each literal DC shell toggles air/material. Thus disconnected solids are kept
-and the nested box is correctly excluded as air; both tests verify that the
+no-core extraction. A two-box fixture and a box with a nested box also pass.
+Generic no-core extraction uses an in-house parity flood: crossing each
+literal DC shell toggles air/material. Its candidate sampler uses the same
+winding-parity rule, so nesting does not depend on whether components happen
+to use opposing global winding signs. Thus disconnected solids are kept and
+the nested box is correctly excluded as air; both tests verify that the
 published boundary is exactly the full input facet set. This qualifies closed,
-embedded, consistently oriented DC-shell sets with ordinary parity material
-semantics. Intersecting/touching shells and non-manifold input are still
-rejected by PLC materialization rather than guessed at.
+embedded DC-shell sets with ordinary parity material semantics.
+Intersecting/touching shells and non-manifold input are still rejected by PLC
+materialization rather than guessed at.
 
 ## 2. Corrections to the initial proposal
 

@@ -65,7 +65,13 @@ bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
     winding+=2.*std::atan2(dot(a,cross(b,c)),
         la*lb*lc+dot(a,b)*lc+dot(b,c)*la+dot(c,a)*lb);
   }
-  return std::abs(winding)>=2.*std::numbers::pi-1e-8;
+  // Every closed component contributes one signed winding in its interior.
+  // Material semantics are parity, so an inner shell is a void regardless of
+  // whether its author chose the opposite global orientation convention.
+  // Rounding is safe away from the PLC itself (all callers use cell centres
+  // or candidate lattice points) and avoids a scale-dependent ray epsilon.
+  const auto crossings=std::llround(std::abs(winding)/(4.*std::numbers::pi));
+  return crossings%2LL==1LL;
 }
 
 struct TetQuality {

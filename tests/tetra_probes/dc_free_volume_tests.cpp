@@ -63,11 +63,11 @@ void append_box(tetra::probes::DcFreeVolumeInput& input,tetra::Vec3 low,
   }
 }
 
-tetra::probes::DcFreeVolumeInput box_with_cavity_input() {
+tetra::probes::DcFreeVolumeInput box_with_cavity_input(bool reverse_inner=true) {
   tetra::probes::DcFreeVolumeInput result;
   append_box(result,{-1.,-1.,-1.},{1.,1.,1.},false);
   // Inverted inner component makes the central void outside the solid.
-  append_box(result,{-.35,-.35,-.35},{.35,.35,.35},true);
+  append_box(result,{-.35,-.35,-.35},{.35,.35,.35},reverse_inner);
   return result;
 }
 
@@ -492,6 +492,26 @@ TEST_CASE("generic path classifies a nested DC shell as an air cavity") {
                        positions.at(tet[2])+positions.at(tet[3]))/4.;
     const bool in_cavity=std::abs(centre.x)<.35&&std::abs(centre.y)<.35&&
         std::abs(centre.z)<.35;
+    CHECK_FALSE(in_cavity);
+  }
+}
+
+TEST_CASE("generic parity volume ignores nested-shell global winding convention") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.4;
+  sampling.maximum_spacing=.8;
+  sampling.maximum_points=8U;
+  // Both components are individually consistently oriented, but their global
+  // orientation signs agree. Parity—not a signed-winding convention—still
+  // defines the inner box as air.
+  const auto input=box_with_cavity_input(false);
+  const auto result=construct_dc_surface_conforming_volume(input,sampling);
+  REQUIRE(result.accepted());
+  CHECK(published_boundary_equals(input,result.volume));
+  for(const auto point:result.interior_samples) {
+    const bool in_cavity=std::abs(point.x)<.35&&std::abs(point.y)<.35&&
+        std::abs(point.z)<.35;
     CHECK_FALSE(in_cavity);
   }
 }
