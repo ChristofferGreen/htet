@@ -35,6 +35,21 @@ double point_triangle_distance(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
   return length(ap-ab*(vb*inverse)-ac*(vc*inverse));
 }
 
+double closest_surface_distance(const DcFreeVolumeInput& input,Vec3 point) {
+  std::map<std::uint64_t,Vec3> positions;
+  for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
+  auto distance=std::numeric_limits<double>::infinity();
+  for(const auto& face:input.faces)distance=std::min(distance,
+      point_triangle_distance(point,positions.at(face[0]),positions.at(face[1]),
+                              positions.at(face[2])));
+  return distance;
+}
+
+double local_target(const DcSurfaceDistanceSamplingOptions& options,double distance) {
+  return std::clamp(options.surface_spacing+options.growth*distance,
+                    options.surface_spacing,options.maximum_spacing);
+}
+
 bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
                            const std::vector<std::array<std::uint64_t,3>>& faces,
                            Vec3 point) {
@@ -116,8 +131,7 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
         for(const auto& face:input.faces)distance=std::min(distance,
             point_triangle_distance(point,positions.at(face[0]),positions.at(face[1]),positions.at(face[2])));
         if(distance<options.surface_spacing*.25)continue;
-        const auto target=std::clamp(options.surface_spacing+options.growth*distance,
-                                     options.surface_spacing,options.maximum_spacing);
+        const auto target=local_target(options,distance);
         const auto stride=std::max<std::size_t>(1U,static_cast<std::size_t>(std::llround(target/options.surface_spacing)));
         if(ix%stride||iy%stride||iz%stride)continue;
         result.push_back(point);
@@ -156,33 +170,92 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   }
   auto seeded=plc.constraints;std::uint64_t next{};
   for(const auto& vertex:seeded.vertices)next=std::max(next,vertex.id);
-  for(const auto point:result.interior_samples) {
-    if(next==std::numeric_limits<std::uint64_t>::max())return result;
-    seeded.vertices.push_back({++next,point});
+  auto append_site=[&](Vec3 point) {
+    if(next==std::numeric_limits<std::uint64_t>::max())return false;
+    seeded.vertices.push_back({++next,point});return true;
+  };
+  for(const auto point:result.interior_samples)if(!append_site(point))return result;
+  const auto build=[&]() { return tetrahedralize_wang_constrained_plc(seeded,options); };
+  result.volume=build();
+  if(!result.volume.accepted()) {
+    result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
+    return result;
   }
-  result.volume=tetrahedralize_wang_constrained_plc(seeded,options);
-  result.failure=result.volume.accepted()?DcSurfaceConformingVolumeFailure::none:
-      DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
-  if(!result.volume.accepted())return result;
-  std::map<std::uint64_t,Vec3> positions;
-  for(const auto& vertex:result.volume.vertices)positions.emplace(vertex.id,vertex.position);
-  result.quality.tetrahedra=result.volume.tetrahedra.size();
-  result.quality.minimum_edge_length=std::numeric_limits<double>::infinity();
-  result.quality.minimum_volume=std::numeric_limits<double>::infinity();
   constexpr std::array<std::array<unsigned int,2>,6> edges{{
       {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
-  for(const auto& tet:result.volume.tetrahedra) {
-    const auto a=positions.at(tet[0]),b=positions.at(tet[1]),
-               c=positions.at(tet[2]),d=positions.at(tet[3]);
-    const auto volume=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
-    result.quality.minimum_volume=std::min(result.quality.minimum_volume,volume);
-    result.quality.maximum_volume=std::max(result.quality.maximum_volume,volume);
-    for(const auto edge:edges) {
-      const auto edge_length=length(positions.at(tet[edge[0]])-positions.at(tet[edge[1]]));
-      result.quality.minimum_edge_length=std::min(result.quality.minimum_edge_length,edge_length);
-      result.quality.maximum_edge_length=std::max(result.quality.maximum_edge_length,edge_length);
+  const auto evaluate=[&](const WangConstrainedTetrahedralizationResult& volume,
+                          bool collect_refinement) {
+    DcVolumeQualityDiagnostics quality;
+    quality.tetrahedra=volume.tetrahedra.size();
+    quality.minimum_edge_length=std::numeric_limits<double>::infinity();
+    quality.minimum_volume=std::numeric_limits<double>::infinity();
+    std::map<std::uint64_t,Vec3> local_positions;
+    for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
+    std::vector<std::pair<double,Vec3>> candidates;
+    std::map<std::array<std::uint64_t,3>,std::size_t> face_uses;
+    for(const auto& tet:volume.tetrahedra)for(unsigned opposite=0;opposite<4U;++opposite) {
+      std::array<std::uint64_t,3> face{};unsigned out{};
+      for(unsigned corner=0;corner<4U;++corner)if(corner!=opposite)face[out++]=tet[corner];
+      std::sort(face.begin(),face.end());++face_uses[face];
     }
+    for(const auto& tet:volume.tetrahedra) {
+      const auto a=local_positions.at(tet[0]),b=local_positions.at(tet[1]),
+                 c=local_positions.at(tet[2]),d=local_positions.at(tet[3]);
+      const auto centroid=(a+b+c+d)/4.;
+      const auto target=local_target(sampling,closest_surface_distance(input,centroid));
+      double longest{};
+      const auto volume_value=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
+      quality.minimum_volume=std::min(quality.minimum_volume,volume_value);
+      quality.maximum_volume=std::max(quality.maximum_volume,volume_value);
+      bool touches_boundary{};
+      for(const auto edge:edges) {
+        const auto edge_length=length(local_positions.at(tet[edge[0]])-local_positions.at(tet[edge[1]]));
+        longest=std::max(longest,edge_length);
+        quality.minimum_edge_length=std::min(quality.minimum_edge_length,edge_length);
+        quality.maximum_edge_length=std::max(quality.maximum_edge_length,edge_length);
+      }
+      for(unsigned opposite=0;opposite<4U;++opposite) {
+        std::array<std::uint64_t,3> face{};unsigned out{};
+        for(unsigned corner=0;corner<4U;++corner)if(corner!=opposite)face[out++]=tet[corner];
+        std::sort(face.begin(),face.end());touches_boundary|=face_uses[face]==1U;
+      }
+      touches_boundary?++quality.boundary_tetrahedra:++quality.interior_tetrahedra;
+      const auto ratio=longest/target;
+      quality.maximum_edge_target_ratio=std::max(quality.maximum_edge_target_ratio,ratio);
+      if(ratio>sampling.refinement_edge_target_multiplier) {
+        ++quality.oversized_tetrahedra;
+        if(collect_refinement)candidates.emplace_back(ratio,centroid);
+      }
+    }
+    std::sort(candidates.begin(),candidates.end(),[](const auto& lhs,const auto& rhs) {
+      return lhs.first>rhs.first;
+    });
+    return std::pair{quality,candidates};
+  };
+  for(std::size_t pass=0U;pass<sampling.maximum_refinement_passes;++pass) {
+    const auto [quality,candidates]=evaluate(result.volume,true);
+    if(candidates.empty())break;
+    std::size_t added{};
+    for(const auto& [ratio,point]:candidates) {
+      if(added>=sampling.maximum_refinement_points_per_pass)break;
+      bool too_close{};
+      for(const auto& vertex:seeded.vertices)
+        too_close|=length(vertex.position-point)<sampling.surface_spacing*.1;
+      if(!too_close&&append_site(point))++added;
+    }
+    if(added==0U)break;
+    const auto refined=build();
+    if(!refined.accepted())break; // Keep the last boundary-validated mesh.
+    result.volume=refined;
+    ++result.quality.refinement_passes;
+    result.quality.refinement_points_added+=added;
   }
+  auto final_evaluation=evaluate(result.volume,false);
+  auto& final_quality=final_evaluation.first;
+  final_quality.refinement_passes=result.quality.refinement_passes;
+  final_quality.refinement_points_added=result.quality.refinement_points_added;
+  result.quality=final_quality;
+  result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;
 }
 

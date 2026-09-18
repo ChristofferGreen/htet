@@ -225,3 +225,32 @@ TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
   CHECK(result.volume.boundary_audit.accepted());
   CHECK_FALSE(result.volume.tetrahedra.empty());
 }
+
+TEST_CASE("bounded generic refinement preserves literal DC facets") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=5U;
+  config.sphere_radius=.23;
+  config.noise_amplitude=.02;
+  config.noise_frequency=4.;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.06;
+  sampling.maximum_spacing=.14;
+  sampling.maximum_points=1U;
+  sampling.maximum_refinement_passes=1U;
+  sampling.maximum_refinement_points_per_pass=4U;
+  const auto result=construct_dc_surface_conforming_volume(
+      make_dc_free_volume_input(build_advancing_front_fixture(config)),sampling);
+  INFO("failure="<<static_cast<unsigned>(result.failure)
+       <<" passes="<<result.quality.refinement_passes
+       <<" added="<<result.quality.refinement_points_added
+       <<" oversized="<<result.quality.oversized_tetrahedra);
+  REQUIRE(result.accepted());
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK(result.quality.boundary_tetrahedra+result.quality.interior_tetrahedra==
+        result.quality.tetrahedra);
+  CHECK(result.quality.refinement_passes<=sampling.maximum_refinement_passes);
+  CHECK(result.quality.refinement_points_added<=sampling.maximum_refinement_points_per_pass);
+  CHECK(result.quality.maximum_edge_target_ratio>0.);
+}

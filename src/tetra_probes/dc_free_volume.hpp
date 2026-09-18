@@ -51,6 +51,12 @@ struct DcSurfaceDistanceSamplingOptions {
   double maximum_spacing{0.16};
   double growth{1.0};
   std::size_t maximum_points{256U};
+  // A deliberately bounded feedback loop.  Each pass adds centroids of the
+  // worst oversized cells then reconstructs the constrained volume from the
+  // frozen PLC; it never edits a DC facet in place.
+  std::size_t maximum_refinement_passes{};
+  std::size_t maximum_refinement_points_per_pass{32U};
+  double refinement_edge_target_multiplier{1.75};
 };
 
 enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
@@ -67,6 +73,12 @@ struct DcVolumeQualityDiagnostics {
   double maximum_edge_length{};
   double minimum_volume{};
   double maximum_volume{};
+  std::size_t boundary_tetrahedra{};
+  std::size_t interior_tetrahedra{};
+  std::size_t oversized_tetrahedra{};
+  double maximum_edge_target_ratio{};
+  std::size_t refinement_passes{};
+  std::size_t refinement_points_added{};
 };
 
 struct DcSurfaceConformingVolumeResult {

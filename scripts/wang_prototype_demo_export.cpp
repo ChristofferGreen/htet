@@ -106,8 +106,8 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc<2||argc>7) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS]\n";
+  if(argc<2||argc>8) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
@@ -214,6 +214,40 @@ int main(int argc,char** argv) {
     return true;
   }();
   if(!free_boundary_matches_dc)return 18;
+  tetra::probes::DcSurfaceDistanceSamplingOptions generic_sampling;
+  generic_sampling.maximum_points=32U;
+  generic_sampling.maximum_refinement_passes=1U;
+  generic_sampling.maximum_refinement_points_per_pass=32U;
+  if(argc>=8) try {
+    generic_sampling.maximum_points=static_cast<std::size_t>(std::stoul(argv[7]));
+  } catch(...) { std::cerr<<"generic sample budget must be an integer\n"; return 2; }
+  const auto generic_started=std::chrono::steady_clock::now();
+  const auto generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
+      free_volume.input,generic_sampling,options);
+  const auto generic_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-generic_started).count();
+  if(!generic_volume.accepted()) {
+    std::cerr<<"generic DC volume fill rejected: failure="
+             <<static_cast<unsigned>(generic_volume.failure)
+             <<" wang_failure="<<static_cast<unsigned>(generic_volume.volume.failure)<<'\n';
+    return 19;
+  }
+  std::vector<Vec3> generic_points;
+  std::map<std::uint64_t,std::uint32_t> generic_point_index;
+  generic_points.reserve(generic_volume.volume.vertices.size());
+  for(const auto& vertex:generic_volume.volume.vertices) {
+    const auto index=static_cast<std::uint32_t>(generic_points.size());
+    if(!generic_point_index.emplace(vertex.id,index).second)return 20;
+    generic_points.push_back(vertex.position);
+  }
+  std::vector<std::array<std::uint32_t,4>> generic_tetrahedra;
+  generic_tetrahedra.reserve(generic_volume.volume.tetrahedra.size());
+  for(const auto& tet:generic_volume.volume.tetrahedra) {
+    std::array<std::uint32_t,4> compact{};
+    for(std::size_t corner=0U;corner<compact.size();++corner)
+      compact[corner]=generic_point_index.at(tet[corner]);
+    generic_tetrahedra.push_back(compact);
+  }
   std::vector<Vec3> free_points;
   std::map<std::uint64_t,std::uint32_t> free_point_index;
   free_points.reserve(free_volume.volume.vertices.size());
@@ -286,6 +320,8 @@ int main(int argc,char** argv) {
                        &prototype.volume.cell_regions))return 10;
   if(!write_tetrahedra(directory/"06-exact-dc-volume-fill.vtk",free_points,
                        free_tetrahedra))return 17;
+  if(!write_tetrahedra(directory/"07-generic-dc-volume-fill.vtk",generic_points,
+                       generic_tetrahedra))return 21;
 
   {
     std::vector<Vec3> hexahedron_points;
@@ -318,6 +354,8 @@ int main(int argc,char** argv) {
     data<<",tetrahedra:";write_javascript_cells(data,transition);
     data<<"},freeVolume:{points:";write_javascript_points(data,free_points);
     data<<",tetrahedra:";write_javascript_cells(data,free_tetrahedra);
+    data<<"},genericVolume:{points:";write_javascript_points(data,generic_points);
+    data<<",tetrahedra:";write_javascript_cells(data,generic_tetrahedra);
     data<<"},summary:{gridResolution:"<<grid_resolution
         <<",coreMode:'"<<core_mode<<"'"
         <<",coreRedDepth:"<<config.core_red_depth
@@ -339,6 +377,20 @@ int main(int argc,char** argv) {
         <<",freeNoStrictOverlap:"<<(free_volume.volume.no_strict_overlap?"true":"false")
         <<",freeExactVolume:"<<(free_volume.volume.exact_volume?"true":"false")
         <<",freeBoundaryMatchesDc:"<<(free_boundary_matches_dc?"true":"false")
+        <<",genericVolumeTetrahedra:"<<generic_tetrahedra.size()
+        <<",genericVolumeVertices:"<<generic_points.size()
+        <<",genericSamples:"<<generic_volume.interior_samples.size()
+        <<",genericVolumeMilliseconds:"<<generic_milliseconds
+        <<",genericExactBoundary:"<<(generic_volume.volume.boundary_audit.accepted()?"true":"false")
+        <<",genericMinimumEdge:"<<generic_volume.quality.minimum_edge_length
+        <<",genericMaximumEdge:"<<generic_volume.quality.maximum_edge_length
+        <<",genericMinimumVolume:"<<generic_volume.quality.minimum_volume
+        <<",genericBoundaryTetrahedra:"<<generic_volume.quality.boundary_tetrahedra
+        <<",genericInteriorTetrahedra:"<<generic_volume.quality.interior_tetrahedra
+        <<",genericOversizedTetrahedra:"<<generic_volume.quality.oversized_tetrahedra
+        <<",genericMaximumEdgeTargetRatio:"<<generic_volume.quality.maximum_edge_target_ratio
+        <<",genericRefinementPasses:"<<generic_volume.quality.refinement_passes
+        <<",genericRefinementPointsAdded:"<<generic_volume.quality.refinement_points_added
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
@@ -397,6 +449,10 @@ int main(int argc,char** argv) {
          <<"  \"exact_dc_free_volume_overlap_pairs_tested\": "<<free_volume.volume.overlap_pairs_tested<<",\n"
          <<"  \"exact_dc_free_volume_accepted\": "<<(free_volume.accepted()?"true":"false")<<",\n"
          <<"  \"exact_dc_free_volume_boundary_matches_dc\": "<<(free_boundary_matches_dc?"true":"false")<<",\n"
+         <<"  \"generic_dc_volume_tetrahedra\": "<<generic_tetrahedra.size()<<",\n"
+         <<"  \"generic_dc_volume_samples\": "<<generic_volume.interior_samples.size()<<",\n"
+         <<"  \"generic_dc_volume_milliseconds\": "<<generic_milliseconds<<",\n"
+         <<"  \"generic_dc_volume_literal_boundary\": "<<(generic_volume.volume.boundary_audit.accepted()?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
          <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"
          <<"  \"core_green_transition_cells\": "<<fixture.audit.core_green_transition_cells<<",\n"
