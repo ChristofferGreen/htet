@@ -442,10 +442,10 @@
     async function rebuildVolume() {
       const next = Number(resolution.value);
       const mode = coreMode.value;
-      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true; genericRefinement.disabled = true; genericSmoothing.disabled = true;
-      rebuildStatus.textContent = `Rebuilding both volume methods at N${next}…`;
+      resolution.disabled = true; coreMode.disabled = true; volumeMethod.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true; genericRefinement.disabled = true; genericSmoothing.disabled = true;
+      rebuildStatus.textContent = `Rebuilding ${volumeMethod.options[volumeMethod.selectedIndex].text} at N${next}…`;
       try {
-        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}&generic_refinement_passes=${genericRefinement.value}&generic_smoothing_passes=${genericSmoothing.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}&generic_refinement_passes=${genericRefinement.value}&generic_smoothing_passes=${genericSmoothing.value}&build_method=${encodeURIComponent(volumeMethod.value)}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
@@ -453,7 +453,7 @@
         window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}&method=${encodeURIComponent(volumeMethod.value)}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false; genericRefinement.disabled = false; genericSmoothing.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; volumeMethod.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false; genericRefinement.disabled = false; genericSmoothing.disabled = false;
       }
     }
     resolution.addEventListener('change', rebuildVolume);
@@ -498,7 +498,7 @@
       updateWholeTetClip();
       updateWireframeMode();
     }
-    volumeMethod.addEventListener('change', updateVolumeMethod);
+    volumeMethod.addEventListener('change', () => { updateVolumeMethod(); rebuildVolume(); });
     for (const name of ['hex','dc','transition','core','free','generic']) {
       const input = document.getElementById(name);
       const update = () => {

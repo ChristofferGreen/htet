@@ -190,6 +190,12 @@ This distinguishes a fast surface-query/sampling improvement from actual
 constrained-recovery cost; it is not a claim that the current CPU prototype is
 ready for a frame-time budget.
 
+The inspector rebuild endpoint also accepts a selected build mode. Selecting
+the generic method builds the common DC/Wang fixture plus only the generic
+fill; it does not spend time constructing the star-shaped reference fill.
+Selecting a comparison method requests its own build revision. This is a
+viewer/export optimization, not a meshing-algorithm improvement.
+
 ## 5. Interior resolution and LOD
 
 Use distance to the closest point on the frozen surface, not camera distance.

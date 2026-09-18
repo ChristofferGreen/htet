@@ -45,10 +45,11 @@ def publish_cached_result(source: Path) -> None:
 
 def rebuild_cache_key(resolution: int, mode: str, minimum_level: int,
                       surface_band: float, free_layers: int, generic_samples: int,
-                      generic_refinement_passes: int, generic_smoothing_passes: int) -> str:
+                      generic_refinement_passes: int, generic_smoothing_passes: int,
+                      build_method: str) -> str:
     exporter = EXPORTER.stat()
     identity = (f"{exporter.st_mtime_ns}:{exporter.st_size}:{resolution}:"
-                f"{mode}:{minimum_level}:{surface_band:.17g}:{free_layers}:{generic_samples}:{generic_refinement_passes}:{generic_smoothing_passes}")
+                f"{mode}:{minimum_level}:{surface_band:.17g}:{free_layers}:{generic_samples}:{generic_refinement_passes}:{generic_smoothing_passes}:{build_method}")
     return hashlib.sha256(identity.encode("ascii")).hexdigest()
 
 
@@ -84,6 +85,10 @@ class Handler(BaseHTTPRequestHandler):
         if mode not in {"uniform", "adaptive"}:
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "mode must be uniform or adaptive"})
             return
+        build_method = parse_qs(request.query).get("build_method", ["all"])[0]
+        if build_method not in {"all", "wang", "free", "generic"}:
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": "build method is invalid"})
+            return
         try:
             minimum_level = int(parse_qs(request.query).get("minimum_level", ["2"])[0])
             surface_band = float(parse_qs(request.query).get("surface_band", ["0.5"])[0])
@@ -113,21 +118,21 @@ class Handler(BaseHTTPRequestHandler):
         with REBUILD_LOCK:
             CACHE_ROOT.mkdir(parents=True, exist_ok=True)
             cache_directory = CACHE_ROOT / rebuild_cache_key(
-                resolution, mode, minimum_level, surface_band, free_layers, generic_samples, generic_refinement_passes, generic_smoothing_passes)
+                resolution, mode, minimum_level, surface_band, free_layers, generic_samples, generic_refinement_passes, generic_smoothing_passes, build_method)
             if all((cache_directory / name).is_file() for name in GENERATED_FILES):
                 publish_cached_result(cache_directory)
                 self.reply(HTTPStatus.OK, {
                     "resolution": resolution, "mode": mode,
                     "minimum_level": minimum_level,
                     "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "generic_smoothing_passes": generic_smoothing_passes, "reloaded": True,
-                    "cached": True,
+                    "cached": True, "build_method": build_method,
                 })
                 return
             temporary_directory = Path(tempfile.mkdtemp(
                 prefix="rebuild-", dir=CACHE_ROOT))
             completed = subprocess.run(
                 [str(EXPORTER), str(temporary_directory), str(resolution), mode,
-                 str(minimum_level), str(surface_band), str(free_layers), str(generic_samples), str(generic_refinement_passes), str(generic_smoothing_passes)],
+                 str(minimum_level), str(surface_band), str(free_layers), str(generic_samples), str(generic_refinement_passes), str(generic_smoothing_passes), build_method],
                 # A geometrically scaled depth-six core is intentionally much
                 # denser than the former fixed-cavity demo.  Keep the browser
                 # request alive while the bounded CPU oracle completes rather
@@ -143,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             temporary_directory.rename(cache_directory)
             publish_cached_result(cache_directory)
         self.reply(HTTPStatus.OK, {"resolution": resolution, "mode": mode,
-                                   "minimum_level": minimum_level,
+                                   "minimum_level": minimum_level, "build_method": build_method,
                                    "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "generic_smoothing_passes": generic_smoothing_passes, "reloaded": True,
                                    "cached": False})
 

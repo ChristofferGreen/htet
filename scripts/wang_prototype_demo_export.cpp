@@ -106,8 +106,8 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc<2||argc>10) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET] [GENERIC_REFINEMENT_PASSES] [GENERIC_INTERIOR_SMOOTHING_PASSES]\n";
+  if(argc<2||argc>11) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET] [GENERIC_REFINEMENT_PASSES] [GENERIC_INTERIOR_SMOOTHING_PASSES] [all|wang|free|generic]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
@@ -184,28 +184,38 @@ int main(int argc,char** argv) {
   if(argc>=7) try {
     free_options.common_kernel_radial_layers=static_cast<unsigned>(std::stoul(argv[6]));
   } catch(...) { std::cerr<<"free radial layers must be an integer\n"; return 2; }
+  const std::string build_method=argc>=11?argv[10]:"all";
+  if(build_method!="all"&&build_method!="wang"&&build_method!="free"&&build_method!="generic") {
+    std::cerr<<"build method must be all, wang, free, or generic\n"; return 2;
+  }
+  const bool build_free=build_method=="all"||build_method=="free";
+  const bool build_generic=build_method=="all"||build_method=="generic";
+  // The generic path consumes the frozen DC PLC directly; it must not build
+  // the star-shaped reference merely to obtain an equivalent input.
+  const auto dc_input=tetra::probes::make_dc_free_volume_input(fixture);
   const auto free_started=std::chrono::steady_clock::now();
-  const auto free_volume=tetra::probes::construct_dc_free_volume(fixture,free_options);
-  const auto free_milliseconds=std::chrono::duration<double,std::milli>(
-      std::chrono::steady_clock::now()-free_started).count();
-  if(!free_volume.accepted()) {
+  tetra::probes::DcFreeVolumeResult free_volume;
+  if(build_free)free_volume=tetra::probes::construct_dc_free_volume(fixture,free_options);
+  const auto free_milliseconds=build_free?std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-free_started).count():0.;
+  if(build_free&&!free_volume.accepted()) {
     std::cerr<<"exact DC volume fill rejected: failure="
              <<static_cast<unsigned>(free_volume.failure)
              <<" volume_failure="<<static_cast<unsigned>(free_volume.volume.failure)<<'\n';
     return 15;
   }
   const auto free_boundary_matches_dc=[&] {
-    if(free_volume.input.vertices.size()!=fixture.dc_vertices.size()||
-       free_volume.input.faces.size()!=fixture.dc_triangles.size())return false;
+    if(dc_input.vertices.size()!=fixture.dc_vertices.size()||
+       dc_input.faces.size()!=fixture.dc_triangles.size())return false;
     for(std::size_t index=0U;index<fixture.dc_vertices.size();++index) {
-      const auto& frozen=free_volume.input.vertices[index];
+      const auto& frozen=dc_input.vertices[index];
       const auto& source=fixture.dc_vertices[index];
       if(frozen.id!=index+1U||frozen.position.x!=source.x||
          frozen.position.y!=source.y||frozen.position.z!=source.z)return false;
     }
     for(std::size_t index=0U;index<fixture.dc_triangles.size();++index) {
       const auto triangle=fixture.dc_triangles[index];
-      if(free_volume.input.faces[index]!=
+      if(dc_input.faces[index]!=
           std::array<std::uint64_t,3>{{static_cast<std::uint64_t>(triangle[0])+1U,
                                        static_cast<std::uint64_t>(triangle[1])+1U,
                                        static_cast<std::uint64_t>(triangle[2])+1U}})
@@ -228,11 +238,12 @@ int main(int argc,char** argv) {
     generic_sampling.maximum_interior_smoothing_passes=static_cast<std::size_t>(std::stoul(argv[9]));
   } catch(...) { std::cerr<<"generic interior smoothing passes must be an integer\n"; return 2; }
   const auto generic_started=std::chrono::steady_clock::now();
-  const auto generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
-      free_volume.input,generic_sampling,options);
-  const auto generic_milliseconds=std::chrono::duration<double,std::milli>(
-      std::chrono::steady_clock::now()-generic_started).count();
-  if(!generic_volume.accepted()) {
+  tetra::probes::DcSurfaceConformingVolumeResult generic_volume;
+  if(build_generic)generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
+      dc_input,generic_sampling,options);
+  const auto generic_milliseconds=build_generic?std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-generic_started).count():0.;
+  if(build_generic&&!generic_volume.accepted()) {
     std::cerr<<"generic DC volume fill rejected: failure="
              <<static_cast<unsigned>(generic_volume.failure)
              <<" wang_failure="<<static_cast<unsigned>(generic_volume.volume.failure)<<'\n';
@@ -372,7 +383,7 @@ int main(int argc,char** argv) {
         <<",dcTriangles:"<<fixture.dc_triangles.size()
         <<",coreTetrahedra:"<<fixture.core_tetrahedra.size()
         <<",transitionTetrahedra:"<<transition.size()
-        <<",freeVolumeTetrahedra:"<<free_tetrahedra.size()
+        <<",freeVolumeTetrahedra:"<<(build_free?std::to_string(free_tetrahedra.size()):"null")
         <<",freeVolumeVertices:"<<free_points.size()
         <<",freeRadialLayers:"<<free_options.common_kernel_radial_layers
         <<",freeVolumeMilliseconds:"<<free_milliseconds
@@ -383,7 +394,7 @@ int main(int argc,char** argv) {
         <<",freeNoStrictOverlap:"<<(free_volume.volume.no_strict_overlap?"true":"false")
         <<",freeExactVolume:"<<(free_volume.volume.exact_volume?"true":"false")
         <<",freeBoundaryMatchesDc:"<<(free_boundary_matches_dc?"true":"false")
-        <<",genericVolumeTetrahedra:"<<generic_tetrahedra.size()
+        <<",genericVolumeTetrahedra:"<<(build_generic?std::to_string(generic_tetrahedra.size()):"null")
         <<",genericVolumeVertices:"<<generic_points.size()
         <<",genericSamples:"<<generic_volume.interior_samples.size()
         <<",genericVolumeMilliseconds:"<<generic_milliseconds
