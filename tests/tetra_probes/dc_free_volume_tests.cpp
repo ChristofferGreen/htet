@@ -76,3 +76,34 @@ TEST_CASE("closed DC sphere has a literal free-volume fill through N12") {
     }
   }
 }
+
+TEST_CASE("common-kernel layers increase free-volume density without changing DC facets") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.sphere_radius=0.23;
+  config.noise_amplitude=0.02;
+  config.noise_frequency=4.0;
+  const auto fixture=build_advancing_front_fixture(config);
+  ClosedPlcTetrahedralizationOptions options;
+  options.common_kernel_radial_layers=2U;
+  const auto result=construct_dc_free_volume(fixture,options);
+
+  INFO("failure="<<static_cast<unsigned>(result.failure)
+       <<" volume_failure="<<static_cast<unsigned>(result.volume.failure)
+       <<" boundary="<<result.volume.exact_boundary
+       <<" positive="<<result.volume.positive
+       <<" overlap="<<result.volume.no_strict_overlap
+       <<" volume="<<result.volume.exact_volume
+       <<" tets="<<result.volume.tetrahedra.size());
+  REQUIRE(result.accepted());
+  CHECK(result.volume.used_common_kernel);
+  CHECK(result.volume.common_kernel_radial_layers==2U);
+  CHECK(result.volume.tetrahedra.size()==fixture.dc_triangles.size()*7U);
+  CHECK(result.volume.vertices.size()==fixture.dc_vertices.size()*3U+1U);
+  CHECK(result.volume.exact_boundary);
+  CHECK(result.volume.positive);
+  CHECK(result.volume.no_strict_overlap);
+  CHECK(result.volume.exact_volume);
+}

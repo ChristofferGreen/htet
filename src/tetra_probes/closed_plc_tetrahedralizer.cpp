@@ -161,16 +161,70 @@ ClosedPlcTetrahedralizationResult tetrahedralize_closed_plc(
 
   const auto kernel=options.allow_interior_steiner?common_kernel(points,boundary):std::nullopt;
   if(kernel) {
-    ++next;points.emplace(next,*kernel);result.vertices.assign(input_vertices.begin(),input_vertices.end());
+    const auto layers=static_cast<std::size_t>(options.common_kernel_radial_layers);
+    if(layers>(std::numeric_limits<std::size_t>::max()-1U)/3U) {
+      result.failure=ClosedPlcTetrahedralizationFailure::candidate_limit;
+      return result;
+    }
+    const auto tets_per_face=3U*layers+1U;
+    if(boundary.size()>options.maximum_candidate_tetrahedra/tets_per_face) {
+      result.failure=ClosedPlcTetrahedralizationFailure::candidate_limit;
+      return result;
+    }
+    result.vertices.assign(input_vertices.begin(),input_vertices.end());
+    std::vector<std::map<Id,Id>> shell_ids(layers+1U);
+    for(const auto& vertex:input_vertices)shell_ids[0U].emplace(vertex.id,vertex.id);
+    for(std::size_t layer=1U;layer<=layers;++layer) {
+      const auto fraction=static_cast<double>(layers+1U-layer)/
+          static_cast<double>(layers+1U);
+      for(const auto& vertex:input_vertices) {
+        if(next==std::numeric_limits<Id>::max())return result;
+        const auto source=points.at(vertex.id);
+        const auto p=add(*kernel,mul(sub(source,*kernel),fraction));
+        ++next;points.emplace(next,p);shell_ids[layer].emplace(vertex.id,next);
+        result.vertices.push_back({next,{p.x,p.y,p.z}});
+      }
+    }
+    if(next==std::numeric_limits<Id>::max())return result;
+    ++next;points.emplace(next,*kernel);
     result.vertices.push_back({next,{kernel->x,kernel->y,kernel->z}});
+    const auto append_positive=[&](Tet tet) {
+      const auto sign=exact_orient(points.at(tet[0]),points.at(tet[1]),
+                                   points.at(tet[2]),points.at(tet[3]));
+      if(sign==ExactPredicateSign::zero)return false;
+      if(sign==ExactPredicateSign::negative)std::swap(tet[1],tet[2]);
+      result.tetrahedra.push_back(tet);return true;
+    };
     for(const auto& face:boundary) {
-      Tet tet{{face[0],face[1],face[2],next}};
-      if(exact_orient(points.at(tet[0]),points.at(tet[1]),points.at(tet[2]),points.at(tet[3]))==
-         ExactPredicateSign::negative)
-        std::swap(tet[1],tet[2]);
-      result.tetrahedra.push_back(tet);
+      // A prism shared by two surface triangles must choose the same diagonal
+      // on their common radial quad.  Sorting by frozen IDs makes the three
+      // side diagonals independent of either triangle's winding or third
+      // vertex: low_outer -> high_inner on every shared edge.
+      auto ordered_face=face;
+      std::sort(ordered_face.begin(),ordered_face.end());
+      for(std::size_t layer=0U;layer<layers;++layer) {
+        const auto a=shell_ids[layer].at(ordered_face[0]);
+        const auto b=shell_ids[layer].at(ordered_face[1]);
+        const auto c=shell_ids[layer].at(ordered_face[2]);
+        const auto ia=shell_ids[layer+1U].at(ordered_face[0]);
+        const auto ib=shell_ids[layer+1U].at(ordered_face[1]);
+        const auto ic=shell_ids[layer+1U].at(ordered_face[2]);
+        if(!append_positive({{a,b,c,ia}})||!append_positive({{b,c,ia,ib}})||
+           !append_positive({{c,ia,ib,ic}})) {
+          result.tetrahedra.clear();result.failure=ClosedPlcTetrahedralizationFailure::audit_failed;
+          return result;
+        }
+      }
+      const auto a=shell_ids[layers].at(ordered_face[0]);
+      const auto b=shell_ids[layers].at(ordered_face[1]);
+      const auto c=shell_ids[layers].at(ordered_face[2]);
+      if(!append_positive({{a,b,c,next}})) {
+        result.tetrahedra.clear();result.failure=ClosedPlcTetrahedralizationFailure::audit_failed;
+        return result;
+      }
     }
     result.used_common_kernel=true;
+    result.common_kernel_radial_layers=options.common_kernel_radial_layers;
   } else {
     std::vector<Id> sites;for(const auto& [id,p]:points){(void)p;sites.push_back(id);}
     P centroid{};for(const auto id:sites)centroid=add(centroid,points.at(id));

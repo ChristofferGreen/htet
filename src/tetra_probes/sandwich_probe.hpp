@@ -957,6 +957,10 @@ struct ClosedPlcTetrahedralizationOptions {
   std::size_t maximum_candidate_tetrahedra{1U<<18U};
   std::size_t maximum_search_states{1U<<20U};
   bool allow_interior_steiner{true};
+  // When a common kernel exists, insert this many homothetic interior shells
+  // between the immutable boundary and the kernel point.  This is a bounded
+  // star-shaped refinement experiment, not a general sizing or CDT scheme.
+  unsigned int common_kernel_radial_layers{};
 };
 
 struct ClosedPlcTetrahedralizationResult {
@@ -971,6 +975,7 @@ struct ClosedPlcTetrahedralizationResult {
   double boundary_volume{};
   double tetrahedron_volume{};
   bool used_common_kernel{};
+  unsigned int common_kernel_radial_layers{};
   bool exact_boundary{};
   bool positive{};
   bool no_strict_overlap{};

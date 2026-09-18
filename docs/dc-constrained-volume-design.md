@@ -32,11 +32,14 @@ The focused test also proves that every input DC triangle has exactly one
 incident output tet and that its fourth vertex lies strictly behind the
 triangle's outward normal.
 
-This is a useful integration checkpoint, not the intended general method. It
-uses one common interior Steiner point and therefore produces one tet per DC
-triangle; it has neither controlled interior density nor a general solution for
-non-star-shaped closed surfaces. It must not be presented as constrained
-Delaunay tetrahedralization.
+This is a useful integration checkpoint, not the intended general method. The
+initial cone produces one tet per DC triangle. A follow-up experimental option
+adds homothetic radial shells between that cone point and the frozen surface;
+each shell is conformingly split into three tetrahedra per DC triangle. It is
+a real, deterministic interior-density control for the current star-shaped
+fixture, while preserving every outer DC facet literally. It is not
+surface-distance sizing, does not handle arbitrary non-star-shaped closed
+surfaces, and must not be presented as constrained Delaunay tetrahedralization.
 
 ## 2. Corrections to the initial proposal
 
