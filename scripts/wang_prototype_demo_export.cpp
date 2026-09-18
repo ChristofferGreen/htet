@@ -106,8 +106,8 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc<2||argc>9) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET] [GENERIC_REFINEMENT_PASSES]\n";
+  if(argc<2||argc>10) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET] [GENERIC_REFINEMENT_PASSES] [GENERIC_INTERIOR_SMOOTHING_PASSES]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
@@ -224,6 +224,9 @@ int main(int argc,char** argv) {
   if(argc>=9) try {
     generic_sampling.maximum_refinement_passes=static_cast<std::size_t>(std::stoul(argv[8]));
   } catch(...) { std::cerr<<"generic refinement passes must be an integer\n"; return 2; }
+  if(argc>=10) try {
+    generic_sampling.maximum_interior_smoothing_passes=static_cast<std::size_t>(std::stoul(argv[9]));
+  } catch(...) { std::cerr<<"generic interior smoothing passes must be an integer\n"; return 2; }
   const auto generic_started=std::chrono::steady_clock::now();
   const auto generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
       free_volume.input,generic_sampling,options);
@@ -403,6 +406,10 @@ int main(int argc,char** argv) {
         <<",genericHighValenceVertices:"<<generic_volume.quality.high_valence_vertices
         <<",genericRefinementPasses:"<<generic_volume.quality.refinement_passes
         <<",genericRefinementPointsAdded:"<<generic_volume.quality.refinement_points_added
+        <<",genericInteriorSmoothingPasses:"<<generic_volume.quality.interior_smoothing_passes
+        <<",genericInteriorSmoothingAttempts:"<<generic_volume.quality.interior_smoothing_attempts
+        <<",genericInteriorSmoothingMoves:"<<generic_volume.quality.interior_smoothing_moves
+        <<",genericInteriorSmoothingRequested:"<<generic_sampling.maximum_interior_smoothing_passes
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges

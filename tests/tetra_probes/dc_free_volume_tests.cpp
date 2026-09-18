@@ -386,6 +386,40 @@ TEST_CASE("bounded generic refinement preserves literal DC facets") {
   CHECK(result.quality.maximum_vertex_valence>0U);
 }
 
+TEST_CASE("in-house interior smoothing is transactional and preserves literal DC facets") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.sphere_radius=.23;
+  config.noise_amplitude=.02;
+  config.noise_frequency=4.;
+  DcSurfaceDistanceSamplingOptions base;
+  base.maximum_points=16U;
+  base.maximum_refinement_passes=1U;
+  base.maximum_refinement_points_per_pass=8U;
+  auto smoothed=base;
+  smoothed.maximum_interior_smoothing_passes=1U;
+  smoothed.maximum_interior_smoothing_attempts_per_pass=16U;
+  const auto input=make_dc_free_volume_input(build_advancing_front_fixture(config));
+  const auto before=construct_dc_surface_conforming_volume(input,base);
+  const auto after=construct_dc_surface_conforming_volume(input,smoothed);
+  REQUIRE(before.accepted());
+  REQUIRE(after.accepted());
+  CHECK(after.volume.boundary_audit.accepted());
+  CHECK(after.quality.interior_smoothing_passes<=1U);
+  CHECK(after.quality.interior_smoothing_attempts<=16U);
+  INFO("moves="<<after.quality.interior_smoothing_moves
+       <<" interior mean ratio "<<before.quality.interior_minimum_mean_ratio
+       <<" -> "<<after.quality.interior_minimum_mean_ratio
+       <<", interior angle "<<before.quality.interior_minimum_dihedral_degrees
+       <<" -> "<<after.quality.interior_minimum_dihedral_degrees);
+  CHECK(after.quality.interior_minimum_mean_ratio+1e-12>=
+        before.quality.interior_minimum_mean_ratio);
+  CHECK(after.quality.interior_minimum_dihedral_degrees+1e-9>=
+        before.quality.interior_minimum_dihedral_degrees);
+}
+
 TEST_CASE("generic DC volume fill is deterministic for a frozen surface") {
   using namespace tetra::probes;
   AdvancingFrontFixtureConfig config;

@@ -85,6 +85,126 @@ bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
   return std::abs(winding)>=2.*std::numbers::pi-1e-8;
 }
 
+struct TetQuality {
+  double volume{};
+  double mean_ratio{};
+  double minimum_dihedral{std::numeric_limits<double>::infinity()};
+};
+
+TetQuality tet_quality(const std::array<std::uint64_t,4>& tet,
+                        const std::map<std::uint64_t,Vec3>& positions) {
+  constexpr std::array<std::array<unsigned int,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  const auto a=positions.at(tet[0]),b=positions.at(tet[1]),
+             c=positions.at(tet[2]),d=positions.at(tet[3]);
+  TetQuality result;
+  result.volume=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
+  double edge_squares{};
+  for(const auto edge:edges) {
+    const auto difference=positions.at(tet[edge[0]])-positions.at(tet[edge[1]]);
+    edge_squares+=dot(difference,difference);
+    const auto first=edge[0],second=edge[1];
+    unsigned third{},fourth{},cursor{};
+    for(unsigned corner=0U;corner<4U;++corner)if(corner!=first&&corner!=second) {
+      if(cursor++==0U)third=corner;else fourth=corner;
+    }
+    auto first_normal=cross(positions.at(tet[second])-positions.at(tet[first]),
+                            positions.at(tet[third])-positions.at(tet[first]));
+    auto second_normal=cross(positions.at(tet[first])-positions.at(tet[second]),
+                             positions.at(tet[fourth])-positions.at(tet[second]));
+    if(dot(first_normal,positions.at(tet[fourth])-positions.at(tet[first]))>0.)
+      first_normal=first_normal*-1.;
+    if(dot(second_normal,positions.at(tet[third])-positions.at(tet[second]))>0.)
+      second_normal=second_normal*-1.;
+    const auto normal_product=length(first_normal)*length(second_normal);
+    if(!(normal_product>0.)) { result.minimum_dihedral=0.;continue; }
+    const auto cosine=std::clamp(dot(first_normal,second_normal)/normal_product,-1.,1.);
+    result.minimum_dihedral=std::min(result.minimum_dihedral,
+        (std::numbers::pi-std::acos(cosine))*180./std::numbers::pi);
+  }
+  if(edge_squares>0.&&result.volume>0.)
+    result.mean_ratio=12.*std::pow(3.*result.volume,2./3.)/edge_squares;
+  return result;
+}
+
+// This deliberately checks the whole published mesh after each proposed
+// local move.  The optimizer may be slow, but it is transactional: a move
+// cannot trade literal faces or a contained, positive volume for a prettier
+// local star.
+bool valid_literal_volume(const DcFreeVolumeInput& input,
+                          const WangConstrainedTetrahedralizationResult& volume) {
+  std::map<std::uint64_t,Vec3> positions;
+  for(const auto& vertex:volume.vertices)
+    if(!positions.emplace(vertex.id,vertex.position).second)return false;
+  std::set<std::array<std::uint64_t,3>> expected,actual;
+  std::map<std::array<std::uint64_t,3>,std::size_t> uses;
+  for(auto face:input.faces) { std::sort(face.begin(),face.end());expected.insert(face); }
+  for(const auto& tet:volume.tetrahedra) {
+    for(const auto id:tet)if(!positions.contains(id))return false;
+    const auto quality=tet_quality(tet,positions);
+    if(!(quality.volume>1e-15)||!std::isfinite(quality.volume))return false;
+    const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
+                       positions.at(tet[2])+positions.at(tet[3]))/4.;
+    if(!inside_closed_surface(input.vertices,input.faces,centre))return false;
+    for(unsigned omitted=0U;omitted<4U;++omitted) {
+      std::array<std::uint64_t,3> face{};unsigned cursor{};
+      for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)face[cursor++]=tet[corner];
+      std::sort(face.begin(),face.end());if(++uses[face]>2U)return false;
+    }
+  }
+  for(const auto& [face,count]:uses)if(count==1U)actual.insert(face);
+  return actual==expected;
+}
+
+std::size_t improve_interior_vertex_positions(
+    const DcFreeVolumeInput& input,WangConstrainedTetrahedralizationResult& volume,
+    const DcSurfaceDistanceSamplingOptions& options,std::size_t& attempts) {
+  std::map<std::uint64_t,Vec3> positions;
+  for(const auto& vertex:volume.vertices)positions.emplace(vertex.id,vertex.position);
+  std::set<std::uint64_t> boundary;
+  for(const auto face:input.faces)boundary.insert(face.begin(),face.end());
+  std::map<std::uint64_t,std::vector<std::size_t>> incident;
+  std::map<std::uint64_t,std::set<std::uint64_t>> neighbours;
+  for(std::size_t index=0U;index<volume.tetrahedra.size();++index) {
+    const auto& tet=volume.tetrahedra[index];
+    for(const auto id:tet)incident[id].push_back(index);
+    for(const auto first:tet)for(const auto second:tet)if(first!=second)
+      neighbours[first].insert(second);
+  }
+  std::vector<std::pair<double,std::uint64_t>> ranked;
+  for(const auto& [id,cells]:incident)if(!boundary.contains(id)&&!cells.empty()) {
+    double worst{std::numeric_limits<double>::infinity()};
+    for(const auto cell:cells)worst=std::min(worst,tet_quality(volume.tetrahedra[cell],positions).mean_ratio);
+    ranked.emplace_back(worst,id);
+  }
+  std::sort(ranked.begin(),ranked.end());
+  std::size_t moved{};
+  for(const auto& [unused,id]:ranked) {
+    (void)unused;if(attempts>=options.maximum_interior_smoothing_attempts_per_pass)break;
+    ++attempts;
+    Vec3 average{};for(const auto other:neighbours.at(id))average=average+positions.at(other);
+    average=average/static_cast<double>(neighbours.at(id).size());
+    double before_ratio{std::numeric_limits<double>::infinity()},before_angle{std::numeric_limits<double>::infinity()};
+    for(const auto cell:incident.at(id)) {
+      const auto q=tet_quality(volume.tetrahedra[cell],positions);
+      before_ratio=std::min(before_ratio,q.mean_ratio);before_angle=std::min(before_angle,q.minimum_dihedral);
+    }
+    const auto original=positions.at(id);
+    positions[id]=original+(average-original)*.15;
+    double after_ratio{std::numeric_limits<double>::infinity()},after_angle{std::numeric_limits<double>::infinity()};
+    for(const auto cell:incident.at(id)) {
+      const auto q=tet_quality(volume.tetrahedra[cell],positions);
+      after_ratio=std::min(after_ratio,q.mean_ratio);after_angle=std::min(after_angle,q.minimum_dihedral);
+    }
+    if(after_ratio>before_ratio+1e-12&&after_angle+1e-9>=before_angle) {
+      for(auto& vertex:volume.vertices)if(vertex.id==id)vertex.position=positions.at(id);
+      if(valid_literal_volume(input,volume)) { ++moved;continue; }
+    }
+    positions[id]=original;
+  }
+  return moved;
+}
+
 } // namespace
 
 DcFreeVolumeInput make_dc_free_volume_input(const AdvancingFrontFixture& fixture) {
@@ -345,10 +465,24 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     ++result.quality.refinement_passes;
     result.quality.refinement_points_added+=added;
   }
+  // This is intentionally a post-recovery operation: it cannot alter the
+  // recovered PLC topology.  Each accepted relocation keeps the exact DC
+  // boundary, positive contained cells and a manifold face-use table.
+  for(std::size_t pass=0U;pass<sampling.maximum_interior_smoothing_passes;++pass) {
+    std::size_t attempts{};
+    const auto moved=improve_interior_vertex_positions(input,result.volume,sampling,attempts);
+    result.quality.interior_smoothing_attempts+=attempts;
+    result.quality.interior_smoothing_moves+=moved;
+    if(moved==0U)break;
+    ++result.quality.interior_smoothing_passes;
+  }
   auto final_evaluation=evaluate(result.volume,false);
   auto& final_quality=final_evaluation.first;
   final_quality.refinement_passes=result.quality.refinement_passes;
   final_quality.refinement_points_added=result.quality.refinement_points_added;
+  final_quality.interior_smoothing_passes=result.quality.interior_smoothing_passes;
+  final_quality.interior_smoothing_attempts=result.quality.interior_smoothing_attempts;
+  final_quality.interior_smoothing_moves=result.quality.interior_smoothing_moves;
   result.quality=final_quality;
   result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;

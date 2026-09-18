@@ -40,6 +40,8 @@
           <input id="generic-samples" type="range" min="1" max="64" step="1" value="32"></label>
         <label id="generic-refinement-control">Generic refinement passes: <output id="generic-refinement-value">1</output>
           <input id="generic-refinement" type="range" min="0" max="2" step="1" value="1"></label>
+        <label id="generic-smoothing-control">Generic interior smoothing passes: <output id="generic-smoothing-value">0</output>
+          <input id="generic-smoothing" type="range" min="0" max="2" step="1" value="0"></label>
       </fieldset>
       <fieldset>
         <legend>Layers</legend>
@@ -399,7 +401,7 @@
     const freeReport = Number.isFinite(summary.freeVolumeTetrahedra)
       ? `\nStar-shaped reference fill (not generic): ${summary.freeVolumeTetrahedra} tetrahedra · ${summary.freeVolumeVertices} vertices · ${summary.freeRadialLayers} radial shells · ${(Number(summary.freeVolumeMilliseconds) / 1000).toFixed(2)} s · ${freeOverlapWork} · shared DC ${summary.freeBoundaryMatchesDc && summary.freeExactBoundary && summary.freePositive && summary.freeNoStrictOverlap && summary.freeExactVolume ? 'validated' : 'FAILED'}` : '';
     const genericReport = Number.isFinite(summary.genericVolumeTetrahedra)
-      ? `\nGeneric DC Fill (experimental): ${summary.genericVolumeTetrahedra} tetrahedra · ${summary.genericSamples} initial samples + ${summary.genericRefinementPointsAdded ?? 0} refinement sites (${summary.genericRefinementPasses ?? 0} pass) · ${(Number(summary.genericVolumeMilliseconds) / 1000).toFixed(2)} s · dihedral ${number(summary.genericMinimumDihedral)}°–${number(summary.genericMaximumDihedral)}° (boundary ${number(summary.genericBoundaryMinimumDihedral)}°, interior ${number(summary.genericInteriorMinimumDihedral)}°) · mean ratio ≥ ${number(summary.genericMinimumMeanRatio)} (boundary ${number(summary.genericBoundaryMinimumMeanRatio)}, interior ${number(summary.genericInteriorMinimumMeanRatio)}) · edge ${number(summary.genericMinimumEdge)}–${number(summary.genericMaximumEdge)} · ${summary.genericOversizedTetrahedra ?? '?'} refinement candidates (worst ${number(summary.genericMaximumEdgeTargetRatio)}× target) · ${summary.genericHighValenceVertices ?? '?'} high-valence vertices (worst ${summary.genericMaximumVertexValence ?? '?'} cells) · literal DC ${summary.genericExactBoundary ? 'validated' : 'FAILED'}` : '';
+      ? `\nGeneric DC Fill (experimental): ${summary.genericVolumeTetrahedra} tetrahedra · ${summary.genericSamples} initial samples + ${summary.genericRefinementPointsAdded ?? 0} refinement sites (${summary.genericRefinementPasses ?? 0} pass) · ${summary.genericInteriorSmoothingMoves ?? 0} accepted interior relocations / ${summary.genericInteriorSmoothingAttempts ?? 0} attempted (${summary.genericInteriorSmoothingPasses ?? 0} pass) · ${(Number(summary.genericVolumeMilliseconds) / 1000).toFixed(2)} s · dihedral ${number(summary.genericMinimumDihedral)}°–${number(summary.genericMaximumDihedral)}° (boundary ${number(summary.genericBoundaryMinimumDihedral)}°, interior ${number(summary.genericInteriorMinimumDihedral)}°) · mean ratio ≥ ${number(summary.genericMinimumMeanRatio)} (boundary ${number(summary.genericBoundaryMinimumMeanRatio)}, interior ${number(summary.genericInteriorMinimumMeanRatio)}) · edge ${number(summary.genericMinimumEdge)}–${number(summary.genericMaximumEdge)} · ${summary.genericOversizedTetrahedra ?? '?'} refinement candidates (worst ${number(summary.genericMaximumEdgeTargetRatio)}× target) · ${summary.genericHighValenceVertices ?? '?'} high-valence vertices (worst ${summary.genericMaximumVertexValence ?? '?'} cells) · literal DC ${summary.genericExactBoundary ? 'validated' : 'FAILED'}` : '';
     document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}${workload}${timing}${freeReport}${genericReport}`;
     const resolution = document.getElementById('resolution');
     const resolutionValue = document.getElementById('resolution-value');
@@ -413,11 +415,13 @@
     const freeLayers = document.getElementById('free-layers');
     const genericSamples = document.getElementById('generic-samples');
     const genericRefinement = document.getElementById('generic-refinement');
+    const genericSmoothing = document.getElementById('generic-smoothing');
     minimumLevel.value = summary.coreMinRedDepth ?? 2;
     surfaceBand.value = summary.coreSurfaceBand ?? .5;
     freeLayers.value = summary.freeRadialLayers ?? 1;
     genericSamples.value = summary.genericSamples ?? 32;
     genericRefinement.value = summary.genericRefinementPasses ?? 1;
+    genericSmoothing.value = summary.genericInteriorSmoothingRequested ?? 0;
     // Rebuilds replace the page so retain the selected real volume method in
     // the URL; otherwise native select defaults would silently return to Wang.
     const requestedMethod = new URLSearchParams(location.search).get('method');
@@ -428,6 +432,7 @@
       document.getElementById('free-layers-value').textContent = freeLayers.value;
       document.getElementById('generic-samples-value').textContent = genericSamples.value;
       document.getElementById('generic-refinement-value').textContent = genericRefinement.value;
+      document.getElementById('generic-smoothing-value').textContent = genericSmoothing.value;
     };
     updateLodLabels();
     resolutionValue.textContent = resolution.value;
@@ -435,10 +440,10 @@
     async function rebuildVolume() {
       const next = Number(resolution.value);
       const mode = coreMode.value;
-      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true; genericRefinement.disabled = true;
+      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true; genericRefinement.disabled = true; genericSmoothing.disabled = true;
       rebuildStatus.textContent = `Rebuilding both volume methods at N${next}…`;
       try {
-        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}&generic_refinement_passes=${genericRefinement.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}&generic_refinement_passes=${genericRefinement.value}&generic_smoothing_passes=${genericSmoothing.value}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
@@ -446,7 +451,7 @@
         window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}&method=${encodeURIComponent(volumeMethod.value)}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false; genericRefinement.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false; genericRefinement.disabled = false; genericSmoothing.disabled = false;
       }
     }
     resolution.addEventListener('change', rebuildVolume);
@@ -461,6 +466,8 @@
     genericSamples.addEventListener('change', rebuildVolume);
     genericRefinement.addEventListener('input', updateLodLabels);
     genericRefinement.addEventListener('change', rebuildVolume);
+    genericSmoothing.addEventListener('input', updateLodLabels);
+    genericSmoothing.addEventListener('change', rebuildVolume);
     camera.position.set(.78, -.92, .72);
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.copy(target);

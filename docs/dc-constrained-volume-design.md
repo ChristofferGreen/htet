@@ -66,6 +66,23 @@ interior-only minima are `0.230762°` and `0.017565`: better, but still below
 any credible physics-quality target. Thus literal DC facets are a real part of
 the quality problem, not an excuse to ignore the remaining interior one.
 
+### In-house interior quality checkpoint
+
+The first in-house remeshing operation is deliberately narrow: bounded
+interior-vertex relocation. It never moves a frozen DC vertex, retriangulates
+a DC face, or changes connectivity. Candidates are the worst mean-ratio
+interior stars; each moves 15% toward its one-ring centroid only when both
+the local worst mean ratio improves and local minimum dihedral does not fall.
+Every accepted proposal then undergoes a full transactional check of positive
+tetrahedra, contained centroids, manifold face use, and equality of the
+published boundary with the literal frozen DC triangle set. Rejected proposals
+leave the mesh untouched. On the N8/16-sample/one-refinement noisy sphere,
+one bounded pass accepted 9 of 16 proposals and improved interior minimum mean
+ratio `0.0182384 -> 0.0187127` and interior minimum dihedral
+`0.650138° -> 0.659208°`. This is an initial safe operation, not a claim that
+boundary-forced slivers are solved; those cannot be silently repaired without
+changing the literal-DC contract.
+
 The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
 concave L prism, and a coarse closed torus pass literal-facet recovery and
 no-core extraction. This qualifies one connected closed component, including

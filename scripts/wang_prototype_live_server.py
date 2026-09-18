@@ -45,10 +45,10 @@ def publish_cached_result(source: Path) -> None:
 
 def rebuild_cache_key(resolution: int, mode: str, minimum_level: int,
                       surface_band: float, free_layers: int, generic_samples: int,
-                      generic_refinement_passes: int) -> str:
+                      generic_refinement_passes: int, generic_smoothing_passes: int) -> str:
     exporter = EXPORTER.stat()
     identity = (f"{exporter.st_mtime_ns}:{exporter.st_size}:{resolution}:"
-                f"{mode}:{minimum_level}:{surface_band:.17g}:{free_layers}:{generic_samples}:{generic_refinement_passes}")
+                f"{mode}:{minimum_level}:{surface_band:.17g}:{free_layers}:{generic_samples}:{generic_refinement_passes}:{generic_smoothing_passes}")
     return hashlib.sha256(identity.encode("ascii")).hexdigest()
 
 
@@ -90,6 +90,7 @@ class Handler(BaseHTTPRequestHandler):
             free_layers = int(parse_qs(request.query).get("free_layers", ["1"])[0])
             generic_samples = int(parse_qs(request.query).get("generic_samples", ["32"])[0])
             generic_refinement_passes = int(parse_qs(request.query).get("generic_refinement_passes", ["1"])[0])
+            generic_smoothing_passes = int(parse_qs(request.query).get("generic_smoothing_passes", ["0"])[0])
         except ValueError:
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "invalid adaptive LOD setting"})
             return
@@ -103,19 +104,22 @@ class Handler(BaseHTTPRequestHandler):
         if generic_refinement_passes not in range(0, 3):
             self.reply(HTTPStatus.BAD_REQUEST, {"error": "generic refinement passes must be 0 through 2"})
             return
+        if generic_smoothing_passes not in range(0, 3):
+            self.reply(HTTPStatus.BAD_REQUEST, {"error": "generic interior smoothing passes must be 0 through 2"})
+            return
         if not EXPORTER.is_file():
             self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "build the Wang exporter first"})
             return
         with REBUILD_LOCK:
             CACHE_ROOT.mkdir(parents=True, exist_ok=True)
             cache_directory = CACHE_ROOT / rebuild_cache_key(
-                resolution, mode, minimum_level, surface_band, free_layers, generic_samples, generic_refinement_passes)
+                resolution, mode, minimum_level, surface_band, free_layers, generic_samples, generic_refinement_passes, generic_smoothing_passes)
             if all((cache_directory / name).is_file() for name in GENERATED_FILES):
                 publish_cached_result(cache_directory)
                 self.reply(HTTPStatus.OK, {
                     "resolution": resolution, "mode": mode,
                     "minimum_level": minimum_level,
-                    "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "reloaded": True,
+                    "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "generic_smoothing_passes": generic_smoothing_passes, "reloaded": True,
                     "cached": True,
                 })
                 return
@@ -123,7 +127,7 @@ class Handler(BaseHTTPRequestHandler):
                 prefix="rebuild-", dir=CACHE_ROOT))
             completed = subprocess.run(
                 [str(EXPORTER), str(temporary_directory), str(resolution), mode,
-                 str(minimum_level), str(surface_band), str(free_layers), str(generic_samples), str(generic_refinement_passes)],
+                 str(minimum_level), str(surface_band), str(free_layers), str(generic_samples), str(generic_refinement_passes), str(generic_smoothing_passes)],
                 # A geometrically scaled depth-six core is intentionally much
                 # denser than the former fixed-cavity demo.  Keep the browser
                 # request alive while the bounded CPU oracle completes rather
@@ -140,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
             publish_cached_result(cache_directory)
         self.reply(HTTPStatus.OK, {"resolution": resolution, "mode": mode,
                                    "minimum_level": minimum_level,
-                                   "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "reloaded": True,
+                                   "surface_band": surface_band, "free_layers": free_layers, "generic_samples": generic_samples, "generic_refinement_passes": generic_refinement_passes, "generic_smoothing_passes": generic_smoothing_passes, "reloaded": True,
                                    "cached": False})
 
     def serve_artifact(self, request_path: str) -> None:

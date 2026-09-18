@@ -58,6 +58,11 @@ struct DcSurfaceDistanceSamplingOptions {
   std::size_t maximum_refinement_points_per_pass{32U};
   double refinement_edge_target_multiplier{1.75};
   std::size_t refinement_maximum_vertex_valence{32U};
+  // An in-house, topology-preserving quality pass.  It moves only vertices
+  // strictly internal to the published mesh; frozen DC coordinates and their
+  // literal triangular facets are never candidates for relocation.
+  std::size_t maximum_interior_smoothing_passes{};
+  std::size_t maximum_interior_smoothing_attempts_per_pass{16U};
 };
 
 enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
@@ -90,6 +95,9 @@ struct DcVolumeQualityDiagnostics {
   std::size_t high_valence_vertices{};
   std::size_t refinement_passes{};
   std::size_t refinement_points_added{};
+  std::size_t interior_smoothing_passes{};
+  std::size_t interior_smoothing_attempts{};
+  std::size_t interior_smoothing_moves{};
 };
 
 struct DcSurfaceConformingVolumeResult {
