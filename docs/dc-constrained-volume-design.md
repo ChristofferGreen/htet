@@ -184,6 +184,12 @@ available, and failure reason. Set explicit point, tet, recovery-operation,
 refinement-iteration, and elapsed-time budgets. Cancellation is checked between
 bounded units of work; budgets must not convert incomplete output into success.
 
+The prototype now reports the generic path separately as sampling, initial
+constrained recovery, refinement recovery, smoothing, and final evaluation.
+This distinguishes a fast surface-query/sampling improvement from actual
+constrained-recovery cost; it is not a claim that the current CPU prototype is
+ready for a frame-time budget.
+
 ## 5. Interior resolution and LOD
 
 Use distance to the closest point on the frozen surface, not camera distance.

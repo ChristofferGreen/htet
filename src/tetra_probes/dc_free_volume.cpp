@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -150,29 +151,6 @@ bool closed_consistently_oriented_surface(const DcFreeVolumeInput& input) {
   return true;
 }
 
-bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
-                           const std::vector<std::array<std::uint64_t,3>>& faces,
-                           Vec3 point) {
-  std::map<std::uint64_t,Vec3> positions;
-  for(const auto& vertex:vertices)positions.emplace(vertex.id,vertex.position);
-  double winding{};
-  for(const auto& face:faces) {
-    const auto a=positions.at(face[0])-point,b=positions.at(face[1])-point,
-               c=positions.at(face[2])-point;
-    const auto la=length(a),lb=length(b),lc=length(c);
-    if(la<=1e-14||lb<=1e-14||lc<=1e-14)return false;
-    winding+=2.*std::atan2(dot(a,cross(b,c)),
-        la*lb*lc+dot(a,b)*lc+dot(b,c)*la+dot(c,a)*lb);
-  }
-  // Every closed component contributes one signed winding in its interior.
-  // Material semantics are parity, so an inner shell is a void regardless of
-  // whether its author chose the opposite global orientation convention.
-  // Rounding is safe away from the PLC itself (all callers use cell centres
-  // or candidate lattice points) and avoids a scale-dependent ray epsilon.
-  const auto crossings=std::llround(std::abs(winding)/(4.*std::numbers::pi));
-  return crossings%2LL==1LL;
-}
-
 struct TetQuality {
   double volume{};
   double mean_ratio{};
@@ -219,7 +197,7 @@ TetQuality tet_quality(const std::array<std::uint64_t,4>& tet,
 // local move.  The optimizer may be slow, but it is transactional: a move
 // cannot trade literal faces or a contained, positive volume for a prettier
 // local star.
-bool valid_literal_volume(const DcFreeVolumeInput& input,
+bool valid_literal_volume(const DcFreeVolumeInput& input,const SurfaceQuery& surface_query,
                           const WangConstrainedTetrahedralizationResult& volume) {
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:volume.vertices)
@@ -233,7 +211,7 @@ bool valid_literal_volume(const DcFreeVolumeInput& input,
     if(!(quality.volume>1e-15)||!std::isfinite(quality.volume))return false;
     const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
                        positions.at(tet[2])+positions.at(tet[3]))/4.;
-    if(!inside_closed_surface(input.vertices,input.faces,centre))return false;
+    if(!surface_query.contains(centre))return false;
     for(unsigned omitted=0U;omitted<4U;++omitted) {
       std::array<std::uint64_t,3> face{};unsigned cursor{};
       for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)face[cursor++]=tet[corner];
@@ -411,7 +389,10 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
   const SurfaceQuery surface_query(input);
+  const auto sampling_started=std::chrono::steady_clock::now();
   result.interior_samples=sample_dc_volume_by_surface_distance(input,sampling);
+  result.quality.sampling_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-sampling_started).count();
   if(sampling.maximum_points!=0U&&result.interior_samples.empty()) {
     result.failure=DcSurfaceConformingVolumeFailure::sampling_failed;return result;
   }
@@ -427,7 +408,10 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   // all material boundaries, whose nesting is resolved by parity.
   configured_options.outer_faces_are_parity_boundaries=true;
   const auto build=[&]() { return tetrahedralize_wang_constrained_plc(seeded,configured_options); };
+  const auto initial_build_started=std::chrono::steady_clock::now();
   result.volume=build();
+  result.quality.initial_build_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-initial_build_started).count();
   if(!result.volume.accepted()) {
     result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
     return result;
@@ -555,7 +539,10 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
       if(!too_close&&append_site(point))++added;
     }
     if(added==0U)break;
+    const auto refinement_build_started=std::chrono::steady_clock::now();
     const auto refined=build();
+    result.quality.refinement_build_milliseconds+=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-refinement_build_started).count();
     if(!refined.accepted())break; // Keep the last boundary-validated mesh.
     result.volume=refined;
     ++result.quality.refinement_passes;
@@ -565,26 +552,37 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   // recovered PLC topology.  Each accepted relocation keeps the exact DC
   // boundary, positive contained cells and a manifold face-use table.
   for(std::size_t pass=0U;pass<sampling.maximum_interior_smoothing_passes;++pass) {
+    const auto smoothing_started=std::chrono::steady_clock::now();
     std::size_t attempts{};
     const auto before_smoothing=result.volume;
     auto moved=improve_interior_vertex_positions(input,result.volume,surface_query,sampling,attempts);
     // The local test is enough for a proposal, but this full audit is the
     // publication gate for the entire pass.
-    if(moved>0U&&!valid_literal_volume(input,result.volume)) {
+    if(moved>0U&&!valid_literal_volume(input,surface_query,result.volume)) {
       result.volume=before_smoothing;moved=0U;
     }
     result.quality.interior_smoothing_attempts+=attempts;
     result.quality.interior_smoothing_moves+=moved;
+    result.quality.smoothing_milliseconds+=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-smoothing_started).count();
     if(moved==0U)break;
     ++result.quality.interior_smoothing_passes;
   }
+  const auto evaluation_started=std::chrono::steady_clock::now();
   auto final_evaluation=evaluate(result.volume,false);
+  result.quality.final_evaluation_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-evaluation_started).count();
   auto& final_quality=final_evaluation.first;
   final_quality.refinement_passes=result.quality.refinement_passes;
   final_quality.refinement_points_added=result.quality.refinement_points_added;
   final_quality.interior_smoothing_passes=result.quality.interior_smoothing_passes;
   final_quality.interior_smoothing_attempts=result.quality.interior_smoothing_attempts;
   final_quality.interior_smoothing_moves=result.quality.interior_smoothing_moves;
+  final_quality.sampling_milliseconds=result.quality.sampling_milliseconds;
+  final_quality.initial_build_milliseconds=result.quality.initial_build_milliseconds;
+  final_quality.refinement_build_milliseconds=result.quality.refinement_build_milliseconds;
+  final_quality.smoothing_milliseconds=result.quality.smoothing_milliseconds;
+  final_quality.final_evaluation_milliseconds=result.quality.final_evaluation_milliseconds;
   result.quality=final_quality;
   result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;

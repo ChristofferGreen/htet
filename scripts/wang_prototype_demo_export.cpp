@@ -410,6 +410,11 @@ int main(int argc,char** argv) {
         <<",genericInteriorSmoothingAttempts:"<<generic_volume.quality.interior_smoothing_attempts
         <<",genericInteriorSmoothingMoves:"<<generic_volume.quality.interior_smoothing_moves
         <<",genericInteriorSmoothingRequested:"<<generic_sampling.maximum_interior_smoothing_passes
+        <<",genericSamplingMilliseconds:"<<generic_volume.quality.sampling_milliseconds
+        <<",genericInitialBuildMilliseconds:"<<generic_volume.quality.initial_build_milliseconds
+        <<",genericRefinementBuildMilliseconds:"<<generic_volume.quality.refinement_build_milliseconds
+        <<",genericSmoothingMilliseconds:"<<generic_volume.quality.smoothing_milliseconds
+        <<",genericFinalEvaluationMilliseconds:"<<generic_volume.quality.final_evaluation_milliseconds
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
@@ -471,6 +476,11 @@ int main(int argc,char** argv) {
          <<"  \"generic_dc_volume_tetrahedra\": "<<generic_tetrahedra.size()<<",\n"
          <<"  \"generic_dc_volume_samples\": "<<generic_volume.interior_samples.size()<<",\n"
          <<"  \"generic_dc_volume_milliseconds\": "<<generic_milliseconds<<",\n"
+         <<"  \"generic_sampling_milliseconds\": "<<generic_volume.quality.sampling_milliseconds<<",\n"
+         <<"  \"generic_initial_build_milliseconds\": "<<generic_volume.quality.initial_build_milliseconds<<",\n"
+         <<"  \"generic_refinement_build_milliseconds\": "<<generic_volume.quality.refinement_build_milliseconds<<",\n"
+         <<"  \"generic_smoothing_milliseconds\": "<<generic_volume.quality.smoothing_milliseconds<<",\n"
+         <<"  \"generic_final_evaluation_milliseconds\": "<<generic_volume.quality.final_evaluation_milliseconds<<",\n"
          <<"  \"generic_dc_volume_literal_boundary\": "<<(generic_volume.volume.boundary_audit.accepted()?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
          <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"
