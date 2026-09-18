@@ -43,6 +43,31 @@ tetra::probes::DcFreeVolumeInput l_prism_input() {
   return result;
 }
 
+void append_box(tetra::probes::DcFreeVolumeInput& input,tetra::Vec3 low,
+                tetra::Vec3 high,bool reverse) {
+  const auto first=static_cast<std::uint64_t>(input.vertices.size())+1U;
+  const std::array<tetra::Vec3,8> points{{
+      {low.x,low.y,low.z},{high.x,low.y,low.z},{low.x,high.y,low.z},{high.x,high.y,low.z},
+      {low.x,low.y,high.z},{high.x,low.y,high.z},{low.x,high.y,high.z},{high.x,high.y,high.z}}};
+  for(std::size_t i=0;i<points.size();++i)input.vertices.push_back({first+i,points[i]});
+  const std::array<std::array<std::uint64_t,3>,12> faces{{
+      {{0,2,1}},{{1,2,3}},{{4,5,6}},{{5,7,6}},{{0,1,4}},{{1,5,4}},
+      {{2,6,3}},{{3,6,7}},{{0,4,2}},{{2,4,6}},{{1,3,5}},{{3,7,5}}}};
+  for(auto face:faces) {
+    for(auto& id:face)id+=first;
+    if(reverse)std::swap(face[1],face[2]);
+    input.faces.push_back(face);
+  }
+}
+
+tetra::probes::DcFreeVolumeInput box_with_cavity_input() {
+  tetra::probes::DcFreeVolumeInput result;
+  append_box(result,{-1.,-1.,-1.},{1.,1.,1.},false);
+  // Inverted inner component makes the central void outside the solid.
+  append_box(result,{-.35,-.35,-.35},{.35,.35,.35},true);
+  return result;
+}
+
 } // namespace
 
 TEST_CASE("closed DC sphere has a literal free-volume fill through N12") {
@@ -253,4 +278,16 @@ TEST_CASE("bounded generic refinement preserves literal DC facets") {
   CHECK(result.quality.refinement_passes<=sampling.maximum_refinement_passes);
   CHECK(result.quality.refinement_points_added<=sampling.maximum_refinement_points_per_pass);
   CHECK(result.quality.maximum_edge_target_ratio>0.);
+}
+
+TEST_CASE("generic path explicitly declines a closed internal cavity") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.4;
+  sampling.maximum_spacing=.8;
+  sampling.maximum_points=8U;
+  const auto input=box_with_cavity_input();
+  const auto result=construct_dc_surface_conforming_volume(input,sampling);
+  CHECK_FALSE(result.accepted());
+  CHECK(result.failure==DcSurfaceConformingVolumeFailure::multiple_surface_components_unsupported);
 }

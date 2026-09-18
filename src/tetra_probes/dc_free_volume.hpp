@@ -62,6 +62,7 @@ struct DcSurfaceDistanceSamplingOptions {
 enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
   none,
   invalid_input,
+  multiple_surface_components_unsupported,
   sampling_failed,
   constraint_materialization_failed,
   constrained_tetrahedralization_failed,
@@ -79,6 +80,10 @@ struct DcVolumeQualityDiagnostics {
   double maximum_edge_target_ratio{};
   std::size_t refinement_passes{};
   std::size_t refinement_points_added{};
+  // Cells rejected after constrained recovery because their centroid lies in
+  // the exterior under the frozen PLC's winding classification.  This makes
+  // cavities explicit rather than relying on the backend's shell/core split.
+  std::size_t exterior_tetrahedra_removed{};
 };
 
 struct DcSurfaceConformingVolumeResult {

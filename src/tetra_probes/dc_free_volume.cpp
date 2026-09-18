@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <set>
 
 namespace tetra::probes {
 namespace {
@@ -48,6 +49,23 @@ double closest_surface_distance(const DcFreeVolumeInput& input,Vec3 point) {
 double local_target(const DcSurfaceDistanceSamplingOptions& options,double distance) {
   return std::clamp(options.surface_spacing+options.growth*distance,
                     options.surface_spacing,options.maximum_spacing);
+}
+
+std::size_t surface_components(const DcFreeVolumeInput& input) {
+  std::map<std::uint64_t,std::set<std::uint64_t>> adjacent;
+  for(const auto& face:input.faces)for(unsigned i=0U;i<3U;++i) {
+    adjacent[face[i]].insert(face[(i+1U)%3U]);
+    adjacent[face[(i+1U)%3U]].insert(face[i]);
+  }
+  std::set<std::uint64_t> visited;std::size_t components{};
+  for(const auto& [start,unused]:adjacent) {
+    (void)unused;if(visited.contains(start))continue;
+    ++components;std::vector<std::uint64_t> queue{start};visited.insert(start);
+    for(std::size_t i=0U;i<queue.size();++i)
+      for(const auto next:adjacent.at(queue[i]))if(visited.insert(next).second)
+        queue.push_back(next);
+  }
+  return components;
 }
 
 bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
@@ -162,6 +180,13 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling,
     const WangConstrainedTetrahedralizationOptions& options) {
   DcSurfaceConformingVolumeResult result;result.input=input;
+  // The owned constrained-recovery backend is presently qualified only for a
+  // single closed component.  In particular, a nested second component would
+  // describe a cavity and must not silently be published as filled material.
+  if(surface_components(input)!=1U) {
+    result.failure=DcSurfaceConformingVolumeFailure::multiple_surface_components_unsupported;
+    return result;
+  }
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
   result.interior_samples=sample_dc_volume_by_surface_distance(input,sampling);
@@ -181,6 +206,23 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
     return result;
   }
+  const auto remove_geometric_exterior=[&](WangConstrainedTetrahedralizationResult& volume) {
+    std::map<std::uint64_t,Vec3> local_positions;
+    for(const auto& vertex:volume.vertices)local_positions.emplace(vertex.id,vertex.position);
+    std::vector<std::array<std::uint64_t,4>> kept;
+    kept.reserve(volume.tetrahedra.size());
+    for(const auto& tet:volume.tetrahedra) {
+      const auto centroid=(local_positions.at(tet[0])+local_positions.at(tet[1])+
+                           local_positions.at(tet[2])+local_positions.at(tet[3]))/4.;
+      if(inside_closed_surface(input.vertices,input.faces,centroid))kept.push_back(tet);
+    }
+    const auto removed=volume.tetrahedra.size()-kept.size();
+    volume.tetrahedra=std::move(kept);
+    volume.transition_tetrahedra=volume.tetrahedra.size();
+    volume.outside_tetrahedra+=removed;
+    return removed;
+  };
+  std::size_t exterior_removed=remove_geometric_exterior(result.volume);
   constexpr std::array<std::array<unsigned int,2>,6> edges{{
       {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
   const auto evaluate=[&](const WangConstrainedTetrahedralizationResult& volume,
@@ -247,6 +289,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const auto refined=build();
     if(!refined.accepted())break; // Keep the last boundary-validated mesh.
     result.volume=refined;
+    exterior_removed+=remove_geometric_exterior(result.volume);
     ++result.quality.refinement_passes;
     result.quality.refinement_points_added+=added;
   }
@@ -254,6 +297,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   auto& final_quality=final_evaluation.first;
   final_quality.refinement_passes=result.quality.refinement_passes;
   final_quality.refinement_points_added=result.quality.refinement_points_added;
+  final_quality.exterior_tetrahedra_removed=exterior_removed;
   result.quality=final_quality;
   result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;
