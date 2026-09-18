@@ -121,57 +121,66 @@ DcFreeVolumeResult construct_dc_free_volume(
 
 std::vector<Vec3> sample_dc_volume_by_surface_distance(
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& options) {
-  std::vector<Vec3> result;
+  struct Candidate { Vec3 point; double target; };
+  std::vector<Candidate> candidates;
   if(input.vertices.empty()||input.faces.empty()||options.maximum_points==0U||
      !std::isfinite(options.surface_spacing)||!std::isfinite(options.maximum_spacing)||
      !std::isfinite(options.growth)||options.surface_spacing<=0.||
-     options.maximum_spacing<options.surface_spacing||options.growth<0.) return result;
+     options.maximum_spacing<options.surface_spacing||options.growth<0.) return {};
   auto low=input.vertices.front().position,high=low;
   for(const auto& vertex:input.vertices) {
     low.x=std::min(low.x,vertex.position.x);low.y=std::min(low.y,vertex.position.y);low.z=std::min(low.z,vertex.position.z);
     high.x=std::max(high.x,vertex.position.x);high.y=std::max(high.y,vertex.position.y);high.z=std::max(high.z,vertex.position.z);
   }
   const auto extent=high-low;
-  const auto nx=static_cast<std::size_t>(std::floor(extent.x/options.surface_spacing));
-  const auto ny=static_cast<std::size_t>(std::floor(extent.y/options.surface_spacing));
-  const auto nz=static_cast<std::size_t>(std::floor(extent.z/options.surface_spacing));
+  // This is a proposal lattice, not the desired near-surface element size.
+  // Keeping it twice as fine lets farthest-point selection actually honour a
+  // requested site budget and avoids the old accidental 50-site ceiling at
+  // N12 when the UI asked for 64.
+  const auto candidate_spacing=options.surface_spacing*.5;
+  const auto nx=static_cast<std::size_t>(std::floor(extent.x/candidate_spacing));
+  const auto ny=static_cast<std::size_t>(std::floor(extent.y/candidate_spacing));
+  const auto nz=static_cast<std::size_t>(std::floor(extent.z/candidate_spacing));
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
   for(std::size_t ix=0U;ix<=nx;++ix)
     for(std::size_t iy=0U;iy<=ny;++iy)
       for(std::size_t iz=0U;iz<=nz;++iz) {
-        const Vec3 point{low.x+(static_cast<double>(ix)+.5)*options.surface_spacing,
-                         low.y+(static_cast<double>(iy)+.5)*options.surface_spacing,
-                         low.z+(static_cast<double>(iz)+.5)*options.surface_spacing};
+        const Vec3 point{low.x+(static_cast<double>(ix)+.5)*candidate_spacing,
+                         low.y+(static_cast<double>(iy)+.5)*candidate_spacing,
+                         low.z+(static_cast<double>(iz)+.5)*candidate_spacing};
         if(point.x>=high.x||point.y>=high.y||point.z>=high.z||
            !inside_closed_surface(input.vertices,input.faces,point))continue;
         double distance=std::numeric_limits<double>::infinity();
         for(const auto& face:input.faces)distance=std::min(distance,
             point_triangle_distance(point,positions.at(face[0]),positions.at(face[1]),positions.at(face[2])));
         if(distance<options.surface_spacing*.25)continue;
-        const auto target=local_target(options,distance);
-        const auto stride=std::max<std::size_t>(1U,static_cast<std::size_t>(std::llround(target/options.surface_spacing)));
-        if(ix%stride||iy%stride||iz%stride)continue;
-        result.push_back(point);
+        candidates.push_back({point,local_target(options,distance)});
       }
-  if(result.size()<=options.maximum_points)return result;
+  std::vector<Vec3> result;
+  if(candidates.size()<=options.maximum_points) {
+    result.reserve(candidates.size());
+    for(const auto& candidate:candidates)result.push_back(candidate.point);
+    return result;
+  }
   // A traversal-order truncation would put all retained sites in one corner.
-  // Choose a deterministic spatially spread subset instead; this remains a
-  // sizing proposal, not a claim of globally optimal Poisson sampling.
+  // Greedy farthest-point selection is normalized by each candidate's local
+  // target size, so small near-surface targets naturally receive more sites.
   const auto centre=(low+high)/2.;
   std::vector<Vec3> selected;selected.reserve(options.maximum_points);
-  std::vector<bool> taken(result.size());
+  std::vector<bool> taken(candidates.size());
   for(std::size_t count=0U;count<options.maximum_points;++count) {
-    std::size_t best{};double best_distance{-1.};
-    for(std::size_t candidate=0U;candidate<result.size();++candidate) {
+    std::size_t best{};double best_score{-1.};
+    for(std::size_t candidate=0U;candidate<candidates.size();++candidate) {
       if(taken[candidate])continue;
-      double nearest=selected.empty()?length(result[candidate]-centre):
+      double nearest=selected.empty()?1./(1.+length(candidates[candidate].point-centre)):
           std::numeric_limits<double>::infinity();
       for(const auto prior:selected)
-        nearest=std::min(nearest,length(result[candidate]-prior));
-      if(nearest>best_distance) {best_distance=nearest;best=candidate;}
+        nearest=std::min(nearest,length(candidates[candidate].point-prior));
+      const auto score=selected.empty()?nearest:nearest/candidates[candidate].target;
+      if(score>best_score) {best_score=score;best=candidate;}
     }
-    taken[best]=true;selected.push_back(result[best]);
+    taken[best]=true;selected.push_back(candidates[best].point);
   }
   return selected;
 }

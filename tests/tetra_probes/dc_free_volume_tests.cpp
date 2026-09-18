@@ -209,7 +209,9 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
     sampling.surface_spacing=0.06;
     sampling.maximum_spacing=0.14;
     sampling.growth=1.0;
-    sampling.maximum_points=5U;
+    // N12 used to expose the proposal-lattice bug: a request for 64 sites
+    // silently returned only 50.  Keep the actual UI upper bound covered.
+    sampling.maximum_points=resolution==12U?64U:5U;
     WangConstrainedTetrahedralizationOptions options;
     options.recovery.maximum_vertices=4096U;
     options.recovery.maximum_facets=8192U;
