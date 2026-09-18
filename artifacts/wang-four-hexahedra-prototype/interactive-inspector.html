@@ -34,7 +34,7 @@
         <legend>Volume method</legend>
         <label>Method
           <select id="volume-method"><option value="wang">Wang + retained core</option><option value="free">Star-shaped reference fill</option><option value="generic">Generic DC constrained fill (experimental)</option></select></label>
-        <label id="free-layer-control">Free-fill radial shells: <output id="free-layers-value">1</output>
+        <label id="free-layer-control">Star-shaped reference radial shells: <output id="free-layers-value">1</output>
           <input id="free-layers" type="range" min="0" max="3" step="1" value="1"></label>
         <label id="generic-sample-control">Generic interior samples: <output id="generic-samples-value">32</output>
           <input id="generic-samples" type="range" min="1" max="64" step="1" value="32"></label>
@@ -45,7 +45,7 @@
         <label><input id="dc" type="checkbox" checked> <span class="key" style="background:#39d9d8"></span>closed DC sphere</label>
         <label><input id="transition" type="checkbox" checked> <span class="key" style="background:#ff9b50"></span>Wang transition</label>
         <label><input id="core" type="checkbox" checked> <span class="key" style="background:#56a8ff"></span>tetrahedral core</label>
-        <label><input id="free" type="checkbox" checked> <span class="key" style="background:#8fbf72"></span>Exact DC Volume Fill</label>
+        <label><input id="free" type="checkbox" checked> <span class="key" style="background:#8fbf72"></span>star-shaped reference fill</label>
         <label><input id="generic" type="checkbox" checked> <span class="key" style="background:#d37ee8"></span>generic DC constrained fill</label>
       </fieldset>
       <fieldset>
@@ -395,7 +395,7 @@
       ? `${summary.freeOverlapPairsTested.toLocaleString()}/${summary.freeExhaustivePairs.toLocaleString()} exact overlap pairs`
       : 'overlap work unavailable';
     const freeReport = Number.isFinite(summary.freeVolumeTetrahedra)
-      ? `\nExact DC Fill (experimental): ${summary.freeVolumeTetrahedra} tetrahedra · ${summary.freeVolumeVertices} vertices · ${summary.freeRadialLayers} radial shells · ${(Number(summary.freeVolumeMilliseconds) / 1000).toFixed(2)} s · ${freeOverlapWork} · shared DC ${summary.freeBoundaryMatchesDc && summary.freeExactBoundary && summary.freePositive && summary.freeNoStrictOverlap && summary.freeExactVolume ? 'validated' : 'FAILED'}` : '';
+      ? `\nStar-shaped reference fill (not generic): ${summary.freeVolumeTetrahedra} tetrahedra · ${summary.freeVolumeVertices} vertices · ${summary.freeRadialLayers} radial shells · ${(Number(summary.freeVolumeMilliseconds) / 1000).toFixed(2)} s · ${freeOverlapWork} · shared DC ${summary.freeBoundaryMatchesDc && summary.freeExactBoundary && summary.freePositive && summary.freeNoStrictOverlap && summary.freeExactVolume ? 'validated' : 'FAILED'}` : '';
     const genericReport = Number.isFinite(summary.genericVolumeTetrahedra)
       ? `\nGeneric DC Fill (experimental): ${summary.genericVolumeTetrahedra} tetrahedra · ${summary.genericSamples} initial samples + ${summary.genericRefinementPointsAdded ?? 0} refinement sites (${summary.genericRefinementPasses ?? 0} pass) · ${(Number(summary.genericVolumeMilliseconds) / 1000).toFixed(2)} s · dihedral ${number(summary.genericMinimumDihedral)}°–${number(summary.genericMaximumDihedral)}° (boundary ${number(summary.genericBoundaryMinimumDihedral)}°, interior ${number(summary.genericInteriorMinimumDihedral)}°) · mean ratio ≥ ${number(summary.genericMinimumMeanRatio)} (boundary ${number(summary.genericBoundaryMinimumMeanRatio)}, interior ${number(summary.genericInteriorMinimumMeanRatio)}) · edge ${number(summary.genericMinimumEdge)}–${number(summary.genericMaximumEdge)} · ${summary.genericOversizedTetrahedra ?? '?'} refinement candidates (worst ${number(summary.genericMaximumEdgeTargetRatio)}× target) · ${summary.genericHighValenceVertices ?? '?'} high-valence vertices (worst ${summary.genericMaximumVertexValence ?? '?'} cells) · literal DC ${summary.genericExactBoundary ? 'validated' : 'FAILED'}` : '';
     document.getElementById('stats').textContent = `${summary.dcTriangles} DC triangles · ${summary.transitionTetrahedra} transition tetrahedra · ${summary.coreTetrahedra} core tetrahedra · ${summary.dcBoundaryEdges} DC boundary edges${sizing ? `\n${sizing}` : ''}${workload}${timing}${freeReport}${genericReport}`;
