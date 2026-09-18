@@ -106,8 +106,8 @@ bool write_transition(const std::filesystem::path& path,
 } // namespace
 
 int main(int argc,char** argv) {
-  if(argc<2||argc>8) {
-    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET]\n";
+  if(argc<2||argc>9) {
+    std::cerr<<"usage: wang_prototype_demo_export OUTPUT_DIRECTORY [GRID_RESOLUTION] [uniform|adaptive] [MIN_CORE_LEVEL] [SURFACE_BAND] [FREE_RADIAL_LAYERS] [GENERIC_SAMPLE_BUDGET] [GENERIC_REFINEMENT_PASSES]\n";
     return 2;
   }
   unsigned grid_resolution=5U;
@@ -221,6 +221,9 @@ int main(int argc,char** argv) {
   if(argc>=8) try {
     generic_sampling.maximum_points=static_cast<std::size_t>(std::stoul(argv[7]));
   } catch(...) { std::cerr<<"generic sample budget must be an integer\n"; return 2; }
+  if(argc>=9) try {
+    generic_sampling.maximum_refinement_passes=static_cast<std::size_t>(std::stoul(argv[8]));
+  } catch(...) { std::cerr<<"generic refinement passes must be an integer\n"; return 2; }
   const auto generic_started=std::chrono::steady_clock::now();
   const auto generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
       free_volume.input,generic_sampling,options);

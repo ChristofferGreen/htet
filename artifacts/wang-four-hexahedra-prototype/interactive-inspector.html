@@ -38,6 +38,8 @@
           <input id="free-layers" type="range" min="0" max="3" step="1" value="1"></label>
         <label id="generic-sample-control">Generic interior samples: <output id="generic-samples-value">32</output>
           <input id="generic-samples" type="range" min="1" max="64" step="1" value="32"></label>
+        <label id="generic-refinement-control">Generic refinement passes: <output id="generic-refinement-value">1</output>
+          <input id="generic-refinement" type="range" min="0" max="2" step="1" value="1"></label>
       </fieldset>
       <fieldset>
         <legend>Layers</legend>
@@ -410,10 +412,12 @@
     const volumeMethod = document.getElementById('volume-method');
     const freeLayers = document.getElementById('free-layers');
     const genericSamples = document.getElementById('generic-samples');
+    const genericRefinement = document.getElementById('generic-refinement');
     minimumLevel.value = summary.coreMinRedDepth ?? 2;
     surfaceBand.value = summary.coreSurfaceBand ?? .5;
     freeLayers.value = summary.freeRadialLayers ?? 1;
     genericSamples.value = summary.genericSamples ?? 32;
+    genericRefinement.value = summary.genericRefinementPasses ?? 1;
     // Rebuilds replace the page so retain the selected real volume method in
     // the URL; otherwise native select defaults would silently return to Wang.
     const requestedMethod = new URLSearchParams(location.search).get('method');
@@ -423,6 +427,7 @@
       document.getElementById('surface-band-value').textContent = Number(surfaceBand.value).toFixed(2);
       document.getElementById('free-layers-value').textContent = freeLayers.value;
       document.getElementById('generic-samples-value').textContent = genericSamples.value;
+      document.getElementById('generic-refinement-value').textContent = genericRefinement.value;
     };
     updateLodLabels();
     resolutionValue.textContent = resolution.value;
@@ -430,10 +435,10 @@
     async function rebuildVolume() {
       const next = Number(resolution.value);
       const mode = coreMode.value;
-      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true;
+      resolution.disabled = true; coreMode.disabled = true; minimumLevel.disabled = true; surfaceBand.disabled = true; freeLayers.disabled = true; genericSamples.disabled = true; genericRefinement.disabled = true;
       rebuildStatus.textContent = `Rebuilding both volume methods at N${next}…`;
       try {
-        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}`);
+        const response = await fetch(`/rebuild?resolution=${next}&mode=${encodeURIComponent(mode)}&minimum_level=${minimumLevel.value}&surface_band=${surfaceBand.value}&free_layers=${freeLayers.value}&generic_samples=${genericSamples.value}&generic_refinement_passes=${genericRefinement.value}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'rebuild failed');
         // A normal reload may reuse the previous generated-data script from
@@ -441,7 +446,7 @@
         window.location.replace(`${location.pathname}?revision=${Date.now()}-N${next}&method=${encodeURIComponent(volumeMethod.value)}`);
       } catch (error) {
         rebuildStatus.textContent = `Rebuild failed: ${error.message}`;
-        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false;
+        resolution.disabled = false; coreMode.disabled = false; minimumLevel.disabled = false; surfaceBand.disabled = false; freeLayers.disabled = false; genericSamples.disabled = false; genericRefinement.disabled = false;
       }
     }
     resolution.addEventListener('change', rebuildVolume);
@@ -454,6 +459,8 @@
     freeLayers.addEventListener('change', rebuildVolume);
     genericSamples.addEventListener('input', updateLodLabels);
     genericSamples.addEventListener('change', rebuildVolume);
+    genericRefinement.addEventListener('input', updateLodLabels);
+    genericRefinement.addEventListener('change', rebuildVolume);
     camera.position.set(.78, -.92, .72);
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.copy(target);
@@ -474,6 +481,7 @@
       document.getElementById('wang-controls').style.display = method === 'wang' ? 'block' : 'none';
       document.getElementById('free-layer-control').style.display = free ? 'block' : 'none';
       document.getElementById('generic-sample-control').style.display = generic ? 'block' : 'none';
+      document.getElementById('generic-refinement-control').style.display = generic ? 'block' : 'none';
       layerGroups.transition.visible = method === 'wang' && document.getElementById('transition').checked;
       layerGroups.core.visible = method === 'wang' && document.getElementById('core').checked;
       layerGroups.free.visible = free && document.getElementById('free').checked;
