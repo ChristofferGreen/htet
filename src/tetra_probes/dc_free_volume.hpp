@@ -61,11 +61,20 @@ enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
   constrained_tetrahedralization_failed,
 };
 
+struct DcVolumeQualityDiagnostics {
+  std::size_t tetrahedra{};
+  double minimum_edge_length{};
+  double maximum_edge_length{};
+  double minimum_volume{};
+  double maximum_volume{};
+};
+
 struct DcSurfaceConformingVolumeResult {
   DcSurfaceConformingVolumeFailure failure{DcSurfaceConformingVolumeFailure::invalid_input};
   DcFreeVolumeInput input;
   std::vector<Vec3> interior_samples;
   WangConstrainedTetrahedralizationResult volume;
+  DcVolumeQualityDiagnostics quality;
   [[nodiscard]] bool accepted() const noexcept {
     return failure==DcSurfaceConformingVolumeFailure::none&&volume.accepted()&&
         volume.boundary_audit.accepted();

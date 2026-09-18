@@ -144,6 +144,26 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   result.volume=tetrahedralize_wang_constrained_plc(seeded,options);
   result.failure=result.volume.accepted()?DcSurfaceConformingVolumeFailure::none:
       DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
+  if(!result.volume.accepted())return result;
+  std::map<std::uint64_t,Vec3> positions;
+  for(const auto& vertex:result.volume.vertices)positions.emplace(vertex.id,vertex.position);
+  result.quality.tetrahedra=result.volume.tetrahedra.size();
+  result.quality.minimum_edge_length=std::numeric_limits<double>::infinity();
+  result.quality.minimum_volume=std::numeric_limits<double>::infinity();
+  constexpr std::array<std::array<unsigned int,2>,6> edges{{
+      {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
+  for(const auto& tet:result.volume.tetrahedra) {
+    const auto a=positions.at(tet[0]),b=positions.at(tet[1]),
+               c=positions.at(tet[2]),d=positions.at(tet[3]);
+    const auto volume=std::abs(dot(b-a,cross(c-a,d-a)))/6.;
+    result.quality.minimum_volume=std::min(result.quality.minimum_volume,volume);
+    result.quality.maximum_volume=std::max(result.quality.maximum_volume,volume);
+    for(const auto edge:edges) {
+      const auto edge_length=length(positions.at(tet[edge[0]])-positions.at(tet[edge[1]]));
+      result.quality.minimum_edge_length=std::min(result.quality.minimum_edge_length,edge_length);
+      result.quality.maximum_edge_length=std::max(result.quality.maximum_edge_length,edge_length);
+    }
+  }
   return result;
 }
 

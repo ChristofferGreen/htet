@@ -195,6 +195,11 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
   CHECK(result.interior_samples.size()==sampling.maximum_points);
   CHECK(result.volume.boundary_audit.accepted());
   CHECK_FALSE(result.volume.tetrahedra.empty());
+  CHECK(result.quality.tetrahedra==result.volume.tetrahedra.size());
+  CHECK(result.quality.minimum_edge_length>0.);
+  CHECK(result.quality.maximum_edge_length>=result.quality.minimum_edge_length);
+  CHECK(result.quality.minimum_volume>0.);
+  CHECK(result.quality.maximum_volume>=result.quality.minimum_volume);
 }
 
 TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
