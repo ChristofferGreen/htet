@@ -104,9 +104,9 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
   const auto nz=static_cast<std::size_t>(std::floor(extent.z/options.surface_spacing));
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:input.vertices)positions.emplace(vertex.id,vertex.position);
-  for(std::size_t ix=0U;ix<=nx&&result.size()<options.maximum_points;++ix)
-    for(std::size_t iy=0U;iy<=ny&&result.size()<options.maximum_points;++iy)
-      for(std::size_t iz=0U;iz<=nz&&result.size()<options.maximum_points;++iz) {
+  for(std::size_t ix=0U;ix<=nx;++ix)
+    for(std::size_t iy=0U;iy<=ny;++iy)
+      for(std::size_t iz=0U;iz<=nz;++iz) {
         const Vec3 point{low.x+(static_cast<double>(ix)+.5)*options.surface_spacing,
                          low.y+(static_cast<double>(iy)+.5)*options.surface_spacing,
                          low.z+(static_cast<double>(iz)+.5)*options.surface_spacing};
@@ -122,7 +122,26 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
         if(ix%stride||iy%stride||iz%stride)continue;
         result.push_back(point);
       }
-  return result;
+  if(result.size()<=options.maximum_points)return result;
+  // A traversal-order truncation would put all retained sites in one corner.
+  // Choose a deterministic spatially spread subset instead; this remains a
+  // sizing proposal, not a claim of globally optimal Poisson sampling.
+  const auto centre=(low+high)/2.;
+  std::vector<Vec3> selected;selected.reserve(options.maximum_points);
+  std::vector<bool> taken(result.size());
+  for(std::size_t count=0U;count<options.maximum_points;++count) {
+    std::size_t best{};double best_distance{-1.};
+    for(std::size_t candidate=0U;candidate<result.size();++candidate) {
+      if(taken[candidate])continue;
+      double nearest=selected.empty()?length(result[candidate]-centre):
+          std::numeric_limits<double>::infinity();
+      for(const auto prior:selected)
+        nearest=std::min(nearest,length(result[candidate]-prior));
+      if(nearest>best_distance) {best_distance=nearest;best=candidate;}
+    }
+    taken[best]=true;selected.push_back(result[best]);
+  }
+  return selected;
 }
 
 DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(

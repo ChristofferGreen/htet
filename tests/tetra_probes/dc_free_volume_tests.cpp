@@ -171,35 +171,38 @@ TEST_CASE("owned constrained backend accepts a no-core frozen DC PLC") {
 
 TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
   using namespace tetra::probes;
-  AdvancingFrontFixtureConfig config;
-  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
-  config.grid_resolution=5U;
-  config.sphere_radius=0.23;
-  config.noise_amplitude=0.02;
-  config.noise_frequency=4.0;
-  const auto input=make_dc_free_volume_input(build_advancing_front_fixture(config));
-  DcSurfaceDistanceSamplingOptions sampling;
-  sampling.surface_spacing=0.06;
-  sampling.maximum_spacing=0.14;
-  sampling.growth=1.0;
-  sampling.maximum_points=5U;
-  WangConstrainedTetrahedralizationOptions options;
-  options.recovery.maximum_vertices=4096U;
-  options.recovery.maximum_facets=8192U;
-  options.recovery.maximum_tetrahedra=65536U;
-  const auto result=construct_dc_surface_conforming_volume(input,sampling,options);
-  INFO("failure="<<static_cast<unsigned>(result.failure)
-       <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
-       <<" samples="<<result.interior_samples.size());
-  REQUIRE(result.accepted());
-  CHECK(result.interior_samples.size()==sampling.maximum_points);
-  CHECK(result.volume.boundary_audit.accepted());
-  CHECK_FALSE(result.volume.tetrahedra.empty());
-  CHECK(result.quality.tetrahedra==result.volume.tetrahedra.size());
-  CHECK(result.quality.minimum_edge_length>0.);
-  CHECK(result.quality.maximum_edge_length>=result.quality.minimum_edge_length);
-  CHECK(result.quality.minimum_volume>0.);
-  CHECK(result.quality.maximum_volume>=result.quality.minimum_volume);
+  for(const auto resolution:{5U,8U,12U}) {
+    CAPTURE(resolution);
+    AdvancingFrontFixtureConfig config;
+    config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+    config.grid_resolution=resolution;
+    config.sphere_radius=0.23;
+    config.noise_amplitude=0.02;
+    config.noise_frequency=4.0;
+    const auto input=make_dc_free_volume_input(build_advancing_front_fixture(config));
+    DcSurfaceDistanceSamplingOptions sampling;
+    sampling.surface_spacing=0.06;
+    sampling.maximum_spacing=0.14;
+    sampling.growth=1.0;
+    sampling.maximum_points=5U;
+    WangConstrainedTetrahedralizationOptions options;
+    options.recovery.maximum_vertices=4096U;
+    options.recovery.maximum_facets=8192U;
+    options.recovery.maximum_tetrahedra=65536U;
+    const auto result=construct_dc_surface_conforming_volume(input,sampling,options);
+    INFO("failure="<<static_cast<unsigned>(result.failure)
+         <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
+         <<" samples="<<result.interior_samples.size());
+    REQUIRE(result.accepted());
+    CHECK(result.interior_samples.size()==sampling.maximum_points);
+    CHECK(result.volume.boundary_audit.accepted());
+    CHECK_FALSE(result.volume.tetrahedra.empty());
+    CHECK(result.quality.tetrahedra==result.volume.tetrahedra.size());
+    CHECK(result.quality.minimum_edge_length>0.);
+    CHECK(result.quality.maximum_edge_length>=result.quality.minimum_edge_length);
+    CHECK(result.quality.minimum_volume>0.);
+    CHECK(result.quality.maximum_volume>=result.quality.minimum_volume);
+  }
 }
 
 TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
