@@ -538,3 +538,15 @@ TEST_CASE("generic path fills disconnected closed DC solids in one parity domain
   }
   CHECK(left);CHECK(right);
 }
+
+TEST_CASE("generic path rejects an open or inconsistently wound DC triangle soup") {
+  using namespace tetra::probes;
+  auto open=l_prism_input();
+  open.faces.pop_back();
+  CHECK(construct_dc_surface_conforming_volume(open).failure==
+        DcSurfaceConformingVolumeFailure::invalid_input);
+  auto inconsistent=l_prism_input();
+  std::swap(inconsistent.faces.front()[1],inconsistent.faces.front()[2]);
+  CHECK(construct_dc_surface_conforming_volume(inconsistent).failure==
+        DcSurfaceConformingVolumeFailure::invalid_input);
+}

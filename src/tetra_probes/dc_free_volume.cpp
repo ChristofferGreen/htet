@@ -51,6 +51,43 @@ double local_target(const DcSurfaceDistanceSamplingOptions& options,double dista
                     options.surface_spacing,options.maximum_spacing);
 }
 
+// The direct generic adapter must not hand an open or inconsistently wound
+// triangle soup to constrained recovery and hope that a later failure is
+// meaningful.  This is intentionally topology-only: embeddedness remains a
+// separate PLC requirement rather than an epsilon-based guess here.
+bool closed_consistently_oriented_surface(const DcFreeVolumeInput& input) {
+  if(input.vertices.empty()||input.faces.empty())return false;
+  std::map<std::uint64_t,Vec3> positions;
+  for(const auto& vertex:input.vertices) {
+    if(!std::isfinite(vertex.position.x)||!std::isfinite(vertex.position.y)||
+       !std::isfinite(vertex.position.z)||!positions.emplace(vertex.id,vertex.position).second)
+      return false;
+  }
+  std::map<std::array<std::uint64_t,2>,std::vector<bool>> edge_directions;
+  std::set<std::array<std::uint64_t,3>> unique_faces;
+  for(const auto& face:input.faces) {
+    if(face[0]==face[1]||face[1]==face[2]||face[0]==face[2]||
+       !positions.contains(face[0])||!positions.contains(face[1])||!positions.contains(face[2]))
+      return false;
+    if(!(length(cross(positions.at(face[1])-positions.at(face[0]),
+                      positions.at(face[2])-positions.at(face[0])))>0.))return false;
+    auto face_key=face;std::sort(face_key.begin(),face_key.end());
+    if(!unique_faces.insert(face_key).second)return false;
+    for(unsigned corner=0U;corner<3U;++corner) {
+      const auto from=face[corner],to=face[(corner+1U)%3U];
+      std::array<std::uint64_t,2> edge{{from,to}};
+      const bool ascending=from<to;
+      if(!ascending)std::swap(edge[0],edge[1]);
+      edge_directions[edge].push_back(ascending);
+    }
+  }
+  for(const auto& [edge,directions]:edge_directions) {
+    (void)edge;
+    if(directions.size()!=2U||directions[0]==directions[1])return false;
+  }
+  return true;
+}
+
 bool inside_closed_surface(const std::vector<FrozenFacetVertex>& vertices,
                            const std::vector<std::array<std::uint64_t,3>>& faces,
                            Vec3 point) {
@@ -299,6 +336,7 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling,
     const WangConstrainedTetrahedralizationOptions& options) {
   DcSurfaceConformingVolumeResult result;result.input=input;
+  if(!closed_consistently_oriented_surface(input))return result;
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
   result.interior_samples=sample_dc_volume_by_surface_distance(input,sampling);

@@ -93,8 +93,10 @@ to use opposing global winding signs. Thus disconnected solids are kept and
 the nested box is correctly excluded as air; both tests verify that the
 published boundary is exactly the full input facet set. This qualifies closed,
 embedded DC-shell sets with ordinary parity material semantics.
-Intersecting/touching shells and non-manifold input are still rejected by PLC
-materialization rather than guessed at.
+The direct entry point rejects non-finite, degenerate, duplicate, open,
+non-manifold, or inconsistently wound triangle soups before recovery.
+Intersecting/touching embeddedness remains a separate PLC precondition: it is
+not guessed using a floating-point tolerance or presented as qualified input.
 
 ## 2. Corrections to the initial proposal
 
