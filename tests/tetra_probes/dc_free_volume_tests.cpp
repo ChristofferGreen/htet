@@ -23,6 +23,26 @@ double outward_face_side(const std::map<std::uint64_t,tetra::Vec3>& positions,
   return normal.x*(d.x-a.x)+normal.y*(d.y-a.y)+normal.z*(d.z-a.z);
 }
 
+tetra::probes::DcFreeVolumeInput l_prism_input() {
+  using tetra::Vec3;
+  using tetra::probes::DcFreeVolumeInput;
+  // A closed concave L prism: no single central cone is assumed by the
+  // generic constrained path.
+  const std::array<Vec3,12> points{{
+      {0,0,0},{2,0,0},{2,1,0},{1,1,0},{1,2,0},{0,2,0},
+      {0,0,1},{2,0,1},{2,1,1},{1,1,1},{1,2,1},{0,2,1}}};
+  DcFreeVolumeInput result;
+  for(std::size_t index=0U;index<points.size();++index)
+    result.vertices.push_back({index+1U,points[index]});
+  // Bottom is downward, top upward, and every side follows the outer loop.
+  result.faces={{{1,4,2}},{{2,4,3}},{{1,6,4}},{{4,6,5}},
+                {{7,8,10}},{{8,9,10}},{{7,10,12}},{{10,11,12}},
+                {{1,2,8}},{{1,8,7}},{{2,3,9}},{{2,9,8}},
+                {{3,4,10}},{{3,10,9}},{{4,5,11}},{{4,11,10}},
+                {{5,6,12}},{{5,12,11}},{{6,1,7}},{{6,7,12}}};
+  return result;
+}
+
 } // namespace
 
 TEST_CASE("closed DC sphere has a literal free-volume fill through N12") {
@@ -173,6 +193,27 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
        <<" samples="<<result.interior_samples.size());
   REQUIRE(result.accepted());
   CHECK(result.interior_samples.size()==sampling.maximum_points);
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK_FALSE(result.volume.tetrahedra.empty());
+}
+
+TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.55;
+  sampling.maximum_spacing=1.1;
+  sampling.growth=1.;
+  sampling.maximum_points=4U;
+  WangConstrainedTetrahedralizationOptions options;
+  options.recovery.maximum_vertices=4096U;
+  options.recovery.maximum_facets=8192U;
+  options.recovery.maximum_tetrahedra=65536U;
+  const auto result=construct_dc_surface_conforming_volume(l_prism_input(),sampling,options);
+  INFO("failure="<<static_cast<unsigned>(result.failure)
+       <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
+       <<" region="<<static_cast<unsigned>(result.volume.region_failure)
+       <<" unsupported="<<static_cast<unsigned>(result.volume.unsupported_branch));
+  REQUIRE(result.accepted());
   CHECK(result.volume.boundary_audit.accepted());
   CHECK_FALSE(result.volume.tetrahedra.empty());
 }

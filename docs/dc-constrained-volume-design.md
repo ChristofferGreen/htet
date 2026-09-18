@@ -49,9 +49,10 @@ inserts them as retained original vertices, and passes only the frozen outer
 facets to the owned constrained recovery backend. Its N5 noisy-sphere test
 retains five distributed interior sites, recovers the literal DC facets, and
 extracts a no-core enclosed solid. This qualifies the backend interface and
-the no-core classification route; it does **not** yet qualify arbitrary
-nonconvex, thin-feature, or multi-component surfaces, nor does it establish a
-quality/refinement result.
+the no-core classification route. A separately triangulated concave L-shaped
+prism also passes, establishing that this route is not dependent on a sphere
+or a common kernel. It does **not** yet qualify thin-feature or multi-component
+surfaces, nor does it establish a quality/refinement result.
 
 ## 2. Corrections to the initial proposal
 
