@@ -59,10 +59,11 @@ fixture, one 64-site pass reduced the worst vertex valence from 166 to 102,
 but the visible mesh is still irregular. This is diagnostic evidence and a
 controlled refinement mechanism, **not** a quality guarantee.
 
-The N5/N8/N12 noisy spheres, a concave L-shaped prism, and a thin (0.1-depth)
-concave L prism pass literal-facet recovery and no-core extraction. This
-qualifies one connected closed component, including nonconvex and thin test
-shapes. Nested components (air cavities) and disconnected components are
+The N5/N8/N12 noisy spheres, a concave L-shaped prism, a thin (0.1-depth)
+concave L prism, and a coarse closed torus pass literal-facet recovery and
+no-core extraction. This qualifies one connected closed component, including
+nonconvex, thin, and genus-one test shapes. Nested components (air cavities)
+and disconnected components are
 explicitly rejected before recovery: the current backend does not yet recover
 all components as one PLC. It must not publish a false filled cavity.
 

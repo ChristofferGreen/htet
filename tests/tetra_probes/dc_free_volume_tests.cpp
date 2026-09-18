@@ -5,7 +5,9 @@
 #include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
+#include <numbers>
 
 namespace {
 
@@ -65,6 +67,30 @@ tetra::probes::DcFreeVolumeInput box_with_cavity_input() {
   append_box(result,{-1.,-1.,-1.},{1.,1.,1.},false);
   // Inverted inner component makes the central void outside the solid.
   append_box(result,{-.35,-.35,-.35},{.35,.35,.35},true);
+  return result;
+}
+
+tetra::probes::DcFreeVolumeInput torus_input() {
+  using tetra::Vec3;
+  using tetra::probes::DcFreeVolumeInput;
+  constexpr std::size_t around=8U,across=4U;
+  constexpr double major=1.,minor=.3;
+  DcFreeVolumeInput result;
+  for(std::size_t u=0U;u<around;++u)for(std::size_t v=0U;v<across;++v) {
+    const auto angle_u=2.*std::numbers::pi*static_cast<double>(u)/static_cast<double>(around);
+    const auto angle_v=2.*std::numbers::pi*static_cast<double>(v)/static_cast<double>(across);
+    result.vertices.push_back({static_cast<std::uint64_t>(result.vertices.size())+1U,
+        {(major+minor*std::cos(angle_v))*std::cos(angle_u),
+         (major+minor*std::cos(angle_v))*std::sin(angle_u),minor*std::sin(angle_v)}});
+  }
+  const auto id=[](std::size_t u,std::size_t v) {
+    return static_cast<std::uint64_t>((u%around)*across+(v%across)+1U);
+  };
+  for(std::size_t u=0U;u<around;++u)for(std::size_t v=0U;v<across;++v) {
+    const auto a=id(u,v),b=id(u+1U,v),c=id(u+1U,v+1U),d=id(u,v+1U);
+    result.faces.push_back({{a,b,c}});
+    result.faces.push_back({{a,c,d}});
+  }
   return result;
 }
 
@@ -267,6 +293,25 @@ TEST_CASE("generic no-core path accepts a thin concave closed PLC") {
   options.recovery.maximum_facets=8192U;
   options.recovery.maximum_tetrahedra=65536U;
   const auto result=construct_dc_surface_conforming_volume(input,sampling,options);
+  INFO("failure="<<static_cast<unsigned>(result.failure)
+       <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
+       <<" region="<<static_cast<unsigned>(result.volume.region_failure));
+  REQUIRE(result.accepted());
+  CHECK(result.volume.boundary_audit.accepted());
+  CHECK_FALSE(result.volume.tetrahedra.empty());
+}
+
+TEST_CASE("generic no-core path accepts a closed torus PLC") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.18;
+  sampling.maximum_spacing=.35;
+  sampling.maximum_points=16U;
+  WangConstrainedTetrahedralizationOptions options;
+  options.recovery.maximum_vertices=4096U;
+  options.recovery.maximum_facets=8192U;
+  options.recovery.maximum_tetrahedra=65536U;
+  const auto result=construct_dc_surface_conforming_volume(torus_input(),sampling,options);
   INFO("failure="<<static_cast<unsigned>(result.failure)
        <<" recovery="<<static_cast<unsigned>(result.volume.recovery.failure)
        <<" region="<<static_cast<unsigned>(result.volume.region_failure));
