@@ -152,6 +152,14 @@ int main(int argc,char** argv) {
   config.noise_frequency=4.0;
   config.core_clearance=core_sizing.clearance;
 
+  const std::string build_method=argc>=11?argv[10]:"all";
+  if(build_method!="all"&&build_method!="wang"&&build_method!="free"&&build_method!="generic") {
+    std::cerr<<"build method must be all, wang, free, or generic\n"; return 2;
+  }
+  const bool build_wang=build_method=="all"||build_method=="wang";
+  const bool build_free=build_method=="all"||build_method=="free";
+  const bool build_generic=build_method=="all"||build_method=="generic";
+
   tetra::probes::WangConstrainedTetrahedralizationOptions options;
   options.recovery.maximum_vertices=16384U;
   options.recovery.maximum_facets=32768U;
@@ -160,10 +168,22 @@ int main(int argc,char** argv) {
   options.recovery.maximum_fhc_steiner_attempts_per_segment=32U;
   options.recovery.maximum_edge_splits=128U;
   options.recovery.maximum_facet_splits=128U;
-  const auto prototype=tetra::probes::construct_four_hexahedra_wang_prototype(
-      config,options);
-  const auto& fixture=prototype.fixture;
-  if(!fixture.audit.accepted||!prototype.accepted()) {
+  std::optional<tetra::probes::FourHexahedraWangPrototypeResult> wang_prototype;
+  tetra::probes::AdvancingFrontFixture standalone_fixture;
+  double standalone_fixture_milliseconds{};
+  if(build_wang) {
+    wang_prototype.emplace(tetra::probes::construct_four_hexahedra_wang_prototype(
+        config,options));
+  } else {
+    const auto fixture_started=std::chrono::steady_clock::now();
+    standalone_fixture=tetra::probes::build_advancing_front_fixture(config);
+    standalone_fixture_milliseconds=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-fixture_started).count();
+  }
+  const tetra::probes::FourHexahedraWangPrototypeResult empty_prototype;
+  const auto& prototype=wang_prototype?*wang_prototype:empty_prototype;
+  const auto& fixture=wang_prototype?wang_prototype->fixture:standalone_fixture;
+  if(!fixture.audit.accepted||(build_wang&&!prototype.accepted())) {
     std::cerr<<"prototype rejected: fixture="<<fixture.audit.accepted
              <<" dc_boundary_edges="<<fixture.audit.dc_boundary_edges
              <<" dc_nonmanifold_edges="<<fixture.audit.dc_nonmanifold_edges
@@ -185,12 +205,6 @@ int main(int argc,char** argv) {
   if(argc>=7) try {
     free_options.common_kernel_radial_layers=static_cast<unsigned>(std::stoul(argv[6]));
   } catch(...) { std::cerr<<"free radial layers must be an integer\n"; return 2; }
-  const std::string build_method=argc>=11?argv[10]:"all";
-  if(build_method!="all"&&build_method!="wang"&&build_method!="free"&&build_method!="generic") {
-    std::cerr<<"build method must be all, wang, free, or generic\n"; return 2;
-  }
-  const bool build_free=build_method=="all"||build_method=="free";
-  const bool build_generic=build_method=="all"||build_method=="generic";
   // The generic path consumes the frozen DC PLC directly; it must not build
   // the star-shaped reference merely to obtain an equivalent input.
   const auto dc_input=tetra::probes::make_dc_free_volume_input(fixture);
@@ -249,6 +263,10 @@ int main(int argc,char** argv) {
       dc_input,*generic_workspace,generic_sampling,options);
   const auto generic_milliseconds=build_generic?std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-generic_started).count():0.;
+  const auto fixture_milliseconds=build_wang?
+      prototype.fixture_milliseconds:standalone_fixture_milliseconds;
+  const auto selected_total_milliseconds=(build_wang?prototype.total_milliseconds:
+      fixture_milliseconds)+free_milliseconds+generic_milliseconds;
   if(build_generic&&!generic_volume.accepted()) {
     std::cerr<<"generic DC volume fill rejected: failure="
              <<static_cast<unsigned>(generic_volume.failure)
@@ -380,6 +398,8 @@ int main(int argc,char** argv) {
     data<<"},genericVolume:{points:";write_javascript_points(data,generic_points);
     data<<",tetrahedra:";write_javascript_cells(data,generic_tetrahedra);
     data<<"},summary:{gridResolution:"<<grid_resolution
+        <<",buildMethod:'"<<build_method<<"'"
+        <<",wangBuilt:"<<(build_wang?"true":"false")
         <<",coreMode:'"<<core_mode<<"'"
         <<",coreRedDepth:"<<config.core_red_depth
         <<",coreMinRedDepth:"<<config.core_min_red_depth
@@ -445,7 +465,7 @@ int main(int argc,char** argv) {
         <<",coreGreenTransitionCells:"<<fixture.audit.core_green_transition_cells
         <<",minimumRetainedCoreRedDepth:"<<fixture.audit.minimum_retained_core_red_depth
         <<",maximumRetainedCoreRedDepth:"<<fixture.audit.maximum_retained_core_red_depth
-        <<",fixtureMilliseconds:"<<prototype.fixture_milliseconds
+        <<",fixtureMilliseconds:"<<fixture_milliseconds
         <<",requestMilliseconds:"<<prototype.request_milliseconds
         <<",wangMilliseconds:"<<prototype.wang_transaction_milliseconds
         <<",wangRecoveryMilliseconds:"<<prototype.volume.wang_recovery_milliseconds
@@ -457,7 +477,7 @@ int main(int argc,char** argv) {
         <<",regionClassificationMilliseconds:"<<prototype.volume.viability.region_classification_milliseconds
         <<",outputValidationMilliseconds:"<<prototype.volume.viability.output_validation_milliseconds
         <<",qualityMilliseconds:"<<prototype.volume.quality_measurement_milliseconds
-        <<",totalMilliseconds:"<<prototype.total_milliseconds
+        <<",totalMilliseconds:"<<selected_total_milliseconds
         <<"}};\n";
     if(!data)return 12;
   }
@@ -466,6 +486,8 @@ int main(int argc,char** argv) {
   if(!summary)return 13;
   summary<<"{\n"
          <<"  \"field\": \"contained-noisy-sphere\",\n"
+         <<"  \"build_method\": \""<<build_method<<"\",\n"
+         <<"  \"wang_built\": "<<(build_wang?"true":"false")<<",\n"
          <<"  \"grid_resolution\": "<<grid_resolution<<",\n"
          <<"  \"core_mode\": \""<<core_mode<<"\",\n"
          <<"  \"core_red_depth\": "<<config.core_red_depth<<",\n"
@@ -510,7 +532,7 @@ int main(int argc,char** argv) {
          <<"  \"core_green_transition_cells\": "<<fixture.audit.core_green_transition_cells<<",\n"
          <<"  \"minimum_retained_core_red_depth\": "<<fixture.audit.minimum_retained_core_red_depth<<",\n"
          <<"  \"maximum_retained_core_red_depth\": "<<fixture.audit.maximum_retained_core_red_depth<<",\n"
-         <<"  \"fixture_milliseconds\": "<<prototype.fixture_milliseconds<<",\n"
+         <<"  \"fixture_milliseconds\": "<<fixture_milliseconds<<",\n"
          <<"  \"request_milliseconds\": "<<prototype.request_milliseconds<<",\n"
          <<"  \"wang_transaction_milliseconds\": "<<prototype.wang_transaction_milliseconds<<",\n"
          <<"  \"wang_recovery_milliseconds\": "<<prototype.volume.wang_recovery_milliseconds<<",\n"
@@ -522,7 +544,7 @@ int main(int argc,char** argv) {
          <<"  \"region_classification_milliseconds\": "<<prototype.volume.viability.region_classification_milliseconds<<",\n"
          <<"  \"output_validation_milliseconds\": "<<prototype.volume.viability.output_validation_milliseconds<<",\n"
          <<"  \"quality_measurement_milliseconds\": "<<prototype.volume.quality_measurement_milliseconds<<",\n"
-         <<"  \"total_milliseconds\": "<<prototype.total_milliseconds<<",\n"
+         <<"  \"total_milliseconds\": "<<selected_total_milliseconds<<",\n"
          <<"  \"core_volume\": "<<published_core_volume<<",\n"
          <<"  \"transition_volume\": "<<transition_volume<<",\n"
          <<"  \"published_tetrahedra\": "<<prototype.volume.output.tetrahedra.size()<<",\n"
