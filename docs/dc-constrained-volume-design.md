@@ -198,21 +198,29 @@ viewer/export optimization, not a meshing-algorithm improvement.
 
 ### Allocation-stability contract (in progress)
 
-The generic path is not allocation-stable yet. A test-local whole-program
-allocation probe measures only the interval beginning at
-`construct_dc_surface_conforming_volume` and ending when it returns; fixture
-and input construction are deliberately outside the interval. Its initial
-concave-L-prism baseline is **37,528 allocations / 3.86 MiB requested**. This
-includes all linked recovery, refinement, smoothing, validation, and result
-construction work.
+The original generic path made **37,528 allocations / 3.86 MiB requested** on
+the concave-L-prism baseline, measured only from entry to
+`construct_dc_surface_conforming_volume` through return (fixture and input
+setup excluded). The workspace overload now routes every ordinary C++
+allocation made in that interval through a caller-provided fixed backing block.
+Its tests cover both a successful 8 MiB build and a 1 KiB capacity refusal;
+there is no heap fallback on exhaustion.
 
-The target contract is zero heap allocations in that measured interval. It
-requires a persistent `DcVolumeBuildWorkspace` with bounded, preallocated
-partitions for result publication, sample candidates, surface queries,
-recovery, refinement, smoothing, and auditing. A capacity breach must return a
-specific refusal and must never fall back to the heap. Converting only the
-outer generic function to PMR is insufficient because the constrained seed and
-recovery implementation currently owns allocating ordered containers.
+`DcVolumeBuildWorkspace` is a fixed-bin, bounded allocator. While its scoped
+generic-build overload is active, all ordinary C++ allocation routes used by
+sampling, recovery, refinement, smoothing, validation, and result publication
+are carved from that initial block and returned to fixed bins for reuse. A
+capacity breach returns `workspace_capacity_exhausted`; it never falls back to
+the heap. The workspace must outlive the published result, and `reset()` is
+permitted only after that result is destroyed.
+
+At the N12 prototype setting (39 samples, one refinement, one smoothing pass),
+the 32 MiB workspace reported a 15 MiB peak and routed 865,502 allocations
+without changing the approximately 0.35 s generic construction time. The
+implementation also has a source audit over the generic/recovery stack for
+direct C allocation calls; none exist. This contract intentionally applies to
+the workspace overload. The legacy overload remains available for diagnostic
+and compatibility callers and is not allocation-stable.
 
 ## 5. Interior resolution and LOD
 

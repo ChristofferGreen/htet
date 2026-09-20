@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tetra_probes/advancing_front_fixture.hpp"
+#include "tetra_probes/dc_volume_workspace.hpp"
 #include "tetra_probes/sandwich_probe.hpp"
 #include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 
@@ -70,6 +71,7 @@ enum class DcSurfaceConformingVolumeFailure : std::uint8_t {
   invalid_input,
   multiple_surface_components_unsupported,
   sampling_failed,
+  workspace_capacity_exhausted,
   constraint_materialization_failed,
   constrained_tetrahedralization_failed,
 };
@@ -124,6 +126,13 @@ struct DcSurfaceConformingVolumeResult {
 
 [[nodiscard]] DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling={},
+    const WangConstrainedTetrahedralizationOptions& options={});
+
+// The result borrows its backing allocations from workspace. Destroy the
+// result before workspace.reset() or destroying the workspace.
+[[nodiscard]] DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
+    const DcFreeVolumeInput& input,DcVolumeBuildWorkspace& workspace,
+    const DcSurfaceDistanceSamplingOptions& sampling={},
     const WangConstrainedTetrahedralizationOptions& options={});
 
 } // namespace tetra::probes

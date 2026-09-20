@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <numeric>
 #include <set>
 
@@ -381,10 +382,21 @@ std::vector<Vec3> sample_dc_volume_by_surface_distance(
   return selected;
 }
 
-DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
+static DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume_impl(
+    DcVolumeBuildWorkspace* workspace,
     const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling,
     const WangConstrainedTetrahedralizationOptions& options) {
-  DcSurfaceConformingVolumeResult result;result.input=input;
+  DcSurfaceConformingVolumeResult result;
+  try {
+  std::optional<DcVolumeBuildWorkspaceScope> workspace_scope;
+  if(workspace) {
+    workspace_scope.emplace(*workspace);
+    if(!workspace_scope->active()) {
+      result.failure=DcSurfaceConformingVolumeFailure::workspace_capacity_exhausted;
+      return result;
+    }
+  }
+  result.input=input;
   if(!closed_consistently_oriented_surface(input))return result;
   const auto plc=materialize_canonical_plc_constraints(input.vertices,input.faces);
   if(!plc.accepted()) { result.failure=DcSurfaceConformingVolumeFailure::constraint_materialization_failed;return result; }
@@ -586,6 +598,23 @@ DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
   result.quality=final_quality;
   result.failure=DcSurfaceConformingVolumeFailure::none;
   return result;
+  } catch(const std::bad_alloc&) {
+    if(workspace)result.failure=DcSurfaceConformingVolumeFailure::workspace_capacity_exhausted;
+    return result;
+  }
+}
+
+DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
+    const DcFreeVolumeInput& input,const DcSurfaceDistanceSamplingOptions& sampling,
+    const WangConstrainedTetrahedralizationOptions& options) {
+  return construct_dc_surface_conforming_volume_impl(nullptr,input,sampling,options);
+}
+
+DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume(
+    const DcFreeVolumeInput& input,DcVolumeBuildWorkspace& workspace,
+    const DcSurfaceDistanceSamplingOptions& sampling,
+    const WangConstrainedTetrahedralizationOptions& options) {
+  return construct_dc_surface_conforming_volume_impl(&workspace,input,sampling,options);
 }
 
 } // namespace tetra::probes

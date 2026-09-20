@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -238,9 +239,14 @@ int main(int argc,char** argv) {
     generic_sampling.maximum_interior_smoothing_passes=static_cast<std::size_t>(std::stoul(argv[9]));
   } catch(...) { std::cerr<<"generic interior smoothing passes must be an integer\n"; return 2; }
   const auto generic_started=std::chrono::steady_clock::now();
+  // The generic path is deliberately bounded. This is an up-front workspace
+  // reservation, not a recovery-time heap fallback; increase only after a
+  // measured capacity refusal.
+  std::optional<tetra::probes::DcVolumeBuildWorkspace> generic_workspace;
+  if(build_generic)generic_workspace.emplace(32U*1024U*1024U);
   tetra::probes::DcSurfaceConformingVolumeResult generic_volume;
   if(build_generic)generic_volume=tetra::probes::construct_dc_surface_conforming_volume(
-      dc_input,generic_sampling,options);
+      dc_input,*generic_workspace,generic_sampling,options);
   const auto generic_milliseconds=build_generic?std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-generic_started).count():0.;
   if(build_generic&&!generic_volume.accepted()) {
@@ -398,6 +404,9 @@ int main(int argc,char** argv) {
         <<",genericVolumeVertices:"<<generic_points.size()
         <<",genericSamples:"<<generic_volume.interior_samples.size()
         <<",genericVolumeMilliseconds:"<<generic_milliseconds
+        <<",genericWorkspaceCapacityBytes:"<<(generic_workspace?generic_workspace->capacity_bytes():0U)
+        <<",genericWorkspaceUsedBytes:"<<(generic_workspace?generic_workspace->used_bytes():0U)
+        <<",genericWorkspaceAllocations:"<<(generic_workspace?generic_workspace->allocation_count():0U)
         <<",genericExactBoundary:"<<(generic_volume.volume.boundary_audit.accepted()?"true":"false")
         <<",genericMinimumEdge:"<<generic_volume.quality.minimum_edge_length
         <<",genericMaximumEdge:"<<generic_volume.quality.maximum_edge_length
@@ -487,6 +496,9 @@ int main(int argc,char** argv) {
          <<"  \"generic_dc_volume_tetrahedra\": "<<generic_tetrahedra.size()<<",\n"
          <<"  \"generic_dc_volume_samples\": "<<generic_volume.interior_samples.size()<<",\n"
          <<"  \"generic_dc_volume_milliseconds\": "<<generic_milliseconds<<",\n"
+         <<"  \"generic_workspace_capacity_bytes\": "<<(generic_workspace?generic_workspace->capacity_bytes():0U)<<",\n"
+         <<"  \"generic_workspace_used_bytes\": "<<(generic_workspace?generic_workspace->used_bytes():0U)<<",\n"
+         <<"  \"generic_workspace_allocations\": "<<(generic_workspace?generic_workspace->allocation_count():0U)<<",\n"
          <<"  \"generic_sampling_milliseconds\": "<<generic_volume.quality.sampling_milliseconds<<",\n"
          <<"  \"generic_initial_build_milliseconds\": "<<generic_volume.quality.initial_build_milliseconds<<",\n"
          <<"  \"generic_refinement_build_milliseconds\": "<<generic_volume.quality.refinement_build_milliseconds<<",\n"

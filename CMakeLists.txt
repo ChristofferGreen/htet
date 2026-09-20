@@ -75,6 +75,7 @@ add_library(tetra_probe_support
   src/tetra_probes/plc_chunk_probe.cpp
   src/tetra_probes/sandwich_probe.cpp
   src/tetra_probes/closed_plc_tetrahedralizer.cpp
+  src/tetra_probes/dc_volume_workspace.cpp
   src/tetra_probes/dc_free_volume.cpp
   src/tetra_probes/bcc_transition_request.cpp
   src/tetra_probes/refined_core_transaction.cpp
