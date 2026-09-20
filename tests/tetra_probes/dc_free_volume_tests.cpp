@@ -5,10 +5,55 @@
 #include "tetra_probes/wang_constrained_tetrahedralizer.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <cmath>
+#include <iostream>
 #include <map>
+#include <new>
 #include <numbers>
 #include <set>
+
+namespace allocation_probe {
+std::atomic<bool> enabled{false};
+std::atomic<std::size_t> allocations{0U};
+std::atomic<std::size_t> bytes{0U};
+
+void reset() {
+  allocations.store(0U,std::memory_order_relaxed);
+  bytes.store(0U,std::memory_order_relaxed);
+}
+
+struct Scope {
+  Scope() { reset();enabled.store(true,std::memory_order_release); }
+  ~Scope() { enabled.store(false,std::memory_order_release); }
+};
+
+void record(std::size_t size) {
+  if(enabled.load(std::memory_order_acquire)) {
+    allocations.fetch_add(1U,std::memory_order_relaxed);
+    bytes.fetch_add(size,std::memory_order_relaxed);
+  }
+}
+} // namespace allocation_probe
+
+// This test-local interposition deliberately counts allocations from every
+// linked generic-volume component, including the recovery implementation.
+// It is enabled only around the measured call, never during doctest setup.
+void* operator new(std::size_t size) {
+  allocation_probe::record(size);
+  if(auto* result=std::malloc(size==0U?1U:size))return result;
+  throw std::bad_alloc{};
+}
+void* operator new[](std::size_t size) {
+  allocation_probe::record(size);
+  if(auto* result=std::malloc(size==0U?1U:size))return result;
+  throw std::bad_alloc{};
+}
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer,std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer,std::size_t) noexcept { std::free(pointer); }
 
 namespace {
 
@@ -549,4 +594,31 @@ TEST_CASE("generic path rejects an open or inconsistently wound DC triangle soup
   std::swap(inconsistent.faces.front()[1],inconsistent.faces.front()[2]);
   CHECK(construct_dc_surface_conforming_volume(inconsistent).failure==
         DcSurfaceConformingVolumeFailure::invalid_input);
+}
+
+TEST_CASE("generic volume allocation probe excludes setup and observes build heap work") {
+  using namespace tetra::probes;
+  DcSurfaceDistanceSamplingOptions sampling;
+  sampling.surface_spacing=.4;
+  sampling.maximum_spacing=.8;
+  sampling.maximum_points=8U;
+  sampling.maximum_refinement_passes=1U;
+  sampling.maximum_refinement_points_per_pass=4U;
+  const auto input=l_prism_input();
+  DcSurfaceConformingVolumeResult result;
+  {
+    allocation_probe::Scope measured_build;
+    result=construct_dc_surface_conforming_volume(input,sampling);
+  }
+  const auto allocations=allocation_probe::allocations.load(std::memory_order_relaxed);
+  const auto bytes=allocation_probe::bytes.load(std::memory_order_relaxed);
+  if(std::getenv("DC_VOLUME_ALLOCATION_PROFILE")!=nullptr)
+    std::cout<<"dc-volume allocation baseline: "<<allocations<<" allocations, "
+             <<bytes<<" requested bytes\n";
+  REQUIRE(result.accepted());
+  // This is intentionally a baseline assertion. It must become zero once the
+  // workspace contract is implemented; retaining the probe ensures that a
+  // later zero-allocation claim covers the complete generic build.
+  CHECK(allocations>0U);
+  CHECK(bytes>0U);
 }

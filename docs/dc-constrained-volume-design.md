@@ -196,6 +196,24 @@ fill; it does not spend time constructing the star-shaped reference fill.
 Selecting a comparison method requests its own build revision. This is a
 viewer/export optimization, not a meshing-algorithm improvement.
 
+### Allocation-stability contract (in progress)
+
+The generic path is not allocation-stable yet. A test-local whole-program
+allocation probe measures only the interval beginning at
+`construct_dc_surface_conforming_volume` and ending when it returns; fixture
+and input construction are deliberately outside the interval. Its initial
+concave-L-prism baseline is **37,528 allocations / 3.86 MiB requested**. This
+includes all linked recovery, refinement, smoothing, validation, and result
+construction work.
+
+The target contract is zero heap allocations in that measured interval. It
+requires a persistent `DcVolumeBuildWorkspace` with bounded, preallocated
+partitions for result publication, sample candidates, surface queries,
+recovery, refinement, smoothing, and auditing. A capacity breach must return a
+specific refusal and must never fall back to the heap. Converting only the
+outer generic function to PMR is insufficient because the constrained seed and
+recovery implementation currently owns allocating ordered containers.
+
 ## 5. Interior resolution and LOD
 
 Use distance to the closest point on the frozen surface, not camera distance.
