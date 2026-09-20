@@ -565,6 +565,7 @@ TEST_CASE("generic volume workspace serves every build allocation from its upfro
   DcVolumeBuildWorkspace workspace{8U*1024U*1024U};
   const auto result=construct_dc_surface_conforming_volume(input,workspace,sampling);
   REQUIRE(result.accepted());
+  CHECK(published_boundary_equals(input,result.volume));
   CHECK(workspace.allocation_count()>0U);
   CHECK_FALSE(workspace.exhausted());
 }
