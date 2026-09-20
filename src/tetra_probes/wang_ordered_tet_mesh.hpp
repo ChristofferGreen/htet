@@ -145,6 +145,10 @@ class WangOrderedTetMesh {
   // edge-existence checks.
   [[nodiscard]] std::optional<std::uint32_t> find_edge_cell(
       std::uint32_t first,std::uint32_t second) const;
+  // Finds the active finite cell containing a point. Generic interior
+  // refinement uses this as the local carrier for a constrained cavity.
+  [[nodiscard]] std::optional<std::uint32_t> find_containing_cell(
+      const std::vector<Vec3>& positions,Vec3 point) const;
   // Ordered point star matching DT::findSphere: start at the retained P2T
   // carrier (falling back to the first containing cell), then breadth-first
   // cross every face incident to the point in local-face order.

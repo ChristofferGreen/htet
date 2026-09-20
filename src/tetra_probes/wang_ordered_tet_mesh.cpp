@@ -1,6 +1,7 @@
 #include "tetra_probes/wang_ordered_tet_mesh.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -823,6 +824,29 @@ std::optional<std::uint32_t> WangOrderedTetMesh::find_edge_cell(
          std::find(star.begin(),star.end(),next)!=star.end())continue;
       star.push_back(next);
     }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::uint32_t> WangOrderedTetMesh::find_containing_cell(
+    const std::vector<Vec3>& positions,Vec3 point) const {
+  const auto six_volume=[](Vec3 a,Vec3 b,Vec3 c,Vec3 d) {
+    const auto ab=b-a,ac=c-a,ad=d-a;
+    return std::abs(ab.x*(ac.y*ad.z-ac.z*ad.y)-
+                    ab.y*(ac.x*ad.z-ac.z*ad.x)+
+                    ab.z*(ac.x*ad.y-ac.y*ad.x));
+  };
+  for(std::size_t index=0U;index<cells_.size();++index) {
+    const auto& cell=cells_[index];
+    if(cell.deleted||std::any_of(cell.vertices.begin(),cell.vertices.end(),
+        [&](const auto vertex){return vertex>=positions.size();}))continue;
+    const auto a=positions[cell.vertices[0]],b=positions[cell.vertices[1]],
+               c=positions[cell.vertices[2]],d=positions[cell.vertices[3]];
+    const auto whole=six_volume(a,b,c,d);
+    const auto parts=six_volume(point,b,c,d)+six_volume(a,point,c,d)+
+        six_volume(a,b,point,d)+six_volume(a,b,c,point);
+    if(whole>1e-15&&std::abs(parts-whole)<=whole*1e-10)
+      return static_cast<std::uint32_t>(index);
   }
   return std::nullopt;
 }
