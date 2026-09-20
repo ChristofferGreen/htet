@@ -199,6 +199,21 @@ about 1.33 s to 0.57 s while preserving the 2,209-cell generic mesh and literal
 DC boundary. This is a viewer/export optimization, not a meshing-algorithm
 improvement.
 
+### Refinement insertion requirement
+
+The first generic mesh is rebuilt after selecting refinement sites. A direct
+call to the existing Wang cavity insertion routine was slower because it
+reconstructs global face and vertex-star maps for every site. A one-tetrahedron
+stellar split was fast, but raised worst vertex valence from 84 to 290 and
+trends back toward a radial fan. Neither replaces the full rebuild.
+
+The next refinement implementation must retain mutable face adjacency, a
+point-to-cell carrier, and the frozen DC facet set between insertions. Each
+refinement point must retriangulate its local Delaunay cavity without crossing
+a frozen DC facet, then pass the same literal-boundary and whole-volume audits
+as a full build. It is qualified only if it improves refinement time while
+preserving approved N12 mesh quality.
+
 ### Allocation-stability contract (in progress)
 
 The original generic path made **37,528 allocations / 3.86 MiB requested** on
