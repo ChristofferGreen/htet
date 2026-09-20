@@ -38,6 +38,9 @@ struct AdvancingFrontFixtureConfig {
   double noise_amplitude{0.075};
   double noise_frequency{3.5};
   double core_clearance{0.055};
+  // DC-only consumers do not need the retained hierarchy core used by the
+  // Wang transition.
+  bool build_retained_core{true};
 };
 
 // A red split halves the regular hierarchy tetrahedron edge.  The contained

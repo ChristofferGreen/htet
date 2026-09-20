@@ -159,6 +159,7 @@ int main(int argc,char** argv) {
   const bool build_wang=build_method=="all"||build_method=="wang";
   const bool build_free=build_method=="all"||build_method=="free";
   const bool build_generic=build_method=="all"||build_method=="generic";
+  config.build_retained_core=build_wang;
 
   tetra::probes::WangConstrainedTetrahedralizationOptions options;
   options.recovery.maximum_vertices=16384U;
@@ -183,7 +184,12 @@ int main(int argc,char** argv) {
   const tetra::probes::FourHexahedraWangPrototypeResult empty_prototype;
   const auto& prototype=wang_prototype?*wang_prototype:empty_prototype;
   const auto& fixture=wang_prototype?wang_prototype->fixture:standalone_fixture;
-  if(!fixture.audit.accepted||(build_wang&&!prototype.accepted())) {
+  const bool surface_fixture_accepted=fixture.audit.finite_vertices&&
+      fixture.audit.dc_closed_two_manifold&&
+      fixture.audit.dc_consistently_oriented&&
+      fixture.audit.artificial_closure_faces==0U;
+  if(!(build_wang?fixture.audit.accepted:surface_fixture_accepted)||
+     (build_wang&&!prototype.accepted())) {
     std::cerr<<"prototype rejected: fixture="<<fixture.audit.accepted
              <<" dc_boundary_edges="<<fixture.audit.dc_boundary_edges
              <<" dc_nonmanifold_edges="<<fixture.audit.dc_nonmanifold_edges

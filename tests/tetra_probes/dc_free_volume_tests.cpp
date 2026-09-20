@@ -317,6 +317,34 @@ TEST_CASE("surface-distance samples seed a generic no-core DC volume") {
   }
 }
 
+TEST_CASE("surface-only fixture preserves the frozen DC surface") {
+  using namespace tetra::probes;
+  AdvancingFrontFixtureConfig config;
+  config.field_kind=AdvancingFrontFieldKind::contained_noisy_sphere;
+  config.grid_resolution=8U;
+  config.sphere_radius=.23;
+  config.noise_amplitude=.02;
+  config.noise_frequency=4.;
+  const auto complete=build_advancing_front_fixture(config);
+  config.build_retained_core=false;
+  const auto surface_only=build_advancing_front_fixture(config);
+  REQUIRE(complete.audit.accepted);
+  CHECK(surface_only.core_vertices.empty());
+  CHECK(surface_only.core_tetrahedra.empty());
+  CHECK(surface_only.core_boundary_triangles.empty());
+  CHECK(surface_only.core_hierarchy_nodes_visited==0U);
+  CHECK(surface_only.audit.dc_closed_two_manifold);
+  REQUIRE(surface_only.dc_vertices.size()==complete.dc_vertices.size());
+  for(std::size_t index=0U;index<surface_only.dc_vertices.size();++index) {
+    const auto actual=surface_only.dc_vertices[index];
+    const auto expected=complete.dc_vertices[index];
+    CHECK(actual.x==expected.x);
+    CHECK(actual.y==expected.y);
+    CHECK(actual.z==expected.z);
+  }
+  CHECK(surface_only.dc_triangles==complete.dc_triangles);
+}
+
 TEST_CASE("generic no-core path accepts a nonconvex closed PLC") {
   using namespace tetra::probes;
   DcSurfaceDistanceSamplingOptions sampling;

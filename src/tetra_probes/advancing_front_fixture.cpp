@@ -12,6 +12,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -422,10 +423,12 @@ AdvancingFrontFixture build_advancing_front_fixture(
      config.sphere_radius+config.noise_amplitude*perlin_absolute_bound>=
          minimum_root_face_distance(result.root_tetrahedron,centre))
     throw std::invalid_argument("contained sphere can reach the root tetrahedron boundary");
-  auto core_future=std::async(std::launch::async,[&config,
-      root=result.root_tetrahedron,centre] {
-    return build_advancing_front_core(config,root,centre);
-  });
+  std::optional<std::future<AdvancingFrontFixture>> core_future;
+  if(config.build_retained_core)
+    core_future.emplace(std::async(std::launch::async,[&config,
+        root=result.root_tetrahedron,centre] {
+      return build_advancing_front_core(config,root,centre);
+    }));
   const auto construction=make_four_hexahedra();
   for(unsigned int parent=0;parent<4U;++parent)
     for(unsigned int corner=0;corner<8U;++corner) {
@@ -653,15 +656,17 @@ AdvancingFrontFixture build_advancing_front_fixture(
     }
   }
 
-  auto core=core_future.get();
-  result.core_vertices=std::move(core.core_vertices);
-  result.core_vertex_keys=std::move(core.core_vertex_keys);
-  result.core_tetrahedra=std::move(core.core_tetrahedra);
-  result.core_tet_addresses=std::move(core.core_tet_addresses);
-  result.core_boundary_triangles=std::move(core.core_boundary_triangles);
-  result.core_hierarchy_nodes_visited=core.core_hierarchy_nodes_visited;
-  result.core_red_leaves_selected=core.core_red_leaves_selected;
-  result.core_green_transition_cells=core.core_green_transition_cells;
+  if(core_future) {
+    auto core=core_future->get();
+    result.core_vertices=std::move(core.core_vertices);
+    result.core_vertex_keys=std::move(core.core_vertex_keys);
+    result.core_tetrahedra=std::move(core.core_tetrahedra);
+    result.core_tet_addresses=std::move(core.core_tet_addresses);
+    result.core_boundary_triangles=std::move(core.core_boundary_triangles);
+    result.core_hierarchy_nodes_visited=core.core_hierarchy_nodes_visited;
+    result.core_red_leaves_selected=core.core_red_leaves_selected;
+    result.core_green_transition_cells=core.core_green_transition_cells;
+  }
   result.audit=audit_advancing_front_fixture(result);return result;
 }
 
@@ -703,6 +708,14 @@ AdvancingFrontCavityAudit audit_advancing_front_fixture(
   }
   audit.outer_closed_two_manifold=audit.outer_boundary_edges==0U&&
       audit.outer_nonmanifold_edges==0U;
+  // Surface-only fixtures deliberately omit a core. Their DC checks are the
+  // applicable contract for direct DC-volume consumers; do not invoke the
+  // surface/core contract with an intentionally empty core.
+  if(!fixture.config.build_retained_core) {
+    audit.extraordinary_dc_polygons=fixture.dc_extraordinary_triangles.size();
+    audit.artificial_closure_faces=fixture.finite_boundary_triangles.size();
+    return audit;
+  }
   std::map<Edge,std::vector<int>> core_edges;
   for(const auto triangle:fixture.core_boundary_triangles)
     for(std::size_t i=0;i<3U;++i) {
