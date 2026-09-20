@@ -321,6 +321,133 @@ WangOrderedTetMesh::replace_cavity_with_appended_vertex(
   return result;
 }
 
+WangOrderedTetMesh::CavityReplacementResult
+WangOrderedTetMesh::replace_local_cavity_with_appended_vertex(
+    const std::vector<std::uint32_t>& cavity_slots,
+    const std::vector<Tet>& replacement) {
+  CavityReplacementResult result;
+  const auto reject=[&](const char* reason) {
+    if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+      std::cerr<<"dc_local_commit "<<reason<<'\n';
+    return CavityReplacementResult{};
+  };
+  if(cavity_slots.empty()||replacement.empty()||!stable_vertex_ids_.empty())
+    return reject("invalid_input");
+  const auto appended=static_cast<std::uint32_t>(vertex_count());
+  std::vector<bool> selected(cells_.size());
+  std::set<std::uint32_t> touched_vertices;
+  for(const auto slot:cavity_slots) {
+    if(slot>=cells_.size()||cells_[slot].deleted||selected[slot])return reject("invalid_slot");
+    selected[slot]=true;
+    touched_vertices.insert(cells_[slot].vertices.begin(),cells_[slot].vertices.end());
+  }
+
+  struct BoundaryUse {
+    Face ordered{};
+    std::int32_t outside{no_neighbour};
+    std::uint8_t outside_opposite{};
+  };
+  std::map<Face,BoundaryUse> boundary;
+  for(const auto slot:cavity_slots)for(unsigned opposite=0U;opposite<4U;++opposite) {
+    const auto neighbour=cells_[slot].neighbours[opposite];
+    if(neighbour>=0&&static_cast<std::size_t>(neighbour)<selected.size()&&
+       selected[static_cast<std::size_t>(neighbour)])continue;
+    const auto ordered=face_opposite(cells_[slot].vertices,opposite);
+    BoundaryUse use{ordered,neighbour,0U};
+    if(neighbour>=0) {
+      if(static_cast<std::size_t>(neighbour)>=cells_.size()||
+         cells_[static_cast<std::size_t>(neighbour)].deleted)return reject("invalid_outside");
+      bool found=false;
+      for(unsigned outside_opposite=0U;outside_opposite<4U;++outside_opposite)
+        if(face_key(face_opposite(cells_[static_cast<std::size_t>(neighbour)].vertices,
+                                  outside_opposite))==face_key(ordered)) {
+          use.outside_opposite=static_cast<std::uint8_t>(outside_opposite);
+          found=true;break;
+        }
+      if(!found)return reject("outside_face_missing");
+    }
+    if(!boundary.emplace(face_key(ordered),use).second)return reject("duplicate_boundary");
+  }
+
+  using NewUse=std::pair<std::size_t,std::uint8_t>;
+  std::map<Face,std::vector<NewUse>> new_faces;
+  std::set<Tet> unique_cells;
+  for(std::size_t cell=0U;cell<replacement.size();++cell) {
+    auto key=cell_key(replacement[cell]);
+    if(std::adjacent_find(key.begin(),key.end())!=key.end()||
+       key.back()!=appended||key.front()>=appended||
+       !unique_cells.insert(key).second)return reject("invalid_replacement");
+    for(unsigned opposite=0U;opposite<4U;++opposite)
+      new_faces[face_key(face_opposite(replacement[cell],opposite))].push_back(
+          {cell,static_cast<std::uint8_t>(opposite)});
+  }
+  for(const auto& [face,uses]:new_faces) {
+    if(uses.size()>2U)return reject("nonmanifold_replacement");
+    if(uses.size()==1U&&!boundary.contains(face))return reject("replacement_hole");
+  }
+  for(const auto& [face,use]:boundary) {
+    (void)use;
+    const auto found=new_faces.find(face);
+    if(found==new_faces.end()||found->second.size()!=1U)return reject("boundary_not_replaced");
+  }
+
+  point_to_cell_.push_back(no_neighbour);
+  deleted_vertices_.push_back(false);
+  for(const auto slot:cavity_slots) {
+    result.erased_cells.push_back(slot);
+    if(!erase_cell(slot))return {};
+  }
+  result.created_cells.reserve(replacement.size());
+  for(const auto& cell:replacement)
+    result.created_cells.push_back(add_cell(cell));
+
+  for(const auto& [face,uses]:new_faces) {
+    if(uses.size()==2U) {
+      const auto first=result.created_cells[uses[0].first];
+      const auto second=result.created_cells[uses[1].first];
+      cells_[first].neighbours[uses[0].second]=static_cast<std::int32_t>(second);
+      cells_[second].neighbours[uses[1].second]=static_cast<std::int32_t>(first);
+      continue;
+    }
+    const auto created=result.created_cells[uses.front().first];
+    const auto& outer=boundary.at(face);
+    cells_[created].neighbours[uses.front().second]=outer.outside;
+    if(outer.outside>=0)
+      cells_[static_cast<std::size_t>(outer.outside)].neighbours[outer.outside_opposite]=
+          static_cast<std::int32_t>(created);
+  }
+
+  hull_faces_.erase(std::remove_if(hull_faces_.begin(),hull_faces_.end(),
+      [&](const auto& hull){return hull.cell<selected.size()&&selected[hull.cell];}),
+      hull_faces_.end());
+  for(const auto& [face,outer]:boundary)if(outer.outside<0) {
+    const auto& use=new_faces.at(face).front();
+    const auto created=result.created_cells[use.first];
+    hull_faces_.push_back({face_opposite(cells_[created].vertices,use.second),
+                           created,use.second});
+  }
+
+  for(std::size_t index=0U;index<replacement.size();++index)
+    for(const auto vertex:replacement[index])
+      point_to_cell_[vertex]=static_cast<std::int32_t>(result.created_cells[index]);
+  for(const auto vertex:touched_vertices) {
+    const auto carrier=point_to_cell_[vertex];
+    if(carrier>=0&&static_cast<std::size_t>(carrier)<cells_.size()&&
+       !cells_[static_cast<std::size_t>(carrier)].deleted&&
+       contains(cells_[static_cast<std::size_t>(carrier)].vertices,vertex))continue;
+    auto found=no_neighbour;
+    for(const auto created:result.created_cells)
+      if(contains(cells_[created].vertices,vertex)) {
+        found=static_cast<std::int32_t>(created);break;
+      }
+    if(found==no_neighbour)return {};
+    point_to_cell_[vertex]=found;
+  }
+  topology_failure_=TopologyFailure::none;
+  result.accepted=true;
+  return result;
+}
+
 bool WangOrderedTetMesh::collapse_vertex_into(std::uint32_t vertex,
                                               std::uint32_t keep) {
   if(vertex==keep||vertex>=vertex_count()||keep>=vertex_count()||

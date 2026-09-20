@@ -161,6 +161,14 @@ class WangOrderedTetMesh {
       const std::vector<Tet>& cavity,const std::vector<Tet>& replacement,
       std::optional<std::uint64_t> appended_stable_id=std::nullopt,
       std::vector<ExactAffinePlaneProvenance> updated_planes={});
+  // Fast generic-volume counterpart. The caller supplies physical cavity
+  // slots and replacement cones around one newly appended vertex. Only the
+  // cavity boundary, adjacent cells, hull records and affected P2T carriers
+  // are changed; no complete mesh copy or topology rebuild is performed.
+  // The caller owns pass-level rollback and must audit before publication.
+  [[nodiscard]] CavityReplacementResult replace_local_cavity_with_appended_vertex(
+      const std::vector<std::uint32_t>& cavity_slots,
+      const std::vector<Tet>& replacement);
 
   [[nodiscard]] const std::vector<Cell>& cells() const noexcept {return cells_;}
   [[nodiscard]] const std::vector<std::int32_t>& point_to_cell() const noexcept {

@@ -1,8 +1,12 @@
 #include "tetra_probes/dc_free_volume.hpp"
+#include "tetra_probes/exact_binary_predicates.hpp"
+#include "tetra_probes/wang_ordered_tet_mesh.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -18,6 +22,156 @@ Vec3 cross(Vec3 a,Vec3 b) {
   return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
 }
 double length(Vec3 value) { return std::sqrt(dot(value,value)); }
+
+using LocalTet=std::array<std::uint32_t,4>;
+
+struct LocalRefinementMesh {
+  WangOrderedTetMesh mesh;
+  std::vector<Vec3> positions;
+  std::vector<std::uint64_t> ids;
+};
+
+std::optional<LocalRefinementMesh> make_local_refinement_mesh(
+    const WangConstrainedTetrahedralizationResult& volume) {
+  LocalRefinementMesh result;
+  result.positions.reserve(volume.vertices.size());
+  result.ids.reserve(volume.vertices.size());
+  std::map<std::uint64_t,std::uint32_t> indices;
+  for(std::size_t index=0U;index<volume.vertices.size();++index) {
+    const auto& vertex=volume.vertices[index];
+    if(!indices.emplace(vertex.id,static_cast<std::uint32_t>(index)).second)
+      return std::nullopt;
+    result.positions.push_back(vertex.position);result.ids.push_back(vertex.id);
+  }
+  std::vector<LocalTet> cells;cells.reserve(volume.tetrahedra.size());
+  for(const auto& source:volume.tetrahedra) {
+    LocalTet cell{};
+    for(unsigned corner=0U;corner<4U;++corner) {
+      const auto found=indices.find(source[corner]);
+      if(found==indices.end())return std::nullopt;
+      cell[corner]=found->second;
+    }
+    cells.push_back(cell);
+  }
+  result.mesh=WangOrderedTetMesh(result.positions.size(),cells);
+  if(!result.mesh.audit().accepted())return std::nullopt;
+  return result;
+}
+
+bool local_sphere_contains(const std::vector<Vec3>& positions,
+                           const LocalTet& cell,Vec3 query) {
+  const auto orientation=static_cast<int>(exact_orientation_3d(
+      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]]));
+  if(orientation==0)return false;
+  const auto sphere=static_cast<int>(exact_in_sphere(
+      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]],query));
+  return sphere!=0&&sphere==-orientation;
+}
+
+bool insert_local_refinement_site(LocalRefinementMesh& state,Vec3 point,
+                                  std::uint64_t id) {
+  const auto carrier=state.mesh.find_containing_cell(state.positions,point);
+  if(!carrier) {
+    if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+      std::cerr<<"dc_local_refinement carrier_not_found id="<<id<<'\n';
+    return false;
+  }
+  const auto& cells=state.mesh.cells();
+  std::vector<bool> selected(cells.size());
+  std::vector<std::uint32_t> cavity{*carrier};selected[*carrier]=true;
+  for(std::size_t cursor=0U;cursor<cavity.size();++cursor) {
+    const auto slot=cavity[cursor];
+    for(const auto neighbour:cells[slot].neighbours) {
+      if(neighbour<0||static_cast<std::size_t>(neighbour)>=cells.size())continue;
+      const auto next=static_cast<std::uint32_t>(neighbour);
+      if(selected[next]||cells[next].deleted||
+         !local_sphere_contains(state.positions,cells[next].vertices,point))continue;
+      selected[next]=true;cavity.push_back(next);
+    }
+  }
+  const auto face_key=[](std::array<std::uint32_t,3> face) {
+    std::sort(face.begin(),face.end());return face;
+  };
+  // A constrained circumsphere flood can be clipped into a cavity whose
+  // exposed faces are not all visible from the new point. Match Wang's
+  // adjustBWCavity rule: peel the last-added offending cell until every
+  // exposed triangle can be positively coned to the insertion point.
+  for(bool adjusted=true;adjusted;) {
+    adjusted=false;
+    std::map<std::array<std::uint32_t,3>,unsigned> face_uses;
+    for(const auto slot:cavity)if(selected[slot])
+      for(unsigned opposite=0U;opposite<4U;++opposite) {
+        std::array<std::uint32_t,3> face{};unsigned out{};
+        for(unsigned corner=0U;corner<4U;++corner)
+          if(corner!=opposite)face[out++]=cells[slot].vertices[corner];
+        ++face_uses[face_key(face)];
+      }
+    for(auto candidate=cavity.rbegin();candidate!=cavity.rend()&&!adjusted;
+        ++candidate) {
+      if(!selected[*candidate])continue;
+      for(unsigned opposite=0U;opposite<4U;++opposite) {
+        std::array<std::uint32_t,3> face{};unsigned out{};
+        for(unsigned corner=0U;corner<4U;++corner)
+          if(corner!=opposite)face[out++]=cells[*candidate].vertices[corner];
+        if(face_uses[face_key(face)]!=1U)continue;
+        const auto query_side=exact_orientation_3d(
+            state.positions[face[0]],state.positions[face[1]],
+            state.positions[face[2]],point);
+        const auto interior_side=exact_orientation_3d(
+            state.positions[face[0]],state.positions[face[1]],
+            state.positions[face[2]],state.positions[cells[*candidate].vertices[opposite]]);
+        if(query_side!=ExactPredicateSign::zero&&query_side==interior_side)continue;
+        selected[*candidate]=false;adjusted=true;break;
+      }
+    }
+    if(std::none_of(cavity.begin(),cavity.end(),[&](auto slot){return selected[slot];}))
+      return false;
+  }
+  cavity.erase(std::remove_if(cavity.begin(),cavity.end(),
+      [&](auto slot){return !selected[slot];}),cavity.end());
+  const auto appended=static_cast<std::uint32_t>(state.positions.size());
+  std::vector<LocalTet> replacement;
+  for(const auto slot:cavity)for(unsigned opposite=0U;opposite<4U;++opposite) {
+    const auto neighbour=cells[slot].neighbours[opposite];
+    if(neighbour>=0&&static_cast<std::size_t>(neighbour)<selected.size()&&
+       selected[static_cast<std::size_t>(neighbour)])continue;
+    LocalTet child{};unsigned out{};
+    for(unsigned corner=0U;corner<4U;++corner)
+      if(corner!=opposite)child[out++]=cells[slot].vertices[corner];
+    child[3]=appended;
+    const auto orientation=exact_orientation_3d(
+        state.positions[child[0]],state.positions[child[1]],
+        state.positions[child[2]],point);
+    if(orientation==ExactPredicateSign::zero) {
+      if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+        std::cerr<<"dc_local_refinement zero_child id="<<id<<'\n';
+      return false;
+    }
+    if(orientation==ExactPredicateSign::negative)std::swap(child[0],child[1]);
+    replacement.push_back(child);
+  }
+  state.positions.push_back(point);state.ids.push_back(id);
+  const auto committed=state.mesh.replace_local_cavity_with_appended_vertex(
+      cavity,replacement);
+  if(!committed.accepted&&std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+    std::cerr<<"dc_local_refinement commit_failed id="<<id
+             <<" cavity="<<cavity.size()<<" replacement="<<replacement.size()<<'\n';
+  return committed.accepted;
+}
+
+WangConstrainedTetrahedralizationResult publish_local_refinement(
+    const WangConstrainedTetrahedralizationResult& base,
+    const LocalRefinementMesh& state) {
+  auto result=base;
+  result.vertices.clear();result.vertices.reserve(state.positions.size());
+  for(std::size_t index=0U;index<state.positions.size();++index)
+    result.vertices.push_back({state.ids[index],state.positions[index]});
+  result.tetrahedra.clear();
+  for(const auto& cell:state.mesh.cells())if(!cell.deleted)
+    result.tetrahedra.push_back({state.ids[cell.vertices[0]],state.ids[cell.vertices[1]],
+                                 state.ids[cell.vertices[2]],state.ids[cell.vertices[3]]});
+  return result;
+}
 
 double point_triangle_distance(Vec3 point,Vec3 a,Vec3 b,Vec3 c) {
   // Closest-point regions from Ericson, Real-Time Collision Detection.
@@ -234,27 +388,33 @@ TetQuality tet_quality(const std::array<std::uint64_t,4>& tet,
 // local star.
 bool valid_literal_volume(const DcFreeVolumeInput& input,const SurfaceQuery& surface_query,
                           const WangConstrainedTetrahedralizationResult& volume) {
+  const auto reject=[](const char* reason) {
+    if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+      std::cerr<<"dc_literal_volume "<<reason<<'\n';
+    return false;
+  };
   std::map<std::uint64_t,Vec3> positions;
   for(const auto& vertex:volume.vertices)
-    if(!positions.emplace(vertex.id,vertex.position).second)return false;
+    if(!positions.emplace(vertex.id,vertex.position).second)return reject("duplicate_vertex");
   std::set<std::array<std::uint64_t,3>> expected,actual;
   std::map<std::array<std::uint64_t,3>,std::size_t> uses;
   for(auto face:input.faces) { std::sort(face.begin(),face.end());expected.insert(face); }
   for(const auto& tet:volume.tetrahedra) {
-    for(const auto id:tet)if(!positions.contains(id))return false;
+    for(const auto id:tet)if(!positions.contains(id))return reject("missing_vertex");
     const auto quality=tet_quality(tet,positions);
-    if(!(quality.volume>1e-15)||!std::isfinite(quality.volume))return false;
+    if(!(quality.volume>1e-15)||!std::isfinite(quality.volume))return reject("degenerate_cell");
     const auto centre=(positions.at(tet[0])+positions.at(tet[1])+
                        positions.at(tet[2])+positions.at(tet[3]))/4.;
-    if(!surface_query.contains(centre))return false;
+    if(!surface_query.contains(centre))return reject("outside_cell");
     for(unsigned omitted=0U;omitted<4U;++omitted) {
       std::array<std::uint64_t,3> face{};unsigned cursor{};
       for(unsigned corner=0U;corner<4U;++corner)if(corner!=omitted)face[cursor++]=tet[corner];
-      std::sort(face.begin(),face.end());if(++uses[face]>2U)return false;
+      std::sort(face.begin(),face.end());if(++uses[face]>2U)return reject("nonmanifold_face");
     }
   }
   for(const auto& [face,count]:uses)if(count==1U)actual.insert(face);
-  return actual==expected;
+  if(actual!=expected)return reject("boundary_mismatch");
+  return true;
 }
 
 std::size_t improve_interior_vertex_positions(
@@ -462,6 +622,13 @@ static DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume_im
     result.failure=DcSurfaceConformingVolumeFailure::constrained_tetrahedralization_failed;
     return result;
   }
+  // Recovery may have allocated transient/interior IDs above the original
+  // sample range. Local refinement retains those vertices, so its new stable
+  // IDs must continue after the published mesh rather than collide with them.
+  for(const auto& vertex:result.volume.vertices)next=std::max(next,vertex.id);
+  auto local_refinement=std::getenv("DC_DISABLE_LOCAL_REFINEMENT")
+      ?std::optional<LocalRefinementMesh>{}
+      :make_local_refinement_mesh(result.volume);
   constexpr std::array<std::array<unsigned int,2>,6> edges{{
       {{0U,1U}},{{0U,2U}},{{0U,3U}},{{1U,2U}},{{1U,3U}},{{2U,3U}}}};
   const auto evaluate=[&](const WangConstrainedTetrahedralizationResult& volume,
@@ -577,19 +744,53 @@ static DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume_im
     const auto [quality,candidates]=evaluate(result.volume,true);
     if(candidates.empty())break;
     std::size_t added{};
+    std::vector<std::pair<Vec3,std::uint64_t>> added_sites;
     for(const auto& [ratio,point]:candidates) {
       if(added>=sampling.maximum_refinement_points_per_pass)break;
       bool too_close{};
       for(const auto& vertex:seeded.vertices)
         too_close|=length(vertex.position-point)<sampling.surface_spacing*.1;
-      if(!too_close&&append_site(point))++added;
+      if(!too_close&&append_site(point)) {
+        added_sites.emplace_back(point,next);++added;
+      }
     }
     if(added==0U)break;
     const auto refinement_build_started=std::chrono::steady_clock::now();
-    const auto refined=build();
+    bool locally_refined=local_refinement.has_value();
+    if(locally_refined)for(const auto& [point,id]:added_sites)
+      if(!insert_local_refinement_site(*local_refinement,point,id)) {
+        if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+          std::cerr<<"dc_local_refinement insertion_failed id="<<id<<'\n';
+        locally_refined=false;break;
+      }
+    const auto local_audit=locally_refined?local_refinement->mesh.audit():
+        WangOrderedTetMesh::Audit{};
+    if(locally_refined&&!local_audit.accepted()&&
+       std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+      std::cerr<<"dc_local_refinement audit_failed failure="
+               <<static_cast<unsigned>(local_audit.failure)
+               <<" reciprocal="<<local_audit.reciprocal_neighbours
+               <<" incidence="<<local_audit.point_incidence_complete
+               <<" hull="<<local_audit.hull_complete<<'\n';
+    auto refined=locally_refined&&local_audit.accepted()
+        ?publish_local_refinement(result.volume,*local_refinement)
+        :WangConstrainedTetrahedralizationResult{};
+    if(locally_refined&&!local_audit.accepted())locally_refined=false;
+    if(locally_refined&&!valid_literal_volume(input,surface_query,refined)) {
+      if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
+        std::cerr<<"dc_local_refinement volume_validation_failed\n";
+      locally_refined=false;
+    }
+    if(!locally_refined) {
+      refined=build();
+      local_refinement=refined.accepted()&&
+          !std::getenv("DC_DISABLE_LOCAL_REFINEMENT")
+          ?make_local_refinement_mesh(refined):std::nullopt;
+    }
     result.quality.refinement_build_milliseconds+=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-refinement_build_started).count();
     if(!refined.accepted())break; // Keep the last boundary-validated mesh.
+    for(const auto& vertex:refined.vertices)next=std::max(next,vertex.id);
     result.volume=refined;
     ++result.quality.refinement_passes;
     result.quality.refinement_points_added+=added;

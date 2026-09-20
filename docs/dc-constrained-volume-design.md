@@ -456,6 +456,25 @@ whether the limit belongs to the backend or the contract. If comparable-density
 construction is slower, retain the result as evidence and keep the Wang path.
 Neither outcome justifies silently degrading or replacing the DC surface.
 
+### Local refinement checkpoint
+
+The generic path now retains an ordered tetrahedral topology after the initial
+constrained build. Refinement sites start from a containing-cell carrier,
+flood the local circumsphere cavity through neighbor links, apply Wang's
+exposed-face visibility adjustment, and replace only that cavity. Frozen DC
+facets remain the hull barrier. The complete literal-boundary, containment,
+positive-volume, manifold, and ordered-mesh audits still run before the pass is
+published; any failed local transaction falls back to the prior full rebuild.
+
+In five interleaved local N12 runs (32 initial sites, one pass of 32 refinement
+sites), local refinement averaged 48.3 ms versus 150.8 ms for the fallback
+rebuild. Generic construction averaged 236.6 ms versus 323.8 ms, and the full
+selected path averaged 281.3 ms versus 366.4 ms. This is a local development
+measurement, not a latency guarantee. The accepted local result contained
+2,152 tets versus 2,135 for the rebuild; high-valence vertex count remained 55
+and worst valence changed from 84 to 86. Both variants retained the literal DC
+boundary. A same-camera clipped visual A/B showed no material quality change.
+
 ## 12. Sources and scope of authority
 
 This proposal follows the exact shared surface/volume intent in

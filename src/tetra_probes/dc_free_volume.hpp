@@ -52,9 +52,10 @@ struct DcSurfaceDistanceSamplingOptions {
   double maximum_spacing{0.16};
   double growth{1.0};
   std::size_t maximum_points{256U};
-  // A deliberately bounded feedback loop.  Each pass adds centroids of the
-  // worst oversized cells then reconstructs the constrained volume from the
-  // frozen PLC; it never edits a DC facet in place.
+  // A deliberately bounded feedback loop. Each pass adds centroids of the
+  // worst oversized cells through local constrained cavities. A failed local
+  // transaction falls back to reconstruction from the frozen PLC; neither
+  // path edits a DC facet in place.
   std::size_t maximum_refinement_passes{};
   std::size_t maximum_refinement_points_per_pass{32U};
   double refinement_edge_target_multiplier{1.75};

@@ -1720,6 +1720,25 @@ TEST_CASE("Wang facet interior insertion commits in the live ordered mesh") {
   CHECK(live==inserted.tetrahedra.size());
 }
 
+TEST_CASE("ordered mesh replaces an interior cavity without rebuilding topology") {
+  using namespace tetra::probes;
+  WangOrderedTetMesh mesh(4U,{{{{0U,1U,2U,3U}}}});
+  REQUIRE(mesh.audit().accepted());
+  const std::vector<WangOrderedTetMesh::Tet> replacement{
+      {{1U,2U,3U,4U}},{{0U,2U,3U,4U}},
+      {{0U,1U,3U,4U}},{{0U,1U,2U,4U}}};
+  const auto committed=mesh.replace_local_cavity_with_appended_vertex(
+      {0U},replacement);
+  REQUIRE(committed.accepted);
+  CHECK(committed.erased_cells.size()==1U);
+  CHECK(committed.created_cells.size()==4U);
+  CHECK(mesh.vertex_count()==5U);
+  const auto audit=mesh.audit();
+  CHECK(audit.accepted());
+  CHECK(audit.active_cells==4U);
+  CHECK(mesh.hull_faces().size()==4U);
+}
+
 TEST_CASE("Wang facet insertion accepts the captured real author fallback patch") {
   using namespace tetra::probes;
   std::ifstream input("tests/fixtures/wang/a320_first_facet_patch.txt");
