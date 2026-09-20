@@ -123,6 +123,7 @@ struct WangConstrainedTetrahedralizationResult {
   WangConstrainedTetrahedralizationFailure failure{
       WangConstrainedTetrahedralizationFailure::invalid_plc};
   CanonicalPlcRecoveryResult recovery;
+  double input_contact_milliseconds{};
   double cleanup_milliseconds{};
   double region_classification_milliseconds{};
   WangBoundaryAudit boundary_audit;

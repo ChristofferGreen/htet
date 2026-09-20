@@ -462,6 +462,9 @@ int main(int argc,char** argv) {
         <<",genericSegmentRecoveryMilliseconds:"<<generic_volume.volume.recovery.segment_recovery_milliseconds
         <<",genericFacetRecoveryMilliseconds:"<<generic_volume.volume.recovery.facet_recovery_milliseconds
         <<",genericRecoveryFinalizationMilliseconds:"<<generic_volume.volume.recovery.finalization_milliseconds
+        <<",genericInspectionMilliseconds:"<<generic_volume.volume.recovery.inspection_milliseconds
+        <<",genericInspectionCalls:"<<generic_volume.volume.recovery.inspection_calls
+        <<",genericInputContactMilliseconds:"<<generic_volume.volume.input_contact_milliseconds
         <<",genericCleanupMilliseconds:"<<generic_volume.volume.cleanup_milliseconds
         <<",genericRegionClassificationMilliseconds:"<<generic_volume.volume.region_classification_milliseconds
         <<",genericRefinementBuildMilliseconds:"<<generic_volume.quality.refinement_build_milliseconds
@@ -541,6 +544,9 @@ int main(int argc,char** argv) {
          <<"  \"generic_segment_recovery_milliseconds\": "<<generic_volume.volume.recovery.segment_recovery_milliseconds<<",\n"
          <<"  \"generic_facet_recovery_milliseconds\": "<<generic_volume.volume.recovery.facet_recovery_milliseconds<<",\n"
          <<"  \"generic_recovery_finalization_milliseconds\": "<<generic_volume.volume.recovery.finalization_milliseconds<<",\n"
+         <<"  \"generic_inspection_milliseconds\": "<<generic_volume.volume.recovery.inspection_milliseconds<<",\n"
+         <<"  \"generic_inspection_calls\": "<<generic_volume.volume.recovery.inspection_calls<<",\n"
+         <<"  \"generic_input_contact_milliseconds\": "<<generic_volume.volume.input_contact_milliseconds<<",\n"
          <<"  \"generic_cleanup_milliseconds\": "<<generic_volume.volume.cleanup_milliseconds<<",\n"
          <<"  \"generic_region_classification_milliseconds\": "<<generic_volume.volume.region_classification_milliseconds<<",\n"
          <<"  \"generic_refinement_build_milliseconds\": "<<generic_volume.quality.refinement_build_milliseconds<<",\n"

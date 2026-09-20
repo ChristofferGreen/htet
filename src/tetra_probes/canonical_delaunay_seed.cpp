@@ -9692,6 +9692,16 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
   result.constraints=initial;
   if(!has_only_nondegenerate_constraint_facets(result.constraints))
     return result;
+  const auto inspect_timed=[&](
+      const CanonicalPlcConstraintSet& constraints,
+      const std::vector<std::array<std::uint32_t,4>>& tetrahedra) {
+    const auto started=std::chrono::steady_clock::now();
+    auto inspection=inspect_canonical_plc_tetrahedra(constraints,tetrahedra);
+    result.inspection_milliseconds+=std::chrono::duration<double,std::milli>(
+        std::chrono::steady_clock::now()-started).count();
+    ++result.inspection_calls;
+    return inspection;
+  };
   std::sort(result.constraints.vertices.begin(),result.constraints.vertices.end(),
             [](const auto& left,const auto& right){return left.id<right.id;});
   // The author scheduler discovers boundary edges in the supplied facet
@@ -10562,7 +10572,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         return GeometryPoint{{point.x,point.y,point.z}};
       };
       const auto finite=finite_before_facet();
-      const auto inspection=inspect_canonical_plc_tetrahedra(
+      const auto inspection=inspect_timed(
           result.constraints,finite);
       std::map<std::uint64_t,GeometryPoint> current_geometry;
       for(const auto& vertex:result.constraints.vertices)
@@ -10700,7 +10710,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
           cells.push_back(cell.vertices);
       return cells;
     };
-    auto facet_state=inspect_canonical_plc_tetrahedra(
+    auto facet_state=inspect_timed(
         result.constraints,finite_for_insertion());
     for(const auto facet:facet_state.missing_facets) {
       if(result.facet_interior_steiner_insertions+2U>
@@ -10731,7 +10741,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
           cells.push_back(cell.vertices);
       return cells;
     };
-    const auto after_insertion=inspect_canonical_plc_tetrahedra(
+    const auto after_insertion=inspect_timed(
         result.constraints,finite_after_insertion());
     for(const auto facet:after_insertion.missing_facets) {
       const auto found=std::find_if(result.constraints.facets.begin(),
@@ -10777,7 +10787,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
             return candidate_key==key;
           });
     };
-    auto inspection=inspect_canonical_plc_tetrahedra(
+    auto inspection=inspect_timed(
         result.constraints,finite_mesh());
     std::vector<std::array<std::uint64_t,3>> pending=inspection.missing_facets;
     for(std::size_t round=0U;!pending.empty()&&round<=options.maximum_facets;
@@ -10917,7 +10927,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
         if(recovered.recovered)++changed;
         else pending.push_back(facet);
       }
-      inspection=inspect_canonical_plc_tetrahedra(result.constraints,finite_mesh());
+      inspection=inspect_timed(result.constraints,finite_mesh());
       // `inspection.missing_facets` is parent-patch based and therefore
       // cannot replace recoverFaces' literal child queue.  Keep every
       // explicit failed/appended child until its own queued recoverFace turn;
@@ -10957,7 +10967,7 @@ CanonicalPlcRecoveryResult recover_wang_constraints(
   // The scheduler mutates this owned state in place; preserve the seed before
   // it can be confused with its post-flip segment stage.
   result.initial_tetrahedra=seed.stages.back();
-  result.inspection=inspect_canonical_plc_tetrahedra(
+  result.inspection=inspect_timed(
       result.constraints,result.tetrahedra);
   result.edges_recovered_before_facet_stage=
       result.inspection.missing_edges.empty();

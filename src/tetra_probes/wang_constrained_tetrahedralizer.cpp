@@ -50,6 +50,42 @@ bool has_open_boundary_vertex_on_literal_edge(const CanonicalPlcConstraintSet& p
           facet.vertices[corner],facet.vertices[(corner+1U)%3U]}};
       std::sort(edge.begin(),edge.end());edges.insert(edge);
     }
+
+  // This grid is only a broad phase.  The exact, deliberately conservative
+  // test below is unchanged: every point which could satisfy it lies in the
+  // segment AABB expanded by its residual tolerance, and is therefore queried.
+  // Ordered containers retain deterministic traversal and output.
+  if(vertices.empty())return false;
+  Vec3 bounds_min{std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::infinity()};
+  Vec3 bounds_max{-std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity()};
+  for(const auto id:vertices) {
+    const auto point=positions.find(id);if(point==positions.end())return true;
+    bounds_min.x=std::min(bounds_min.x,point->second.x);
+    bounds_min.y=std::min(bounds_min.y,point->second.y);
+    bounds_min.z=std::min(bounds_min.z,point->second.z);
+    bounds_max.x=std::max(bounds_max.x,point->second.x);
+    bounds_max.y=std::max(bounds_max.y,point->second.y);
+    bounds_max.z=std::max(bounds_max.z,point->second.z);
+  }
+  const auto extent=std::max({bounds_max.x-bounds_min.x,
+      bounds_max.y-bounds_min.y,bounds_max.z-bounds_min.z});
+  const auto bins=std::max(1,static_cast<int>(std::ceil(std::cbrt(
+      static_cast<double>(vertices.size())))));
+  const auto cell_width=extent>0.0?extent/static_cast<double>(bins):1.0;
+  const auto bin_for=[&](double coordinate,double minimum) {
+    const auto raw=static_cast<int>(std::floor((coordinate-minimum)/cell_width));
+    return std::clamp(raw,0,bins-1);
+  };
+  std::map<std::array<int,3>,std::vector<std::uint64_t>> spatial_vertices;
+  for(const auto id:vertices) {
+    const auto& point=positions.find(id)->second;
+    spatial_vertices[{{bin_for(point.x,bounds_min.x),bin_for(point.y,bounds_min.y),
+        bin_for(point.z,bounds_min.z)}}].push_back(id);
+  }
   for(const auto& edge:edges) {
     const auto first=positions.find(edge[0]),second=positions.find(edge[1]);
     if(first==positions.end()||second==positions.end())return true;
@@ -57,18 +93,39 @@ bool has_open_boundary_vertex_on_literal_edge(const CanonicalPlcConstraintSet& p
     const auto length2=direction.x*direction.x+direction.y*direction.y+
         direction.z*direction.z;
     if(!(length2>0.0))return true;
-    for(const auto id:vertices) {
-      if(id==edge[0]||id==edge[1])continue;
-      const auto point=positions.find(id);if(point==positions.end())return true;
-      const auto offset=point->second-first->second;
-      const auto parameter=(offset.x*direction.x+offset.y*direction.y+
-          offset.z*direction.z)/length2;
-      if(!(parameter>0.0&&parameter<1.0))continue;
-      const auto residual=offset-direction*parameter;
-      const auto residual2=residual.x*residual.x+residual.y*residual.y+
-          residual.z*residual.z;
-      if(residual2<=64.0*std::numeric_limits<double>::epsilon()*length2)
-        return true;
+    const auto residual_limit=std::sqrt(64.0*
+        std::numeric_limits<double>::epsilon()*length2);
+    const auto query_min=Vec3{std::min(first->second.x,second->second.x)-residual_limit,
+        std::min(first->second.y,second->second.y)-residual_limit,
+        std::min(first->second.z,second->second.z)-residual_limit};
+    const auto query_max=Vec3{std::max(first->second.x,second->second.x)+residual_limit,
+        std::max(first->second.y,second->second.y)+residual_limit,
+        std::max(first->second.z,second->second.z)+residual_limit};
+    // One-cell padding protects the bin conversion from roundoff at a cell face.
+    const auto lower=[&](double coordinate,double minimum) {
+      return std::max(0,bin_for(coordinate,minimum)-1);
+    };
+    const auto upper=[&](double coordinate,double minimum) {
+      return std::min(bins-1,bin_for(coordinate,minimum)+1);
+    };
+    const auto x0=lower(query_min.x,bounds_min.x),x1=upper(query_max.x,bounds_min.x);
+    const auto y0=lower(query_min.y,bounds_min.y),y1=upper(query_max.y,bounds_min.y);
+    const auto z0=lower(query_min.z,bounds_min.z),z1=upper(query_max.z,bounds_min.z);
+    for(auto x=x0;x<=x1;++x)for(auto y=y0;y<=y1;++y)for(auto z=z0;z<=z1;++z) {
+      const auto cell=spatial_vertices.find({{x,y,z}});if(cell==spatial_vertices.end())continue;
+      for(const auto id:cell->second) {
+        if(id==edge[0]||id==edge[1])continue;
+        const auto point=positions.find(id);if(point==positions.end())return true;
+        const auto offset=point->second-first->second;
+        const auto parameter=(offset.x*direction.x+offset.y*direction.y+
+            offset.z*direction.z)/length2;
+        if(!(parameter>0.0&&parameter<1.0))continue;
+        const auto residual=offset-direction*parameter;
+        const auto residual2=residual.x*residual.x+residual.y*residual.y+
+            residual.z*residual.z;
+        if(residual2<=64.0*std::numeric_limits<double>::epsilon()*length2)
+          return true;
+      }
     }
   }
   return false;
@@ -538,7 +595,12 @@ tetrahedralize_wang_constrained_plc_impl(
   if(plc.vertices.size()<4U||plc.facets.size()<4U||
      literal_faces(plc).size()!=plc.facets.size())
     return result;
-  if(!embedded_input_prevalidated&&has_open_boundary_vertex_on_literal_edge(plc))
+  const auto contact_started=std::chrono::steady_clock::now();
+  const auto has_open_contact=!embedded_input_prevalidated&&
+      has_open_boundary_vertex_on_literal_edge(plc);
+  result.input_contact_milliseconds=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-contact_started).count();
+  if(has_open_contact)
     return result;
   // Wang et al. (2026), Algorithm 2 lines 1-22. This dedicated entry point
   // deliberately refuses incomplete paper stages rather than falling through

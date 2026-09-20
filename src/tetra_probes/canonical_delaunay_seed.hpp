@@ -945,6 +945,10 @@ struct CanonicalPlcRecoveryResult {
   double segment_recovery_milliseconds{};
   double facet_recovery_milliseconds{};
   double finalization_milliseconds{};
+  // Mesh-wide PLC inspection rebuilds face and edge sets. Track it separately
+  // from the source-shaped phases so its cost is visible in generic profiles.
+  double inspection_milliseconds{};
+  std::size_t inspection_calls{};
   CanonicalPlcConstraintSet constraints;
   CanonicalPlcSeedInspection inspection;
   // Finite cells immediately after the Wang-specific BndPntInst/AddBox seed,
