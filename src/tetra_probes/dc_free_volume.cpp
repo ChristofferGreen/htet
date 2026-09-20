@@ -93,7 +93,7 @@ struct SurfaceQuery {
       else { self(self,node.right);self(self,node.left); }
     };visit(visit,0);return best;
   }
-  bool contains(Vec3 point) const {
+  bool contains_by_winding(Vec3 point) const {
     double winding{};
     for(const auto& triangle:triangles) {
       const auto a=triangle.a-point,b=triangle.b-point,c=triangle.c-point;
@@ -103,6 +103,40 @@ struct SurfaceQuery {
           la*lb*lc+dot(a,b)*lc+dot(b,c)*la+dot(c,a)*lb);
     }
     return std::llround(std::abs(winding)/(4.*std::numbers::pi))%2LL==1LL;
+  }
+  bool contains(Vec3 point) const {
+    // Fast parity query for ordinary interior candidates.  A ray exactly on
+    // an edge or vertex is deliberately sent through the winding fallback,
+    // retaining the former predicate for the numerically delicate cases.
+    constexpr double epsilon=1e-12;
+    std::size_t intersections{};
+    bool ambiguous{};
+    std::vector<int> pending{0};
+    while(!pending.empty()&&!ambiguous) {
+      const auto index=pending.back();pending.pop_back();
+      const auto& node=nodes[static_cast<std::size_t>(index)];
+      if(node.high.x<point.x-epsilon||point.y<node.low.y-epsilon||
+         point.y>node.high.y+epsilon||point.z<node.low.z-epsilon||
+         point.z>node.high.z+epsilon)continue;
+      if(node.left>=0) { pending.push_back(node.left);pending.push_back(node.right);continue; }
+      for(auto i=node.begin;i<node.end;++i) {
+        const auto& triangle=triangles[order[i]];
+        const auto edge_ab=triangle.b-triangle.a,edge_ac=triangle.c-triangle.a;
+        const Vec3 ray{1.,0.,0.};
+        const auto determinant=dot(edge_ab,cross(ray,edge_ac));
+        if(std::abs(determinant)<=epsilon)continue;
+        const auto offset=point-triangle.a;
+        const auto u=dot(offset,cross(ray,edge_ac))/determinant;
+        const auto v=dot(ray,cross(offset,edge_ab))/determinant;
+        const auto distance=dot(edge_ac,cross(offset,edge_ab))/determinant;
+        if(distance<-epsilon||u<-epsilon||v<-epsilon||u+v>1.+epsilon)continue;
+        if(distance<=epsilon||u<=epsilon||v<=epsilon||u+v>=1.-epsilon) {
+          ambiguous=true;break;
+        }
+        ++intersections;
+      }
+    }
+    return ambiguous?contains_by_winding(point):(intersections%2U)==1U;
   }
 };
 
