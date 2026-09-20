@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cfloat>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -25,11 +26,94 @@ double length(Vec3 value) { return std::sqrt(dot(value,value)); }
 
 using LocalTet=std::array<std::uint32_t,4>;
 
+struct LocalPredicateStats {
+  std::size_t filtered{};
+  std::size_t exact_fallbacks{};
+};
+
 struct LocalRefinementMesh {
   WangOrderedTetMesh mesh;
   std::vector<Vec3> positions;
   std::vector<std::uint64_t> ids;
+  LocalPredicateStats predicate_stats;
 };
+
+bool force_exact_local_predicates() {
+  static const bool enabled=std::getenv("DC_FORCE_EXACT_LOCAL_PREDICATES")!=nullptr;
+  return enabled;
+}
+
+ExactPredicateSign filtered_orientation_3d(
+    Vec3 a,Vec3 b,Vec3 c,Vec3 d,LocalPredicateStats& stats) {
+  if(!force_exact_local_predicates()) {
+    const auto ab=b-a,ac=c-a,ad=d-a;
+    const long double determinant=
+        static_cast<long double>(ab.x)*(static_cast<long double>(ac.y)*ad.z-
+                                        static_cast<long double>(ac.z)*ad.y)-
+        static_cast<long double>(ab.y)*(static_cast<long double>(ac.x)*ad.z-
+                                        static_cast<long double>(ac.z)*ad.x)+
+        static_cast<long double>(ab.z)*(static_cast<long double>(ac.x)*ad.y-
+                                        static_cast<long double>(ac.y)*ad.x);
+    const auto scale=std::max({1.0,std::abs(a.x),std::abs(a.y),std::abs(a.z),
+        std::abs(b.x),std::abs(b.y),std::abs(b.z),std::abs(c.x),std::abs(c.y),
+        std::abs(c.z),std::abs(d.x),std::abs(d.y),std::abs(d.z)});
+    // The bound is deliberately conservative. Any determinant close enough
+    // to rounding uncertainty uses the binary-exact predicate below.
+    const long double tolerance=4096.0L*LDBL_EPSILON*
+        static_cast<long double>(scale)*scale*scale;
+    if(std::abs(determinant)>tolerance) {
+      ++stats.filtered;
+      return determinant<0.0L?ExactPredicateSign::negative:
+                              ExactPredicateSign::positive;
+    }
+  }
+  ++stats.exact_fallbacks;
+  return exact_orientation_3d(a,b,c,d);
+}
+
+ExactPredicateSign filtered_in_sphere(
+    Vec3 a,Vec3 b,Vec3 c,Vec3 d,Vec3 query,LocalPredicateStats& stats) {
+  if(!force_exact_local_predicates()) {
+    const auto row=[query](Vec3 point) {
+      const auto delta=point-query;
+      const long double x=delta.x,y=delta.y,z=delta.z;
+      return std::array<long double,4>{{x,y,z,x*x+y*y+z*z}};
+    };
+    std::array<std::array<long double,4>,4> matrix{{
+        row(a),row(b),row(c),row(d)}};
+    long double determinant=1.0L;
+    bool singular{};
+    for(unsigned column=0U;column<4U;++column) {
+      unsigned pivot=column;
+      for(unsigned candidate=column+1U;candidate<4U;++candidate)
+        if(std::abs(matrix[candidate][column])>
+           std::abs(matrix[pivot][column]))pivot=candidate;
+      if(matrix[pivot][column]==0.0L) { singular=true;break; }
+      if(pivot!=column) { std::swap(matrix[pivot],matrix[column]);determinant=-determinant; }
+      const auto divisor=matrix[column][column];determinant*=divisor;
+      for(unsigned row_index=column+1U;row_index<4U;++row_index) {
+        const auto factor=matrix[row_index][column]/divisor;
+        for(unsigned index=column+1U;index<4U;++index)
+          matrix[row_index][index]-=factor*matrix[column][index];
+      }
+    }
+    const auto scale=std::max({1.0,std::abs(a.x),std::abs(a.y),std::abs(a.z),
+        std::abs(b.x),std::abs(b.y),std::abs(b.z),std::abs(c.x),std::abs(c.y),
+        std::abs(c.z),std::abs(d.x),std::abs(d.y),std::abs(d.z),std::abs(query.x),
+        std::abs(query.y),std::abs(query.z)});
+    // The same conservative gate keeps a fast sign only when it is far from
+    // a cospherical tie; ambiguous cases retain the exact implementation.
+    const long double tolerance=4096.0L*LDBL_EPSILON*
+        static_cast<long double>(scale)*scale*scale*scale;
+    if(!singular&&std::abs(determinant)>tolerance) {
+      ++stats.filtered;
+      return determinant<0.0L?ExactPredicateSign::negative:
+                              ExactPredicateSign::positive;
+    }
+  }
+  ++stats.exact_fallbacks;
+  return exact_in_sphere(a,b,c,d,query);
+}
 
 std::optional<LocalRefinementMesh> make_local_refinement_mesh(
     const WangConstrainedTetrahedralizationResult& volume) {
@@ -58,13 +142,16 @@ std::optional<LocalRefinementMesh> make_local_refinement_mesh(
   return result;
 }
 
-bool local_sphere_contains(const std::vector<Vec3>& positions,
+bool local_sphere_contains(LocalRefinementMesh& state,
                            const LocalTet& cell,Vec3 query) {
-  const auto orientation=static_cast<int>(exact_orientation_3d(
-      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]]));
+  const auto& positions=state.positions;
+  const auto orientation=static_cast<int>(filtered_orientation_3d(
+      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]],
+      state.predicate_stats));
   if(orientation==0)return false;
-  const auto sphere=static_cast<int>(exact_in_sphere(
-      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]],query));
+  const auto sphere=static_cast<int>(filtered_in_sphere(
+      positions[cell[0]],positions[cell[1]],positions[cell[2]],positions[cell[3]],query,
+      state.predicate_stats));
   return sphere!=0&&sphere==-orientation;
 }
 
@@ -85,7 +172,7 @@ bool insert_local_refinement_site(LocalRefinementMesh& state,Vec3 point,
       if(neighbour<0||static_cast<std::size_t>(neighbour)>=cells.size())continue;
       const auto next=static_cast<std::uint32_t>(neighbour);
       if(selected[next]||cells[next].deleted||
-         !local_sphere_contains(state.positions,cells[next].vertices,point))continue;
+         !local_sphere_contains(state,cells[next].vertices,point))continue;
       selected[next]=true;cavity.push_back(next);
     }
   }
@@ -114,12 +201,13 @@ bool insert_local_refinement_site(LocalRefinementMesh& state,Vec3 point,
         for(unsigned corner=0U;corner<4U;++corner)
           if(corner!=opposite)face[out++]=cells[*candidate].vertices[corner];
         if(face_uses[face_key(face)]!=1U)continue;
-        const auto query_side=exact_orientation_3d(
+        const auto query_side=filtered_orientation_3d(
             state.positions[face[0]],state.positions[face[1]],
-            state.positions[face[2]],point);
-        const auto interior_side=exact_orientation_3d(
+            state.positions[face[2]],point,state.predicate_stats);
+        const auto interior_side=filtered_orientation_3d(
             state.positions[face[0]],state.positions[face[1]],
-            state.positions[face[2]],state.positions[cells[*candidate].vertices[opposite]]);
+            state.positions[face[2]],state.positions[cells[*candidate].vertices[opposite]],
+            state.predicate_stats);
         if(query_side!=ExactPredicateSign::zero&&query_side==interior_side)continue;
         selected[*candidate]=false;adjusted=true;break;
       }
@@ -139,9 +227,9 @@ bool insert_local_refinement_site(LocalRefinementMesh& state,Vec3 point,
     for(unsigned corner=0U;corner<4U;++corner)
       if(corner!=opposite)child[out++]=cells[slot].vertices[corner];
     child[3]=appended;
-    const auto orientation=exact_orientation_3d(
+    const auto orientation=filtered_orientation_3d(
         state.positions[child[0]],state.positions[child[1]],
-        state.positions[child[2]],point);
+        state.positions[child[2]],point,state.predicate_stats);
     if(orientation==ExactPredicateSign::zero) {
       if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
         std::cerr<<"dc_local_refinement zero_child id="<<id<<'\n';
@@ -757,12 +845,21 @@ static DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume_im
     if(added==0U)break;
     const auto refinement_build_started=std::chrono::steady_clock::now();
     bool locally_refined=local_refinement.has_value();
+    const auto predicates_before=locally_refined
+        ?local_refinement->predicate_stats:LocalPredicateStats{};
     if(locally_refined)for(const auto& [point,id]:added_sites)
       if(!insert_local_refinement_site(*local_refinement,point,id)) {
         if(std::getenv("DC_LOCAL_REFINEMENT_TRACE"))
           std::cerr<<"dc_local_refinement insertion_failed id="<<id<<'\n';
         locally_refined=false;break;
       }
+    if(local_refinement) {
+      result.quality.local_predicate_filtered+=
+          local_refinement->predicate_stats.filtered-predicates_before.filtered;
+      result.quality.local_predicate_exact_fallbacks+=
+          local_refinement->predicate_stats.exact_fallbacks-
+          predicates_before.exact_fallbacks;
+    }
     const auto local_audit=locally_refined?local_refinement->mesh.audit():
         WangOrderedTetMesh::Audit{};
     if(locally_refined&&!local_audit.accepted()&&
@@ -825,6 +922,9 @@ static DcSurfaceConformingVolumeResult construct_dc_surface_conforming_volume_im
   final_quality.interior_smoothing_passes=result.quality.interior_smoothing_passes;
   final_quality.interior_smoothing_attempts=result.quality.interior_smoothing_attempts;
   final_quality.interior_smoothing_moves=result.quality.interior_smoothing_moves;
+  final_quality.local_predicate_filtered=result.quality.local_predicate_filtered;
+  final_quality.local_predicate_exact_fallbacks=
+      result.quality.local_predicate_exact_fallbacks;
   final_quality.sampling_milliseconds=result.quality.sampling_milliseconds;
   final_quality.initial_build_milliseconds=result.quality.initial_build_milliseconds;
   final_quality.refinement_build_milliseconds=result.quality.refinement_build_milliseconds;

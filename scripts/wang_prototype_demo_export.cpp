@@ -458,9 +458,17 @@ int main(int argc,char** argv) {
         <<",genericInteriorSmoothingRequested:"<<generic_sampling.maximum_interior_smoothing_passes
         <<",genericSamplingMilliseconds:"<<generic_volume.quality.sampling_milliseconds
         <<",genericInitialBuildMilliseconds:"<<generic_volume.quality.initial_build_milliseconds
+        <<",genericSeedMilliseconds:"<<generic_volume.volume.recovery.seed_milliseconds
+        <<",genericSegmentRecoveryMilliseconds:"<<generic_volume.volume.recovery.segment_recovery_milliseconds
+        <<",genericFacetRecoveryMilliseconds:"<<generic_volume.volume.recovery.facet_recovery_milliseconds
+        <<",genericRecoveryFinalizationMilliseconds:"<<generic_volume.volume.recovery.finalization_milliseconds
+        <<",genericCleanupMilliseconds:"<<generic_volume.volume.cleanup_milliseconds
+        <<",genericRegionClassificationMilliseconds:"<<generic_volume.volume.region_classification_milliseconds
         <<",genericRefinementBuildMilliseconds:"<<generic_volume.quality.refinement_build_milliseconds
         <<",genericSmoothingMilliseconds:"<<generic_volume.quality.smoothing_milliseconds
         <<",genericFinalEvaluationMilliseconds:"<<generic_volume.quality.final_evaluation_milliseconds
+        <<",genericLocalPredicateFiltered:"<<generic_volume.quality.local_predicate_filtered
+        <<",genericLocalPredicateExactFallbacks:"<<generic_volume.quality.local_predicate_exact_fallbacks
         <<",coreVolume:"<<published_core_volume
         <<",transitionVolume:"<<transition_volume
         <<",dcBoundaryEdges:"<<fixture.audit.dc_boundary_edges
@@ -529,9 +537,17 @@ int main(int argc,char** argv) {
          <<"  \"generic_workspace_allocations\": "<<(generic_workspace?generic_workspace->allocation_count():0U)<<",\n"
          <<"  \"generic_sampling_milliseconds\": "<<generic_volume.quality.sampling_milliseconds<<",\n"
          <<"  \"generic_initial_build_milliseconds\": "<<generic_volume.quality.initial_build_milliseconds<<",\n"
+         <<"  \"generic_seed_milliseconds\": "<<generic_volume.volume.recovery.seed_milliseconds<<",\n"
+         <<"  \"generic_segment_recovery_milliseconds\": "<<generic_volume.volume.recovery.segment_recovery_milliseconds<<",\n"
+         <<"  \"generic_facet_recovery_milliseconds\": "<<generic_volume.volume.recovery.facet_recovery_milliseconds<<",\n"
+         <<"  \"generic_recovery_finalization_milliseconds\": "<<generic_volume.volume.recovery.finalization_milliseconds<<",\n"
+         <<"  \"generic_cleanup_milliseconds\": "<<generic_volume.volume.cleanup_milliseconds<<",\n"
+         <<"  \"generic_region_classification_milliseconds\": "<<generic_volume.volume.region_classification_milliseconds<<",\n"
          <<"  \"generic_refinement_build_milliseconds\": "<<generic_volume.quality.refinement_build_milliseconds<<",\n"
          <<"  \"generic_smoothing_milliseconds\": "<<generic_volume.quality.smoothing_milliseconds<<",\n"
          <<"  \"generic_final_evaluation_milliseconds\": "<<generic_volume.quality.final_evaluation_milliseconds<<",\n"
+         <<"  \"generic_local_predicate_filtered\": "<<generic_volume.quality.local_predicate_filtered<<",\n"
+         <<"  \"generic_local_predicate_exact_fallbacks\": "<<generic_volume.quality.local_predicate_exact_fallbacks<<",\n"
          <<"  \"generic_dc_volume_literal_boundary\": "<<(generic_volume.volume.boundary_audit.accepted()?"true":"false")<<",\n"
          <<"  \"core_hierarchy_nodes_visited\": "<<fixture.audit.core_hierarchy_nodes_visited<<",\n"
          <<"  \"core_red_leaves_selected\": "<<fixture.audit.core_red_leaves_selected<<",\n"

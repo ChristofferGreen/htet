@@ -475,6 +475,23 @@ measurement, not a latency guarantee. The accepted local result contained
 and worst valence changed from 84 to 86. Both variants retained the literal DC
 boundary. A same-camera clipped visual A/B showed no material quality change.
 
+### Predicate-filter checkpoint
+
+The local cavity path now evaluates orientation and in-sphere signs with a
+conservative long-double filter first. A sign near the numerical bound uses
+the prior binary-exact predicate, so the filter cannot decide an ambiguous
+case. The inspector exposes the full first-build phase breakdown and the count
+of filtered versus exact local predicates.
+
+Five interleaved N12 runs measured local refinement at 13.8 ms with filtering
+versus 58.3 ms when every local predicate was forced through the exact path.
+Generic volume construction averaged 157.3 ms versus 202.8 ms. The N12 result
+used 17,290 filtered predicates and no exact fallback; N8 used 9,428 filtered
+predicates and two exact fallbacks. The published N8 and N12 VTK outputs were
+byte-identical to their forced-exact counterparts and retained the literal DC
+boundary. N8 can still reject its local candidate for a separate degeneracy
+condition and use the existing full-rebuild fallback.
+
 ## 12. Sources and scope of authority
 
 This proposal follows the exact shared surface/volume intent in

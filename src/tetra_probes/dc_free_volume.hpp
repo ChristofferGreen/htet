@@ -101,6 +101,8 @@ struct DcVolumeQualityDiagnostics {
   std::size_t interior_smoothing_passes{};
   std::size_t interior_smoothing_attempts{};
   std::size_t interior_smoothing_moves{};
+  std::size_t local_predicate_filtered{};
+  std::size_t local_predicate_exact_fallbacks{};
   // Phase timings are diagnostic only.  They make it possible to distinguish
   // sample selection, constrained recovery, and publication work.
   double sampling_milliseconds{};
